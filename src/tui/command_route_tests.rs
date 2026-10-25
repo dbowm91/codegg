@@ -29,8 +29,8 @@ use tokio::sync::mpsc;
 use crate::core::CoreClient;
 use crate::error::AppError;
 use crate::protocol::core::{
-    CommandCatalogScopeDto, CommandExecuteResultDto, CoreEvent, CoreRequest, CoreResponse,
-    EventEnvelope, RequestEnvelope,
+    ChatCapabilitiesDto, ChatChannelDto, CommandCatalogScopeDto, CommandExecuteResultDto,
+    CoreEvent, CoreRequest, CoreResponse, EventEnvelope, RequestEnvelope,
 };
 use crate::tui::app::App;
 use crate::tui::command_route::{route_for, CommandRoute};
@@ -55,10 +55,13 @@ const MIGRATED: &[(&str, &str, &str)] = &[
     // Session
     ("edit_undo", "", "Session"),
     ("edit_reapply", "", "Session"),
+    // Collaboration
+    ("stop", "", "Collaboration"),
+    ("chat_action_list", "", "Collaboration"),
 ];
 
 /// The families the migrated commands cover.
-const FAMILIES: &[&str] = &["Memory", "System", "Execution", "Session"];
+const FAMILIES: &[&str] = &["Memory", "System", "Execution", "Session", "Collaboration"];
 
 /// A client that records the requests it is given and answers a command
 /// execution with the inner response the daemon would have produced.
@@ -82,30 +85,71 @@ impl CoreClient for RecordingClient {
         &self,
         request: RequestEnvelope<CoreRequest>,
     ) -> Result<CoreResponse, AppError> {
+        let response = match &request.payload {
+            // The chat surface negotiates its capabilities and resolves its
+            // channel before the effect it is about to run. The recorder
+            // answers both, so the effect is reached.
+            CoreRequest::ChatCapabilities => CoreResponse::ChatCapabilities {
+                capabilities: chat_capabilities(),
+            },
+            CoreRequest::ChatChannelEnsure { project_id, .. } => CoreResponse::ChatChannel {
+                channel: chat_channel(project_id),
+            },
+            _ => CoreResponse::CommandExecute {
+                result: CommandExecuteResultDto {
+                    run_id: "run-1".to_string(),
+                    command_id: "recorded".to_string(),
+                    status: codegg_protocol::core::CommandOutcomeStatusDto::Completed,
+                    summary: "ok".to_string(),
+                    lines: Vec::new(),
+                    report: None,
+                    started_at_ms: 0,
+                    completed_at_ms: 1,
+                    // The inner response travels verbatim: the daemon's own
+                    // response for the effect.
+                    response: Some(serde_json::json!({ "type": "json", "data": { "ok": true } })),
+                },
+            },
+        };
         self.seen
             .lock()
             .expect("the recorder is not poisoned")
             .push(request.payload);
-        Ok(CoreResponse::CommandExecute {
-            result: CommandExecuteResultDto {
-                run_id: "run-1".to_string(),
-                command_id: "recorded".to_string(),
-                status: codegg_protocol::core::CommandOutcomeStatusDto::Completed,
-                summary: "ok".to_string(),
-                lines: Vec::new(),
-                report: None,
-                started_at_ms: 0,
-                completed_at_ms: 1,
-                // The inner response travels verbatim: the daemon's own
-                // response for the effect.
-                response: Some(serde_json::json!({ "type": "json", "data": { "ok": true } })),
-            },
-        })
+        Ok(response)
     }
 
     fn subscribe(&self) -> mpsc::Receiver<EventEnvelope<CoreEvent>> {
         let (_tx, rx) = mpsc::channel(8);
         rx
+    }
+}
+
+/// The chat capabilities the recorder advertises.
+fn chat_capabilities() -> ChatCapabilitiesDto {
+    ChatCapabilitiesDto {
+        supported: true,
+        protocol_version: 1,
+        max_body_bytes: 64 * 1024,
+        max_page_limit: 100,
+        max_mentions: 16,
+        max_references: 16,
+        composing_ttl_secs: 30,
+        retention_max_messages: 1000,
+        actions_supported: true,
+        max_action_title_bytes: 256,
+        max_action_prompt_bytes: 8192,
+        backward_paging: false,
+    }
+}
+
+/// The channel the recorder resolves for a project.
+fn chat_channel(project_id: &str) -> ChatChannelDto {
+    ChatChannelDto {
+        channel_id: "channel-1".to_string(),
+        project_id: project_id.to_string(),
+        name: "general".to_string(),
+        created_by: "principal-1".to_string(),
+        created_at_ms: 0,
     }
 }
 
@@ -348,8 +392,50 @@ async fn the_session_family_is_executed_by_the_daemon() {
     );
 }
 
-// ── 3. The outcome ───────────────────────────────────────────────────
+/// The Collaboration family: the turn cancel and the structured-action
+/// listing are executed by the daemon.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_collaboration_family_is_executed_by_the_daemon() {
+    let recorder = Arc::new(RecordingClient::default());
+    let mut app = app_with_recorder(recorder.clone());
 
+    // The stop command acts on the session's running turn, so the session
+    // and the turn must be bound before there is anything to stop.
+    let session = crate::session::Session {
+        id: "session-1".to_string(),
+        project_id: "project-1".to_string(),
+        ..Default::default()
+    };
+    app.session_state.session = Some(session);
+    app.session_state.session_status = crate::tui::app::SessionStatus::Working;
+    app.session_state.active_turn_id = Some("turn-1".to_string());
+
+    crate::tui::commands::turn_control::stop(&mut app);
+    wait_for_command(&recorder, "stop").await;
+    assert_eq!(
+        recorded_for(&recorder, "stop"),
+        Some(("stop".to_string(), String::new(), "turn-1".to_string())),
+        "the stop command must carry the turn id as its argument"
+    );
+
+    crate::tui::commands::chat::start_chat_action_list(
+        &mut app,
+        "project-1".to_string(),
+        Some("msg-1".to_string()),
+    );
+    wait_for_command(&recorder, "chat_action_list").await;
+    assert_eq!(
+        recorded_for(&recorder, "chat_action_list"),
+        Some((
+            "chat_action_list".to_string(),
+            String::new(),
+            "channel-1 msg-1".to_string()
+        )),
+        "the action listing must carry the channel and the message id as its argument"
+    );
+}
+
+// ── 3. The outcome ───────────────────────────────────────────────────
 /// The response the TUI's presentation receives is the daemon's inner
 /// response, verbatim.
 ///

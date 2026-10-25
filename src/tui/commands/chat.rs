@@ -2092,6 +2092,8 @@ pub(crate) fn start_chat_action_list(
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
     let pid = project_id.clone();
+    // M007-D: the daemon owns the effect.
+    let scope = crate::tui::command_route::scope_for(app);
     spawn_registered_tui_task(
         tx,
         &mut app.task_registry,
@@ -2141,15 +2143,21 @@ pub(crate) fn start_chat_action_list(
                     }
                 },
             };
-            let req = crate::core::new_request(
-                format!("chat-action-list-{}", uuid::Uuid::new_v4()),
-                CoreRequest::ChatActionList {
-                    channel_id: channel_id.clone(),
-                    message_id: message_id.clone(),
-                    limit: None,
-                },
-            );
-            match core_client.request(req).await {
+            // M007-D: the daemon owns the effect. The argument carries the
+            // channel and the optional message id, in that order.
+            let argument = match &message_id {
+                Some(id) => format!("{channel_id} {id}"),
+                None => channel_id.clone(),
+            };
+            match crate::tui::command_route::send_command(
+                &core_client,
+                scope,
+                "chat_action_list",
+                "",
+                &argument,
+            )
+            .await
+            {
                 Ok(CoreResponse::ChatActionList { actions, .. }) => {
                     Some(finish(actions, channel_id, None, false, false))
                 }

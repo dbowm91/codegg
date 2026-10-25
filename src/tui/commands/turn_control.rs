@@ -17,7 +17,7 @@
 //! The spelling is `/start` rather than `/resume` because `/sessions` owns
 //! the `resume` alias for session switching; see `BuiltinSlashAction::StartTurn`.
 
-use crate::protocol::core::{CoreRequest, CoreResponse};
+use crate::protocol::core::CoreResponse;
 use crate::tui::app::state::prompt::STOP_ARM_WINDOW;
 use crate::tui::app::TuiCommand;
 use crate::tui::app::{App, SessionStatus};
@@ -77,6 +77,10 @@ pub(crate) fn stop(app: &mut App) {
         return;
     };
 
+    // M007-D: the daemon owns the effect. The turn id travels as the
+    // command's argument; the session travels in the scope.
+    let scope = crate::tui::command_route::scope_for(app);
+
     // Mark stopped immediately. The daemon's cooperative cancel means the turn
     // unwinds over its next poll, so waiting for `TurnCompleted` would leave a
     // visible lag between the keypress and the badge — and a user who pressed
@@ -90,16 +94,15 @@ pub(crate) fn stop(app: &mut App) {
         TuiTaskKind::Command,
         "turn_cancel",
         async move {
-            let request = crate::core::new_request(
-                format!("turn-cancel-{}", uuid::Uuid::new_v4()),
-                CoreRequest::TurnCancel {
-                    session_id: session_id.clone(),
-                    turn_id: turn_id.clone(),
-                },
-            );
-            let error = match core_client.request(request).await {
+            let response =
+                crate::tui::command_route::send_command(&core_client, scope, "stop", "", &turn_id)
+                    .await;
+            let error = match response {
                 Ok(CoreResponse::Ack) => None,
                 Ok(CoreResponse::Error { code, message }) => Some(format!("{code}: {message}")),
+                // A refusal carries no inner response: the daemon declined to
+                // run the effect at all, and its summary is the reason.
+                Ok(CoreResponse::CommandExecute { result }) => Some(result.summary),
                 Ok(other) => Some(format!("unexpected core response: {other:?}")),
                 Err(error) => Some(error.to_string()),
             };

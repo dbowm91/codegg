@@ -306,6 +306,35 @@ pub fn build_inner_request(
                 }
             })
         }
+        // The turn the user wants stopped. The session travels in the scope
+        // and the turn id travels as the argument: the daemon refuses a
+        // turn that does not belong to the session.
+        ("stop", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            json!({
+                "type": "turn_cancel",
+                "session_id": session_id,
+                "turn_id": first,
+            })
+        }
+        // The structured actions of one channel. The argument carries the
+        // channel and the optional message id, in that order; a channel the
+        // daemon does not know fails closed.
+        ("chat_action_list", "") => {
+            let message_id = if rest.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::Value::String(rest.to_string())
+            };
+            json!({
+                "type": "chat_action_list",
+                "channel_id": first,
+                "message_id": message_id,
+                "limit": null,
+            })
+        }
 
         // ── the editor's checkpoints ──
         ("edit_undo", "") => {
@@ -1003,6 +1032,8 @@ mod tests {
         ("team", ""),
         ("control", ""),
         ("observe", ""),
+        ("stop", ""),
+        ("chat_action_list", ""),
         ("edit_undo", ""),
         ("edit_reapply", ""),
         ("edit_checkpoints", ""),
@@ -1115,5 +1146,73 @@ mod tests {
     fn a_form_with_no_row_is_not_served() {
         assert!(!serves_form("not_a_command", ""));
         assert!(!serves_form("skills", "not_a_form"));
+    }
+
+    /// The Collaboration rows carry their identifiers in the argument.
+    ///
+    /// The turn id and the channel are not in the scope, so the argument is
+    /// where they travel. The test pins the encoding, because a frontend
+    /// that encoded them differently would address the wrong turn or the
+    /// wrong channel.
+    #[test]
+    fn the_collaboration_rows_carry_their_identifiers_in_the_argument() {
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session"),
+            argument: "turn-1",
+        };
+        let Some(CommandEffect::Ready(request)) = build_inner_request("stop", "", &ctx) else {
+            panic!("stop must build a request");
+        };
+        assert!(
+            matches!(
+                request.as_ref(),
+                CoreRequest::TurnCancel { session_id, turn_id }
+                    if session_id == "session" && turn_id == "turn-1"
+            ),
+            "the stop row must cancel the named turn of the named session"
+        );
+
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session"),
+            argument: "channel-1 message-1",
+        };
+        let Some(CommandEffect::Ready(request)) = build_inner_request("chat_action_list", "", &ctx)
+        else {
+            panic!("chat_action_list must build a request");
+        };
+        assert!(
+            matches!(
+                request.as_ref(),
+                CoreRequest::ChatActionList { channel_id, message_id, limit }
+                    if channel_id == "channel-1"
+                        && message_id.as_deref() == Some("message-1")
+                        && limit.is_none()
+            ),
+            "the action-list row must address the channel and the message"
+        );
+
+        // A channel with no message id lists the channel's own actions.
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session"),
+            argument: "channel-1",
+        };
+        let Some(CommandEffect::Ready(request)) = build_inner_request("chat_action_list", "", &ctx)
+        else {
+            panic!("chat_action_list must build a request");
+        };
+        assert!(
+            matches!(
+                request.as_ref(),
+                CoreRequest::ChatActionList { channel_id, message_id, .. }
+                    if channel_id == "channel-1" && message_id.is_none()
+            ),
+            "an action listing with no message id must list the channel's actions"
+        );
     }
 }
