@@ -6540,19 +6540,19 @@ mod tests {
             historical_schemas.insert(tool.to_string(), schema);
         }
 
-        {
+        for tool in ["glob", "grep"] {
             let schema = historical_schemas
-                .get_mut("glob")
-                .expect("glob schema already restored");
+                .get_mut(tool)
+                .unwrap_or_else(|| panic!("{tool} schema already restored"));
             let props = schema["properties"]
                 .as_object_mut()
-                .expect("glob properties remain declared");
+                .unwrap_or_else(|| panic!("{tool} properties remain declared"));
             let include_ignored = props
                 .remove("include_ignored")
-                .expect("post-M003 glob.include_ignored remains declared");
+                .unwrap_or_else(|| panic!("post-M003 {tool}.include_ignored remains declared"));
             assert_eq!(
                 include_ignored["type"], "boolean",
-                "unexpected post-M003 glob.include_ignored schema"
+                "unexpected post-M003 {tool}.include_ignored schema"
             );
         }
 
