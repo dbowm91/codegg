@@ -412,18 +412,40 @@ impl PreflightService {
             || risk.as_deref() == Some("high")
             || output.contains("risk: high")
             || output.contains("verdict: block");
-        let is_warn = verdict.as_deref() == Some("warn")
+        let mut is_warn = verdict.as_deref() == Some("warn")
             || risk.as_deref() == Some("medium")
             || output.contains("risk: medium")
             || output.contains("verdict: warn")
             || verdict.as_deref() == Some("review")
             || output.contains("verdict: review");
 
+        // D5: recompute control-operator on the unquoted token stream.
+        // Upstream flags `;` inside `python3 -c '...; ...'` because it joins
+        // argv and scans the joined text; a `;` inside one argv token is
+        // quoted data, not syntax. Consume shell_split.argv so only unquoted
+        // operators count.
+        let structured_ref = result.result.as_ref();
+        let recomputed_control = recomputed_control_operator(structured_ref);
+        let upstream_control = upstream_control_operator(structured_ref);
+        let control_artifact = upstream_control == Some(true) && !recomputed_control;
+        if control_artifact && !is_risk_signal && is_warn {
+            // Quoted `;`/`&` alone must not sustain a Warn. Real signals
+            // below (sensitive reads, process primitives, real operators)
+            // re-raise it; otherwise this falls to Allow.
+            is_warn = false;
+        }
+
         // F5: a read-only pipe (`ls -la | head -20` → has_pipe / medium) is
         // the most common benign shell shape. Downgrade pipe-only medium to
         // Allow so agents stop learning to click through advisories.
         if !is_risk_signal && is_warn && is_pipe_only_advisory(output, result.result.as_ref()) {
-            return self.decide_from_findings(Vec::new());
+            // A real sensitive/process signal still overrides the pipe-only
+            // downgrade; check those before returning.
+            let sensitive = sensitive_path_postcheck(structured_ref);
+            let process = process_spawn_postcheck(structured_ref);
+            if sensitive.is_none() && process.is_none() && !recomputed_control {
+                return self.decide_from_findings(Vec::new());
+            }
         }
 
         if is_risk_signal {
@@ -445,6 +467,28 @@ impl PreflightService {
                     "Command preflight: {}",
                     truncate(&sanitize_advisory_output(output), 200)
                 ),
+                location: None,
+                source_tool: "command_preflight".to_string(),
+            });
+        }
+
+        // D2: bare sensitive-path reads (`cat ~/.ssh/id_rsa`, no pipe).
+        // Both advisors share the sandbox deny authority so they agree.
+        if let Some(extra) = sensitive_path_postcheck(structured_ref) {
+            findings.push(extra);
+        }
+        // D5: process-spawn primitives (`os.system`, `subprocess.run`, …).
+        if let Some(extra) = process_spawn_postcheck(structured_ref) {
+            findings.push(extra);
+        }
+        // D5: a real unquoted control operator upstream missed still warns.
+        if recomputed_control && upstream_control != Some(true) {
+            findings.push(PreflightFinding {
+                severity: PreflightSeverity::Warn,
+                machine_code: result.machine_code.clone(),
+                message:
+                    "Command preflight: unquoted shell control operator (`;`, `&&`, `||`, `&`)"
+                        .to_string(),
                 location: None,
                 source_tool: "command_preflight".to_string(),
             });
@@ -711,6 +755,138 @@ fn is_pipe_only_advisory(output: &str, structured: Option<&serde_json::Value>) -
         }
     }
     true
+}
+
+/// D2: shared sensitive-path authority. Both advisors consult the sandbox
+/// deny list so `cat ~/.ssh/id_rsa` warns in preflight and in eggsentry.
+fn command_text(structured: Option<&serde_json::Value>) -> Option<String> {
+    structured
+        .and_then(|v| v.get("command"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+fn shell_split_argv(structured: Option<&serde_json::Value>) -> Vec<String> {
+    structured
+        .and_then(|v| v.get("subresults"))
+        .and_then(|v| v.get("shell_split"))
+        .and_then(|v| v.get("argv"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn upstream_control_operator(structured: Option<&serde_json::Value>) -> Option<bool> {
+    structured
+        .and_then(|v| v.get("subresults"))
+        .and_then(|v| v.get("shell_split"))
+        .and_then(|v| v.get("features"))
+        .and_then(|v| v.get("has_control_operator"))
+        .and_then(|v| v.as_bool())
+}
+
+/// D5: recompute `has_control_operator` on the unquoted token stream.
+/// A `;`/`&` inside one argv token is quoted data (e.g. `python3 -c
+/// 'import os; os.system("id")'`), not shell syntax. Strip every argv token
+/// that carries `;`/`&` from the raw command and look for operators in what
+/// remains; only unquoted operators count.
+fn recomputed_control_operator(structured: Option<&serde_json::Value>) -> bool {
+    let Some(cmd) = command_text(structured) else {
+        return false;
+    };
+    let argv = shell_split_argv(structured);
+    let mut remaining = cmd.clone();
+    for token in &argv {
+        if token.contains(';') || token.contains('&') {
+            // Remove the quoted-data occurrence so its `;`/`&` cannot read
+            // as syntax. One replacement per token occurrence is enough:
+            // syntax needs only one unquoted operator to be real.
+            if let Some(pos) = remaining.find(token.as_str()) {
+                remaining.replace_range(pos..pos + token.len(), " ");
+            }
+        }
+    }
+    if remaining.contains("&&") || remaining.contains("||") {
+        return true;
+    }
+    // Single `;` or `&` outside tokens is a real operator. `&&`/`||`
+    // already returned, so any remaining `;`/`&` counts.
+    remaining.contains(';') || remaining.contains('&')
+}
+
+/// D2: bare sensitive-path read without a pipe. Uses the sandbox deny
+/// authority so preflight and the classifier agree.
+fn sensitive_path_postcheck(structured: Option<&serde_json::Value>) -> Option<PreflightFinding> {
+    let cmd = command_text(structured)?;
+    let lower = cmd.to_lowercase();
+    let has_reader = ["cat", "less", "more", "head", "tail", "read", "cp", "scp"]
+        .iter()
+        .any(|c| lower.contains(c));
+    if !has_reader {
+        return None;
+    }
+    // Shared authority: the sandbox deny list is the source of truth both
+    // advisors consult. Tilde spellings (`~/.ssh`) are checked alongside
+    // the expanded absolute forms the list carries.
+    let _deny = crate::security::sandbox::policy::sensitive_deny_paths();
+    let tilde_hit = lower.contains("~/.ssh")
+        || lower.contains("~/.aws")
+        || lower.contains("~/.gnupg")
+        || lower.contains(".pem")
+        || lower.contains("id_rsa")
+        || lower.contains("id_ed25519")
+        || lower.contains("id_ecdsa")
+        || lower.contains("id_dsa")
+        || lower.contains(".gnupg")
+        || lower.contains("private_key");
+    let expanded_hit = _deny.iter().any(|p| {
+        let s = p.to_string_lossy().to_lowercase();
+        !s.is_empty() && lower.contains(s.as_str())
+    });
+    if !(tilde_hit || expanded_hit) {
+        return None;
+    }
+    Some(PreflightFinding {
+        severity: PreflightSeverity::Warn,
+        machine_code: None,
+        message: format!(
+            "Command preflight: direct read of sensitive credential path (no pipe required): {}",
+            truncate(&cmd, 120)
+        ),
+        location: None,
+        source_tool: "command_preflight".to_string(),
+    })
+}
+
+/// D5: process-spawn primitives hidden in shell text.
+fn process_spawn_postcheck(structured: Option<&serde_json::Value>) -> Option<PreflightFinding> {
+    let cmd = command_text(structured)?;
+    let lower = cmd.to_lowercase();
+    let hit = lower.contains("os.system(")
+        || lower.contains("os.popen(")
+        || lower.contains("os.exec")
+        || lower.contains("os.spawn")
+        || lower.contains("subprocess.popen(")
+        || lower.contains("subprocess.run(")
+        || lower.contains("subprocess.call(")
+        || lower.contains("subprocess.check_");
+    if !hit {
+        return None;
+    }
+    Some(PreflightFinding {
+        severity: PreflightSeverity::Warn,
+        machine_code: None,
+        message: format!(
+            "Command preflight: process-spawn primitive (os.system/subprocess): {}",
+            truncate(&cmd, 120)
+        ),
+        location: None,
+        source_tool: "command_preflight".to_string(),
+    })
 }
 
 /// F8: true when a text-security result carries an actionable signal beyond
@@ -1167,5 +1343,125 @@ mod tests {
         let decision = service.parse_text_security_result(result);
         assert!(!decision.findings().is_empty());
         assert!(decision.summary().contains("INSTRUCTION_PHRASE"));
+    }
+
+    #[test]
+    fn bare_ssh_key_read_warns_via_shared_deny_authority() {
+        let service = PreflightService::with_runtime(
+            std::sync::Arc::new(
+                crate::eggsact::adapter::EggsactRuntime::new(
+                    crate::eggsact::adapter::EggsactConfig::default(),
+                )
+                .unwrap(),
+            ),
+            PreflightPolicy::default(),
+        );
+        let cmd = "cat ~/.ssh/id_rsa";
+        let result = EggsactCallResult {
+            output: "verdict: allow".to_string(),
+            success: true,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({
+                "verdict": "allow",
+                "command": cmd,
+                "subresults": {
+                    "shell_split": {
+                        "argv": ["cat", "~/.ssh/id_rsa"],
+                        "features": {"has_control_operator": false}
+                    }
+                }
+            })),
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        let decision = service.parse_command_result(result);
+        assert!(
+            !decision.findings().is_empty(),
+            "bare key read must warn even when upstream allows"
+        );
+        let summary = decision.summary().to_lowercase();
+        assert!(
+            summary.contains("sensitive") || summary.contains("credential"),
+            "sensitive-read finding must name the credential risk, got: {summary}"
+        );
+    }
+
+    #[test]
+    fn quoted_semicolon_is_quoted_data_but_process_primitive_warns() {
+        let service = PreflightService::with_runtime(
+            std::sync::Arc::new(
+                crate::eggsact::adapter::EggsactRuntime::new(
+                    crate::eggsact::adapter::EggsactConfig::default(),
+                )
+                .unwrap(),
+            ),
+            PreflightPolicy::default(),
+        );
+        // Quoted `;` with a real primitive: control artifact suppressed,
+        // process primitive sustains the Warn for the right reason.
+        let cmd = "python3 -c 'import os; os.system(\"id\")'";
+        let result = EggsactCallResult {
+            output: "verdict: review\nRISKY_SHELL_FEATURE has_control_operator".to_string(),
+            success: true,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({
+                "verdict": "review",
+                "command": cmd,
+                "subresults": {
+                    "shell_split": {
+                        "argv": ["python3", "-c", "import os; os.system(\"id\")"],
+                        "features": {"has_control_operator": true}
+                    }
+                }
+            })),
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        let decision = service.parse_command_result(result);
+        assert!(
+            !decision.findings().is_empty(),
+            "process primitive must warn even when control flag is quoted data"
+        );
+        let summary = decision.summary().to_lowercase();
+        assert!(
+            summary.contains("process-spawn") || summary.contains("os.system"),
+            "finding must name the primitive, not the quoting artifact, got: {summary}"
+        );
+        // Quoted `;` alone with no primitive: artifact suppresses to Allow.
+        let quiet = EggsactCallResult {
+            output: "verdict: review\nRISKY_SHELL_FEATURE has_control_operator".to_string(),
+            success: true,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({
+                "verdict": "review",
+                "command": "python3 -c 'a; b'",
+                "subresults": {
+                    "shell_split": {
+                        "argv": ["python3", "-c", "a; b"],
+                        "features": {"has_control_operator": true}
+                    }
+                }
+            })),
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        let quiet_decision = service.parse_command_result(quiet);
+        assert!(
+            quiet_decision.findings().is_empty(),
+            "quoted `;` alone must not sustain a Warn, got: {}",
+            quiet_decision.summary()
+        );
     }
 }

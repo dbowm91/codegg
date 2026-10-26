@@ -5943,7 +5943,7 @@ mod tests {
         // above are untouched.
         assert_eq!(
             task_action["description"],
-            serde_json::json!("Action: create/revoke parent-owned shared scratch, spawn children, converge, manage groups/runs, or manage workstream claims. status/wait/message/interrupt/cancel address an AgentRunId through run_id; get retrieves a task through task_id (durable AgentTaskId string or legacy numeric ID). Group actions use group_id."),
+            serde_json::json!("Action: create/revoke parent-owned shared scratch, spawn children, converge, manage groups/runs, or manage workstream claims. status/wait/message/interrupt/cancel address an AgentRunId through run_id (a durable task_id string is accepted as an alias and resolved to its run); get retrieves a task through task_id (durable AgentTaskId string or legacy numeric ID; a run_id is accepted as an alias and resolved to its task). Group actions use group_id."),
             "unexpected post-M003 task action description"
         );
         task_action["description"] = serde_json::json!("Action: spawn, converge, convergence_status, convergence_decide, convergence_cancel, spawn_many, create_group, status (get alias), message, interrupt, wait, cancel, status_group, wait_group, or cancel_group");
@@ -6027,7 +6027,7 @@ mod tests {
             .expect("run_id description");
         assert_eq!(
             live_run_id_description,
-            "Required for action=status, wait, message, interrupt, or cancel: durable AgentRunId. Do not use task_id here."
+            "Required for action=status, wait, message, interrupt, or cancel: durable AgentRunId. A durable task_id string is accepted as an alias and resolved to its run."
         );
         task_properties["run_id"]["description"] =
             serde_json::json!("Durable AgentRunId for control/status/wait");
@@ -6252,6 +6252,212 @@ mod tests {
             "unexpected post-M003 repo_search schema"
         );
         historical_schemas.insert("repo_search".to_string(), historical_repo_search_schema);
+
+        // The agentfindings workstream (F1 integer coercion + F11 compact
+        // projection) extended several pilot-tool schemas after M003. All
+        // are post-M003 edits, so reconstruct the frozen shapes here: the
+        // receipt stays immutable and the live schemas keep the newer
+        // coercion/projection contract.
+        for tool in ["work_plan_get", "work_plan_update_item", "webfetch"] {
+            let mut schema = registry
+                .get(tool)
+                .unwrap_or_else(|| panic!("{tool} tool remains registered"))
+                .parameters();
+            let props = schema["properties"]
+                .as_object_mut()
+                .unwrap_or_else(|| panic!("{tool} properties remain declared"));
+            match tool {
+                "work_plan_get" => {
+                    for (prop, expected) in [
+                        (
+                            "offset",
+                            "Pagination offset into the actionable slice. Whole-valued floats (e.g. 5.0) are coerced to that integer; fractional values fail validation.",
+                        ),
+                        (
+                            "limit",
+                            "Maximum items to return. Whole-valued floats (e.g. 5.0) are coerced to that integer; fractional values fail validation.",
+                        ),
+                    ] {
+                        let entry = props
+                            .get_mut(prop)
+                            .and_then(|v| v.as_object_mut())
+                            .unwrap_or_else(|| panic!("{tool}.{prop} remains declared"));
+                        assert_eq!(
+                            entry.get("description").and_then(|d| d.as_str()),
+                            Some(expected),
+                            "unexpected post-M003 {tool}.{prop} description"
+                        );
+                        entry.remove("description");
+                    }
+                }
+                "work_plan_update_item" => {
+                    let entry = props
+                        .get_mut("expected_revision")
+                        .and_then(|v| v.as_object_mut())
+                        .expect("work_plan_update_item.expected_revision remains declared");
+                    assert_eq!(
+                        entry.get("description").and_then(|d| d.as_str()),
+                        Some("Expected item revision for optimistic concurrency. Whole-valued floats (e.g. 3.0) are coerced to that integer; fractional values fail."),
+                        "unexpected post-M003 work_plan_update_item.expected_revision description"
+                    );
+                    entry.remove("description");
+                }
+                "webfetch" => {
+                    assert!(
+                        props.remove("compact").is_some(),
+                        "expected post-M003 webfetch.compact"
+                    );
+                    assert!(
+                        props.remove("detail").is_some(),
+                        "expected post-M003 webfetch.detail"
+                    );
+                }
+                _ => unreachable!(),
+            }
+            historical_schemas.insert(tool.to_string(), schema);
+        }
+        // `test` and `verify` are already in `historical_schemas` above;
+        // restore the F1 description/type deltas on those entries in place.
+        for (tool, prop, live_description, historical_description) in [
+            (
+                "test",
+                "max_report_bytes",
+                "Hard ceiling for the formatted report returned to the model, in bytes. Default 20000. Useful for keeping model-visible output bounded when failure sets are large. Whole-valued floats (e.g. 20000.0) are coerced to that integer; fractional values fail validation.",
+                "Hard ceiling for the formatted report returned to the model, in bytes. Default 20000. Useful for keeping model-visible output bounded when failure sets are large.",
+            ),
+            (
+                "verify",
+                "max_report_bytes",
+                "Maximum diagnostic summary bytes. Whole-valued floats (e.g. 20000.0) are coerced to that integer; fractional values fail validation.",
+                "Maximum diagnostic summary bytes.",
+            ),
+        ] {
+            let schema = historical_schemas
+                .get_mut(tool)
+                .unwrap_or_else(|| panic!("{tool} schema already restored"));
+            let entry = schema["properties"][prop]
+                .as_object_mut()
+                .unwrap_or_else(|| panic!("{tool}.{prop} remains declared"));
+            assert_eq!(
+                entry.get("description").and_then(|d| d.as_str()),
+                Some(live_description),
+                "unexpected post-M003 {tool}.{prop} description"
+            );
+            entry.insert(
+                "description".to_string(),
+                serde_json::json!(historical_description),
+            );
+        }
+        // `verify.timeout` changed shape (`integer` -> `number`) plus
+        // description; restore both so the frozen receipt keeps matching.
+        {
+            let schema = historical_schemas
+                .get_mut("verify")
+                .expect("verify schema already restored");
+            let entry = schema["properties"]["timeout"]
+                .as_object_mut()
+                .expect("verify.timeout remains declared");
+            assert_eq!(
+                entry.get("type").and_then(|t| t.as_str()),
+                Some("number"),
+                "unexpected post-M003 verify.timeout schema type"
+            );
+            assert_eq!(
+                entry.get("description").and_then(|d| d.as_str()),
+                Some("Wall-clock timeout in seconds. Whole-valued floats (e.g. 300.0) are coerced to that integer; fractional values fail validation. Mirrors the test tool timeout."),
+                "unexpected post-M003 verify.timeout description"
+            );
+            entry.insert("type".to_string(), serde_json::json!("integer"));
+            entry.insert(
+                "description".to_string(),
+                serde_json::json!("Wall-clock timeout in seconds."),
+            );
+        }
+        // The agentfindings search workstream gave `websearch` the same
+        // compact/detail projection as the other search tools. `websearch`
+        // is a pilot tool, so strip those properties for the frozen receipt.
+        {
+            let schema = historical_schemas
+                .get_mut("websearch")
+                .expect("websearch schema already restored");
+            let props = schema["properties"]
+                .as_object_mut()
+                .expect("websearch properties remain declared");
+            assert!(
+                props.remove("compact").is_some(),
+                "expected post-M003 websearch.compact"
+            );
+            assert!(
+                props.remove("detail").is_some(),
+                "expected post-M003 websearch.detail"
+            );
+        }
+        // The agentfindings usability workstream clarified the `test`
+        // custom-command description. Restore the frozen wording.
+        {
+            let schema = historical_schemas
+                .get_mut("test")
+                .expect("test schema already restored");
+            let entry = schema["properties"]["command"]
+                .as_object_mut()
+                .expect("test.command remains declared");
+            assert_eq!(
+                entry.get("description").and_then(|d| d.as_str()),
+                Some("Custom test command (required when scope is custom, ignored otherwise). Must pass test command safety checks. Example: {\"scope\":\"custom\",\"command\":\"cargo test -p mycrate\"}."),
+                "unexpected post-M003 test.command description"
+            );
+            entry.insert(
+                "description".to_string(),
+                serde_json::json!(
+                    "Custom test command. Requires custom scope and must pass test command safety checks."
+                ),
+            );
+        }
+        // The agentfindings usability workstream fixed the `git` workdir
+        // text and stated the `research` corpus in mode/depth. All three
+        // are pilot-tool parameter descriptions, so restore the frozen
+        // wording here.
+        for (tool, property, live_description, historical_description) in [
+            (
+                "git",
+                "workdir",
+                "Working directory for git command (default: session workspace root; explicit workdir selects the checkout for mutations)",
+                "Working directory for git command (default: current directory)",
+            ),
+            (
+                "research",
+                "mode",
+                "Research mode that sets framing and upstream workflow, not the corpus (local workspace is always searched; web only via eggsearch when [search].backend is not disabled)",
+                "Research mode that biases the pipeline",
+            ),
+            (
+                "research",
+                "depth",
+                "Research depth as a source budget (low=8 sources, medium=30, high=80); does not change the corpus",
+                "Research depth (low=8 sources, medium=30, high=80)",
+            ),
+        ] {
+            let mut schema = match historical_schemas.remove(tool) {
+                Some(schema) => schema,
+                None => registry
+                    .get(tool)
+                    .unwrap_or_else(|| panic!("{tool} tool remains registered"))
+                    .parameters(),
+            };
+            let entry = schema["properties"][property]
+                .as_object_mut()
+                .unwrap_or_else(|| panic!("{tool}.{property} remains declared"));
+            let previous = entry.insert(
+                "description".to_string(),
+                serde_json::json!(historical_description),
+            );
+            assert_eq!(
+                previous.as_ref().and_then(|d| d.as_str()),
+                Some(live_description),
+                "unexpected post-M003 {tool}.{property} description"
+            );
+            historical_schemas.insert(tool.to_string(), schema);
+        }
 
         // Integer parameters were re-declared as `"integer"` (with a
         // `minimum`) after M003. They were `"number"`, which is why a model

@@ -28,7 +28,7 @@ impl Tool for SecurityTool {
     }
 
     fn description(&self) -> &str {
-        "Deterministic security scanning tool. Classifies commands, inspects text/files, and runs security profiles. Shapes differ per action: classify_command returns a classification (risk/categories verdict) and covers shell risk (rm -rf / returns critical); inspect_text/inspect_file/run_profile return a SecurityReport envelope (profile/findings/summary) and cover secrets/unsafe-deps/CORS/supply-chain, not shell — test strings without execution context are not findings there. Canonical pair: security covers secrets/supply-chain/CVE plus classify_command; for shell-risk gating before bash use command_preflight (different envelope, same risk class)."
+        "Auditing text/files/artifacts -> classify_command. Deterministic security scanning tool. Classifies commands, inspects text/files, and runs security profiles. Shapes differ per action: classify_command returns a classification (risk/categories verdict) and covers shell risk (rm -rf / returns critical); inspect_text/inspect_file/run_profile return a SecurityReport envelope (profile/findings/summary) and cover secrets/unsafe-deps/CORS/supply-chain, not shell — test strings without execution context are not findings there. Canonical pair: security covers secrets/supply-chain/CVE plus classify_command; for shell-risk gating before bash use command_preflight (different envelope, same risk class)."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -187,6 +187,12 @@ mod tests {
         let tool = SecurityTool;
         assert_eq!(tool.name(), "security");
         assert!(!tool.description().is_empty());
+        assert!(
+            tool.description()
+                .starts_with("Auditing text/files/artifacts -> classify_command"),
+            "security description must lead with the audit decision rule, got: {}",
+            tool.description()
+        );
     }
 
     #[test]
@@ -597,5 +603,62 @@ mod tests {
         assert_eq!(provenance.backend, "native");
         assert_eq!(provenance.implementation, "eggsentry");
         assert!(provenance.elapsed_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn classify_command_bare_ssh_key_read_is_secret_exposure() {
+        let tool = SecurityTool;
+        let result = tool
+            .execute(json!({
+                "action": "classify_command",
+                "command": "cat ~/.ssh/id_rsa"
+            }))
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(
+            parsed["risk"] == "high" || parsed["risk"] == "critical",
+            "bare key read must be high/critical, got: {parsed}"
+        );
+        let categories = parsed["categories"].as_array().unwrap();
+        assert!(
+            categories.iter().any(|c| c == "secret_exposure"),
+            "bare key read must be SecretExposure, got: {parsed}"
+        );
+        assert!(
+            !parsed["finding"].is_null(),
+            "bare key read must carry a finding with no pipe required, got: {parsed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn inspect_file_cargo_toml_names_executable_audit() {
+        let dir = tempfile::tempdir().unwrap();
+        let cargo = dir.path().join("Cargo.toml");
+        std::fs::write(&cargo, "[package]\nname = \"probe\"\nversion = \"0.1.0\"").unwrap();
+        let tool = SecurityTool;
+        let result = tool
+            .execute(json!({
+                "action": "inspect_file",
+                "path": &cargo.to_string_lossy()
+            }))
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let findings = parsed["findings"].as_array().unwrap();
+        let supply: Vec<_> = findings
+            .iter()
+            .filter(|f| f["category"] == "supply_chain_risk")
+            .collect();
+        assert_eq!(
+            supply.len(),
+            1,
+            "Cargo.toml must yield one supply-chain finding"
+        );
+        let recommendation = supply[0]["recommendation"].as_str().unwrap_or_default();
+        assert!(
+            recommendation.contains("cargo audit"),
+            "finding must name an executable next step, got: {recommendation}"
+        );
     }
 }

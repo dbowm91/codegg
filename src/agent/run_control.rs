@@ -537,7 +537,11 @@ impl RunControlService {
     ///
     /// The `reason` names the handoff cause plus the run's own status and
     /// `cancellation_requested` flag, so a recorded cancel that is still
-    /// waiting for a live loop reads differently from a lost one.
+    /// waiting for a live loop reads differently from a lost one. A cancel
+    /// the store already shows as `cancelling`/`cancelled` (or flagged
+    /// `cancellation_requested`) leads with "Cancel acknowledged, draining"
+    /// — the live-handoff detail is secondary, and "queued for later" stays
+    /// reserved for a control with no live loop attached.
     async fn delivery_pending(
         &self,
         target: &AgentRunId,
@@ -545,25 +549,35 @@ impl RunControlService {
         message: AgentRunMailboxMessage,
         cause: &str,
     ) -> ControlOutcome {
-        let state_note = match self.runs.get_run(target).await {
-            Ok(Some(run)) => format!(
-                "run status '{}', cancellation_requested={}",
-                run.status.as_str(),
-                run.cancellation_requested
+        let (state_note, acknowledged) = match self.runs.get_run(target).await {
+            Ok(Some(run)) => (
+                format!(
+                    "run status '{}', cancellation_requested={}",
+                    run.status.as_str(),
+                    run.cancellation_requested
+                ),
+                kind == AgentRunControlKind::Cancel
+                    && (run.status == AgentRunStatus::Cancelling
+                        || run.status == AgentRunStatus::Cancelled
+                        || run.cancellation_requested),
             ),
-            _ => "run state unreadable".to_string(),
+            _ => ("run state unreadable".to_string(), false),
         };
         let recorded = if kind == AgentRunControlKind::Cancel {
             " the cancel itself is durably recorded;"
         } else {
             ""
         };
-        ControlOutcome::DeliveryPending {
-            message,
-            reason: format!(
+        let reason = if acknowledged {
+            format!(
+                "Cancel acknowledged, draining (run '{target}'); {cause} ({state_note});{recorded} the control stays queued and replays on attach"
+            )
+        } else {
+            format!(
                 "{cause} ({state_note});{recorded} the control stays queued and replays on attach"
-            ),
-        }
+            )
+        };
+        ControlOutcome::DeliveryPending { message, reason }
     }
 
     pub async fn status(
@@ -576,6 +590,12 @@ impl RunControlService {
         ))
     }
 
+    /// Wait for a run to turn terminal, up to `timeout`.
+    ///
+    /// A timeout returns the *current* run with `timed_out: true` — the same
+    /// snapshot `status` would return, never a bare timeout. The parent
+    /// (`task wait`) layers the durable `get` snapshot on top, so a timeout
+    /// carries the recorded result, liveness and transcript tail.
     pub async fn wait(
         &self,
         actor: &ControlActor,
@@ -1541,5 +1561,67 @@ mod tests {
             stored.cancellation_requested,
             "the cancel must be durably recorded even with no live handle"
         );
+    }
+
+    #[tokio::test]
+    async fn cancel_without_a_live_handle_leads_with_acknowledged_draining() {
+        let runs: Arc<dyn AgentRunStore> =
+            Arc::new(codegg_core::agent_run::InMemoryAgentRunStore::new());
+        let run = running_run(&runs, "owner-session").await;
+        let service = RunControlService::in_memory(runs.clone());
+        let outcome = service
+            .send(
+                &owner_actor(),
+                run.run_id.clone(),
+                AgentRunControlKind::Cancel,
+                String::new(),
+                "cancel-ack-1".into(),
+            )
+            .await
+            .unwrap();
+        match outcome {
+            ControlOutcome::DeliveryPending { message, reason } => {
+                assert_eq!(message.run_id, run.run_id);
+                assert!(
+                    reason.starts_with(&format!(
+                        "Cancel acknowledged, draining (run '{}')",
+                        run.run_id
+                    )),
+                    "a recorded cancel leads with acknowledgement, got: {reason}"
+                );
+                assert!(
+                    reason.contains("no live run is attached"),
+                    "the handoff detail is demoted, not dropped, got: {reason}"
+                );
+            }
+            other => panic!("a cancel with no live handle must not fail, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn non_cancel_without_a_live_handle_has_no_acknowledgement_lead() {
+        let runs: Arc<dyn AgentRunStore> =
+            Arc::new(codegg_core::agent_run::InMemoryAgentRunStore::new());
+        let run = running_run(&runs, "owner-session").await;
+        let service = RunControlService::in_memory(runs);
+        let outcome = service
+            .send(
+                &owner_actor(),
+                run.run_id.clone(),
+                AgentRunControlKind::Message,
+                "hello".into(),
+                "message-noack-1".into(),
+            )
+            .await
+            .unwrap();
+        match outcome {
+            ControlOutcome::DeliveryPending { reason, .. } => {
+                assert!(
+                    !reason.starts_with("Cancel acknowledged"),
+                    "only a cancel earns the acknowledgement lead, got: {reason}"
+                );
+            }
+            other => panic!("a message with no live handle must not fail, got: {other:?}"),
+        }
     }
 }

@@ -325,7 +325,11 @@ impl Tool for ReviewTool {
 /// Offline fallback when no LLM provider is reachable: diff stats plus a
 /// review checklist that echoes the configured model value, so the agent can
 /// act without burning another call discovering the provider requirement.
-fn offline_review_fallback(diff: &str, model: &str, reason: &str) -> String {
+///
+/// Single counting rule: `files` is the count of `diff --git` headers in the
+/// structured file list. Untracked files are listed separately and never
+/// added to the diff count: `untracked files: listed, not diffed (N: ...)`.
+fn offline_review_fallback(diff: &str, model: &str, reason: &str, untracked: &[String]) -> String {
     let mut files = 0usize;
     let mut insertions = 0usize;
     let mut deletions = 0usize;
@@ -340,9 +344,22 @@ fn offline_review_fallback(diff: &str, model: &str, reason: &str) -> String {
             deletions += 1;
         }
     }
-    if files == 0 {
-        files = 1;
-    }
+    let untracked_line = if untracked.is_empty() {
+        "untracked files: listed, not diffed (0)".to_string()
+    } else {
+        let shown: Vec<&str> = untracked.iter().take(20).map(String::as_str).collect();
+        let suffix = if untracked.len() > shown.len() {
+            format!(", +{} more", untracked.len() - shown.len())
+        } else {
+            String::new()
+        };
+        format!(
+            "untracked files: listed, not diffed ({}: {}{})",
+            untracked.len(),
+            shown.join(", "),
+            suffix
+        )
+    };
     let mut end = diff.len().min(4000);
     while end > 0 && !diff.is_char_boundary(end) {
         end -= 1;
@@ -353,7 +370,8 @@ fn offline_review_fallback(diff: &str, model: &str, reason: &str) -> String {
         "## Code Review (offline fallback — no active LLM connection)\n\n\
          Configured model `{model}` is unreachable: {reason}. \
          Open /connect to create a connection, or set `model` via `codegg edit` / `-m provider/model`.\n\n\
-         Diff stats: {files} file(s) changed, +{insertions}/-{deletions} lines, {} bytes.\n\n\
+         Diff stats: {files} file(s) changed, +{insertions}/-{deletions} lines, {} bytes.\n\
+         {untracked_line}\n\n\
          Checklist:\n\
          - Confirm the change compiles and existing tests cover the touched paths.\n\
          - Look for functional issues (wrong branches, missing error handling).\n\
@@ -364,6 +382,27 @@ fn offline_review_fallback(diff: &str, model: &str, reason: &str) -> String {
         diff.len(),
         if truncated { " (truncated at 4000 chars)" } else { "" },
     )
+}
+
+/// Best-effort untracked-file listing via the status read path.
+///
+/// Parses `git status --short` stdout for `?? ` entries. Never fails the
+/// fallback: any status error yields an empty list. Untracked entries are
+/// reported separately and never added to the diff file count.
+async fn untracked_files_for_root(root: &std::path::Path) -> Vec<String> {
+    let svc = GitExecutionService::new();
+    let result = svc
+        .execute(&GitOperation::Status { short: true }, root)
+        .await;
+    match result {
+        Ok(execution) => execution
+            .stdout
+            .lines()
+            .filter_map(|line| line.strip_prefix("?? ").map(|p| p.trim().to_string()))
+            .filter(|p| !p.is_empty())
+            .collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
 impl ReviewTool {
@@ -386,7 +425,14 @@ impl ReviewTool {
                     .model
                     .clone()
                     .unwrap_or_else(|| EMERGENCY_DEFAULT_MODEL.to_string());
-                Ok(offline_review_fallback(&diff, &model, &e.to_string()))
+                let root = self.effective_root(context);
+                let untracked = untracked_files_for_root(&root).await;
+                Ok(offline_review_fallback(
+                    &diff,
+                    &model,
+                    &e.to_string(),
+                    &untracked,
+                ))
             }
         }
     }
@@ -575,6 +621,24 @@ mod tests {
         assert!(
             output.contains("Checklist:"),
             "fallback must carry a review checklist, got: {output}"
+        );
+    }
+
+    #[test]
+    fn offline_fallback_lists_untracked_without_diffing_them() {
+        let untracked = vec!["probe_untracked.txt".to_string()];
+        let output = offline_review_fallback("", "openai/gpt-4o", "no provider", &untracked);
+        assert!(
+            output.contains("0 file(s) changed"),
+            "empty diff must count zero files, never force to one, got: {output}"
+        );
+        assert!(
+            output.contains("untracked files: listed, not diffed (1: probe_untracked.txt)"),
+            "untracked file must be listed separately, got: {output}"
+        );
+        assert!(
+            !output.contains("1 file(s) changed"),
+            "untracked entries must not inflate the diff count, got: {output}"
         );
     }
 }

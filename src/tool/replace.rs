@@ -61,7 +61,7 @@ impl Tool for ReplaceTool {
     }
 
     fn description(&self) -> &str {
-        "Find and replace text in a file using regular expressions. Replaces all occurrences by default (global defaults to true; non-global is refused — use edit for a single occurrence). Chooser: single literal replacement->edit | multi-hunk/create->apply_patch | regex->replace (global:true) | shell pipelines->bash | compat one-shot->terminal; tests->test; python->python_script."
+        "Regex replace in a file (global:true replaces all occurrences, global:false replaces the first occurrence only). See tool_search for the file-op chooser."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -82,7 +82,7 @@ impl Tool for ReplaceTool {
                 },
                 "global": {
                     "type": "boolean",
-                    "description": "Replace all occurrences (default: true)",
+                    "description": "Replace all occurrences (default: true); false replaces the first occurrence only",
                     "default": true
                 },
                 "case_sensitive": {
@@ -249,12 +249,6 @@ impl ReplaceTool {
             }
             .map_err(no_effect)?;
 
-            if !global {
-                return Err(no_effect(ToolError::Execution(
-                    "non-global replacement not supported. Use 'global: true' or the 'edit' tool for single replacement.".to_string()
-                )));
-            }
-
             if pattern_clone.len() > MAX_PATTERN_SIZE {
                 return Err(no_effect(ToolError::Execution(format!(
                     "pattern exceeds {} bytes",
@@ -272,11 +266,12 @@ impl ReplaceTool {
                 format!("(?i)(?P<whole>{})", pattern_clone)
             };
 
-            let re = Regex::new(&regex_pattern)
-                .map_err(|e| no_effect(ToolError::Execution(format!(
+            let re = Regex::new(&regex_pattern).map_err(|e| {
+                no_effect(ToolError::Execution(format!(
                     "invalid regex pattern: {}",
                     e
-                ))))?;
+                )))
+            })?;
             // Subtract the synthetic `whole` wrapper group.
             let group_count = re.capture_names().flatten().count().saturating_sub(1);
             if group_count > MAX_PATTERN_GROUPS {
@@ -286,11 +281,12 @@ impl ReplaceTool {
                 ))));
             }
 
-            let metadata = std::fs::metadata(&canonical)
-                .map_err(|e| no_effect(ToolError::Execution(format!(
+            let metadata = std::fs::metadata(&canonical).map_err(|e| {
+                no_effect(ToolError::Execution(format!(
                     "failed to read file metadata: {}",
                     e
-                ))))?;
+                )))
+            })?;
             if metadata.len() > MAX_FILE_SIZE as u64 {
                 return Err(no_effect(ToolError::Execution(format!(
                     "file too large (max {} bytes): {}",
@@ -315,11 +311,19 @@ impl ReplaceTool {
             let matches: Vec<_> = re.find_iter(&content).collect();
             if matches.is_empty() {
                 return Err(no_effect(ToolError::Execution(
-                    "no matches found for pattern".to_string()
+                    "no matches found for pattern".to_string(),
                 )));
             }
 
-            let new_content = re.replace_all(&content, replacement_clone.as_str()).to_string();
+            // `global:false` replaces the first occurrence only (F9); the
+            // default replaces all occurrences.
+            let new_content = if global {
+                re.replace_all(&content, replacement_clone.as_str())
+                    .to_string()
+            } else {
+                re.replacen(&content, 1, replacement_clone.as_str())
+                    .to_string()
+            };
 
             // Narrow the check-then-write window (BUG-005): re-verify the
             // file is unchanged immediately before write. True concurrent
@@ -419,7 +423,9 @@ impl ReplaceTool {
 
         let mut output = format!(
             "Replaced {} occurrence(s) in {} with pattern '{}'",
-            matches_len, path_str, pattern
+            if global { matches_len } else { 1 },
+            path_str,
+            pattern
         );
         if !preflight_warnings.is_empty() {
             output = format!("{}\n\n{}", preflight_warnings.join("\n"), output);
@@ -482,5 +488,16 @@ mod tests {
         let new_content = re.replace_all(content, replacement);
 
         assert_eq!(new_content, "hello[123]world[456]");
+    }
+
+    #[test]
+    fn global_false_replaces_first_occurrence_only() {
+        let content = "hello world hello world";
+        let regex_pattern = format!("(?P<whole>{})", "hello");
+        let re = Regex::new(&regex_pattern).unwrap();
+        assert_eq!(
+            re.replacen(content, 1, "goodbye"),
+            "goodbye world hello world"
+        );
     }
 }

@@ -478,6 +478,16 @@ fn age_secs(since_ms: i64) -> Option<u64> {
 const TRANSCRIPT_TAIL_LINES: usize = 20;
 const TRANSCRIPT_TAIL_CHARS: usize = 2000;
 
+/// Extract the tool name from a captured `ToolCall` transcript row body
+/// (`tool_call_id=... tool=<name> arguments=...`), as captured in
+/// `worker.rs`. Unknown shapes read as `unknown`, never fail `get`.
+fn transcript_tool_name(body: &str) -> String {
+    body.split_whitespace()
+        .find_map(|token| token.strip_prefix("tool="))
+        .unwrap_or("unknown")
+        .to_string()
+}
+
 fn format_control_outcome(outcome: ControlOutcome) -> String {
     match outcome {
         ControlOutcome::Queued(message) => format!(
@@ -487,13 +497,39 @@ fn format_control_outcome(outcome: ControlOutcome) -> String {
             message.sequence,
             mailbox_state_str(&message.state),
         ),
-        ControlOutcome::DeliveryPending { message, reason } => format!(
-            "Control queued (delivery pending: {reason})\nRun: {}\nKind: {}\nSequence: {}\nState: {}",
-            message.run_id,
-            message.kind.as_str(),
-            message.sequence,
-            mailbox_state_str(&message.state),
-        ),
+        ControlOutcome::DeliveryPending { message, reason } => {
+            let base = format!(
+                "Run: {}\nKind: {}\nSequence: {}\nState: {}",
+                message.run_id,
+                message.kind.as_str(),
+                message.sequence,
+                mailbox_state_str(&message.state),
+            );
+            // D7: a cancel the store already shows as cancelling/cancelled
+            // (or flagged cancellation_requested) leads with acknowledgement
+            // — the live-handoff detail is secondary. "Queued for later" is
+            // reserved for a control with no live loop attached. The service
+            // may already lead with the same acknowledgement; strip it so
+            // the lead appears exactly once.
+            let cancel_acknowledged = message.kind == AgentRunControlKind::Cancel
+                && (reason.contains("cancelling")
+                    || reason.contains("cancelled")
+                    || reason.contains("cancellation_requested=true"));
+            if cancel_acknowledged {
+                let detail = reason
+                    .strip_prefix("Cancel acknowledged, draining")
+                    .and_then(|rest| rest.split_once("; ").map(|(_, tail)| tail))
+                    .unwrap_or(&reason);
+                format!(
+                    "Cancel acknowledged, draining (run={})\n{base}\nDelivery detail: {detail}",
+                    message.run_id
+                )
+            } else if reason.contains("no live run is attached") {
+                format!("Control queued for later\n{base}\nDelivery detail: {reason}")
+            } else {
+                format!("Control queued (delivery pending: {reason})\n{base}")
+            }
+        }
         ControlOutcome::Terminal(status) => format!("Run is terminal: {}", status.as_str()),
         ControlOutcome::Status(run) => append_run_failure(
             format!(
@@ -1341,29 +1377,73 @@ impl TaskTool {
     /// result says so plainly: an empty string would read like "the child
     /// produced nothing".
     ///
+    /// Ordering is deliberate (F6): the recorded result (with its status
+    /// and byte size) comes first in both the text and the JSON, the
+    /// `result_ref` pointer second for compatibility, and the transcript
+    /// tail last. The tail skips `Internal`-role rows and the ordinal-0
+    /// model message (the child's system prompt) behind the existing caps,
+    /// and says so via `transcript_excluded_system_prompt`.
+    ///
     /// Parent-visible progress fields are additive: `live_attached` (a live
     /// run loop is currently attached), `cancellation_requested`, the
-    /// scheduler job's state and age (queue-vs-executing), and a bounded
-    /// transcript tail. Every progress source degrades to a null/absent
-    /// marker when it is unavailable — a missing transcript store or job
-    /// row never fails `get`.
+    /// scheduler job's state and age (queue-vs-executing) plus its heartbeat
+    /// age, the last child tool call with its age, a transcript-derived turn
+    /// count, and a bounded transcript tail. Every progress source degrades
+    /// to a null/absent marker when it is unavailable — a missing transcript
+    /// store or job row never fails `get`.
     async fn format_durable_task_get(
         &self,
         task: &codegg_core::agent_run::AgentTaskRecord,
         run: &codegg_core::agent_run::AgentRunRecord,
         recorded: Option<codegg_core::run_result::AgentRunResult>,
     ) -> String {
-        let result_ref = run.result_ref.clone().unwrap_or_default();
-        let mut text = append_run_failure(
-            format!(
-                "Task: {}\nRun: {}\nStatus: {}\nResult: {}",
-                task.task_id,
-                run.run_id,
-                run.status.as_str(),
-                result_ref
+        // Recorded result first: what succeeded, the payload, and its bound.
+        let (state, note, body, recorded_status) = match recorded {
+            Some(result) if !result.summary.trim().is_empty() => (
+                "recorded",
+                None,
+                Some(result.summary),
+                Some(format!("{:?}", result.status).to_lowercase()),
             ),
-            run,
-        );
+            Some(result) => (
+                "empty",
+                Some("this run recorded a result with no output text".to_string()),
+                None,
+                Some(format!("{:?}", result.status).to_lowercase()),
+            ),
+            None => (
+                "absent",
+                Some("this run recorded no result".to_string()),
+                None,
+                None,
+            ),
+        };
+        let recorded_bytes = body.as_deref().map(str::len).unwrap_or(0);
+        let result_ref = run.result_ref.clone().unwrap_or_default();
+        let mut text = match &body {
+            Some(payload) => format!(
+                "Recorded result ({})\n{payload}\nRecorded bytes: {recorded_bytes} (limit {})",
+                recorded_status.as_deref().unwrap_or("unknown"),
+                codegg_core::run_result::MAX_RESULT_SUMMARY_BYTES,
+            ),
+            None => format!(
+                "Recorded result: {}\n{}",
+                state,
+                note.as_deref().unwrap_or("")
+            ),
+        };
+        text.push_str(&format!(
+            "\nResult ref: {}\nTask: {}\nRun: {}\nStatus: {}",
+            if result_ref.is_empty() {
+                "(none)"
+            } else {
+                result_ref.as_str()
+            },
+            task.task_id,
+            run.run_id,
+            run.status.as_str(),
+        ));
+        text = append_run_failure(text, run);
         // Parent-visible liveness: whether a live run loop is attached right
         // now. A non-terminal run with no live loop is queued or between
         // attempts, not executing. Absent without a control service.
@@ -1373,19 +1453,29 @@ impl TaskTool {
         };
         let cancellation_requested = run.cancellation_requested;
         // Queue-vs-executing age from the scheduler job row, when the run
-        // names one and the submission boundary is available. The attempt's
-        // heartbeat lives in the attempt rows, which the submission boundary
-        // does not expose, so only the job row's own timestamps are read;
-        // the run's attempt linkage is reported instead. Unavailable reads
-        // degrade to nulls rather than failing `get`.
+        // names one and the submission boundary is available, plus the job
+        // heartbeat age (the attempt heartbeat the scheduler records).
+        // Unavailable reads degrade to nulls rather than failing `get`.
         let mut job_state: Option<String> = None;
         let mut job_age_secs: Option<u64> = None;
         let mut job_cancel_requested = false;
+        let mut heartbeat_age_secs: Option<u64> = None;
         if let (Some(job_id), Some(submission)) = (run.job_id.clone(), self.submission.clone()) {
             if let Ok(Some(job)) = submission.existing_job(&job_id).await {
                 job_state = Some(job.state.as_str().to_string());
                 job_age_secs = age_secs(job.created_at.timestamp_millis());
                 job_cancel_requested = job.cancel_requested_at.is_some();
+                // Heartbeat age from the attempt rows (`JobStore::
+                // record_heartbeat`): the newest heartbeat across the job's
+                // attempts. Unavailable reads degrade to null.
+                if let Ok(attempts) = submission.scheduler().store().list_attempts(&job_id).await {
+                    let newest = attempts
+                        .iter()
+                        .filter_map(|attempt| attempt.heartbeat_at.as_ref())
+                        .max();
+                    heartbeat_age_secs =
+                        newest.and_then(|heartbeat| age_secs(heartbeat.timestamp_millis()));
+                }
             }
         }
         let attempt_id = run
@@ -1397,10 +1487,17 @@ impl TaskTool {
         // Bounded transcript tail: the last rows, hard-capped in
         // characters. `absent` is typed — a run recorded before transcripts
         // existed reads as "no transcript recorded", not as an empty one.
+        // `Internal`-role rows and the ordinal-0 model message (the child's
+        // system prompt, ~60% of a naive tail) are filtered behind the same
+        // caps; the exclusion is marked, never silent.
         let mut transcript_state = "unavailable";
         let mut transcript_tail = String::new();
         let mut transcript_tail_truncated = false;
         let mut transcript_total_entries: Option<i64> = None;
+        let mut transcript_excluded_system_prompt = false;
+        let mut last_child_tool_call: Option<String> = None;
+        let mut last_child_tool_call_age_secs: Option<u64> = None;
+        let mut turn_count: Option<u64> = None;
         if let Some(store) = self.transcript_store.clone() {
             match store.read(&run.run_id, 0, 1).await {
                 Ok(codegg_core::agent_run_transcript::AgentRunTranscriptRead::Present(page)) => {
@@ -1408,21 +1505,63 @@ impl TaskTool {
                     if page.total_entries == 0 {
                         transcript_state = "empty";
                     } else {
-                        let from = page
-                            .total_entries
-                            .saturating_sub(TRANSCRIPT_TAIL_LINES as i64);
-                        match store.read(&run.run_id, from, TRANSCRIPT_TAIL_LINES).await {
+                        // One bounded window holds the tail, the last tool
+                        // call, and the turn count together: the newest
+                        // rows, capped at the store's own read bound.
+                        let window = page.total_entries.min(
+                            codegg_core::agent_run_transcript::MAX_TRANSCRIPT_READ_LIMIT as i64,
+                        );
+                        let from = page.total_entries.saturating_sub(window);
+                        match store.read(&run.run_id, from, window as usize).await {
                             Ok(
                                 codegg_core::agent_run_transcript::AgentRunTranscriptRead::Present(
                                     tail,
                                 ),
                             ) => {
                                 transcript_state = "present";
+                                let mut visible = Vec::with_capacity(tail.entries.len());
+                                let mut excluded = 0u32;
+                                for entry in &tail.entries {
+                                    let is_system_prompt = entry.role
+                                        == codegg_core::agent_run_transcript::TranscriptRole::Internal
+                                        || (entry.ordinal == 0
+                                            && entry.kind
+                                                == codegg_core::agent_run_transcript::TranscriptKind::ModelMessage);
+                                    if is_system_prompt {
+                                        excluded += 1;
+                                        continue;
+                                    }
+                                    visible.push(entry);
+                                }
+                                transcript_excluded_system_prompt = excluded > 0;
+                                // Turn count derives from the visible
+                                // orchestrator model messages; liveness is
+                                // the newest tool call in the window.
+                                turn_count = Some(
+                                    visible
+                                        .iter()
+                                        .filter(|entry| {
+                                            entry.kind
+                                                == codegg_core::agent_run_transcript::TranscriptKind::ModelMessage
+                                        })
+                                        .count() as u64,
+                                );
+                                for entry in visible.iter().rev() {
+                                    if entry.kind
+                                        == codegg_core::agent_run_transcript::TranscriptKind::ToolCall
+                                    {
+                                        last_child_tool_call =
+                                            Some(transcript_tool_name(&entry.redacted_body));
+                                        last_child_tool_call_age_secs =
+                                            age_secs(entry.created_at);
+                                        break;
+                                    }
+                                }
                                 transcript_tail_truncated = page.total_entries
                                     > TRANSCRIPT_TAIL_LINES as i64
                                     || tail.has_more;
-                                let joined = tail
-                                    .entries
+                                let start = visible.len().saturating_sub(TRANSCRIPT_TAIL_LINES);
+                                let joined = visible[start..]
                                     .iter()
                                     .map(|entry| {
                                         format!(
@@ -1469,46 +1608,50 @@ impl TaskTool {
                 (None, _) => "unknown".to_string(),
             },
         ));
-        if !transcript_tail.is_empty() {
-            text.push_str(&format!("\nRecent transcript:\n{transcript_tail}"));
+        match (&last_child_tool_call, last_child_tool_call_age_secs) {
+            (Some(tool), Some(age)) => {
+                text.push_str(&format!("\nLast child tool call: {tool} ({age}s ago)"));
+            }
+            (Some(tool), None) => {
+                text.push_str(&format!("\nLast child tool call: {tool}"));
+            }
+            (None, _) => {
+                text.push_str("\nLast child tool call: none");
+            }
         }
-        let (state, note, body, recorded_status) = match recorded {
-            Some(result) if !result.summary.trim().is_empty() => (
-                "recorded",
-                None,
-                Some(result.summary),
-                Some(format!("{:?}", result.status).to_lowercase()),
-            ),
-            Some(result) => (
-                "empty",
-                Some("this run recorded a result with no output text".to_string()),
-                None,
-                Some(format!("{:?}", result.status).to_lowercase()),
-            ),
-            None => (
-                "absent",
-                Some("this run recorded no result".to_string()),
-                None,
-                None,
-            ),
-        };
+        if let Some(turns) = turn_count {
+            text.push_str(&format!("\nTurn count: {turns}"));
+        }
+        match heartbeat_age_secs {
+            Some(age) => text.push_str(&format!("\nHeartbeat: {age}s ago")),
+            None => text.push_str("\nHeartbeat: unknown"),
+        }
+        if !transcript_tail.is_empty() {
+            text.push_str(&format!(
+                "\nRecent transcript (system prompt excluded: {transcript_excluded_system_prompt}):\n{transcript_tail}"
+            ));
+        }
         serde_json::json!({
-            "task_id": task.task_id.to_string(),
-            "run_id": run.run_id.to_string(),
-            "status": run.status.as_str(),
-            "result_ref": result_ref,
-            "text": text,
             "recorded_result": body,
             "recorded_result_state": state,
             "recorded_result_note": note,
             "recorded_result_status": recorded_status,
-            "recorded_result_bytes": body.as_deref().map(str::len).unwrap_or(0),
+            "recorded_result_bytes": recorded_bytes,
             "recorded_result_limit_bytes": codegg_core::run_result::MAX_RESULT_SUMMARY_BYTES,
+            "result_ref": result_ref,
+            "task_id": task.task_id.to_string(),
+            "run_id": run.run_id.to_string(),
+            "status": run.status.as_str(),
+            "text": text,
             "live_attached": live_attached,
             "cancellation_requested": cancellation_requested,
             "job_state": job_state,
             "job_age_secs": job_age_secs,
             "job_cancel_requested": job_cancel_requested,
+            "heartbeat_age_secs": heartbeat_age_secs,
+            "last_child_tool_call": last_child_tool_call,
+            "last_child_tool_call_age_secs": last_child_tool_call_age_secs,
+            "turn_count": turn_count,
             "attempt_id": attempt_id,
             "run_age_secs": run_age_secs,
             "run_started_age_secs": run_started_age_secs,
@@ -1516,8 +1659,24 @@ impl TaskTool {
             "transcript_tail": transcript_tail,
             "transcript_tail_truncated": transcript_tail_truncated,
             "transcript_total_entries": transcript_total_entries,
+            "transcript_excluded_system_prompt": transcript_excluded_system_prompt,
         })
         .to_string()
+    }
+
+    /// The same snapshot `get` returns, reused when `wait` times out (D6):
+    /// a timeout carries the recorded result, liveness and transcript tail
+    /// instead of a bare timeout line. `None` when the durable stores are
+    /// unavailable, in which case the caller falls back to the control
+    /// outcome.
+    async fn durable_get_snapshot(
+        &self,
+        run: &codegg_core::agent_run::AgentRunRecord,
+    ) -> Option<String> {
+        let agent_runs = self.agent_runs.clone()?;
+        let task = agent_runs.get_task(&run.task_id).await.ok()??;
+        let recorded = agent_runs.get_result(&run.run_id).await.ok()?;
+        Some(self.format_durable_task_get(&task, run, recorded).await)
     }
 
     /// Subscribe the delegated job for its own durable terminal notice.
@@ -2582,6 +2741,21 @@ impl TaskTool {
                 }
             }
             .map_err(|e| ToolError::Execution(e.to_string()))?;
+            // D6: a `wait` timeout returns the same snapshot `get` would —
+            // recorded result, liveness, transcript tail — instead of a bare
+            // timeout line. A parent deciding cancel-vs-keep needs the
+            // evidence, and the timeout is when it most needs it.
+            if action == "wait" {
+                if let ControlOutcome::Wait {
+                    run,
+                    timed_out: true,
+                } = &outcome
+                {
+                    if let Some(snapshot) = self.durable_get_snapshot(run).await {
+                        return Ok(format!("Timed out: true\n{snapshot}"));
+                    }
+                }
+            }
             return Ok(format_control_outcome(outcome));
         }
 
@@ -3808,5 +3982,293 @@ mod tests {
         fn make_writer(&self) -> Self::Writer {
             self.clone()
         }
+    }
+
+    // ── F6/D6/D7: get ordering, liveness, wait snapshot, cancel wording ──
+
+    fn pending_cancel_message() -> codegg_core::agent_run_control::AgentRunMailboxMessage {
+        codegg_core::agent_run_control::AgentRunMailboxMessage {
+            message_id: codegg_core::identity::AgentRunMessageId::new(),
+            run_id: codegg_core::identity::AgentRunId::new(),
+            sender_run_id: None,
+            kind: codegg_core::agent_run_control::AgentRunControlKind::Cancel,
+            payload: String::new(),
+            sequence: 1,
+            state: codegg_core::agent_run_control::MailboxState::Queued,
+            idempotency_key: "cancel-1".to_string(),
+            causation_id: None,
+            created_at: 0,
+            delivered_at: None,
+            acknowledged_at: None,
+        }
+    }
+
+    #[test]
+    fn cancel_acknowledged_leads_and_demotes_handoff_detail() {
+        let message = pending_cancel_message();
+        let run_id = message.run_id.clone();
+        let reason = "live handoff failed (live run control channel is unavailable) (run status 'cancelling', cancellation_requested=true); the cancel itself is durably recorded; the control stays queued and replays on attach".to_string();
+        let text = format_control_outcome(ControlOutcome::DeliveryPending { message, reason });
+        assert!(
+            text.starts_with(&format!("Cancel acknowledged, draining (run={run_id})")),
+            "cancel must lead with acknowledgement, got: {text}"
+        );
+        assert!(
+            text.contains("live handoff failed"),
+            "handoff detail is demoted, not dropped, got: {text}"
+        );
+        assert!(
+            !text.starts_with("Control queued"),
+            "an acknowledged cancel is never 'queued', got: {text}"
+        );
+    }
+
+    #[test]
+    fn unattached_control_is_queued_for_later() {
+        let message = pending_cancel_message();
+        let reason = "no live run is attached (run status 'queued', cancellation_requested=false); the control stays queued and replays on attach".to_string();
+        let text = format_control_outcome(ControlOutcome::DeliveryPending { message, reason });
+        assert!(
+            text.starts_with("Control queued for later"),
+            "unattached controls wait for a loop, got: {text}"
+        );
+    }
+
+    #[test]
+    fn other_delivery_pending_keeps_queued_wording() {
+        let mut message = pending_cancel_message();
+        message.kind = codegg_core::agent_run_control::AgentRunControlKind::Message;
+        let reason = "live handoff failed (channel full) (run status 'running', cancellation_requested=false); the control stays queued and replays on attach".to_string();
+        let text = format_control_outcome(ControlOutcome::DeliveryPending { message, reason });
+        assert!(
+            text.starts_with("Control queued (delivery pending:"),
+            "non-cancel pending keeps the queued wording, got: {text}"
+        );
+    }
+
+    #[test]
+    fn transcript_tool_name_parses_the_captured_shape() {
+        assert_eq!(
+            transcript_tool_name("tool_call_id=call-1 tool=read arguments={\"path\":\"x\"}"),
+            "read"
+        );
+        assert_eq!(transcript_tool_name("no tool marker here"), "unknown");
+    }
+
+    /// F6: recorded result first, system prompt filtered, liveness exposed.
+    #[tokio::test(flavor = "current_thread")]
+    async fn durable_get_orders_recorded_first_and_filters_system_prompt() {
+        use codegg_core::agent_run::{
+            AgentRunStatus, AgentTaskStatus, InMemoryAgentRunStore, NewAgentRun, NewAgentTask,
+        };
+        use codegg_core::agent_run_transcript::{
+            AgentRunTranscriptStore, InMemoryAgentRunTranscriptStore, TranscriptKind,
+            TranscriptRole,
+        };
+        use codegg_core::identity::AgentTaskId;
+        use codegg_core::run_result::{
+            AgentRunResult, AgentRunResultStatus, RepositoryState, Retryability,
+        };
+
+        let runs: Arc<dyn AgentRunStore> = Arc::new(InMemoryAgentRunStore::new());
+        let transcript: Arc<dyn AgentRunTranscriptStore> =
+            Arc::new(InMemoryAgentRunTranscriptStore::new());
+        let tag = format!("f6-{}", uuid::Uuid::new_v4());
+        let created = runs
+            .create_or_get(
+                NewAgentTask {
+                    task_id: AgentTaskId::new(),
+                    parent_task_id: None,
+                    originating_session_id: "sess-f6".to_string(),
+                    originating_turn_id: Some("turn-f6".to_string()),
+                    project_id: ProjectId::new(),
+                    repository_id: None,
+                    workspace_id: WorkspaceId::new_unchecked("ws-f6"),
+                    requested_agent: "general".to_string(),
+                    delegation_key: format!("delegation-{tag}"),
+                    request_fingerprint: format!("fingerprint-{tag}"),
+                    description: "f6 probe".to_string(),
+                },
+                NewAgentRun {
+                    run_id: AgentRunId::new(),
+                    parent_run_id: None,
+                    depth: 1,
+                    workspace_id: WorkspaceId::new_unchecked("ws-f6"),
+                    agent_name: "general".to_string(),
+                    agent_digest: None,
+                    provider: "test".to_string(),
+                    model: "test".to_string(),
+                    authority_digest: "authority".to_string(),
+                    budget: AgentRunBudget::default(),
+                    shared_scratch: Vec::new(),
+                },
+            )
+            .await
+            .expect("create delegated run");
+        runs.transition_task(&created.task.task_id, AgentTaskStatus::Queued)
+            .await
+            .expect("queue task");
+        for status in [
+            AgentRunStatus::Queued,
+            AgentRunStatus::Preparing,
+            AgentRunStatus::Running,
+        ] {
+            runs.transition(&created.run.run_id, status)
+                .await
+                .expect("advance run");
+        }
+        // Ordinal 0: the child's internal system prompt. It must never
+        // dominate the parent-visible tail.
+        transcript
+            .append(
+                &created.run.run_id,
+                TranscriptRole::Internal,
+                TranscriptKind::ModelMessage,
+                "SYSTEM PROMPT BODY: you are a subagent with secret instructions",
+            )
+            .await
+            .expect("append system prompt");
+        transcript
+            .append(
+                &created.run.run_id,
+                TranscriptRole::Orchestrator,
+                TranscriptKind::ModelMessage,
+                "the parent prompt",
+            )
+            .await
+            .expect("append prompt");
+        transcript
+            .append(
+                &created.run.run_id,
+                TranscriptRole::Orchestrator,
+                TranscriptKind::ToolCall,
+                "tool_call_id=call-1 tool=read arguments={\"path\":\"x\"}",
+            )
+            .await
+            .expect("append tool call");
+        transcript
+            .append(
+                &created.run.run_id,
+                TranscriptRole::Orchestrator,
+                TranscriptKind::ToolResult,
+                "tool_call_id=call-1 tool=read success=true output_truncated=false output=hello",
+            )
+            .await
+            .expect("append tool result");
+        transcript
+            .append(
+                &created.run.run_id,
+                TranscriptRole::Orchestrator,
+                TranscriptKind::ModelMessage,
+                "final answer PROBE_OK",
+            )
+            .await
+            .expect("append final message");
+        runs.save_result(AgentRunResult {
+            run_id: created.run.run_id.clone(),
+            status: AgentRunResultStatus::Succeeded,
+            summary: "PROBE_OK".to_string(),
+            worktree_id: None,
+            base_commit: None,
+            result_commit: None,
+            changed_paths: Vec::new(),
+            validation: Vec::new(),
+            findings: Vec::new(),
+            artifacts: Vec::new(),
+            repository_state: RepositoryState::Clean,
+            retryability: Retryability::NotRetryable,
+            recovery_hint: None,
+        })
+        .await
+        .expect("save recorded result");
+
+        let tool = TaskTool::new(
+            Arc::new(Mutex::new(TaskStore::new())),
+            None,
+            Some("sess-f6".to_string()),
+            Vec::new(),
+        )
+        .with_agent_run_store(runs.clone())
+        .with_transcript_store(Some(transcript));
+        let task = runs
+            .get_task(&created.task.task_id)
+            .await
+            .expect("task lookup")
+            .expect("the task");
+        let run = runs
+            .get_run_for_task(&created.task.task_id)
+            .await
+            .expect("run lookup")
+            .expect("the run");
+        let recorded = runs
+            .get_result(&created.run.run_id)
+            .await
+            .expect("result lookup");
+        let output = tool.format_durable_task_get(&task, &run, recorded).await;
+        let parsed: serde_json::Value = serde_json::from_str(&output)
+            .unwrap_or_else(|_| panic!("get returns JSON, got: {output}"));
+        let text = parsed["text"].as_str().expect("text field");
+
+        assert!(
+            text.starts_with("Recorded result (succeeded)"),
+            "recorded result leads the text, got: {text}"
+        );
+        assert!(
+            text.find("PROBE_OK").expect("payload") < text.find("Result ref:").expect("ref"),
+            "payload precedes the result_ref pointer, got: {text}"
+        );
+        assert!(
+            !text.contains("SYSTEM PROMPT BODY"),
+            "the system prompt must not leak into the tail, got: {text}"
+        );
+        assert!(
+            text.contains("final answer PROBE_OK"),
+            "the tail keeps orchestrator rows, got: {text}"
+        );
+        let first_key = parsed
+            .as_object()
+            .expect("object")
+            .keys()
+            .next()
+            .expect("a first key")
+            .clone();
+        assert_eq!(
+            first_key, "recorded_result",
+            "recorded_result is the first JSON key"
+        );
+        assert_eq!(
+            parsed["recorded_result"].as_str(),
+            Some("PROBE_OK"),
+            "the payload is returned, got: {output}"
+        );
+        assert!(
+            parsed.get("result_ref").is_some(),
+            "the result_ref pointer survives for compatibility, got: {output}"
+        );
+        assert_eq!(
+            parsed["transcript_excluded_system_prompt"],
+            serde_json::Value::Bool(true),
+            "the exclusion is marked, got: {output}"
+        );
+        assert_eq!(
+            parsed["last_child_tool_call"].as_str(),
+            Some("read"),
+            "liveness names the last child tool call, got: {output}"
+        );
+        assert_eq!(
+            parsed["turn_count"].as_u64(),
+            Some(2),
+            "turn count derives from orchestrator model messages, got: {output}"
+        );
+
+        // D6: the wait-timeout snapshot is this same answer.
+        let snapshot = tool
+            .durable_get_snapshot(&run)
+            .await
+            .expect("wait-timeout snapshot");
+        assert!(
+            snapshot.contains("PROBE_OK"),
+            "the timeout snapshot carries the recorded result, got: {snapshot}"
+        );
     }
 }

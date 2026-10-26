@@ -181,7 +181,7 @@ impl Tool for TerminalTool {
     }
 
     fn description(&self) -> &str {
-        "Routing: compat one-shot raw `sh -c` only — use me only for compat one-shot; prefer bash for pipelines/interactive semantics, test for test runners, python_script for Python. Chooser: single literal replacement->edit | multi-hunk/create->apply_patch | regex->replace (global:true) | shell pipelines->bash | compat one-shot->terminal; tests->test; python->python_script. Run one shell command to completion and return captured output (one-shot, not an interactive PTY). Command plus args join verbatim with spaces and run via `sh -c` — quote a `sh -c` script inside `command` (args are not re-quoted); stdout and stderr are both returned followed by `[exit code: N]`. Correct form is `command:\"echo hi\"` with empty `args`. A `command:\"sh\"` with `args:[\"-c\", \"<script>\"]` wrapper is normalized to the inner script before spawn. Bash is the canonical model shell — prefer it for pipelines; human interactive terminals run in the TUI over the daemon interactive-process service"
+        "Compat one-shot raw `sh -c` runner (command plus args join verbatim with spaces; quote a `sh -c` script inside `command`, args are not re-quoted). See tool_search for the shell chooser; prefer bash for pipelines."
     }
 
     fn parameters(&self) -> serde_json::Value {

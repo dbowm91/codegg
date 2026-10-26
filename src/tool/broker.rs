@@ -1382,7 +1382,23 @@ fn validate_json_schema(
             "object" => value.is_object(),
             "array" => value.is_array(),
             "string" => value.is_string(),
-            "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+            // F1: whole-valued floats (5.0) carry exactly the integer the
+            // caller meant, so a model serializing every number with a
+            // decimal point is not rejected. Accept finite, integral,
+            // in-range floats; fractional, negative-overflow, and
+            // non-finite values still fail.
+            "integer" => {
+                if value.as_i64().is_some() || value.as_u64().is_some() {
+                    true
+                } else if let Some(float) = value.as_f64() {
+                    float.is_finite()
+                        && float.fract() == 0.0
+                        && float >= i64::MIN as f64
+                        && float <= u64::MAX as f64
+                } else {
+                    false
+                }
+            }
             "number" => value.is_number(),
             "boolean" => value.is_boolean(),
             "null" => value.is_null(),
@@ -2022,5 +2038,36 @@ mod tests {
         }
         assert_eq!(ToolEffectClass::from_authority_str("any"), None);
         assert_eq!(ToolEffectClass::from_authority_str(""), None);
+    }
+
+    /// F1: the broker integer arm coerces whole-valued floats instead of
+    /// rejecting the `.0` serializer shape, while fractional, negative
+    /// (for unsigned intent is covered by i64), and non-finite values
+    /// still fail.
+    #[test]
+    fn integer_schema_accepts_whole_valued_floats_and_rejects_fractions() {
+        let schema = serde_json::json!({"type": "integer"});
+        for whole in [
+            serde_json::json!(5),
+            serde_json::json!(5.0),
+            serde_json::json!(0.0),
+            serde_json::json!(-3.0),
+        ] {
+            assert!(
+                validate_json_schema(&schema, &whole).is_ok(),
+                "whole value {whole} must validate as integer"
+            );
+        }
+        for invalid in [
+            serde_json::json!(1.5),
+            serde_json::json!("5"),
+            serde_json::json!(true),
+            serde_json::json!(serde_json::Value::Null),
+        ] {
+            assert!(
+                validate_json_schema(&schema, &invalid).is_err(),
+                "non-integer value {invalid} must not validate as integer"
+            );
+        }
     }
 }

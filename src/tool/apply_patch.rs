@@ -69,12 +69,7 @@ impl Tool for ApplyPatchTool {
     }
 
     fn description(&self) -> &str {
-        "Create, update, delete, or move a workspace file. mode=update takes a unified diff \
-         with one @@ -<start>[,<count>] +<start>[,<count>] @@ hunk header per hunk (e.g. \
-         \"@@ -1,3 +1,3 @@\"); a \"*** Begin Patch ***\" wrapper is not accepted — send bare hunks. \
-         mode=create takes file contents; mode=delete takes no body \
-         (path only; pass an empty string for patch); mode=move takes a rename header (\"rename from <old>\" plus \
-         \"rename to <new>\", or \"--- a/<old>\" plus \"+++ b/<new>\"). Chooser: single literal replacement->edit | multi-hunk/create->apply_patch | regex->replace (global:true) | shell pipelines->bash | compat one-shot->terminal; tests->test; python->python_script."
+        "Create, update, delete, or move a workspace file with unified-diff hunks (mode=update takes bare @@ hunks, no wrapper). See tool_search for the file-op chooser."
     }
 
     fn parameters(&self) -> serde_json::Value {

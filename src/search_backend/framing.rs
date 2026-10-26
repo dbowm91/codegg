@@ -132,8 +132,61 @@ pub fn project_compact_search_value(
     Some(serde_json::Value::Array(compacted))
 }
 
+/// Compact projection for batch-fetch results (F11).
+///
+/// Batch items carry full `text` plus an optional `focus` object with
+/// `chunks`. Keeping both duplicates the content, so the projection keeps
+/// one: when `focus.chunks` is a non-empty array the full `text` is
+/// stripped (the chunks are the selection); otherwise a chunk-less `focus`
+/// is stripped and `text` is kept. Returns `None` when the upstream value
+/// has no recognizable item array, so callers retain the full envelope
+/// instead of emitting an empty success.
+pub fn project_batch_compact_value(
+    value: &serde_json::Value,
+    max_items: usize,
+) -> Option<serde_json::Value> {
+    fn find_items(value: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
+        match value {
+            serde_json::Value::Array(items) => Some(items),
+            serde_json::Value::Object(map) => {
+                for key in ["items", "results", "sources", "fetches", "entries"] {
+                    if let Some(serde_json::Value::Array(items)) = map.get(key) {
+                        return Some(items);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+    fn dedup_item(item: &serde_json::Value) -> serde_json::Value {
+        let Some(map) = item.as_object() else {
+            return item.clone();
+        };
+        let mut out = map.clone();
+        let has_chunks = out
+            .get("focus")
+            .and_then(|focus| focus.get("chunks"))
+            .and_then(|chunks| chunks.as_array())
+            .is_some_and(|chunks| !chunks.is_empty());
+        if has_chunks {
+            out.remove("text");
+        } else {
+            out.remove("focus");
+        }
+        serde_json::Value::Object(out)
+    }
+    let items = find_items(value)?;
+    let compacted: Vec<serde_json::Value> = items
+        .iter()
+        .take(max_items.max(1))
+        .map(dedup_item)
+        .collect();
+    Some(serde_json::Value::Array(compacted))
+}
+
 /// Whether a native search input requests the compact (`summary`)
-/// projection. Accepts `compact:true` or `detail:"summary"`; `detail`
+/// projection. Accepts `compact:true` / `detail:"summary"`; `detail`
 /// mirrors `tool_search` (`summary` compact, `full`/`schema` full).
 /// Returns an error for any other explicit `detail` value.
 pub fn search_detail_requests_compact(
@@ -523,6 +576,37 @@ mod tests {
     fn compact_projection_returns_none_without_result_array() {
         let value = serde_json::json!({"status": "no_native_tree"});
         assert!(project_compact_search_value(&value, 10).is_none());
+    }
+
+    #[test]
+    fn batch_compact_projection_strips_text_when_focus_chunks_present() {
+        let value = serde_json::json!({
+            "items": [
+                {
+                    "url": "https://example.com/a",
+                    "text": "full document text",
+                    "focus": {"chunks": ["selected chunk"]},
+                },
+                {
+                    "url": "https://example.com/b",
+                    "text": "other full text",
+                    "focus": {"chunks": []},
+                }
+            ]
+        });
+        let compact = project_batch_compact_value(&value, 10).expect("compact");
+        let items = compact.as_array().expect("item array");
+        assert_eq!(items.len(), 2);
+        assert!(items[0].get("text").is_none());
+        assert!(items[0]["focus"]["chunks"].as_array().unwrap().len() == 1);
+        assert_eq!(items[1]["text"], "other full text");
+        assert!(items[1].get("focus").is_none());
+    }
+
+    #[test]
+    fn batch_compact_projection_returns_none_without_item_array() {
+        let value = serde_json::json!({"status": "no_native_tree"});
+        assert!(project_batch_compact_value(&value, 10).is_none());
     }
 
     #[test]

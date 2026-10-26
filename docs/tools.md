@@ -270,6 +270,12 @@ If a sandbox profile is requested without a workspace root, bash runs without
 OS containment and that is reported as *unavailable*, never as full host
 access — the absence of a workspace never silently widens authority.
 
+File tools are jailed to the workspace; bash is Seatbelt
+write-confined/read-broad/credential-deny (writes confined to
+workspace+scratch, reads broad, credential paths denied). An absolute path
+outside workspace/scratch in bash argv triggers an advisory path-guard
+warning, not a deny; the sandbox remains the enforcer.
+
 Model-owned Bash and Python processes receive a private scratch directory for
 their session. Use the `CODEGG_SCRATCH_DIR` environment variable in shell
 commands, or its displayed path with the structured `read` and `write` tools,
@@ -451,11 +457,13 @@ effect.
 | Discover tools or skills | `tool_search` (paged; `query: ""` browses; `name` + `detail=schema` needs no query) | `skill` (loads one skill by exact name; unknown names return did-you-mean suggestions) |
 | Call several read-only tools deterministically | `tool_program` (only `DirectOrProgrammatic`/`ProgrammaticOnly` + read-only effect class) | Direct calls (no shared ledger or contract snapshot) |
 
-Counts and sizes are integers: whole-valued floats (`500.0`) are coerced to
-that integer everywhere counts are parsed (`max_items`,
-`max_chars_per_item`, `line_start`, `focus_max_chunks`, `max_results`,
-`max_depth`, `offset`, `limit`, …); fractional values are rejected or fall
-back to the default, so prefer sending integers. Tool
+Counts, sizes, and timeouts are integers: whole-valued floats (`500.0`) are
+coerced to that integer both at schema validation and at every count parser
+(`max_items`, `max_chars_per_item`, `line_start`, `focus_max_chunks`,
+`max_results`, `max_depth`, `offset`, `limit`, `timeout`, `timeout_ms`,
+`max_report_bytes`, `expected_revision`, …); fractional values are rejected
+(or fall back to the default where the parameter is optional), so prefer
+sending integers. Tool
 Programs accept only contracts whose caller policy is `DirectOrProgrammatic`
 or `ProgrammaticOnly` with a read-only effect class (`ReadOnly`,
 `ReadValidate`, `SafeRepeat`); `DirectOnly` and mutating tools are rejected

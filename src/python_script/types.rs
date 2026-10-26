@@ -81,6 +81,15 @@ pub struct PythonCapabilityProfile {
     pub allow_dependency_install: bool,
     /// Whether destructive filesystem ops (unlink, rmdir, rmtree) are allowed.
     pub allow_destructive_fs: bool,
+    /// Whether reads of sensitive paths (`~/.ssh`, `*.pem`, `/etc/passwd`,
+    /// `~/.aws`, `~/.gnupg`) are allowed. Never granted: a sensitive read
+    /// is denied with `read_sensitive`, never as `destructive_fs`.
+    #[serde(default)]
+    pub allow_sensitive_read: bool,
+    /// Whether reads of absolute paths outside the workspace/scratch roots
+    /// are allowed. Never granted: denied as `read_out_of_scope`.
+    #[serde(default)]
+    pub allow_out_of_scope_read: bool,
     /// Required sandbox enforcement level.
     pub sandbox_requirement: SandboxRequirement,
 }
@@ -98,6 +107,8 @@ impl PythonCapabilityProfile {
             allow_env: vec![],
             allow_dependency_install: false,
             allow_destructive_fs: false,
+            allow_sensitive_read: false,
+            allow_out_of_scope_read: false,
             sandbox_requirement: SandboxRequirement::Preferred,
         }
     }
@@ -114,6 +125,8 @@ impl PythonCapabilityProfile {
             allow_env: vec![],
             allow_dependency_install: false,
             allow_destructive_fs: false,
+            allow_sensitive_read: false,
+            allow_out_of_scope_read: false,
             sandbox_requirement: SandboxRequirement::Preferred,
         }
     }
@@ -138,6 +151,8 @@ impl PythonCapabilityProfile {
             allow_env: vec![],
             allow_dependency_install: false,
             allow_destructive_fs: false,
+            allow_sensitive_read: false,
+            allow_out_of_scope_read: false,
             sandbox_requirement: SandboxRequirement::Preferred,
         }
     }
@@ -328,6 +343,15 @@ pub struct PythonCapabilityEnvelope {
     pub env_access: bool,
     pub dependency_install: bool,
     pub destructive_fs: bool,
+    /// Reads of sensitive paths (`~/.ssh`, `*.pem`, `/etc/passwd`, ...).
+    /// Never granted: a sensitive read is denied as `read_sensitive`,
+    /// never as `destructive_fs` (reading is not destruction).
+    #[serde(default)]
+    pub read_sensitive: bool,
+    /// Reads of absolute paths outside the workspace/scratch roots.
+    /// Never granted: denied as `read_out_of_scope`.
+    #[serde(default)]
+    pub read_out_of_scope: bool,
 }
 
 impl PythonCapabilityEnvelope {
@@ -343,6 +367,8 @@ impl PythonCapabilityEnvelope {
             env_access: false,
             dependency_install: false,
             destructive_fs: false,
+            read_sensitive: false,
+            read_out_of_scope: false,
         }
     }
 
@@ -358,6 +384,8 @@ impl PythonCapabilityEnvelope {
             env_access: false,
             dependency_install: false,
             destructive_fs: false,
+            read_sensitive: false,
+            read_out_of_scope: false,
         }
     }
 
@@ -373,6 +401,8 @@ impl PythonCapabilityEnvelope {
             env_access: false,
             dependency_install: false,
             destructive_fs: false,
+            read_sensitive: false,
+            read_out_of_scope: false,
         }
     }
 
@@ -420,6 +450,12 @@ impl PythonCapabilityEnvelope {
         if risk.has_file_write && !self.write_workspace {
             denied.push("write_workspace".to_string());
         }
+        if risk.has_sensitive_read && !self.read_sensitive {
+            denied.push("read_sensitive".to_string());
+        }
+        if risk.has_out_of_scope_read && !self.read_out_of_scope {
+            denied.push("read_out_of_scope".to_string());
+        }
         denied
     }
 }
@@ -454,6 +490,16 @@ pub struct PythonRiskAssessment {
     pub has_network: bool,
     pub has_destructive_ops: bool,
     pub has_dynamic_execution: bool,
+    /// A file read names a sensitive path (`~/.ssh`, `*.pem`,
+    /// `/etc/passwd`, `~/.aws`, `~/.gnupg`). Set only when file I/O is
+    /// present; never implies `has_destructive_ops` (reading is not
+    /// destruction).
+    #[serde(default)]
+    pub has_sensitive_read: bool,
+    /// A file read names an absolute path outside the workspace/scratch
+    /// roots. Set only when file I/O is present.
+    #[serde(default)]
+    pub has_out_of_scope_read: bool,
     pub imports: Vec<String>,
     pub scanner: PythonRiskScanner,
 }
@@ -470,6 +516,8 @@ impl PythonRiskAssessment {
             has_network: false,
             has_destructive_ops: false,
             has_dynamic_execution: false,
+            has_sensitive_read: false,
+            has_out_of_scope_read: false,
             imports: vec![],
             scanner: PythonRiskScanner::Fallback,
         }

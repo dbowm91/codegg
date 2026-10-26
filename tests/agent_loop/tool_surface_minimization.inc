@@ -66,7 +66,6 @@ fn deferred_specialists_remain_registered_but_deferred() {
         "security_search",
         "batch_fetch",
         "evidence_bundle",
-        "codesearch",
         "review",
         "image",
         "terminal",
@@ -108,6 +107,20 @@ fn deferred_specialists_remain_registered_but_deferred() {
     assert_eq!(
         disclosure::disclosure_for("repo_search"),
         disclosure::ToolDisclosure::Core
+    );
+    // `codesearch` is the M001 compat alias over canonical `repo_search`:
+    // still registered and callable for compat, but hidden from listings
+    // so agents pick one.
+    let alias = registry
+        .get("codesearch")
+        .expect("codesearch alias remains registered");
+    assert!(
+        alias.description().contains("repo_search"),
+        "codesearch alias must name canonical repo_search"
+    );
+    assert_eq!(
+        disclosure::disclosure_for("codesearch"),
+        disclosure::ToolDisclosure::Hidden
     );
 }
 
@@ -554,6 +567,6 @@ fn m001_canonical_names_consumed_without_reopening_compat() {
     );
     assert_eq!(
         disclosure::disclosure_for("codesearch"),
-        disclosure::ToolDisclosure::Deferred
+        disclosure::ToolDisclosure::Hidden
     );
 }

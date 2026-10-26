@@ -268,6 +268,22 @@ fn inspect_lines(path: Option<&Path>, text: &str) -> Vec<SecurityFinding> {
         if let Some(p) = path {
             if is_dependency_file(p) && !supply_chain_added {
                 supply_chain_added = true;
+                let ecosystem = crate::dependency::detect_dependency_file(p);
+                let audit_cmds = ecosystem
+                    .map(crate::dependency::recommended_audit_commands)
+                    .unwrap_or_default();
+                // D10: an advisory without an executable next step is
+                // telemetry, not security. Append the concrete audit command
+                // so the finding names the tool to run; ecosystems with no
+                // registered audit command keep the generic pointer.
+                let recommendation = if audit_cmds.is_empty() {
+                    "Run dependency audit for this ecosystem".to_string()
+                } else {
+                    format!(
+                        "Run dependency audit for this ecosystem: {}",
+                        audit_cmds.join(", ")
+                    )
+                };
                 let id = SecurityFinding::deterministic_id(
                     "file",
                     &SecurityCategory::SupplyChainRisk,
@@ -284,7 +300,7 @@ fn inspect_lines(path: Option<&Path>, text: &str) -> Vec<SecurityFinding> {
                     file: Some(p.to_path_buf()),
                     line_range: None,
                     evidence: "dependency or config file detected".into(),
-                    recommendation: "Run dependency audit for this ecosystem".into(),
+                    recommendation,
                 });
             }
         }
@@ -684,6 +700,11 @@ fn main() {
             .collect();
         assert_eq!(supply_findings.len(), 1);
         assert_eq!(supply_findings[0].severity, Severity::Info);
+        assert!(
+            supply_findings[0].recommendation.contains("cargo audit"),
+            "Cargo supply-chain finding must name an executable audit, got: {}",
+            supply_findings[0].recommendation
+        );
     }
 
     #[test]

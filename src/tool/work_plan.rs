@@ -110,8 +110,8 @@ impl Tool for WorkPlanGetTool {
             "properties": {
                 "plan_id": { "type": "string", "description": "Optional plan id (defaults to the active session plan)" },
                 "item_id": { "type": "string", "description": "Optional single item lookup (wi_ id)" },
-                "offset": { "type": "integer", "minimum": 0, "maximum": 64 },
-                "limit": { "type": "integer", "minimum": 1, "maximum": 8 },
+                "offset": { "type": "integer", "minimum": 0, "maximum": 64, "description": "Pagination offset into the actionable slice. Whole-valued floats (e.g. 5.0) are coerced to that integer; fractional values fail validation." },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 8, "description": "Maximum items to return. Whole-valued floats (e.g. 5.0) are coerced to that integer; fractional values fail validation." },
                 "include_completed": { "type": "boolean" }
             }
         })
@@ -180,16 +180,9 @@ impl Tool for WorkPlanGetTool {
             .to_string());
         }
 
-        let offset = input
-            .get("offset")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0)
-            .min(64) as usize;
-        let limit = input
-            .get("limit")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(5)
-            .clamp(1, 8) as usize;
+        // F1: whole-valued floats coerce (5.0 -> 5) via the shared
+        // tolerant parser; absent or unparseable values keep the defaults.
+        let (offset, limit) = bounded_offset_limit(&input);
         let include_completed = input
             .get("include_completed")
             .and_then(serde_json::Value::as_bool)
@@ -262,7 +255,7 @@ impl Tool for WorkPlanUpdateItemTool {
             "required": ["item_id", "expected_revision"],
             "properties": {
                 "item_id": { "type": "string", "description": "Work item id (wi_ prefix)" },
-                "expected_revision": { "type": "integer", "minimum": 0 },
+                "expected_revision": { "type": "integer", "minimum": 0, "description": "Expected item revision for optimistic concurrency. Whole-valued floats (e.g. 3.0) are coerced to that integer; fractional values fail." },
                 "status": { "type": "string", "enum": ["pending", "actionable", "in_progress", "blocked", "completed", "cancelled"] },
                 "blocker": { "type": ["string", "null"] },
                 "next_action": { "type": ["string", "null"] },
@@ -280,10 +273,23 @@ impl Tool for WorkPlanUpdateItemTool {
             .get("item_id")
             .and_then(|value| value.as_str())
             .ok_or_else(|| ToolError::Execution("missing 'item_id'".to_string()))?;
-        let expected_revision = input
-            .get("expected_revision")
-            .and_then(serde_json::Value::as_i64)
-            .ok_or_else(|| ToolError::Execution("missing 'expected_revision'".to_string()))?;
+        // F1: coerce whole-valued floats (3.0 -> 3) like every other
+        // integer param; distinguish a missing key from a malformed value
+        // so a coerced-through float is never misreported as missing.
+        let expected_revision = match input.get("expected_revision") {
+            None => {
+                return Err(ToolError::Execution(
+                    "missing 'expected_revision'".to_string(),
+                ));
+            }
+            Some(value) => crate::tool::util::json_usize(value)
+                .and_then(|n| i64::try_from(n).ok())
+                .ok_or_else(|| {
+                    ToolError::Execution(format!(
+                        "'expected_revision' must be a whole number, got {value}"
+                    ))
+                })?,
+        };
         let item_id = WorkItemId(item_id_str.to_string());
         if !item_id_str.starts_with("wi_") {
             return Err(ToolError::Execution(
@@ -573,4 +579,78 @@ impl Tool for WorkPlanUpdateItemTool {
 
 fn todo_policy_for_session() -> Result<codegg_core::model_profile::types::TaskStatePolicy, String> {
     Ok(codegg_core::model_profile::types::TaskStatePolicy::explicit_todo())
+}
+
+/// Bounded pagination for the actionable slice (F1).
+///
+/// Whole-valued floats coerce to that integer (`5.0` -> `5`) via the
+/// shared tolerant parser; absent or unparseable values keep the
+/// defaults instead of failing the read.
+fn bounded_offset_limit(input: &serde_json::Value) -> (usize, usize) {
+    let offset = input
+        .get("offset")
+        .and_then(crate::tool::util::json_usize)
+        .unwrap_or(0)
+        .min(64);
+    let limit = input
+        .get("limit")
+        .and_then(crate::tool::util::json_usize)
+        .unwrap_or(5)
+        .clamp(1, 8);
+    (offset, limit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F1: whole-valued floats coerce to the integer the caller meant,
+    /// while absent values keep the bounded defaults.
+    #[test]
+    fn whole_valued_float_pagination_coerces_to_integers() {
+        assert_eq!(
+            bounded_offset_limit(&serde_json::json!({"offset": 2.0, "limit": 5.0})),
+            (2, 5)
+        );
+        assert_eq!(bounded_offset_limit(&serde_json::json!({})), (0, 5));
+    }
+
+    /// F1: pagination stays bounded no matter what whole numbers arrive;
+    /// a fractional offset falls back to the default while a zero limit
+    /// clamps to the minimum instead of emptying the page.
+    #[test]
+    fn pagination_bounds_clamp_large_whole_values() {
+        assert_eq!(
+            bounded_offset_limit(&serde_json::json!({"offset": 500.0, "limit": 500.0})),
+            (64, 8)
+        );
+        assert_eq!(
+            bounded_offset_limit(&serde_json::json!({"offset": 1.5, "limit": 0})),
+            (0, 1)
+        );
+    }
+
+    /// F1: integer schemas document the whole-float coercion contract.
+    #[tokio::test(flavor = "current_thread")]
+    async fn integer_schemas_document_whole_float_coercion() {
+        let pool =
+            sqlx::SqlitePool::connect_lazy("sqlite::memory:").expect("lazy pool never connects");
+        let get_params = WorkPlanGetTool::new(pool.clone(), "session".to_string()).parameters();
+        for field in ["offset", "limit"] {
+            let description = get_params["properties"][field]["description"]
+                .as_str()
+                .unwrap_or_default();
+            assert!(
+                description.contains("Whole-valued floats"),
+                "{field} schema must document whole-float coercion"
+            );
+        }
+        let update_params = WorkPlanUpdateItemTool::new(pool, "session".to_string()).parameters();
+        assert!(
+            update_params["properties"]["expected_revision"]["description"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Whole-valued floats")
+        );
+    }
 }

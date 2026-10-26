@@ -196,12 +196,12 @@ impl Tool for DiffTool {
     }
 
     fn description(&self) -> &str {
-        "Show the unified diff between the given original text and the current file at \
+        "For pre-checks use text_replace_check; for working-tree state use git_query diff. Show the unified diff between the given original text and the current file at \
          path. The original parameter is required: pass the full prior file contents; \
          the tool compares it against the file on disk and truncates long output. \
-         Prefer an edit dry-run or text_replace_check for pre-checks; reserve diff for small files. \
+         Reserve diff for small files. \
          For large files prefer git_query diff (working tree against HEAD, no original needed) or text_replace_check. \
-         Chooser: single literal replacement->edit | multi-hunk/create->apply_patch | regex->replace (global:true) | shell pipelines->bash | compat one-shot->terminal; tests->test; python->python_script."
+         See tool_search for the file-op chooser."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -443,7 +443,16 @@ mod tests {
     #[test]
     fn diff_description_routes_prechecks_to_replace_check() {
         let tool = DiffTool::new();
-        assert!(tool.description().contains("text_replace_check"));
-        assert!(tool.description().contains("small files"));
+        let description = tool.description();
+        assert!(description.contains("text_replace_check"));
+        assert!(description.contains("small files"));
+        assert!(
+            description.starts_with("For pre-checks use text_replace_check;"),
+            "cross-link must lead the description, got: {description}"
+        );
+        assert!(
+            description.contains("for working-tree state use git_query diff"),
+            "must route working-tree state to git_query diff, got: {description}"
+        );
     }
 }

@@ -407,7 +407,7 @@ advertised):
 | **websearch** | Core | `websearch.rs` | Web search via search_backend dispatch. |
 | **research** | Deferred | `research.rs` | Deep research (may invoke websearch/webfetch). Immediate for the `research` role. |
 | **image** | Deferred | `image.rs` | DALL-E image generation (dall-e-3, size, quality). |
-| **codesearch** | Deferred | `codesearch.rs` | Compatibility alias for coding-focused repo_search (M001 retained); canonical `repo_search` stays core. |
+| **codesearch** | Hidden | `codesearch.rs` | Compatibility alias for coding-focused repo_search (M001 retained); canonical `repo_search` stays core. Registered and callable for compat, hidden from listings so agents pick one. |
 | **question** | Core | `question.rs` | Ask user clarifying questions. |
 | **mcp_resource_search** | Deferred | `mcp_resource.rs` | Search MCP-exposed resources. |
 | **mcp_resource_read** | Deferred | `mcp_resource.rs` | Read one MCP-exposed resource by URI. |

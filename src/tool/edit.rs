@@ -67,7 +67,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "Surgically search and replace text in a file. Chooser: single literal replacement->edit | multi-hunk/create->apply_patch | regex->replace (global:true) | shell pipelines->bash | compat one-shot->terminal; tests->test; python->python_script."
+        "Replace the first occurrence of literal text in a file (replaces first occurrence only). See tool_search for the file-op chooser."
     }
 
     fn parameters(&self) -> serde_json::Value {

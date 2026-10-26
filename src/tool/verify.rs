@@ -285,17 +285,19 @@ impl ResolvedVerification {
             argv.extend(["--".into(), "-D".into(), "warnings".into()]);
         }
 
+        // F1: whole-valued floats coerce (300.0 -> 300) via the shared
+        // tolerant parser, matching the test tool; absent values keep the
+        // defaults.
         let timeout_secs = input
             .get("timeout")
-            .and_then(|v| v.as_u64())
+            .and_then(crate::tool::util::json_usize)
+            .map(|n| n as u64)
             .unwrap_or(DEFAULT_TIMEOUT_SECS)
             .clamp(1, MAX_TIMEOUT_SECS);
         let max_report_bytes = input
             .get("max_report_bytes")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(DEFAULT_REPORT_BYTES as u64)
-            .try_into()
-            .map_err(|_| ToolError::Execution("max_report_bytes is too large".into()))?;
+            .and_then(crate::tool::util::json_usize)
+            .unwrap_or(DEFAULT_REPORT_BYTES);
         if max_report_bytes == 0 {
             return Err(ToolError::Execution(
                 "max_report_bytes must be positive".into(),
@@ -399,8 +401,8 @@ impl Tool for VerifyTool {
                 "package": {"type": "string", "description": "Workspace package name; required when scope is package or features are selected."},
                 "features": {"type": "array", "items": {"type": "string"}, "description": "Explicit Cargo feature names. Requires package."},
                 "all_features": {"type": "boolean", "description": "Explicitly enable all features for one selected package. May compile optional and real-server dependencies."},
-                "timeout": {"type": "integer", "minimum": 1, "maximum": MAX_TIMEOUT_SECS, "description": "Wall-clock timeout in seconds."},
-                "max_report_bytes": {"type": "integer", "minimum": 1, "description": "Maximum diagnostic summary bytes."}
+                "timeout": {"type": "number", "minimum": 1, "maximum": MAX_TIMEOUT_SECS, "description": "Wall-clock timeout in seconds. Whole-valued floats (e.g. 300.0) are coerced to that integer; fractional values fail validation. Mirrors the test tool timeout."},
+                "max_report_bytes": {"type": "integer", "minimum": 1, "description": "Maximum diagnostic summary bytes. Whole-valued floats (e.g. 20000.0) are coerced to that integer; fractional values fail validation."}
             },
             "required": ["action"],
             "additionalProperties": false
@@ -666,5 +668,41 @@ mod tests {
         assert_eq!(parse_exit_status("output\n[exit code: 101]"), Some(101));
         assert_eq!(parse_exit_status("output"), None);
         assert!(truncate_report("ééé", 2).contains("truncated"));
+    }
+
+    /// F1: whole-valued floats coerce at resolve time, matching the test
+    /// tool's tolerant timeout parsing.
+    #[test]
+    fn whole_valued_float_timeout_and_report_cap_coerce_to_integers() {
+        let root = tempdir().expect("tempdir");
+        std::fs::write(
+            root.path().join("Cargo.toml"),
+            "[package]\nname='fixture'\n",
+        )
+        .expect("manifest");
+        let resolved = ResolvedVerification::resolve(
+            &json!({"action": "check", "timeout": 300.0, "max_report_bytes": 20000.0}),
+            Some(root.path()),
+            None,
+        )
+        .expect("whole floats coerce");
+        assert_eq!(resolved.timeout_secs, 300);
+        assert_eq!(resolved.max_report_bytes, 20_000);
+    }
+
+    /// F1: the verify timeout schema keeps the test tool's `number`
+    /// shape so one numeric serializer serves both tools.
+    #[test]
+    fn timeout_schema_matches_test_tool_number_shape() {
+        let verify_params = VerifyTool::new(crate::tool::bash::BashTool::default()).parameters();
+        let test_params = crate::tool::test::TestTool::default().parameters();
+        assert_eq!(
+            verify_params["properties"]["timeout"]["type"],
+            json!("number")
+        );
+        assert_eq!(
+            test_params["properties"]["timeout"]["type"],
+            json!("number")
+        );
     }
 }

@@ -190,6 +190,37 @@ fn apply_compact_projection(
     Ok(result)
 }
 
+/// Batch-only compact projection (F11).
+///
+/// Mirrors [`apply_compact_projection`] but dedups `text` vs
+/// `focus.chunks` (see `project_batch_compact_value`) instead of selecting
+/// card fields: a batch item's content is the payload, not telemetry, so
+/// field selection would discard the evidence itself.
+fn apply_batch_compact_projection(
+    input: &Value,
+    mut result: EggsearchCallResult,
+    max_items: usize,
+    max_output_chars: usize,
+    cap_label: &str,
+) -> Result<EggsearchCallResult, ToolError> {
+    let wants_compact = super::framing::search_detail_requests_compact(input)?;
+    if !wants_compact {
+        return Ok(result);
+    }
+    let Some(value) = result.value.clone() else {
+        return Ok(result);
+    };
+    let Some(compact) = super::framing::project_batch_compact_value(&value, max_items) else {
+        return Ok(result);
+    };
+    let pretty = serde_json::to_string_pretty(&compact).unwrap_or_else(|_| compact.to_string());
+    let (capped, truncated) = super::framing::clamp_output(&pretty, max_output_chars, cap_label);
+    result.output = frame_batch_results(&capped, "eggsearch");
+    result.value = Some(compact);
+    result.truncated = truncated || result.truncated;
+    Ok(result)
+}
+
 fn compact_limit(input: &Value, fields: &[&str], default: u64) -> usize {
     for field in fields {
         if let Some(n) = input.get(*field).and_then(tolerant_u64) {
@@ -804,9 +835,11 @@ pub async fn call_web_fetch_structured(
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<EggsearchCallResult, ToolError> {
+    // Validate local-only projection before any MCP dispatch.
+    super::framing::search_detail_requests_compact(input)?;
     let args = build_web_fetch_args(input)?;
 
-    call_structured_tool_with_service(
+    let result = call_structured_tool_with_service(
         svc,
         mcp_server,
         "web_fetch",
@@ -816,7 +849,15 @@ pub async fn call_web_fetch_structured(
         "max_fetch_output_chars",
         frame_fetched_page,
     )
-    .await
+    .await?;
+    apply_compact_projection(
+        input,
+        result,
+        compact_limit(input, &["max_chars", "max_length"], 10),
+        max_output_chars,
+        "max_fetch_output_chars",
+        frame_fetched_page,
+    )
 }
 
 pub async fn call_web_fetch(
@@ -970,6 +1011,7 @@ pub async fn call_repo_fetch_structured_with_host_scope(
     timeout_ms: u64,
     host_scope: Option<Option<&std::path::Path>>,
 ) -> Result<EggsearchCallResult, ToolError> {
+    super::framing::search_detail_requests_compact(input)?;
     let path = non_empty_string(input, "path")?
         .ok_or_else(|| ToolError::Execution("missing 'path' parameter".to_string()))?;
     let mut args = json!({"path": path});
@@ -998,7 +1040,7 @@ pub async fn call_repo_fetch_structured_with_host_scope(
     }
     apply_internal_response_detail(input, &mut args)?;
 
-    call_structured_tool_with_service_scope(
+    let result = call_structured_tool_with_service_scope(
         svc,
         mcp_server,
         "repo_fetch",
@@ -1009,7 +1051,15 @@ pub async fn call_repo_fetch_structured_with_host_scope(
         host_scope,
         frame_repo_file,
     )
-    .await
+    .await?;
+    apply_compact_projection(
+        input,
+        result,
+        10,
+        max_output_chars,
+        "max_repo_output_chars",
+        frame_repo_file,
+    )
 }
 
 pub async fn call_repo_fetch(
@@ -1133,6 +1183,7 @@ pub async fn call_security_search_structured(
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<EggsearchCallResult, ToolError> {
+    super::framing::search_detail_requests_compact(input)?;
     let query = input
         .get("query")
         .and_then(Value::as_str)
@@ -1183,7 +1234,7 @@ pub async fn call_security_search_structured(
         .min(20));
     apply_internal_response_detail(input, &mut args)?;
 
-    call_structured_tool_with_service(
+    let result = call_structured_tool_with_service(
         svc,
         mcp_server,
         "security_search",
@@ -1193,7 +1244,16 @@ pub async fn call_security_search_structured(
         "max_security_output_chars",
         frame_security_results,
     )
-    .await
+    .await?;
+    let limit = compact_limit(input, &["max_results"], 10);
+    apply_compact_projection(
+        input,
+        result,
+        limit,
+        max_output_chars,
+        "max_security_output_chars",
+        frame_security_results,
+    )
 }
 
 pub async fn call_security_search(
@@ -1219,6 +1279,7 @@ pub async fn call_research_search_structured(
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<EggsearchCallResult, ToolError> {
+    super::framing::search_detail_requests_compact(input)?;
     let query = input
         .get("query")
         .and_then(Value::as_str)
@@ -1254,7 +1315,7 @@ pub async fn call_research_search_structured(
         .min(15));
     apply_internal_response_detail(input, &mut args)?;
 
-    call_structured_tool_with_service(
+    let result = call_structured_tool_with_service(
         svc,
         mcp_server,
         "research_search",
@@ -1264,7 +1325,16 @@ pub async fn call_research_search_structured(
         "max_research_output_chars",
         frame_research_results,
     )
-    .await
+    .await?;
+    let limit = compact_limit(input, &["max_results"], 10);
+    apply_compact_projection(
+        input,
+        result,
+        limit,
+        max_output_chars,
+        "max_research_output_chars",
+        frame_research_results,
+    )
 }
 
 pub async fn call_research_search(
@@ -1290,9 +1360,10 @@ pub async fn call_batch_fetch_structured(
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<EggsearchCallResult, ToolError> {
+    super::framing::search_detail_requests_compact(input)?;
     let args = build_batch_fetch_args(input)?;
 
-    call_structured_tool_with_service(
+    let result = call_structured_tool_with_service(
         svc,
         mcp_server,
         "batch_fetch",
@@ -1302,7 +1373,15 @@ pub async fn call_batch_fetch_structured(
         "max_batch_output_chars",
         frame_batch_results,
     )
-    .await
+    .await?;
+    let limit = compact_limit(input, &["max_items"], 10);
+    apply_batch_compact_projection(
+        input,
+        result,
+        limit,
+        max_output_chars,
+        "max_batch_output_chars",
+    )
 }
 
 pub async fn call_batch_fetch(
@@ -1328,10 +1407,11 @@ pub async fn call_build_evidence_bundle_structured(
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<EggsearchCallResult, ToolError> {
+    super::framing::search_detail_requests_compact(input)?;
     let mut args = build_evidence_bundle_args(input)?;
     apply_internal_response_detail(input, &mut args)?;
 
-    call_structured_tool_with_service(
+    let result = call_structured_tool_with_service(
         svc,
         mcp_server,
         "build_evidence_bundle",
@@ -1341,7 +1421,16 @@ pub async fn call_build_evidence_bundle_structured(
         "max_evidence_output_chars",
         frame_evidence_bundle,
     )
-    .await
+    .await?;
+    let limit = compact_limit(input, &["max_sources", "max_fetched_items"], 10);
+    apply_compact_projection(
+        input,
+        result,
+        limit,
+        max_output_chars,
+        "max_evidence_output_chars",
+        frame_evidence_bundle,
+    )
 }
 
 pub async fn call_build_evidence_bundle(
@@ -1868,6 +1957,130 @@ mod tests {
             normalized.get("repo").is_none(),
             "repo field should not be copied into web-type item"
         );
+    }
+
+    /// F11: the six telemetry-heavy tools expose the same compact/detail
+    /// projection contract as `repo_search`, steering agents to summary
+    /// while keeping full as the default.
+    #[test]
+    fn summary_projection_params_reach_every_telemetry_heavy_tool() {
+        use crate::tool::Tool;
+        let schemas = [
+            crate::tool::batch_fetch::BatchFetchTool::default().parameters(),
+            crate::tool::security_search::SecuritySearchTool::default().parameters(),
+            crate::tool::research_search::ResearchSearchTool::default().parameters(),
+            crate::tool::webfetch::WebFetchTool::default().parameters(),
+            crate::tool::repo_fetch::RepoFetchTool::default().parameters(),
+            crate::tool::evidence_bundle::EvidenceBundleTool::default().parameters(),
+        ];
+        for params in &schemas {
+            let props = &params["properties"];
+            assert!(props.get("compact").is_some());
+            assert_eq!(
+                props["detail"]["enum"],
+                json!(["summary", "full", "schema"])
+            );
+        }
+        let descriptions = [
+            crate::tool::batch_fetch::BatchFetchTool::default()
+                .description()
+                .to_string(),
+            crate::tool::security_search::SecuritySearchTool::default()
+                .description()
+                .to_string(),
+            crate::tool::research_search::ResearchSearchTool::default()
+                .description()
+                .to_string(),
+            crate::tool::webfetch::WebFetchTool::default()
+                .description()
+                .to_string(),
+            crate::tool::repo_fetch::RepoFetchTool::default()
+                .description()
+                .to_string(),
+            crate::tool::evidence_bundle::EvidenceBundleTool::default()
+                .description()
+                .to_string(),
+        ];
+        for description in descriptions {
+            assert!(description.contains("detail='summary'"));
+            assert!(description.contains("default detail='full'"));
+        }
+    }
+
+    /// F11: `detail='summary'` on a batch result keeps the focused chunks
+    /// and drops the duplicated full text (and vice versa), inside the
+    /// batch frame.
+    #[test]
+    fn batch_summary_projection_dedups_text_against_focus_chunks() {
+        let value = json!({
+            "items": [
+                {
+                    "url": "https://example.com/a",
+                    "text": "full document text",
+                    "focus": {"chunks": ["selected chunk"]},
+                },
+                {
+                    "url": "https://example.com/b",
+                    "text": "other full text",
+                    "focus": {"chunks": []},
+                },
+            ],
+        });
+        let result = EggsearchCallResult {
+            output: "full envelope".to_string(),
+            value: Some(value),
+            truncated: false,
+            success: true,
+        };
+        let projected = apply_batch_compact_projection(
+            &json!({"detail": "summary"}),
+            result,
+            10,
+            12000,
+            "max_batch_output_chars",
+        )
+        .expect("summary projection");
+        assert!(!projected.truncated);
+        let items = projected.value.expect("compact value").to_owned();
+        let items = items.as_array().expect("item array");
+        assert_eq!(items.len(), 2);
+        assert!(items[0].get("text").is_none());
+        assert_eq!(items[0]["focus"]["chunks"][0], "selected chunk");
+        assert_eq!(items[1]["text"], "other full text");
+        assert!(items[1].get("focus").is_none());
+        assert!(projected.output.contains("tool=batch_fetch"));
+    }
+
+    /// F11: without `detail='summary'` the batch envelope passes through
+    /// untouched — summary is opt-in, never a silent default change.
+    #[test]
+    fn batch_full_default_preserves_the_complete_envelope() {
+        let value = json!({
+            "items": [
+                {
+                    "url": "https://example.com/a",
+                    "text": "full document text",
+                    "focus": {"chunks": ["selected chunk"]},
+                },
+            ],
+        });
+        let result = EggsearchCallResult {
+            output: "full envelope".to_string(),
+            value: Some(value.clone()),
+            truncated: false,
+            success: true,
+        };
+        let kept = apply_batch_compact_projection(
+            &json!({"detail": "full"}),
+            result,
+            10,
+            12000,
+            "max_batch_output_chars",
+        )
+        .expect("full default");
+        assert_eq!(kept.output, "full envelope");
+        assert_eq!(kept.value, Some(value));
+        assert!(!kept.truncated);
     }
 
     #[tokio::test]

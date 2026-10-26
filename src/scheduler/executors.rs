@@ -559,10 +559,50 @@ impl JobExecutor for ManagedArgvExecutor {
         let output = match crate::managed_process::ManagedProcessService::run(request).await {
             Ok(o) => o,
             Err(e) => {
+                // F3: classify the typed failure variant (never string-match
+                // the message) so the completion summary carries a stable
+                // code plus the actionable reason. The ReadOutput arm names
+                // the F2 hazard explicitly: a surviving descendant holding
+                // the pipe open after `&`/detachment inside a background job.
+                use crate::managed_process::ManagedProcessError as SpawnError;
+                let (code, reason) = match &e {
+                    SpawnError::Spawn(_) => (
+                        "JOB_SPAWN_REFUSED",
+                        "process spawn was refused by the OS",
+                    ),
+                    SpawnError::CancelledBeforeSpawn => (
+                        "JOB_SPAWN_CANCELLED",
+                        "spawn was cancelled before the process started",
+                    ),
+                    SpawnError::ProcessDenied(_) => (
+                        "JOB_SPAWN_DENIED",
+                        "process launch was refused by admission policy",
+                    ),
+                    SpawnError::ReadOutput(_) => (
+                        "JOB_SPAWN_READ_OUTPUT",
+                        "process output could not be collected; a surviving descendant may still hold the pipe open (avoid trailing `&`/detached children inside background jobs)",
+                    ),
+                    SpawnError::OutputReaderTask(_) => (
+                        "JOB_SPAWN_READ_OUTPUT",
+                        "process output reader failed before EOF",
+                    ),
+                    SpawnError::Wait(_) => (
+                        "JOB_SPAWN_WAIT",
+                        "waiting for the process failed",
+                    ),
+                    SpawnError::SandboxFailed(_) => (
+                        "JOB_SPAWN_SANDBOX",
+                        "sandbox setup for the process failed",
+                    ),
+                    SpawnError::EmptyArgv | SpawnError::InvalidArgument(_) => (
+                        "JOB_SPAWN_INVALID",
+                        "process request had no executable or an invalid argument",
+                    ),
+                };
                 return failure_completion(
                     started,
                     ExecutorStatus::Failed,
-                    format!("spawn failed: {e}"),
+                    format!("spawn failed [{code}]: {reason}: {e}"),
                 );
             }
         };

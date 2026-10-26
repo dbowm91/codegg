@@ -450,6 +450,26 @@ fn intent_risk_label(
     })
 }
 
+/// F2: trailing `&` inside a background job is redundant — the scheduler
+/// already backgrounds the whole command, and a surviving `&` child keeps
+/// the output pipe open so the job fails opaquely. Detect a single trailing
+/// unquoted `&` (not `&&`) and fail closed with a typed hint.
+///
+/// Quote-awareness comes from the existing shell-split: a quoted `&` is
+/// literal and never yields a `Background` reason, so it cannot trigger.
+fn has_redundant_background_operator(command: &str) -> bool {
+    let trimmed = command.trim_end();
+    if trimmed.is_empty() || !trimmed.ends_with('&') || trimmed.ends_with("&&") {
+        return false;
+    }
+    match crate::command_intent::shell_shape::parse_shell_words(command) {
+        crate::command_intent::shell_shape::ShellShape::ComplexShell { reasons } => {
+            reasons.contains(&crate::command_intent::shell_shape::ShellComplexityReason::Background)
+        }
+        _ => false,
+    }
+}
+
 impl Default for BashTool {
     fn default() -> Self {
         Self::new()
@@ -463,7 +483,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Routing: use bash for general shell (pipelines/interactive semantics); use terminal only for compat one-shot, test for test runners, python_script for Python. Execute a shell command and return its output. Chooser: single literal replacement->edit | multi-hunk/create->apply_patch | regex->replace (global:true) | shell pipelines->bash | compat one-shot->terminal; tests->test; python->python_script. For web search and URL fetching, prefer the `websearch` and `webfetch` tools — they handle rate limits, SSRF protection, and bot detection. `curl`/`wget` to arbitrary URLs is permitted but discouraged; use them only when a tool is genuinely unsuitable. Set execution_mode=background for long builds/tests to receive a stable JobHandle immediately and one terminal notification on completion without blocking or polling."
+        "Routing: use bash for general shell (pipelines/interactive semantics); use terminal only for compat one-shot, test for test runners, python_script for Python. Execute a shell command and return its output. File tools are jailed to the workspace; bash is Seatbelt write-confined/read-broad/credential-deny (writes confined to workspace+scratch, reads broad, credential paths denied). Absolute paths outside workspace/scratch trigger an advisory path-guard warning, not a deny. See tool_search for the shell chooser. For web search and URL fetching, prefer the `websearch` and `webfetch` tools — they handle rate limits, SSRF protection, and bot detection. `curl`/`wget` to arbitrary URLs is permitted but discouraged; use them only when a tool is genuinely unsuitable. Set execution_mode=background for long builds/tests to receive a stable JobHandle immediately and one terminal notification on completion without blocking or polling."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -702,6 +722,16 @@ impl BashTool {
             )
         };
 
+        // D1: advisory path-guard warning (never a deny). Reuses the
+        // prepare_command pipeline; the sandbox remains the enforcer.
+        let scratch_root: Option<PathBuf> =
+            std::env::var_os("CODEGG_SCRATCH_DIR").map(PathBuf::from);
+        let path_guard_warning = policy::outside_workspace_warning(
+            &pipeline,
+            self.workspace_root.as_deref(),
+            scratch_root.as_deref(),
+        );
+
         tracing::info!(
             command_digest = %crate::live_execution_audit::command_digest_str(command),
             "dispatching command"
@@ -776,6 +806,16 @@ impl BashTool {
                 )
                 .await?
             } else {
+                // F2: a trailing `&` inside a background job is redundant —
+                // the scheduler already backgrounds the whole command. A
+                // surviving `&` child keeps the output pipe open and fails
+                // the job opaquely; fail closed with a typed hint instead.
+                if has_redundant_background_operator(command) {
+                    return Err(ToolError::Execution(
+                        "redundant `&` — background execution_mode already backgrounds the whole command; drop it"
+                            .to_string(),
+                    ));
+                }
                 // Adopt the canonical scheduler-backed Shell translation for
                 // raw-shell background (same executor/approval/sandbox as the
                 // foreground Shell route); never a detached PID or unsupervised
@@ -1041,6 +1081,9 @@ impl BashTool {
 
         // 5. project/redact/persist suffixes and return the structured result.
         if let Some(warning) = preflight_warning {
+            result = format!("{}\n\n{}", warning, result);
+        }
+        if let Some(warning) = path_guard_warning {
             result = format!("{}\n\n{}", warning, result);
         }
 

@@ -419,7 +419,7 @@ impl Tool for PythonScriptTool {
     }
 
     fn description(&self) -> &str {
-        "Execute Python scripts with static risk analysis, mode-based capability control, and safe projection. Use the least-powerful mode: 'analyze' for read-only analysis, 'transform' for workspace file changes, 'verify' for tests with subprocess. Prefer native tools for simple read/write/edit/test/git operations."
+        "Execute Python scripts with static risk analysis, mode-based capability control, and safe projection. Use the least-powerful mode: 'analyze' for read-only analysis, 'transform' for workspace file changes (writes are scoped to the workspace plus $CODEGG_SCRATCH_DIR; /etc, /tmp-outside and rmtree stay denied), 'verify' for tests with subprocess. Static analysis is textual: importing subprocess denies even if never called; a pure read of a sensitive path denies read_sensitive, never destructive_fs. Prefer native tools for simple read/write/edit/test/git operations."
     }
 
     fn parameters(&self) -> serde_json::Value {

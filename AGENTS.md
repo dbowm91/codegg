@@ -299,6 +299,16 @@ is what says which.
 
 ## Gotchas
 
+> Token budget: this section is the load-bearing one (~2400 words of the
+> file's ~5900, per `wc -w AGENTS.md`). For trivial turns the quick-start,
+> layout, and testing sections suffice — load the skill behind the rule
+> instead of re-reading it here: path/root rules → `skill(tool-execution)`,
+> permission/approval rules → `skill(permission)`, agent-loop/progress rules
+> → `skill(agent)`, TUI rules → `skill(tui)` (pairings in the Skills index
+> below). Local harness probes go in `agentfindings.md` (git-ignored via
+> `.gitignore:99`, never commit); include scope / repro / recommended fix
+> per finding.
+
 - A **relative** path in any tool is relative to the session's `workspace_root`,
   never to the process cwd. `validate_path`/`validate_target_path` join the
   `allowed_root` first; `TestTool`/`PythonScriptTool` default `workdir` to it

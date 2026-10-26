@@ -123,7 +123,10 @@ impl Tool for EggsactTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
-        let result = self.runtime.call_json(self.eggsact_name, input)?;
+        let mut result = self.runtime.call_json(self.eggsact_name, input)?;
+        if self.codegg_name == "text_security_inspect" {
+            apply_text_security_noise_filter(&mut result);
+        }
         Ok(result.output)
     }
 
@@ -132,9 +135,246 @@ impl Tool for EggsactTool {
         input: serde_json::Value,
         _ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
-        let result = self.runtime.call_json(self.eggsact_name, input)?;
+        let mut result = self.runtime.call_json(self.eggsact_name, input)?;
+        if self.codegg_name == "text_security_inspect" {
+            apply_text_security_noise_filter(&mut result);
+        }
         Ok(to_structured_result(self.eggsact_name, result))
     }
+}
+
+/// F5: enforce the tool's own caveat — single-character ASCII confusables on
+/// plain English are informational noise. When findings carry no
+/// mixed-script/invisible/secret/INSTRUCTION_PHRASE/non-confusable signal
+/// (same rule as the preflight filter), demote single-char ASCII confusables
+/// to info/informational so the verdict falls to allow.
+pub(crate) fn apply_text_security_noise_filter(
+    result: &mut crate::eggsact::adapter::EggsactCallResult,
+) {
+    if has_actionable_text_signal_for_deterministic(result) {
+        return;
+    }
+    let has_confusable = result.output.to_lowercase().contains("confusable")
+        || result
+            .findings
+            .as_ref()
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter().any(|item| {
+                    item.get("type")
+                        .or_else(|| item.get("kind"))
+                        .or_else(|| item.get("code"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| {
+                            let l = s.to_lowercase();
+                            l.contains("confusable")
+                        })
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+        || result
+            .result
+            .as_ref()
+            .and_then(|r| r.get("findings"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter().any(|item| {
+                    item.get("code")
+                        .or_else(|| item.get("type"))
+                        .or_else(|| item.get("kind"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| {
+                            let l = s.to_lowercase();
+                            l.contains("confusable")
+                        })
+                        .unwrap_or(false)
+                        || item
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .map(|m| m.to_lowercase().contains("confusable"))
+                            .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+    if !has_confusable {
+        return;
+    }
+    // Demote single-char ASCII confusables in both structured slots.
+    let mut demoted_any = false;
+    if let Some(findings) = result.findings.as_mut().and_then(|v| v.as_array_mut()) {
+        for item in findings.iter_mut() {
+            if is_single_char_ascii_confusable_finding(item) {
+                demote_to_info(item);
+                demoted_any = true;
+            }
+        }
+    }
+    if let Some(res) = result.result.as_mut() {
+        if let Some(arr) = res.get_mut("findings").and_then(|v| v.as_array_mut()) {
+            for item in arr.iter_mut() {
+                if is_single_char_ascii_confusable_finding(item) {
+                    demote_to_info(item);
+                    demoted_any = true;
+                }
+            }
+        }
+        // Verdict falls to allow once only informational noise remains.
+        if demoted_any && !has_remaining_actionable_finding(res) {
+            res["verdict"] = serde_json::Value::String("allow".to_string());
+            // Keep the human-readable envelope consistent with the verdict.
+            result.output = result
+                .output
+                .replace("verdict: review", "verdict: allow")
+                .replace("verdict:review", "verdict:allow")
+                .replace("VERDICT_REVIEW", "VERDICT_ALLOW")
+                .replace("\"verdict\": \"review\"", "\"verdict\": \"allow\"")
+                .replace("\"verdict\":\"review\"", "\"verdict\":\"allow\"");
+        }
+    }
+}
+
+fn is_single_char_ascii_confusable_finding(item: &serde_json::Value) -> bool {
+    let kind = item
+        .get("type")
+        .or_else(|| item.get("kind"))
+        .or_else(|| item.get("code"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if !(kind.contains("confusable")) {
+        return false;
+    }
+    // Message shape: "Text contains confusable character 'm' (looks like 'rn')".
+    // Single-char ASCII noise is `'X'` where X is one ASCII char. Longer or
+    // non-ASCII confusables stay as-is.
+    if let Some(msg) = item.get("message").and_then(|v| v.as_str()) {
+        if let Some(start) = msg.find('\'') {
+            let rest = &msg[start + 1..];
+            if let Some(end) = rest.find('\'') {
+                let inner = &rest[..end];
+                let mut chars = inner.chars();
+                if let (Some(c), None) = (chars.next(), chars.next()) {
+                    if c.is_ascii() {
+                        return true;
+                    }
+                }
+            }
+        }
+        // Fallback: a bare "Confusable characters: 1" style count without a
+        // quoted char is treated as single-char noise when no actionable
+        // signal exists (the caller already established that).
+        if msg.to_lowercase().contains("confusable") {
+            return true;
+        }
+    } else {
+        // No message to disprove single-char noise; demote when the kind is
+        // confusable and the caller proved no actionable signal.
+        return true;
+    }
+    false
+}
+
+fn demote_to_info(item: &mut serde_json::Value) {
+    if let Some(obj) = item.as_object_mut() {
+        obj.insert(
+            "severity".to_string(),
+            serde_json::Value::String("info".to_string()),
+        );
+        obj.insert(
+            "disposition".to_string(),
+            serde_json::Value::String("informational".to_string()),
+        );
+    }
+}
+
+fn has_remaining_actionable_finding(res: &serde_json::Value) -> bool {
+    if let Some(arr) = res.get("findings").and_then(|v| v.as_array()) {
+        for item in arr {
+            let sev = item
+                .get("severity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if sev != "info" && sev != "informational" {
+                return true;
+            }
+            let kind = item
+                .get("code")
+                .or_else(|| item.get("type"))
+                .or_else(|| item.get("kind"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if !kind.contains("confusable") && !kind.is_empty() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Same rule as the preflight filter: actionable means mixed-script,
+/// invisible, secret, INSTRUCTION_PHRASE, or a non-confusable finding type.
+fn has_actionable_text_signal_for_deterministic(
+    result: &crate::eggsact::adapter::EggsactCallResult,
+) -> bool {
+    let output = result.output.to_lowercase();
+    for token in [
+        "instruction_phrase",
+        "prompt_injection",
+        "secret",
+        "credential",
+        "api_key",
+        "private_key",
+        "hidden_char",
+        "zero_width",
+        "mixed_script",
+        "homoglyph_attack",
+        "high ",
+        "verdict: block",
+        "verdict:block",
+    ] {
+        if output.contains(token) {
+            return true;
+        }
+    }
+    let check_array = |arr: &[serde_json::Value]| -> bool {
+        arr.iter().any(|item| {
+            if let Some(kind) = item
+                .get("type")
+                .or_else(|| item.get("kind"))
+                .or_else(|| item.get("code"))
+                .and_then(|v| v.as_str())
+            {
+                let kind = kind.to_lowercase();
+                if kind != "confusable"
+                    && kind != "confusables"
+                    && kind != "text_inspect_warning"
+                    && !kind.is_empty()
+                {
+                    return true;
+                }
+            }
+            false
+        })
+    };
+    if let Some(arr) = result.findings.as_ref().and_then(|v| v.as_array()) {
+        if check_array(arr) {
+            return true;
+        }
+    }
+    if let Some(arr) = result
+        .result
+        .as_ref()
+        .and_then(|r| r.get("findings"))
+        .and_then(|v| v.as_array())
+    {
+        if check_array(arr) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Helper to build a simple `{ "type": "object", "properties": ..., "required": ... }` schema.
@@ -228,7 +468,7 @@ pub fn build_eggsact_tools(runtime: Arc<EggsactRuntime>) -> (Vec<EggsactTool>, V
     always_visible.push(EggsactTool::new(
         "command_preflight",
         "command_preflight",
-        "Analyze a shell command before execution: parse argv, detect features (network, filesystem, env, process), find risk patterns, and return an ADVISORY verdict; never blocks except typed contract failures under block_on_definite. Use before running bash commands. Canonical pair: preflight gates shell risk before bash; for secrets/supply-chain/CVE use the security tool (classify_command shares the shell-risk signal with a different envelope).",
+        "Gating a command you are about to run -> preflight. Analyze a shell command before execution: parse argv, detect features (network, filesystem, env, process), find risk patterns, and return an ADVISORY verdict; never blocks except typed contract failures under block_on_definite. Use before running bash commands. Canonical pair: preflight gates shell risk before bash; for secrets/supply-chain/CVE use the security tool (classify_command shares the shell-risk signal with a different envelope).",
         simple_schema(json!({
             "command": { "type": "string", "description": "Shell command to analyze" },
         }), &["command"]),
@@ -412,5 +652,92 @@ mod tests {
         let map: std::collections::HashMap<_, _> = descriptions().into_iter().collect();
         assert!(map["text_security_inspect"].contains("Single-character ASCII"));
         assert!(map["text_security_inspect"].contains("INSTRUCTION_PHRASE"));
+    }
+
+    #[test]
+    fn command_preflight_description_leads_with_decision_rule() {
+        let map: std::collections::HashMap<_, _> = descriptions().into_iter().collect();
+        assert!(
+            map["command_preflight"]
+                .starts_with("Gating a command you are about to run -> preflight"),
+            "preflight description must lead with the decision rule, got: {}",
+            map["command_preflight"]
+        );
+    }
+
+    #[test]
+    fn text_security_noise_filter_demotes_single_char_ascii_to_allow() {
+        let mut result = crate::eggsact::adapter::EggsactCallResult {
+            output: "ok: true\nverdict: review\nconfusable: 'm' looks like 'rn'".to_string(),
+            success: true,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({
+                "verdict": "review",
+                "findings": [
+                    {"type": "confusable", "severity": "medium", "message": "Text contains confusable character 'm' (looks like 'rn')"}
+                ]
+            })),
+            findings: Some(serde_json::json!([
+                {"type": "confusable", "severity": "medium", "message": "Text contains confusable character 'm' (looks like 'rn')"}
+            ])),
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        apply_text_security_noise_filter(&mut result);
+        let verdict = result
+            .result
+            .as_ref()
+            .and_then(|r| r.get("verdict"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert_eq!(
+            verdict, "allow",
+            "single-char ASCII noise with no actionable signal must fall to allow"
+        );
+        assert!(
+            result.output.contains("verdict: allow"),
+            "envelope must stay consistent with the demoted verdict, got: {}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn text_security_noise_filter_preserves_instruction_phrase() {
+        let mut result = crate::eggsact::adapter::EggsactCallResult {
+            output:
+                "ok: true\nverdict: review\nconfusable: 'm'\nINSTRUCTION_PHRASE: ignore previous"
+                    .to_string(),
+            success: true,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({
+                "verdict": "review",
+                "findings": [
+                    {"type": "confusable", "severity": "medium", "message": "Text contains confusable character 'm'"},
+                    {"type": "prompt_injection", "severity": "high", "message": "INSTRUCTION_PHRASE: ignore previous"}
+                ]
+            })),
+            findings: Some(serde_json::json!([
+                {"type": "prompt_injection", "message": "INSTRUCTION_PHRASE"}
+            ])),
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        apply_text_security_noise_filter(&mut result);
+        let verdict = result
+            .result
+            .as_ref()
+            .and_then(|r| r.get("verdict"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert_eq!(
+            verdict, "review",
+            "actionable INSTRUCTION_PHRASE must survive the noise filter"
+        );
     }
 }

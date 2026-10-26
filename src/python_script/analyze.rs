@@ -259,10 +259,67 @@ fn ast_scan_python(code: &str) -> AstScanResult {
     }
 }
 
+/// Markers for sensitive paths: a file read naming one of these is denied
+/// as `read_sensitive`, never as `destructive_fs` (reading is not
+/// destruction). Mirrors the shell sensitive-path list (D2).
+const SENSITIVE_PATH_MARKERS: &[&str] = &[
+    ".ssh",
+    "id_rsa",
+    "id_ed25519",
+    ".pem",
+    ".gnupg",
+    "/etc/passwd",
+    "/etc/shadow",
+    ".aws/credentials",
+    ".aws/config",
+];
+
+/// Absolute-path prefixes that can never resolve inside the
+/// workspace/scratch roots. A file read naming one is denied as
+/// `read_out_of_scope`. Deliberately narrow (`/etc`, `/proc`, `/sys`,
+/// `/root`): broader roots such as `/tmp` or `/var` can host the session
+/// scratch or a temp workspace, so those stay the sandbox's job to deny at
+/// exec rather than a static refusal.
+const OUT_OF_SCOPE_PREFIXES: &[&str] = &["/etc/", "/proc/", "/sys/", "/root/"];
+
+/// Textual read-scope detection for one script body.
+///
+/// Analyze-mode detection is textual: `import subprocess` denies with
+/// `subprocess` even when the module is never called, and a file read that
+/// names a sensitive or absolute path is labeled `read_sensitive` /
+/// `read_out_of_scope`. The check is gated on `has_file_io` so a bare
+/// string mention with no file operation denies nothing, and it never sets
+/// destructive semantics: a pure-read `open()` must never deny
+/// `destructive_fs`.
+fn detect_read_scope(code: &str, has_file_io: bool) -> (bool, bool, Vec<String>) {
+    if !has_file_io {
+        return (false, false, Vec::new());
+    }
+    let sensitive = SENSITIVE_PATH_MARKERS
+        .iter()
+        .any(|marker| code.contains(marker));
+    let out_of_scope = OUT_OF_SCOPE_PREFIXES
+        .iter()
+        .any(|prefix| code.contains(prefix));
+    let mut reasons = Vec::new();
+    if sensitive {
+        reasons.push("sensitive path read detected".to_string());
+    }
+    if out_of_scope {
+        reasons.push("out-of-scope absolute path read detected".to_string());
+    }
+    (sensitive, out_of_scope, reasons)
+}
+
 /// Analyze Python code for static risk indicators.
 ///
 /// This is NOT a proof of safety. It feeds the capability envelope and
 /// permission prompts. Runtime sandbox/snapshot checks remain required.
+///
+/// Detection is textual: importing a module denies its capability even when
+/// the import is never called (e.g. `import subprocess` with only a
+/// `hasattr` check still denies `subprocess`). Agents should route to the
+/// right tool rather than retrying without the word.
 pub fn analyze_python_risk(code: &str) -> PythonRiskAssessment {
     let ast_result = ast_scan_python(code);
 
@@ -307,6 +364,12 @@ fn build_risk_from_ast(code: &str, ast: &AstScanResult) -> PythonRiskAssessment 
 
     let has_file_io = ast.file_read || ast.file_write;
 
+    // Textual read-scope labels: sensitive/out-of-scope reads are denied
+    // under their own names, never as `destructive_fs`.
+    let (sensitive_read, out_of_scope_read, mut scope_reasons) =
+        detect_read_scope(code, has_file_io);
+    reasons.append(&mut scope_reasons);
+
     // For parse errors, fall back to string scanning and explicitly mark the
     // lower-confidence result as fallback-scanned.
     if ast.parse_error {
@@ -317,7 +380,7 @@ fn build_risk_from_ast(code: &str, ast: &AstScanResult) -> PythonRiskAssessment 
 
     let level = if ast.destructive_fs {
         PythonRiskLevel::High
-    } else if ast.subprocess || ast.network {
+    } else if ast.subprocess || ast.network || sensitive_read || out_of_scope_read {
         PythonRiskLevel::Medium
     } else if has_file_io || ast.dynamic_execution || ast.dependency_install || !imports.is_empty()
     {
@@ -336,6 +399,8 @@ fn build_risk_from_ast(code: &str, ast: &AstScanResult) -> PythonRiskAssessment 
         has_network: ast.network,
         has_destructive_ops: ast.destructive_fs,
         has_dynamic_execution: ast.dynamic_execution,
+        has_sensitive_read: sensitive_read,
+        has_out_of_scope_read: out_of_scope_read,
         imports,
         scanner: PythonRiskScanner::Ast,
     }
@@ -451,9 +516,15 @@ fn build_risk_from_string(code: &str) -> PythonRiskAssessment {
     }
 
     // --- Risk level calculation ---
+    // Textual read-scope labels: a sensitive or out-of-scope read escalates
+    // to Medium under its own reason, never as `destructive_fs`.
+    let (sensitive_read, out_of_scope_read, mut scope_reasons) =
+        detect_read_scope(code, has_file_io);
+    reasons.append(&mut scope_reasons);
+
     let level = if has_destructive_ops {
         PythonRiskLevel::High
-    } else if has_subprocess || has_network {
+    } else if has_subprocess || has_network || sensitive_read || out_of_scope_read {
         PythonRiskLevel::Medium
     } else if has_file_io
         || has_dynamic_execution
@@ -475,6 +546,8 @@ fn build_risk_from_string(code: &str) -> PythonRiskAssessment {
         has_network,
         has_destructive_ops,
         has_dynamic_execution,
+        has_sensitive_read: sensitive_read,
+        has_out_of_scope_read: out_of_scope_read,
         imports,
         scanner: PythonRiskScanner::Fallback,
     }
@@ -788,5 +861,54 @@ mod tests {
         assert!(result.has_destructive_ops);
         assert_eq!(result.level, PythonRiskLevel::High);
         assert_eq!(result.scanner, PythonRiskScanner::Ast);
+    }
+
+    // ── D3: read-scope labels are distinct from destruction ──────────
+
+    #[test]
+    fn pure_read_open_never_denies_destructive_fs() {
+        let result = analyze_python_risk("open('/etc/passwd').readline()");
+        assert!(result.has_file_read);
+        assert!(!result.has_destructive_ops);
+        assert_eq!(result.scanner, PythonRiskScanner::Ast);
+    }
+
+    #[test]
+    fn sensitive_path_read_is_labeled_not_destructive() {
+        let result = analyze_python_risk("open('/etc/passwd').readline()");
+        assert!(result.has_sensitive_read);
+        assert!(result.has_out_of_scope_read);
+        assert!(!result.has_destructive_ops);
+        assert!(result.reasons.iter().any(|r| r.contains("sensitive")));
+    }
+
+    #[test]
+    fn tmp_outside_read_is_out_of_scope_not_destructive() {
+        // `/tmp` is outside the narrow static prefix set on purpose (it can
+        // host scratch or a temp workspace): no static scope flag, and never
+        // a destructive label. The sandbox denies it at exec instead.
+        let result = analyze_python_risk("open('/tmp/probe_outside.txt').read()");
+        assert!(!result.has_sensitive_read);
+        assert!(!result.has_out_of_scope_read);
+        assert!(!result.has_destructive_ops);
+    }
+
+    #[test]
+    fn subprocess_import_mention_denies_textually() {
+        // Analyze detection is textual: importing subprocess denies even
+        // when the module is never called.
+        let result = analyze_python_risk("import subprocess\nx = hasattr(subprocess, 'run')");
+        assert!(result.has_subprocess);
+        assert_eq!(result.level, PythonRiskLevel::Medium);
+        assert_eq!(result.scanner, PythonRiskScanner::Ast);
+    }
+
+    #[test]
+    fn relative_read_without_markers_has_no_scope_flags() {
+        let result = analyze_python_risk("f = open('notes.txt', 'r')\nprint(f.read())");
+        assert!(result.has_file_read);
+        assert!(!result.has_sensitive_read);
+        assert!(!result.has_out_of_scope_read);
+        assert!(!result.has_destructive_ops);
     }
 }

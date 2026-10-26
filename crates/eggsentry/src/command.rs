@@ -104,6 +104,23 @@ static SECRET_PIPE_RE: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
+// D2: bare sensitive-path reads without a pipe. `cat ~/.ssh/id_rsa` is
+// blind-spot High even with no `|` — only Seatbelt saved the secret.
+static SENSITIVE_READ_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"\b(cat|less|more|head|tail|read|cp|scp)\b.*(~\/\.ssh|~\/\.aws|~\/\.gnupg|\.ssh\b|\.aws\b|\.gnupg\b|\.pem\b|\bid_[A-Za-z0-9_]+\b|private_key)",
+    )
+    .unwrap()
+});
+
+// D5: process-spawn primitives inside shell text (`python3 -c
+// 'import os; os.system("id")'`). The shell-syntax flag fires on the
+// quoted `;` while the real primitive goes unnamed; these name it.
+static PY_OS_SPAWN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bos\.(system|popen|exec[a-z_]*|spawn[a-z_]*)\s*\(").unwrap());
+static PY_SUBPROCESS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bsubprocess\.(Popen|run|call|check_[a-z_]+)\s*\(").unwrap());
+
 // Scoped recursive force-delete: `rm` with both recursive and force flags.
 // Critical root/home patterns are handled by CRITICAL_RM_RE above; anything
 // else with both flags (e.g. `rm -rf /tmp/dir`) is High, not Medium.
@@ -455,6 +472,22 @@ pub fn classify_bash_command(command: &str) -> CommandClassification {
                 ));
             }
         }
+
+        // D2: bare sensitive-path reads with no pipe required.
+        if SENSITIVE_READ_RE.is_match(command) {
+            risk = risk.max(CommandRisk::High);
+            categories.push(SecurityCategory::SecretExposure);
+            reasons.push("direct read of sensitive credential path".into());
+            if finding.is_none() {
+                finding = Some(finding_for_command(
+                    command,
+                    SecurityCategory::SecretExposure,
+                    Severity::High,
+                    Confidence::High,
+                    "direct read of sensitive credential path",
+                ));
+            }
+        }
     }
 
     // Medium checks
@@ -503,6 +536,22 @@ pub fn classify_bash_command(command: &str) -> CommandClassification {
             risk = CommandRisk::Medium;
             categories.push(SecurityCategory::DangerousCommand);
             reasons.push("git push detected".into());
+        }
+
+        // D5: process-spawn primitives hidden inside shell text.
+        if PY_OS_SPAWN_RE.is_match(command) || PY_SUBPROCESS_RE.is_match(command) {
+            risk = risk.max(CommandRisk::Medium);
+            categories.push(SecurityCategory::DangerousCommand);
+            reasons.push("process-spawn primitive (os.system/subprocess)".into());
+            if finding.is_none() {
+                finding = Some(finding_for_command(
+                    command,
+                    SecurityCategory::DangerousCommand,
+                    Severity::Medium,
+                    Confidence::High,
+                    "process-spawn primitive via os/subprocess",
+                ));
+            }
         }
     }
 
@@ -1133,6 +1182,50 @@ mod tests {
     }
 
     #[test]
+    fn bare_sensitive_path_read_is_high_without_pipe() {
+        for cmd in [
+            "cat ~/.ssh/id_rsa",
+            "head ~/.aws/credentials",
+            "less ~/.gnupg/pubring.kbx",
+            "cp ~/.ssh/id_rsa /tmp/copy",
+        ] {
+            let c = classify_bash_command(cmd);
+            assert_eq!(c.risk, CommandRisk::High, "bare read must be High: {cmd}");
+            assert!(
+                c.categories.contains(&SecurityCategory::SecretExposure),
+                "bare read must be SecretExposure: {cmd}"
+            );
+            assert!(
+                c.finding.is_some(),
+                "bare read must carry a finding without requiring a pipe: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn process_spawn_primitive_is_at_least_medium() {
+        for cmd in [
+            "python3 -c 'import os; os.system(\"id\")'",
+            "python3 -c 'import subprocess; subprocess.run([\"id\"])'",
+        ] {
+            let c = classify_bash_command(cmd);
+            assert!(
+                c.risk >= CommandRisk::Medium,
+                "process-spawn primitive must be >=medium: {cmd} got {:?}",
+                c.risk
+            );
+            assert!(
+                c.categories.contains(&SecurityCategory::DangerousCommand),
+                "process-spawn must name the primitive risk class: {cmd}"
+            );
+            assert!(
+                c.finding.is_some(),
+                "process-spawn primitive must carry a finding: {cmd}"
+            );
+        }
+    }
+
+    #[test]
     fn all_static_regexes_compile() {
         // Forces LazyLock init in tests so a regex typo fails `cargo test`,
         // not production (see M1).
@@ -1162,6 +1255,9 @@ mod tests {
         std::sync::LazyLock::force(&super::ENV_EXFIL_RE);
         std::sync::LazyLock::force(&super::ENV_REDIRECT_RE);
         std::sync::LazyLock::force(&super::SECRET_PIPE_RE);
+        std::sync::LazyLock::force(&super::SENSITIVE_READ_RE);
+        std::sync::LazyLock::force(&super::PY_OS_SPAWN_RE);
+        std::sync::LazyLock::force(&super::PY_SUBPROCESS_RE);
         std::sync::LazyLock::force(&super::RM_GENERAL_RE);
         std::sync::LazyLock::force(&super::MV_GENERAL_RE);
         std::sync::LazyLock::force(&super::CP_GENERAL_RE);
