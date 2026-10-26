@@ -1,7 +1,8 @@
 # Delegated Run Live Transcript — Roadmap
 
-Status: ready for staged implementation (M001 ready; M002 and M003 blocked on their hard predecessors)
-Planning baseline: main at 0be3e0a53ba97ee51f6d64aba2235bdef92452e7 (2026-10-26). Revalidate implementation head before editing.
+Status: closed on feature branch — M001–M003 closed; post-closure integration corrective C001 ready / C002 blocked (PR #203 remains unmerged)
+Original planning baseline: main at 0be3e0a53ba97ee51f6d64aba2235bdef92452e7 (2026-10-26). The §4 observations and §6 original dependency graph describe the historical baseline, not the current branch implementation.
+Feature branch closure baseline: plan/delegated-run-live-transcript at 21dca074 (M001–M003 closed on branch). Current integration corrective: plans/subsystems/delegated-run-live-transcript-post-closure-corrective-addendum.md (C001–C002).
 
 Long-term references:
 - plans/000-long-term-specification.md — architectural principle that frontends render daemon projections; durable agent hierarchy; reliability/recovery; observability; bounded disclosures.
@@ -45,7 +46,7 @@ Polish (included only where necessary): correct loading/absent/old-daemon wordin
 
 No raw per-token provider feed, no raw chain-of-thought display, no full-context buffer reconstruction, no unbounded database/event-log retention, no background polling per subagent, no human-to-child messaging, no new scheduler/daemon service or second notification store, no change to AgentRun continuation semantics, no desktop/ACP parity expansion, and no promise that an existing legacy non-durable run has a transcript.
 
-## 4. Measured baseline and defects
+## 4. Original measured baseline and defects (historical; resolved by M001–M003 on feature branch)
 
 - The accepted C002 store is crates/codegg-core/src/agent_run_transcript.rs (SQLite store; append/read with bounds and redaction at write). The store is not a session message table. Its per-row ceiling is 8 KiB, per-run 256 KiB, read limit 256 rows.
 - src/agent/worker.rs records the child's system/prompt before agent_loop.run(), but traverses the returned events and retained executed_tool_outcomes to capture model final output, tool calls and tool results *after* agent_loop.run() returns. Thus in-flight inspection often sees just the initial prompt. Failure before the post-run pass can lose the most useful observations.
@@ -59,20 +60,20 @@ A live durable child commits a redacted row when that semantic event occurs, wit
 
 The TUI fetches bounded transcript pages through CoreClient only for an open, authorized, identity-matching tab. Requests include the owning session and a cursor; the daemon revalidates principal and run-to-session ownership, enforces row/byte limits, and returns authoritative next cursor/has-more/truncation fields. Frontend merges by (run id, ordinal), ignores duplicates/out-of-order hints, detects gaps, catches up from the store and stops cleanly on session switch, tab close, reconnect or detach. Persistent execution may continue without any subscribed clients. A last-page buffer is not represented as the full transcript; the original bounded snapshot remains a compatibility preview.
 
-## 6. Dependency graph
+## 6. Original implementation dependency graph (historical; all three gates discharged)
 
 C002 + C003 + ADR-0051 (closed)
              |
              v
-M001 live semantic capture (ready)
+M001 live semantic capture (closed on branch)
              |
              v hard
-M002 authorized tail read + change signal (blocked pending M001)
+M002 authorized tail read + change signal (closed on branch)
              |
              v hard
-M003 TUI live follow + end-to-end proof (blocked pending M002)
+M003 TUI live follow + end-to-end proof (closed on branch)
 
-M002 may design its interface while M001 is active but cannot claim integration closure without M001's committed mid-run entries. M003 may implement isolated UI tests against a fake client after M002's typed interface stabilizes, but cannot close without the real daemon path.
+Historical sequencing: M002 consumed the closed M001 capture contract; M003 consumed M002's authorized reads and body-free advisories. All three milestones have closure records on the feature branch. New integration findings are owned separately by post-closure corrective C001/C002; those findings do not imply merge to main.
 
 ## 7. Milestones
 
@@ -128,6 +129,10 @@ The roadmap closes only after M001–M003 have independent closure records, test
 
 | Milestone | Status | Implementation plan | Closure |
 |---|---|---|---|
-| M001 | ready | plans/implementation/delegated-run-live-transcript/001-live-semantic-capture.md | pending |
-| M002 | blocked (hard M001) | plans/implementation/delegated-run-live-transcript/002-authorized-tail-and-change-publication.md | pending |
-| M003 | blocked (hard M002) | plans/implementation/delegated-run-live-transcript/003-tui-live-follow-and-qualification.md | pending |
+| M001 | closed on branch | plans/implementation/delegated-run-live-transcript/001-live-semantic-capture.md | plans/closure/delegated-run-live-transcript/001-status.md |
+| M002 | closed on branch | plans/implementation/delegated-run-live-transcript/002-authorized-tail-and-change-publication.md | plans/closure/delegated-run-live-transcript/002-status.md |
+| M003 | closed on branch | plans/implementation/delegated-run-live-transcript/003-tui-live-follow-and-qualification.md | plans/closure/delegated-run-live-transcript/003-status.md |
+
+## 13. Post-closure integration tracking (new corrective line)
+
+This original feature line is closed **on the feature branch**, not merged to main. PR #203 remains draft. The additional liveness and exact-head verification findings opened a new additive corrective line rather than rewriting M001–M003's closure evidence: plans/subsystems/delegated-run-live-transcript-post-closure-corrective-addendum.md. **C001 ready** (four-page catch-up forward progress, quiet-run advisory flush); **C002 blocked on C001** (Rust 1.99 CI Clippy remediation, composed daemon/TUI verification, exact-head hosted qualification). No claim of merge readiness until that line has evidence.
