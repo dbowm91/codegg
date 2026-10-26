@@ -1,6 +1,6 @@
 # Agent Recovery Escalation Authority Corrective Addendum
 
-Status: active (C001 closed; C002 eligible for fresh planning)
+Status: active (C001 closed; C002 implementation plan registered and ready)
 
 Long-term references:
 
@@ -258,12 +258,17 @@ observation contract contains no permanently-false field.
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | C001 | closed | `plans/implementation/agent-recovery-escalation-authority/001-progress-recovery-escalation-authority.md` | `plans/closure/agent-recovery-escalation-authority/001-status.md` | None |
-| C002 | not started; eligible for fresh planning | — | — | C001 now closed |
+| C002 | ready | `plans/implementation/agent-recovery-escalation-authority/002-observation-diagnostics-and-stall-control.md` | — | C001 closed; accepted ADR-0040 Option B governs outcome semantics |
 
 ## Source verification
 
 **2026-10-23** — status verified read-only against the repository working tree:
 
 - C001 closed: `plans/implementation/agent-recovery-escalation-authority/001-progress-recovery-escalation-authority.md` carries `Status: closed`, and `plans/closure/agent-recovery-escalation-authority/001-status.md` is its closure record (`Status: closed`).
-- C002 has no implementation plan and is deliberately unopened, so the addendum is *active*, not *proposed* and not *closed*.
-- `plans/registry.md` already read *active (C001 closed; C002 eligible for fresh planning)* for this addendum; the header here was the stale copy.
+- The 2026-10-23 statement that C002 had no plan was true at that verification. A new C002 implementation plan is registered on 2026-10-26; this does not retroactively change the old closure or verification.
+- The historical 2026-10-23 registry note has been superseded by the new ready C002 registry entry; roadmap remains active until closure.
+
+
+## C002 handoff addendum (2026-10-26)
+
+The named C002 work in §7 is now executable through `plans/implementation/agent-recovery-escalation-authority/002-observation-diagnostics-and-stall-control.md`. The plan owns the real `ProgressObservation` producer/consumer contract, diagnostics, dead fields and non-vacuous guards; its Harness Lab cross-consumer is `plans/subsystems/harness-lab-continuation-corrective-addendum.md`. C005 found an impossible legacy stall terminal and insufficient live exercised repetitions. **ADR-0040 Option B remains authoritative:** repeated tool identity/unknown observation is not a stall, and outer budget stop must not be mislabeled. No new model-provider trial is authorized by this handoff. C001 historical closure unchanged.
