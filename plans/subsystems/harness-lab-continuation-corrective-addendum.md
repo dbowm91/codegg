@@ -1,6 +1,6 @@
 # Harness Lab Continuation — Post-C006 Corrective Addendum
 
-Status: active planning; D001–D003 ready; D004 ready in the existing Agent Recovery ownership lane; separate CI integrity work is registered under its own corrective roadmap.
+Status: D001–D003 implementation closed; D003's live C006 rate condition remains not established. D004 is owned by the closed Agent Recovery C002 milestone; exact-head CI E001/E002 is closed in its own corrective roadmap.
 
 Reviewed baseline: `main@957fcbf00e17bf108429f0d75dcbf760736ae511` (2026-10-26). Re-check latest main and any successor/PR before implementation.
 
@@ -28,14 +28,14 @@ CodeGG's daemon/broker remains the tool authority. ACP is a projection/transport
 - **Polish:** diagnostics and status/reporting after proof.
 
 ```
-D001 mainline headless parity / accepted-candidate disposition  ─ ready
-D002 truthful native tool outcomes / ACP contract                ─ ready
-D003 sustained event-gap observability / bounded reliability     ─ ready (soft coordination with D002)
-Agent Recovery C002 diagnostics + ADR-0040 reconciliation         ─ ready (owned by other roadmap)
-CI corrective E001/E002                                          ─ ready independently
+D001 mainline headless parity / accepted-candidate disposition  ─ closed
+D002 truthful native tool outcomes / ACP contract                ─ closed
+D003 sustained event-gap observer parity                         ─ closed; C006 live rate not established
+Agent Recovery C002 diagnostics + ADR-0040 reconciliation         ─ closed (owned by other roadmap)
+CI corrective E001/E002                                          ─ closed independently
 ```
 
-No new dependency blocks initial code work; the **final sustained baseline/candidate reliability claim** depends on D002/D003 completion and a green exact-HEAD CI. D001 independent until convergence for a release gate. CI E001/E002 independently ready, but exact-HEAD qualification requires both.
+All implementation dependencies are discharged and exact-head CI is green. The C006 live event-gap-rate qualification remains not established until a separately approved and reviewed sample is run; this does not reopen the completed D003 observer implementation.
 
 ## 4. Milestones
 
@@ -59,7 +59,11 @@ Each plan requires a new, independently reviewed closure record with implementat
 
 | Milestone | Status | Plan | Hard blocker |
 |---|---|---|---|
-| D001 | ready | `implementation/harness-lab-continuation/001-mainline-headless-accepted-fix-disposition.md` | None |
-| D002 | ready | `implementation/harness-lab-continuation/002-tool-terminal-truth-native-to-acp.md` | None |
-| D003 | ready | `implementation/harness-lab-continuation/003-sustained-trial-gap-and-rate-qualification.md` | None; coordinate ACP changes with D002 |
-| Recovery C002 (D004 cross-reference) | ready, other subsystem | `implementation/agent-recovery-escalation-authority/002-observation-diagnostics-and-stall-control.md` | Recovery C001 already closed |
+| D001 | closed | `implementation/harness-lab-continuation/001-mainline-headless-accepted-fix-disposition.md`; `closure/harness-lab-continuation/001-status.md` | Exact-head CI run 40383901325 passed |
+| D002 | closed | `implementation/harness-lab-continuation/002-tool-terminal-truth-native-to-acp.md`; `closure/harness-lab-continuation/002-status.md` | Exact-head CI run 40383901325 passed |
+| D003 | closed (implementation); live rate not established | `implementation/harness-lab-continuation/003-sustained-trial-gap-and-rate-qualification.md`; `closure/harness-lab-continuation/003-status.md` | No provider-backed sample was run; existing 0/14 remains unqualified |
+| Recovery C002 (D004 cross-reference) | closed in owning subsystem | `implementation/agent-recovery-escalation-authority/002-observation-diagnostics-and-stall-control.md`; `closure/agent-recovery-escalation-authority/002-status.md` | ADR-0040 Option B unchanged |
+
+## Closure verification (2026-10-26)
+
+D001–D003 implementation closures and the Recovery C002 cross-reference were recorded against source head `56279dfc7dc8ee82f0239d6412b4fa50a42a74d6`. Exact-head `CI / verify` run [40383901325](https://github.com/dbowm91/codegg/actions/runs/40383901325) passed. D003 did not run a new provider-backed sample; C006's existing zero-of-fourteen observation remains unqualified.

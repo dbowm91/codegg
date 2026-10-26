@@ -1,6 +1,6 @@
 # Exact-HEAD CI E001 — Restore Strict Workspace Clippy Signal
 
-Status: ready
+Status: closed
 Baseline: `main@957fcbf00e17bf108429f0d75dcbf760736ae511`, CI `40324996955` 2026-10-26, failed Workspace Clippy.
 Source: `plans/subsystems/ci-exact-head-signal-corrective-addendum.md`.
 Primary class: infrastructure/invariant; no new ADR.

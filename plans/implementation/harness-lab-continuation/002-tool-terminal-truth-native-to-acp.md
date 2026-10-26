@@ -1,6 +1,6 @@
 # Harness Lab Continuation D002 — Truthful Native Tool Terminal Events Through ACP
 
-Status: ready
+Status: closed
 Baseline: `main@957fcbf00e17bf108429f0d75dcbf760736ae511` (2026-10-26; refresh on entry).
 Roadmap: `plans/subsystems/harness-lab-continuation-corrective-addendum.md`.
 Findings: `plans/closure/harness-lab-post-pilot-corrective/005-status.md#10-unresolved-findings`; C006's typed gap events. Normative: `plans/000-long-term-specification.md` §§23–24, 26–29, `architecture/projection.md`, `architecture/tool_broker.md`. Primary class: invariant.

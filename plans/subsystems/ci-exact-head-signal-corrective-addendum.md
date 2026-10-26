@@ -1,6 +1,6 @@
 # Exact-HEAD CI Signal — October 26 Corrective Addendum
 
-Status: active planning; E001 and E002 independently ready; **current main CI is not green** as of evidence below.
+Status: E001 and E002 closed on branch head `56279dfc7dc8ee82f0239d6412b4fa50a42a74d6`; exact-head CI run 40383901325 passed. The earlier main baseline failures below remain historical evidence.
 Reviewed baseline: `main@957fcbf00e17bf108429f0d75dcbf760736ae511`, 2026-10-26. Refresh GitHub Actions statuses on entry.
 Related already closed predecessor: `plans/subsystems/branch-and-ci-stabilization-roadmap.md` C001. This is a **new incident**, not reopening or rewriting its valid historical closure.
 Related work: `plans/subsystems/harness-lab-continuation-corrective-addendum.md` (operational green exact-head gate).
@@ -24,10 +24,10 @@ Primary infrastructure/invariant: exact-head deterministic CI. Existing `branch-
 
 | Plan | Status | Hard dependency |
 |---|---|---|
-| E001 — all-targets Clippy exact-head restoration `plans/implementation/ci-exact-head-signal/001-clippy-gate-exact-head-restore.md` | ready | none |
-| E002 — Tool Programs M015 crash/restart SQLite lock determinism `plans/implementation/ci-exact-head-signal/002-m015-restart-database-lock-determinism.md` | ready | none; reverify in hosted sweep after E001 |
+| E001 — all-targets Clippy exact-head restoration `plans/implementation/ci-exact-head-signal/001-clippy-gate-exact-head-restore.md` | closed | `plans/closure/ci-exact-head-signal/001-status.md`; exact-head CI 40383901325 passed |
+| E002 — Tool Programs M015 crash/restart SQLite lock determinism `plans/implementation/ci-exact-head-signal/002-m015-restart-database-lock-determinism.md` | closed | `plans/closure/ci-exact-head-signal/002-status.md`; exact-head CI 40383901325 passed |
 
-E001 and E002 can be implemented separately; **final combined verification** is a green exact-source `CI / verify` after both fixes, plus unaffected Linux/Windows workflows as applicable. These are operational dependencies of final Harness Lab mainline qualification, not hard dependencies for writing Harness Lab code.
+E001 and E002 were implemented separately; **final combined verification** is the green exact-source `CI / verify` after both fixes, plus unaffected Linux/Windows workflows as applicable. These were operational dependencies of final Harness Lab branch qualification, not hard dependencies for writing Harness Lab code.
 
 ## 5. Invariants
 
@@ -35,4 +35,8 @@ Never weaken Clippy/warnings, skip/quarantine an integration test as if closed, 
 
 ## 6. Closure and registration
 
-Each E001/E002 closure in `plans/closure/ci-exact-head-signal/` must cite exact implementation SHA, baseline failing CI, failing-first proof, tests/guards actually run, old/new exit, compatibility and live contention semantics; update this roadmap and registry after acceptance. If E001 is merged while E002 remains flaky, status **conditional**, not green. Nothing here authorizes re-running paid providers or changes any Harness Lab M001–M005 historical closure.
+The E001/E002 closure records cite exact implementation SHA, baseline failing CI, tests/guards actually run, compatibility and live contention semantics. Both closures and this roadmap/registry update are now recorded together. No paid provider was run, and no historical delegated-run or Harness Lab closure was rewritten.
+
+## Closure verification (2026-10-26)
+
+E001 and E002 are closed at source head `56279dfc7dc8ee82f0239d6412b4fa50a42a74d6`. Exact-head run [40383901325](https://github.com/dbowm91/codegg/actions/runs/40383901325) passed formatting, strict all-target Clippy, guards, Harness Lab Python tests, and the full workspace test sweep. The original Clippy and M015 lock incidents remain historical baseline evidence, not current blockers.

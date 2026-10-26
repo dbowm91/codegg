@@ -1,6 +1,6 @@
 # Harness Lab Continuation D001 — Mainline Headless Workspace Binding and Accepted Candidate Disposition
 
-Status: ready
+Status: closed
 Baseline: `main@957fcbf00e17bf108429f0d75dcbf760736ae511`, 2026-10-26; refresh before implementation.
 Roadmap: `plans/subsystems/harness-lab-continuation-corrective-addendum.md`.
 Prior evidence: `plans/closure/harness-lab-post-pilot-corrective/003-status.md` and `003-evidence.md`, `plans/closure/harness-lab/004-status.md`. Long-term: `plans/000-long-term-specification.md` §§23,26,27,29. Primary class: invariant. No new ADR if workspace ownership unchanged.

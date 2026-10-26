@@ -1,6 +1,6 @@
 # Exact-HEAD CI E002 — M015 Corrupt-Journal Restart and SQLite Lock Determinism
 
-Status: ready
+Status: closed
 Reviewed baseline: `main@957fcbf00e17bf108429f0d75dcbf760736ae511`, 2026-10-26. Original failure: `CI / verify` run `40224670033`, SHA `bec31b1e5a`, 2026-10-25.
 Source: `plans/subsystems/ci-exact-head-signal-corrective-addendum.md`; original Tool Programs M015 `plans/implementation/tool-programs/015-final-production-path-and-independent-closure.md`. Primary class: invariant/infrastructure; no new ADR unless store ownership/recovery authority changes.
 
