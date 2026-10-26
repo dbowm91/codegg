@@ -5619,6 +5619,12 @@ async fn task_tool_status_get_group_and_cross_session_contracts_are_model_visibl
                 name: "task".to_string().into(),
                 arguments: serde_json::json!({"action":"wait", "run_id":run_id, "timeout_ms":10}),
             }),
+            ChatEvent::Finish {
+                stop_reason: "tool_calls".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![
             ChatEvent::ToolCall(ToolCall {
                 id: "task-group-wait".to_string().into(),
                 name: "task".to_string().into(),
