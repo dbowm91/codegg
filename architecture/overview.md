@@ -596,7 +596,7 @@ fifth reconciliations recorded. The full reconciliation is in
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 351 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Integration test files | 352 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
 | Guard scripts (all) | 102 | `scripts/check_*` — every guard the repository ships |
 | CI guard scripts | 68 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
@@ -888,7 +888,7 @@ merged tree and **not** incremented from either parent:
   **56** (which added `command_catalog` and `frontend_action`) plus this line's
   **two** delegated-run modules. Both parents measure **56**; the merged tree
   measures **58**.
-- *Integration test files* is **351** (`tests/*.rs` + `tests/*/*.inc`, with the
+- *Integration test files* is **352** (`tests/*.rs` + `tests/*/*.inc`, with the
   `tests/common/` helper tree excluded) — the base **342**, plus this line's
   **eight** and `main`'s **one**, with no overlap.
 - *Guard scripts (all)* is **102** (`ls scripts/check_*`) — the base **97**,

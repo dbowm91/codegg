@@ -56,7 +56,7 @@ fn bounds_tool_call_counted() {
 
 #[test]
 fn bounds_parallel_width() {
-    let src = "r = parallel({\"tool\": \"t1\"}, {\"tool\": \"t2\"}, {\"tool\": \"t3\"}, {\"tool\": \"t4\"})\n";
+    let src = "r = parallel({\"tool\": \"read\", \"path\": \"1.rs\"}, {\"tool\": \"read\", \"path\": \"2.rs\"}, {\"tool\": \"read\", \"path\": \"3.rs\"}, {\"tool\": \"read\", \"path\": \"4.rs\"})\n";
     let ast = parse_source(src).unwrap();
     validate(&ast).unwrap();
     let bounds = static_bounds::analyze(&ast).unwrap();
@@ -79,7 +79,7 @@ fn bounds_reject_excessive_loop() {
 #[test]
 fn bounds_reject_excessive_parallel() {
     // 11 parallel calls exceeds default max of 10
-    let src = "r = parallel({\"tool\": \"t1\"},{\"tool\": \"t2\"},{\"tool\": \"t3\"},{\"tool\": \"t4\"},{\"tool\": \"t5\"},{\"tool\": \"t6\"},{\"tool\": \"t7\"},{\"tool\": \"t8\"},{\"tool\": \"t9\"},{\"tool\": \"t10\"},{\"tool\": \"t11\"})\n";
+    let src = "r = parallel({\"tool\": \"read\", \"path\": \"1.rs\"}, {\"tool\": \"read\", \"path\": \"2.rs\"}, {\"tool\": \"read\", \"path\": \"3.rs\"}, {\"tool\": \"read\", \"path\": \"4.rs\"}, {\"tool\": \"read\", \"path\": \"5.rs\"}, {\"tool\": \"read\", \"path\": \"6.rs\"}, {\"tool\": \"read\", \"path\": \"7.rs\"}, {\"tool\": \"read\", \"path\": \"8.rs\"}, {\"tool\": \"read\", \"path\": \"9.rs\"}, {\"tool\": \"read\", \"path\": \"10.rs\"}, {\"tool\": \"read\", \"path\": \"11.rs\"})\n";
     let ast = parse_source(src).unwrap();
     validate(&ast).unwrap();
     let result = static_bounds::analyze(&ast);

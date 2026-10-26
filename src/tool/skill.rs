@@ -273,7 +273,6 @@ mod tests {
         let err = skill_not_found("tseting-ci", None, &registry);
         let msg = err.to_string();
         let testing_pos = msg.find("testing-ci").expect("near miss must be suggested");
-        // The near miss must outrank every other candidate in the message.
         for other in ["tool-execution", "agent", "architecture-review"] {
             if let Some(pos) = msg.find(other) {
                 assert!(

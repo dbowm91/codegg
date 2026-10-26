@@ -430,6 +430,10 @@ name = "tool_programs"
 path = "tests/tool_programs/mod.rs"
 
 [[test]]
+name = "exec_workspace_path_policy"
+path = "tests/exec_workspace_path_policy.rs"
+
+[[test]]
 name = "tui_render"
 path = "tests/tui_render/mod.rs"
 

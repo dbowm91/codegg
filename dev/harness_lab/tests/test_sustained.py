@@ -79,6 +79,47 @@ class CleanupEvidenceTest(unittest.TestCase):
             self.assertTrue(evidence["daemon_socket_present"])
 
 
+class GapQualificationTest(unittest.TestCase):
+    def test_zero_gap_bound_needs_59_instrumented_trials_to_reach_five_percent(self):
+        self.assertGreater(sustained._one_sided_95_upper_bound(0, 58), 0.05)
+        self.assertLessEqual(sustained._one_sided_95_upper_bound(0, 59), 0.05)
+        self.assertIsNone(sustained._one_sided_95_upper_bound(0, 0))
+
+    def test_a_gap_receipt_is_unmeasured_and_not_a_solved_trial(self):
+        original = sustained.pilot.run_live_task
+        sustained.pilot.run_live_task = lambda *_args, **_kwargs: {
+            "terminal": "completed",
+            "ok": True,
+            "event_observation_state": "unmeasured_gap",
+            "event_gap_count": 1,
+            "measurement_failures": 1,
+            "provider_usage": None,
+        }
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                receipt = sustained.run_sustained_scenario(
+                    Path("/unused"),
+                    "opencode_go/muse-spark-1.3-contributor",
+                    budget_policy=_policy(),
+                    plans=[sustained.TrialPlan("gap-case", "worklog")],
+                    root=Path(temp) / "scenario",
+                    repository=REPO_ROOT,
+                )
+        finally:
+            sustained.pilot.run_live_task = original
+
+        trial = receipt["trials"][0]
+        self.assertEqual(trial["terminal"], "infrastructure_error")
+        self.assertFalse(trial["ok"])
+        self.assertEqual(trial["attempt_id"], "gap-case:0")
+        self.assertEqual(receipt["measurement_failures"], 1)
+        gap = receipt["event_gap_measurement"]
+        self.assertEqual(gap["unit"], "instrumented_completed_trial")
+        self.assertEqual(gap["instrumented_trials"], 1)
+        self.assertEqual(gap["gap_trials"], 1)
+        self.assertEqual(gap["qualification_state"], "insufficient_evidence")
+
+
 class InterruptionTest(unittest.TestCase):
     """A stopped lane must not stop the other lane.
 

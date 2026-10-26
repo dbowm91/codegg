@@ -3343,9 +3343,14 @@ async fn test_missing_tool_produces_error_result() {
 
     let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry).await;
 
+    let session_id = format!("missing-tool-terminal-{}", uuid::Uuid::new_v4());
+    agent_loop.set_session_id(&session_id);
+    let mut event_collector = EventCollector::with_session(session_id);
+
     let request = make_chat_request("Use nonexistent_tool");
     let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request).await;
     assert!(result.is_ok(), "Loop should continue after missing tool");
+    event_collector.collect();
 
     let requests = scripted_provider.get_requests().await;
     assert!(requests.len() >= 2, "Should have at least 2 provider calls");
@@ -3376,6 +3381,15 @@ async fn test_missing_tool_produces_error_result() {
     assert_tool_result_with_id(&second_request.messages, "call_1", Some("not found"));
     assert_assistant_tool_call_precedes_result(&second_request.messages, "call_1");
     assert_no_orphan_tool_results(&second_request.messages);
+    let terminal = event_collector
+        .find_event(
+            |event| matches!(event, AppEvent::ToolResult { tool_id, .. } if tool_id == "call_1"),
+        )
+        .expect("the failed call must publish a native ToolResult");
+    assert!(
+        matches!(terminal, AppEvent::ToolResult { success: false, .. }),
+        "a missing tool is a typed failure terminal, not a completed success: {terminal:?}"
+    );
 }
 
 #[tokio::test]

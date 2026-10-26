@@ -67,7 +67,6 @@ pub enum RecoveryAction {
     Correct,
     RestoreBasePalette,
     Replan,
-    Stall,
 }
 
 /// The normalized status of a tool execution as seen by recovery policy.
@@ -145,7 +144,6 @@ pub enum AutonomyPhase {
     Normal,
     AdapterRepair,
     ContinueOrReplan,
-    Stall,
 }
 
 /// Turn-local owner of autonomous recovery transitions.  Provider transport
@@ -212,7 +210,6 @@ impl AutonomyState {
                 self.transitions = self.transitions.saturating_add(1);
                 self.phase = AutonomyPhase::ContinueOrReplan;
             }
-            RecoveryDecision::Stalled(_) => self.phase = AutonomyPhase::Stall,
             RecoveryDecision::Continue => {}
         }
         decision
@@ -307,17 +304,9 @@ pub struct RecoveryIncident {
     pub kind: IncidentKind,
     pub occurrences: u8,
     pub last_action: RecoveryAction,
+    pub action_fingerprint: String,
+    pub progress: ProgressSignal,
     pub evidence: String,
-    pub execution_status: Option<ToolExecutionStatus>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StalledReport {
-    pub last_progress: ProgressSignal,
-    pub incident: IncidentKind,
-    pub attempted_recoveries: u8,
-    pub evidence: String,
-    pub suggested_user_action: String,
     pub execution_status: Option<ToolExecutionStatus>,
 }
 
@@ -329,7 +318,6 @@ pub enum RecoveryDecision {
         action: RecoveryAction,
         incident: RecoveryIncident,
     },
-    Stalled(StalledReport),
 }
 
 #[derive(Debug, Clone)]
@@ -452,6 +440,7 @@ impl RecoveryController {
             self.recoveries = 0;
             self.incident = None;
         }
+        let action_fingerprint = fingerprint(&action_key).1;
         self.incident_key = Some(action_key);
         let occurrences = self
             .incident
@@ -469,6 +458,8 @@ impl RecoveryController {
             kind,
             occurrences,
             last_action: action,
+            action_fingerprint,
+            progress,
             evidence: evidence.clone(),
             execution_status,
         };
@@ -633,10 +624,7 @@ mod tests {
     }
     /// A decision that escalates the ladder rather than letting the turn run on.
     fn is_escalation(decision: &RecoveryDecision) -> bool {
-        matches!(
-            decision,
-            RecoveryDecision::Recover { .. } | RecoveryDecision::Stalled(_)
-        )
+        matches!(decision, RecoveryDecision::Recover { .. })
     }
     #[test]
     fn repeated_unknown_work_gets_bounded_replanning_without_terminal_stall() {
@@ -695,6 +683,32 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn recovery_diagnostics_are_bounded_and_use_a_hashed_incident_identity() {
+        let mut c = RecoveryController::default();
+        c.observe(failing_obs(
+            "bash",
+            "cargo build --token=private-value",
+            "compiler failed with private output",
+        ));
+        let decision = c.observe(failing_obs(
+            "bash",
+            "cargo build --token=private-value",
+            "compiler failed with different private output",
+        ));
+        let RecoveryDecision::Recover { incident, .. } = decision else {
+            panic!("a repeated failed action should produce advisory recovery");
+        };
+
+        assert!(incident.action_fingerprint.starts_with("sha256:"));
+        assert_eq!(incident.action_fingerprint.len(), 71);
+        assert_eq!(incident.progress, ProgressSignal::Unknown);
+        assert_eq!(incident.occurrences, 1);
+        assert!(incident.evidence.len() <= MAX_SUMMARY_BYTES);
+        assert!(!incident.evidence.contains("private-value"));
+        assert!(!incident.evidence.contains("private output"));
     }
 
     #[test]
@@ -1094,10 +1108,7 @@ mod tests {
                 &format!("rg -n 'needle' src/module-{n}"),
                 "matches",
             ));
-            assert!(
-                !matches!(decision, RecoveryDecision::Stalled(_)),
-                "interleaving shell work must not stall (iteration {n}): {decision:?}"
-            );
+            assert_eq!(decision, RecoveryDecision::Continue);
         }
         assert_eq!(c.recovery_count(), 0, "no recovery was ever warranted");
     }
