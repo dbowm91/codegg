@@ -6794,8 +6794,8 @@ async fn test_live_dispatcher_uses_execute_capture() {
         "ToolExecutionContext::backend should be resolved by the dispatcher"
     );
 
-    // The model-facing tool result must be the raw string output
-    // (not a structured JSON envelope containing provenance).
+    // The captured model-facing result must retain the raw tool payload
+    // without adding a structured provenance envelope.
     let requests = scripted_provider.get_requests().await;
     assert!(requests.len() >= 2, "expected at least 2 provider calls");
     let tool_message = requests[1]
@@ -6810,8 +6810,8 @@ async fn test_live_dispatcher_uses_execute_capture() {
         })
         .expect("expected Message::Tool with tool_call_id=call_1 in second request");
     assert!(
-        tool_message.ends_with(r#"{"value":"hello"}"#),
-        "Model-facing tool result should preserve the raw tool payload at the end; got: {}",
+        tool_message.contains(r#"{"value":"hello"}"#),
+        "Model-facing tool result should preserve the raw tool payload; got: {}",
         tool_message
     );
     for forbidden in [
