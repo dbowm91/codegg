@@ -154,6 +154,12 @@ pub struct BrokerInvocationContext {
     /// re-judgement of the caller's authority, so the caller's own
     /// authorization decision still stands and is still recorded.
     pub process_admission: Option<super::process_admission::SharedProcessAdmission>,
+    /// P2: whether plan mode is active for this invocation. Threaded from
+    /// `AgentLoop::is_plan_mode()` at the tool-batch boundary. When `true`,
+    /// the broker's execution gate refuses tools outside
+    /// `disclosure::plan_allowed` with a `Permission` error naming
+    /// `plan_exit`.
+    pub plan_mode: bool,
 }
 
 impl BrokerInvocationContext {
@@ -205,6 +211,7 @@ pub enum BrokerAuthority {
 impl From<ToolExecutionContext> for BrokerInvocationContext {
     fn from(ctx: ToolExecutionContext) -> Self {
         Self {
+            plan_mode: ctx.plan_mode,
             writer_fence: ctx.writer_fence.clone(),
             process_admission: ctx.process_admission.clone(),
             caller: ToolCaller::Agent,
@@ -681,6 +688,19 @@ impl ToolBroker {
         ctx: &BrokerInvocationContext,
         input: &serde_json::Value,
     ) -> Result<u64, BrokerError> {
+        // P2: plan-mode execution gate. One gate in the broker dispatch;
+        // the sibling gate lives in `AgentLoop::execute_tool_calls_impl`.
+        // Both reuse `ToolError::Permission` (no new variant) and name
+        // `plan_exit` so the model knows the recovery step.
+        if ctx.plan_mode && !super::disclosure::plan_allowed(&contract.name) {
+            return Err(BrokerError::AuthorityError {
+                tool: contract.name.clone(),
+                reason: format!(
+                    "plan mode blocks '{}': mutating tools are disabled in plan mode; use plan_exit to leave plan mode",
+                    contract.name
+                ),
+            });
+        }
         // Step 2: caller policy
         self.check_caller_policy(contract, &ctx.caller)?;
 
@@ -1451,6 +1471,7 @@ fn execution_context_for_attempt(
     let grant = ctx.authority.grant();
     let authorization = ctx.execution_authorization.as_ref();
     let mut exec_ctx = ToolExecutionContext {
+        plan_mode: ctx.plan_mode,
         backend: super::backend::ToolBackendKind::Native,
         session_id: ctx.session_id.clone(),
         cwd: ctx.cwd.clone(),
@@ -1659,6 +1680,7 @@ mod tests {
             }
         };
         BrokerInvocationContext {
+            plan_mode: false,
             writer_fence: None,
             process_admission: None,
             caller: ToolCaller::Agent,

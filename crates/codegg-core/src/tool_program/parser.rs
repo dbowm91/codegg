@@ -4,12 +4,37 @@
 //! into Codegg-owned normalized AST types. Unsupported constructs are rejected
 //! during conversion. The parser never executes source.
 
-use rustpython_parser::ast::{self as pyast, Expr as PyExpr, Mod, Stmt as PyStmt};
+use rustpython_parser::ast::{self as pyast, Expr as PyExpr, Mod, Ranged, Stmt as PyStmt};
 use rustpython_parser::{parse, Mode};
 
 use crate::tool_program::ast::*;
 use crate::tool_program::diagnostics::{Diagnostic, DiagnosticCode, SourceSpan};
 use crate::tool_program::ToolProgramError;
+
+/// Convert a rustpython `TextRange` to a Codegg `Span`, clamped to the
+/// source length so diagnostics never point past the buffer.
+fn span_from_range(range: rustpython_parser::text_size::TextRange, source_len: usize) -> Span {
+    let start = range.start().to_usize().min(source_len);
+    let end = range.end().to_usize().min(source_len);
+    if end <= start {
+        Span::new(start, start.saturating_add(1).min(source_len))
+    } else {
+        Span::new(start, end)
+    }
+}
+
+#[allow(dead_code)]
+fn stmt_span(stmt: &PyStmt, source_len: usize) -> Span {
+    span_from_range(stmt.range(), source_len)
+}
+
+fn expr_span(expr: &PyExpr, source_len: usize) -> Span {
+    span_from_range(expr.range(), source_len)
+}
+
+fn source_span_from(span: Span) -> SourceSpan {
+    SourceSpan::new(span.start, span.len())
+}
 
 /// Maximum source size in bytes.
 const MAX_SOURCE_BYTES: usize = 1024 * 1024;
@@ -316,13 +341,15 @@ fn convert_stmt(
     }
 }
 
-/// Convert an expression statement, recognizing call(), submit_job(), emit(), fail().
+/// Convert an expression statement, recognizing call(), submit_job(), emit(), fail(), and bare parallel().
 fn convert_expr_stmt(
     expr: &PyExpr,
     source: &str,
     node_count: &mut usize,
     depth: usize,
 ) -> Result<Stmt, ToolProgramError> {
+    let stmt_span = expr_span(expr, source.len());
+    let stmt_source_span = source_span_from(stmt_span);
     match expr {
         PyExpr::Call(c) => {
             if let PyExpr::Name(n) = c.func.as_ref() {
@@ -335,10 +362,7 @@ fn convert_expr_stmt(
                         )));
                     }
                     let value = convert_expr(&c.args[0], source, node_count, depth)?;
-                    return Ok(Stmt::Emit {
-                        value,
-                        span: Span::new(0, 0),
-                    });
+                    return Ok(Stmt::Emit { value, span: stmt_span });
                 }
                 if n.id.as_str() == "fail" {
                     let reason = if c.args.is_empty() {
@@ -349,49 +373,94 @@ fn convert_expr_stmt(
                         return Err(ToolProgramError::Parse(Diagnostic::new(
                             DiagnosticCode::UnsupportedSyntax,
                             "fail() accepts at most one argument".to_string(),
-                            SourceSpan::new(0, 0),
+                            stmt_source_span,
                         )));
                     };
-                    return Ok(Stmt::Fail {
-                        reason,
-                        span: Span::new(0, 0),
-                    });
+                    return Ok(Stmt::Fail { reason, span: stmt_span });
                 }
                 if n.id.as_str() == "submit_job" {
                     if c.args.len() < 2 {
                         return Err(ToolProgramError::Parse(Diagnostic::new(
                             DiagnosticCode::UnsupportedSyntax,
                             "submit_job() requires operation and config arguments".to_string(),
-                            SourceSpan::new(0, 0),
+                            stmt_source_span,
                         )));
                     }
                     let op = convert_expr(&c.args[0], source, node_count, depth)?;
                     let config = convert_expr(&c.args[1], source, node_count, depth)?;
                     return Ok(Stmt::SubmitJob {
-                        target: Ident {
-                            name: "_submit_job_result".into(),
-                            span: Span::new(0, 0),
-                        },
+                        target: Ident { name: "_submit_job_result".into(), span: stmt_span },
                         op,
                         config,
-                        span: Span::new(0, 0),
+                        span: stmt_span,
+                    });
+                }
+                if n.id.as_str() == "parallel" {
+                    let descriptors = convert_parallel_call_args(&c.args, source, node_count, depth, stmt_span)?;
+                    return Ok(Stmt::Parallel {
+                        target: Ident { name: "_parallel_result".into(), span: stmt_span },
+                        descriptors,
+                        span: stmt_span,
                     });
                 }
             }
             Err(ToolProgramError::Parse(Diagnostic::new(
                 DiagnosticCode::UnsupportedSyntax,
-                "expression statements must be assignment, call(), submit_job(), emit(), or fail()"
+                "expression statements must be assignment, call(), submit_job(), emit(), fail(), or parallel()"
                     .to_string(),
-                SourceSpan::new(0, 0),
+                stmt_source_span,
             )))
         }
         _ => Err(ToolProgramError::Parse(Diagnostic::new(
             DiagnosticCode::UnsupportedSyntax,
-            "expression statements must be assignment, call(), submit_job(), emit(), or fail()"
+            "expression statements must be assignment, call(), submit_job(), emit(), fail(), or parallel()"
                 .to_string(),
-            SourceSpan::new(0, 0),
+            stmt_source_span,
         ))),
     }
+}
+
+/// Normalize `parallel(...)` call args to a descriptor list.
+///
+/// Canonical form is `parallel(d1, d2)`; a single list arg
+/// `parallel([d1, d2])` is normalized to the same list. Each dict
+/// descriptor must carry a `tool` key (TP011).
+fn convert_parallel_call_args(
+    args: &[PyExpr],
+    source: &str,
+    node_count: &mut usize,
+    depth: usize,
+    call_span: Span,
+) -> Result<Vec<Expr>, ToolProgramError> {
+    let call_source_span = source_span_from(call_span);
+    let effective: Vec<&PyExpr> = if args.len() == 1 {
+        if let PyExpr::List(l) = &args[0] {
+            l.elts.iter().collect()
+        } else {
+            args.iter().collect()
+        }
+    } else {
+        args.iter().collect()
+    };
+    let mut descriptors = Vec::with_capacity(effective.len());
+    for arg in effective {
+        let descriptor = convert_expr(arg, source, node_count, depth)?;
+        if let Expr::Dict { keys, .. } = &descriptor {
+            let has_tool = keys.iter().any(|k| match k {
+                Expr::StringLiteral { value, .. } => value == "tool",
+                _ => false,
+            });
+            if !has_tool {
+                return Err(ToolProgramError::Parse(Diagnostic::new(
+                    DiagnosticCode::InvalidCallDescriptor,
+                    "parallel() descriptors must be dicts with a `tool` key; canonical form is parallel(d1, d2) e.g. parallel({\"tool\": \"read\", \"path\": \"src/main.rs\"}, {\"tool\": \"grep\", \"pattern\": \"TODO\"})".to_string(),
+                    call_source_span,
+                )));
+            }
+        }
+        descriptors.push(descriptor);
+    }
+    Ok(descriptors)
 }
 
 /// Convert a Python expression into our normalized AST.
@@ -644,13 +713,37 @@ fn convert_expr(
                         });
                     }
                     "parallel" => {
-                        let mut descriptors = Vec::new();
-                        for arg in &c.args {
-                            descriptors.push(convert_expr(arg, source, node_count, depth)?);
+                        let call_span = expr_span(c.func.as_ref(), source.len());
+                        let effective: Vec<&PyExpr> = if c.args.len() == 1 {
+                            if let PyExpr::List(l) = &c.args[0] {
+                                l.elts.iter().collect()
+                            } else {
+                                c.args.iter().collect()
+                            }
+                        } else {
+                            c.args.iter().collect()
+                        };
+                        let mut descriptors = Vec::with_capacity(effective.len());
+                        for arg in effective {
+                            let descriptor = convert_expr(arg, source, node_count, depth)?;
+                            if let Expr::Dict { keys, .. } = &descriptor {
+                                let has_tool = keys.iter().any(|k| match k {
+                                    Expr::StringLiteral { value, .. } => value == "tool",
+                                    _ => false,
+                                });
+                                if !has_tool {
+                                    return Err(ToolProgramError::Parse(Diagnostic::new(
+                                        DiagnosticCode::InvalidCallDescriptor,
+                                        "parallel() descriptors must be dicts with a `tool` key; canonical form is parallel(d1, d2) e.g. parallel({\"tool\": \"read\", \"path\": \"src/main.rs\"}, {\"tool\": \"grep\", \"pattern\": \"TODO\"})".to_string(),
+                                        source_span_from(call_span),
+                                    )));
+                                }
+                            }
+                            descriptors.push(descriptor);
                         }
                         return Ok(Expr::ParallelExpr {
                             descriptors,
-                            span: Span::new(0, 0),
+                            span: call_span,
                         });
                     }
                     "submit_job" => {
@@ -1282,5 +1375,67 @@ mod tests {
     fn source_too_large() {
         let src = "x = 1\n".repeat(200_000);
         assert!(parse_source(&src).is_err());
+    }
+
+    #[test]
+    fn bare_parallel_becomes_discarded_parallel_stmt() {
+        let prog = parse_source("parallel({\"tool\": \"a\"}, {\"tool\": \"b\"})\n").unwrap();
+        assert_eq!(prog.body.len(), 1);
+        match &prog.body[0] {
+            Stmt::Parallel {
+                target,
+                descriptors,
+                ..
+            } => {
+                assert_eq!(target.name, "_parallel_result");
+                assert_eq!(descriptors.len(), 2);
+            }
+            other => panic!("expected Parallel stmt, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bare_parallel_single_list_normalizes_to_descriptor_list() {
+        let prog = parse_source("parallel([{\"tool\": \"a\"}, {\"tool\": \"b\"}])\n").unwrap();
+        match &prog.body[0] {
+            Stmt::Parallel { descriptors, .. } => {
+                assert_eq!(descriptors.len(), 2);
+            }
+            other => panic!("expected Parallel stmt, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parallel_dict_without_tool_key_is_tp011() {
+        let err = parse_source("parallel({\"path\": \"x\"})\n")
+            .expect_err("missing tool key must be TP011");
+        match err {
+            ToolProgramError::Parse(diagnostic) => {
+                assert_eq!(diagnostic.code, DiagnosticCode::InvalidCallDescriptor);
+                assert!(
+                    diagnostic.message.contains("`tool`"),
+                    "TP011 must name the tool key, got: {}",
+                    diagnostic.message
+                );
+            }
+            other => panic!("expected Parse diagnostic, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn statement_spans_use_source_locations() {
+        let src = "x = 1\nemit(x)\n";
+        let prog = parse_source(src).unwrap();
+        assert_eq!(prog.body.len(), 2);
+        match &prog.body[1] {
+            Stmt::Emit { span, .. } => {
+                assert!(
+                    !span.is_empty(),
+                    "emit statement span must not be empty (0,0)"
+                );
+                assert!(span.start >= 5, "emit span must start after first line");
+            }
+            other => panic!("expected Emit, got: {:?}", other),
+        }
     }
 }

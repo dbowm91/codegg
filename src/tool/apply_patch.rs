@@ -238,6 +238,14 @@ impl ApplyPatchTool {
         content: &str,
         ctx: Option<&ToolExecutionContext>,
     ) -> Result<String, ToolError> {
+        // mode=create takes file contents, not a diff. Reject unified-diff
+        // shapes before any filesystem effect so a mis-routed patch creates
+        // nothing.
+        if is_unified_diff_shape(content) {
+            return Err(ToolError::Execution(
+                "mode=create takes file contents, not a diff; use mode=update with @@ hunks (bare @@ -<start>[,<count>] +<start>[,<count>] @@, no \"*** Begin Patch ***\" wrapper)".to_string(),
+            ));
+        }
         // Config format validation for create mode
         if let Some(ref svc) = self.preflight {
             if is_config_file(path) {
@@ -653,6 +661,25 @@ fn validate_target_path_unrestricted(path: &Path) -> Result<PathBuf, ToolError> 
     Ok(parent_canonical.join(file_name))
 }
 
+/// Returns true when `content` looks like a unified diff rather than file
+/// contents (`@@ ` hunk headers, `---`/`+++` file headers, or a
+/// `*** Begin Patch ***` wrapper).
+fn is_unified_diff_shape(content: &str) -> bool {
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("@@ ") || trimmed.starts_with("@@@ ") {
+            return true;
+        }
+        if trimmed.starts_with("--- ")
+            || trimmed.starts_with("+++ ")
+            || trimmed.starts_with("*** Begin Patch ***")
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Returns true if the path looks like a structured config file.
 fn is_config_file(path: &str) -> bool {
     let lower = path.to_lowercase();
@@ -685,6 +712,54 @@ mod tests {
             .canonicalize()
             .expect("canonical nested parent");
         assert_eq!(validated, expected_parent.join("new.txt"));
+    }
+
+    #[test]
+    fn create_rejects_unified_diff_shapes() {
+        for diff in [
+            "@@ -1,3 +1,3 @@\n context\n",
+            "--- a/foo\n+++ b/foo\n",
+            "*** Begin Patch ***\n",
+        ] {
+            assert!(
+                is_unified_diff_shape(diff),
+                "diff shape must be detected: {diff:?}"
+            );
+        }
+        assert!(!is_unified_diff_shape("hello\nworld\n"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn create_mode_rejects_diff_and_creates_nothing() {
+        let temp = TempDir::new().expect("temp dir");
+        let tool = ApplyPatchTool::new().with_allowed_root(temp.path().to_path_buf());
+        for diff in [
+            "@@ -1,1 +1,1 @@\n-old\n+new\n",
+            "--- a/file\n+++ b/file\n",
+            "*** Begin Patch ***\n*** End Patch ***\n",
+        ] {
+            let err = tool
+                .execute(serde_json::json!({
+                    "path": "new.txt",
+                    "mode": "create",
+                    "patch": diff,
+                }))
+                .await
+                .expect_err("create with diff shape must fail");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("mode=create takes file contents, not a diff"),
+                "unexpected create rejection: {msg}"
+            );
+            assert!(
+                msg.contains("mode=update"),
+                "create rejection must point at mode=update, got: {msg}"
+            );
+        }
+        assert!(
+            !temp.path().join("new.txt").exists(),
+            "rejected create must not leave a file behind"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

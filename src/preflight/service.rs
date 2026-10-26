@@ -1234,6 +1234,36 @@ mod tests {
     }
 
     #[test]
+    fn shell_block_verdict_surfaces_as_advisory_block_and_never_blocks() {
+        let service = PreflightService::with_runtime(
+            std::sync::Arc::new(
+                crate::eggsact::adapter::EggsactRuntime::new(
+                    crate::eggsact::adapter::EggsactConfig::default(),
+                )
+                .unwrap(),
+            ),
+            PreflightPolicy::default(),
+        );
+        let result = EggsactCallResult {
+            output: "verdict: block\nrisk: high".to_string(),
+            success: true,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: None,
+            result: None,
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        let decision = service.parse_command_result(result);
+        assert!(!decision.is_blocked());
+        let summary = decision.summary();
+        assert!(summary.contains("advisory-block"));
+        assert!(!decision.findings().is_empty());
+    }
+
+    #[test]
     fn pipe_only_medium_is_downgraded_to_allow() {
         let service = PreflightService::with_runtime(
             std::sync::Arc::new(

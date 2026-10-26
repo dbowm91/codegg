@@ -500,14 +500,16 @@ impl Tool for BashTool {
                 },
                 "timeout": {
                     "type": "number",
+                    "minimum": 1,
+                    "maximum": 3600,
                     "description": format!(
                         "Timeout in seconds (default: {DEFAULT_SHELL_TIMEOUT_SECS}, \
-                         max: {MAX_SHELL_TIMEOUT_SECS}). A command that exceeds it is \
+                         max: {MAX_SHELL_TIMEOUT_SECS}); must be positive integer 1..3600; 0 rejected (use background for no-wait). A command that exceeds it is \
                          terminated and its partial output is returned as the tool result. \
                          Raise this for work that legitimately takes a long time -- a full \
                          build or test suite -- rather than polling in a loop; do not raise \
                          it to wait on something that should be fast, because a hung command \
-                         will hold the turn until it expires."
+                         will hold the turn until it expires. Whole-valued floats coerced; fractions rejected."
                     )
                 },
                 "execution_mode": {
@@ -643,11 +645,26 @@ impl BashTool {
         // child process can never disagree. Falling back to the argument
         // (then the historical 120s default) keeps a direct, unbrokered
         // invocation working.
-        let timeout_secs = audit_ctx
-            .and_then(|ctx| ctx.timeout_ms)
-            .map(|ms| ms.div_ceil(1000))
-            .or_else(|| input["timeout"].as_u64())
-            .unwrap_or(DEFAULT_SHELL_TIMEOUT_SECS);
+        // N3/R6: `timeout` must be a positive integer 1..=3600. Whole-valued
+        // floats coerce (120.0 -> 120) via the shared tolerant parser;
+        // zero, negatives, NaN, and fractions fail with `must be a positive
+        // integer` (mirrors `test.rs::parse_positive_seconds`) instead of
+        // silently clamping or falling back to the default.
+        let timeout_secs = if let Some(ms) = audit_ctx.and_then(|ctx| ctx.timeout_ms) {
+            ms.div_ceil(1000)
+        } else if let Some(raw) = input.get("timeout") {
+            let secs = crate::tool::util::json_usize(raw).ok_or_else(|| {
+                ToolError::Execution("timeout must be a positive integer".to_string())
+            })?;
+            if !(1..=3600).contains(&secs) {
+                return Err(ToolError::Execution(
+                    "timeout must be a positive integer".to_string(),
+                ));
+            }
+            secs as u64
+        } else {
+            DEFAULT_SHELL_TIMEOUT_SECS
+        };
         let execution_timeout = Duration::from_secs(timeout_secs.clamp(1, MAX_SHELL_TIMEOUT_SECS));
 
         let workdir = input["workdir"].as_str().map(str::to_string).or_else(|| {
@@ -731,6 +748,29 @@ impl BashTool {
             self.workspace_root.as_deref(),
             scratch_root.as_deref(),
         );
+
+        // P2: plan-mode read-only intent gate for bash. `disclosure::plan_allowed`
+        // keeps `bash` in the plan surface, but a shell string can still mutate
+        // (rm/mv, git commit, cargo publish, build/lint/format, FileWrite), so
+        // the tool refines by intent: only GitReadOnly/SearchReadOnly/FileRead
+        // (managed status/diff/log, grep) run; everything else refuses with
+        // `Permission` naming `plan_exit`. Uses the existing
+        // command-intent classifier; no new error type.
+        if audit_ctx.is_some_and(|ctx| ctx.plan_mode) {
+            let allowed = intent.as_ref().is_some_and(|intent| {
+                matches!(
+                    intent.kind,
+                    crate::command_intent::CommandIntentKind::GitReadOnly
+                        | crate::command_intent::CommandIntentKind::SearchReadOnly
+                        | crate::command_intent::CommandIntentKind::FileRead
+                )
+            });
+            if !allowed {
+                return Err(ToolError::Permission(format!(
+                    "plan mode blocks 'bash': command '{command}' is not read-only in plan mode; use plan_exit to leave plan mode"
+                )));
+            }
+        }
 
         tracing::info!(
             command_digest = %crate::live_execution_audit::command_digest_str(command),
@@ -1080,11 +1120,15 @@ impl BashTool {
         .await;
 
         // 5. project/redact/persist suffixes and return the structured result.
+        // F3: advisories APPEND (`result + "\n\n" + warning`), never prepend.
+        // Byte/line caps apply to the command output BEFORE merging, so
+        // warnings never eat output.
+        result = output::truncate_output(&result, self.max_output_lines, self.max_output_bytes);
         if let Some(warning) = preflight_warning {
-            result = format!("{}\n\n{}", warning, result);
+            result = format!("{}\n\n{}", result, warning);
         }
         if let Some(warning) = path_guard_warning {
-            result = format!("{}\n\n{}", warning, result);
+            result = format!("{}\n\n{}", result, warning);
         }
 
         result = output::append_routing_suffix(result, routing_metadata.as_ref());

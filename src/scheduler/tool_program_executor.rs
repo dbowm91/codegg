@@ -677,6 +677,7 @@ impl BrokerCallback for BrokerAdapter {
             return Err(InterpreterError::Cancelled);
         }
         let ctx = BrokerInvocationContext {
+            plan_mode: false,
             writer_fence: None,
             // M005 corrective C005: the Tool Program inherits the narrow
             // profile. A nested call cannot reach a process the parent
@@ -2231,7 +2232,7 @@ impl JobExecutor for ToolProgramExecutor {
             result.clone(),
             call_artifacts,
             child_artifacts,
-            output_artifact,
+            output_artifact.clone(),
         )
         .await
         {
@@ -2266,7 +2267,10 @@ impl JobExecutor for ToolProgramExecutor {
             ProgramStatus::Recoverable => ExecutorStatus::Failed,
         };
 
-        // Build summary
+        // Build summary: success carries a bounded output preview plus the
+        // spilled artifact handle when the 256 KiB spill path fired, so
+        // success is as visible as failure. `program_artifacts` stay
+        // non-transcript handles by contract.
         let mut summary = format!(
             "status={:?} steps={} iterations={} bytes={} calls={}",
             result.status,
@@ -2276,8 +2280,22 @@ impl JobExecutor for ToolProgramExecutor {
             result.calls_completed
         );
         if let Some(ref output) = result.output {
-            let _ = output;
             summary.push_str("\noutput_present=true");
+            let rendered = match output {
+                codegg_core::tool_program::ProgramValue::String(s) => s.clone(),
+                codegg_core::tool_program::ProgramValue::ToolResult(v) => v.to_string(),
+                other => format!("{:?}", other),
+            };
+            let preview: String = rendered.chars().take(1000).collect();
+            let truncated = rendered.chars().count() > 1000;
+            summary.push_str(&format!(
+                "\noutput_preview: {}{}",
+                preview,
+                if truncated { "... [truncated]" } else { "" }
+            ));
+        }
+        if let Some(ref handle) = output_artifact {
+            summary.push_str(&format!("\noutput_artifact: {handle}"));
         }
         if result.error_message.is_some() {
             summary.push_str("\nerror_present=true");

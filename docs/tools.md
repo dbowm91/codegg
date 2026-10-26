@@ -113,10 +113,19 @@ For `task`, run control and task retrieval use different identities:
 `status`, `wait`, `message`, `interrupt`, and `cancel` take `run_id`; `get`
 takes `task_id` (durable string ID or legacy numeric ID). Group status/wait/
 cancel operations take `group_id`. A run ID is not accepted as a task ID.
+Durable spawn ~11-19s (worktree+scheduling); retrieve via wait/get, notice is
+next-turn backstop; don't poll.
 
-`repo_search` forwards `include_local` to Eggsearch. Local coverage follows the
-Eggsearch sidecar's configured roots; CodeGG does not currently bind those
-roots to the active session workspace. Check that the sidecar roots include
+`repo_search` forwards `include_local` to Eggsearch (defaults to true when an
+authorized root is present; falls back to the invocation workspace_root with a
+typed `[local_scope reason]` prefix when no authorized root is bound). `repo_map`
+auto-prefixes the same `[local_scope reason]` and, on `no_native_tree`,
+appends a local `list`/`glob` fallback hint. Both default to
+`detail='summary'` compact-first; use `detail='full'` for the telemetry
+envelope. Output is capped at 15k chars per tool family (see caps table below).
+Local coverage follows the
+Eggsearch sidecar's configured roots; CodeGG binds the active session workspace
+as the host scope for each call. Check that the sidecar roots include
 the intended repository before treating a local miss or hit as workspace
 coverage.
 
@@ -274,7 +283,11 @@ File tools are jailed to the workspace; bash is Seatbelt
 write-confined/read-broad/credential-deny (writes confined to
 workspace+scratch, reads broad, credential paths denied). An absolute path
 outside workspace/scratch in bash argv triggers an advisory path-guard
-warning, not a deny; the sandbox remains the enforcer.
+warning, not a deny; the sandbox remains the enforcer. `cd /private/tmp` may
+succeed but writes outside workspace+scratch denied; use canonical realpath root.
+`read` sees ignored files; discovery (`glob`/`grep`/`list`) skips them unless
+`include_ignored:true`. `.codegg/test-runs/*` may be gitignored — use
+`include_ignored:true` or `read` directly.
 
 Model-owned Bash and Python processes receive a private scratch directory for
 their session. Use the `CODEGG_SCRATCH_DIR` environment variable in shell

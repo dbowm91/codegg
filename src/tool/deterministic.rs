@@ -55,10 +55,11 @@ impl EggsactTool {
     /// `ok` flag plus optional machine-code/result/findings fields.
     /// No property is required so the schema stays permissive for
     /// future envelope extensions.
+    /// `ok` is transport (tool ran); validity is result.valid/verdict.
     fn contract_output_schema() -> serde_json::Value {
         json!({
             "type": "object",
-            "description": "Deterministic eggsact result envelope (ok plus optional machine_code, result, findings).",
+            "description": "Deterministic eggsact result envelope (ok plus optional machine_code, result, findings). `ok` is transport (tool ran); validity is result.valid/verdict.",
             "properties": {
                 "ok": { "type": "boolean" },
                 "machine_code": { "type": "string" },
@@ -124,7 +125,7 @@ impl Tool for EggsactTool {
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let mut result = self.runtime.call_json(self.eggsact_name, input)?;
-        if self.codegg_name == "text_security_inspect" {
+        if self.codegg_name == "text_security_inspect" || self.codegg_name == "identifier_inspect" {
             apply_text_security_noise_filter(&mut result);
         }
         Ok(result.output)
@@ -136,7 +137,7 @@ impl Tool for EggsactTool {
         _ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
         let mut result = self.runtime.call_json(self.eggsact_name, input)?;
-        if self.codegg_name == "text_security_inspect" {
+        if self.codegg_name == "text_security_inspect" || self.codegg_name == "identifier_inspect" {
             apply_text_security_noise_filter(&mut result);
         }
         Ok(to_structured_result(self.eggsact_name, result))
@@ -147,10 +148,15 @@ impl Tool for EggsactTool {
 /// plain English are informational noise. When findings carry no
 /// mixed-script/invisible/secret/INSTRUCTION_PHRASE/non-confusable signal
 /// (same rule as the preflight filter), demote single-char ASCII confusables
-/// to info/informational so the verdict falls to allow.
+/// to info/informational so the verdict falls to allow. Applies to both
+/// `text_security_inspect` and `identifier_inspect`. Findings are deduped by
+/// (code/kind, normalized message, span) before demotion, and
+/// IDENT_COLLISION findings require word-boundary/token equality — a mere
+/// substring (e.g. `rm` inside `immediately`) must not fire.
 pub(crate) fn apply_text_security_noise_filter(
     result: &mut crate::eggsact::adapter::EggsactCallResult,
 ) {
+    dedup_deterministic_findings(result);
     if has_actionable_text_signal_for_deterministic(result) {
         return;
     }
@@ -197,14 +203,34 @@ pub(crate) fn apply_text_security_noise_filter(
                 })
             })
             .unwrap_or(false);
-    if !has_confusable {
+    let has_collision = result
+        .findings
+        .as_ref()
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .any(|item| finding_kind(item).contains("collision"))
+        })
+        .unwrap_or(false)
+        || result
+            .result
+            .as_ref()
+            .and_then(|r| r.get("findings"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .any(|item| finding_kind(item).contains("collision"))
+            })
+            .unwrap_or(false);
+    if !has_confusable && !has_collision {
         return;
     }
-    // Demote single-char ASCII confusables in both structured slots.
+    // Demote single-char ASCII confusables and spurious IDENT_COLLISIONs in
+    // both structured slots.
     let mut demoted_any = false;
     if let Some(findings) = result.findings.as_mut().and_then(|v| v.as_array_mut()) {
         for item in findings.iter_mut() {
-            if is_single_char_ascii_confusable_finding(item) {
+            if is_single_char_ascii_confusable_finding(item) || is_spurious_ident_collision(item) {
                 demote_to_info(item);
                 demoted_any = true;
             }
@@ -213,13 +239,17 @@ pub(crate) fn apply_text_security_noise_filter(
     if let Some(res) = result.result.as_mut() {
         if let Some(arr) = res.get_mut("findings").and_then(|v| v.as_array_mut()) {
             for item in arr.iter_mut() {
-                if is_single_char_ascii_confusable_finding(item) {
+                if is_single_char_ascii_confusable_finding(item)
+                    || is_spurious_ident_collision(item)
+                {
                     demote_to_info(item);
                     demoted_any = true;
                 }
             }
         }
         // Verdict falls to allow once only informational noise remains.
+        // Verdict drivers are INSTRUCTION_PHRASE/secret/mixed_script/invisible
+        // alone; confusable-only review falls to allow.
         if demoted_any && !has_remaining_actionable_finding(res) {
             res["verdict"] = serde_json::Value::String("allow".to_string());
             // Keep the human-readable envelope consistent with the verdict.
@@ -232,6 +262,187 @@ pub(crate) fn apply_text_security_noise_filter(
                 .replace("\"verdict\":\"review\"", "\"verdict\":\"allow\"");
         }
     }
+}
+
+/// Normalized message for dedup: lowercase, trimmed, inner whitespace collapsed.
+fn normalize_message_for_dedup(s: &str) -> String {
+    s.to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn finding_kind(item: &serde_json::Value) -> String {
+    item.get("type")
+        .or_else(|| item.get("kind"))
+        .or_else(|| item.get("code"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_lowercase()
+}
+
+fn finding_span_key(item: &serde_json::Value) -> String {
+    for key in [
+        "span", "location", "range", "line", "column", "offset", "path",
+    ] {
+        if let Some(v) = item.get(key) {
+            if let Some(s) = v.as_str() {
+                return s.to_string();
+            }
+            return v.to_string();
+        }
+    }
+    String::new()
+}
+
+fn dedup_array(arr: &mut Vec<serde_json::Value>) {
+    use std::collections::HashSet;
+    let mut seen: HashSet<String> = HashSet::new();
+    arr.retain(|item| {
+        let kind = finding_kind(item);
+        let msg = item.get("message").and_then(|v| v.as_str()).unwrap_or("");
+        let key = format!(
+            "{}|{}|{}",
+            kind,
+            normalize_message_for_dedup(msg),
+            finding_span_key(item)
+        );
+        seen.insert(key)
+    });
+}
+
+/// Dedup findings by (code/kind, normalized message, span) before demotion.
+fn dedup_deterministic_findings(result: &mut crate::eggsact::adapter::EggsactCallResult) {
+    if let Some(findings) = result.findings.as_mut().and_then(|v| v.as_array_mut()) {
+        let vec = std::mem::take(findings);
+        let mut vec = vec;
+        dedup_array(&mut vec);
+        *findings = vec;
+    }
+    if let Some(res) = result.result.as_mut() {
+        if let Some(arr) = res.get_mut("findings").and_then(|v| v.as_array_mut()) {
+            let vec = std::mem::take(arr);
+            let mut vec = vec;
+            dedup_array(&mut vec);
+            *arr = vec;
+        }
+    }
+}
+
+fn quoted_tokens(msg: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = msg;
+    while let Some(start) = rest.find('\'') {
+        let after = &rest[start + 1..];
+        if let Some(end) = after.find('\'') {
+            out.push(after[..end].to_string());
+            rest = &after[end + 1..];
+        } else {
+            break;
+        }
+    }
+    if out.is_empty() {
+        let mut rest = msg;
+        while let Some(start) = rest.find('"') {
+            let after = &rest[start + 1..];
+            if let Some(end) = after.find('"') {
+                out.push(after[..end].to_string());
+                rest = &after[end + 1..];
+            } else {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// IDENT_COLLISION guard: a mere substring must not fire. Require
+/// word-boundary/token equality — tokens that are equal (casefolded) are a
+/// real collision; when one token merely contains the other as a substring
+/// (e.g. `rm` inside `immediately`) the finding is spurious.
+fn is_spurious_ident_collision(item: &serde_json::Value) -> bool {
+    let kind = finding_kind(item);
+    if !kind.contains("collision") && !kind.contains("ident_collision") {
+        return false;
+    }
+    let msg = item.get("message").and_then(|v| v.as_str()).unwrap_or("");
+    /// F5: leading-char guard — a collision between tokens that share no
+    /// leading character (e.g. `immediately` vs `rm`) is spurious regardless
+    /// of substring relations. Real confusable collisions share a prefix.
+    fn leading_chars_differ(a: &str, b: &str) -> bool {
+        let fa = a.chars().find(|c| c.is_alphanumeric());
+        let fb = b.chars().find(|c| c.is_alphanumeric());
+        match (fa, fb) {
+            (Some(x), Some(y)) => x.to_lowercase().next() != y.to_lowercase().next(),
+            _ => false,
+        }
+    }
+    if let Some(ids) = item.get("identifiers").and_then(|v| v.as_array()) {
+        let tokens: Vec<String> = ids
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
+            .collect();
+        if tokens.len() >= 2 {
+            for i in 0..tokens.len() {
+                for j in (i + 1)..tokens.len() {
+                    if tokens[i] == tokens[j] {
+                        return false;
+                    }
+                }
+            }
+            for i in 0..tokens.len() {
+                for j in (i + 1)..tokens.len() {
+                    if leading_chars_differ(&tokens[i], &tokens[j]) {
+                        return true;
+                    }
+                    if tokens[i].contains(&tokens[j]) || tokens[j].contains(&tokens[i]) {
+                        return true;
+                    }
+                }
+            }
+            // Tokens that are neither equal nor substring-related and share
+            // no other similarity signal are still spurious when they share
+            // no leading character path; otherwise leave to upstream.
+            return false;
+        }
+    }
+    let tokens = quoted_tokens(msg);
+    if tokens.len() < 2 {
+        return false;
+    }
+    let lowered: Vec<String> = tokens.iter().map(|t| t.to_lowercase()).collect();
+    for i in 0..lowered.len() {
+        for j in (i + 1)..lowered.len() {
+            if lowered[i] == lowered[j] {
+                return false;
+            }
+        }
+    }
+    for i in 0..lowered.len() {
+        for j in (i + 1)..lowered.len() {
+            if leading_chars_differ(&lowered[i], &lowered[j]) {
+                return true;
+            }
+            let (short, long) = if lowered[i].len() <= lowered[j].len() {
+                (&lowered[i], &lowered[j])
+            } else {
+                (&lowered[j], &lowered[i])
+            };
+            if short.is_empty() {
+                continue;
+            }
+            if long.contains(short.as_str()) {
+                let parts: Vec<&str> = long
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .collect();
+                if !parts.iter().any(|p| *p == short.as_str()) {
+                    return true;
+                }
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn is_single_char_ascii_confusable_finding(item: &serde_json::Value) -> bool {
@@ -291,6 +502,9 @@ fn demote_to_info(item: &mut serde_json::Value) {
 fn has_remaining_actionable_finding(res: &serde_json::Value) -> bool {
     if let Some(arr) = res.get("findings").and_then(|v| v.as_array()) {
         for item in arr {
+            if is_spurious_ident_collision(item) {
+                continue;
+            }
             let sev = item
                 .get("severity")
                 .and_then(|v| v.as_str())
@@ -316,6 +530,8 @@ fn has_remaining_actionable_finding(res: &serde_json::Value) -> bool {
 
 /// Same rule as the preflight filter: actionable means mixed-script,
 /// invisible, secret, INSTRUCTION_PHRASE, or a non-confusable finding type.
+/// Verdict drivers are INSTRUCTION_PHRASE/secret/mixed_script/invisible
+/// alone; confusable-only review falls to allow.
 fn has_actionable_text_signal_for_deterministic(
     result: &crate::eggsact::adapter::EggsactCallResult,
 ) -> bool {
@@ -328,8 +544,10 @@ fn has_actionable_text_signal_for_deterministic(
         "api_key",
         "private_key",
         "hidden_char",
+        "invisible",
         "zero_width",
         "mixed_script",
+        "mixed-script",
         "homoglyph_attack",
         "high ",
         "verdict: block",
@@ -341,6 +559,9 @@ fn has_actionable_text_signal_for_deterministic(
     }
     let check_array = |arr: &[serde_json::Value]| -> bool {
         arr.iter().any(|item| {
+            if is_spurious_ident_collision(item) {
+                return false;
+            }
             if let Some(kind) = item
                 .get("type")
                 .or_else(|| item.get("kind"))
@@ -354,6 +575,22 @@ fn has_actionable_text_signal_for_deterministic(
                     && !kind.is_empty()
                 {
                     return true;
+                }
+            }
+            if let Some(msg) = item.get("message").and_then(|v| v.as_str()) {
+                let lower = msg.to_lowercase();
+                for token in [
+                    "instruction_phrase",
+                    "secret",
+                    "mixed_script",
+                    "mixed-script",
+                    "invisible",
+                    "hidden_char",
+                    "zero_width",
+                ] {
+                    if lower.contains(token) {
+                        return true;
+                    }
                 }
             }
             false
@@ -442,7 +679,7 @@ pub fn build_eggsact_tools(runtime: Arc<EggsactRuntime>) -> (Vec<EggsactTool>, V
     always_visible.push(EggsactTool::new(
         "validate_json",
         "validate_json",
-        "Validate JSON syntax and report precise parse errors or structure info. Use before writing or editing JSON files. Pass real newlines, not literal backslash-n sequences.",
+        "Validate JSON syntax and report precise parse errors or structure info. Use before writing or editing JSON files. Pass real newlines, not literal backslash-n sequences. `ok` is transport (tool ran); validity is result.valid/verdict.",
         simple_schema(json!({
             "text": { "type": "string", "description": "JSON text to validate" },
         }), &["text"]),
@@ -522,7 +759,7 @@ pub fn build_eggsact_tools(runtime: Arc<EggsactRuntime>) -> (Vec<EggsactTool>, V
     deferred.push(EggsactTool::new(
         "config_preflight",
         "config_preflight",
-        "Validate generated config text. Auto-detects format (JSON, TOML, dotenv/INI, cargo_toml) and runs the appropriate validator. YAML is not supported; YAML input is reported as unsupported rather than JSON. Returns valid/invalid with parse error details.",
+        "Validate generated config text. Auto-detects format (JSON, TOML, dotenv/INI, cargo_toml) and runs the appropriate validator. YAML is not supported; YAML input is reported as unsupported rather than JSON. Returns valid/invalid with parse error details. `ok` is transport (tool ran); validity is result.valid/verdict.",
         simple_schema(json!({
             "text": { "type": "string", "description": "Config text to validate" },
         }), &["text"]),
@@ -738,6 +975,147 @@ mod tests {
         assert_eq!(
             verdict, "review",
             "actionable INSTRUCTION_PHRASE must survive the noise filter"
+        );
+    }
+
+    #[test]
+    fn ok_is_transport_sentence_present() {
+        let map: std::collections::HashMap<_, _> = descriptions().into_iter().collect();
+        for tool in ["validate_json", "config_preflight"] {
+            assert!(
+                map[tool].contains("`ok` is transport"),
+                "{tool} description must carry the ok-is-transport sentence, got: {}",
+                map[tool]
+            );
+        }
+        let runtime = Arc::new(
+            crate::eggsact::adapter::EggsactRuntime::new(
+                crate::eggsact::adapter::EggsactConfig::default(),
+            )
+            .expect("eggsact runtime"),
+        );
+        let tool = super::EggsactTool::new(
+            "probe",
+            "text_equal",
+            "probe",
+            serde_json::json!({"type": "object"}),
+            crate::tool::ToolCategory::ReadOnly,
+            false,
+            true,
+            runtime,
+        );
+        let schema = tool.contract("probe", serde_json::json!({"type": "object"}));
+        let desc = schema.output_schema.expect("schema").to_string();
+        assert!(
+            desc.contains("`ok` is transport"),
+            "contract output schema must carry the ok-is-transport sentence, got: {desc}"
+        );
+    }
+
+    #[test]
+    fn noise_filter_dedups_identical_findings_before_demotion() {
+        let finding = serde_json::json!({
+            "type": "confusable",
+            "severity": "medium",
+            "message": "Text contains confusable character 'm' (looks like 'rn')"
+        });
+        let mut result = crate::eggsact::adapter::EggsactCallResult {
+            output: "ok: true\nverdict: review\nconfusable: 'm'".to_string(),
+            success: true,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({
+                "verdict": "review",
+                "findings": [finding.clone(), finding.clone()]
+            })),
+            findings: Some(serde_json::json!([finding.clone(), finding])),
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        apply_text_security_noise_filter(&mut result);
+        let count = result
+            .result
+            .as_ref()
+            .and_then(|r| r.get("findings"))
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(99);
+        assert_eq!(
+            count, 1,
+            "identical (kind, message, span) findings must dedup, got {count}"
+        );
+        let verdict = result
+            .result
+            .as_ref()
+            .and_then(|r| r.get("verdict"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert_eq!(verdict, "allow");
+    }
+
+    #[test]
+    fn ident_collision_substring_does_not_fire() {
+        let mut result = crate::eggsact::adapter::EggsactCallResult {
+            output: "ok: true\nverdict: review\nIDENT_COLLISION 'immediately' vs 'rm'".to_string(),
+            success: true,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({
+                "verdict": "review",
+                "findings": [
+                    {"code": "IDENT_COLLISION", "severity": "medium", "message": "Identifiers 'immediately' and 'rm' collide"}
+                ]
+            })),
+            findings: Some(serde_json::json!([
+                {"code": "IDENT_COLLISION", "severity": "medium", "message": "Identifiers 'immediately' and 'rm' collide"}
+            ])),
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        assert!(
+            is_spurious_ident_collision(&result.result.as_ref().unwrap()["findings"][0]),
+            "substring rm inside immediately must be spurious"
+        );
+        apply_text_security_noise_filter(&mut result);
+        let verdict = result
+            .result
+            .as_ref()
+            .and_then(|r| r.get("verdict"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let sev = result
+            .result
+            .as_ref()
+            .and_then(|r| r.get("findings"))
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a[0].get("severity")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            })
+            .unwrap_or_default();
+        assert_eq!(sev, "info");
+        assert_eq!(
+            verdict, "allow",
+            "spurious-only collision must not drive review"
+        );
+    }
+
+    #[test]
+    fn ident_collision_token_equality_is_not_spurious() {
+        let item = serde_json::json!({
+            "code": "IDENT_COLLISION",
+            "severity": "medium",
+            "message": "Identifiers 'Admin' and 'admin' collide"
+        });
+        assert!(
+            !is_spurious_ident_collision(&item),
+            "casefold-equal tokens are a real collision"
         );
     }
 }

@@ -169,6 +169,11 @@ pub struct ToolExecutionContext {
     /// profile — an ordinary session, a CLI run, a test harness — and
     /// processes behave exactly as they did before C005.
     pub process_admission: Option<crate::tool::process_admission::SharedProcessAdmission>,
+    /// P2: whether plan mode is active for this execution. Populated from
+    /// `AgentLoop::is_plan_mode()` at the tool-batch boundary and threaded
+    /// through the broker into every attempt. When `true`, the execution
+    /// gate refuses mutating tools via `disclosure::plan_allowed`.
+    pub plan_mode: bool,
 }
 
 impl ToolExecutionContext {
@@ -218,6 +223,7 @@ impl ToolExecutionContext {
             audit_emitter: None,
             writer_fence: None,
             process_admission: None,
+            plan_mode: false,
         }
     }
 

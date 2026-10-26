@@ -558,10 +558,42 @@ pub(crate) fn outside_workspace_warning(
     if outside.is_empty() {
         return None;
     }
+    fn redact_path_for_warning(
+        path: &str,
+        workspace_root: Option<&Path>,
+        scratch_root: Option<&Path>,
+    ) -> String {
+        let mut redacted = path.to_string();
+        if let Some(home) = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .and_then(|p| p.to_str().map(|s| s.to_string()))
+        {
+            if !home.is_empty() {
+                redacted = redacted.replacen(&home, "[HOME]", 1);
+            }
+        }
+        if redacted.starts_with("~/") {
+            redacted = format!("[HOME]/{}", &redacted[2..]);
+        }
+        for root in [workspace_root, scratch_root].into_iter().flatten() {
+            if let Some(root) = root.to_str() {
+                if !root.is_empty() {
+                    redacted = redacted.replacen(root, "[CWD]", 1);
+                }
+            }
+        }
+        // Bound each path so the advisory never dominates the envelope.
+        if redacted.chars().count() > 60 {
+            let kept: String = redacted.chars().take(59).collect();
+            format!("{kept}…")
+        } else {
+            redacted
+        }
+    }
     let shown = outside
         .iter()
         .take(3)
-        .cloned()
+        .map(|p| redact_path_for_warning(p, workspace_root, scratch_root))
         .collect::<Vec<_>>()
         .join(", ");
     let more = if outside.len() > 3 {

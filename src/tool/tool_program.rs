@@ -165,8 +165,10 @@ impl Tool for ToolProgramTool {
          Intermediate tool call outputs stay in the program artifact ledger and do not \
          enter the parent transcript. \
          Example: result = call({\"tool\": \"read\", \"path\": \"src/main.rs\"}). \
-         Extra tool args may be extra dict keys or trailing k=v pairs, and parallel() \
-         takes the same dicts."
+         Extra tool args may be extra dict keys or trailing k=v pairs, and parallel \
+         takes the same dicts (canonical parallel(d1, d2), e.g. \
+         parallel({\"tool\": \"read\", \"path\": \"a\"}, {\"tool\": \"grep\", \"pattern\": \"TODO\"}); \
+         single-list parallel([d1, d2]) normalizes to the same list, each dict must carry a `tool` key)."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -179,8 +181,11 @@ impl Tool for ToolProgramTool {
                         or defs). Supports: variables, assignments, if/elif/else, \
                         for loops (with range()), call(descriptor_dict[, k=v...]) e.g. \
                         result = call({\"tool\": \"read\", \"path\": \"src/main.rs\"}), \
-                        parallel groups (parallel()), emit(), fail(), basic arithmetic, \
-                        string operations, list/dict literals, and indexing."
+                        parallel groups canonical parallel(d1, d2) e.g. \
+                        parallel({\"tool\": \"read\", \"path\": \"a\"}, {\"tool\": \"grep\", \"pattern\": \"TODO\"}) \
+                        (single-list parallel([d1, d2]) normalizes; each dict needs a `tool` key), \
+                        bare parallel(...) as a statement with discarded target, emit(), fail(), \
+                        basic arithmetic, string operations, list/dict literals, and indexing."
                 },
                 "tools": {
                     "type": "array",
@@ -297,6 +302,29 @@ impl Tool for ToolProgramTool {
         // the recorded error/output inline so the failure is actionable
         // without a second round-trip.
         let mut output = format!("program status: {display}");
+        if success {
+            // Success is as visible as failure: surface a bounded preview of
+            // the program output plus the spilled artifact handle when the
+            // executor spilled large output (mirrors the 256 KiB spill path).
+            // `program_artifacts` stay non-transcript handles by contract.
+            if let Some(out) = value.get("output") {
+                let rendered = if let Some(s) = out.as_str() {
+                    s.to_string()
+                } else {
+                    out.to_string()
+                };
+                let preview: String = rendered.chars().take(1000).collect();
+                let truncated = rendered.chars().count() > 1000;
+                output.push_str(&format!(
+                    "\noutput preview: {}{}",
+                    preview,
+                    if truncated { "... [truncated]" } else { "" }
+                ));
+                if let Some(handle) = value.get("output_artifact").and_then(|v| v.as_str()) {
+                    output.push_str(&format!("\noutput_artifact: {handle}"));
+                }
+            }
+        }
         if !success {
             if let Some(error) = value.get("error").and_then(|e| e.as_str()) {
                 output.push_str(&format!("\nerror: {error}"));

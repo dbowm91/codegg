@@ -243,7 +243,7 @@ impl Tool for WorkOrderTool {
     }
 
     fn description(&self) -> &str {
-        "Router: use work_order for the future-session queue; for live subagent runs use task spawn. Create durable project WorkOrders (future sessions) as single items or one atomic sequential batch. Project WorkOrders enqueue future work that the release coordinator materializes into ordinary sessions; they are NOT delegated subagent runs (use task/spawn for live child execution). Supports create, create_batch (atomic ordered lane placement with optional start_first_now), list, and get. Bounded, project-scoped, and lineage-attributed. Canonical map: goal = session intent, work_plan = actionable slice + revision, work_order = future-session queue, todowrite = in-turn steps. See the planning skill decision table."
+        "Router: use work_order for the future-session queue; for live subagent runs use task spawn. Create durable project WorkOrders (future sessions) as single items or one atomic sequential batch. Project WorkOrders enqueue future work that the release coordinator materializes into ordinary sessions; they are NOT delegated subagent runs (use task/spawn for live child execution). Supports create, create_batch (atomic ordered lane placement with optional start_first_now), list, get, and cancel (id + expected_revision CAS, project-scoped, idempotent on already-cancelled; Completed/Archived refuse with a transition error). Bounded, project-scoped, and lineage-attributed. Canonical map: goal = session intent, work_plan = actionable slice + revision, work_order = future-session queue, todowrite = in-turn steps. See the planning skill decision table."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -252,8 +252,8 @@ impl Tool for WorkOrderTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "description": "Action: create, create_batch, list, get",
-                    "enum": ["create", "create_batch", "list", "get"]
+                    "description": "Action: create, create_batch, list, get, cancel",
+                    "enum": ["create", "create_batch", "list", "get", "cancel"]
                 },
                 "prompt": { "type": "string", "description": "Work objective for action=create (1..=32768 bytes)" },
                 "title": { "type": "string", "description": "Optional bounded title (action=create, per-item in create_batch)" },
@@ -285,7 +285,8 @@ impl Tool for WorkOrderTool {
                 "limit": { "type": "integer", "minimum": 1, "maximum": 32, "description": "Bounded list page size (action=list)" },
                 "state_filter": { "type": "string", "description": "Optional state filter for action=list" },
                 "cursor": { "type": "string", "description": "Opaque page cursor for action=list" },
-                "id": { "type": "string", "description": "WorkOrder id for action=get" }
+                "id": { "type": "string", "description": "WorkOrder id for action=get and action=cancel" },
+                "expected_revision": { "type": "integer", "minimum": 1, "description": "CAS revision for action=cancel; must match the current revision" }
             },
             "required": ["action"]
         })
@@ -353,10 +354,90 @@ impl WorkOrderTool {
             "create_batch" => self.execute_batch(input, ctx).await,
             "list" => self.execute_list(input, ctx).await,
             "get" => self.execute_get(input, ctx).await,
+            "cancel" => self.execute_cancel(input, ctx).await,
             other => Err(ToolError::Execution(format!(
                 "unsupported work_order action '{other}'"
             ))),
         }
+    }
+
+    /// N7: `action="cancel"` — project-scoped CAS cancel via
+    /// `transition_work_order(..., Cancelled, ...)`.
+    ///
+    /// Inputs: `id` + `expected_revision` (CAS) + optional `idempotency_key`
+    /// (accepted for caller correlation; durability is the state itself).
+    /// Idempotent on already-cancelled; `Completed`/`Archived` refuse with
+    /// the store's transition error; returns bounded
+    /// `{id,state:cancelled,revision,cancelled_at}`.
+    async fn execute_cancel(
+        &self,
+        input: serde_json::Value,
+        _ctx: Option<&ToolExecutionContext>,
+    ) -> Result<String, ToolError> {
+        let project = self.bound_project()?;
+        reject_project_override(&input, &project)?;
+        let service = self.service()?;
+        let raw = input
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::Execution("missing 'id' parameter".into()))?;
+        let id = WorkOrderId::parse(raw)
+            .map_err(|e| ToolError::Execution(format!("invalid work order id: {e}")))?;
+        let expected_revision = input
+            .get("expected_revision")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| ToolError::Execution("missing 'expected_revision' parameter".into()))?;
+        if expected_revision == 0 {
+            return Err(ToolError::Execution(
+                "expected_revision must be >= 1".into(),
+            ));
+        }
+        let _idempotency_key = input
+            .get("idempotency_key")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let current = service
+            .get_work_order(&project, &id)
+            .await
+            .map_err(map_work_order_error)?
+            .ok_or_else(|| ToolError::Execution("work order not found".into()))?;
+        if current.revision != expected_revision {
+            return Err(map_work_order_error(
+                codegg_core::work_order::WorkOrderError::RevisionConflict {
+                    id: id.as_str().to_owned(),
+                    expected: expected_revision,
+                    current: current.revision,
+                },
+            ));
+        }
+        // Idempotent on already-cancelled: return the bounded record without
+        // a second transition.
+        if current.state == codegg_core::work_order::WorkOrderState::Cancelled {
+            return Ok(json!({
+                "id": current.id.as_str(),
+                "state": "cancelled",
+                "revision": current.revision,
+                "cancelled_at": current.cancelled_at_ms,
+            })
+            .to_string());
+        }
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let updated = service
+            .transition_work_order(
+                &project,
+                &id,
+                codegg_core::work_order::WorkOrderState::Cancelled,
+                now_ms,
+            )
+            .await
+            .map_err(map_work_order_error)?;
+        Ok(json!({
+            "id": updated.id.as_str(),
+            "state": "cancelled",
+            "revision": updated.revision,
+            "cancelled_at": updated.cancelled_at_ms,
+        })
+        .to_string())
     }
 
     async fn execute_create(

@@ -1293,7 +1293,13 @@ fn map_mutation_err(e: GitMutationError) -> ToolError {
             ToolError::Execution(format!("publication refused: {refusal}"))
         }
         GitMutationError::PublicationFailed(message) => {
-            ToolError::Execution(format!("publication failed: {message}"))
+            if message.contains("CleanSmudgeFilter") && message.contains("publication=None") {
+                ToolError::Execution(format!("publication failed: {message}"))
+            } else {
+                ToolError::Execution(format!(
+                    "refusing stage_paths/add: missing capability CleanSmudgeFilter; backend state publication=None; disposition fenced-native; publication failed: {message}; remedy: attach daemon publisher or use contained worktree; do not shell out"
+                ))
+            }
         }
     }
 }

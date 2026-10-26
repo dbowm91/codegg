@@ -52,6 +52,30 @@ pub(super) const TOOL_TIMEOUT_GRACE: Duration = Duration::from_secs(5);
 /// budget while it is still waiting for a permit.
 const TOOL_BATCH_ADMISSION_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// P3: dynamic batch admission bound.
+///
+/// A fixed 30s admission timeout drops siblings behind a slow head. The
+/// bound scales with the batch: `ceil(batch_len / effective_parallelism)`
+/// waves of the slowest tool plus 5s slack, floored at 30s. The per-tool
+/// timeout comes from `resolve_tool_timeout` (model request clamped into
+/// `[1s, MAX]` over the per-tool default), so a batch of long builds
+/// waits long enough for its waves to start.
+fn compute_batch_admission_timeout(
+    batch_len: usize,
+    effective_parallelism: usize,
+    max_tool_timeout: Duration,
+) -> Duration {
+    if batch_len == 0 || effective_parallelism == 0 {
+        return TOOL_BATCH_ADMISSION_TIMEOUT;
+    }
+    let waves = batch_len.div_ceil(effective_parallelism);
+    let scaled = max_tool_timeout
+        .checked_mul(waves as u32)
+        .and_then(|d| d.checked_add(Duration::from_secs(5)))
+        .unwrap_or(Duration::MAX);
+    TOOL_BATCH_ADMISSION_TIMEOUT.max(scaled)
+}
+
 struct QueuedCallGuard {
     depth: Arc<AtomicUsize>,
     tool_id: String,
@@ -295,7 +319,27 @@ fn preflight_requires_escalation(
 fn preflight_policy_denies_execution(
     command_preflight: Option<&crate::tool::authorization::CommandPreflightResult>,
 ) -> bool {
-    command_preflight.is_some_and(|result| result.blocked)
+    // F4: the adapter's new vocabulary is `advisory-block` with
+    // `enforcement: advisory_only`. Those strings are advisory-only and
+    // never deny, as is `would_block`. Only a real `Block` (blocked==true
+    // with none of the advisory markers) denies. The real-Block arm stays
+    // reachable; advisory strings force non-blocking even if `blocked`
+    // were set.
+    let Some(result) = command_preflight else {
+        return false;
+    };
+    if !result.blocked {
+        return false;
+    }
+    if let Some(summary) = result.summary.as_deref() {
+        if summary.contains("advisory-block")
+            || summary.contains("would_block")
+            || summary.contains("enforcement: advisory_only")
+        {
+            return false;
+        }
+    }
+    true
 }
 
 pub(super) struct ToolBatchExecutor<'a> {
@@ -624,6 +668,10 @@ impl AgentLoop {
             // M002: shared bounded emitter travels with the trusted
             // context; tools emit only when both are present.
             audit_emitter: None,
+            // P2: plan-mode flag threaded from `is_plan_mode()` at the
+            // tool-batch boundary; the execution gate refuses mutating
+            // tools when true.
+            plan_mode: self.is_plan_mode(),
         }
     }
 
@@ -1471,8 +1519,28 @@ impl AgentLoop {
         // from another frontend apply on the next boundary and cannot
         // retroactively bless pending actions in this batch.
         let batch_snapshot = self.capture_execution_snapshot();
+        // P2: plan-mode snapshot for this batch. The execution gate below
+        // refuses mutating tools; the sibling gate lives in the broker's
+        // `validate_pre_execution`. Both reuse `ToolError::Permission` and
+        // name `plan_exit`.
+        let batch_plan_mode = self.is_plan_mode();
         let mut allowed_tools = Vec::with_capacity(tool_calls.len());
         for (idx, tc) in tool_calls.iter().enumerate() {
+            // P2: plan-mode execution gate — one of two (broker is the other).
+            if batch_plan_mode && !crate::tool::disclosure::plan_allowed(tc.name.as_str()) {
+                tool_results.push((
+                    idx,
+                    tc.id.to_string(),
+                    ToolExecutionOutcome {
+                        status: crate::agent::progress_recovery::ToolExecutionStatus::Denied,
+                        model_text: format!(
+                            "plan mode blocks '{}': mutating tools are disabled in plan mode; use plan_exit to leave plan mode",
+                            tc.name
+                        ),
+                    },
+                ));
+                continue;
+            }
             match self
                 .check_tool_permission_with_snapshot(tc, &batch_snapshot)
                 .await
@@ -1660,8 +1728,6 @@ impl AgentLoop {
             );
             effective_max = 1;
         }
-        let admission_timeout = TOOL_BATCH_ADMISSION_TIMEOUT;
-        let regular_tool_count = allowed_tools.len();
         let registry = &self.services.tool_registry;
 
         let mut mcp_tool_calls = Vec::with_capacity(4);
@@ -1676,6 +1742,21 @@ impl AgentLoop {
                 }
             })
             .collect();
+        // P3: dynamic admission bound from the batch's own timeouts.
+        // `resolve_tool_timeout` honors the model's per-call request (clamped)
+        // over the per-tool default, so a batch of long builds admits waves
+        // of the slowest tool plus slack instead of a fixed 30s.
+        let max_tool_timeout = regular_tools
+            .iter()
+            .map(|(_, tc, _, _)| {
+                self.effective_tool_timeout(tc.name.as_str(), &tc.arguments)
+                    .effective
+            })
+            .max()
+            .unwrap_or(Duration::from_secs(60));
+        let admission_timeout =
+            compute_batch_admission_timeout(regular_tools.len(), effective_max, max_tool_timeout);
+        let regular_tool_count = regular_tools.len();
 
         let mcp_timeout = Duration::from_secs(60);
         let mut mcp_futures = Vec::with_capacity(mcp_tool_calls.len());
@@ -2158,6 +2239,7 @@ impl AgentLoop {
                                     ..grant
                                 };
                                 let broker_ctx = crate::tool::broker::BrokerInvocationContext {
+                                    plan_mode: exec_ctx.plan_mode,
             writer_fence: exec_ctx.writer_fence.clone(),
                                     process_admission: exec_ctx.process_admission.clone(),
                                     caller: crate::tool::contract::ToolCaller::Agent,
@@ -2778,6 +2860,35 @@ mod invocation_tests {
     }
 
     #[test]
+    fn advisory_block_vocabulary_never_denies_execution() {
+        // F4: the adapter emits `advisory-block` + `enforcement:
+        // advisory_only`; the deny arm must treat those (and `would_block`)
+        // as non-blocking even if `blocked` were set. Real `Block` stays
+        // reachable (covered above).
+        for summary in [
+            "verdict: advisory-block enforcement: advisory_only",
+            "verdict: advisory-block",
+            "would_block: true enforcement: advisory_only",
+        ] {
+            let advisory = CommandPreflightResult {
+                blocked: true,
+                summary: Some(summary.to_string()),
+            };
+            assert!(
+                !preflight_policy_denies_execution(Some(&advisory)),
+                "{summary} must not deny"
+            );
+            // Advisory findings still escalate for human review.
+            assert!(preflight_requires_escalation(Some(&advisory)));
+        }
+        let real_block = CommandPreflightResult {
+            blocked: true,
+            summary: Some("verdict: block".to_string()),
+        };
+        assert!(preflight_policy_denies_execution(Some(&real_block)));
+    }
+
+    #[test]
     fn invocation_identity_is_scoped_to_owner_and_provider_turn() {
         let first_turn = invocation_key_for("session", Some("turn-1"), None, 1, "text-repair-0", 0);
         let second_turn =
@@ -3106,8 +3217,29 @@ mod batch_admission_tests {
         let error = result.unwrap_err().to_string();
         assert!(error.contains("did not start executing"));
         assert!(error.contains("effective parallelism 1"));
+        // P3: the message reports the computed admission bound.
+        assert!(error.contains("admission limit 10ms"));
         assert_eq!(queue_depth.load(Ordering::Acquire), 0);
         drop(held);
+    }
+
+    #[test]
+    fn dynamic_admission_timeout_scales_with_batch_waves() {
+        // Floor at 30s for small batches.
+        assert_eq!(
+            compute_batch_admission_timeout(1, 4, Duration::from_secs(60)),
+            Duration::from_secs(65)
+        );
+        // Ceil(batch_len/parallelism) waves of the slowest tool + 5s slack.
+        assert_eq!(
+            compute_batch_admission_timeout(4, 1, Duration::from_secs(60)),
+            Duration::from_secs(245)
+        );
+        // Never below the 30s floor.
+        assert_eq!(
+            compute_batch_admission_timeout(1, 100, Duration::from_secs(1)),
+            Duration::from_secs(30)
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

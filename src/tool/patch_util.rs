@@ -19,6 +19,10 @@ pub fn apply_unified_diff(original: &str, patch: &str) -> Result<String, String>
         }
 
         saw_hunk = true;
+        let hunk_idx = patch_lines[..=patch_idx]
+            .iter()
+            .filter(|l| l.starts_with("@@"))
+            .count();
         let old_start = parse_hunk_old_start(line).ok_or_else(|| {
             format!(
                 "invalid hunk header at patch line {}: expected @@ -<line>[,<count>] +<line>[,<count>] @@ (e.g. \"@@ -1,3 +1,3 @@\"); mode=update takes a unified diff, not a \"*** Begin Patch ***\" wrapper",
@@ -28,12 +32,17 @@ pub fn apply_unified_diff(original: &str, patch: &str) -> Result<String, String>
 
         let target_idx = old_start.saturating_sub(1);
         if target_idx < orig_idx {
-            return Err(format!("overlapping hunk at original line {}", old_start));
+            return Err(format!("overlapping hunk {hunk_idx} (old_start {old_start}): requested line {old_start}, resolved cursor line {}, file has {} lines", orig_idx + 1, original_lines.len()));
+        }
+        if target_idx > original_lines.len() {
+            return Err(format!("hunk {hunk_idx} (old_start {old_start}) starts past EOF: requested line {old_start}, resolved cursor line {}, file has {} lines; expected hunk to start within the file", orig_idx + 1, original_lines.len()));
         }
         while orig_idx < target_idx && orig_idx < original_lines.len() {
             output.push(original_lines[orig_idx].to_string());
             orig_idx += 1;
         }
+
+        let mut hunk_old_consumed: usize = 0;
 
         patch_idx += 1;
         while patch_idx < patch_lines.len() {
@@ -58,19 +67,32 @@ pub fn apply_unified_diff(original: &str, patch: &str) -> Result<String, String>
             match tag {
                 " " => {
                     if orig_idx >= original_lines.len() || original_lines[orig_idx] != content {
+                        let requested = old_start.saturating_add(hunk_old_consumed);
+                        let observed: &str =
+                            original_lines.get(orig_idx).copied().unwrap_or("<EOF>");
                         return Err(format!(
-                            "context mismatch at original line {}",
-                            orig_idx + 1
+                            "context mismatch in hunk {hunk_idx} (old_start {old_start}): requested line {requested}, resolved cursor line {}, file has {} lines; expected {content:?} but observed {observed:?}",
+                            orig_idx + 1,
+                            original_lines.len()
                         ));
                     }
                     output.push(content.to_string());
                     orig_idx += 1;
+                    hunk_old_consumed += 1;
                 }
                 "-" => {
                     if orig_idx >= original_lines.len() || original_lines[orig_idx] != content {
-                        return Err(format!("delete mismatch at original line {}", orig_idx + 1));
+                        let requested = old_start.saturating_add(hunk_old_consumed);
+                        let observed: &str =
+                            original_lines.get(orig_idx).copied().unwrap_or("<EOF>");
+                        return Err(format!(
+                        "delete mismatch in hunk {hunk_idx} (old_start {old_start}): requested line {requested}, resolved cursor line {}, file has {} lines; expected {content:?} but observed {observed:?}",
+                        orig_idx + 1,
+                        original_lines.len()
+                    ));
                     }
                     orig_idx += 1;
+                    hunk_old_consumed += 1;
                 }
                 "+" => output.push(content.to_string()),
                 _ => return Err(format!("invalid hunk prefix '{}'", tag)),
@@ -172,6 +194,18 @@ mod tests {
 
         let err = apply_unified_diff(original, patch).expect_err("must fail");
         assert!(err.contains("context mismatch"), "unexpected error: {err}");
+        assert!(
+            err.contains("requested line 2"),
+            "must name requested line: {err}"
+        );
+        assert!(
+            err.contains("resolved cursor line 2"),
+            "must name resolved cursor: {err}"
+        );
+        assert!(
+            err.contains("file has 3 lines"),
+            "must name file len: {err}"
+        );
     }
 
     #[test]
@@ -185,6 +219,29 @@ mod tests {
 
         let err = apply_unified_diff(original, patch).expect_err("must fail");
         assert!(err.contains("delete mismatch"), "unexpected error: {err}");
+        assert!(
+            err.contains("requested line 2"),
+            "must name requested line: {err}"
+        );
+        assert!(
+            err.contains("file has 3 lines"),
+            "must name file len: {err}"
+        );
+    }
+
+    #[test]
+    fn hunk_start_past_eof_reports_requested_and_len() {
+        let err = apply_unified_diff("a\n", "@@ -10,1 +10,1 @@\n-a\n+b")
+            .expect_err("past-EOF hunk must fail");
+        assert!(err.contains("starts past EOF"), "unexpected error: {err}");
+        assert!(
+            err.contains("requested line 10"),
+            "must name requested: {err}"
+        );
+        assert!(
+            err.contains("file has 1 lines"),
+            "must name file len: {err}"
+        );
     }
 
     #[test]

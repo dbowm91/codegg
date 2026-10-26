@@ -265,11 +265,76 @@ impl JobTool {
                     .request_cancel(&job_id, "user_cancelled_via_job_tool")
                     .await
                     .map_err(|e| ToolError::Execution(e.to_string()))?;
-                Ok(json!({
-                    "job_id": job_id_str,
-                    "cancelled": matches!(result.state, codegg_core::jobs::CancelOutcome::Cancelled | codegg_core::jobs::CancelOutcome::Requested),
-                    "message": "cancellation targets the exact accepted job and its descendants only",
-                }))
+                // Q6: distinct envelope per outcome; never one shared message.
+                // `Cancelled` is terminal now, `Requested` is draining, and
+                // `AlreadyTerminal` re-reads the terminal state.
+                match result.state {
+                    codegg_core::jobs::CancelOutcome::Cancelled => {
+                        let current = submission
+                            .scheduler()
+                            .store()
+                            .get_job(&job_id)
+                            .await
+                            .map_err(|e| ToolError::Execution(e.to_string()))?
+                            .map(|job| job_state_str(&job.state).to_string())
+                            .unwrap_or_else(|| "cancelled".to_string());
+                        Ok(json!({
+                            "job_id": job_id_str,
+                            "status": current,
+                            "machine_code": "JOB_CANCELLED",
+                            "cancelled": true,
+                            "already_terminal": false,
+                            "message": "job cancelled immediately; terminal state reached and descendants cancelled",
+                            "next_action": "inspect diagnostics and revise",
+                        }))
+                    }
+                    codegg_core::jobs::CancelOutcome::Requested => {
+                        let current = submission
+                            .scheduler()
+                            .store()
+                            .get_job(&job_id)
+                            .await
+                            .map_err(|e| ToolError::Execution(e.to_string()))?
+                            .map(|job| job_state_str(&job.state).to_string())
+                            .unwrap_or_else(|| "running".to_string());
+                        Ok(json!({
+                            "job_id": job_id_str,
+                            "status": current,
+                            "machine_code": "JOB_CANCEL_REQUESTED",
+                            "cancelled": true,
+                            "already_terminal": false,
+                            "message": "cancellation requested; draining the running attempt and its descendants",
+                            "next_action": "wait",
+                        }))
+                    }
+                    codegg_core::jobs::CancelOutcome::AlreadyTerminal => {
+                        let current = submission
+                            .scheduler()
+                            .store()
+                            .get_job(&job_id)
+                            .await
+                            .map_err(|e| ToolError::Execution(e.to_string()))?
+                            .ok_or_else(|| ToolError::Execution("job not found".into()))?;
+                        let status = job_state_str(&current.state).to_string();
+                        let (machine_code, _exit_code, _reason, _recommendation, next_action) =
+                            job_state_terminal_envelope(&current.state).unwrap_or((
+                                "JOB_UNKNOWN",
+                                None,
+                                "job reached an unrecognized terminal status",
+                                "re-issue status to re-read the current state",
+                                "inspect diagnostics and revise",
+                            ));
+                        Ok(json!({
+                            "job_id": job_id_str,
+                            "status": status,
+                            "machine_code": machine_code,
+                            "cancelled": false,
+                            "already_terminal": true,
+                            "message": "job already terminal; no cancellation applied",
+                            "next_action": next_action,
+                        }))
+                    }
+                }
             }
             "output" => {
                 // Bounded terminal summary or artifact reference; never an
@@ -327,6 +392,9 @@ impl JobTool {
 }
 
 fn enforce_job_owner(job_session: &Option<String>, caller: Option<&str>) -> Result<(), ToolError> {
+    // Q6: closed ownership — unknown job session and foreign session both
+    // fail with the same `job not found`, so existence never leaks across
+    // sessions.
     let Some(owner) = job_session.as_deref().filter(|s| !s.is_empty()) else {
         return Err(ToolError::Execution("job not found".into()));
     };

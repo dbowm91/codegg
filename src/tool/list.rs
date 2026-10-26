@@ -15,6 +15,8 @@ struct ListInput {
     path: Option<String>,
     #[serde(default, deserialize_with = "tolerant_opt_usize")]
     max_files: Option<usize>,
+    #[serde(default)]
+    include_ignored: bool,
 }
 
 pub struct ListTool {
@@ -54,7 +56,7 @@ impl Tool for ListTool {
     }
 
     fn description(&self) -> &str {
-        "List directory tree with ignore patterns (node_modules, .git, etc.). Limited to 300 files by default. Workspace-scoped; resolves against the session workspace root."
+        "List directory tree with ignore patterns (node_modules, .git, etc.). Limited to 300 files by default. Workspace-scoped; resolves against the session workspace root. `read` sees ignored files; discovery skips them unless include_ignored:true. Note: `.codegg/test-runs/*` may be gitignored — use include_ignored:true or read directly."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -69,6 +71,10 @@ impl Tool for ListTool {
                     "type": "integer",
                     "minimum": 1,
                     "description": "Maximum number of files to list (default: 300)"
+                },
+                "include_ignored": {
+                    "type": "boolean",
+                    "description": "Include gitignored files (default false; read sees ignored files, discovery skips them unless include_ignored:true)"
                 }
             }
         })
@@ -144,6 +150,8 @@ impl Tool for ListTool {
         }
 
         let max_files = parsed.max_files.unwrap_or(300);
+        let include_ignored = parsed.include_ignored;
+        let dir_for_skipped = dir_for_task.clone();
 
         let (entries, truncated) = task::spawn_blocking(move || {
             let canonical_dir = match std::fs::canonicalize(&dir_for_task) {
@@ -159,7 +167,9 @@ impl Tool for ListTool {
 
             let walk = WalkBuilder::new(&dir_for_task)
                 .hidden(false)
-                .git_ignore(true)
+                .git_ignore(!include_ignored)
+                .git_exclude(!include_ignored)
+                .ignore(!include_ignored)
                 .follow_links(false)
                 .max_depth(Some(3))
                 .build();
@@ -215,7 +225,50 @@ impl Tool for ListTool {
                 max_files,
             ));
         }
+        if entries.is_empty() && !include_ignored {
+            let skipped = count_ignored_list_entries(&dir_for_skipped);
+            if skipped > 0 {
+                if !result.is_empty() {
+                    result.push('\n');
+                }
+                result.push_str(&format!(
+                    "[skipped {skipped} ignored (gitignore); retry include_ignored:true]"
+                ));
+            }
+        }
 
         Ok(result)
     }
+}
+
+fn count_ignored_list_entries(dir: &std::path::Path) -> usize {
+    fn count_with(dir: &std::path::Path, include_ignored: bool) -> usize {
+        let walk = WalkBuilder::new(dir)
+            .hidden(false)
+            .git_ignore(!include_ignored)
+            .git_exclude(!include_ignored)
+            .ignore(!include_ignored)
+            .follow_links(false)
+            .max_depth(Some(3))
+            .build();
+        let mut count = 0usize;
+        for entry in walk {
+            let Ok(entry) = entry else { continue };
+            if entry.file_type().map(|t| t.is_symlink()).unwrap_or(false) {
+                continue;
+            }
+            if let Ok(rel) = entry.path().strip_prefix(dir) {
+                if !rel.as_os_str().is_empty() {
+                    count += 1;
+                }
+            }
+            if count >= 10_000 {
+                break;
+            }
+        }
+        count
+    }
+    let enabled = count_with(dir, false);
+    let disabled = count_with(dir, true);
+    disabled.saturating_sub(enabled).min(10_000)
 }

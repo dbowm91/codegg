@@ -205,7 +205,7 @@ impl Tool for McpResourceReadTool {
             name == server && handle_for(name, &resource.uri) == handle
         }) else {
             return Err(ToolError::Execution(
-                "resource handle is not admitted in this turn".into(),
+                "resource handle is not admitted in this turn; handles are turn-local; re-run mcp_resource_search this turn, use fresh handle".into(),
             ));
         };
         let contents = mcp

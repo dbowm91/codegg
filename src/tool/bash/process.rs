@@ -1104,12 +1104,20 @@ impl BashTool {
 
         // Execute via the shared GitMutationExecutor. Errors include typed
         // context but never leak credentials (redaction happens inside
-        // `MutationResult` projection).
+        // `MutationResult` projection). The `Add` refusal is fenced-native:
+        // no raw-shell fallback; surface the structured backend state.
         let result = exec
             .execute(&request.operation, repo_root.as_path())
             .await
-            .map_err(|e: GitMutationError| {
-                ToolError::Execution(format!("git dispatch failed: {}", e))
+            .map_err(|e: GitMutationError| match e {
+                GitMutationError::PublicationFailed(message)
+                    if !message.contains("CleanSmudgeFilter") =>
+                {
+                    ToolError::Execution(format!(
+                        "git dispatch failed: refusing stage_paths/add: missing capability CleanSmudgeFilter; backend state publication=None; disposition fenced-native; publication failed: {message}; remedy: attach daemon publisher or use contained worktree; do not shell out"
+                    ))
+                }
+                other => ToolError::Execution(format!("git dispatch failed: {}", other)),
             })?;
 
         // Persist to RunStore using the canonical `git_run_store` helper.

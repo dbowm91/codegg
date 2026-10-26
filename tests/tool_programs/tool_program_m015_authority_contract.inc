@@ -48,6 +48,7 @@ fn accepted_context() -> ToolExecutionContext {
         audit_emitter: None,
         execution_authorization: None,
         process_admission: None,
+        plan_mode: false,
     }
 }
 

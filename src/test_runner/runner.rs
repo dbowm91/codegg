@@ -153,6 +153,66 @@ fn read_capped_bytes(path: &Path, cap: usize) -> std::io::Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Resolve the absolute `cargo` binary before spawn.
+///
+/// Tries `rustup which cargo` first (the toolchain-aware resolution),
+/// then falls back to a canonicalized PATH lookup (`which cargo` /
+/// manual `PATH` scan). Returns the absolute path as a string, or `None`
+/// when no binary can be located (the caller keeps the display `cargo`).
+fn resolve_cargo_absolute() -> Option<String> {
+    if let Ok(output) = std::process::Command::new("rustup")
+        .arg("which")
+        .arg("cargo")
+        .output()
+    {
+        if !output.status.success() {
+            // fall through to PATH scan below
+        } else {
+            let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !s.is_empty() {
+                let p = PathBuf::from(&s);
+                if p.is_file() {
+                    if let Ok(c) = p.canonicalize() {
+                        return Some(c.to_string_lossy().into_owned());
+                    }
+                    return Some(s);
+                }
+            }
+        }
+    }
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join("cargo");
+            if candidate.is_file() {
+                if let Ok(c) = candidate.canonicalize() {
+                    return Some(c.to_string_lossy().into_owned());
+                }
+                return Some(candidate.to_string_lossy().into_owned());
+            }
+            let candidate_exe = dir.join("cargo.exe");
+            if candidate_exe.is_file() {
+                if let Ok(c) = candidate_exe.canonicalize() {
+                    return Some(c.to_string_lossy().into_owned());
+                }
+                return Some(candidate_exe.to_string_lossy().into_owned());
+            }
+        }
+    }
+    if let Ok(output) = std::process::Command::new("which").arg("cargo").output() {
+        if output.status.success() {
+            let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !s.is_empty() {
+                let p = PathBuf::from(&s);
+                if let Ok(c) = p.canonicalize() {
+                    return Some(c.to_string_lossy().into_owned());
+                }
+                return Some(s);
+            }
+        }
+    }
+    None
+}
+
 fn create_log_dir(workdir: &Path) -> Result<PathBuf, TestRunError> {
     let now = Utc::now().format("%Y%m%dT%H%M%SZ");
     let short_uuid = &Uuid::new_v4().to_string()[..8];
@@ -441,7 +501,25 @@ async fn run_managed_test_process(
             "test execution requires WorkspaceWrite authority".into(),
         ));
     }
-    let argv: Vec<OsString> = resolved.argv.iter().map(OsString::from).collect();
+    // Pin `cargo` before spawn: a PATH `cargo` may be a rustup shim while
+    // the real toolchain binary lives elsewhere. Resolve via
+    // `rustup which cargo` first, else the canonicalized `which cargo`
+    // result, and store the absolute path in argv[0] for spawn. The display
+    // argv (`resolved.argv`, `cargo ...`) is unchanged.
+    let mut spawn_argv_strings: Vec<String> = resolved.argv.clone();
+    if let Some(first) = spawn_argv_strings.first() {
+        let is_cargo = first == "cargo"
+            || std::path::Path::new(first)
+                .file_name()
+                .and_then(|n| n.to_str())
+                == Some("cargo");
+        if is_cargo {
+            if let Some(pinned) = resolve_cargo_absolute() {
+                spawn_argv_strings[0] = pinned;
+            }
+        }
+    }
+    let argv: Vec<OsString> = spawn_argv_strings.iter().map(OsString::from).collect();
     let mut process = crate::managed_process::ManagedProcessRequest::new(
         argv,
         resolved.cwd.clone(),
@@ -486,7 +564,11 @@ async fn run_managed_test_process(
         })?;
         process.sandbox = crate::managed_process::SandboxRequest::Required(
             config
-                .launch_spec(&resolved.argv[0], &resolved.argv[1..], Some(&resolved.cwd))
+                .launch_spec(
+                    &spawn_argv_strings[0],
+                    &spawn_argv_strings[1..],
+                    Some(&resolved.cwd),
+                )
                 .map_err(|error| TestRunError::InvalidRequest(error.to_string()))?,
         );
     }
@@ -670,11 +752,10 @@ fn build_report(
         .collect();
 
     // The dispatched `cargo` argv resolved to a `rustup` toolchain shim
-    // (PATH resolves `cargo` to the shim while the agent shell finds
-    // `~/.cargo/bin/cargo`), so no test binary ever ran. Shim usage text
-    // mimics cargo/clap error prefixes — without this the run reports
-    // `rust_compile_error` on code that was never compiled. Lead with a
-    // spawn-class entry that names the environment cause and the fix.
+    // (PATH resolves `cargo` to the shim), so no test binary ever ran. Shim
+    // usage text mimics cargo/clap error prefixes — without this the run
+    // reports `rust_compile_error` on code that was never compiled. Lead
+    // with a spawn-class entry that names the environment cause and the fix.
     if parse_state.toolchain_shim_seen {
         failures.insert(
             0,
@@ -685,7 +766,8 @@ fn build_report(
                 message: "test dispatch executed a rustup shim instead of cargo \
                     (saw rustup usage / '[+toolchain]' in output); not a compile error in \
                     the code under test. Resolve the real cargo binary before dispatch \
-                    (e.g. ~/.cargo/bin/cargo) and retry"
+                    (e.g. `rustup which cargo`, `rustup show active-toolchain`, \
+                    `ls -l $(which cargo)`) and retry"
                     .to_string(),
                 failure_class: FailureClass::SpawnError,
             },
@@ -1450,6 +1532,62 @@ mod tests {
         };
         let result = run_resolved_test(&request, resolved, None, None).await;
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn shim_advice_names_toolchain_diagnostics_not_shim_path() {
+        let mut state = TestParseState::default();
+        state.toolchain_shim_seen = true;
+        let report = build_report(
+            &SupervisorResult::Completed { exit_code: Some(1) },
+            &ResolvedTestCommand {
+                language: crate::test_runner::types::TestLanguage::Rust,
+                argv: vec!["cargo".into(), "test".into()],
+                cwd: std::path::PathBuf::from("/tmp"),
+                scope_label: "test".into(),
+            },
+            10,
+            &state,
+            std::path::Path::new("/tmp"),
+            std::path::Path::new("/tmp/stdout.log"),
+            std::path::Path::new("/tmp/stderr.log"),
+            20_000,
+        );
+        let shim = report
+            .failures
+            .iter()
+            .find(|f| f.name.as_deref() == Some("toolchain-shim"))
+            .expect("shim failure must be present");
+        assert!(
+            shim.message.contains("rustup which cargo"),
+            "shim advice must name `rustup which cargo`, got: {}",
+            shim.message
+        );
+        assert!(
+            shim.message.contains("rustup show active-toolchain"),
+            "shim advice must name `rustup show active-toolchain`, got: {}",
+            shim.message
+        );
+        assert!(
+            shim.message.contains("ls -l $(which cargo)"),
+            "shim advice must name `ls -l $(which cargo)`, got: {}",
+            shim.message
+        );
+        assert!(
+            !shim.message.contains("~/.cargo/bin/cargo"),
+            "shim advice must not suggest the shim path, got: {}",
+            shim.message
+        );
+    }
+
+    #[test]
+    fn cargo_absolute_resolution_returns_absolute_when_present() {
+        if let Some(pinned) = resolve_cargo_absolute() {
+            assert!(
+                std::path::Path::new(&pinned).is_absolute(),
+                "pinned cargo must be absolute, got: {pinned}"
+            );
+        }
     }
 
     /// Confirms the timeout path still produces a `TestReport` after the

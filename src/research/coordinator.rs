@@ -199,7 +199,7 @@ impl ResearchCoordinator {
             )
             .await
         } else {
-            build_claims(&run_id, &evidence, &sources, false)
+            build_claims(&run_id, &evidence, &sources, &request.question, false)
         };
         for claim in &claims {
             self.store.append_claim(claim).await?;

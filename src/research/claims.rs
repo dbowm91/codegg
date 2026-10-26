@@ -3,15 +3,59 @@ use crate::research::llm;
 use crate::research::templates;
 use crate::research::types::*;
 
+/// Normalize for query-restatement comparison: lowercase, collapse whitespace.
+fn normalize_for_relevance(s: &str) -> String {
+    s.to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Relevance filter applied BEFORE claim construction and envelope build.
+/// Drops empty spans and exact query restatements so the envelope never carries vacuous claims.
+pub fn is_relevant_evidence(evidence: &EvidenceSpan, question: &str) -> bool {
+    let text = evidence.text.trim();
+    if text.len() < 10 {
+        return false;
+    }
+    let norm_text = normalize_for_relevance(text);
+    let norm_q = normalize_for_relevance(question.trim());
+    if !norm_q.is_empty() && norm_text == norm_q {
+        return false;
+    }
+    text.split(|c: char| !c.is_alphanumeric())
+        .any(|tok| tok.len() >= 3)
+}
+
+pub fn filter_relevant_evidence<'a>(
+    evidence: &'a [EvidenceSpan],
+    question: &str,
+) -> Vec<&'a EvidenceSpan> {
+    evidence
+        .iter()
+        .filter(|e| is_relevant_evidence(e, question))
+        .collect()
+}
+
+fn truncate_predicate(s: &str, max_chars: usize) -> String {
+    let mut out = crate::util::truncate_prefix(s, max_chars).to_string();
+    if out.len() < s.len() {
+        out.push('…');
+    }
+    out
+}
+
 /// Build claims deterministically from evidence (no model).
-/// Creates one low-confidence claim per evidence span.
+/// Each claim requires a predicate plus evidence_ids/span — query restatements
+/// are dropped by [`filter_relevant_evidence`] before construction.
 pub fn deterministic_claims(
     run_id: &str,
     evidence: &[EvidenceSpan],
     sources: &[SourceRecord],
+    question: &str,
 ) -> Vec<ClaimRecord> {
-    evidence
-        .iter()
+    filter_relevant_evidence(evidence, question)
+        .into_iter()
         .map(|evid| {
             let source = sources.iter().find(|s| s.id == evid.source_id);
             let source_desc = source
@@ -22,8 +66,9 @@ pub fn deterministic_claims(
                 id: uuid::Uuid::new_v4().to_string(),
                 run_id: run_id.to_string(),
                 text: format!(
-                    "Source '{}' contains potentially relevant information about the research question.",
-                    source_desc
+                    "Evidence from '{}' supports: {}",
+                    source_desc,
+                    truncate_predicate(evid.text.trim(), 280),
                 ),
                 claim_type: ClaimType::Inference,
                 confidence: Confidence::Low,
@@ -45,10 +90,10 @@ pub fn build_claims(
     run_id: &str,
     evidence: &[EvidenceSpan],
     sources: &[SourceRecord],
+    question: &str,
     _model_available: bool,
 ) -> Vec<ClaimRecord> {
-    // For MVP, always use deterministic fallback
-    deterministic_claims(run_id, evidence, sources)
+    deterministic_claims(run_id, evidence, sources, question)
 }
 
 /// Parsed claim item from model response.
@@ -76,12 +121,13 @@ pub async fn build_claims_with_model(
     context: ProviderRequestContext,
     question: &str,
 ) -> Vec<ClaimRecord> {
-    if evidence.is_empty() {
+    let relevant: Vec<&EvidenceSpan> = filter_relevant_evidence(evidence, question);
+    if relevant.is_empty() {
         return Vec::new();
     }
 
     // Build a compact evidence summary for the prompt
-    let evidence_brief: Vec<serde_json::Value> = evidence
+    let evidence_brief: Vec<serde_json::Value> = relevant
         .iter()
         .map(|e| {
             let source = sources.iter().find(|s| s.id == e.source_id);
@@ -105,24 +151,32 @@ pub async fn build_claims_with_model(
         match llm::call_llm_json(provider, model, context, None, &prompt, Some(4096)).await {
             Ok(v) => v,
             Err(_) => {
-                return deterministic_claims(run_id, evidence, sources);
+                return deterministic_claims(run_id, evidence, sources, question);
             }
         };
 
     let items: Vec<ModelClaimItem> = match serde_json::from_value(json_val) {
         Ok(v) => v,
         Err(_) => {
-            return deterministic_claims(run_id, evidence, sources);
+            return deterministic_claims(run_id, evidence, sources, question);
         }
     };
 
     if items.is_empty() {
-        return deterministic_claims(run_id, evidence, sources);
+        return deterministic_claims(run_id, evidence, sources, question);
     }
 
+    let norm_q = normalize_for_relevance(question);
     items
         .into_iter()
-        .map(|item| {
+        .filter_map(|item| {
+            let text = item.text.trim().to_string();
+            if text.len() < 10 {
+                return None;
+            }
+            if !norm_q.is_empty() && normalize_for_relevance(&text) == norm_q {
+                return None;
+            }
             let claim_type = match item.claim_type.as_deref() {
                 Some("fact") => ClaimType::Fact,
                 Some("comparison") => ClaimType::Comparison,
@@ -139,30 +193,28 @@ pub async fn build_claims_with_model(
                 _ => Confidence::Low,
             };
 
-            // Filter evidence_ids to only those that actually exist
             let evidence_ids: Vec<String> = item
                 .evidence_ids
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|id| evidence.iter().any(|e| &e.id == id))
                 .collect();
-
-            let mut caveats = item.caveats.unwrap_or_default();
             if evidence_ids.is_empty() {
-                caveats
-                    .push("Model-generated claim with no matched evidence references".to_string());
+                return None;
             }
 
-            ClaimRecord {
+            let caveats = item.caveats.unwrap_or_default();
+
+            Some(ClaimRecord {
                 id: uuid::Uuid::new_v4().to_string(),
                 run_id: run_id.to_string(),
-                text: item.text,
+                text,
                 claim_type,
                 confidence,
                 evidence_ids,
                 caveats,
                 applies_to: item.applies_to.unwrap_or_default(),
-            }
+            })
         })
         .collect()
 }
@@ -232,7 +284,7 @@ mod tests {
             make_evidence("ev-2", "src-1"),
             make_evidence("ev-3", "src-1"),
         ];
-        let claims = deterministic_claims("run-1", &evidence, &sources);
+        let claims = deterministic_claims("run-1", &evidence, &sources, "What is foo?");
         assert_eq!(claims.len(), 3);
     }
 
@@ -240,7 +292,7 @@ mod tests {
     fn deterministic_claims_uses_source_title() {
         let sources = vec![make_source("src-1", "foo.rs")];
         let evidence = vec![make_evidence("ev-1", "src-1")];
-        let claims = deterministic_claims("run-1", &evidence, &sources);
+        let claims = deterministic_claims("run-1", &evidence, &sources, "What is foo?");
         assert!(claims[0].text.contains("Title of foo.rs"));
     }
 
@@ -250,28 +302,28 @@ mod tests {
         source.title = None;
         let sources = vec![source];
         let evidence = vec![make_evidence("ev-1", "src-1")];
-        let claims = deterministic_claims("run-1", &evidence, &sources);
+        let claims = deterministic_claims("run-1", &evidence, &sources, "What is foo?");
         assert!(claims[0].text.contains("https://example.com"));
     }
 
     #[test]
     fn deterministic_claims_unknown_source() {
         let evidence = vec![make_evidence("ev-1", "nonexistent")];
-        let claims = deterministic_claims("run-1", &evidence, &[]);
+        let claims = deterministic_claims("run-1", &evidence, &[], "What is foo?");
         assert!(claims[0].text.contains("unknown source"));
     }
 
     #[test]
     fn deterministic_claims_sets_low_confidence() {
         let evidence = vec![make_evidence("ev-1", "src-1")];
-        let claims = deterministic_claims("run-1", &evidence, &[]);
+        let claims = deterministic_claims("run-1", &evidence, &[], "What is foo?");
         assert_eq!(claims[0].confidence, Confidence::Low);
     }
 
     #[test]
     fn deterministic_claims_includes_caveats() {
         let evidence = vec![make_evidence("ev-1", "src-1")];
-        let claims = deterministic_claims("run-1", &evidence, &[]);
+        let claims = deterministic_claims("run-1", &evidence, &[], "What is foo?");
         assert_eq!(claims[0].caveats.len(), 2);
         assert!(claims[0].caveats[0].contains("deterministic fallback"));
     }
@@ -282,7 +334,7 @@ mod tests {
             make_evidence("ev-1", "src-1"),
             make_evidence("ev-2", "src-1"),
         ];
-        let claims = deterministic_claims("run-1", &evidence, &[]);
+        let claims = deterministic_claims("run-1", &evidence, &[], "What is foo?");
         assert_eq!(claims[0].evidence_ids, vec!["ev-1"]);
         assert_eq!(claims[1].evidence_ids, vec!["ev-2"]);
     }
@@ -291,7 +343,7 @@ mod tests {
     fn build_claims_delegates_to_deterministic() {
         let sources = vec![make_source("src-1", "foo.rs")];
         let evidence = vec![make_evidence("ev-1", "src-1")];
-        let claims = build_claims("run-1", &evidence, &sources, false);
+        let claims = build_claims("run-1", &evidence, &sources, "What is foo?", false);
         assert_eq!(claims.len(), 1);
         assert_eq!(claims[0].confidence, Confidence::Low);
     }
@@ -300,8 +352,8 @@ mod tests {
     fn build_claims_ignores_model_flag() {
         let sources = vec![make_source("src-1", "foo.rs")];
         let evidence = vec![make_evidence("ev-1", "src-1")];
-        let with_model = build_claims("run-1", &evidence, &sources, true);
-        let without_model = build_claims("run-1", &evidence, &sources, false);
+        let with_model = build_claims("run-1", &evidence, &sources, "What is foo?", true);
+        let without_model = build_claims("run-1", &evidence, &sources, "What is foo?", false);
         // Both should produce identical results (deterministic fallback)
         assert_eq!(with_model.len(), without_model.len());
         assert_eq!(with_model[0].confidence, without_model[0].confidence);
@@ -309,7 +361,33 @@ mod tests {
 
     #[test]
     fn deterministic_claims_empty_evidence() {
-        let claims = deterministic_claims("run-1", &[], &[]);
+        let claims = deterministic_claims("run-1", &[], &[], "What is foo?");
         assert!(claims.is_empty());
+    }
+
+    #[test]
+    fn deterministic_claims_drops_query_restatements() {
+        let sources = vec![make_source("src-1", "foo.rs")];
+        let mut restatement = make_evidence("ev-1", "src-1");
+        restatement.text = "What is foo?".to_string();
+        let claims = deterministic_claims("run-1", &[restatement], &sources, "What is foo?");
+        assert!(
+            claims.is_empty(),
+            "query restatement must not become a claim"
+        );
+    }
+
+    #[test]
+    fn deterministic_claims_requires_predicate_text() {
+        let sources = vec![make_source("src-1", "foo.rs")];
+        let evidence = vec![make_evidence("ev-1", "src-1")];
+        let claims = deterministic_claims("run-1", &evidence, &sources, "What is foo?");
+        assert_eq!(claims.len(), 1);
+        assert!(!claims[0].evidence_ids.is_empty());
+        assert!(
+            claims[0].text.contains("some evidence text"),
+            "claim must quote its predicate, got: {}",
+            claims[0].text
+        );
     }
 }

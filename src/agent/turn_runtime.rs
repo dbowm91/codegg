@@ -1053,6 +1053,13 @@ impl TurnRuntime for DefaultTurnRuntime {
             process_admission: process_admission.clone(),
         };
         let mut agent_loop = crate::agent::agent_loop_factory::build_agent_loop(agent_loop_input);
+        // P2: seed plan-mode from the turn input. The loop also toggles it via
+        // `plan_enter`/`plan_exit` markers, but the initial turn must start in
+        // the requested mode so the tool-batch + broker gates enforce from the
+        // first call.
+        if plan_mode {
+            agent_loop.enter_plan_mode(None);
+        }
         agent_loop.set_prompt_compiler_fingerprint(compiled_prompt.fingerprint.clone());
         agent_loop.set_reasoning_override(reasoning_override);
         agent_loop.set_runtime_asset_pin(asset_pin);

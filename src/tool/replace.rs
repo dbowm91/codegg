@@ -61,7 +61,7 @@ impl Tool for ReplaceTool {
     }
 
     fn description(&self) -> &str {
-        "Regex replace in a file (global:true replaces all occurrences, global:false replaces the first occurrence only). See tool_search for the file-op chooser."
+        "Regex replace in a file (global:true replaces all occurrences, global:false replaces the first occurrence only). Rust regex over whole file text; ^/$ are file bounds unless (?m); e.g. (?m)^foo$. See tool_search for the file-op chooser."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -74,7 +74,7 @@ impl Tool for ReplaceTool {
                 },
                 "pattern": {
                     "type": "string",
-                    "description": "Regular expression pattern to search for"
+                    "description": "Rust regex over whole file text; ^/$ are file bounds unless (?m) is set; e.g. (?m)^foo$ matches a whole line"
                 },
                 "replacement": {
                     "type": "string",
@@ -310,9 +310,11 @@ impl ReplaceTool {
 
             let matches: Vec<_> = re.find_iter(&content).collect();
             if matches.is_empty() {
-                return Err(no_effect(ToolError::Execution(
-                    "no matches found for pattern".to_string(),
-                )));
+                let line_count = content.lines().count();
+                let byte_count = content.len();
+                return Err(no_effect(ToolError::Execution(format!(
+                    "no matches found for pattern '{pattern_clone}' in {line_count} lines / {byte_count} bytes; note ^/$ are file bounds unless (?m) is set, e.g. use (?m)^foo$ for line anchors"
+                ))));
             }
 
             // `global:false` replaces the first occurrence only (F9); the
@@ -421,14 +423,24 @@ impl ReplaceTool {
             }
         }
 
+        // Caps apply to the tool output before warnings are merged, so a
+        // bounded result stays bounded after the append.
         let mut output = format!(
             "Replaced {} occurrence(s) in {} with pattern '{}'",
             if global { matches_len } else { 1 },
             path_str,
             pattern
         );
+        const MAX_REPLACE_OUTPUT: usize = 4000;
+        if output.len() > MAX_REPLACE_OUTPUT {
+            let mut end = MAX_REPLACE_OUTPUT;
+            while end > 0 && !output.is_char_boundary(end) {
+                end -= 1;
+            }
+            output = format!("{}\n... [output truncated]", &output[..end]);
+        }
         if !preflight_warnings.is_empty() {
-            output = format!("{}\n\n{}", preflight_warnings.join("\n"), output);
+            output = format!("{}\n\n{}", output, preflight_warnings.join("\n"));
         }
         Ok(output)
     }
@@ -488,6 +500,22 @@ mod tests {
         let new_content = re.replace_all(content, replacement);
 
         assert_eq!(new_content, "hello[123]world[456]");
+    }
+
+    #[test]
+    fn caret_dollar_are_file_bounds_without_multiline_flag() {
+        let content = "bar\nfoo\nbaz";
+        let re = Regex::new("(?P<whole>^foo$)").unwrap();
+        assert!(re.find_iter(content).collect::<Vec<_>>().is_empty());
+    }
+
+    #[test]
+    fn multiline_flag_enables_line_anchors() {
+        let content = "bar\nfoo\nbaz";
+        let re = Regex::new("(?P<whole>(?m)^foo$)").unwrap();
+        let matches: Vec<_> = re.find_iter(content).collect();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].as_str(), "foo");
     }
 
     #[test]

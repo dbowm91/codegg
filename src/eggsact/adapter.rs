@@ -220,12 +220,23 @@ fn format_response(
 
     // Decision first: verdict and summary live inside `result` for tools
     // like `command_preflight`, so lift them out before the body.
+    // S4: a raw `block` verdict from preflight is advisory-only at the
+    // harness layer — surface `advisory-block` + enforcement so the tool
+    // result agrees with the bash-time text.
     let result_object = response.result.as_ref().and_then(|value| value.as_object());
     if let Some(verdict) = result_object
         .and_then(|object| object.get("verdict"))
         .and_then(serde_json::Value::as_str)
     {
-        parts.push(format!("verdict: {verdict}"));
+        let display = if verdict == "block" {
+            "advisory-block"
+        } else {
+            verdict
+        };
+        parts.push(format!("verdict: {display}"));
+        if display == "advisory-block" {
+            parts.push("enforcement: advisory_only".to_string());
+        }
     }
 
     if let Some(ref mc) = response.machine_code {
@@ -287,10 +298,23 @@ fn capped_result_body(result: &serde_json::Value) -> serde_json::Value {
     let Some(object) = result.as_object() else {
         return result.clone();
     };
-    let mut ordered = serde_json::Map::with_capacity(object.len());
+    let mut ordered = serde_json::Map::with_capacity(object.len() + 1);
     for (key, value) in object {
         if key == "subresults" {
             continue;
+        }
+        if key == "verdict" {
+            if value.as_str() == Some("block") {
+                ordered.insert(
+                    key.clone(),
+                    serde_json::Value::String("advisory-block".to_string()),
+                );
+                ordered.insert(
+                    "enforcement".to_string(),
+                    serde_json::Value::String("advisory_only".to_string()),
+                );
+                continue;
+            }
         }
         if key == "command" {
             if let Some(command) = value.as_str() {
@@ -454,6 +478,28 @@ mod tests {
         // Output includes "ok: true\nresult: \"aaa...\"" ~ 112 chars, so use 200
         let formatted = format_response(&response, 200);
         assert!(!formatted.truncated);
+    }
+
+    #[test]
+    fn format_response_maps_block_to_advisory_block_with_enforcement() {
+        let result = serde_json::json!({
+            "verdict": "block",
+            "summary": "would block",
+        });
+        let response = ok_response(Some(result));
+        let formatted = format_response(&response, 1000);
+        assert!(formatted.output.contains("verdict: advisory-block"));
+        assert!(formatted.output.contains("enforcement: advisory_only"));
+        assert!(!formatted.output.contains("verdict: block\n"));
+        let body = capped_result_body(response.result.as_ref().expect("result present"));
+        assert_eq!(
+            body.get("verdict").and_then(|v| v.as_str()),
+            Some("advisory-block")
+        );
+        assert_eq!(
+            body.get("enforcement").and_then(|v| v.as_str()),
+            Some("advisory_only")
+        );
     }
 
     #[test]

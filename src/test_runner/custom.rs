@@ -213,6 +213,39 @@ pub fn validate_custom_command(
             });
         }
     }
+    // Absolute-cargo allowlist: an absolute `cargo` path (e.g. a rustup
+    // toolchain `.../bin/cargo`) basename-matches `cargo`, then the
+    // remainder must match the `cargo test` / `cargo nextest` argv prefix.
+    // Shell metacharacters were already rejected by `tokenize`, so this
+    // only widens the executable identity, never the allowed syntax.
+    if let Some(first) = tokens.first() {
+        let is_cargo = std::path::Path::new(first)
+            .file_name()
+            .and_then(|n| n.to_str())
+            == Some("cargo");
+        if is_cargo {
+            let rest = &tokens[1..];
+            for allowed in CUSTOM_COMMAND_ALLOWLIST {
+                let prefix = allowed.argv_prefix;
+                if prefix.first() != Some(&"cargo") {
+                    continue;
+                }
+                let suffix = &prefix[1..];
+                if rest.len() >= suffix.len()
+                    && rest
+                        .iter()
+                        .take(suffix.len())
+                        .map(String::as_str)
+                        .eq(suffix.iter().copied())
+                {
+                    return Ok(ValidatedCustomCommand {
+                        argv: tokens,
+                        label: allowed.label,
+                    });
+                }
+            }
+        }
+    }
     Err(CustomCommandValidationError::UnsupportedCommand)
 }
 
@@ -226,6 +259,51 @@ pub fn is_allowed_custom_command(cmd: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absolute_cargo_test_and_nextest_allowlisted_by_basename() {
+        for (cmd, label) in [
+            (
+                "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --lib",
+                "cargo test",
+            ),
+            (
+                "/usr/local/cargo/bin/cargo nextest run --workspace",
+                "cargo nextest",
+            ),
+        ] {
+            let validated = validate_custom_command(cmd)
+                .unwrap_or_else(|e| panic!("expected `{cmd}` to validate, got {e:?}"));
+            assert_eq!(
+                std::path::Path::new(&validated.argv[0])
+                    .file_name()
+                    .and_then(|n| n.to_str()),
+                Some("cargo"),
+                "argv[0] must keep the absolute cargo for spawn"
+            );
+            assert_eq!(validated.label, label);
+        }
+    }
+
+    #[test]
+    fn absolute_cargo_non_test_still_rejected() {
+        assert!(matches!(
+            validate_custom_command("/usr/bin/cargo build"),
+            Err(CustomCommandValidationError::UnsupportedCommand)
+        ));
+        assert!(matches!(
+            validate_custom_command("/usr/bin/cargo"),
+            Err(CustomCommandValidationError::UnsupportedCommand)
+        ));
+    }
+
+    #[test]
+    fn absolute_cargo_keeps_shell_rejection() {
+        assert!(matches!(
+            validate_custom_command("/usr/bin/cargo test; rm -rf /"),
+            Err(CustomCommandValidationError::ForbiddenShellSyntax)
+        ));
+    }
 
     #[test]
     fn allowed_commands_match_argv_prefixes() {

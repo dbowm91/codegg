@@ -329,7 +329,12 @@ impl Tool for ReviewTool {
 /// Single counting rule: `files` is the count of `diff --git` headers in the
 /// structured file list. Untracked files are listed separately and never
 /// added to the diff count: `untracked files: listed, not diffed (N: ...)`.
-fn offline_review_fallback(diff: &str, model: &str, reason: &str, untracked: &[String]) -> String {
+fn offline_review_fallback(
+    diff: &str,
+    model: Option<&str>,
+    reason: &str,
+    untracked: &[String],
+) -> String {
     let mut files = 0usize;
     let mut insertions = 0usize;
     let mut deletions = 0usize;
@@ -366,10 +371,18 @@ fn offline_review_fallback(diff: &str, model: &str, reason: &str, untracked: &[S
     }
     let excerpt = &diff[..end];
     let truncated = diff.len() > end;
+    let model_line = match model {
+        None => format!(
+            "no model configured; defaulted to {} (emergency default). {reason}. Open /connect to create a connection, or set `model` via `codegg edit` / `-m provider/model`; run `codegg doctor` to check wiring.",
+            EMERGENCY_DEFAULT_MODEL
+        ),
+        Some(model) => format!(
+            "Configured model `{model}` is unreachable: {reason}. Open /connect to create a connection, or set `model` via `codegg edit` / `-m provider/model`."
+        ),
+    };
     format!(
         "## Code Review (offline fallback — no active LLM connection)\n\n\
-         Configured model `{model}` is unreachable: {reason}. \
-         Open /connect to create a connection, or set `model` via `codegg edit` / `-m provider/model`.\n\n\
+         {model_line}\n\n\
          Diff stats: {files} file(s) changed, +{insertions}/-{deletions} lines, {} bytes.\n\
          {untracked_line}\n\n\
          Checklist:\n\
@@ -380,7 +393,11 @@ fn offline_review_fallback(diff: &str, model: &str, reason: &str, untracked: &[S
          - Note anything needing a human decision as a suggestion, not a verdict.\n\n\
          Diff excerpt{}:\n{excerpt}",
         diff.len(),
-        if truncated { " (truncated at 4000 chars)" } else { "" },
+        if truncated {
+            " (truncated at 4000 chars)"
+        } else {
+            ""
+        },
     )
 }
 
@@ -421,15 +438,12 @@ impl ReviewTool {
             Ok(review) => Ok(format!("## Code Review Results\n\n{}", review)),
             Err(e) => {
                 let config = Config::load_or_default();
-                let model = config
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| EMERGENCY_DEFAULT_MODEL.to_string());
+                let model_opt = config.model.clone();
                 let root = self.effective_root(context);
                 let untracked = untracked_files_for_root(&root).await;
                 Ok(offline_review_fallback(
                     &diff,
-                    &model,
+                    model_opt.as_deref(),
                     &e.to_string(),
                     &untracked,
                 ))
@@ -627,7 +641,7 @@ mod tests {
     #[test]
     fn offline_fallback_lists_untracked_without_diffing_them() {
         let untracked = vec!["probe_untracked.txt".to_string()];
-        let output = offline_review_fallback("", "openai/gpt-4o", "no provider", &untracked);
+        let output = offline_review_fallback("", Some("openai/gpt-4o"), "no provider", &untracked);
         assert!(
             output.contains("0 file(s) changed"),
             "empty diff must count zero files, never force to one, got: {output}"
@@ -640,5 +654,30 @@ mod tests {
             !output.contains("1 file(s) changed"),
             "untracked entries must not inflate the diff count, got: {output}"
         );
+    }
+
+    #[test]
+    fn offline_fallback_branches_on_model_config() {
+        let untracked: Vec<String> = vec![];
+        let with_model = offline_review_fallback(
+            "diff --git a/b b/b",
+            Some("openai/gpt-4o"),
+            "no provider",
+            &untracked,
+        );
+        assert!(
+            with_model.contains("Configured model `openai/gpt-4o` is unreachable"),
+            "configured model must keep the unreachable wording, got: {with_model}"
+        );
+        assert!(with_model.contains("offline fallback"));
+        let without_model =
+            offline_review_fallback("diff --git a/b b/b", None, "no provider", &untracked);
+        assert!(
+            without_model
+                .contains("no model configured; defaulted to openai/gpt-4o (emergency default)"),
+            "missing model must name the emergency default, got: {without_model}"
+        );
+        assert!(without_model.contains("/connect"));
+        assert!(without_model.contains("offline fallback"));
     }
 }

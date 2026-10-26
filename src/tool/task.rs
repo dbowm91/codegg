@@ -473,6 +473,31 @@ fn age_secs(since_ms: i64) -> Option<u64> {
         .map(|age_ms| (age_ms / 1000) as u64)
 }
 
+/// Q5/S1/S2/R7: normalize a pasted run/task ref.
+///
+/// Trims whitespace, strips ONE `agent-run-result:` prefix, then the caller
+/// parses. Keeps `IdentityParseError` for the remainder: a stripped value
+/// that still fails to parse returns the underlying parse error unchanged.
+fn normalize_id_ref(raw: &str) -> String {
+    let trimmed = raw.trim();
+    trimmed
+        .strip_prefix("agent-run-result:")
+        .map(str::to_string)
+        .unwrap_or_else(|| trimmed.to_string())
+}
+
+/// Q5: whole-float-tolerant timeout coercion for `timeout_ms`.
+///
+/// Coerces finite whole floats (1000.0 -> 1000) via the shared tolerant
+/// parser; rejects fractions, negatives, NaN, and non-numbers. Default
+/// 1000, clamped to 1..=30000 as before.
+fn coerce_timeout_ms(value: Option<&serde_json::Value>) -> Option<u64> {
+    let Some(v) = value else {
+        return None;
+    };
+    crate::tool::util::json_usize(v).map(|n| n as u64)
+}
+
 /// Bounds for the parent-visible transcript tail in `task action=get`:
 /// the last few rows, hard-capped in characters.
 const TRANSCRIPT_TAIL_LINES: usize = 20;
@@ -1869,11 +1894,11 @@ impl Tool for TaskTool {
                         {"type": "string", "minLength": 1},
                         {"type": "integer", "minimum": 0}
                     ],
-                    "description": "Required for action=get: durable AgentTaskId string or legacy numeric task ID. A run_id is accepted as an alias and resolved to its task on the durable path. Do not use task_id for run status/control."
+                    "description": "Required for action=get: durable AgentTaskId string or legacy numeric task ID. A run_id (or `agent-run-result:<run_id>` pasted ref) is accepted as an alias and resolved to its task on the durable path. Do not use task_id for run status/control."
                 },
                 "run_id": {
                     "type": "string",
-                    "description": "Required for action=status, wait, message, interrupt, or cancel: durable AgentRunId. A durable task_id string is accepted as an alias and resolved to its run."
+                    "description": "Required for action=status, wait, message, interrupt, or cancel: durable AgentRunId (or `agent-run-result:<run_id>` pasted ref). A durable task_id string is accepted as an alias and resolved to its run."
                 },
                 "message": {
                     "type": "string",
@@ -1885,7 +1910,7 @@ impl Tool for TaskTool {
                 },
                 "timeout_ms": {
                     "type": "integer",
-                    "description": "Bounded wait timeout in milliseconds, clamped to 30000 (30s). Issue waits solo, never batched with other work: a wait holds no batch execution slot and head-of-line-blocks its siblings."
+                    "description": "Bounded wait timeout in milliseconds, clamped to 30000 (30s). Whole-valued floats coerced. Issue waits solo, never batched with other work: a wait holds no batch execution slot and head-of-line-blocks its siblings."
                 },
                 "requests": {
                     "type": "array",
@@ -1992,7 +2017,7 @@ impl TaskTool {
         let raw_run_id = input["run_id"]
             .as_str()
             .ok_or_else(|| ToolError::Execution("missing 'run_id' parameter".into()))?;
-        let run_id = AgentRunId::parse(raw_run_id)
+        let run_id = AgentRunId::parse(&normalize_id_ref(raw_run_id))
             .map_err(|e| ToolError::Execution(format!("invalid run_id: {e}")))?;
         let actor = ControlActor {
             session_id: self.parent_session_id.clone(),
@@ -2564,9 +2589,9 @@ impl TaskTool {
                         let raw = value.as_str().ok_or_else(|| {
                             ToolError::Execution("member_run_ids must contain strings".into())
                         })?;
-                        accepted.push(AgentRunId::parse(raw).map_err(|error| {
-                            ToolError::Execution(format!("invalid member run_id: {error}"))
-                        })?);
+                        accepted.push(AgentRunId::parse(&normalize_id_ref(raw)).map_err(
+                            |error| ToolError::Execution(format!("invalid member run_id: {error}")),
+                        )?);
                     }
                     (accepted, Vec::new())
                 };
@@ -2637,7 +2662,9 @@ impl TaskTool {
             let result = match action {
                 "status_group" => groups.status(&actor, group_id).await,
                 "wait_group" => {
-                    let timeout = input["timeout_ms"].as_u64().unwrap_or(1000).min(30_000);
+                    let timeout = coerce_timeout_ms(input.get("timeout_ms"))
+                        .unwrap_or(1000)
+                        .clamp(1, 30_000);
                     groups
                         .wait(&actor, group_id, std::time::Duration::from_millis(timeout))
                         .await
@@ -2682,7 +2709,7 @@ impl TaskTool {
                 ));
             };
             let run_id = match input["run_id"].as_str() {
-                Some(raw) => AgentRunId::parse(raw)
+                Some(raw) => AgentRunId::parse(&normalize_id_ref(raw))
                     .map_err(|e| ToolError::Execution(format!("invalid run_id: {e}")))?,
                 None => {
                     let raw_task = input["task_id"].as_str().ok_or_else(|| {
@@ -2691,7 +2718,7 @@ impl TaskTool {
                     let agent_runs = self.agent_runs.clone().ok_or_else(|| {
                         ToolError::Execution("durable agent run store is unavailable".into())
                     })?;
-                    let task_id = AgentTaskId::parse(raw_task)
+                    let task_id = AgentTaskId::parse(&normalize_id_ref(raw_task))
                         .map_err(|e| ToolError::Execution(format!("invalid task_id alias: {e}")))?;
                     agent_runs
                         .get_run_for_task(&task_id)
@@ -2711,7 +2738,9 @@ impl TaskTool {
             let outcome = match action {
                 "status" => control.status(&actor, run_id).await,
                 "wait" => {
-                    let timeout = input["timeout_ms"].as_u64().unwrap_or(1000).min(30_000);
+                    let timeout = coerce_timeout_ms(input.get("timeout_ms"))
+                        .unwrap_or(1000)
+                        .clamp(1, 30_000);
                     control
                         .wait(&actor, run_id, std::time::Duration::from_millis(timeout))
                         .await
@@ -2764,15 +2793,36 @@ impl TaskTool {
         }
 
         if action == "get" {
-            // Alias: a run_id is resolved to its task so callers holding
-            // only the wait/status Run id can fetch the recorded result.
-            let resolved_task_id = if input["task_id"].as_str().is_some() {
-                input["task_id"].as_str().map(str::to_string)
+            // Alias: a run_id (or pasted `agent-run-result:<run>` ref, which
+            // `normalize_id_ref` strips) is resolved to its task so callers
+            // holding only the wait/status Run id can fetch the recorded
+            // result. A pasted ref in `task_id` is also accepted as a run
+            // alias so the `Result ref: agent-run-result:<run>` line the
+            // tool emits pastes back into either field and the loop closes.
+            let resolved_task_id = if let Some(raw_task) = input["task_id"].as_str() {
+                let normalized = normalize_id_ref(raw_task);
+                if AgentTaskId::parse(&normalized).is_ok() {
+                    Some(normalized)
+                } else if let Ok(run_id) = AgentRunId::parse(&normalized) {
+                    let agent_runs = self.agent_runs.clone().ok_or_else(|| {
+                        ToolError::Execution("missing 'task_id' parameter".to_string())
+                    })?;
+                    let run = agent_runs
+                        .get_run(&run_id)
+                        .await
+                        .map_err(|e| ToolError::Execution(e.to_string()))?
+                        .ok_or_else(|| ToolError::Execution(format!("Run {run_id} not found")))?;
+                    Some(run.task_id.to_string())
+                } else {
+                    // Leave the normalized value for the parse below so the
+                    // remainder keeps its `IdentityParseError`.
+                    Some(normalized)
+                }
             } else if let Some(raw_run) = input["run_id"].as_str() {
                 let agent_runs = self.agent_runs.clone().ok_or_else(|| {
                     ToolError::Execution("missing 'task_id' parameter".to_string())
                 })?;
-                let run_id = AgentRunId::parse(raw_run)
+                let run_id = AgentRunId::parse(&normalize_id_ref(raw_run))
                     .map_err(|e| ToolError::Execution(format!("invalid run_id alias: {e}")))?;
                 let run = agent_runs
                     .get_run(&run_id)
@@ -2795,7 +2845,7 @@ impl TaskTool {
             if let (Some(raw_id), Some(agent_runs)) =
                 (effective_input["task_id"].as_str(), self.agent_runs.clone())
             {
-                let task_id = AgentTaskId::parse(raw_id)
+                let task_id = AgentTaskId::parse(&normalize_id_ref(raw_id))
                     .map_err(|e| ToolError::Execution(format!("invalid durable task_id: {e}")))?;
                 let task = agent_runs
                     .get_task(&task_id)

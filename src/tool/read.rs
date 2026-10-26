@@ -137,6 +137,94 @@ fn collect_matching_entries(
     }
 }
 
+fn symlink_escape_message(requested: &Path, allowed_root: &Path) -> Option<String> {
+    let root_canonical = allowed_root.canonicalize().ok()?;
+    let candidate = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        root_canonical.join(requested)
+    };
+    let mut current = std::path::PathBuf::new();
+    for component in candidate.components() {
+        current.push(component.as_os_str());
+        let Ok(meta) = current.symlink_metadata() else {
+            continue;
+        };
+        if !meta.file_type().is_symlink() {
+            continue;
+        }
+        let target = std::fs::read_link(&current).ok()?;
+        let resolved = if target.is_absolute() {
+            target.clone()
+        } else {
+            current
+                .parent()
+                .unwrap_or(std::path::Path::new("/"))
+                .join(&target)
+        };
+        let outside = if let Ok(canonical) = resolved.canonicalize() {
+            !canonical.starts_with(&root_canonical)
+        } else {
+            let mut normalized = std::path::PathBuf::new();
+            for comp in resolved.components() {
+                match comp {
+                    std::path::Component::CurDir => {}
+                    std::path::Component::ParentDir => {
+                        normalized.pop();
+                    }
+                    _ => normalized.push(comp.as_os_str()),
+                }
+            }
+            !normalized.starts_with(&root_canonical)
+        };
+        if outside {
+            return Some(format!(
+                "refused: symlink target outside workspace: {} → {}",
+                current.display(),
+                target.display()
+            ));
+        }
+        continue;
+    }
+    if let Ok(meta) = candidate.symlink_metadata() {
+        if meta.file_type().is_symlink() {
+            if let Ok(target) = std::fs::read_link(&candidate) {
+                let resolved = if target.is_absolute() {
+                    target.clone()
+                } else {
+                    candidate
+                        .parent()
+                        .unwrap_or(std::path::Path::new("/"))
+                        .join(&target)
+                };
+                let outside = if let Ok(canonical) = resolved.canonicalize() {
+                    !canonical.starts_with(&root_canonical)
+                } else {
+                    let mut normalized = std::path::PathBuf::new();
+                    for comp in resolved.components() {
+                        match comp {
+                            std::path::Component::CurDir => {}
+                            std::path::Component::ParentDir => {
+                                normalized.pop();
+                            }
+                            _ => normalized.push(comp.as_os_str()),
+                        }
+                    }
+                    !normalized.starts_with(&root_canonical)
+                };
+                if outside {
+                    return Some(format!(
+                        "refused: symlink target outside workspace: {} → {}",
+                        candidate.display(),
+                        target.display()
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
 pub struct ReadTool {
     allowed_root: PathBuf,
     unrestricted: bool,
@@ -260,6 +348,11 @@ impl Tool for ReadTool {
             } {
                 Ok(path) => path,
                 Err(err) => {
+                    if !unrestricted {
+                        if let Some(escape) = symlink_escape_message(original_path, &allowed_root) {
+                            return Err(ToolError::Execution(escape));
+                        }
+                    }
                     if let Some(hint) =
                         missing_path_hint(original_path, &allowed_root, unrestricted)
                     {
