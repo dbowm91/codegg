@@ -1,6 +1,6 @@
 # Agent Recovery Escalation Authority Corrective Addendum
 
-Status: active (C001 closed; C002 implementation plan registered and ready)
+Status: closed (C001 and C002 closed)
 
 Long-term references:
 
@@ -258,7 +258,11 @@ observation contract contains no permanently-false field.
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | C001 | closed | `plans/implementation/agent-recovery-escalation-authority/001-progress-recovery-escalation-authority.md` | `plans/closure/agent-recovery-escalation-authority/001-status.md` | None |
-| C002 | ready | `plans/implementation/agent-recovery-escalation-authority/002-observation-diagnostics-and-stall-control.md` | — | C001 closed; accepted ADR-0040 Option B governs outcome semantics |
+| C002 | closed | `plans/implementation/agent-recovery-escalation-authority/002-observation-diagnostics-and-stall-control.md` | `plans/closure/agent-recovery-escalation-authority/002-status.md` | Exact-head CI run 40383901325 passed; ADR-0040 Option B governs outcome semantics |
+
+## C002 closure verification (2026-10-26)
+
+C002 implementation is recorded at source head `56279dfc7dc8ee82f0239d6412b4fa50a42a74d6`. Exact-head `CI / verify` run [40383901325](https://github.com/dbowm91/codegg/actions/runs/40383901325) passed. No new stall-terminal authority was introduced; the removed unreachable terminal stays removed.
 
 ## Source verification
 

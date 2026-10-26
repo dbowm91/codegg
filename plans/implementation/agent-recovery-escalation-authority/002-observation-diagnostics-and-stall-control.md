@@ -1,6 +1,6 @@
 # Agent Recovery Escalation Authority C002 — Progress Diagnostics and Stall-Control Contract
 
-Status: ready (C001 strictly closed)
+Status: closed (C001 strictly closed)
 Baseline: `main@957fcbf00e17bf108429f0d75dcbf760736ae511`, re-check before implementation.
 Canonical subsystem owner: `plans/subsystems/agent-recovery-escalation-authority-corrective-addendum.md` §7 C002 (previously eligible but unplanned). Cross-consumer: `plans/subsystems/harness-lab-continuation-corrective-addendum.md` (D004 reference only).
 Decision: **accepted ADR-0040 Option B — evidence-gated, scope-aware recovery**. Long-term: `plans/000-long-term-specification.md` §§26 and 29. Primary class: invariant, secondary polish.
