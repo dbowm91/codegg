@@ -6027,7 +6027,7 @@ mod tests {
             .expect("run_id description");
         assert_eq!(
             live_run_id_description,
-            "Required for action=status, wait, message, interrupt, or cancel: durable AgentRunId. A durable task_id string is accepted as an alias and resolved to its run."
+            "Required for action=status, wait, message, interrupt, or cancel: durable AgentRunId (or `agent-run-result:<run_id>` pasted ref). A durable task_id string is accepted as an alias and resolved to its run."
         );
         task_properties["run_id"]["description"] =
             serde_json::json!("Durable AgentRunId for control/status/wait");
