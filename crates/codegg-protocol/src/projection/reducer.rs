@@ -1037,6 +1037,32 @@ impl ProjectionReducer {
                     )
                 }
             }
+            ProjectionEvent::AgentRunTranscriptAdvanced {
+                run_id,
+                ordinal,
+                recording_stopped,
+                at: _,
+            } => {
+                // The hint is **advisory**. The reducer records a bounded
+                // dirty watermark and nothing else: it never invents a
+                // transcript entry, and it never claims the run's
+                // transcript is complete. A reader that wants the entries
+                // fetches the authorized page, whose cursor comes from the
+                // store.
+                //
+                // The watermark does not require the run to be known to
+                // this snapshot: a hint can legitimately arrive before the
+                // run's summary does, and dropping it would lose the
+                // signal for no reason.
+                snapshot.upsert_transcript_watermark(
+                    crate::projection::dto::AgentRunTranscriptWatermarkProjection {
+                        run_id: run_id.clone(),
+                        ordinal: *ordinal,
+                        recording_stopped: *recording_stopped,
+                    },
+                );
+                ApplyOutcome::Applied
+            }
             ProjectionEvent::WorktreeUpserted { worktree } => {
                 snapshot.upsert_worktree(worktree.clone());
                 ApplyOutcome::Applied
@@ -2564,6 +2590,128 @@ mod tests {
         assert_eq!(
             snap.primary_session.selected_model.as_deref(),
             Some("anthropic/claude")
+        );
+    }
+
+    /// M002: the transcript-advanced hint updates a bounded dirty watermark
+    /// and nothing else.
+    ///
+    /// The reducer must not invent transcript entries from the hint: the
+    /// hint carries no body, and a reader that wants the conversation asks
+    /// for the authorized page.
+    #[test]
+    fn a_transcript_advanced_hint_updates_only_a_watermark() {
+        let mut snap = SessionProjectionSnapshot::empty("s", "p", "w");
+        let reducer = ProjectionReducer::default();
+
+        let outcome = reducer.apply(
+            &mut snap,
+            ReducerEventInput::session(
+                1,
+                0,
+                "s",
+                None,
+                ProjectionEvent::AgentRunTranscriptAdvanced {
+                    run_id: "run-1".into(),
+                    ordinal: 12,
+                    recording_stopped: false,
+                    at: 1,
+                },
+            ),
+        );
+        assert_eq!(outcome, ApplyOutcome::Applied);
+        let watermark = snap
+            .transcript_watermark("run-1")
+            .expect("the hint records a watermark for its run");
+        assert_eq!(watermark.ordinal, 12);
+        assert!(!watermark.recording_stopped);
+        assert!(
+            snap.agent_runs.is_empty(),
+            "the hint must not invent a durable run summary"
+        );
+        assert!(
+            snap.active_turn.is_none(),
+            "the hint must not invent a turn or a transcript entry"
+        );
+    }
+
+    /// M002: the canonical storage ordinal dominates an advisory watermark.
+    ///
+    /// A duplicate or out-of-order hint never moves the watermark
+    /// backwards, and the recording-stopped flag is sticky.
+    #[test]
+    fn an_out_of_order_transcript_advance_never_moves_the_watermark_backwards() {
+        let mut snap = SessionProjectionSnapshot::empty("s", "p", "w");
+        let reducer = ProjectionReducer::default();
+
+        for (seq, ordinal) in [(1u64, 12i64), (2, 5), (3, 12)] {
+            let outcome = reducer.apply(
+                &mut snap,
+                ReducerEventInput::session(
+                    seq,
+                    0,
+                    "s",
+                    None,
+                    ProjectionEvent::AgentRunTranscriptAdvanced {
+                        run_id: "run-1".into(),
+                        ordinal,
+                        recording_stopped: false,
+                        at: seq as i64,
+                    },
+                ),
+            );
+            assert_eq!(outcome, ApplyOutcome::Applied);
+        }
+        let watermark = snap
+            .transcript_watermark("run-1")
+            .expect("the hint records a watermark for its run");
+        assert_eq!(
+            watermark.ordinal, 12,
+            "an out-of-order hint must not move the canonical ordinal backwards"
+        );
+
+        reducer.apply(
+            &mut snap,
+            ReducerEventInput::session(
+                4,
+                0,
+                "s",
+                None,
+                ProjectionEvent::AgentRunTranscriptAdvanced {
+                    run_id: "run-1".into(),
+                    ordinal: 13,
+                    recording_stopped: true,
+                    at: 4,
+                },
+            ),
+        );
+        let watermark = snap
+            .transcript_watermark("run-1")
+            .expect("the watermark survives");
+        assert_eq!(watermark.ordinal, 13);
+        assert!(watermark.recording_stopped);
+
+        // A later, ordinary advance must not un-stop the recording.
+        reducer.apply(
+            &mut snap,
+            ReducerEventInput::session(
+                5,
+                0,
+                "s",
+                None,
+                ProjectionEvent::AgentRunTranscriptAdvanced {
+                    run_id: "run-1".into(),
+                    ordinal: 14,
+                    recording_stopped: false,
+                    at: 5,
+                },
+            ),
+        );
+        assert!(
+            snap.transcript_watermark("run-1")
+                .expect("the watermark survives")
+                .recording_stopped,
+            "a stopped recording does not become un-stopped"
         );
     }
 }

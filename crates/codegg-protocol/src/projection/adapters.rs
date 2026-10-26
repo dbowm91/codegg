@@ -113,6 +113,7 @@ pub fn snapshot_from_snapshot_session(
         worktrees: Vec::new().into(),
         run_groups: Vec::new().into(),
         convergences: Vec::new().into(),
+        transcript_watermarks: Vec::new().into(),
         diagnostics: Vec::new().into(),
     };
 
@@ -598,6 +599,22 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
                 control_status: truncate_str(control_status, MAX_PROJECTION_STRING_BYTES)
                     .into_owned(),
                 cancellation_requested: *cancellation_requested,
+                at: env.timestamp_ms,
+            });
+        }
+        CoreEvent::AgentRunTranscriptAdvanced {
+            run_id,
+            ordinal,
+            recording_stopped,
+            ..
+        } => {
+            // Body-free by construction: the adapter copies the run id,
+            // the committed ordinal, and the flag. It never reads a
+            // transcript body, because the event carries none.
+            events.push(ProjectionEvent::AgentRunTranscriptAdvanced {
+                run_id: truncate_str(run_id, MAX_PROJECTION_STRING_BYTES).into_owned(),
+                ordinal: *ordinal,
+                recording_stopped: *recording_stopped,
                 at: env.timestamp_ms,
             });
         }

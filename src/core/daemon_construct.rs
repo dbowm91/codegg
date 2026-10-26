@@ -817,6 +817,28 @@ impl CoreDaemon {
                 deps.run_control.clone(),
                 deps.run_group_service.clone(),
             );
+            // M002: the delegated child's runtime announces its run's
+            // committed transcript advancing through the daemon's canonical
+            // event log.
+            //
+            // The publisher is installed on the subagent pool **this daemon
+            // owns**, so the child obtains it from the runtime it was
+            // dispatched through. It is not a process-wide registry, it
+            // carries no TUI dependency, and it does not reach the
+            // projection replay handle: the event log is the only
+            // producer, and the advisory it carries is body-free.
+            let advance_sink = Arc::new(
+                crate::agent::transcript_publisher::EventLogTranscriptAdvanceSink::new(
+                    event_log.clone(),
+                    deps.agent_run_store.clone(),
+                ),
+            );
+            let advance_publisher = Arc::new(
+                crate::agent::transcript_publisher::CoalescingTranscriptPublisher::new(
+                    advance_sink,
+                ),
+            );
+            pool.set_transcript_publisher(advance_publisher);
         }
 
         // The Tool Program executor needs the daemon-owned submission facade

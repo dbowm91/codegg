@@ -387,6 +387,20 @@ pub struct SubAgentPool {
     /// happens to own. Held on the pool because the pool is the one
     /// thing both the spawn site and the completion paths can reach.
     name_registry: Arc<crate::agent::subagent_names::SubagentNameRegistry>,
+    /// M002: the post-commit publisher a delegated child uses to announce
+    /// that its run's committed transcript advanced.
+    ///
+    /// It is installed **after** the pool is built, by the daemon that owns
+    /// it: the publisher reaches the daemon's event log, which does not
+    /// exist when the pool is constructed. A pool with no publisher
+    /// installed records transcripts exactly as it did before, and the
+    /// durable store stays the only truth.
+    ///
+    /// Holding it on the pool is what makes the injection explicit: the
+    /// child obtains the publisher from the runtime it was dispatched
+    /// through, not from a process-wide registry.
+    transcript_publisher:
+        Arc<Mutex<Option<Arc<dyn crate::agent::transcript_publisher::TranscriptAdvancePublisher>>>>,
 }
 
 impl SubAgentPool {
@@ -454,6 +468,7 @@ impl SubAgentPool {
             durable_run_control: Arc::new(TokioMutex::new(None)),
             durable_run_groups: Arc::new(TokioMutex::new(None)),
             name_registry: Arc::new(crate::agent::subagent_names::SubagentNameRegistry::new()),
+            transcript_publisher: Arc::new(Mutex::new(None)),
         };
 
         let pool_clone = pool_inst.clone();
@@ -526,6 +541,7 @@ impl SubAgentPool {
             durable_run_control: Arc::new(TokioMutex::new(None)),
             durable_run_groups: Arc::new(TokioMutex::new(None)),
             name_registry: Arc::new(crate::agent::subagent_names::SubagentNameRegistry::new()),
+            transcript_publisher: Arc::new(Mutex::new(None)),
         };
 
         let pool_clone = pool_inst.clone();
@@ -765,6 +781,33 @@ impl SubAgentPool {
         }
     }
 
+    /// Install the post-commit publisher a delegated child uses to announce
+    /// that its run's committed transcript advanced (M002).
+    ///
+    /// The daemon that owns this pool installs it once the daemon's event
+    /// log exists. A pool with no publisher installed records transcripts
+    /// exactly as it did before M002.
+    pub fn set_transcript_publisher(
+        &self,
+        publisher: Arc<dyn crate::agent::transcript_publisher::TranscriptAdvancePublisher>,
+    ) {
+        let mut slot = self
+            .transcript_publisher
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *slot = Some(publisher);
+    }
+
+    /// The installed post-commit publisher, when the pool has one.
+    pub fn transcript_publisher(
+        &self,
+    ) -> Option<Arc<dyn crate::agent::transcript_publisher::TranscriptAdvancePublisher>> {
+        self.transcript_publisher
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     /// Cancel one root lineage without affecting unrelated roots.
     pub async fn cancel_lineage(&self, root_id: &str) -> bool {
         self.lineage_tokens
@@ -850,6 +893,7 @@ impl Clone for SubAgentPool {
             // Shared, not re-created: a fresh registry per clone would let
             // two workers hand out the same name simultaneously.
             name_registry: Arc::clone(&self.name_registry),
+            transcript_publisher: Arc::clone(&self.transcript_publisher),
         }
     }
 }
@@ -1382,17 +1426,24 @@ async fn run_subagent_task_with_cancel(
                         agent: agent_name,
                         error: error_for_bus,
                     });
-                    // The failure is the last note in the transcript.
+                    // Don't update task store here - let handle_response do it
+                    let failure_class =
+                        classify_delegated_failure(e.as_ref()).map(str::to_string);
+                    // The failure is the last note in the transcript, and it
+                    // names the class the continuability decision reads. A
+                    // note whose failure has no recognised class says so,
+                    // rather than implying a class it does not have.
+                    let terminal_note = match failure_class.as_deref() {
+                        Some(class) => format!("{error_msg} [class={class}]"),
+                        None => format!("{error_msg} [class=unclassified]"),
+                    };
                     capture_transcript(
                         transcript_store.as_ref(),
                         transcript_run_id.as_ref(),
                         TranscriptRole::Orchestrator,
                         TranscriptKind::TerminalNote,
-                        &error_msg,
+                        &terminal_note,
                     ).await;
-                    // Don't update task store here - let handle_response do it
-                    let failure_class =
-                        classify_delegated_failure(e.as_ref()).map(str::to_string);
                     SubAgentResult::failure_with_class(task_id, error_msg, failure_class)
                 }
             }
@@ -1846,6 +1897,38 @@ async fn execute_agent_task(
     // that admitted the dispatching turn. The child has no turn of its own,
     // so the dispatch site's attribution is what resolves its writer.
     agent_loop.set_inherited_execution_audit(request.execution_audit.clone());
+    // The delegated run's transcript is captured **while the child runs**, not
+    // after it finishes. The loop reports the model's message, an accepted
+    // tool call, and a delivered tool result at the seam each one happens, and
+    // this sink writes them to the run's durable transcript. A parent that
+    // opens the child's transcript mid-run sees what the child has already
+    // done, and a child that dies mid-turn leaves the observations it had
+    // already made.
+    // M002: the delegated child's runtime obtains the post-commit
+    // publisher from the runtime it was dispatched through — the subagent
+    // pool the daemon owns and installed it on. There is no process-wide
+    // registry, no TUI dependency, and no lookup at write time: a pool
+    // with no publisher installed simply records without signalling.
+    let transcript_publisher = subagent_pool.transcript_publisher();
+    let transcript_capture = match (transcript_store.as_ref(), transcript_run_id.as_ref()) {
+        (Some(store), Some(run_id)) => Some(Arc::new(match transcript_publisher.clone() {
+            Some(publisher) => {
+                crate::agent::transcript_capture::StoreTranscriptCapture::with_publisher(
+                    store.clone(),
+                    run_id.clone(),
+                    publisher,
+                )
+            }
+            None => crate::agent::transcript_capture::StoreTranscriptCapture::new(
+                store.clone(),
+                run_id.clone(),
+            ),
+        })),
+        _ => None,
+    };
+    agent_loop.set_transcript_capture(transcript_capture.clone().map(|capture| {
+        capture as Arc<dyn crate::agent::transcript_capture::AgentRunTranscriptCapture>
+    }));
     if let Some(run_id) = request.run_id.as_ref() {
         let runs = subagent_pool
             .durable_agent_runs
@@ -2117,6 +2200,38 @@ async fn execute_agent_task(
     if let Some((control, run_id)) = live_registration {
         control.unregister_live(&run_id).await;
     }
+    // The transcript's own health, reported after the run on both the success
+    // and the failure path. A transcript that stopped recording is not a
+    // transcript that is complete, and the run's own outcome says nothing
+    // about that.
+    if let Some(capture) = transcript_capture.as_ref() {
+        if capture.write_failed() {
+            tracing::warn!(
+                target: "codegg::agent::worker",
+                run_id = ?transcript_run_id,
+                "the delegated run's transcript is incomplete: at least one write failed"
+            );
+        }
+        if capture.recording_stopped() {
+            tracing::warn!(
+                target: "codegg::agent::worker",
+                run_id = ?transcript_run_id,
+                "the delegated run's transcript stopped recording at the store's per-run bound"
+            );
+        }
+    }
+    // M002: the run is over, so the advisory that was coalesced away must
+    // not be left waiting for an append that will never come. The flush
+    // publishes the run's final committed watermark.
+    if let (Some(publisher), Some(run_id)) =
+        (transcript_publisher.as_ref(), transcript_run_id.as_ref())
+    {
+        publisher.flush(run_id.as_str()).await;
+    }
+    // A failed run keeps the observations it had already made: they were
+    // committed while the run was executing, at the seam each one happened.
+    // The failure itself is classified and noted by the caller, so this path
+    // never depends on an event stream the failed run did not produce.
     let events = events?;
 
     let mut output = String::new();
@@ -2134,85 +2249,16 @@ async fn execute_agent_task(
         );
     }
 
-    // The child's tool calls and the outcomes the loop executed for them.
+    // The child's conversation is already recorded. The capture happened
+    // inside the run: the model's message, an accepted tool call, and a
+    // delivered tool result were written to the durable transcript at the
+    // seam each one happened, so the transcript is readable while the child
+    // is still running and stays readable when the child dies mid-turn.
     //
-    // The call arguments come from the provider's events; the outputs come
-    // from the outcomes the loop itself executed, which is the only place
-    // they exist — no adapter constructs `ChatEvent::ToolResult`, so the
-    // event stream cannot be the source. Both rows carry the tool call id,
-    // so a reader can pair a call with its result. `ReasoningDelta` is
-    // deliberately not captured: raw provider reasoning is not a transcript.
-    let mut calls_by_id: HashMap<&str, &crate::provider::ToolCall> = HashMap::new();
-    for event in &events {
-        if let crate::provider::ChatEvent::ToolCall(call) = event {
-            calls_by_id.insert(call.id.as_str(), call);
-        }
-    }
-    let mut captured_call_ids: HashSet<&str> = HashSet::new();
-    for outcome in agent_loop.executed_tool_outcomes().entries.iter() {
-        if let Some(call) = calls_by_id.get(outcome.tool_call_id.as_str()) {
-            captured_call_ids.insert(call.id.as_str());
-            capture_transcript(
-                transcript_store.as_ref(),
-                transcript_run_id.as_ref(),
-                TranscriptRole::Orchestrator,
-                TranscriptKind::ToolCall,
-                &format!(
-                    "tool_call_id={} tool={} arguments={}",
-                    call.id, call.name, call.arguments
-                ),
-            )
-            .await;
-        }
-        // The truncation flag is a field ahead of the output, so a later and
-        // tighter row bound cannot cut it away.
-        capture_transcript(
-            transcript_store.as_ref(),
-            transcript_run_id.as_ref(),
-            TranscriptRole::Orchestrator,
-            TranscriptKind::ToolResult,
-            &format!(
-                "tool_call_id={} tool={} success={} output_truncated={} output={}",
-                outcome.tool_call_id,
-                outcome.tool_name,
-                outcome.success,
-                outcome.output_truncated,
-                outcome.output
-            ),
-        )
-        .await;
-    }
-    // A call the loop produced no outcome for still belongs in the
-    // transcript: the parent can see that the child asked for it.
-    for event in &events {
-        let crate::provider::ChatEvent::ToolCall(call) = event else {
-            continue;
-        };
-        if captured_call_ids.contains(call.id.as_str()) {
-            continue;
-        }
-        capture_transcript(
-            transcript_store.as_ref(),
-            transcript_run_id.as_ref(),
-            TranscriptRole::Orchestrator,
-            TranscriptKind::ToolCall,
-            &format!(
-                "tool_call_id={} tool={} arguments={}",
-                call.id, call.name, call.arguments
-            ),
-        )
-        .await;
-    }
-
-    // The child's final response: the same text the run records as its result.
-    capture_transcript(
-        transcript_store.as_ref(),
-        transcript_run_id.as_ref(),
-        TranscriptRole::Orchestrator,
-        TranscriptKind::ModelMessage,
-        &output,
-    )
-    .await;
+    // Nothing here reconstructs it from the event stream. The stream cannot
+    // be the source of a tool result — no adapter constructs one — and a
+    // batch reconstruction after the fact could only ever describe a child
+    // that had already finished.
 
     let report = serde_json::from_str::<SubAgentReport>(&output).ok();
     let (validation, artifacts) = extract_validation_evidence(agent_loop.executed_tool_outcomes());

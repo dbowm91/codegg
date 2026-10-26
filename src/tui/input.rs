@@ -20,6 +20,7 @@
 //! | Ctrl+T | ToggleTasksList (todos + subagents + jobs) |
 //! | Shift+N / Shift+P | Next / previous subagent tab (main buffer) |
 //! | Shift+X | Close subagent tab (main buffer) |
+//! | Ctrl+Alt+R | Retry the delegated transcript read |
 //! | Ctrl+B | ToggleSidebar |
 //! | Ctrl+W | CloseSession |
 //! | Ctrl+S | StashPrompt |
@@ -239,6 +240,17 @@ pub enum InputAction {
     /// conversation. Never closes the main buffer itself, and cancels
     /// nothing — the run keeps going whether or not its tab is open.
     CloseSubagentTab,
+    /// Retry the delegated run's live transcript read (`Ctrl+Alt+R`).
+    ///
+    /// The explicit retry for a follow that broke: a read the daemon
+    /// refused, a daemon that went away, or a read that failed. It re-reads
+    /// from the tab's own cursor, so it never re-fetches what the tab
+    /// already holds.
+    ///
+    /// A no-op when no subagent tab is showing, and a no-op when the tab's
+    /// follow is not in a failed state — a follow that is working is not
+    /// re-issued.
+    RetryTranscriptFollow,
     /// Project Work Orders M003 + C001: toggle the prompt composer between
     /// Session and Task submission modes. C001 owns bare Tab at root
     /// prompt focus (`Session <-> Task`); `SwitchAgent` lives on `Ctrl+A`
@@ -330,6 +342,8 @@ pub enum ActionKey {
     NextSubagentTab,
     PreviousSubagentTab,
     CloseSubagentTab,
+    /// Retry the delegated run's live transcript read.
+    RetryTranscriptFollow,
     ToggleComposerMode,
     OpenWorkspaceDashboard,
 }
@@ -401,6 +415,7 @@ impl ActionKey {
             Self::NextSubagentTab,
             Self::PreviousSubagentTab,
             Self::CloseSubagentTab,
+            Self::RetryTranscriptFollow,
             Self::ToggleComposerMode,
             Self::OpenWorkspaceDashboard,
             Self::ToggleTasksList,
@@ -467,6 +482,7 @@ impl ActionKey {
             Self::NextSubagentTab => InputAction::NextSubagentTab,
             Self::PreviousSubagentTab => InputAction::PreviousSubagentTab,
             Self::CloseSubagentTab => InputAction::CloseSubagentTab,
+            Self::RetryTranscriptFollow => InputAction::RetryTranscriptFollow,
             Self::ToggleComposerMode => InputAction::ToggleComposerMode,
             Self::OpenWorkspaceDashboard => InputAction::OpenWorkspaceDashboard,
             Self::ToggleTasksList => InputAction::ToggleTasksList,
@@ -546,6 +562,7 @@ impl ActionKey {
             InputAction::NextSubagentTab => Self::NextSubagentTab,
             InputAction::PreviousSubagentTab => Self::PreviousSubagentTab,
             InputAction::CloseSubagentTab => Self::CloseSubagentTab,
+            InputAction::RetryTranscriptFollow => Self::RetryTranscriptFollow,
             InputAction::ToggleComposerMode => Self::ToggleComposerMode,
             InputAction::OpenWorkspaceDashboard => Self::OpenWorkspaceDashboard,
         };
@@ -612,6 +629,7 @@ impl ActionKey {
             Self::NextSubagentTab => "Next subagent tab (Shift+N)",
             Self::PreviousSubagentTab => "Previous subagent tab (Shift+P)",
             Self::CloseSubagentTab => "Close subagent tab (Shift+X)",
+            Self::RetryTranscriptFollow => "Retry the delegated transcript read (Ctrl+Alt+R)",
             Self::ToggleComposerMode => "Toggle composer mode (Session/Task)",
             Self::OpenWorkspaceDashboard => "Open Workspace view (selected-project chat)",
             Self::ToggleTasksList => "Toggle tasks (todos, subagents, jobs) (Ctrl+T)",
@@ -919,6 +937,16 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         (KeyModifiers::CONTROL, KeyCode::Char('b')),
         InputAction::ToggleSidebar,
     );
+    // The delegated tab's live follow has an explicit retry. `Ctrl+Alt+R` is
+    // a chord no bare letter can claim, so it needs no mode gate: the
+    // action is reachable from the mode the app boots in.
+    map.insert(
+        (
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('r'),
+        ),
+        InputAction::RetryTranscriptFollow,
+    );
     // Normal-mode space opens help (the `/help` affordance). Insert mode is
     // unaffected: bare printable keys remain prompt text there.
     map.insert((KeyModifiers::NONE, KeyCode::Char(' ')), InputAction::Help);
@@ -1065,6 +1093,13 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('b')),
         InputAction::ToggleSidebar,
+    );
+    map.insert(
+        (
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('r'),
+        ),
+        InputAction::RetryTranscriptFollow,
     );
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('f')),

@@ -927,19 +927,88 @@ bound), and `absent` — a plain statement of why, never an empty pane that
 reads as "the child did nothing". A `None` transcript (a summary written by a
 daemon older than this milestone) leaves the tab as the inspector it was.
 
-**The transcript is read at a boundary, not on a timer.** The tab's transcript
-comes from the session projection snapshot, which is rebuilt when the tab
-opens: `App::open_subagent_tab` asks the daemon for a fresh session snapshot,
-and the snapshot builder attaches each run's bounded transcript page. The
-refresh is a re-read of the session the client is already watching and it
-leaves the open rows alone, so it neither flickers the tab nor detaches the
-other tabs. There is no poll and no live feed: a live feed would be a new
-projection capability with its own bounds, and the plan puts it out of scope.
+**M003 makes the tab a live follow, and the follow is not a poll.** The
+boundary read above was the whole of it: the tab showed whatever the session
+projection carried when it opened, and it never changed again. The tab now
+reads the recorded transcript through the daemon's authorized page read
+(`CoreRequest::AgentRunTranscriptRead`) and keeps up as the run records more.
+
+Three things make it read, and **none of them is a timer**:
+
+1. the daemon publishes a **body-free hint**
+   (`CoreEvent::AgentRunTranscriptAdvanced`) once a row is committed. The
+   projection reducer keeps it as a per-run watermark, and the TUI reads
+   that watermark to learn *that* the run advanced — never *what* it
+   recorded. The rows come from the authorized page read;
+2. a **tab boundary** — opening or focusing a tab catches up from the store's
+   own cursor, so a tab opened on a long-running child shows the rows
+   recorded while it was closed;
+3. a **terminal run** still owes its last rows, so a finished run triggers one
+   final catch-up.
+
+The bounds are the point. Only the **focused** tab reads eagerly; a
+background tab remembers that it is behind (bounded dirty state) and reads
+when it is focused, so a hidden tab generates no recurrent traffic. One read
+is outstanding per tab, and a second hint **coalesces** with the read
+already in flight rather than issuing another. A catch-up cycle is bounded to
+`MAX_TRANSCRIPT_PAGES_PER_PASS` pages, and the total number of outstanding
+reads across the open tabs is bounded to `MAX_TRANSCRIPT_FETCHES_PER_PASS`,
+so one busy child cannot spend the whole budget while the others wait. The
+read is a spawned task: the event loop never blocks a redraw on it.
+
+The **cursor is authoritative and comes from the store**, never from a hint
+and never from a count of painted rows. The hint is advisory. The page's
+`next_ordinal` is what the next read starts from, and it never moves
+backwards. Merging is by `(run_id, ordinal)`: a duplicate or stale row is
+ignored, a row for another run is never merged, and a **gap** keeps the
+cursor at the gap so the next read recovers it from the authoritative reader
+instead of skipping the missing rows.
+
+The tab keeps a **bounded window** of the recorded rows
+(`MAX_TRANSCRIPT_CACHE_ENTRIES`). When the window has evicted earlier rows
+the tab says `earlier entries not loaded`, so a view scrolled to the top of a
+bounded window never passes for the whole conversation. Three truncations stay
+distinct: the **source's** own per-run bound (the missing rows were never
+written), the **view's** display bound (one row clipped on screen), and the
+**window's** eviction (the tab's own memory bound).
+
+**The follow's state is stated, and the states are not interchangeable.** An
+older peer that does not serve the read, a read the daemon refused, a daemon
+that went away, a run that recorded nothing, a run that finished, a source
+that stopped recording, a tab that is behind, and a read that failed are
+seven different facts, and the tab says which one it is. A failed follow
+offers an explicit retry; a follow that is working is not re-issued.
+
+**Every completion is fenced.** The per-tab request id, the live route token
+(project, workspace, session, reconnect epoch), the tab's own existence, the
+run id the cache follows, and the cursor the read asked from all have to
+match, or the page is **dropped** — not rendered, not merged, not allowed to
+move a cursor. A session switch, a project switch, a reconnect, a tab close,
+a task-id reuse and a run replacement therefore all discard the old answer,
+and no stale view can reveal another project's or session's transcript after
+a tab switch. The **inspector metadata stays separate from the paging
+state**: a snapshot that arrives late cannot overwrite fresher fetched
+entries, because the rows the page read fetched live in the tab's cache and
+the last-known row lives on the tab.
 
 **The tab is scrollable, and says when there is more.** The tab's content is
 one paragraph, so the viewport keys and `PageUp`/`PageDown` scroll it, and the
 tab states how many lines are below the fold. A transcript taller than the
 window that says nothing about it reads as a complete conversation.
+
+**The scroll extent is the wrapped extent.** The renderer measures the
+content **after** wrapping (`Paragraph::line_count`), because a body that
+wraps onto three visual rows is three rows on screen; a count taken from the
+number of logical lines would let the view stop short of the real end and
+would claim a line count the screen never showed.
+
+**The scroll position is anchored.** A view pinned to the bottom follows
+newly recorded rows; a view the reader scrolled **up** from stays exactly
+where they left it, because a new row must not yank the view away from what
+they were reading. The pin is set by an explicit jump to the bottom and
+released by an explicit scroll upward, and the renderer writes both the
+scroll extent and the pin back onto the tab — the tab deliberately does not
+know how tall its own content is.
 
 **The tool output is bounded on screen.** A tool call renders as a tool call
 and a tool result as a tool result, and a body larger than

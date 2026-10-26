@@ -38,6 +38,12 @@ pub fn classify(event: &CoreEvent) -> SafePublicationClass {
         CoreEvent::AgentRunProgress { .. } => SafePublicationClass::Safe,
         CoreEvent::AgentRunTerminal { .. } => SafePublicationClass::Safe,
         CoreEvent::AgentRunControlUpdated { .. } => SafePublicationClass::Safe,
+        // M002: the transcript-advanced hint carries a run id, a committed
+        // ordinal, and a flag. No text, no tool arguments, no reasoning, no
+        // credentials — so it is classified like the rest of the run
+        // family. The transcript *body* still crosses only through the
+        // authorized page read, never through this event.
+        CoreEvent::AgentRunTranscriptAdvanced { .. } => SafePublicationClass::Safe,
         CoreEvent::WorktreeUpserted { .. } => SafePublicationClass::Safe,
         CoreEvent::AgentRunGroupUpserted { .. } => SafePublicationClass::Safe,
         CoreEvent::FileChanged { .. } => SafePublicationClass::Safe,
@@ -205,6 +211,7 @@ pub fn has_safe_origin(event: &CoreEvent) -> bool {
         CoreEvent::AgentRunProgress { session_id, .. } => !session_id.is_empty(),
         CoreEvent::AgentRunTerminal { session_id, .. } => !session_id.is_empty(),
         CoreEvent::AgentRunControlUpdated { session_id, .. } => !session_id.is_empty(),
+        CoreEvent::AgentRunTranscriptAdvanced { session_id, .. } => !session_id.is_empty(),
         CoreEvent::WorktreeUpserted { session_id, .. } => !session_id.is_empty(),
         CoreEvent::AgentRunGroupUpserted { session_id, .. } => !session_id.is_empty(),
         CoreEvent::RunStarted { session_id, .. } => !session_id.is_empty(),
@@ -669,6 +676,12 @@ mod tests {
                         message: "m".into(),
                     },
                 ),
+            },
+            CoreEvent::AgentRunTranscriptAdvanced {
+                session_id: "s".into(),
+                run_id: "run-1".into(),
+                ordinal: 12,
+                recording_stopped: false,
             },
         ];
 

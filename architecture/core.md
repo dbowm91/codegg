@@ -1113,6 +1113,54 @@ split: no hand-written job-state terminality list in production code outside
 the domain, and no new `JobState` variant that the projections do not
 cover.
 
+## The delegated-run transcript read (M002)
+
+`CoreRequest::AgentRunTranscriptRead { session_id, run_id, from_ordinal,
+limit }` is the **session-scoped tail read** of a delegated run's recorded
+transcript. It is routed by `DaemonRequestFamily::of` to the new
+`DaemonRequestFamily::AgentRuns` family, whose owner is
+`src/core/daemon_refresh.rs` — the module that already owns the
+delegated-run transcript boundary read.
+
+It has its own family because its authority is the **run's own durable
+ownership**, not the session's. Routing it to `Sessions` would file it under
+a surface whose gate is the session, and the run-ownership gate would read
+as an extra check rather than as the point.
+
+### Two gates, two different facts
+
+| Gate | Where | What it decides |
+|------|-------|-----------------|
+| Authorization | `crates/codegg-core/src/authorization/policy.rs` → `operation_descriptor` | The scope is `ViaSession` and the capability is `Capability::SessionRead`, so the daemon resolves the session's project and checks the caller's grant over it. |
+| Ownership | `src/core/daemon_refresh.rs` → `handle_agent_run_request` | The run's own task origin names the session that owns it. The client's `session_id` is a claim that is **checked**, never a grant. |
+
+`session.read` is the capability, not `session.observe`: the page carries the
+child's recorded conversation, which is content. `session.observe` is the
+narrower "may see that this session exists and how it is going" capability.
+Every `ProjectRole` that carries `observe` also carries `read`, so today the
+gap is expressed by the descriptor itself — which is the machine-checkable
+form of "observe is not enough".
+
+The daemon does **not** branch on a role: `src/core/daemon.rs` contains no
+`ProjectRole::` check, and `scripts/check_authorization_matrix.py` holds it
+to that.
+
+### Three answers, and they are three different facts
+
+| Situation | Answer |
+|-----------|--------|
+| The session does not own the run, **or** the run does not exist | `CoreResponse::Error { code: "agent_run_not_found", … }` — **the same answer for both**, so a guessed run id reveals neither the run's existence nor its size |
+| The session owns the run and it recorded nothing | A **page** whose status is `Absent` — the run exists and nothing was recorded, which is a different fact from the refusal above |
+| The store could not be read | `CoreResponse::Error { code: "transcript_unavailable", … }` — "could not read it" is not "not yours" |
+
+The refusal is deliberately **not** the absent page: an absent page is the
+statement "this run exists and nothing was recorded", and that statement
+must not be made about a run the caller does not own.
+
+A retired parent turn does not close the door. Ownership is session-scoped
+and durable, so a run whose parent turn has ended is still readable by the
+session that owns it — the read never consults the turn.
+
 ## Source verification
 
 Verified 2026-10-06 against `crates/codegg-core/src/lib.rs`, `src/lib.rs`,

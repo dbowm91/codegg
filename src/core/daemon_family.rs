@@ -69,6 +69,16 @@ pub enum DaemonRequestFamily {
     /// daemon-effect command forms under `command.execute`, auditing each
     /// one as a canonical `Run` (ADR-0052).
     Commands,
+    /// M002. The durable delegated-run surface: the session-scoped
+    /// transcript page read.
+    ///
+    /// It is its own family because its authority is the **run's own
+    /// durable ownership**, not the session's: the handler must resolve
+    /// which session owns the run before it reads a row. Routing it to
+    /// `Sessions` would file it under a surface whose gate is the
+    /// session, and the run-ownership gate would read as an extra check
+    /// rather than the point.
+    AgentRuns,
 }
 
 impl DaemonRequestFamily {
@@ -151,6 +161,9 @@ impl DaemonRequestFamily {
             CoreRequest::SessionList { .. } => Self::Sessions,
             CoreRequest::SessionLoad { .. } => Self::Sessions,
             CoreRequest::SessionMessageCounts { .. } => Self::Sessions,
+            // M002: the delegated-run transcript page read. Its own family:
+            // the handler's authority is the run's durable ownership.
+            CoreRequest::AgentRunTranscriptRead { .. } => Self::AgentRuns,
             CoreRequest::SessionMessagesLoad { .. } => Self::Sessions,
             CoreRequest::SessionRename { .. } => Self::Sessions,
             CoreRequest::SessionRestore { .. } => Self::Sessions,
@@ -380,6 +393,10 @@ impl DaemonRequestFamily {
             Self::Assets => "src/core/daemon_assets.rs",
             Self::Providers => "src/core/daemon_providers.rs",
             Self::Sessions => "src/core/daemon_sessions.rs",
+            // M002: the durable delegated-run surface. The transcript page
+            // read is served from the refresh module, which already owns
+            // the delegated-run transcript boundary read.
+            Self::AgentRuns => "src/core/daemon_refresh.rs",
             Self::Turns => "src/core/daemon_turns.rs",
             Self::Jobs => "src/core/daemon_jobs.rs",
             Self::Projects => "src/core/daemon_projects.rs",
@@ -438,6 +455,15 @@ mod tests {
                     session_id: "s".into(),
                 },
                 DaemonRequestFamily::Sessions,
+            ),
+            (
+                CoreRequest::AgentRunTranscriptRead {
+                    session_id: "s".into(),
+                    run_id: "r".into(),
+                    from_ordinal: 0,
+                    limit: 64,
+                },
+                DaemonRequestFamily::AgentRuns,
             ),
             (CoreRequest::ModelsRefresh, DaemonRequestFamily::Turns),
             (

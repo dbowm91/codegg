@@ -42,6 +42,7 @@
 use std::collections::HashMap;
 
 use crate::tui::app::state::subagents::SubagentRow;
+use crate::tui::app::state::transcript_cache::TranscriptCache;
 
 /// Ceiling on simultaneously open subagent tabs.
 ///
@@ -175,6 +176,41 @@ pub struct SubagentTabState {
     pub liveness: SubagentTabLiveness,
     /// Scroll offset within the rendered view, in rows.
     pub scroll: u16,
+    /// Whether the view is pinned to the bottom of the content.
+    ///
+    /// This is the *only* thing that decides whether newly recorded rows
+    /// pull the view down. A user who has scrolled up is reading, and their
+    /// position is anchored: a new row must not yank the view away from
+    /// what they were reading.
+    ///
+    /// The flag is set by an explicit jump to the bottom and cleared by an
+    /// explicit scroll upward. It is not derived from the offset alone: a
+    /// fresh tab starts at the top of a long transcript, which is *not* the
+    /// bottom, and treating "offset 0" as "pinned" would hide every new row
+    /// below the fold.
+    pub follow_bottom: bool,
+    /// The maximum scroll offset the last render computed.
+    ///
+    /// Only the renderer knows how tall the content is, so it writes this
+    /// back. The tab uses it to turn "pinned to the bottom" back into a
+    /// real offset when the user scrolls up from there. `None` means the
+    /// view has not been rendered yet, so its extent is unknown.
+    pub scroll_max: Option<u16>,
+    /// The tab's bounded live transcript cache.
+    ///
+    /// `None` when the tab has no durable run identity, or when live follow
+    /// is not available for it. This is **paging state** and is deliberately
+    /// separate from [`SubagentTabState::row`], which is the last-known
+    /// inspector metadata: a snapshot that arrives late must not overwrite
+    /// fresher fetched entries.
+    pub transcript: Option<TranscriptCache>,
+    /// Why live follow is unavailable for this tab, when it is.
+    ///
+    /// `None` means live follow is not *unavailable* — it is simply not
+    /// started yet (the tab was just opened, or the session was re-bound and
+    /// the cache was dropped). `Some` names the reason the tab cannot
+    /// follow at all.
+    pub follow_unavailable: Option<String>,
 }
 
 impl SubagentTabState {
@@ -185,6 +221,10 @@ impl SubagentTabState {
             row,
             liveness: SubagentTabLiveness::Attached,
             scroll: 0,
+            follow_bottom: false,
+            scroll_max: None,
+            transcript: None,
+            follow_unavailable: None,
         }
     }
 
@@ -273,17 +313,34 @@ impl SubagentTabs {
     /// The offset never goes below zero. The **lower** end is the renderer's
     /// to clamp: only the renderer knows how tall the content is, and a tab
     /// that guessed would either stop short of the end or run past it.
+    ///
+    /// Scrolling **upward** releases the bottom pin: the user is reading
+    /// something other than the live edge, and newly recorded rows must not
+    /// pull the view away from them. Scrolling downward keeps the pin, so a
+    /// reader who is already at the bottom stays at the bottom.
     pub fn scroll_active(&mut self, delta: i16) {
         let Some(tab) = self.active_mut() else {
             return;
         };
-        let next = i32::from(tab.scroll) + i32::from(delta);
+        if delta < 0 {
+            tab.follow_bottom = false;
+        }
+        // `u16::MAX` is the "as far down as there is" sentinel. Resolving it
+        // against the last known extent is what lets a scroll *up* from the
+        // bottom move instead of saturating.
+        let base = if tab.scroll == u16::MAX {
+            tab.scroll_max.unwrap_or(0)
+        } else {
+            tab.scroll
+        };
+        let next = i32::from(base) + i32::from(delta);
         tab.scroll = next.max(0) as u16;
     }
     /// Move the active tab's view to its first line.
     pub fn scroll_active_to_top(&mut self) {
         if let Some(tab) = self.active_mut() {
             tab.scroll = 0;
+            tab.follow_bottom = false;
         }
     }
     /// Move the active tab's view to its last line.
@@ -291,14 +348,45 @@ impl SubagentTabs {
     /// `u16::MAX` means "as far down as there is": the renderer clamps the
     /// offset to the content height, so the tab does not have to know how
     /// tall its own content is.
+    ///
+    /// This is also the explicit **pin**: a jump to the bottom is the user
+    /// saying they want to watch the live edge, so newly recorded rows
+    /// follow from here on.
     pub fn scroll_active_to_bottom(&mut self) {
         if let Some(tab) = self.active_mut() {
             tab.scroll = u16::MAX;
+            tab.follow_bottom = true;
         }
     }
     /// Lookup a tab by id.
     pub fn get(&self, tab_id: &SubagentTabId) -> Option<&SubagentTabState> {
         self.tabs.get(tab_id)
+    }
+
+    /// Mutable lookup of a tab by id.
+    pub fn get_mut(&mut self, tab_id: &SubagentTabId) -> Option<&mut SubagentTabState> {
+        self.tabs.get_mut(tab_id)
+    }
+
+    /// Drop every tab's fetched transcript rows.
+    ///
+    /// The cached rows are **bodies** the daemon authorized for one session
+    /// and one project. A session switch, a project switch, or a reconnect
+    /// changes who owns the view, so the bodies go with it: keeping them
+    /// would leave one session's conversation on screen under another
+    /// session's header.
+    ///
+    /// The tabs themselves stay open — a tab outlives its subject by design
+    /// — but they keep only the last-known metadata, which the projection
+    /// refreshes or drops on its own terms.
+    pub fn clear_transcript_caches(&mut self) {
+        for tab in self.tabs.values_mut() {
+            tab.transcript = None;
+            // The follow is not *unavailable* — it is not started yet. The
+            // distinction matters: an unavailable follow says the run has no
+            // durable identity, and that is a claim about the run.
+            tab.follow_unavailable = None;
+        }
     }
 
     /// Whether a tab for this subject is already open.

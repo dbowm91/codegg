@@ -3684,6 +3684,7 @@ impl CoreDaemon {
             | CoreRequest::ActiveGoalLoad { session_id }
             | CoreRequest::GoalSetBudget { session_id, .. }
             | CoreRequest::SnapshotSession { session_id }
+            | CoreRequest::AgentRunTranscriptRead { session_id, .. }
             | CoreRequest::ToolProgramList { session_id, .. }
             | CoreRequest::ToolProgramNotificationReinject { session_id }
             | CoreRequest::ToolProgramRecoveryDebugInspect { session_id, .. }
@@ -4742,6 +4743,19 @@ impl CoreDaemon {
                 Box::pin(self.handle_command_request(
                     payload,
                     request_id,
+                    trusted_client_id,
+                    authority,
+                    authz_decision,
+                ))
+                .await
+            }
+            // M002: the durable delegated-run surface. The handler's
+            // authority is the run's own durable ownership: it re-resolves
+            // the run's owning session and refuses a read that does not
+            // belong to the session the caller named.
+            super::daemon_family::DaemonRequestFamily::AgentRuns => {
+                Box::pin(self.handle_agent_run_request(
+                    payload,
                     trusted_client_id,
                     authority,
                     authz_decision,

@@ -49,6 +49,13 @@ pub(super) struct AgentLoopServices {
     /// are not, in which case nothing is inferred and nothing is written.
     pub(super) credential_observer:
         Option<super::provider_qualification::SharedProviderCredentialObserver>,
+    /// The in-execution capture of a durable delegated run's transcript.
+    ///
+    /// Present only when this turn belongs to a durable delegated run; `None`
+    /// for every other turn, in which case the loop records nothing and its
+    /// behaviour is unchanged.
+    pub(super) transcript_capture:
+        Option<Arc<dyn super::transcript_capture::AgentRunTranscriptCapture>>,
     pub(super) permission_checker: PermissionChecker,
     pub(super) tool_registry: crate::tool::ToolRegistry,
     pub(super) hook_registry: Option<Arc<crate::hooks::HookRegistry>>,

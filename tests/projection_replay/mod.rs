@@ -25,6 +25,8 @@ pub mod common;
 pub mod daemon_protocol;
 #[path = "delegated_transcript.inc"]
 pub mod delegated_transcript;
+#[path = "delegated_transcript_advance.inc"]
+pub mod delegated_transcript_advance;
 #[path = "failpoint.inc"]
 pub mod failpoint;
 #[path = "publication_integration.inc"]

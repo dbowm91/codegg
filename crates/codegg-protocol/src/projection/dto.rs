@@ -16,6 +16,7 @@ use std::collections::VecDeque;
 use crate::projection::limits::{
     truncate_str, MAX_PROJECTION_DESCRIPTOR_BYTES, MAX_PROJECTION_DISPLAY_NAME_BYTES,
     MAX_PROJECTION_RUN_SUMMARY_BYTES, MAX_PROJECTION_STRING_BYTES, MAX_PROJECTION_TRANSCRIPT_BYTES,
+    MAX_PROJECTION_TRANSCRIPT_PAGE_BYTES, MAX_PROJECTION_TRANSCRIPT_PAGE_ROWS,
     MAX_PROJECTION_TRANSCRIPT_ROWS,
 };
 
@@ -695,6 +696,147 @@ impl AgentRunTranscriptProjection {
     pub fn is_within_bounds(&self) -> bool {
         self.body_bytes() <= Self::MAX_BYTES && self.entries().len() <= Self::MAX_ROWS
     }
+}
+
+/// The state of a delegated run's recorded transcript for one bounded read.
+///
+/// Three states, and they are three different facts:
+///
+/// - **Absent** — the store holds no recorded rows for this run. This is
+///   what an old run recorded before the transcript store existed looks
+///   like, and it is *not* a claim that the child did nothing.
+/// - **Present** — the page carries recorded rows.
+/// - **RecordingStopped** — the page carries recorded rows *and* the run's
+///   own recording stopped at the store's per-run bound, so the recorded
+///   transcript is itself incomplete and will never grow.
+///
+/// "Absent" is never a rendering of "unauthorized": an unauthorized read
+/// does not produce a page at all (see
+/// [`AgentRunTranscriptPageDto`]).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum AgentRunTranscriptPageStatus {
+    /// The store holds no recorded transcript for this run.
+    #[default]
+    Absent,
+    /// The page carries recorded rows.
+    Present,
+    /// The page carries recorded rows, and the run's own recording stopped
+    /// at the store's per-run bound.
+    RecordingStopped,
+}
+
+/// The store's own record of a run's transcript, independent of the page.
+///
+/// This is deliberately **not** the same fact as `has_more`:
+///
+/// - `has_more` says the *store* holds rows beyond this page, so another
+///   read can move the cursor.
+/// - `recording_stopped` says the run's own recording ended at the store's
+///   per-run bound, so the rows that were never written will never arrive.
+///
+/// A full last page therefore does not look like exhausted history: it
+/// reports `has_more = false` *and* `recording_stopped = true`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentRunTranscriptSourceState {
+    /// The run's recording stopped at the store's per-run bound. The
+    /// recorded transcript is itself incomplete and will never grow.
+    pub recording_stopped: bool,
+    /// How many entries the store has committed for this run. This is the
+    /// committed high-water count, not the number of rows in this page.
+    pub total_entries: i64,
+}
+
+/// One bounded page of a delegated run's recorded transcript.
+///
+/// The page is the *tail* read: it is addressed by a durable cursor
+/// (`from_ordinal`) and it answers with the authoritative cursor to pass
+/// back (`next_ordinal`), so a client can walk past the initial preview
+/// without re-fetching the whole session.
+///
+/// The page carries redacted bodies only. Redaction happens at the store's
+/// write boundary, and the byte ceiling here is applied *after* that
+/// redaction and *before* serialization, so a page can never widen what
+/// the store already withheld.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentRunTranscriptPageDto {
+    /// The run this page belongs to.
+    pub run_id: String,
+    /// Whether the run has a recorded transcript, and whether that
+    /// recording stopped at the store's per-run bound.
+    pub status: AgentRunTranscriptPageStatus,
+    /// The redacted rows this page carries, in ascending ordinal order.
+    pub entries: Vec<AgentRunTranscriptEntryProjection>,
+    /// The authoritative cursor: the ordinal the next page starts at.
+    ///
+    /// This is the store's own committed ordinal, not a count of rows
+    /// returned, so a page cut short by the byte ceiling still advances
+    /// the cursor to the first row it did not carry.
+    pub next_ordinal: i64,
+    /// Whether the store holds rows beyond this page.
+    pub has_more: bool,
+    /// The store's own record of the run, independent of this page.
+    pub source: AgentRunTranscriptSourceState,
+}
+
+impl AgentRunTranscriptPageDto {
+    /// The declared bound: the maximum body bytes one page may carry.
+    pub const MAX_BYTES: usize = MAX_PROJECTION_TRANSCRIPT_PAGE_BYTES;
+
+    /// The declared bound: the maximum rows one page may carry.
+    pub const MAX_ROWS: usize = MAX_PROJECTION_TRANSCRIPT_PAGE_ROWS;
+
+    /// Build a page, refusing one over the declared bound.
+    ///
+    /// A caller that cannot fit its rows must say so rather than ship a
+    /// shortened page that reads as the whole transcript.
+    pub fn checked(
+        page: AgentRunTranscriptPageDto,
+    ) -> Result<AgentRunTranscriptPageDto, AgentRunTranscriptBoundExceeded> {
+        let bytes: usize = page.entries.iter().map(|entry| entry.body.len()).sum();
+        let rows = page.entries.len();
+        if bytes > Self::MAX_BYTES || rows > Self::MAX_ROWS {
+            return Err(AgentRunTranscriptBoundExceeded {
+                bytes,
+                rows,
+                max_bytes: Self::MAX_BYTES,
+                max_rows: Self::MAX_ROWS,
+            });
+        }
+        Ok(page)
+    }
+
+    /// The total body bytes this page carries.
+    pub fn body_bytes(&self) -> usize {
+        self.entries.iter().map(|entry| entry.body.len()).sum()
+    }
+
+    /// Whether this page is within the declared bound.
+    pub fn is_within_bounds(&self) -> bool {
+        self.body_bytes() <= Self::MAX_BYTES && self.entries.len() <= Self::MAX_ROWS
+    }
+}
+
+/// A delegated run's transcript watermark: how far the last
+/// transcript-advanced hint said the run's recording had reached.
+///
+/// This is an **advisory** watermark and never a transcript. It carries no
+/// body, and a reader that wants the entries must fetch the authorized
+/// page — the canonical cursor always comes from the store, never from
+/// here.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentRunTranscriptWatermarkProjection {
+    /// The run this watermark belongs to.
+    pub run_id: String,
+    /// The run's committed high-water ordinal.
+    ///
+    /// Monotonic per run: a duplicate or out-of-order hint never moves it
+    /// backwards, because the canonical storage ordinal dominates any
+    /// advisory watermark.
+    pub ordinal: i64,
+    /// The run's recording stopped at the store's per-run bound, so the
+    /// recorded transcript is itself incomplete and will not grow.
+    pub recording_stopped: bool,
 }
 
 /// Bounded, frontend-neutral summary of a durable delegated agent run.

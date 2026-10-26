@@ -128,6 +128,9 @@ All projection DTOs honour explicit caps declared in
 | `MAX_PROJECTION_TOOL_OUTPUT_BYTES` | 8,192 |
 | `MAX_PROJECTION_RUN_SUMMARY_BYTES` | 2,048 |
 | `MAX_PROJECTION_TRUNCATION_MARKER_BYTES` | 64 |
+| `MAX_PROJECTION_TRANSCRIPT_PAGE_BYTES` | 8,192 (M002 tail-read page) |
+| `MAX_PROJECTION_TRANSCRIPT_PAGE_ROWS` | 64 (M002 tail-read page) |
+| `MAX_PROJECTION_TRANSCRIPT_WATERMARKS` | 64 (M002 per-run watermarks) |
 
 Strings exceeding their bound are truncated with
 `TRUNCATION_MARKER` (`"\u{2026}[truncated]"`) rounded to the nearest
@@ -186,7 +189,7 @@ Lifecycle invariants:
 snapshot helpers (`upsert_secondary`, `push_recent_turn`). External
 implementations MUST go through these helpers.
 
-### ProjectionEvent (47 variants)
+### ProjectionEvent (48 variants)
 
 | Family | Variants |
 |--------|----------|
@@ -197,7 +200,7 @@ implementations MUST go through these helpers.
 | Permission | `PermissionPending`, `PermissionResolved` |
 | Question | `QuestionPending`, `QuestionResolved`, `LspDiagnosticsUpdated` |
 | Subagent | `SubagentStarted`, `SubagentProgress`, `SubagentCompleted`, `SubagentFailed` |
-| Durable agent run | `AgentRunUpserted`, `AgentRunProgress`, `AgentRunTerminal`, `AgentRunControlUpdated` |
+| Durable agent run | `AgentRunUpserted`, `AgentRunProgress`, `AgentRunTerminal`, `AgentRunControlUpdated`, `AgentRunTranscriptAdvanced` |
 | Worktree/group | `WorktreeUpserted`, `AgentRunGroupUpserted` |
 | Convergence | `ConvergenceUpserted` |
 | File | `FileChanged` |
@@ -462,6 +465,70 @@ without a later status_group request. The event's session routing comes from
 the persisted turn owner or the owner run's originating task. Terminal live
 follow-up delivery is separately claim-gated by durable group notification
 state, so replay can refresh projections without duplicating user messages.
+
+### The delegated-transcript advisory (M002)
+
+M002 adds two things to this surface: an **authorized tail read** of a
+delegated run's recorded transcript, and a **body-free advisory** that says
+the transcript grew.
+
+#### The advisory
+
+`ProjectionEvent::AgentRunTranscriptAdvanced { run_id, ordinal,
+recording_stopped, at }` is the projection form of
+`CoreEvent::AgentRunTranscriptAdvanced`. It is body-free by contract: a run
+id, the run's committed high-water ordinal, and a flag. It carries no text,
+no tool arguments, no provider reasoning, and no credentials. The transcript
+itself crosses only through the authorized page read, which is gated on
+ownership and on the `session.read` capability.
+
+The reducer's job here is deliberately small. It updates a **bounded dirty
+watermark** — `SessionProjectionSnapshot::transcript_watermarks`, at most
+`MAX_PROJECTION_TRANSCRIPT_WATERMARKS` entries — and nothing else. It never
+invents a transcript entry, and it never claims a run's transcript is
+complete. The watermark is monotonic per run: the canonical storage ordinal
+dominates, so a duplicate or out-of-order advisory never moves it backwards,
+and a run whose recording stopped stays stopped.
+
+A watermark does not require the run to be known to the snapshot: a hint can
+legitimately arrive before the run's summary does, and dropping it would lose
+the signal for no reason.
+
+#### Forward compatibility of the additive variant
+
+The audit this change required, in full:
+
+- `ProjectionEvent` is `#[serde(tag = "kind", rename_all = "snake_case")]`.
+  There is **no** `#[serde(other)]` and **no** custom `Deserialize`. Serde's
+  internally-tagged enums *error* on an unknown tag — they do not ignore it.
+- `CoreEvent` is `#[serde(tag = "type", rename_all = "snake_case")]`, with
+  the same property.
+- The repository's stated policy — "Unknown variants map to `Unknown
+  { variant_name, notice }`" — is implemented **server-side**: the
+  projection adapter's fallback arm maps an unmapped `CoreEvent` to
+  `ProjectionEvent::Unknown`, and the reducer records a bounded diagnostic
+  for it. It does not, on its own, make an old *client* tolerant of a new
+  wire tag.
+- What does make an old client tolerant is the **transport**: an
+  undecodable frame is skipped with a warning rather than fatal
+  (`crates/codegg-client/src/local.rs`, `src/core/transport/daemon_socket.rs`
+  — `if let Ok(frame) = …`), and the legacy `/tui` protocol drops a
+  `CoreEvent` it has no arm for (`src/server/ws.rs`,
+  `convert_core_event_to_tui`).
+- `PROJECTION_PROTOCOL_VERSION` stays at **1**. The negotiated version is
+  not threaded into the publication path (the envelope's `protocol_version`
+  is stamped literally), so a version-gated emission is not currently
+  expressible; and the new variant changes no existing variant's shape, so a
+  consumer that cannot parse it skips it instead of mis-parsing it.
+
+**Therefore**: an additive variant is *ignored* by an older consumer rather
+than fatal, and it is never fatal to the connection. A newer consumer
+handles the new arm explicitly, and an older consumer of a newer daemon
+simply does not receive the hint — which is exactly the intended
+degradation, because the hint is advisory and the durable store remains the
+truth. The one thing that must not happen is a new variant *changing* an
+existing variant's shape; that is why the advisory is a **new** variant and
+not a new field on `AgentRunSummary`.
 
 ### Bounded workstream view (agent-workstream-blackboard M002)
 

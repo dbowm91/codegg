@@ -1200,6 +1200,49 @@ Three rules, each of which was a defect first:
 - **The subagent buffer is a view, not a modal.** Clicking a row replaces the
   transcript in the viewport rect; `Esc` returns. Its `Esc` arm sits below the
   modal short-circuit and above every other handler.
+- **The delegated tab follows the run; the follow is not a poll.** The tab
+  reads the recorded transcript through the daemon's authorized page read
+  (`CoreRequest::AgentRunTranscriptRead`) and keeps up as the run records more.
+  Exactly three things make it read: the daemon's **body-free hint**
+  (`CoreEvent::AgentRunTranscriptAdvanced`, carried by the projection as a
+  per-run watermark), a **tab boundary** (open or focus), and a **terminal
+  run**. There is no timer and no poll behind it.
+  - The **hint is advisory**: it says *that* the run advanced, never *what*
+    it recorded. The rows come from the page read, and the cursor always
+    comes from the page's own `next_ordinal` — never from the hint, never
+    from a count of painted rows.
+  - **Only the focused tab reads eagerly.** A background tab keeps bounded
+    dirty state and reads when it is focused, so a hidden tab generates no
+    recurrent traffic. One outstanding read per tab; a second hint
+    **coalesces** with the read in flight. A catch-up cycle is bounded to a
+    few pages, and the total outstanding reads across the open tabs are
+    bounded too.
+  - **Keep the inspector metadata separate from the paging state.** The rows
+    the page read fetched live in the tab's cache; the last-known row lives
+    on the tab. A snapshot that arrives late must not overwrite fresher
+    fetched entries.
+  - **The states are not interchangeable.** An older peer that does not
+    serve the read, a refused read, an unreachable daemon, a run that
+    recorded nothing, a finished run, a source whose own recording stopped,
+    a tab that is behind, and a read that failed are eight different facts.
+    Say which one it is. An empty pane is never "the subagent did nothing".
+  - **The window is bounded and says so.** When the tab's cache has evicted
+    earlier rows it says `earlier entries not loaded`. The source's own
+    per-run truncation, the view's display bound, and the cache's eviction
+    are three different facts and stay three different facts.
+  - **Every completion is fenced** by the per-tab request id, the live route
+    token (project, workspace, session, reconnect epoch), the tab's
+    existence, the run id, and the cursor. A page that fails any of them is
+    dropped — never rendered, never merged, never allowed to move a cursor.
+- **The delegated tab's scroll is anchored and the extent is the wrapped
+  extent.** A view pinned to the bottom follows newly recorded rows; a view
+  the reader scrolled **up** from stays where they left it, because a new
+  row must not yank the view away from what they were reading. The pin is
+  set by an explicit jump to the bottom and released by an explicit scroll
+  upward. The renderer measures the content **after** wrapping
+  (`Paragraph::line_count`) and writes the extent and the pin back onto the
+  tab, because the tab deliberately does not know how tall its own content
+  is.
 - **The viewport rect has exactly one owner.** `render()` picks one of
   {route's own view, change review, open subagent tab} and renders exactly one
   of them into the rect. The change review outranks the tab (it is a modal

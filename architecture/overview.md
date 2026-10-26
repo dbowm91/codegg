@@ -576,29 +576,80 @@ fifth reconciliations recorded. The full reconciliation is in
 |------|-------|--------|
 | Architecture docs | 92 | `architecture/*.md` |
 | Tool registrations in `with_options()` | 67 (53 `register` + 14 `register_boxed`) | `ToolRegistry::with_options()` (`src/tool/mod.rs`) — the registrations are the `registry.register(..)` / `registry.register_boxed(..)` calls in that constructor's body, not the constructor's own call sites |
-| Distinct production tool names | 75 | `impl Tool for …` `name()` across `src/` (the whole tree — a production `Tool` impl may live with the subsystem that owns the tool's behaviour, e.g. `src/python_script/tool.rs`), **plus** the 13 eggsact validator names at their `EggsactTool::new()` call sites in `src/tool/deterministic.rs` — that family's `impl Tool for EggsactTool` returns `self.codegg_name`, so a literal-name scan cannot see it. 67 production `impl Tool for` blocks, of which 5 resolve their name at runtime; excludes the 8 test-only mock impls under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs`, `tool_search.rs`, `disabled.rs`, `broker.rs` and `src/scheduler/tool_program_executor.rs`. The runtime-named families that only *substitute* for an already-counted tool add no new name: `DisabledTool` carries the name of the tool it replaces (`lsp`, `lsp_read`, `security`) and `UnrootedTool` forwards its inner tool's name |
+| Distinct production tool names | 78 | `impl Tool for …` `name()` across `src/` (the whole tree — a production `Tool` impl may live with the subsystem that owns the tool's behaviour, e.g. `src/python_script/tool.rs`), **plus** the 16 eggsact validator names at their `EggsactTool::new()` call sites in `src/tool/deterministic.rs` — that family's `impl Tool for EggsactTool` returns `self.codegg_name`, so a literal-name scan cannot see it. 67 production `impl Tool for` blocks, of which 5 resolve their name at runtime; excludes the 9 test-only mock impls under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs`, `tool_search.rs`, `disabled.rs`, `broker.rs` and `src/scheduler/tool_program_executor.rs`. The runtime-named families that only *substitute* for an already-counted tool add no new name: `DisabledTool` carries the name of the tool it replaces (`lsp`, `lsp_read`, `security`) and `UnrootedTool` forwards its inner tool's name |
 | Tool source files | 83 | `src/tool/**.rs` (incl. `bash/`; excl. the `bash/tests/` fixture, which is test support, not tool source) |
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 58 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 61 | `crates/codegg-core/src/bus/events.rs` |
-| `CoreRequest` variants | 270 (244 struct + 26 unit) | `crates/codegg-protocol/src/core.rs` |
-| `CoreResponse` variants | 178 (177 struct + 1 unit) | `crates/codegg-protocol/src/core.rs` |
-| `CoreEvent` variants | 92 | `crates/codegg-protocol/src/core.rs` |
-| `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
-| Authorized operations | 264 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) — 264 arms carrying 264 distinct operation names, covering all 270 `CoreRequest` variants; the `representative_requests()` list holds 254 of them |
+| `CoreRequest` variants | 271 (245 struct + 26 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreResponse` variants | 179 (178 struct + 1 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreEvent` variants | 97 | `crates/codegg-protocol/src/core.rs` |
+| `ProjectionEvent` variants | 50 | `crates/codegg-protocol/src/projection/event.rs` |
+| Authorized operations | 265 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) — 271 arms carrying 265 distinct operation names, covering all 271 `CoreRequest` variants; the `representative_requests()` list holds 229 of them |
 | Identity newtypes | 19 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
 | Built-in slash commands | 169 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
-| TUI state modules | 33 (34 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
+| TUI state modules | 34 (35 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
 | Database tables (`CREATE TABLE`) | 99 statements / 95 tables | `crates/codegg-core/src/session/schema.rs` (96 distinct `CREATE TABLE` names, less the transient `origin_attribution_new` rebuild name; `migration_version`, `origin_attribution` and that rebuild each appear twice) |
 | Storage layout version | 90 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 351 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Integration test files | 354 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
 | Guard scripts (all) | 102 | `scripts/check_*` — every guard the repository ships |
 | CI guard scripts | 68 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+
+### Count reconciliation — delegated live transcript, M001–M003 (2026-10-26)
+
+The delegated live transcript line moved **six** code-count rows. Every figure
+below was **re-measured** against its own listed `Source` with
+`scripts/measure_overview_counts.py`, not incremented.
+
+- *`CoreRequest` variants* is **271** (245 struct + 26 unit) — the new
+  `AgentRunTranscriptRead` arm, added **beside** the existing arms, never
+  replacing one.
+- *`CoreResponse` variants* is **179** (178 struct + 1 unit) — the new
+  `AgentRunTranscriptRead` arm.
+- *`CoreEvent` variants* is **97** — the new `AgentRunTranscriptAdvanced` arm.
+  The row read **92** before this line and the tree already held **96** at
+  `HEAD`: **four** of the movement was pre-existing drift, not this line's.
+  This line moved it **96 → 97**.
+- *`ProjectionEvent` variants* is **50** — the new
+  `AgentRunTranscriptAdvanced` wire arm. The row read **47** and the tree held
+  **49** at `HEAD`: the same **two** of the movement was pre-existing drift.
+  This line moved it **49 → 50**.
+- *Authorized operations* is **265** — the new `agent_run_transcript_read`
+  descriptor. The row's note read "264 arms carrying 264 distinct operation
+  names, covering all 270 `CoreRequest` variants; the
+  `representative_requests()` list holds 254 of them". The arms are now
+  **271**, the distinct names **265**, and the `CoreRequest` variants they
+  cover **271**. The `representative_requests()` figure was **already** stale
+  at `HEAD`: the list holds **229** arms there and holds **229** here — this
+  line did not move it.
+- *TUI state modules* is **34** (35 `.rs` files incl. `mod.rs`) — the new
+  `src/tui/app/state/transcript_cache.rs`, the delegated tab's bounded
+  per-tab paging cache.
+- *Integration test files* is **354** (`tests/*.rs` + `tests/*/*.inc`, with the
+  `tests/common/` helper tree excluded) — by **three**: the new
+  `tests/core_daemon/delegated_transcript_m002.inc`,
+  `tests/projection_replay/delegated_transcript_advance.inc` and
+  `tests/tui_render/transcript_follow.inc`. All three sit inside the
+  existing `core_daemon`, `projection_replay` and `tui_render` families, so
+  the root package's **test-target** count did **not** move.
+- *Distinct production tool names* is **78** — **not** moved by this line: it
+  adds no `impl Tool for` block and touches no file under `src/tool/`. The
+  row read **75** and the tree already held **78** at `HEAD`, so the **three**
+  of the movement was pre-existing drift. The row's own detail was stale with
+  it: it counted **13** eggsact validator names where the tree holds **16**,
+  and **8** test-only mock impls where the tree holds **9**.
+
+*Guard scripts (all)* is **102** and *CI guard scripts* is **68**, both
+unchanged: this line strengthened **existing** guards and added none. The
+comment budget was **re-banked** on the merged tree
+(`python3 scripts/check_comment_budget.py --bank`), which raised the recorded
+ceilings for the files this line's comments grew and added the new files to
+`docs/comment-budget.toml`.
 
 ### Count reconciliation — M008 (2026-10-24)
 

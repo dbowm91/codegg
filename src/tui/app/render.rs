@@ -1705,13 +1705,33 @@ impl App {
         // The scroll offset is the renderer's to clamp: it is the only place
         // that knows how tall the content is, so a tab that guessed would
         // either stop short of the end or run past it into blank space.
+        //
+        // The height that matters is the **wrapped** height. A body that
+        // wraps onto three visual rows is three rows on screen, and a scroll
+        // extent computed from the number of logical lines would let the view
+        // stop short of the real end — and would claim a line count the
+        // screen never showed.
         let viewport = area.height as usize;
-        let max_scroll = lines.len().saturating_sub(viewport);
-        let scroll = (tab.scroll as usize).min(max_scroll);
+        let probe = Paragraph::new(lines.clone()).wrap(ratatui::widgets::Wrap { trim: false });
+        let content_height = probe.line_count(area.width);
+        let max_scroll = content_height.saturating_sub(viewport);
+        // Whether the view was at the bottom **before** this frame's content
+        // grew. A view that was at the bottom follows the new rows; a view
+        // that was scrolled up stays anchored where the reader left it.
+        let was_at_bottom = tab.follow_bottom
+            || tab
+                .scroll_max
+                .map(|previous| tab.scroll as usize >= previous as usize)
+                .unwrap_or(false);
+        let scroll = if was_at_bottom {
+            max_scroll
+        } else {
+            (tab.scroll as usize).min(max_scroll)
+        };
         // Say how much is below the fold. A transcript longer than the
         // viewport that says nothing about it reads as a complete
         // conversation, and the user never learns to scroll.
-        let below = lines.len().saturating_sub(scroll + viewport);
+        let below = content_height.saturating_sub(scroll + viewport);
         let overflow = if below > 0 {
             format!("   ▾ {below} more lines below — PageDown to read on")
         } else {
@@ -1719,6 +1739,17 @@ impl App {
         };
         if let Some(line) = lines.get_mut(overflow_index) {
             *line = Line::from(Span::styled(overflow, Style::default().fg(theme.muted)));
+        }
+        // Write the two facts the tab cannot compute back onto the tab: how
+        // far the view can scroll, and whether it is pinned to the bottom.
+        // The pin is what decides whether newly recorded rows pull the view
+        // down; a reader who scrolled up keeps their place.
+        if let Some(tab) = self.ui_state.subagents.active_tab_mut() {
+            tab.scroll = scroll as u16;
+            tab.scroll_max = Some(max_scroll as u16);
+            if !tab.follow_bottom && scroll >= max_scroll {
+                tab.follow_bottom = true;
+            }
         }
         // The full width of the rect. A one-column inset left the last
         // column of the viewport unpainted, which read as the transcript
@@ -1730,22 +1761,64 @@ impl App {
     }
     /// The delegated run's recorded transcript, as view lines.
     ///
-    /// `None` means the projection carried no transcript at all — an older
-    /// daemon, or a summary built for a lifecycle event rather than read at a
-    /// boundary. The tab then stays the run inspector it was.
+    /// Two sources, in one order: the **fetched** rows win, because a page
+    /// read is strictly newer than the projection's boundary preview for the
+    /// same run. The preview is still used — for a daemon that does not
+    /// serve the page read, and for the frame before any page has landed —
+    /// so a tab is never blank while a read is on its way.
+    ///
+    /// `None` in the preview means the projection carried no transcript at
+    /// all — an older daemon, or a summary built for a lifecycle event
+    /// rather than read at a boundary. The tab then stays the run inspector
+    /// it was, and says that live follow is unavailable rather than painting
+    /// an empty pane.
     fn delegated_transcript_lines(
         &self,
         tab: &crate::tui::app::state::subagent_tabs::SubagentTabState,
     ) -> Vec<Line<'static>> {
-        use crate::protocol::projection::dto::{
-            AgentRunTranscriptKind, AgentRunTranscriptProjection, AgentRunTranscriptRole,
-        };
-        use crate::tui::app::state::subagent_tabs::MAX_RENDERED_TRANSCRIPT_ENTRY_BYTES;
+        use crate::protocol::projection::dto::AgentRunTranscriptProjection;
         let theme = self.ui_state.theme.clone();
-        let Some(transcript) = tab.row.transcript.as_ref() else {
-            return Vec::new();
-        };
         let mut lines: Vec<Line<'static>> = Vec::new();
+        // The live-follow state comes first: it says what the tab is doing
+        // about the recording. A user who cannot see that cannot tell a
+        // paused follow from a finished run, and an empty pane must never
+        // read as "the subagent did nothing".
+        lines.extend(self.transcript_follow_lines(tab));
+        let fetched = tab
+            .transcript
+            .as_ref()
+            .filter(|cache| cache.entry_count() > 0);
+        if let Some(cache) = fetched {
+            lines.push(Line::from(Span::styled(
+                " Transcript",
+                Style::default().fg(theme.muted),
+            )));
+            lines.push(Line::from(Span::styled(
+                self.fetched_transcript_state_line(cache),
+                Style::default().fg(theme.foreground),
+            )));
+            for entry in cache.entries.iter() {
+                lines.extend(self.transcript_entry_lines(entry));
+            }
+            // The cache's own cap is a **window** fact, and it is distinct
+            // from the store's per-run truncation and from the viewport's own
+            // fold. A view that scrolled to the top of a bounded window must
+            // not claim to be the whole conversation.
+            if cache.has_evicted_entries() {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "   … earlier entries not loaded — this tab keeps the last {} of {} recorded entries",
+                        cache.entry_count(),
+                        cache.entry_count() as i64 + cache.evicted_entries
+                    ),
+                    Style::default().fg(theme.muted),
+                )));
+            }
+            return lines;
+        }
+        let Some(transcript) = tab.row.transcript.as_ref() else {
+            return lines;
+        };
         lines.push(Line::from(Span::styled(
             " Transcript",
             Style::default().fg(theme.muted),
@@ -1808,44 +1881,189 @@ impl App {
             }
         }
         for entry in transcript.entries() {
-            let role = match entry.role {
-                AgentRunTranscriptRole::Orchestrator => "orchestrator",
-                AgentRunTranscriptRole::Internal => "internal",
-            };
-            let kind = match entry.kind {
-                AgentRunTranscriptKind::ModelMessage => "model message",
-                AgentRunTranscriptKind::ToolCall => "tool call",
-                AgentRunTranscriptKind::ToolResult => "tool result",
-                AgentRunTranscriptKind::TerminalNote => "terminal note",
+            lines.extend(self.transcript_entry_lines(entry));
+        }
+        lines
+    }
+    /// One recorded entry, as view lines.
+    ///
+    /// The per-entry **display** bound is a viewport fact: the row is
+    /// clipped so one enormous tool output cannot push the rest of the
+    /// conversation off the screen. It says so when it clips, because a
+    /// silently shortened row reads as a short row.
+    fn transcript_entry_lines(
+        &self,
+        entry: &crate::protocol::projection::dto::AgentRunTranscriptEntryProjection,
+    ) -> Vec<Line<'static>> {
+        use crate::protocol::projection::dto::{AgentRunTranscriptKind, AgentRunTranscriptRole};
+        use crate::tui::app::state::subagent_tabs::MAX_RENDERED_TRANSCRIPT_ENTRY_BYTES;
+        let theme = self.ui_state.theme.clone();
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        let role = match entry.role {
+            AgentRunTranscriptRole::Orchestrator => "orchestrator",
+            AgentRunTranscriptRole::Internal => "internal",
+        };
+        let kind = match entry.kind {
+            AgentRunTranscriptKind::ModelMessage => "model message",
+            AgentRunTranscriptKind::ToolCall => "tool call",
+            AgentRunTranscriptKind::ToolResult => "tool result",
+            AgentRunTranscriptKind::TerminalNote => "terminal note",
+        };
+        lines.push(Line::from(Span::styled(
+            format!("   {} · {kind} · {role}", entry.ordinal),
+            Style::default().fg(theme.primary),
+        )));
+        let body = entry.body.as_str();
+        let (shown, omitted) = if body.len() > MAX_RENDERED_TRANSCRIPT_ENTRY_BYTES {
+            (
+                crate::protocol::projection::limits::clip_str(
+                    body,
+                    MAX_RENDERED_TRANSCRIPT_ENTRY_BYTES,
+                ),
+                body.len() - MAX_RENDERED_TRANSCRIPT_ENTRY_BYTES,
+            )
+        } else {
+            (body, 0)
+        };
+        for body_line in shown.lines() {
+            lines.push(Line::from(Span::styled(
+                format!("     {body_line}"),
+                Style::default().fg(theme.foreground),
+            )));
+        }
+        if omitted > 0 {
+            lines.push(Line::from(Span::styled(
+                format!("     … {omitted} more bytes of this {kind} are not shown"),
+                Style::default().fg(theme.muted),
+            )));
+        }
+        lines
+    }
+    /// The one-line state of the fetched transcript.
+    ///
+    /// Four different facts, four different lines: the run may still be
+    /// recording, the run has finished and every row is here, the run's own
+    /// recording stopped at the store's bound, or the tab is behind.
+    fn fetched_transcript_state_line(
+        &self,
+        cache: &crate::tui::app::state::transcript_cache::TranscriptCache,
+    ) -> String {
+        use crate::tui::app::state::transcript_cache::TranscriptFollowStatus;
+        match cache.status {
+            TranscriptFollowStatus::Complete => {
+                format!("   complete · {} entries", cache.entry_count())
+            }
+            TranscriptFollowStatus::RecordingStopped => format!(
+                "   the run's recording stopped at the store's per-run bound · {} entries",
+                cache.entry_count()
+            ),
+            TranscriptFollowStatus::Absent => {
+                "   no transcript was recorded for this run".to_string()
+            }
+            TranscriptFollowStatus::CatchingUp => {
+                format!("   catching up · {} entries so far", cache.entry_count())
+            }
+            _ => format!(
+                "   following · {} entries recorded so far",
+                cache.entry_count()
+            ),
+        }
+    }
+    /// What the tab is doing about the delegated run's recording.
+    ///
+    /// These are several different facts and the tab says which one it is.
+    /// "The daemon is older", "the daemon refused", "the daemon is
+    /// unreachable", "the run recorded nothing" and "the read failed" are
+    /// not the same claim, and none of them is "the subagent did nothing".
+    fn transcript_follow_lines(
+        &self,
+        tab: &crate::tui::app::state::subagent_tabs::SubagentTabState,
+    ) -> Vec<Line<'static>> {
+        use crate::tui::app::state::transcript_cache::TranscriptFollowStatus;
+        let theme = self.ui_state.theme.clone();
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        let Some(cache) = tab.transcript.as_ref() else {
+            // No cache. Either the run has no durable identity — there is
+            // nothing to read at all — or the follow has simply not been
+            // started yet. The two are different claims and the tab says
+            // which one it is, because an empty pane must never read as a
+            // subagent that did nothing.
+            let reason = tab.follow_unavailable.as_deref();
+            let (head, tail) = match reason {
+                Some(reason) => (
+                    format!(" Live follow unavailable — {reason}"),
+                    "   What is shown above is the run's own metadata.".to_string(),
+                ),
+                None => (
+                    " Live follow · not started — the recorded transcript has not been read yet"
+                        .to_string(),
+                    "   The run's own metadata is shown above.".to_string(),
+                ),
             };
             lines.push(Line::from(Span::styled(
-                format!("   {} · {kind} · {role}", entry.ordinal),
-                Style::default().fg(theme.primary),
+                head,
+                Style::default().fg(theme.muted),
             )));
-            let body = entry.body.as_str();
-            let (shown, omitted) = if body.len() > MAX_RENDERED_TRANSCRIPT_ENTRY_BYTES {
-                (
-                    crate::protocol::projection::limits::clip_str(
-                        body,
-                        MAX_RENDERED_TRANSCRIPT_ENTRY_BYTES,
-                    ),
-                    body.len() - MAX_RENDERED_TRANSCRIPT_ENTRY_BYTES,
-                )
-            } else {
-                (body, 0)
-            };
-            for body_line in shown.lines() {
-                lines.push(Line::from(Span::styled(
-                    format!("     {body_line}"),
-                    Style::default().fg(theme.foreground),
-                )));
+            lines.push(Line::from(Span::styled(
+                tail,
+                Style::default().fg(theme.muted),
+            )));
+            return lines;
+        };
+        let text = match &cache.status {
+            TranscriptFollowStatus::Idle => {
+                " Live follow · not started — the recorded transcript has not been read yet"
+                    .to_string()
             }
-            if omitted > 0 {
-                lines.push(Line::from(Span::styled(
-                    format!("     … {omitted} more bytes of this {kind} are not shown"),
-                    Style::default().fg(theme.muted),
-                )));
+            TranscriptFollowStatus::Fetching => {
+                " Live follow · reading the recorded transcript …".to_string()
             }
+            TranscriptFollowStatus::Following => format!(
+                " Live follow · following · {} entries so far",
+                cache.entry_count()
+            ),
+            TranscriptFollowStatus::CatchingUp => format!(
+                " Live follow · catching up · {} entries so far",
+                cache.entry_count()
+            ),
+            TranscriptFollowStatus::Complete => {
+                format!(" Live follow · the run finished · {} entries", cache.entry_count())
+            }
+            TranscriptFollowStatus::RecordingStopped => format!(
+                " Live follow · the run's own recording stopped at the store's bound · {} entries",
+                cache.entry_count()
+            ),
+            TranscriptFollowStatus::Absent => {
+                " Live follow · the run recorded no transcript at all".to_string()
+            }
+            TranscriptFollowStatus::Unavailable => {
+                " Live follow unavailable — this run has no durable identity".to_string()
+            }
+            TranscriptFollowStatus::Unsupported => {
+                " Live follow unavailable — the connected daemon does not serve delegated transcript reads"
+                    .to_string()
+            }
+            TranscriptFollowStatus::Denied => {
+                " Live follow unavailable — the daemon refused this session's read of the run"
+                    .to_string()
+            }
+            TranscriptFollowStatus::Disconnected => {
+                " Live follow paused — the daemon is unreachable".to_string()
+            }
+            TranscriptFollowStatus::Failed(message) => {
+                format!(" Live follow failed — {message}")
+            }
+        };
+        lines.push(Line::from(Span::styled(
+            text,
+            Style::default().fg(theme.muted),
+        )));
+        if cache.status.is_retryable() {
+            // The retry is an explicit gesture, and it says what it does.
+            lines.push(Line::from(Span::styled(
+                "   Ctrl+Alt+R retries the read; Shift+X then reopening the tab does the same",
+                Style::default().fg(theme.muted),
+            )));
         }
         lines
     }

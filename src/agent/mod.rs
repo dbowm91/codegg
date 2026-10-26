@@ -48,6 +48,9 @@ mod tool_inspect;
 pub mod tool_program_recovery;
 pub mod tool_surface;
 mod transcript;
+pub mod transcript_capture;
+
+pub mod transcript_publisher;
 mod turn_completion;
 pub mod turn_runtime;
 pub mod worker;

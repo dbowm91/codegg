@@ -23,6 +23,7 @@ asset management.
 | `src/agent/semantic_router.rs` | Bounded selector execution and exact virtual-model route resolution |
 | `src/agent/turn_completion.rs` | Terminal publication, goal accounting/continuation, limit checks, run-boundary journaling, session transcript persistence |
 | `src/agent/transcript.rs` | Pure turn→transcript projection (`build_turn_transcript`): prompt, assistant text/reasoning, tool calls with outputs |
+| `src/agent/transcript_capture.rs` | In-execution capture of a durable delegated run's recorded conversation |
 | `src/agent/habit_observation.rs` | Host-owned habit observation adapter (allowlisted structural metadata only) |
 | `src/agent/snapshot_capture.rs` | Snapshot capture, file-change draining, security-review trigger dispatch |
 | `src/agent/follow_up.rs` | Notification injection and non-blocking follow-up drain |
@@ -1125,6 +1126,47 @@ behind.
   Their output stays in the run journal.
 - The TUI never writes this. `set_message_store` refuses in
   `AppMode::RemoteCore` — the daemon owns durable storage.
+
+### Delegated-run transcript capture (in execution)
+
+A durable delegated run's transcript is the parent's window into what the
+child did. The window is only useful while the child is still running, so the
+capture happens **inside** the agent loop, not in a batch after the run.
+
+- `src/agent/transcript_capture.rs` owns the sink. `AgentRunTranscriptCapture`
+  is the loop's contract: one `TranscriptCheckpoint` per semantic moment.
+  `StoreTranscriptCapture` is the store-backed implementation and the only
+  writer; every body reaches the durable store through
+  `AgentRunTranscriptStore::append`, so write-time redaction and both bounds
+  apply to a live capture exactly as they applied to the batch it replaced.
+- The loop holds `Option<Arc<dyn AgentRunTranscriptCapture>>`. It is `None`
+  for every turn that is not a durable delegated run, so an ordinary turn
+  records nothing and behaves identically. `src/agent/worker.rs` installs the
+  sink with `set_transcript_capture` before the run starts.
+- There are exactly **three** seams, and each is a semantic boundary rather
+  than a stream event:
+  - the provider response is complete → the model's assistant message for
+    that turn (once per response, never per text delta, never the provider's
+    private reasoning);
+  - the loop has accepted the structured calls → one `ToolCall` row per
+    logical call, **before** any tool runs, so a reader sees a call that is
+    still pending;
+  - the loop has delivered the result to the model → one `ToolResult` row
+    carrying the redacted, bounded text the model received and the tool's
+    actual outcome.
+- **Nothing here can fail the delegated work.** A write failure is logged and
+  remembered as a recording failure; the child's execution is untouched, and
+  a failed write is never reported as an absent transcript.
+- A failed or cancelled child keeps the observations it had already made:
+  they were committed during the run. The failure itself is classified
+  (`classify_delegated_failure`) and written as the last `TerminalNote`,
+  naming its class.
+- A call the child never executed stays a call with no result. Nothing
+  fabricates an outcome, and one logical call is one row per recorded attempt.
+
+`scripts/check_delegated_transcript_store.py` enforces the seams exist and
+that the post-run batch reconstruction stays gone; its `--self-test` injects
+each defect and proves the guard rejects it.
 
 ### Bounded run groups
 

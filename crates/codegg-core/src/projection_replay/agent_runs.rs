@@ -7,9 +7,10 @@
 //! resulting bounded DTO/event through `ProjectionReplayService`.
 
 use codegg_protocol::projection::dto::{
-    AgentRunGroupSummaryProjection, AgentRunSummary, AgentRunTranscriptEntryProjection,
-    AgentRunTranscriptKind, AgentRunTranscriptProjection, AgentRunTranscriptRole,
-    AgentRunTranscriptTruncation, WorktreeSummaryProjection,
+    AgentRunGroupSummaryProjection, AgentRunSummary, AgentRunTranscriptBoundExceeded,
+    AgentRunTranscriptEntryProjection, AgentRunTranscriptKind, AgentRunTranscriptPageDto,
+    AgentRunTranscriptPageStatus, AgentRunTranscriptProjection, AgentRunTranscriptRole,
+    AgentRunTranscriptSourceState, AgentRunTranscriptTruncation, WorktreeSummaryProjection,
 };
 
 use super::super::agent_run::{AgentRunRecord, AgentRunStatus, AgentTaskRecord};
@@ -19,7 +20,8 @@ use super::super::agent_run_group::{
     AgentRunGroupOwner, AgentRunGroupRecord, RunGroupStatus, RunJoinPolicy,
 };
 use super::super::agent_run_transcript::{
-    AgentRunTranscriptRead, AgentRunTranscriptStore, TranscriptKind, TranscriptRole,
+    AgentRunTranscriptError, AgentRunTranscriptRead, AgentRunTranscriptStore, TranscriptKind,
+    TranscriptRole,
 };
 use crate::identity::AgentRunId;
 use crate::run_result::AgentRunResult;
@@ -188,6 +190,136 @@ pub async fn agent_run_summary_with_transcript(
         }
     }
     summary
+}
+
+/// Why a transcript page read did not produce a page.
+///
+/// The two causes are deliberately distinct. A **storage failure** is not
+/// "the run has no transcript": a caller that renders one as the other
+/// asserts that a child never spoke. A **bound refusal** is not a shortened
+/// page either: it is a page the contract could not carry.
+#[derive(Debug, thiserror::Error)]
+pub enum AgentRunTranscriptPageError {
+    /// The store could not be read.
+    #[error("transcript storage failure: {0}")]
+    Storage(#[from] AgentRunTranscriptError),
+    /// The page was over the declared bound and was refused rather than
+    /// silently shortened.
+    #[error("transcript page is over the declared bound: {0}")]
+    BoundExceeded(#[from] AgentRunTranscriptBoundExceeded),
+}
+
+/// Read one bounded page of a delegated run's recorded transcript.
+///
+/// This is the **tail read**. It is addressed by the store's durable cursor
+/// and answers with the authoritative cursor to pass back, so a client can
+/// walk past the initial preview without re-fetching the whole session.
+///
+/// Three server-side clamps are applied here, in this order:
+///
+/// 1. the cursor is clamped to a non-negative value, so a negative
+///    `from_ordinal` reads from the beginning rather than from a negative
+///    offset the store would have to interpret;
+/// 2. the requested row count is clamped to the declared page row ceiling,
+///    independently of the store's own larger read limit;
+/// 3. the byte ceiling is applied to the **redacted** bodies — after the
+///    store's own write-time redaction and before serialization.
+///
+/// The cut is always at a row boundary and always states where it stopped:
+/// the page's `next_ordinal` is the first row it did **not** carry, and
+/// `has_more` is true whenever the store holds rows beyond the page. A
+/// full last page therefore does not read as exhausted history — the
+/// store's own `recording_stopped` is reported separately, and a page cut
+/// short by the byte ceiling is never silently "complete".
+pub async fn agent_run_transcript_page(
+    store: &dyn AgentRunTranscriptStore,
+    run_id: &AgentRunId,
+    from_ordinal: i64,
+    limit: usize,
+) -> Result<AgentRunTranscriptPageDto, AgentRunTranscriptPageError> {
+    let from_ordinal = from_ordinal.max(0);
+    let limit = limit.min(AgentRunTranscriptPageDto::MAX_ROWS);
+
+    let page = match store.read(run_id, from_ordinal, limit).await? {
+        AgentRunTranscriptRead::Absent => {
+            return Ok(AgentRunTranscriptPageDto {
+                run_id: run_id.to_string(),
+                status: AgentRunTranscriptPageStatus::Absent,
+                entries: Vec::new(),
+                next_ordinal: from_ordinal,
+                has_more: false,
+                source: AgentRunTranscriptSourceState {
+                    recording_stopped: false,
+                    total_entries: 0,
+                },
+            });
+        }
+        AgentRunTranscriptRead::Present(page) => page,
+    };
+
+    // The byte bound is applied to the redacted body, which is exactly what
+    // will cross the wire. Rows that do not fit are not dropped silently:
+    // the cut point becomes the page's cursor.
+    //
+    // The store's own per-row bound (`MAX_TRANSCRIPT_ROW_BYTES`, 8 KiB) is
+    // not larger than this page's byte ceiling, so the first row of a page
+    // always fits and a cut page is never empty. That matters: an empty
+    // page with a cursor that does not advance would strand a client that
+    // pages by cursor.
+    let mut entries: Vec<AgentRunTranscriptEntryProjection> = Vec::new();
+    let mut bytes = 0usize;
+    let mut cut_by_bytes = false;
+    for entry in &page.entries {
+        let len = entry.redacted_body.len();
+        if bytes + len > AgentRunTranscriptPageDto::MAX_BYTES {
+            cut_by_bytes = true;
+            break;
+        }
+        bytes += len;
+        entries.push(AgentRunTranscriptEntryProjection {
+            ordinal: entry.ordinal,
+            role: match entry.role {
+                TranscriptRole::Orchestrator => AgentRunTranscriptRole::Orchestrator,
+                TranscriptRole::Internal => AgentRunTranscriptRole::Internal,
+            },
+            kind: match entry.kind {
+                TranscriptKind::ModelMessage => AgentRunTranscriptKind::ModelMessage,
+                TranscriptKind::ToolCall => AgentRunTranscriptKind::ToolCall,
+                TranscriptKind::ToolResult => AgentRunTranscriptKind::ToolResult,
+                TranscriptKind::TerminalNote => AgentRunTranscriptKind::TerminalNote,
+            },
+            body: entry.redacted_body.clone(),
+            byte_len: entry.byte_len,
+            created_at: entry.created_at,
+        });
+    }
+
+    // The cursor is the store's own ordinal, not a count of rows returned:
+    // a page cut short by the byte ceiling still advances to the first row
+    // it did not carry.
+    let next_ordinal = entries
+        .last()
+        .map(|entry| entry.ordinal + 1)
+        .unwrap_or(from_ordinal);
+    let has_more = page.has_more || cut_by_bytes;
+    let status = if page.truncated {
+        AgentRunTranscriptPageStatus::RecordingStopped
+    } else {
+        AgentRunTranscriptPageStatus::Present
+    };
+
+    let dto = AgentRunTranscriptPageDto {
+        run_id: run_id.to_string(),
+        status,
+        entries,
+        next_ordinal,
+        has_more,
+        source: AgentRunTranscriptSourceState {
+            recording_stopped: page.truncated,
+            total_entries: page.total_entries,
+        },
+    };
+    Ok(AgentRunTranscriptPageDto::checked(dto)?)
 }
 
 /// Convert a managed worktree record without exposing its filesystem path.
@@ -537,5 +669,152 @@ mod tests {
         assert_eq!(projection.owner_kind, "turn");
         assert_eq!(projection.owner_session_id.as_deref(), Some("session"));
         assert_eq!(projection.owner_turn_id.as_deref(), Some("turn"));
+    }
+
+    /// M002: a page read answers with the store's own cursor.
+    #[tokio::test]
+    async fn a_page_reads_from_the_cursor_and_answers_with_the_next_cursor() {
+        let store = InMemoryAgentRunTranscriptStore::new();
+        let run_id = AgentRunId::new();
+        for index in 0..5 {
+            store
+                .append(
+                    &run_id,
+                    TranscriptRole::Orchestrator,
+                    TranscriptKind::ModelMessage,
+                    &format!("row-{index}"),
+                )
+                .await
+                .expect("append a row");
+        }
+
+        let page = agent_run_transcript_page(&store, &run_id, 0, 3)
+            .await
+            .expect("the page read succeeds");
+        assert_eq!(page.entries.len(), 3);
+        assert_eq!(page.entries[0].ordinal, 0);
+        assert_eq!(
+            page.next_ordinal, 3,
+            "the cursor is the store's own ordinal"
+        );
+        assert!(page.has_more, "the store holds rows beyond the page");
+
+        let second = agent_run_transcript_page(&store, &run_id, page.next_ordinal, 3)
+            .await
+            .expect("the page read succeeds");
+        assert_eq!(second.entries.len(), 2);
+        assert_eq!(second.entries[0].ordinal, 3);
+        assert_eq!(second.next_ordinal, 5);
+        assert!(!second.has_more, "the last page does not claim more rows");
+        assert!(
+            !second.source.recording_stopped,
+            "a run that recorded to the end did not stop recording"
+        );
+    }
+
+    /// M002: a negative cursor reads from the beginning.
+    #[tokio::test]
+    async fn a_negative_cursor_is_clamped_to_the_beginning() {
+        let store = InMemoryAgentRunTranscriptStore::new();
+        let run_id = AgentRunId::new();
+        store
+            .append(
+                &run_id,
+                TranscriptRole::Orchestrator,
+                TranscriptKind::ModelMessage,
+                "first",
+            )
+            .await
+            .expect("append a row");
+
+        let page = agent_run_transcript_page(&store, &run_id, -9, 8)
+            .await
+            .expect("the page read succeeds");
+        assert_eq!(
+            page.entries.first().map(|entry| entry.ordinal),
+            Some(0),
+            "a negative cursor is clamped to zero"
+        );
+    }
+
+    /// M002: the byte ceiling cuts the page at a row boundary and the
+    /// cursor still says where it stopped.
+    #[tokio::test]
+    async fn a_page_is_cut_at_the_byte_ceiling_and_still_advances_the_cursor() {
+        let store = InMemoryAgentRunTranscriptStore::new();
+        let run_id = AgentRunId::new();
+        // Each row is well under the ceiling, but together they exceed it.
+        let body = "x".repeat(2_000);
+        for _ in 0..10 {
+            store
+                .append(
+                    &run_id,
+                    TranscriptRole::Orchestrator,
+                    TranscriptKind::ModelMessage,
+                    &body,
+                )
+                .await
+                .expect("append a row");
+        }
+
+        let page = agent_run_transcript_page(&store, &run_id, 0, 64)
+            .await
+            .expect("the page read succeeds");
+        assert!(
+            page.body_bytes() <= AgentRunTranscriptPageDto::MAX_BYTES,
+            "the page must stay inside the declared byte ceiling, got {}",
+            page.body_bytes()
+        );
+        assert!(
+            page.entries.len() < 10,
+            "the page must be cut short by the byte ceiling"
+        );
+        assert!(page.has_more, "a cut page still has rows behind it");
+        assert_eq!(
+            page.next_ordinal,
+            page.entries.len() as i64,
+            "the cursor names the first row the page did not carry"
+        );
+    }
+
+    /// M002: a run that recorded nothing is absent, and a run whose
+    /// recording stopped says so separately from `has_more`.
+    #[tokio::test]
+    async fn an_absent_run_and_a_stopped_recording_are_different_answers() {
+        let store = InMemoryAgentRunTranscriptStore::new();
+        let empty = AgentRunId::new();
+        let page = agent_run_transcript_page(&store, &empty, 0, 8)
+            .await
+            .expect("the page read succeeds");
+        assert_eq!(page.status, AgentRunTranscriptPageStatus::Absent);
+        assert!(page.entries.is_empty());
+        assert!(!page.has_more);
+        assert!(!page.source.recording_stopped);
+        assert_eq!(page.source.total_entries, 0);
+
+        // A run whose recording hit the store's per-run bound reports the
+        // truncation as its own fact, not as "there is more".
+        let truncated = AgentRunId::new();
+        let huge = "y".repeat(64 * 1024);
+        for _ in 0..40 {
+            let _ = store
+                .append(
+                    &truncated,
+                    TranscriptRole::Orchestrator,
+                    TranscriptKind::ModelMessage,
+                    &huge,
+                )
+                .await
+                .expect("append a row");
+        }
+        let page = agent_run_transcript_page(&store, &truncated, 0, 64)
+            .await
+            .expect("the page read succeeds");
+        assert_eq!(
+            page.status,
+            AgentRunTranscriptPageStatus::RecordingStopped,
+            "a stopped recording is its own status"
+        );
+        assert!(page.source.recording_stopped);
     }
 }

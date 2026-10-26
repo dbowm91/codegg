@@ -270,6 +270,25 @@ pub enum ProjectionEvent {
         cancellation_requested: bool,
         at: i64,
     },
+    /// A delegated run's recorded transcript advanced.
+    ///
+    /// **Body-free.** It carries the run id, the committed high-water
+    /// ordinal, and whether the run's own recording stopped at the store's
+    /// per-run bound. It never carries transcript text: the reducer marks
+    /// the run's transcript dirty and a reader fetches the redacted page
+    /// through the authorized page request.
+    ///
+    /// The ordinal is the store's own committed ordinal for the **run**, so
+    /// it is monotonic per run even when two children write concurrently or
+    /// a continuation appends to the same run id.
+    AgentRunTranscriptAdvanced {
+        run_id: String,
+        /// The run's committed high-water ordinal.
+        ordinal: i64,
+        /// The run's recording stopped at the store's per-run bound.
+        recording_stopped: bool,
+        at: i64,
+    },
     /// Current bounded state of a managed worktree.
     WorktreeUpserted { worktree: WorktreeSummaryProjection },
     /// Current bounded state of a durable run group.
@@ -438,6 +457,7 @@ impl ProjectionEvent {
             ProjectionEvent::AgentRunProgress { .. } => false,
             ProjectionEvent::AgentRunTerminal { .. } => false,
             ProjectionEvent::AgentRunControlUpdated { .. } => false,
+            ProjectionEvent::AgentRunTranscriptAdvanced { .. } => false,
             ProjectionEvent::WorktreeUpserted { .. } => false,
             ProjectionEvent::AgentRunGroupUpserted { .. } => false,
             ProjectionEvent::ConvergenceUpserted { .. } => false,
@@ -482,6 +502,10 @@ impl ProjectionEvent {
             ProjectionEvent::AgentRunProgress { .. } => VisibilityClass::Public,
             ProjectionEvent::AgentRunTerminal { .. } => VisibilityClass::Public,
             ProjectionEvent::AgentRunControlUpdated { .. } => VisibilityClass::Public,
+            // The hint is body-free: a run id, a committed ordinal, and a
+            // flag. It discloses nothing the run summary does not already
+            // carry, so it is public like the rest of the run family.
+            ProjectionEvent::AgentRunTranscriptAdvanced { .. } => VisibilityClass::Public,
             ProjectionEvent::WorktreeUpserted { .. } => VisibilityClass::Public,
             ProjectionEvent::AgentRunGroupUpserted { .. } => VisibilityClass::Public,
             ProjectionEvent::ConvergenceUpserted { .. } => VisibilityClass::Public,

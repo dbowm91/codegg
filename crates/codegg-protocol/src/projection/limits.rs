@@ -138,6 +138,34 @@ pub const MAX_PROJECTION_TRANSCRIPT_BYTES: usize = 8 * 1024;
 /// count so a payload cannot be thousands of empty rows.
 pub const MAX_PROJECTION_TRANSCRIPT_ROWS: usize = 64;
 
+/// Maximum body bytes one delegated run transcript **page** may carry.
+///
+/// The tail-read page is bounded by the same ceiling as the initial
+/// preview: the preview *is* the page at ordinal 0, and a client that
+/// walks past it with the cursor must not be able to widen the wire
+/// payload by asking for a page instead of a preview.
+///
+/// The ceiling is applied to the **redacted** body bytes, after the
+/// store's own redaction and before serialization.
+pub const MAX_PROJECTION_TRANSCRIPT_PAGE_BYTES: usize = 8 * 1024;
+
+/// Maximum rows one delegated run transcript **page** may carry.
+///
+/// Bounded separately from the byte ceiling so a page cannot be thousands
+/// of empty rows. The store's own read limit
+/// (`MAX_TRANSCRIPT_READ_LIMIT`, 256) is a third, independent bound: the
+/// request's `limit` is clamped to this value before the store is asked.
+pub const MAX_PROJECTION_TRANSCRIPT_PAGE_ROWS: usize = 64;
+
+/// Maximum number of per-run transcript watermarks retained in one session
+/// projection.
+///
+/// The watermark is advisory metadata, not a transcript: it says how far a
+/// run's recording reached so a reader knows to fetch a page. It is bounded
+/// so a session with many delegated runs cannot grow the snapshot without
+/// limit.
+pub const MAX_PROJECTION_TRANSCRIPT_WATERMARKS: usize = 64;
+
 /// Maximum number of durable run-group summaries retained in one session
 /// projection.
 pub const MAX_PROJECTION_RUN_GROUPS: usize = 32;
