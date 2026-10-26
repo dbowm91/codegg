@@ -5657,6 +5657,9 @@ async fn task_tool_status_get_group_and_cross_session_contracts_are_model_visibl
     assert!(tool_results
         .iter()
         .any(|(id, output)| id == "task-get" && output.contains("fixture-result-private-marker")));
+    let reports_completed = |output: &str| {
+        output.contains("Status: completed") || output.contains("Run is terminal: completed")
+    };
     assert!(
         tool_results
             .iter()
@@ -5665,13 +5668,13 @@ async fn task_tool_status_get_group_and_cross_session_contracts_are_model_visibl
     );
     assert!(tool_results
         .iter()
-        .any(|(id, output)| id == "task-wait" && output.contains("Status: completed")));
+        .any(|(id, output)| id == "task-wait" && reports_completed(output)));
     assert!(tool_results
         .iter()
         .any(|(id, output)| id == "task-group-status" && output.contains("Status: completed")));
     assert!(tool_results
         .iter()
-        .any(|(id, output)| id == "task-group-wait" && output.contains("Status: completed")));
+        .any(|(id, output)| id == "task-group-wait" && reports_completed(output)));
 
     let attacker_tool = TaskTool::new(
         Arc::new(tokio::sync::Mutex::new(TaskStore::new())),
