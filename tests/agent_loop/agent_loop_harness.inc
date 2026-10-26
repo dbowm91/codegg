@@ -5666,15 +5666,21 @@ async fn task_tool_status_get_group_and_cross_session_contracts_are_model_visibl
             .any(|(id, output)| id == "task-status" && output.contains("Status: completed")),
         "status output was not completed: {tool_results:?}"
     );
-    assert!(tool_results
-        .iter()
-        .any(|(id, output)| id == "task-wait" && reports_completed(output)));
+    assert!(
+        tool_results
+            .iter()
+            .any(|(id, output)| id == "task-wait" && reports_completed(output)),
+        "wait output did not report completion: {tool_results:?}"
+    );
     assert!(tool_results
         .iter()
         .any(|(id, output)| id == "task-group-status" && output.contains("Status: completed")));
-    assert!(tool_results
-        .iter()
-        .any(|(id, output)| id == "task-group-wait" && reports_completed(output)));
+    assert!(
+        tool_results
+            .iter()
+            .any(|(id, output)| id == "task-group-wait" && reports_completed(output)),
+        "group wait output did not report completion: {tool_results:?}"
+    );
 
     let attacker_tool = TaskTool::new(
         Arc::new(tokio::sync::Mutex::new(TaskStore::new())),
