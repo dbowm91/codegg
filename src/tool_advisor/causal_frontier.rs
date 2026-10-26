@@ -6540,9 +6540,6 @@ mod tests {
             historical_schemas.insert(tool.to_string(), schema);
         }
 
-        // The ignored-file discovery control was added to `glob` after the
-        // M003 receipt was frozen. Keep it in the live schema, but exclude it
-        // when reconstructing the receipt's historical input contract.
         {
             let schema = historical_schemas
                 .get_mut("glob")
