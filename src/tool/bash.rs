@@ -479,6 +479,133 @@ fn has_redundant_background_operator(command: &str) -> bool {
     }
 }
 
+/// A15: plan-mode compound read-only check. Split `| && || ; &` outside
+/// quotes; allow when every segment is read-only. A leading `cd` into the
+/// session root (or bare `cd`) is a no-op for planning purposes.
+fn plan_mode_compound_is_read_only(
+    command: &str,
+    context: &crate::command_intent::CommandIntentContext,
+) -> bool {
+    use crate::command_intent::{
+        classify_command_with_context, shell_shape::parse_shell_words, CommandIntentKind,
+    };
+    let segments = split_plan_segments(command);
+    if segments.len() < 2 {
+        return false;
+    }
+    // Reject shapes the splitter cannot see through (substitution,
+    // expansion, heredoc, unbalanced quotes): same rule as permission
+    // scopes — fall back to the single-intent verdict.
+    match parse_shell_words(command) {
+        crate::command_intent::shell_shape::ShellShape::ComplexShell { reasons } => {
+            use crate::command_intent::shell_shape::ShellComplexityReason;
+            if reasons.iter().any(|r| {
+                matches!(
+                    r,
+                    ShellComplexityReason::CommandSubstitution
+                        | ShellComplexityReason::VariableExpansion
+                        | ShellComplexityReason::Heredoc
+                        | ShellComplexityReason::UnbalancedQuotes
+                        | ShellComplexityReason::Redirection
+                        | ShellComplexityReason::Background
+                )
+            }) {
+                return false;
+            }
+        }
+        _ => return false,
+    }
+    for segment in segments {
+        let seg = segment.trim();
+        if seg.is_empty() {
+            continue;
+        }
+        // `cd <ws>` / bare `cd` is a planning no-op; any other `cd` is not.
+        if seg == "cd" || seg.starts_with("cd ") {
+            let target = seg.strip_prefix("cd").unwrap_or("").trim();
+            let target = target.trim_matches(|c| c == '\'' || c == '"').trim();
+            if target.is_empty() {
+                continue;
+            }
+            let allowed = context
+                .workspace_root
+                .as_ref()
+                .map(|root| {
+                    let root_str = root.to_string_lossy();
+                    target == root_str.as_ref()
+                        || target == "."
+                        || target.starts_with(root_str.as_ref())
+                })
+                .unwrap_or(false)
+                || context
+                    .cwd
+                    .as_ref()
+                    .map(|cwd| {
+                        let cwd_str = cwd.to_string_lossy();
+                        target == cwd_str.as_ref()
+                    })
+                    .unwrap_or(false);
+            if allowed {
+                continue;
+            }
+            return false;
+        }
+        // `head`/`tail` truncations of a read-only stream stay read-only.
+        let sub_context = CommandIntentContext {
+            workspace_root: context.workspace_root.clone(),
+            cwd: context.cwd.clone(),
+        };
+        let intent = classify_command_with_context(seg, &sub_context);
+        if !matches!(
+            intent.kind,
+            CommandIntentKind::GitReadOnly
+                | CommandIntentKind::SearchReadOnly
+                | CommandIntentKind::FileRead
+        ) {
+            return false;
+        }
+    }
+    true
+}
+
+fn split_plan_segments(command: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut chars = command.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            current.push(ch);
+            if let Some(escaped) = chars.next() {
+                current.push(escaped);
+            }
+            continue;
+        }
+        match ch {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            _ => {}
+        }
+        if !in_single && !in_double && matches!(ch, ';' | '|' | '&' | '\n' | '\r') {
+            if !current.trim().is_empty() {
+                segments.push(std::mem::take(&mut current));
+            } else {
+                current.clear();
+            }
+            if matches!(ch, '|' | '&') && chars.peek() == Some(&ch) {
+                chars.next();
+            }
+            continue;
+        }
+        current.push(ch);
+    }
+    if !current.trim().is_empty() {
+        segments.push(current);
+    }
+    segments
+}
+
 impl Default for BashTool {
     fn default() -> Self {
         Self::new()
@@ -785,6 +912,9 @@ impl BashTool {
         // (managed status/diff/log, grep) run; everything else refuses with
         // `Permission` naming `plan_exit`. Uses the existing
         // command-intent classifier; no new error type.
+        // A15: parse pipelines the way preflight splits segments and allow
+        // when every segment is read-only; a leading `cd` into an allowed
+        // root is a no-op. Mutations stay blocked.
         if audit_ctx.is_some_and(|ctx| ctx.plan_mode) {
             let allowed = intent.as_ref().is_some_and(|intent| {
                 matches!(
@@ -793,7 +923,7 @@ impl BashTool {
                         | crate::command_intent::CommandIntentKind::SearchReadOnly
                         | crate::command_intent::CommandIntentKind::FileRead
                 )
-            });
+            }) || plan_mode_compound_is_read_only(command, &context);
             if !allowed {
                 return Err(ToolError::Permission(format!(
                     "plan mode blocks 'bash': command '{command}' is not read-only in plan mode; use plan_exit to leave plan mode"
@@ -2078,5 +2208,28 @@ mod timeout_execution_tests {
             .collect::<Vec<_>>();
         assert_eq!(values, vec![scratch.to_string_lossy().as_ref(); 4]);
         std::fs::remove_dir_all(scratch).expect("remove test-owned scratch directory");
+    }
+
+    #[test]
+    fn plan_mode_allows_pipes_and_cd_noop_but_blocks_mutation() {
+        use crate::command_intent::CommandIntentContext;
+        let root = std::path::PathBuf::from("/repo");
+        let ctx = CommandIntentContext {
+            workspace_root: Some(root.clone()),
+            cwd: Some(root.clone()),
+        };
+        assert!(plan_mode_compound_is_read_only(
+            "git status --porcelain | head",
+            &ctx
+        ));
+        assert!(plan_mode_compound_is_read_only(
+            "cd /repo && git status",
+            &ctx
+        ));
+        assert!(!plan_mode_compound_is_read_only(
+            "echo hi && rm -rf /tmp/x",
+            &ctx
+        ));
+        assert!(!plan_mode_compound_is_read_only("ls > /tmp/out", &ctx));
     }
 }

@@ -476,15 +476,15 @@ fn age_secs(since_ms: i64) -> Option<u64> {
 
 /// Q5/S1/S2/R7: normalize a pasted run/task ref.
 ///
-/// Trims whitespace, strips ONE `agent-run-result:` prefix, then the caller
+/// Trims whitespace, strips every `agent-run-result:` prefix, then the caller
 /// parses. Keeps `IdentityParseError` for the remainder: a stripped value
 /// that still fails to parse returns the underlying parse error unchanged.
 fn normalize_id_ref(raw: &str) -> String {
-    let trimmed = raw.trim();
-    trimmed
-        .strip_prefix("agent-run-result:")
-        .map(str::to_string)
-        .unwrap_or_else(|| trimmed.to_string())
+    let mut value = raw.trim().to_string();
+    while let Some(rest) = value.strip_prefix("agent-run-result:") {
+        value = rest.to_string();
+    }
+    value
 }
 
 /// Q5: whole-float-tolerant timeout coercion for `timeout_ms`.
@@ -2831,9 +2831,38 @@ impl TaskTool {
             // result. A pasted ref in `task_id` is also accepted as a run
             // alias so the `Result ref: agent-run-result:<run>` line the
             // tool emits pastes back into either field and the loop closes.
+            //
+            // Both id kinds share one lexical contract, so a bare run UUID
+            // also parses as a task id. A `task_id` that names no task must
+            // therefore fall through to the run lookup below instead of
+            // returning "not found" here.
             let resolved_task_id = if let Some(raw_task) = input["task_id"].as_str() {
+                let had_prefix = raw_task.trim().starts_with("agent-run-result:");
                 let normalized = normalize_id_ref(raw_task);
-                if AgentTaskId::parse(&normalized).is_ok() {
+                if had_prefix {
+                    // Pasted `Result: agent-run-result:<run>` — resolve as a
+                    // run first so the alias holds even though the UUID also
+                    // parses as a task id.
+                    if let Ok(run_id) = AgentRunId::parse(&normalized) {
+                        let agent_runs = self.agent_runs.clone().ok_or_else(|| {
+                            ToolError::Execution("missing 'task_id' parameter".to_string())
+                        })?;
+                        let run = agent_runs
+                            .get_run(&run_id)
+                            .await
+                            .map_err(|e| ToolError::Execution(e.to_string()))?
+                            .ok_or_else(|| {
+                                ToolError::Execution(format!("Run {run_id} not found"))
+                            })?;
+                        Some(run.task_id.to_string())
+                    } else {
+                        // Leave the normalized value for the parse below so
+                        // the remainder keeps its `IdentityParseError`.
+                        Some(normalized)
+                    }
+                } else if AgentTaskId::parse(&normalized).is_ok() {
+                    // Defer to the task fetch below, which falls back to a
+                    // run lookup when no task bears this id.
                     Some(normalized)
                 } else if let Ok(run_id) = AgentRunId::parse(&normalized) {
                     let agent_runs = self.agent_runs.clone().ok_or_else(|| {
@@ -2884,6 +2913,44 @@ impl TaskTool {
                     .await
                     .map_err(|e| ToolError::Execution(e.to_string()))?;
                 let Some(task) = task else {
+                    // No task bears this id, but both id kinds share one
+                    // lexical contract: a bare run UUID also parses as a task
+                    // id. Fall back to the run lookup so `get(task_id=<run>)`
+                    // resolves as documented instead of reporting "not found"
+                    // for an id the caller legitimately holds.
+                    if let Ok(run_id) = AgentRunId::parse(&normalize_id_ref(raw_id)) {
+                        if let Ok(Some(run)) = agent_runs.get_run(&run_id).await {
+                            let aliased = agent_runs
+                                .get_task(&run.task_id)
+                                .await
+                                .map_err(|e| ToolError::Execution(e.to_string()))?;
+                            if let Some(aliased) = aliased {
+                                if self.parent_session_id.as_deref().is_some_and(|session| {
+                                    aliased.originating_session_id != session
+                                }) {
+                                    return Ok(format!("Task {} not found", task_id));
+                                }
+                                let run_for_task = agent_runs
+                                    .get_run_for_task(&aliased.task_id)
+                                    .await
+                                    .map_err(|e| ToolError::Execution(e.to_string()))?;
+                                if let Some(run_for_task) = run_for_task {
+                                    let recorded = agent_runs
+                                        .get_result(&run_for_task.run_id)
+                                        .await
+                                        .map_err(|e| ToolError::Execution(e.to_string()))?;
+                                    return Ok(self
+                                        .format_durable_task_get(&aliased, &run_for_task, recorded)
+                                        .await);
+                                }
+                                return Ok(format!(
+                                    "Task: {}\nStatus: {}",
+                                    aliased.task_id,
+                                    aliased.status.as_str()
+                                ));
+                            }
+                        }
+                    }
                     return Ok(format!("Task {} not found", task_id));
                 };
                 if self
@@ -4527,5 +4594,16 @@ mod tests {
             snapshot.contains("PROBE_OK"),
             "the timeout snapshot carries the recorded result, got: {snapshot}"
         );
+    }
+
+    #[test]
+    fn normalize_id_ref_strips_every_pasted_prefix() {
+        // `Result: agent-run-result:<id>` must paste directly into `get`.
+        assert_eq!(normalize_id_ref("  agent-run-result:abc-123  "), "abc-123");
+        assert_eq!(
+            normalize_id_ref("agent-run-result:agent-run-result:abc-123"),
+            "abc-123"
+        );
+        assert_eq!(normalize_id_ref("abc-123"), "abc-123");
     }
 }

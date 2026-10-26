@@ -336,10 +336,14 @@ impl Tool for ReadTool {
             .as_f64()
             .map(|v| v.max(1.0) as usize)
             .unwrap_or(1);
+        // A1: default limit fits the ~8 KiB transport budget (~48 B/line
+        // → ~160 lines). 2000 lines never survived transport, so the
+        // tool's own `truncated` was never set while the transport cut at
+        // 167 lines.
         let limit = input["limit"]
             .as_f64()
             .map(|v| v.max(1.0) as usize)
-            .unwrap_or(2000);
+            .unwrap_or(300);
 
         let allowed_root = self.allowed_root.clone();
         let unrestricted = self.unrestricted;
@@ -437,11 +441,49 @@ impl Tool for ReadTool {
 
             let mut result = String::new();
             for (i, line) in selected.iter().enumerate() {
-                result.push_str(&format!("{:>6}: {}\n", start + i + 1, line));
+                // A3: neuter ESC/OSC in third-party file bytes before they
+                // reach the transcript; CodeGG-generated SGR survives.
+                let clean = crate::tool::util::sanitize_tool_output(line);
+                result.push_str(&format!("{:>6}: {}\n", start + i + 1, clean));
             }
 
-            if lines.len() > end {
-                result.push_str(&format!("\n... [{} more lines] ...\n", lines.len() - end));
+            // A1/A17: honest truncation — line continuation always names
+            // the resume offset; byte-budget cuts carry total_bytes so the
+            // inline total (not transport recount) is authoritative.
+            let total_lines = lines.len();
+            let total_bytes = content.len();
+            if total_lines > end {
+                result.push_str(&format!(
+                    "\n... [{} more lines of {} total; truncated: true, total_bytes: {}; use offset={} to continue] ...\n",
+                    total_lines - end,
+                    total_lines,
+                    total_bytes,
+                    end + 1
+                ));
+            }
+            // Coherent byte cap before transport: head+tail with elision,
+            // never a mid-line cut that shifts totals.
+            const INLINE_BYTE_BUDGET: usize = 7500;
+            if result.len() > INLINE_BYTE_BUDGET {
+                let head_len = INLINE_BYTE_BUDGET / 2;
+                let mut head_end = head_len.min(result.len());
+                while head_end > 0 && !result.is_char_boundary(head_end) {
+                    head_end -= 1;
+                }
+                let tail_len = INLINE_BYTE_BUDGET - head_end;
+                let mut tail_start = result.len().saturating_sub(tail_len);
+                while tail_start < result.len() && !result.is_char_boundary(tail_start) {
+                    tail_start += 1;
+                }
+                let omitted = result.len().saturating_sub(head_end + (result.len() - tail_start));
+                result = format!(
+                    "{}... [omitted {} bytes of {} total; truncated: true; use offset={} to continue] ...{}",
+                    &result[..head_end],
+                    omitted,
+                    total_bytes,
+                    end + 1,
+                    &result[tail_start..]
+                );
             }
 
             Ok(result)
@@ -488,6 +530,17 @@ impl Tool for ReadTool {
         } else {
             self.execute(input).await?
         };
-        Ok(crate::tool::StructuredToolResult::legacy("read", output))
+        // A1: `truncated` was never set — transport cut at 8 KiB while the
+        // schema promised the field. Detect our own markers.
+        let truncated = output.contains("truncated: true") || output.contains("more lines of");
+        if truncated {
+            let mut provenance = crate::tool::backend::ToolProvenance::legacy("read");
+            provenance.truncated = true;
+            Ok(crate::tool::StructuredToolResult::with_provenance(
+                output, true, provenance,
+            ))
+        } else {
+            Ok(crate::tool::StructuredToolResult::legacy("read", output))
+        }
     }
 }

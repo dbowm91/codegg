@@ -144,8 +144,10 @@ impl WriteTool {
             .to_string();
 
         let allowed_root = self.allowed_root.clone();
+        let allowed_root_for_diff = self.allowed_root.clone();
         let unrestricted = self.unrestricted;
         let content_for_write = content.clone();
+        let path_for_header = path_str.clone();
 
         // Resolve the target before the permit is taken: the fence has to
         // name the very path the write lands on, and the target may not
@@ -265,7 +267,13 @@ impl WriteTool {
         }
 
         let action = if existed { "Updated" } else { "Created" };
-        let diff = generate_diff(&old_content, &content, &path_display);
+        let diff = generate_diff(
+            &old_content,
+            &content,
+            &path_for_header,
+            Some(allowed_root_for_diff.as_path()),
+        );
+        let diff = crate::tool::diff::truncate_grouped_preview(diff, 4000);
 
         Ok(format!(
             "{} {}{}{}",
@@ -299,34 +307,41 @@ impl Default for WriteTool {
     }
 }
 
-fn generate_diff(old: &str, new: &str, path: &str) -> String {
-    use similar::TextDiff;
-    let diff = TextDiff::from_lines(old, new);
-    let mut result = String::new();
-    result.push_str(&format!("--- a/{}\n", path));
-    result.push_str(&format!("+++ b/{}\n", path));
-    for (idx, group) in diff.grouped_ops(3).iter().enumerate() {
-        if idx > 0 {
-            result.push_str("...\n");
-        }
-        for op in group {
-            for change in diff.iter_changes(op) {
-                let sign = match change.tag() {
-                    similar::ChangeTag::Delete => "-",
-                    similar::ChangeTag::Insert => "+",
-                    similar::ChangeTag::Equal => " ",
-                };
-                let line_num = change.old_index().or(change.new_index()).unwrap_or(0) + 1;
-                result.push_str(&format!(
-                    "{}{:>4} {}\n",
-                    sign,
-                    line_num,
-                    change.value().trim_end_matches('\n'),
-                ));
-            }
-        }
+fn generate_diff(old: &str, new: &str, path: &str, workspace_root: Option<&Path>) -> String {
+    crate::tool::diff::format_grouped_diff(old, new, path, workspace_root)
+}
+
+#[cfg(test)]
+mod diff_format_tests {
+    use super::generate_diff;
+    use std::path::Path;
+
+    #[test]
+    fn write_diff_uses_relative_headers_and_new_side_numbering() {
+        let root = Path::new("/repo");
+        let preview = generate_diff(
+            "A\nB\nC\n",
+            "A\nINSERTED\nB\nC\n",
+            "/repo/diffnum.txt",
+            Some(root),
+        );
+        assert!(preview.contains("--- a/diffnum.txt"), "got: {preview}");
+        assert!(preview.contains("+++ b/diffnum.txt"), "got: {preview}");
+        assert!(!preview.contains("[CWD]"), "got: {preview}");
+        assert!(
+            !preview.contains("/repo/"),
+            "must be repo-relative, got: {preview}"
+        );
+        assert!(preview.contains("   2 INSERTED"), "got: {preview}");
+        assert!(preview.contains("   3 B"), "got: {preview}");
     }
-    result
+
+    #[test]
+    fn write_diff_strips_cwd_placeholder_from_header() {
+        let preview = generate_diff("a\n", "a\nb\n", "[CWD]/tmp/a.txt", None);
+        assert!(preview.contains("--- a/tmp/a.txt"), "got: {preview}");
+        assert!(!preview.contains("[CWD]"), "got: {preview}");
+    }
 }
 
 #[cfg(test)]

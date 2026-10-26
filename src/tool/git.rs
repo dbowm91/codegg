@@ -306,7 +306,7 @@ impl Tool for GitTool {
                 },
                 "dry_run": {
                     "type": "boolean",
-                    "description": "Pass --dry-run (clean_preview)"
+                    "description": "Preview only: commit returns the message preview without mutating; clean_preview equivalent for clean (default: false)"
                 },
                 "ignored": {
                     "type": "boolean",
@@ -396,7 +396,7 @@ impl GitTool {
             .as_str()
             .ok_or_else(|| ToolError::Execution("missing 'subcommand' parameter".to_string()))?;
 
-        let args: Vec<String> = input["args"]
+        let mut args: Vec<String> = input["args"]
             .as_array()
             .map(|arr| {
                 arr.iter()
@@ -404,6 +404,14 @@ impl GitTool {
                     .collect()
             })
             .unwrap_or_default();
+        // A10: `git(subcommand:"log", args:["log","-5"])` repeats the
+        // subcommand inside `args` (`git log log -5`). Git then errors to
+        // stderr while the wrapper reported empty output + exit 0. Strip
+        // the duplicated leading subcommand so the read shares `git_query`
+        // resolution instead of failing opaquely.
+        if args.first().map(String::as_str) == Some(subcommand) {
+            args.remove(0);
+        }
 
         if self.read_only_only && !Self::invocation_is_read_only(subcommand, &args) {
             return Err(ToolError::Permission(format!(
@@ -535,8 +543,16 @@ impl GitTool {
         if !stderr.is_empty() {
             if !result.is_empty() {
                 result.push_str("\n--- stderr ---\n");
+            } else {
+                result.push_str("--- stderr ---\n");
             }
             result.push_str(&stderr);
+        }
+        // A10: never report a false empty success — an empty stdout+stderr
+        // body is marked explicitly so the agent does not read it as
+        // evidence.
+        if result.trim().is_empty() {
+            result.push_str("(empty git output; check stderr/exit code — a duplicated subcommand in `args` is stripped automatically)");
         }
 
         result.push_str(&format!(
@@ -749,6 +765,14 @@ impl GitTool {
                         ))
                     })?
                     .to_string();
+                if dry_run {
+                    return Ok(TypedMutationReport {
+                        output: format!(
+                            "dry_run: commit preview — message {msg:?}, selection {sel:?} (no mutation made)"
+                        ),
+                        changed: false,
+                    });
+                }
                 gm_ops::commit_with_selection(
                     &exec,
                     workdir,
@@ -762,6 +786,14 @@ impl GitTool {
             }
             "commit_amend" => {
                 let msg = message.unwrap_or("HEAD");
+                if dry_run {
+                    return Ok(TypedMutationReport {
+                        output: format!(
+                            "dry_run: commit_amend preview — message {msg:?} (no mutation made)"
+                        ),
+                        changed: false,
+                    });
+                }
                 gm_ops::commit_with_selection(
                     &exec,
                     workdir,

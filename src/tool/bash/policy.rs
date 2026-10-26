@@ -569,16 +569,16 @@ pub(crate) fn outside_workspace_warning(
             .and_then(|p| p.to_str().map(|s| s.to_string()))
         {
             if !home.is_empty() {
-                redacted = redacted.replacen(&home, "[HOME]", 1);
+                redacted = redacted.replacen(&home, "<home>", 1);
             }
         }
         if redacted.starts_with("~/") {
-            redacted = format!("[HOME]/{}", &redacted[2..]);
+            redacted = format!("<home>/{}", &redacted[2..]);
         }
         for root in [workspace_root, scratch_root].into_iter().flatten() {
             if let Some(root) = root.to_str() {
                 if !root.is_empty() {
-                    redacted = redacted.replacen(root, "[CWD]", 1);
+                    redacted = redacted.replacen(root, "<workspace>", 1);
                 }
             }
         }
@@ -602,7 +602,7 @@ pub(crate) fn outside_workspace_warning(
         String::new()
     };
     Some(format!(
-        "bash path guard (advisory, not a deny): absolute path(s) outside workspace/scratch: {shown}{more} — file tools are jailed to the workspace; bash is Seatbelt write-confined/read-broad/credential-deny; prefer workspace-relative paths or $CODEGG_SCRATCH_DIR ([REDACTED_PATH] style redaction applies)"
+        "bash path guard (advisory, not a deny): absolute path(s) outside workspace/scratch: {shown}{more} — file tools are jailed to the workspace; bash is Seatbelt write-confined/read-broad/credential-deny; prefer workspace-relative paths or $CODEGG_SCRATCH_DIR (<workspace>/<home> placeholders are non-literal)"
     ))
 }
 

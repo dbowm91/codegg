@@ -796,12 +796,38 @@ fn build_report(
         );
     }
 
+    // A10: never report a bare `process exited with code N` when the real
+    // diagnostic sits in `stderr.log` — surface its tail so the agent sees
+    // `error: unexpected argument …` without opening the log by hand.
     if failures.is_empty() && exit_code != Some(0) && status != TestStatus::Passed {
+        let stderr_tail = std::fs::read_to_string(stderr_log)
+            .map(|content| {
+                let lines: Vec<&str> = content.lines().collect();
+                let tail: Vec<&str> = lines
+                    .iter()
+                    .rev()
+                    .take(8)
+                    .rev()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                tail.join("\n")
+            })
+            .unwrap_or_default();
+        let message = if stderr_tail.is_empty() {
+            format!("process exited with code {}", exit_code.unwrap_or(-1))
+        } else {
+            format!(
+                "process exited with code {} — stderr tail:\n{}",
+                exit_code.unwrap_or(-1),
+                stderr_tail.chars().take(800).collect::<String>()
+            )
+        };
         failures.push(crate::test_runner::types::TestFailure {
             name: None,
             file: None,
             line: None,
-            message: format!("process exited with code {}", exit_code.unwrap_or(-1)),
+            message,
             failure_class: FailureClass::NonzeroExit,
         });
     }
@@ -839,10 +865,12 @@ fn build_summary(parse_state: &TestParseState, exit_code: Option<i32>) -> String
     }
     if parse_state.tests_seen == 0 && parse_state.tests_passed == 0 && parse_state.tests_failed == 0
     {
+        // A10: a vacuous run is not green — it is `no_tests`, so the agent
+        // does not mistake 0 tests for a pass.
         return match exit_code {
-            Some(0) => "completed successfully".into(),
-            Some(code) => format!("process exited with code {code}"),
-            None => "process terminated without exit code".into(),
+            Some(0) => "no_tests: 0 tests selected (not a pass)".into(),
+            Some(code) => format!("process exited with code {code} (0 tests ran)"),
+            None => "process terminated without exit code (0 tests ran)".into(),
         };
     }
 

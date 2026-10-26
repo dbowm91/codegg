@@ -329,6 +329,23 @@ impl Tool for ReviewTool {
 /// Single counting rule: `files` is the count of `diff --git` headers in the
 /// structured file list. Untracked files are listed separately and never
 /// added to the diff count: `untracked files: listed, not diffed (N: ...)`.
+const OFFLINE_REMEDIATION: &str = "Open /connect to create a connection, or set `model` via `codegg edit` / `-m provider/model`; run `codegg doctor` to check wiring";
+
+/// Strip the shared remediation sentence from a provider error so the offline
+/// fallback emits it exactly once. Provider errors already embed the
+/// `/connect` guidance; echoing it verbatim would duplicate the sentence.
+fn strip_offline_remediation(reason: &str) -> String {
+    let trimmed = reason.trim();
+    if let Some((before, _)) = trimmed.split_once("Open /connect") {
+        let base = before.trim().trim_end_matches(['.', ';']).trim();
+        if base.is_empty() {
+            return "provider unreachable".to_string();
+        }
+        return base.to_string();
+    }
+    trimmed.trim_end_matches('.').to_string()
+}
+
 fn offline_review_fallback(
     diff: &str,
     model: Option<&str>,
@@ -371,13 +388,19 @@ fn offline_review_fallback(
     }
     let excerpt = &diff[..end];
     let truncated = diff.len() > end;
+    // Single remediation sentence (H10): provider errors already carry the
+    // `/connect` guidance, so strip it from the reason before appending it
+    // once. The emergency-default model value stays internal to the
+    // selection path; user-facing text names the default without the
+    // parenthetical.
+    let clean_reason = strip_offline_remediation(reason);
     let model_line = match model {
         None => format!(
-            "no model configured; defaulted to {} (emergency default). {reason}. Open /connect to create a connection, or set `model` via `codegg edit` / `-m provider/model`; run `codegg doctor` to check wiring.",
-            EMERGENCY_DEFAULT_MODEL
+            "no model configured; defaulted to {}. {}. {OFFLINE_REMEDIATION}.",
+            EMERGENCY_DEFAULT_MODEL, clean_reason
         ),
         Some(model) => format!(
-            "Configured model `{model}` is unreachable: {reason}. Open /connect to create a connection, or set `model` via `codegg edit` / `-m provider/model`."
+            "Configured model `{model}` is unreachable: {clean_reason}. {OFFLINE_REMEDIATION}."
         ),
     };
     format!(
@@ -673,11 +696,41 @@ mod tests {
         let without_model =
             offline_review_fallback("diff --git a/b b/b", None, "no provider", &untracked);
         assert!(
-            without_model
-                .contains("no model configured; defaulted to openai/gpt-4o (emergency default)"),
-            "missing model must name the emergency default, got: {without_model}"
+            without_model.contains("no model configured; defaulted to openai/gpt-4o"),
+            "missing model must name the default, got: {without_model}"
         );
-        assert!(without_model.contains("/connect"));
+        assert!(
+            !without_model.contains("emergency default"),
+            "user-facing text must not leak the internal emergency-default label, got: {without_model}"
+        );
+        assert_eq!(
+            without_model.matches("/connect").count(),
+            1,
+            "remediation must appear exactly once, got: {without_model}"
+        );
         assert!(without_model.contains("offline fallback"));
+    }
+
+    #[test]
+    fn offline_fallback_dedupes_provider_remediation() {
+        // Provider errors already embed the `/connect` guidance; the fallback
+        // must not repeat it.
+        let untracked: Vec<String> = vec![];
+        let reason = "No active connection matches provider 'openai' (model 'openai/gpt-4o'). Open /connect to create one, or set `model` via `codegg edit` / `-m provider/model`; run `codegg doctor` to check wiring.";
+        let output = offline_review_fallback(
+            "diff --git a/b b/b",
+            Some("openai/gpt-4o"),
+            reason,
+            &untracked,
+        );
+        assert_eq!(
+            output.matches("/connect").count(),
+            1,
+            "remediation must appear exactly once, got: {output}"
+        );
+        assert!(
+            !output.contains("emergency default"),
+            "internal label must not leak, got: {output}"
+        );
     }
 }

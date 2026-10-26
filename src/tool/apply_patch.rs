@@ -82,12 +82,12 @@ impl Tool for ApplyPatchTool {
                 },
                 "patch": {
                     "type": "string",
-                    "description": "File contents for mode=create; unified diff with @@ -<start>[,<count>] +<start>[,<count>] @@ hunk headers for mode=update (e.g. \"@@ -1,3 +1,3 @@\"); bare hunks only, no \"*** Begin Patch ***\" wrapper; empty string for mode=delete; \"rename from <old>\" plus \"rename to <new>\" (or \"--- a/<old>\" plus \"+++ b/<new>\") for mode=move"
+                    "description": "File contents for mode=create or mode=overwrite; unified diff with @@ -<start>[,<count>] +<start>[,<count>] @@ hunk headers for mode=update (e.g. \"@@ -1,3 +1,3 @@\"); bare hunks only, no \"*** Begin Patch ***\" wrapper; empty string for mode=delete; \"rename from <old>\" plus \"rename to <new>\" (or \"--- a/<old>\" plus \"+++ b/<new>\") for mode=move"
                 },
                 "mode": {
                     "type": "string",
-                    "enum": ["update", "create", "delete", "move"],
-                    "description": "Operation mode (default: update)"
+                    "enum": ["update", "create", "overwrite", "delete", "move"],
+                    "description": "Operation mode (default: update). mode=create refuses when the file exists; use mode=overwrite to replace with a diff."
                 }
             },
             "required": ["path"]
@@ -143,6 +143,7 @@ impl ApplyPatchTool {
         match mode {
             "delete" => self.apply_delete(&parsed.path, ctx).await,
             "create" => self.apply_create(&parsed.path, &parsed.patch, ctx).await,
+            "overwrite" => self.apply_overwrite(&parsed.path, &parsed.patch, ctx).await,
             "move" => self.apply_move(&parsed.patch, ctx).await,
             "update" => self.apply_update(&parsed.path, &parsed.patch, ctx).await,
             _ => Err(ToolError::Execution(format!("unknown mode: {mode}"))),
@@ -277,6 +278,8 @@ impl ApplyPatchTool {
 
         let path_owned = path.to_string();
         let content_owned = content.to_string();
+        let path_for_error = path.to_string();
+        let path_for_output = path.to_string();
         let allowed_root = self.allowed_root.clone();
         let unrestricted = self.unrestricted;
 
@@ -307,6 +310,16 @@ impl ApplyPatchTool {
         .await?;
 
         let effect = match tokio::task::spawn_blocking(move || {
+            // Exclusive create (O_EXCL): refuse when the file already exists
+            // before any truncation, so mode=create can never clobber.
+            if validated_path.exists() {
+                return Err((
+                    ToolError::Execution(format!(
+                        "file exists; use mode=update or mode=overwrite: {path_for_error}"
+                    )),
+                    WriterFenceOutcome::NoEffect,
+                ));
+            }
             if let Some(parent) = validated_path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| {
                     (
@@ -353,7 +366,120 @@ impl ApplyPatchTool {
             }
         }
 
-        Ok(format!("Created: {path}"))
+        let preview = generate_diff_preview("", content, &path_for_output);
+        Ok(format!("Created: {path}\n\n{preview}"))
+    }
+
+    async fn apply_overwrite(
+        &self,
+        path: &str,
+        content: &str,
+        ctx: Option<&ToolExecutionContext>,
+    ) -> Result<String, ToolError> {
+        if is_unified_diff_shape(content) {
+            return Err(ToolError::Execution(
+                "mode=overwrite takes file contents, not a diff; use mode=update with @@ hunks (bare @@ -<start>[,<count>] +<start>[,<count>] @@, no \"*** Begin Patch ***\" wrapper)".to_string(),
+            ));
+        }
+        if let Some(ref svc) = self.preflight {
+            if is_config_file(path) {
+                let ext = Path::new(path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                let config_decision = match ext {
+                    "json" | "jsonc" | "json5" => svc.check_json_valid(content).await,
+                    "toml" => svc.check_toml_valid(content).await,
+                    _ => svc.check_config(content).await,
+                };
+                if let PreflightDecision::Block { findings } = config_decision {
+                    return Err(ToolError::Execution(format!(
+                        "preflight blocked config overwrite: {}",
+                        PreflightDecision::Block { findings }.summary()
+                    )));
+                }
+            }
+            let unicode_decision = svc.check_text_security(content).await;
+            if let PreflightDecision::Block { findings } = unicode_decision {
+                return Err(ToolError::Execution(format!(
+                    "preflight blocked overwrite: {}",
+                    PreflightDecision::Block { findings }.summary()
+                )));
+            }
+        }
+
+        let path_owned = path.to_string();
+        let content_owned = content.to_string();
+        let path_for_output = path.to_string();
+        let allowed_root = self.allowed_root.clone();
+        let unrestricted = self.unrestricted;
+
+        let validated_path = tokio::task::spawn_blocking(move || {
+            let original_path = Path::new(&path_owned);
+            if unrestricted {
+                validate_target_path_unrestricted(original_path)
+            } else {
+                validate_target_path(original_path, &allowed_root)
+            }
+        })
+        .await
+        .map_err(|e| ToolError::Execution(format!("join error: {}", e)))??;
+
+        let targets = vec![validated_path.clone()];
+        let permit = acquire_writer_permit(
+            ctx,
+            NativeEffectClass::FileWrite,
+            targets.clone(),
+            writer_fence_key(self.name(), &targets, ctx),
+        )
+        .await?;
+
+        let effect = match tokio::task::spawn_blocking(move || {
+            let old_content = if validated_path.exists() {
+                std::fs::read_to_string(&validated_path).unwrap_or_default()
+            } else {
+                String::new()
+            };
+            if let Some(parent) = validated_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    (
+                        ToolError::Execution(format!("failed to create directory: {e}")),
+                        WriterFenceOutcome::NoEffect,
+                    )
+                })?;
+            }
+            std::fs::write(&validated_path, content_owned).map_err(|e| {
+                let message = format!("failed to overwrite file: {e}");
+                (
+                    ToolError::Execution(message.clone()),
+                    WriterFenceOutcome::Unproven(message),
+                )
+            })?;
+            Ok::<_, (ToolError, WriterFenceOutcome)>(old_content)
+        })
+        .await
+        {
+            Ok(Ok(written)) => Ok(written),
+            Ok(Err(failure)) => Err(failure),
+            Err(join_error) => Err((
+                ToolError::Execution(format!("join error: {}", join_error)),
+                WriterFenceOutcome::Unproven(format!("join error: {}", join_error)),
+            )),
+        };
+
+        let old_content = match effect {
+            Ok(written) => {
+                settle_writer_fence(permit, WriterFenceOutcome::Settled, false).await?;
+                written
+            }
+            Err((error, outcome)) => {
+                settle_writer_fence(permit, outcome, true).await?;
+                return Err(error);
+            }
+        };
+
+        let preview = generate_diff_preview(&old_content, content, &path_for_output);
+        Ok(format!("Overwrote: {path}\n\n{preview}"))
     }
 
     async fn apply_move(
@@ -600,24 +726,9 @@ impl ApplyPatchTool {
     }
 }
 
-fn generate_diff_preview(original: &str, modified: &str, _path: &str) -> String {
-    let diff = similar::TextDiff::from_lines(original, modified);
-    let mut preview = String::from("Preview:\n");
-
-    for change in diff.iter_all_changes() {
-        let prefix = match change.tag() {
-            similar::ChangeTag::Delete => "-",
-            similar::ChangeTag::Insert => "+",
-            similar::ChangeTag::Equal => " ",
-        };
-        preview.push_str(&format!("{}{}", prefix, change.value()));
-    }
-
-    if preview == "Preview:\n" {
-        preview.push_str("(no changes)\n");
-    }
-
-    preview
+fn generate_diff_preview(original: &str, modified: &str, path: &str) -> String {
+    let preview = crate::tool::diff::format_grouped_diff(original, modified, path, None);
+    crate::tool::diff::truncate_grouped_preview(preview, 4000)
 }
 
 fn parse_rename(patch: &str) -> Option<(String, String)> {
@@ -760,6 +871,72 @@ mod tests {
             !temp.path().join("new.txt").exists(),
             "rejected create must not leave a file behind"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn create_on_existing_refuses_and_does_not_clobber() {
+        let temp = TempDir::new().expect("temp dir");
+        std::fs::write(temp.path().join("a.txt"), "original\n").expect("seed");
+        let tool = ApplyPatchTool::new().with_allowed_root(temp.path().to_path_buf());
+        let err = tool
+            .execute(serde_json::json!({
+                "path": "a.txt",
+                "mode": "create",
+                "patch": "this would clobber\n",
+            }))
+            .await
+            .expect_err("create on existing must refuse");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("file exists"),
+            "must mention file exists: {msg}"
+        );
+        assert!(msg.contains("mode=update"), "must suggest update: {msg}");
+        assert!(
+            msg.contains("mode=overwrite"),
+            "must suggest overwrite: {msg}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("a.txt")).unwrap(),
+            "original\n",
+            "refused create must not clobber"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn overwrite_replaces_with_diff() {
+        let temp = TempDir::new().expect("temp dir");
+        std::fs::write(temp.path().join("b.txt"), "A\nB\nC\n").expect("seed");
+        let tool = ApplyPatchTool::new().with_allowed_root(temp.path().to_path_buf());
+        let out = tool
+            .execute(serde_json::json!({
+                "path": "b.txt",
+                "mode": "overwrite",
+                "patch": "A\nINSERTED\nB\nC\n",
+            }))
+            .await
+            .expect("overwrite must succeed");
+        assert!(out.contains("Overwrote"), "got: {out}");
+        assert!(out.contains("--- a/b.txt"), "relative header, got: {out}");
+        assert!(!out.contains("[CWD]"), "got: {out}");
+        assert!(
+            out.contains("   2 INSERTED"),
+            "new-side numbering, got: {out}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("b.txt")).unwrap(),
+            "A\nINSERTED\nB\nC\n"
+        );
+    }
+
+    #[test]
+    fn create_preview_uses_relative_headers_and_new_side_numbering() {
+        let preview = generate_diff_preview("A\nB\nC\n", "A\nINSERTED\nB\nC\n", "d.txt");
+        assert!(preview.contains("--- a/d.txt"), "got: {preview}");
+        assert!(preview.contains("+++ b/d.txt"), "got: {preview}");
+        assert!(!preview.contains("[CWD]"), "got: {preview}");
+        assert!(preview.contains("   2 INSERTED"), "got: {preview}");
+        assert!(preview.contains("   3 B"), "got: {preview}");
     }
 
     #[tokio::test(flavor = "current_thread")]

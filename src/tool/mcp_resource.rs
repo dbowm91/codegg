@@ -30,6 +30,25 @@ fn origin_label(origin: &McpServerOrigin) -> &'static str {
     }
 }
 
+/// Parse the `limit` bound for `mcp_resource_search` (H12).
+///
+/// Whole-valued floats (`5.0`) coerce via the shared tolerant parser, like
+/// every sibling tool; a present-but-non-whole value (`1.5`, strings) is a
+/// typed error echoing the received value and the expected type instead of
+/// silently defaulting to 8. Absent means 8.
+fn parse_mcp_resource_limit(value: Option<&serde_json::Value>) -> Result<usize, ToolError> {
+    match value {
+        None => Ok(8),
+        Some(v) => crate::tool::util::json_usize(v)
+            .ok_or_else(|| {
+                ToolError::Execution(format!(
+                    "property limit: expected JSON type integer, got {v} (whole-valued floats like 5.0 are coerced; fractional values fail)"
+                ))
+            })
+            .map(|n| n.min(MAX_RESOURCE_RESULTS).max(1)),
+    }
+}
+
 fn matches(resource: &McpResource, query: &str) -> bool {
     let query = query.to_ascii_lowercase();
     resource.name.to_ascii_lowercase().contains(&query)
@@ -94,11 +113,7 @@ impl Tool for McpResourceSearchTool {
             ));
         }
         let server_filter = input.get("server").and_then(|v| v.as_str());
-        let limit = input
-            .get("limit")
-            .and_then(crate::tool::util::json_usize)
-            .unwrap_or(8)
-            .min(MAX_RESOURCE_RESULTS);
+        let limit = parse_mcp_resource_limit(input.get("limit"))?;
         let Some(mcp) = self.runtime.mcp() else {
             return Ok(
                 json!({"status":"unavailable","configured":false,"resources":[]}).to_string(),
@@ -262,5 +277,31 @@ impl Tool for McpResourceReadTool {
                 trust: crate::tool::ToolTrust::ExternalUntrusted,
             }),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn whole_valued_float_limit_coerces() {
+        assert_eq!(
+            parse_mcp_resource_limit(Some(&serde_json::json!(5.0))).expect("5.0 coerces"),
+            5
+        );
+        assert_eq!(parse_mcp_resource_limit(None).expect("absent defaults"), 8);
+    }
+
+    #[test]
+    fn fractional_limit_errors_with_received_value() {
+        let err =
+            parse_mcp_resource_limit(Some(&serde_json::json!(1.5))).expect_err("1.5 must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("expected JSON type integer"), "got: {msg}");
+        assert!(
+            msg.contains("1.5"),
+            "error must echo the received value, got: {msg}"
+        );
     }
 }

@@ -424,8 +424,13 @@ impl TestTool {
         let input = self.apply_default_workdir(input);
         let mut request = parse_test_request_in(&input, self.workspace_root.as_deref())?;
         request.session_id = Some(session_id.clone());
-        let resolved = crate::test_runner::resolve_test_command(&request)
+        let mut resolved = crate::test_runner::resolve_test_command(&request)
             .map_err(|e| ToolError::Execution(format!("test command resolution failed: {e}")))?;
+        // A10: a `test`-tool run must never carry the bare `bash-dispatch`
+        // label — that scope belongs to `bash`-owned dispatches.
+        if resolved.scope_label == "bash-dispatch" {
+            resolved.scope_label = "test:bash-dispatch".to_string();
+        }
         let workspace_id = submission
             .workspace_id_for_root(&request.workdir)
             .await
@@ -521,8 +526,11 @@ impl TestTool {
                 "test execution requires the daemon scheduler; standalone callers must provide a harness scheduler".into(),
             ));
         };
-        let resolved = crate::test_runner::resolve_test_command(&request)
+        let mut resolved = crate::test_runner::resolve_test_command(&request)
             .map_err(|e| ToolError::Execution(format!("test command resolution failed: {e}")))?;
+        if resolved.scope_label == "bash-dispatch" {
+            resolved.scope_label = "test:bash-dispatch".to_string();
+        }
         let workspace_id = submission
             .workspace_id_for_root(&request.workdir)
             .await
@@ -737,7 +745,7 @@ fn parse_test_request_in(
     };
 
     let timeout_secs = parse_positive_seconds(input.get("timeout"), "timeout")?;
-    let stall_timeout_secs = parse_positive_seconds(input.get("stall_timeout"), "stall_timeout")?;
+    let stall_timeout_secs = parse_stall_timeout_seconds(input.get("stall_timeout"))?;
 
     // F1: whole-valued floats coerce (20000.0 -> 20000) via the shared
     // tolerant parser, matching `timeout` above; fractional or negative
@@ -793,6 +801,33 @@ fn parse_positive_seconds(
         return Err(ToolError::Execution(format!(
             "{field} must be a positive integer number of seconds"
         )));
+    }
+    Ok(Some(n as u64))
+}
+
+/// Parse the `stall_timeout` watchdog value.
+///
+/// Identical to [`parse_positive_seconds`] except `0` is accepted and means
+/// "disabled" (`Some(0)`), matching the schema text ("set 0 to disable") and
+/// the runner, which skips the stall check when the bound is `0`. Negative,
+/// fractional, NaN, and non-numeric values still fail.
+fn parse_stall_timeout_seconds(
+    value: Option<&serde_json::Value>,
+) -> Result<Option<u64>, ToolError> {
+    let Some(v) = value else {
+        return Ok(None);
+    };
+    let n = v.as_f64().ok_or_else(|| {
+        ToolError::Execution(
+            "stall_timeout must be a positive integer number of seconds (0 disables the watchdog)"
+                .to_string(),
+        )
+    })?;
+    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
+        return Err(ToolError::Execution(
+            "stall_timeout must be a positive integer number of seconds (0 disables the watchdog)"
+                .to_string(),
+        ));
     }
     Ok(Some(n as u64))
 }
@@ -1370,6 +1405,18 @@ mod tests {
             msg.contains("stall_timeout must be a positive integer"),
             "unexpected error: {msg}"
         );
+    }
+
+    #[test]
+    fn test_parse_request_accepts_zero_stall_timeout_as_disabled() {
+        // Schema documents `stall_timeout: 0` as "disable the watchdog";
+        // the runner already skips the check when the bound is 0.
+        let input = json!({"scope": "auto", "stall_timeout": 0});
+        let req = parse_test_request(&input).expect("stall_timeout 0 must parse");
+        assert_eq!(req.stall_timeout_secs, Some(0));
+        let whole_float = json!({"scope": "auto", "stall_timeout": 0.0});
+        let req = parse_test_request(&whole_float).expect("stall_timeout 0.0 must coerce");
+        assert_eq!(req.stall_timeout_secs, Some(0));
     }
 
     #[test]

@@ -160,6 +160,7 @@ impl Tool for ResearchTool {
          Local ranking is filename-weighted (path hits outrank content hits) and seeds \
          scripts/verify.sh, AGENTS.md, and architecture/testing.md for repo-how questions: \
          for repo mechanics, read scripts/verify.sh + AGENTS.md first. \
+         Prefer local reads for in-repo documents; remote fetch is capped and unpaged. \
          The pipeline collects sources from the configured providers, extracts evidence, constructs claims, \
          verifies citations, and synthesizes a final answer. For a quick lookup, use `websearch` instead."
     }

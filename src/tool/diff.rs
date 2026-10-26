@@ -107,7 +107,10 @@ impl DiffTool {
 
         let original = parsed.original.clone().ok_or_else(|| {
             ToolError::Execution(
-                "original content required for diff tool. Use \"original\" parameter.".to_string(),
+                "original content required for diff tool. Use \"original\" parameter; \
+                 for pre-checks use text_replace_check, for working-tree state use \
+                 git_query diff."
+                    .to_string(),
             )
         })?;
         if original.len() > MAX_ORIGINAL_BYTES {
@@ -302,6 +305,158 @@ fn truncate_diff_display(diff: String) -> (String, bool) {
     (truncated, true)
 }
 
+/// Repo-relative display path for diff `--- a/...` / `+++ b/...` headers.
+///
+/// Strips `[CWD]` / `[HOME]` placeholders and, when `workspace_root` is
+/// known, strips that prefix so headers never contain an absolute path or a
+/// placeholder. Falls back to stripping a leading `/` so the header stays
+/// relative even when the root is unknown.
+pub fn relative_diff_path(path: &str, workspace_root: Option<&Path>) -> String {
+    let mut display = path.replace("[CWD]/", "").replace("[CWD]", "");
+    display = display.replace("[HOME]/", "").replace("[HOME]", "");
+    if let Some(root) = workspace_root {
+        let root_str = root.to_string_lossy();
+        let root_prefix = root_str.trim_end_matches('/');
+        if display.starts_with(root_prefix)
+            && display.len() > root_prefix.len()
+            && display[root_prefix.len()..].starts_with('/')
+        {
+            display = display[root_prefix.len() + 1..].to_string();
+        } else if let Ok(rel) = Path::new(&display).strip_prefix(root) {
+            display = rel.to_string_lossy().to_string();
+        }
+    }
+    while display.starts_with('/') {
+        display.remove(0);
+    }
+    if display.is_empty() {
+        display = "file".to_string();
+    }
+    display
+}
+
+/// Shared grouped-diff formatter for mutator previews.
+///
+/// Uses repo-relative headers, numbers every row from the new side
+/// (`new_index` first), groups with `grouped_ops(3)`, emits `...` between
+/// groups and when context omits the file head/tail, and reports
+/// `(no changes)` when identical.
+pub fn format_grouped_diff(
+    old: &str,
+    new: &str,
+    path: &str,
+    workspace_root: Option<&Path>,
+) -> String {
+    use similar::TextDiff;
+    let display = relative_diff_path(path, workspace_root);
+    let diff = TextDiff::from_lines(old, new);
+    let mut result = String::new();
+    result.push_str(&format!("--- a/{display}\n"));
+    result.push_str(&format!("+++ b/{display}\n"));
+    if old == new {
+        result.push_str("(no changes)\n");
+        return result;
+    }
+    let groups = diff.grouped_ops(3);
+    if groups.is_empty() {
+        result.push_str("(no changes)\n");
+        return result;
+    }
+    // Head omission: first shown row does not start at line 1.
+    if let Some(first_group) = groups.first() {
+        if let Some(first_op) = first_group.first() {
+            for change in diff.iter_changes(first_op) {
+                let first_idx = change.new_index().or(change.old_index()).unwrap_or(0);
+                if first_idx > 0 {
+                    result.push_str("...\n");
+                }
+                break;
+            }
+        }
+    }
+    for (idx, group) in groups.iter().enumerate() {
+        if idx > 0 {
+            result.push_str("...\n");
+        }
+        for op in group {
+            for change in diff.iter_changes(op) {
+                let sign = match change.tag() {
+                    similar::ChangeTag::Delete => "-",
+                    similar::ChangeTag::Insert => "+",
+                    similar::ChangeTag::Equal => " ",
+                };
+                let line_num = change.new_index().or(change.old_index()).unwrap_or(0) + 1;
+                result.push_str(&format!(
+                    "{}{:>4} {}\n",
+                    sign,
+                    line_num,
+                    change.value().trim_end_matches('\n')
+                ));
+            }
+        }
+    }
+    // Tail omission (N8): last shown new-side line does not reach EOF.
+    let new_total = new.lines().count();
+    let mut last_new: Option<usize> = None;
+    if let Some(last_group) = groups.last() {
+        for op in last_group.iter().rev() {
+            let mut found = None;
+            for change in diff.iter_changes(op) {
+                if change.new_index().is_some() {
+                    found = change.new_index();
+                }
+            }
+            if found.is_some() {
+                last_new = found;
+                break;
+            }
+        }
+        // Fall back to scanning the whole tail when the last op is
+        // delete-only (no new side).
+        if last_new.is_none() {
+            for group in groups.iter().rev() {
+                for op in group.iter().rev() {
+                    for change in diff.iter_changes(op).collect::<Vec<_>>().iter().rev() {
+                        if let Some(n) = change.new_index() {
+                            last_new = Some(n);
+                            break;
+                        }
+                    }
+                    if last_new.is_some() {
+                        break;
+                    }
+                }
+                if last_new.is_some() {
+                    break;
+                }
+            }
+        }
+    }
+    if new_total > 0 {
+        if let Some(last) = last_new {
+            if last + 1 < new_total {
+                result.push_str("...\n");
+            }
+        }
+    }
+    if result.ends_with(&format!("+++ b/{display}\n")) {
+        result.push_str("(no changes)\n");
+    }
+    result
+}
+
+/// Bound a grouped preview so a capped diff always carries its marker.
+pub fn truncate_grouped_preview(preview: String, cap: usize) -> String {
+    if preview.len() <= cap {
+        return preview;
+    }
+    let mut end = cap;
+    while end > 0 && !preview.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n... [preview truncated]", &preview[..end])
+}
+
 fn generate_unified_diff(
     old: &str,
     new: &str,
@@ -311,8 +466,8 @@ fn generate_unified_diff(
     let diff = TextDiff::from_lines(old, new);
     let mut result = String::new();
 
-    result.push_str(&format!("--- a/{}\n", path));
-    result.push_str(&format!("+++ b/{}\n", path));
+    result.push_str(&format!("--- a/{}\n", relative_diff_path(path, None)));
+    result.push_str(&format!("+++ b/{}\n", relative_diff_path(path, None)));
 
     let changes: Vec<_> = diff.iter_all_changes().collect();
     let total_changes = changes.len();
@@ -454,5 +609,40 @@ mod tests {
             description.contains("for working-tree state use git_query diff"),
             "must route working-tree state to git_query diff, got: {description}"
         );
+    }
+
+    #[test]
+    fn grouped_diff_uses_relative_headers_and_new_side_numbering() {
+        let preview = format_grouped_diff("A\nB\nC\n", "A\nINSERTED\nB\nC\n", "d.txt", None);
+        assert!(preview.contains("--- a/d.txt"), "got: {preview}");
+        assert!(preview.contains("+++ b/d.txt"), "got: {preview}");
+        assert!(!preview.contains("[CWD]"), "got: {preview}");
+        assert!(preview.contains("   2 INSERTED"), "got: {preview}");
+        assert!(preview.contains("   3 B"), "got: {preview}");
+    }
+
+    #[test]
+    fn relative_diff_path_strips_root_and_placeholders() {
+        let root = Path::new("/repo");
+        assert_eq!(relative_diff_path("/repo/a/b.txt", Some(root)), "a/b.txt");
+        assert_eq!(relative_diff_path("[CWD]/tmp/a.txt", None), "tmp/a.txt");
+        assert_eq!(relative_diff_path("/abs/a.txt", None), "abs/a.txt");
+        assert!(!relative_diff_path("[CWD]/x", None).contains("[CWD]"));
+    }
+
+    #[test]
+    fn grouped_diff_tail_omission_carries_marker() {
+        let old = (1..=10)
+            .map(|i| format!("l{i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let new = format!("NEW\n{old}");
+        let preview = format_grouped_diff(&old, &new, "t.txt", None);
+        assert!(
+            preview.contains("..."),
+            "tail cap must be marked, got: {preview}"
+        );
+        assert!(preview.contains("--- a/t.txt"), "got: {preview}");
     }
 }

@@ -67,7 +67,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "Replace the first occurrence of literal text in a file (replaces first occurrence only). See tool_search for the file-op chooser."
+        "Replace literal text in a file (refuses when old_string matches more than once; use text_replace_check for pre-check or a longer anchor). See tool_search for the file-op chooser."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -235,16 +235,7 @@ impl EditTool {
             .map_err(|error| (error, WriterFenceOutcome::NoEffect))?;
 
             let outcome = try_edit(&content, &old_string_for_closure, &new_string_for_closure)
-                .ok_or_else(|| {
-                    let hint = find_similar_block(&content, &old_string_for_closure);
-                    (
-                        ToolError::Execution(format!(
-                            "could not find exact match for old_string.{}",
-                            hint
-                        )),
-                        WriterFenceOutcome::NoEffect,
-                    )
-                })?;
+                .map_err(|message| (ToolError::Execution(message), WriterFenceOutcome::NoEffect))?;
 
             // `fs::write` truncates before it writes, so a failure here can
             // leave a partially written file behind: the effect is unproven,
@@ -344,6 +335,7 @@ impl EditTool {
     }
 }
 
+#[derive(Debug)]
 struct EditOutcome {
     result: String,
     strategy: &'static str,
@@ -353,7 +345,41 @@ struct EditOutcome {
 
 type EditStrategy = (&'static str, fn(&str, &str, &str) -> Option<EditOutcome>);
 
-fn try_edit(content: &str, old_string: &str, new_string: &str) -> Option<EditOutcome> {
+fn exact_match_line_numbers(content: &str, old_string: &str) -> Vec<usize> {
+    if old_string.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    let mut start = 0;
+    while start <= content.len() {
+        let Some(rel) = content[start..].find(old_string) else {
+            break;
+        };
+        let idx = start + rel;
+        let (line, _) = line_range_for_byte_idx(content, idx, old_string.len());
+        lines.push(line);
+        start = idx + old_string.len().max(1);
+        if start >= content.len() {
+            // A match ending exactly at EOF still counts; stop scanning.
+            if content[start..].find(old_string).is_none() {
+                break;
+            }
+        }
+    }
+    lines
+}
+
+fn try_edit(content: &str, old_string: &str, new_string: &str) -> Result<EditOutcome, String> {
+    if !old_string.is_empty() {
+        let dup_lines = exact_match_line_numbers(content, old_string);
+        if dup_lines.len() > 1 {
+            return Err(format!(
+                "matched {} times at lines {:?}; use text_replace_check for pre-check or a longer anchor",
+                dup_lines.len(),
+                dup_lines
+            ));
+        }
+    }
     let strategies: &[EditStrategy] = &[
         ("exact_match", exact_match),
         ("line_trimmed_match", line_trimmed_match),
@@ -367,10 +393,11 @@ fn try_edit(content: &str, old_string: &str, new_string: &str) -> Option<EditOut
     for (name, strategy) in strategies {
         if let Some(mut outcome) = strategy(content, old_string, new_string) {
             outcome.strategy = name;
-            return Some(outcome);
+            return Ok(outcome);
         }
     }
-    None
+    let hint = find_similar_block(content, old_string);
+    Err(format!("could not find exact match for old_string.{hint}"))
 }
 
 fn min_indent(lines: &[&str]) -> usize {
@@ -434,46 +461,10 @@ fn line_range_for_byte_idx(
     (start_line, end_line.max(start_line))
 }
 fn grouped_preview(old: &str, new: &str, path: &str) -> String {
-    use similar::TextDiff;
-    let diff = TextDiff::from_lines(old, new);
-    let mut result = String::new();
-    result.push_str(&format!("--- a/{path}\n"));
-    result.push_str(&format!("+++ b/{path}\n"));
-    for (idx, group) in diff.grouped_ops(3).iter().enumerate() {
-        if idx > 0 {
-            result.push_str("...\n");
-        }
-        for op in group {
-            for change in diff.iter_changes(op) {
-                let sign = match change.tag() {
-                    similar::ChangeTag::Delete => "-",
-                    similar::ChangeTag::Insert => "+",
-                    similar::ChangeTag::Equal => " ",
-                };
-                let line_num = change.old_index().or(change.new_index()).unwrap_or(0) + 1;
-                result.push_str(&format!(
-                    "{}{:>4} {}\n",
-                    sign,
-                    line_num,
-                    change.value().trim_end_matches('\n')
-                ));
-            }
-        }
-    }
-    if result.ends_with(&format!("+++ b/{path}\n")) {
-        result.push_str("(no changes)\n");
-    }
-    result
+    crate::tool::diff::format_grouped_diff(old, new, path, None)
 }
 fn truncate_preview(preview: String, cap: usize) -> String {
-    if preview.len() <= cap {
-        return preview;
-    }
-    let mut end = cap;
-    while end > 0 && !preview.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}\n... [preview truncated]", &preview[..end])
+    crate::tool::diff::truncate_grouped_preview(preview, cap)
 }
 fn exact_match(content: &str, old_string: &str, new_string: &str) -> Option<EditOutcome> {
     let idx = content.find(old_string)?;
@@ -934,10 +925,36 @@ mod tests {
 
     #[test]
     fn exact_match_replaces_only_the_first_duplicate() {
-        let outcome = try_edit("same\nsame", "same", "new").expect("match should be found");
-        assert_eq!(outcome.result, "new\nsame");
-        assert_eq!(outcome.strategy, "exact_match");
-        assert_eq!((outcome.start_line, outcome.end_line), (1, 1));
+        let err = try_edit("same\nsame", "same", "new").expect_err("duplicate must refuse");
+        assert!(err.contains("matched 2 times"), "unexpected refusal: {err}");
+        assert!(
+            err.contains("lines [1, 2]"),
+            "must report lines, got: {err}"
+        );
+        assert!(
+            err.contains("text_replace_check"),
+            "must suggest pre-check: {err}"
+        );
+        assert!(err.contains("longer anchor"), "must suggest anchor: {err}");
+    }
+
+    #[test]
+    fn duplicate_old_string_reports_both_line_numbers() {
+        let content = "dup\nunique\nDUP-TARGET\ndup\nEND\n";
+        let err = try_edit(content, "dup", "dup\nREPLACED").expect_err("must refuse");
+        assert!(err.contains("matched 2 times"), "got: {err}");
+        assert!(
+            err.contains("[1, 4]"),
+            "must list lines 1 and 4, got: {err}"
+        );
+        assert!(err.contains("text_replace_check"), "got: {err}");
+    }
+
+    #[test]
+    fn single_match_still_succeeds() {
+        let outcome = try_edit("a\nb\nc\n", "b", "B").expect("single must succeed");
+        assert_eq!(outcome.result, "a\nB\nc\n");
+        assert_eq!((outcome.start_line, outcome.end_line), (2, 2));
     }
 
     #[test]
@@ -947,8 +964,32 @@ mod tests {
         assert_eq!((outcome.start_line, outcome.end_line), (2, 2));
         let preview = grouped_preview("a\nb\nc\n", &outcome.result, "f.txt");
         assert!(preview.contains("--- a/f.txt"));
+        assert!(preview.contains("+++ b/f.txt"));
+        assert!(
+            !preview.contains("[CWD]"),
+            "header must be relative: {preview}"
+        );
         assert!(preview.contains("-"));
         assert!(preview.contains("+"));
+    }
+
+    #[test]
+    fn grouped_preview_numbers_added_lines_from_new_side() {
+        let old = "A\nB\nC\n";
+        let new = "A\nINSERTED\nB\nC\n";
+        let preview = grouped_preview(old, new, "diffnum.txt");
+        assert!(preview.contains("--- a/diffnum.txt"), "got: {preview}");
+        assert!(!preview.contains("[CWD]"), "got: {preview}");
+        assert!(preview.contains("+"), "got: {preview}");
+        // INSERTED is new line 2; B shifts to new line 3 (not pre-insertion 2).
+        assert!(
+            preview.contains("   2 INSERTED"),
+            "new-side numbering, got: {preview}"
+        );
+        assert!(
+            preview.contains("   3 B"),
+            "B must be line 3, got: {preview}"
+        );
     }
 
     #[test]

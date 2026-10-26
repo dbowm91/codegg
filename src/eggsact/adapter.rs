@@ -332,6 +332,11 @@ fn capped_result_body(result: &serde_json::Value) -> serde_json::Value {
 
 /// Cap the echoed `shell_split.argv` entries inside `subresults` without
 /// touching the analyzed features the verdict was computed from.
+///
+/// H9: for compound commands (`has_pipe`/`has_control_operator`) `argv`
+/// mixes operators with args (`"|"`, `"&&"`, `"ok;"`) and misleads
+/// logging/policy/replay consumers. Emit `argv: null` + `segments: [...]`
+/// (one argv per pipeline/control segment) so downstream sees structure.
 fn cap_subresults_echo(subresults: &serde_json::Value) -> serde_json::Value {
     let Some(object) = subresults.as_object() else {
         return subresults.clone();
@@ -341,6 +346,16 @@ fn cap_subresults_echo(subresults: &serde_json::Value) -> serde_json::Value {
         .get_mut("shell_split")
         .and_then(|value| value.as_object_mut())
     {
+        let is_compound = shell_split
+            .get("features")
+            .and_then(|f| f.as_object())
+            .map(|f| {
+                f.get("has_pipe").and_then(|v| v.as_bool()).unwrap_or(false)
+                    || f.get("has_control_operator")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+            })
+            .unwrap_or(false);
         if let Some(argv) = shell_split
             .get_mut("argv")
             .and_then(|value| value.as_array_mut())
@@ -355,9 +370,57 @@ fn cap_subresults_echo(subresults: &serde_json::Value) -> serde_json::Value {
                     }
                 }
             }
+            if is_compound {
+                let segments = split_command_segments(argv);
+                shell_split.insert(
+                    "segments".to_string(),
+                    serde_json::Value::Array(
+                        segments
+                            .into_iter()
+                            .map(|seg| {
+                                serde_json::Value::Array(
+                                    seg.into_iter().map(serde_json::Value::String).collect(),
+                                )
+                            })
+                            .collect(),
+                    ),
+                );
+                shell_split.insert("argv".to_string(), serde_json::Value::Null);
+            }
         }
     }
     serde_json::Value::Object(capped)
+}
+
+/// H9: split a flat `argv` echo (which embeds `"|"`, `"&&"`, `"||"`,
+/// `";"`, `"&"` and glued `"ok;"`) into per-segment argvs.
+fn split_command_segments(argv: &[serde_json::Value]) -> Vec<Vec<String>> {
+    let mut segments: Vec<Vec<String>> = vec![Vec::new()];
+    for entry in argv {
+        let Some(text) = entry.as_str() else {
+            continue;
+        };
+        // Handle glued `ok;` / `cmd&` tails produced by the naive splitter.
+        let mut token = text.to_string();
+        if (token.ends_with(';') || token.ends_with('&')) && token.len() > 1 {
+            token.pop();
+            if !token.is_empty() {
+                if let Some(current) = segments.last_mut() {
+                    current.push(token);
+                }
+            }
+            segments.push(Vec::new());
+            continue;
+        }
+        if matches!(token.as_str(), "|" | "&&" | "||" | ";" | "&") {
+            segments.push(Vec::new());
+            continue;
+        }
+        if let Some(current) = segments.last_mut() {
+            current.push(token);
+        }
+    }
+    segments.into_iter().filter(|s| !s.is_empty()).collect()
 }
 
 #[cfg(test)]
@@ -693,5 +756,44 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn compound_argv_becomes_null_plus_segments() {
+        let subresults = serde_json::json!({
+            "shell_split": {
+                "argv": ["echo", "hello", "|", "grep", "h", "&&", "echo", "ok;"],
+                "features": {"has_pipe": true, "has_control_operator": true}
+            }
+        });
+        let capped = cap_subresults_echo(&subresults);
+        assert!(
+            capped["shell_split"]["argv"].is_null(),
+            "compound argv must be null, got: {capped}"
+        );
+        let segments = capped["shell_split"]["segments"]
+            .as_array()
+            .expect("segments present");
+        assert_eq!(segments.len(), 3, "got: {segments:?}");
+        assert!(
+            !serde_json::to_string(&capped).unwrap().contains("\"|\""),
+            "operators must not survive as args"
+        );
+    }
+
+    #[test]
+    fn simple_argv_survives_untouched() {
+        let subresults = serde_json::json!({
+            "shell_split": {
+                "argv": ["ls", "-la"],
+                "features": {"has_pipe": false, "has_control_operator": false}
+            }
+        });
+        let capped = cap_subresults_echo(&subresults);
+        assert_eq!(
+            capped["shell_split"]["argv"],
+            serde_json::json!(["ls", "-la"])
+        );
+        assert!(capped["shell_split"].get("segments").is_none());
     }
 }

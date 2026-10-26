@@ -122,9 +122,28 @@ impl Tool for EggsactTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
-        let mut result = self.runtime.call_json(self.eggsact_name, input)?;
+        let mut result = self.runtime.call_json(self.eggsact_name, input.clone())?;
         if self.codegg_name == "text_security_inspect" || self.codegg_name == "identifier_inspect" {
             apply_text_security_noise_filter(&mut result);
+        }
+        if self.codegg_name == "math_eval" {
+            apply_math_division_by_zero_fix(
+                &mut result,
+                input.get("expression").and_then(|v| v.as_str()),
+            );
+        }
+        if self.codegg_name == "text_diff_explain" {
+            apply_diff_explain_ascii_fix(
+                &mut result,
+                input.get("a").and_then(|v| v.as_str()),
+                input.get("b").and_then(|v| v.as_str()),
+            );
+        }
+        if self.codegg_name == "path_normalize" {
+            apply_path_normalize_escape_flag(
+                &mut result,
+                input.get("path").and_then(|v| v.as_str()),
+            );
         }
         Ok(result.output)
     }
@@ -134,11 +153,186 @@ impl Tool for EggsactTool {
         input: serde_json::Value,
         _ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
-        let mut result = self.runtime.call_json(self.eggsact_name, input)?;
+        let mut result = self.runtime.call_json(self.eggsact_name, input.clone())?;
         if self.codegg_name == "text_security_inspect" || self.codegg_name == "identifier_inspect" {
             apply_text_security_noise_filter(&mut result);
         }
+        if self.codegg_name == "math_eval" {
+            apply_math_division_by_zero_fix(
+                &mut result,
+                input.get("expression").and_then(|v| v.as_str()),
+            );
+        }
+        if self.codegg_name == "text_diff_explain" {
+            apply_diff_explain_ascii_fix(
+                &mut result,
+                input.get("a").and_then(|v| v.as_str()),
+                input.get("b").and_then(|v| v.as_str()),
+            );
+        }
+        if self.codegg_name == "path_normalize" {
+            apply_path_normalize_escape_flag(
+                &mut result,
+                input.get("path").and_then(|v| v.as_str()),
+            );
+        }
         Ok(to_structured_result(self.eggsact_name, result))
+    }
+}
+
+/// H11: normalize `math_eval` divide-by-zero into a precise machine code.
+///
+/// Upstream returns `ok:false, machine_code: INVALID_ARGUMENTS` with no
+/// `result`/`details` for `1/0`. Agents (and `validate_json`-style precise
+/// errors) need `DivisionByZero` + "division by zero". When upstream already
+/// reports a machine code, it is preserved and only missing detail is added;
+/// otherwise an `INVALID_ARGUMENTS` (or missing-code) failure whose message
+/// or expression indicates division by zero is mapped to `DivisionByZero`.
+pub(crate) fn apply_math_division_by_zero_fix(
+    result: &mut crate::eggsact::adapter::EggsactCallResult,
+    expression: Option<&str>,
+) {
+    if result.success {
+        return;
+    }
+    if result.machine_code.as_deref() == Some("DivisionByZero") {
+        if result.error.is_none() {
+            result.error = Some("division by zero".to_string());
+        }
+        if !result.output.contains("division by zero") {
+            result.output.push_str("\nmessage: division by zero");
+        }
+        return;
+    }
+    let haystack = [
+        result.error.as_deref().unwrap_or(""),
+        result
+            .result
+            .as_ref()
+            .and_then(|v| v.as_str())
+            .unwrap_or(""),
+        &result.output,
+        expression.unwrap_or(""),
+    ]
+    .join("\n")
+    .to_lowercase();
+    let looks_like_div_zero = haystack.contains("division by zero")
+        || haystack.contains("divide by zero")
+        || haystack.contains("division_by_zero")
+        || (haystack.contains("zero") && haystack.contains("divis"))
+        || expression.is_some_and(|expr| {
+            let compact: String = expr.chars().filter(|c| !c.is_whitespace()).collect();
+            compact.contains("/0") || compact.contains("%0") || compact.contains("//0")
+        });
+    if !looks_like_div_zero {
+        return;
+    }
+    // Only remap the generic argument error (or a missing code); a specific
+    // upstream code is preserved per contract.
+    let remappable = result.machine_code.is_none()
+        || result.machine_code.as_deref() == Some("INVALID_ARGUMENTS");
+    if !remappable {
+        return;
+    }
+    result.machine_code = Some("DivisionByZero".to_string());
+    if result.error.is_none()
+        || !result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains("division by zero")
+    {
+        result.error = Some("division by zero".to_string());
+    }
+    if !result.output.contains("DivisionByZero") {
+        result.output.push_str("\nmachine_code: DivisionByZero");
+    }
+    if !result.output.contains("division by zero") {
+        result.output.push_str("\nmessage: division by zero");
+    }
+}
+
+/// H15: `colour`/`color` are pure ASCII — never cite Unicode
+/// normalization. Only emit the normalization sentence when a normalization
+/// comparison actually differs; for ASCII diffs say so and stop.
+pub(crate) fn apply_diff_explain_ascii_fix(
+    result: &mut crate::eggsact::adapter::EggsactCallResult,
+    a: Option<&str>,
+    b: Option<&str>,
+) {
+    let (Some(a), Some(b)) = (a, b) else {
+        return;
+    };
+    if !a.is_ascii() || !b.is_ascii() {
+        return;
+    }
+    if !(result.output.contains("normalization") || result.output.contains("normalisation")) {
+        return;
+    }
+    let replacement =
+        "Both strings are ASCII; the difference is not a Unicode normalization issue.";
+    result.output = result.output.replace(
+        "differ in Unicode normalization. Choose appropriate normalization",
+        "differ as plain ASCII text. No Unicode normalization applies",
+    );
+    if !result.output.contains("Both strings are ASCII") {
+        result
+            .output
+            .push_str(&format!("\nagent_instruction: {replacement}"));
+    }
+    if let Some(res) = result.result.as_mut() {
+        if let Some(obj) = res.as_object_mut() {
+            if let Some(instr) = obj.get("agent_instruction").and_then(|v| v.as_str()) {
+                if instr.contains("normalization") || instr.contains("normalisation") {
+                    obj.insert(
+                        "agent_instruction".to_string(),
+                        serde_json::Value::String(replacement.to_string()),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// P2/P8: absolute inputs that climb above `/` (e.g.
+/// `/../../../../etc/passwd` collapsing to `/etc/passwd` with only
+/// "Collapsing dot-dot" warnings). Append an explicit `escapes_root: true`
+/// signal so policy consumers can treat it as escape, not hygiene.
+pub(crate) fn apply_path_normalize_escape_flag(
+    result: &mut crate::eggsact::adapter::EggsactCallResult,
+    input: Option<&str>,
+) {
+    let Some(input) = input else {
+        return;
+    };
+    if !input.starts_with('/') {
+        return;
+    }
+    let mut depth: i32 = 0;
+    let mut escapes = false;
+    for part in input.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                depth -= 1;
+                if depth < 0 {
+                    escapes = true;
+                }
+            }
+            _ => depth += 1,
+        }
+    }
+    if !escapes {
+        return;
+    }
+    if !result.output.contains("escapes_root") {
+        result.output.push_str("\nescapes_root: true");
+    }
+    if let Some(res) = result.result.as_mut() {
+        if let Some(obj) = res.as_object_mut() {
+            obj.insert("escapes_root".to_string(), serde_json::Value::Bool(true));
+        }
     }
 }
 
@@ -223,12 +417,22 @@ pub(crate) fn apply_text_security_noise_filter(
     if !has_confusable && !has_collision {
         return;
     }
-    // Demote single-char ASCII confusables and spurious IDENT_COLLISIONs in
-    // both structured slots.
+    // H1/H2: no actionable signal (no INSTRUCTION_PHRASE/secret/
+    // invisible/mixed-script) — a plain-English sentence must clear.
+    // Demote single-char ASCII confusables, separator variants
+    // (`user_name`/`username`), and any remaining IDENT_COLLISION to info
+    // in both structured slots; verdict falls to allow below.
     let mut demoted_any = false;
     if let Some(findings) = result.findings.as_mut().and_then(|v| v.as_array_mut()) {
         for item in findings.iter_mut() {
-            if is_single_char_ascii_confusable_finding(item) || is_spurious_ident_collision(item) {
+            if is_single_char_ascii_confusable_finding(item)
+                || is_spurious_ident_collision(item)
+                || is_separator_variant_collision(item)
+                || is_ident_collision(item)
+            {
+                if is_separator_variant_collision(item) {
+                    mark_separator_variant(item);
+                }
                 demote_to_info(item);
                 demoted_any = true;
             }
@@ -239,7 +443,12 @@ pub(crate) fn apply_text_security_noise_filter(
             for item in arr.iter_mut() {
                 if is_single_char_ascii_confusable_finding(item)
                     || is_spurious_ident_collision(item)
+                    || is_separator_variant_collision(item)
+                    || is_ident_collision(item)
                 {
+                    if is_separator_variant_collision(item) {
+                        mark_separator_variant(item);
+                    }
                     demote_to_info(item);
                     demoted_any = true;
                 }
@@ -496,6 +705,63 @@ fn demote_to_info(item: &mut serde_json::Value) {
     }
 }
 
+fn is_ident_collision(item: &serde_json::Value) -> bool {
+    finding_kind(item).contains("collision")
+}
+
+fn strip_separators(s: &str) -> String {
+    s.chars()
+        .filter(|c| *c != '_' && *c != '-' && *c != '.' && *c != ' ')
+        .collect::<String>()
+        .to_lowercase()
+}
+
+/// H2: `user_name`/`username` is a separator variant, not a homoglyph
+/// attack. Neutralize separators before comparison; equal-after-strip
+/// reports as `separator_variant (info)`, never `IDENT_COLLISION (warn)`.
+fn is_separator_variant_collision(item: &serde_json::Value) -> bool {
+    if !is_ident_collision(item) {
+        return false;
+    }
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(ids) = item.get("identifiers").and_then(|v| v.as_array()) {
+        for id in ids {
+            if let Some(s) = id.as_str() {
+                candidates.push(s.to_string());
+            }
+        }
+    }
+    if candidates.is_empty() {
+        let msg = item.get("message").and_then(|v| v.as_str()).unwrap_or("");
+        candidates = quoted_tokens(msg);
+    }
+    if candidates.len() < 2 {
+        return false;
+    }
+    for i in 0..candidates.len() {
+        for j in (i + 1)..candidates.len() {
+            let a = strip_separators(&candidates[i]);
+            let b = strip_separators(&candidates[j]);
+            if !a.is_empty()
+                && a == b
+                && candidates[i].to_lowercase() != candidates[j].to_lowercase()
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn mark_separator_variant(item: &mut serde_json::Value) {
+    if let Some(obj) = item.as_object_mut() {
+        obj.insert(
+            "variant".to_string(),
+            serde_json::Value::String("separator_variant".to_string()),
+        );
+    }
+}
+
 fn has_remaining_actionable_finding(res: &serde_json::Value) -> bool {
     if let Some(arr) = res.get("findings").and_then(|v| v.as_array()) {
         for item in arr {
@@ -715,7 +981,7 @@ pub fn build_eggsact_tools(runtime: Arc<EggsactRuntime>) -> (Vec<EggsactTool>, V
     always_visible.push(EggsactTool::new(
         "path_normalize",
         "path_normalize",
-        "Normalize a filesystem path: collapse dot segments, resolve components. Use when comparing or validating file paths.",
+        "Normalize a filesystem path: collapse dot segments, resolve components. Use when comparing or validating file paths. Absolute inputs that climb above `/` (e.g. `/../../../../etc/passwd`) carry `escapes_root: true` so policy consumers can treat it as a signal.",
         simple_schema(json!({
             "path": { "type": "string", "description": "Path to normalize" },
         }), &["path"]),
@@ -1114,5 +1380,132 @@ mod tests {
             !is_spurious_ident_collision(&item),
             "casefold-equal tokens are a real collision"
         );
+    }
+
+    #[test]
+    fn math_divide_by_zero_maps_to_division_by_zero_code() {
+        // Upstream shape: ok:false, INVALID_ARGUMENTS, no details.
+        let mut result = crate::eggsact::adapter::EggsactCallResult {
+            output: "ok: false\nmachine_code: INVALID_ARGUMENTS".to_string(),
+            success: false,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: Some("INVALID_ARGUMENTS".to_string()),
+            result: None,
+            findings: None,
+            warnings: None,
+            error_type: Some("INVALID_ARGUMENTS".to_string()),
+            error: Some("invalid arguments for 1/0".to_string()),
+        };
+        apply_math_division_by_zero_fix(&mut result, Some("1/0"));
+        assert_eq!(result.machine_code.as_deref(), Some("DivisionByZero"));
+        assert_eq!(result.error.as_deref(), Some("division by zero"));
+        assert!(result.output.contains("DivisionByZero"));
+        assert!(result.output.contains("division by zero"));
+    }
+
+    #[test]
+    fn math_division_fix_preserves_specific_upstream_code() {
+        let mut result = crate::eggsact::adapter::EggsactCallResult {
+            output: "ok: false\nmachine_code: DivisionByZero".to_string(),
+            success: false,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: Some("DivisionByZero".to_string()),
+            result: None,
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        apply_math_division_by_zero_fix(&mut result, Some("1/0"));
+        assert_eq!(result.machine_code.as_deref(), Some("DivisionByZero"));
+        assert_eq!(result.error.as_deref(), Some("division by zero"));
+    }
+
+    #[test]
+    fn benign_english_demotes_to_allow_with_dedup() {
+        let mut result = crate::eggsact::adapter::EggsactCallResult {
+            output: "verdict: review\nCONFUSABLES\nconfusables\nIDENT_COLLISION: 'message' collides with 'normal'"
+                .to_string(),
+            success: true,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({
+                "verdict": "review",
+                "findings": [
+                    {"kind": "confusables", "message": "Text contains confusable character 'm' (looks like 'rn')"},
+                    {"kind": "CONFUSABLES", "message": "Text contains confusable character 'm' (looks like 'rn')"},
+                    {"kind": "IDENT_COLLISION", "message": "IDENT_COLLISION: 'message' collides with 'normal'"}
+                ]
+            })),
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        apply_text_security_noise_filter(&mut result);
+        let verdict = result
+            .result
+            .as_ref()
+            .and_then(|v| v.get("verdict"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert_eq!(
+            verdict, "allow",
+            "benign English must clear, got: {verdict}"
+        );
+        assert!(result.output.contains("verdict: allow"));
+    }
+
+    #[test]
+    fn separator_variant_is_info_not_collision() {
+        let item = serde_json::json!({
+            "kind": "IDENT_COLLISION",
+            "message": "confusable: 'user_name' collides with 'username'"
+        });
+        assert!(is_separator_variant_collision(&item));
+        assert!(is_ident_collision(&item));
+    }
+
+    #[test]
+    fn ascii_diff_never_cites_normalization() {
+        let mut result = crate::eggsact::adapter::EggsactCallResult {
+            output: "agent_instruction: Strings differ in Unicode normalization. Choose appropriate normalization"
+                .to_string(),
+            success: true,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({
+                "agent_instruction": "Strings differ in Unicode normalization. Choose appropriate normalization"
+            })),
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        apply_diff_explain_ascii_fix(&mut result, Some("colour"), Some("color"));
+        assert!(!result.output.contains("differ in Unicode normalization"));
+        assert!(result.output.contains("Both strings are ASCII"));
+    }
+
+    #[test]
+    fn path_escape_flag_fires_above_root() {
+        let mut result = crate::eggsact::adapter::EggsactCallResult {
+            output: "path: /etc/passwd".to_string(),
+            success: true,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({"path": "/etc/passwd"})),
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        apply_path_normalize_escape_flag(&mut result, Some("/../../../../etc/passwd"));
+        assert!(result.output.contains("escapes_root: true"));
     }
 }

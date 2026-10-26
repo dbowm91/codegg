@@ -280,10 +280,63 @@ pub fn frame_batch_results(content: &str, source: &str) -> String {
     out
 }
 
+/// Backend-to-canonical tool name map (A8).
+///
+/// Eggsearch speaks `web_search`/`web_fetch`/`build_evidence_bundle` while
+/// the CodeGG-native registry (`tool_search` index) lists `websearch`/
+/// `webfetch`/`evidence_bundle`. Guidance that echoes a backend name sends
+/// the agent to a tool that does not exist. This single constant is the
+/// authority for the rewrite; `canonicalize_next_actions` applies it to
+/// upstream `next_actions[].tool` values so model-visible guidance always
+/// names executable tools. If a new backend name appears, extend this table
+/// (and the `backend_names_are_canonical` guard test) rather than ad-hoc
+/// string replaces.
+pub const BACKEND_TO_CANONICAL_TOOL: &[(&str, &str)] = &[
+    ("web_search", "websearch"),
+    ("web_fetch", "webfetch"),
+    ("build_evidence_bundle", "evidence_bundle"),
+];
+
+/// Map one backend tool name to its canonical CodeGG-native name.
+/// Unknown names pass through unchanged so future tools degrade to the
+/// upstream value instead of vanishing.
+pub fn canonical_tool_name(backend: &str) -> &str {
+    for (from, to) in BACKEND_TO_CANONICAL_TOOL {
+        if *from == backend {
+            return to;
+        }
+    }
+    backend
+}
+
+/// Rewrite upstream `next_actions[].tool` entries in place from backend to
+/// canonical names. No-op when the value has no `next_actions` array.
+pub fn canonicalize_next_actions(value: &mut serde_json::Value) {
+    let Some(actions) = value.get_mut("next_actions").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    for action in actions.iter_mut() {
+        let tool = action
+            .get("tool")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string();
+        let canonical = canonical_tool_name(&tool);
+        if canonical != tool {
+            if let Some(map) = action.as_object_mut() {
+                map.insert(
+                    "tool".to_string(),
+                    serde_json::Value::String(canonical.to_string()),
+                );
+            }
+        }
+    }
+}
+
 pub fn frame_evidence_bundle(content: &str, source: &str) -> String {
     let mut out = String::with_capacity(content.len() + 192);
     out.push_str(&format!(
-        "[external_evidence_bundle trust=external_untrusted source={source} tool=build_evidence_bundle]\n"
+        "[external_evidence_bundle trust=external_untrusted source={source} tool=evidence_bundle]\n"
     ));
     out.push_str(
         "The following is a compiled evidence bundle from external sources. \
@@ -493,7 +546,7 @@ mod tests {
     fn evidence_bundle_frame_includes_trust_label_and_warning() {
         let framed = frame_evidence_bundle("compiled evidence", "eggsearch");
         assert!(framed.contains("trust=external_untrusted"));
-        assert!(framed.contains("tool=build_evidence_bundle"));
+        assert!(framed.contains("tool=evidence_bundle"));
         assert!(framed.contains("EXTERNAL, UNTRUSTED DATA"));
         assert!(framed.contains("external_evidence_bundle"));
         assert!(framed.contains("compiled evidence"));
@@ -545,7 +598,7 @@ mod tests {
     fn frame_evidence_bundle_has_trust() {
         let out = frame_evidence_bundle("evidence data", "eggsearch");
         assert!(out.contains("trust=external_untrusted"));
-        assert!(out.contains("tool=build_evidence_bundle"));
+        assert!(out.contains("tool=evidence_bundle"));
     }
 
     #[test]
@@ -614,5 +667,56 @@ mod tests {
         assert!(search_detail_requests_compact(&serde_json::json!({"detail": "summary"})).unwrap());
         assert!(!search_detail_requests_compact(&serde_json::json!({"detail": "schema"})).unwrap());
         assert!(search_detail_requests_compact(&serde_json::json!({"detail": "bogus"})).is_err());
+    }
+
+    #[test]
+    fn backend_names_map_to_canonical_tool_names() {
+        // Single-constant guard: backend guidance must name executable tools.
+        assert_eq!(canonical_tool_name("web_fetch"), "webfetch");
+        assert_eq!(
+            canonical_tool_name("build_evidence_bundle"),
+            "evidence_bundle"
+        );
+        assert_eq!(canonical_tool_name("web_search"), "websearch");
+        assert_eq!(canonical_tool_name("repo_search"), "repo_search");
+        for (backend, canonical) in BACKEND_TO_CANONICAL_TOOL {
+            assert_ne!(backend, canonical, "mapping must rename, got: {backend}");
+        }
+    }
+
+    #[test]
+    fn backend_names_are_canonical() {
+        // Drift guard: every rewritten name must stay distinct from its
+        // backend spelling so a silent pass-through cannot reintroduce
+        // `web_fetch`/`build_evidence_bundle` guidance.
+        let mut value = serde_json::json!({
+            "next_actions": [
+                {"tool": "web_fetch"},
+                {"tool": "build_evidence_bundle"},
+                {"tool": "web_search"},
+                {"tool": "repo_search"},
+            ]
+        });
+        canonicalize_next_actions(&mut value);
+        let tools: Vec<&str> = value["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["tool"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            tools,
+            vec!["webfetch", "evidence_bundle", "websearch", "repo_search"]
+        );
+        assert!(
+            !serde_json::to_string(&value).unwrap().contains("web_fetch"),
+            "backend spelling must not survive canonicalization"
+        );
+        assert!(
+            !serde_json::to_string(&value)
+                .unwrap()
+                .contains("build_evidence_bundle"),
+            "backend spelling must not survive canonicalization"
+        );
     }
 }

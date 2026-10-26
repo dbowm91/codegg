@@ -214,6 +214,8 @@ from `off` through `observe` and `warn` to `block_on_definite`. This is a
 different surface from the `!` human-shell confirmation, which retains its own
 policy.
 
+`config_preflight` valid-JSON responses nest `result.subresults`; `json_canonicalize.changed: true` means the input was re-serialized to canonical JSON (key order/whitespace), not that it was invalid. `webfetch` accepts `offset` with `max_length` as a paging window (not a prefix cap); `repo_fetch` `code_span.confidence: "Exact"` describes the selection, and the payload is projected to `line_start..line_end` with `chunks` omitted when a span is requested.
+
 ### Routine commands and approval
 
 Once the requested workspace and action are authorized, routine development

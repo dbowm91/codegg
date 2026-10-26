@@ -367,6 +367,60 @@ fn add_repository_locator(args: &mut Value, locator: RepositoryLocator) {
     }
 }
 
+/// A9: project a `repo_fetch` result to its requested line span so
+/// `code_span {line_start, line_end, confidence: Exact}` describes the
+/// projection, not just the selection. Restricts `document.blocks` and
+/// `text` to the span and drops `chunks` (range-scoped callers do not need
+/// the whole-document triple carry that blew the 8 KiB cap).
+fn project_repo_fetch_to_span(result: &mut EggsearchCallResult, start: u64, end: u64) {
+    let (Ok(start), Ok(end)) = (
+        usize::try_from(start.max(1)),
+        usize::try_from(end.max(start.max(1))),
+    ) else {
+        return;
+    };
+    if let Some(value) = result.value.as_mut() {
+        if let Some(doc) = value.get_mut("document") {
+            if let Some(obj) = doc.as_object_mut() {
+                obj.remove("chunks");
+                if let Some(blocks) = obj.get_mut("blocks").and_then(|v| v.as_array_mut()) {
+                    blocks.retain(|b| {
+                        let s = b
+                            .get("line_start")
+                            .or_else(|| b.get("start_line"))
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(1) as usize;
+                        let e = b
+                            .get("line_end")
+                            .or_else(|| b.get("end_line"))
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(u64::MAX) as usize;
+                        e >= start && s <= end
+                    });
+                }
+                for key in ["text", "content"] {
+                    if let Some(text) = obj.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+                    {
+                        let lines: Vec<&str> = text.lines().collect();
+                        if start <= lines.len() {
+                            let slice_end = end.min(lines.len());
+                            obj.insert(
+                                key.to_string(),
+                                serde_json::Value::String(lines[start - 1..slice_end].join("\n")),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Re-frame the (now projected) output so the inline copy matches.
+    result.output = format!(
+        "{}\n[projected to lines {}..{}; chunks omitted]",
+        result.output, start, end
+    );
+}
+
 fn range_alias(input: &Value, current: &str, legacy: &str) -> Result<Option<u64>, ToolError> {
     let current_value = input.get(current).and_then(tolerant_u64);
     let legacy_value = input.get(legacy).and_then(tolerant_u64);
@@ -441,7 +495,11 @@ fn build_web_fetch_args(input: &Value) -> Result<Value, ToolError> {
         .or_else(|| input.get("max_chars"))
         .and_then(tolerant_u64)
         .unwrap_or(10_000);
-    let mut args = json!({"url": url, "max_chars": max_chars});
+    // A9: `offset` windows the fetch instead of re-truncating the same
+    // prefix. Forwarded when present; the local projection below enforces
+    // the window even if the backend ignores it.
+    let offset = input.get("offset").and_then(tolerant_u64).unwrap_or(0);
+    let mut args = json!({"url": url, "max_chars": max_chars, "offset": offset});
     args["extract_mode"] = input
         .get("extract_mode")
         .cloned()
@@ -650,7 +708,7 @@ fn build_evidence_bundle_args(input: &Value) -> Result<Value, ToolError> {
     let fetches = input.get("fetches").and_then(Value::as_array);
     if sources.is_empty() && fetches.is_none_or(Vec::is_empty) {
         return Err(ToolError::Execution(
-            "evidence_bundle requires at least one current source or fetch input".to_string(),
+            "evidence_bundle requires at least one current source or fetch input, e.g. {\"sources\": [{\"id\": \"src-1\", \"url\": \"https://example.com\", \"title\": \"Example\", \"snippet\": \"…\"}]} (source-card ids from websearch)".to_string(),
         ));
     }
     for (index, source) in sources.iter().enumerate() {
@@ -754,9 +812,16 @@ where
     // content or as serialized JSON text. Keep text-only responses as an
     // explicit compatibility projection for older servers and web-fetch
     // bodies; they never masquerade as structured evidence.
-    let value = result
+    let mut value = result
         .structured
         .or_else(|| serde_json::from_str::<Value>(&result.text).ok());
+    // A8: backend `next_actions[].tool` names (`web_fetch`,
+    // `build_evidence_bundle`) are not executable CodeGG tools. Rewrite to
+    // the canonical registry names (`webfetch`, `evidence_bundle`) before
+    // the value reaches model-visible guidance.
+    if let Some(ref mut v) = value {
+        super::framing::canonicalize_next_actions(v);
+    }
     let (capped, truncated) = clamp_output(&result.text, max_output_chars, cap_label);
     Ok(EggsearchCallResult {
         output: frame(&capped, "eggsearch"),
@@ -1040,7 +1105,7 @@ pub async fn call_repo_fetch_structured_with_host_scope(
     }
     apply_internal_response_detail(input, &mut args)?;
 
-    let result = call_structured_tool_with_service_scope(
+    let mut result = call_structured_tool_with_service_scope(
         svc,
         mcp_server,
         "repo_fetch",
@@ -1052,6 +1117,16 @@ pub async fn call_repo_fetch_structured_with_host_scope(
         frame_repo_file,
     )
     .await?;
+    // A9: `code_span` was metadata-only — `blocks`+`chunks`+`text` each
+    // carried the whole document (2–3× bytes, so an 8 KiB cap truncates a
+    // 60-line range). Project to the requested span locally: restrict
+    // blocks/text to line_start..line_end, drop `chunks`.
+    if let (Some(start), Some(end)) = (
+        range_alias(input, "line_start", "start_line").unwrap_or(None),
+        range_alias(input, "line_end", "end_line").unwrap_or(None),
+    ) {
+        project_repo_fetch_to_span(&mut result, start, end);
+    }
     apply_compact_projection(
         input,
         result,
@@ -1913,6 +1988,20 @@ mod tests {
     }
 
     #[test]
+    fn evidence_bundle_empty_error_shows_example_shape() {
+        let err = build_evidence_bundle_args(&json!({})).expect_err("empty must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("requires at least one current source"),
+            "got: {msg}"
+        );
+        assert!(
+            msg.contains("\"sources\"") && msg.contains("src-1"),
+            "error must include an example input shape, got: {msg}"
+        );
+    }
+
+    #[test]
     fn eggsearch_tool_missing_includes_upstream_name() {
         let err = super::eggsearch_tool_missing(
             "eggsearch",
@@ -2127,6 +2216,48 @@ mod tests {
             result.is_ok(),
             "ensure_tool_available should return Ok(()) during bootstrap lock hold, got: {:?}",
             result
+        );
+    }
+
+    #[test]
+    fn webfetch_args_forward_offset_window() {
+        let args = super::build_web_fetch_args(&serde_json::json!({
+            "url": "https://example.com/x",
+            "max_length": 2000,
+            "offset": 2000
+        }))
+        .expect("offset must parse");
+        assert_eq!(args["offset"], serde_json::json!(2000));
+        assert_eq!(args["max_chars"], serde_json::json!(2000));
+    }
+
+    #[test]
+    fn repo_fetch_projects_to_span_and_drops_chunks() {
+        let mut result = super::EggsearchCallResult {
+            output: "whole".to_string(),
+            value: Some(serde_json::json!({
+                "document": {
+                    "text": "l1\nl2\nl3\nl4\nl5",
+                    "blocks": [
+                        {"line_start": 1, "line_end": 2, "text": "l1\nl2"},
+                        {"line_start": 4, "line_end": 5, "text": "l4\nl5"}
+                    ],
+                    "chunks": [{"text": "l1\nl2\nl3\nl4\nl5"}]
+                }
+            })),
+            truncated: false,
+            success: true,
+        };
+        super::project_repo_fetch_to_span(&mut result, 4, 5);
+        let doc = result.value.as_ref().unwrap()["document"].clone();
+        assert!(
+            doc.get("chunks").is_none(),
+            "triple-carry chunks must be dropped, got: {doc}"
+        );
+        assert!(
+            result.output.contains("projected to lines 4..5"),
+            "got: {}",
+            result.output
         );
     }
 }

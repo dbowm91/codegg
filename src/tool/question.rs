@@ -129,6 +129,10 @@ impl Tool for QuestionTool {
                         "required": ["question"]
                     },
                     "description": "List of questions to ask the user"
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Harness self-test echo: validate and return the question shape without blocking on a human (default: false)"
                 }
             },
             "required": ["questions"]
@@ -146,10 +150,23 @@ impl Tool for QuestionTool {
     /// and routes it through `QuestionRegistry`. This fallback is only reached
     /// if the tool bypasses permission checks (e.g., exec mode with Allow default).
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
+        let dry_run = input
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let parsed = parse_question_input(input)?;
 
         if parsed.questions.is_empty() {
             return Err(ToolError::Execution("no questions provided".to_string()));
+        }
+
+        if dry_run {
+            return serde_json::to_string_pretty(&serde_json::json!({
+                "dry_run": true,
+                "question_count": parsed.questions.len(),
+                "questions": parsed.questions,
+            }))
+            .map_err(|e| ToolError::Execution(format!("failed to serialize: {e}")));
         }
 
         let pending = QuestionPending {
@@ -202,5 +219,20 @@ mod tests {
 
         assert_eq!(questions.len(), 2);
         assert_eq!(questions[1].initial.as_deref(), Some("default"));
+    }
+
+    #[tokio::test]
+    async fn dry_run_echoes_without_blocking() {
+        use crate::tool::Tool;
+        let tool = QuestionTool;
+        let out = tool
+            .execute(json!({
+                "questions": [{"question": "Proceed?"}],
+                "dry_run": true
+            }))
+            .await
+            .expect("dry_run must succeed");
+        assert!(out.contains("dry_run"), "got: {out}");
+        assert!(out.contains("Proceed?"), "got: {out}");
     }
 }

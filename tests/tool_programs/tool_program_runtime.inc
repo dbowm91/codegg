@@ -411,7 +411,7 @@ async fn empty_frozen_contract_is_rejected() {
         *authority_grant_json = Some(serde_json::to_string(&grant).unwrap());
     }
     let result = fixture.executor.execute(make_ctx(job, false)).await;
-    assert_failed(&result, "at least one frozen runtime contract");
+    assert_failed(&result, "non-empty `tools` list");
     assert_eq!(fixture.call_count(), 0);
 }
 

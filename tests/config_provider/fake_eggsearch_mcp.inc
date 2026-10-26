@@ -1282,6 +1282,8 @@ async fn structured_wrappers_preserve_upstream_value_and_bound_display() {
         "unknown_future_field": {"must_survive": true},
         "payload": "large evidence payload"
     });
+    // A8: upstream backend names (`web_fetch`) are canonicalized to
+    // executable registry names (`webfetch`) before reaching the model.
     let response = fixture.to_string();
     let mut svc = McpService::new();
     let tools = [
@@ -1371,7 +1373,7 @@ async fn structured_wrappers_preserve_upstream_value_and_bound_display() {
         assert_eq!(value["routing_decision"]["degraded"], true);
         assert_eq!(value["providers_failed"][0], "exa");
         assert_eq!(value["retrieval_state"]["complete"], false);
-        assert_eq!(value["next_actions"][0]["tool"], "web_fetch");
+        assert_eq!(value["next_actions"][0]["tool"], "webfetch");
         assert_eq!(value["unknown_future_field"]["must_survive"], true);
         assert!(result.output.contains("trust=external_untrusted"));
         assert!(result

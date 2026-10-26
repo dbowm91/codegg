@@ -64,7 +64,7 @@ impl Tool for GrepTool {
     }
 
     fn description(&self) -> &str {
-        "Search file contents using regular expressions. `read` sees ignored files; discovery skips them unless include_ignored:true. Note: `.codegg/test-runs/*` may be gitignored — use include_ignored:true or read directly."
+        "Search file contents using regular expressions. `read` sees ignored files; discovery skips them unless include_ignored:true. Note: `.codegg/test-runs/*` may be gitignored — use include_ignored:true or read directly. Hits render `path:line:text`, context renders `path:line- text` (grep-style, not diff deletions)."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -732,8 +732,10 @@ fn push_rendered_line(
     is_context: bool,
     control: &SearchControl,
 ) -> bool {
+    // H16: grep-style separators — `path:line:text` for hits,
+    // `path:line- text` for context (not diff `-` deletions).
     let line = if is_context {
-        format!("{}:{}:- {}", path.display(), line_number, text)
+        format!("{}:{}- {}", path.display(), line_number, text)
     } else {
         format!("{}:{}:{}", path.display(), line_number, text)
     };
@@ -820,11 +822,11 @@ mod tests {
         assert_eq!(metrics.context_reads.load(Ordering::Acquire), 1);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].lines.len(), 5);
-        assert!(files[0].lines[0].ends_with(":1:- one"));
+        assert!(files[0].lines[0].ends_with(":1- one"));
         assert!(files[0].lines[1].contains(":2:needle two"));
-        assert!(files[0].lines[2].ends_with(":3:- three"));
+        assert!(files[0].lines[2].ends_with(":3- three"));
         assert!(files[0].lines[3].contains(":4:needle four"));
-        assert!(files[0].lines[4].ends_with(":5:- five"));
+        assert!(files[0].lines[4].ends_with(":5- five"));
     }
 
     #[tokio::test(flavor = "current_thread")]
