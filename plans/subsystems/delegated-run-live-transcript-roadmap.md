@@ -79,17 +79,17 @@ M002 may design its interface while M001 is active but cannot claim integration 
 ### M001 — Capture the delegated conversation during execution
 Primary class: infrastructure. Plan: plans/implementation/delegated-run-live-transcript/001-live-semantic-capture.md.
 Exit: while a child is deliberately held at a tool boundary, the store contains its preceding model/tool call/result rows in ordinal order, without waiting for completion; partial failed/cancelled attempts retain committed observations and terminal provenance; pre-existing C002 privacy/bounds and tool execution semantics remain intact.
-Status: ready.
+Status: closed. Closure: `plans/closure/delegated-run-live-transcript/001-status.md`.
 
 ### M002 — Session-authorized cursor read and transcript-advanced projection signal
 Primary class: infrastructure. Hard dependency: M001. Plan: plans/implementation/delegated-run-live-transcript/002-authorized-tail-and-change-publication.md.
 Exit: a subscribed owning-session client receives a body-free advanced hint after commit, and can page the redacted stored tail without a full session snapshot; wrong-session/principal attempts are denied before reading; reconnect, duplicate and gap cases recover from authoritative cursor reads.
-Status: blocked until M001 closes.
+Status: closed. Closure: `plans/closure/delegated-run-live-transcript/002-status.md`.
 
 ### M003 — TUI follows open delegated tabs
 Primary class: capability. Hard dependency: M002. Plan: plans/implementation/delegated-run-live-transcript/003-tui-live-follow-and-qualification.md.
 Exit: the opened TUI tab visibly advances during a paused real child run without reopen, reliably recovers after disconnect, preserves reader scroll and does not mix runs/sessions; closed or hidden tabs impose no recurring live reads.
-Status: blocked until M002 closes.
+Status: closed. Closure: `plans/closure/delegated-run-live-transcript/003-status.md`.
 
 ## 8. Cross-cutting requirements
 
