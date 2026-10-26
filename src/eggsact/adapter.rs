@@ -76,7 +76,6 @@ pub struct EggsactConfig {
 
 impl Default for EggsactConfig {
     fn default() -> Self {
-        // R19: stays `codegg_core`/`model` (upstream MATH_TOOLS lacks
         // `codegg_core`, so `has_tool("math_eval")` is false here by
         // design). Math exposure is bound in
         // `build_eggsact_tools()` to a math-capable (`full`) runtime
@@ -303,18 +302,16 @@ fn capped_result_body(result: &serde_json::Value) -> serde_json::Value {
         if key == "subresults" {
             continue;
         }
-        if key == "verdict" {
-            if value.as_str() == Some("block") {
-                ordered.insert(
-                    key.clone(),
-                    serde_json::Value::String("advisory-block".to_string()),
-                );
-                ordered.insert(
-                    "enforcement".to_string(),
-                    serde_json::Value::String("advisory_only".to_string()),
-                );
-                continue;
-            }
+        if key == "verdict" && value.as_str() == Some("block") {
+            ordered.insert(
+                key.clone(),
+                serde_json::Value::String("advisory-block".to_string()),
+            );
+            ordered.insert(
+                "enforcement".to_string(),
+                serde_json::Value::String("advisory_only".to_string()),
+            );
+            continue;
         }
         if key == "command" {
             if let Some(command) = value.as_str() {

@@ -492,7 +492,6 @@ impl AgentLoop {
                 hook_registry,
                 context_tracker,
                 progress_recovery: RecoveryController::default(),
-                recovery_parallel_limit: None,
                 mcp_service: mcp_service.clone(),
                 // Explicit search/MCP runtime context (M005): owned
                 // immutable config snapshot plus the daemon-owned shared
@@ -849,9 +848,6 @@ impl AgentLoop {
     }
 
     pub(super) fn max_parallel_tools(&self) -> usize {
-        if let Some(limit) = self.services.recovery_parallel_limit {
-            return self.max_parallel_tools_unconstrained().min(limit.max(1));
-        }
         self.max_parallel_tools_unconstrained()
     }
 
@@ -1259,7 +1255,6 @@ impl AgentLoop {
         // Reset per-run policy runtime (defensive; new AgentLoop instances also start defaulted).
         self.services.context_policy_runtime = ContextPolicyRuntimeState::default();
         self.services.progress_recovery = RecoveryController::default();
-        self.services.recovery_parallel_limit = None;
         self.habit_actions.clear();
         self.habit_had_failure = false;
         // Gated effective-cost driven tool palette reduction (prototype). Applies only to
@@ -1950,7 +1945,6 @@ impl AgentLoop {
             // arguments/results remain in the normal model context and are
             // never copied into recovery diagnostics.
             let recovery_batch = 0;
-            let mut recovery_stalled = false;
             // O(1) lookup per tool call (was an O(N) scan per call, O(N²)
             // overall). Outcomes are borrowed; no per-call clone of the
             // (potentially large) model text.
@@ -2012,11 +2006,6 @@ impl AgentLoop {
                     // uncredited on purpose; widening this needs a per-tool
                     // state-change observation that does not exist yet.
                     //
-                    // Known imprecision, in the permissive direction: the bus
-                    // is drained once per batch, so within a multi-call batch
-                    // every file-modifying call is credited when *any* of them
-                    // emitted a change. Correcting it needs per-path
-                    // attribution, which is a separate change from this one.
                     state_changed: observed_file_change
                         && is_file_modifying_tool(&tc.name)
                         && tool_outcome_is_success(outcome),
@@ -2024,7 +2013,7 @@ impl AgentLoop {
                     batch_id: recovery_batch,
                 };
                 match autonomy.observe_tool_result(outcome, observation) {
-                    RecoveryDecision::Progress => self.services.recovery_parallel_limit = None,
+                    RecoveryDecision::Progress => {}
                     RecoveryDecision::Recover { action, incident } => {
                         let instruction = match action {
                             RecoveryAction::Nudge => format!(
@@ -2041,37 +2030,24 @@ impl AgentLoop {
                                 "Recovery correction: the available palette was restored to the authorized base surface. Choose one available structured tool and continue.".to_string()
                             }
                             RecoveryAction::Replan => "Recovery replan: provide a short plan grounded only in the latest tool result, then execute the next concrete structured action.".to_string(),
-                            RecoveryAction::Stall => {
-                                tracing::error!(
-                                    "RecoveryAction::Stall reached dispatch; upstream short-circuit missing"
-                                );
-                                "Recovery stalled: re-evaluate the next step with available tools."
-                                    .to_string()
-                            }
                         };
                         push_control_instruction(
                             &mut request.messages,
                             &model_profile,
                             &instruction,
                         );
-                        tracing::info!(incident = ?incident.kind, action = ?action, "agent recovery action");
-                    }
-                    RecoveryDecision::Stalled(report) => {
-                        recovery_stalled = true;
-                        tracing::warn!(incident = ?report.incident, attempts = report.attempted_recoveries, evidence = %report.evidence, "agent stalled after bounded recovery");
-                        crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
-                            message: format!(
-                                "Agent stalled: {}. {}",
-                                report.evidence, report.suggested_user_action
-                            ),
-                        });
-                        break;
+                        tracing::info!(
+                            incident = ?incident.kind,
+                            incident_id = %incident.action_fingerprint,
+                            occurrences = incident.occurrences,
+                            progress = ?incident.progress,
+                            action = ?action,
+                            decision_owner = "advisory_recovery",
+                            "agent recovery action"
+                        );
                     }
                     RecoveryDecision::Continue => {}
                 }
-            }
-            if recovery_stalled {
-                break;
             }
 
             // Auto-invoke security-review subagent if triggered by high-risk tools or sensitive paths

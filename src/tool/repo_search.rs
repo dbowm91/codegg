@@ -306,12 +306,19 @@ impl Tool for RepoSearchTool {
         let start = Instant::now();
         let (root, reason) = Self::resolve_local_root_with_reason(ctx.as_ref());
         let input = Self::with_repo_search_defaults(input, root.is_some());
+        let include_local = input
+            .get("include_local")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(root.is_some());
+        let host_root = include_local.then_some(root.as_deref()).flatten();
         let mut result = self
             .search_runtime
-            .dispatch_repo_search_host_scoped(&input, root.as_deref())
+            .dispatch_repo_search_host_scoped(&input, host_root)
             .await?;
-        if let Some(reason) = reason {
-            result.output = format!("[local_scope {reason}]\n{}", result.output);
+        if include_local {
+            if let Some(reason) = reason {
+                result.output = format!("[local_scope {reason}]\n{}", result.output);
+            }
         }
         let elapsed_ms = start.elapsed().as_millis() as u64;
         let mut provenance = self

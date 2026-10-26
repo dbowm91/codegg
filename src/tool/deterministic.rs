@@ -48,8 +48,6 @@ impl EggsactTool {
         }
     }
 
-    /// Shared output schema for the deterministic result envelope.
-    ///
     /// All 15 validators are pure functions over their inputs (no
     /// filesystem reads, no external state); the envelope carries the
     /// `ok` flag plus optional machine-code/result/findings fields.
@@ -432,12 +430,6 @@ fn is_spurious_ident_collision(item: &serde_json::Value) -> bool {
                 continue;
             }
             if long.contains(short.as_str()) {
-                let parts: Vec<&str> = long
-                    .split(|c: char| !c.is_alphanumeric() && c != '_')
-                    .collect();
-                if !parts.iter().any(|p| *p == short.as_str()) {
-                    return true;
-                }
                 return true;
             }
         }

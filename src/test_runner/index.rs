@@ -393,7 +393,7 @@ pub fn validate_indexed_rerun_command(
         }
         return Ok(());
     }
-    let is_known = valid_prefixes.iter().any(|p| base == *p);
+    let is_known = valid_prefixes.contains(&base);
     if !is_known {
         return Err(TestIndexError::CommandInvalid(format!(
             "argv[0] '{first}' is not a known test executable",

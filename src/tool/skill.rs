@@ -170,6 +170,27 @@ fn skill_not_found(
     ToolError::Execution(msg)
 }
 
+fn render_skill(skill: &crate::skills::EffectiveSkill) -> Result<String, ToolError> {
+    // Discovery already inventories bounded resource metadata. Reuse it
+    // instead of scanning the package again; resource bodies are loaded
+    // only through an explicit ResourceHandle read.
+    let resources: Vec<&str> = skill
+        .resources
+        .iter()
+        .map(|resource| resource.name.as_str())
+        .collect();
+
+    let result = serde_json::json!({
+        "name": skill.name,
+        "description": skill.description,
+        "body": skill.body,
+        "resources": resources,
+    });
+
+    serde_json::to_string_pretty(&result)
+        .map_err(|e| ToolError::Execution(format!("failed to serialize: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,7 +273,6 @@ mod tests {
         let err = skill_not_found("tseting-ci", None, &registry);
         let msg = err.to_string();
         let testing_pos = msg.find("testing-ci").expect("near miss must be suggested");
-        // The near miss must outrank every other candidate in the message.
         for other in ["tool-execution", "agent", "architecture-review"] {
             if let Some(pos) = msg.find(other) {
                 assert!(
@@ -273,25 +293,4 @@ mod tests {
         assert!(required.iter().any(|v| v == "name"));
         assert!(params["properties"].get("query").is_some());
     }
-}
-
-fn render_skill(skill: &crate::skills::EffectiveSkill) -> Result<String, ToolError> {
-    // Discovery already inventories bounded resource metadata. Reuse it
-    // instead of scanning the package again; resource bodies are loaded
-    // only through an explicit ResourceHandle read.
-    let resources: Vec<&str> = skill
-        .resources
-        .iter()
-        .map(|resource| resource.name.as_str())
-        .collect();
-
-    let result = serde_json::json!({
-        "name": skill.name,
-        "description": skill.description,
-        "body": skill.body,
-        "resources": resources,
-    });
-
-    serde_json::to_string_pretty(&result)
-        .map_err(|e| ToolError::Execution(format!("failed to serialize: {e}")))
 }

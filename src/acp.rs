@@ -45,6 +45,14 @@ const ACP_TURN_FAILED_CODE: i64 = -32010;
 /// let a dropped tool completion be read as a tool that never finished.
 const EVENT_GAP_SESSION_UPDATE: &str = "codegg_event_gap";
 
+fn acp_tool_terminal_status(success: bool) -> &'static str {
+    if success {
+        "completed"
+    } else {
+        "failed"
+    }
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct RpcRequest {
     #[serde(default)]
@@ -870,7 +878,7 @@ async fn handle_event(
         match &envelope.payload {
             ProjectionEvent::MessageAppended { message } if message.visibility == crate::protocol::projection::dto::VisibilityClass::Public => update(stdout, &prompt.session_id, json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":message.text}})).await?,
             ProjectionEvent::ToolStarted { tool } => update(stdout, &prompt.session_id, json!({"sessionUpdate":"tool_call","toolCallId":tool.tool_id,"title":tool.tool_name,"status":"in_progress","codeggArgumentsSha256":tool_arguments_sha256(&tool.arguments)})).await?,
-            ProjectionEvent::ToolCompleted { tool_id, output, success, .. } => update(stdout, &prompt.session_id, json!({"sessionUpdate":"tool_call_update","toolCallId":tool_id,"status":if *success {"completed"} else {"failed"},"rawOutput":format!("{output:?}")})).await?,
+            ProjectionEvent::ToolCompleted { tool_id, output, success, .. } => update(stdout, &prompt.session_id, json!({"sessionUpdate":"tool_call_update","toolCallId":tool_id,"status":acp_tool_terminal_status(*success),"rawOutput":format!("{output:?}")})).await?,
             _ => {}
         }
     } else if let CoreEvent::TurnStarted { turn_id, .. } = &event.payload {
@@ -1654,6 +1662,12 @@ mod tests {
         assert_eq!(map_acp_stop_reason("refusal"), "refusal");
         assert_eq!(map_acp_stop_reason("cancelled"), "cancelled");
         assert_eq!(map_acp_stop_reason("vendor_specific"), "end_turn");
+    }
+
+    #[test]
+    fn tool_failure_projection_remains_failed_in_acp() {
+        assert_eq!(acp_tool_terminal_status(true), "completed");
+        assert_eq!(acp_tool_terminal_status(false), "failed");
     }
 }
 

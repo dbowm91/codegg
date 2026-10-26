@@ -286,6 +286,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn terminal_success_comes_from_typed_execution_status() {
+        assert!(tool_outcome_is_success(&ToolExecutionOutcome::success(
+            "Error: this is legitimate tool output"
+        )));
+        let failed = ToolExecutionOutcome::from_tool_error(crate::error::ToolError::Execution(
+            "fixture failure".into(),
+        ));
+        assert!(!tool_outcome_is_success(&failed));
+    }
+
+    #[test]
     fn only_stop_and_end_turn_are_post_tool_soft_finishes() {
         assert!(is_soft_stop_reason(Some("stop")));
         assert!(is_soft_stop_reason(Some("end_turn")));

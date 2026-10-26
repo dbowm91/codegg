@@ -3004,4 +3004,67 @@ mod source_subject_tests {
             Some(format!("sha256:{}", "c".repeat(64)))
         );
     }
+
+    #[tokio::test]
+    async fn sqlite_recovery_reports_forced_writer_lock_as_storage_failure() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("jobs.sqlite");
+        let connect = || {
+            SqliteConnectOptions::new()
+                .filename(&database)
+                .create_if_missing(true)
+                .journal_mode(SqliteJournalMode::Wal)
+                .busy_timeout(Duration::from_millis(25))
+        };
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(connect())
+            .await
+            .unwrap();
+        crate::session::schema::migrate(&pool).await.unwrap();
+        let store = SqliteJobStore::new(pool);
+        let job = store.create_job(test_job()).await.unwrap();
+        store
+            .begin_attempt(
+                &job.job_id,
+                &crate::jobs::DaemonGeneration::new_unchecked("prior-generation"),
+            )
+            .await
+            .unwrap();
+
+        let lock_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(connect())
+            .await
+            .unwrap();
+        let mut lock_connection = lock_pool.acquire().await.unwrap();
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *lock_connection)
+            .await
+            .unwrap();
+
+        let error = store
+            .recover_generation(
+                &crate::jobs::DaemonGeneration::new_unchecked("recovery-generation"),
+                &RecoveryPolicy::default(),
+            )
+            .await
+            .expect_err("recovery must preserve forced SQLite writer contention");
+        let JobStoreError::Storage(crate::error::StorageError::Database(message)) = error else {
+            panic!("expected typed storage failure, got {error:?}");
+        };
+        let message = message.to_ascii_lowercase();
+        assert!(
+            message.contains("locked") || message.contains("busy"),
+            "forced writer contention must remain identifiable, got: {message}"
+        );
+
+        sqlx::query("ROLLBACK")
+            .execute(&mut *lock_connection)
+            .await
+            .unwrap();
+    }
 }

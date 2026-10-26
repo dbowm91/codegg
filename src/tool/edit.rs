@@ -351,8 +351,10 @@ struct EditOutcome {
     end_line: usize,
 }
 
+type EditStrategy = (&'static str, fn(&str, &str, &str) -> Option<EditOutcome>);
+
 fn try_edit(content: &str, old_string: &str, new_string: &str) -> Option<EditOutcome> {
-    let strategies: &[(&'static str, fn(&str, &str, &str) -> Option<EditOutcome>)] = &[
+    let strategies: &[EditStrategy] = &[
         ("exact_match", exact_match),
         ("line_trimmed_match", line_trimmed_match),
         ("whitespace_normalized_match", whitespace_normalized_match),

@@ -105,6 +105,15 @@ impl CoreClient {
     }
 }
 
+impl Drop for CoreClient {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
 fn wait_for(path: &Path) {
     let deadline = Instant::now() + Duration::from_secs(15);
     while !path.exists() {
@@ -242,8 +251,8 @@ fn submission_for_source(
                 "allowed_tools": tools,
                 "authority_grant_json": serde_json::to_string(&grant).unwrap(),
             },
-            "timeout_ms": 60000,
-            "deadline_ms": chrono::Utc::now().timestamp_millis() + 60000,
+            "timeout_ms": 60_000,
+            "deadline_ms": chrono::Utc::now().timestamp_millis() + 300_000,
             "retry_max_attempts": 1,
             "idempotency": "safe_repeat",
         }
@@ -459,12 +468,33 @@ fn corrupt_committed_state_is_rejected(failpoint: &str, relative: PathBuf, backg
         "query": {"workspace_id": workspace_id, "kinds": ["tool_program"], "limit": 10}
     }));
     let job_id = listed["jobs"][0]["job_id"].as_str().unwrap();
-    let waited = second.request(json!({
+    let waited = second.request_raw(json!({
         "type": "job_wait",
         "job_id": job_id,
         "timeout_ms": 60000,
     }));
+    if waited["type"] == "error" {
+        let attempts = second.request(json!({
+            "type": "job_attempts",
+            "job_id": job_id,
+        }));
+        let job = second.request(json!({"type": "job_get", "job_id": job_id}));
+        panic!("restart job wait failed: {waited}; job={job}; attempts={attempts}");
+    }
     assert_eq!(waited["status"], "failed", "corruption must fail closed");
+    let summary = waited["summary"].as_str().unwrap_or_default();
+    let summary_lower = summary.to_ascii_lowercase();
+    assert!(
+        summary_lower.contains("corrupt")
+            || summary_lower.contains("invalid")
+            || summary_lower.contains("journal"),
+        "the restart failure must name the corrupt persisted state, not an unrelated failure: {waited}"
+    );
+    assert!(
+        !summary_lower.contains("database is locked")
+            && !summary_lower.contains("database is busy"),
+        "SQLite contention must not masquerade as journal-corruption evidence: {waited}"
+    );
     second.stop();
 }
 

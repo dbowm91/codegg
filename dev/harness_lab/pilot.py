@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from . import budget
+from . import event_observation
 from . import supervisor
 from .supervisor import (AcpClient, HarnessError, HarnessTimeout, HarnessTurnFailure,
                          SubjectSpec, sha256_file)
@@ -337,6 +338,7 @@ def run_live_task(binary: Path, task: str, model: str, *, budget_policy: budget.
     result: dict[str, Any] = {}
     fault_outcome: Optional[str] = None
     session_id: Optional[str] = None
+    event_observer_drained = False
     try:
         client.request("initialize", {"protocolVersion": ACP_PROTOCOL_VERSION,
                                       "clientInfo": {"name": "codegg-harness-lab", "version": "1"}})
@@ -401,6 +403,11 @@ def run_live_task(binary: Path, task: str, model: str, *, budget_policy: budget.
         terminal = "timeout"
         result = {"error": str(error)}
     finally:
+        try:
+            client.drain(timeout=min(2.0, max(0.2, timeout / 10)))
+            event_observer_drained = True
+        except (HarnessError, OSError, subprocess.SubprocessError):
+            pass
         client.close()
         # The lane's daemon outlives the ACP client unless it is stopped. A
         # trial that leaves a daemon behind keeps a socket, a lock and a
@@ -415,6 +422,18 @@ def run_live_task(binary: Path, task: str, model: str, *, budget_policy: budget.
 
     duration_ms = int((time.monotonic() - started) * 1000)
     sequence, statuses = _tool_updates(client)
+    observation_receipt = event_observation.observe_notifications(
+        client.notifications, drained=event_observer_drained
+    )
+    agent_terminal = terminal
+    if observation_receipt["event_gap_count"]:
+        terminal = "infrastructure_error"
+        fault_outcome = None
+        failure = HarnessTurnFailure(
+            "ACP event stream gap made this trial unmeasured",
+            category="infrastructure_error",
+            usage_reason="event_stream_gap",
+        )
 
     raw_usage = result.get("codeggUsage") if isinstance(result, dict) else None
     usage = None
@@ -457,12 +476,21 @@ def run_live_task(binary: Path, task: str, model: str, *, budget_policy: budget.
         "fixture_sha256": fixture_sha256,
         "daemon_stop_error": daemon_stop_error,
         "terminal": terminal,
+        "agent_terminal": agent_terminal,
         "fault": fault,
         "fault_outcome": fault_outcome,
         "duration_ms": duration_ms,
         "tool_call_count": len(sequence),
         "tool_sequence": sequence,
         "tool_event_statuses": statuses,
+        "attempt_id": f"{task}:0",
+        "event_gap": observation_receipt,
+        "event_gap_count": observation_receipt["event_gap_count"],
+        "event_observation_state": observation_receipt["event_observation_state"],
+        "measurement_failures": observation_receipt["event_gap_count"],
+        "measurement_retry_state": (
+            "unresolved" if observation_receipt["event_gap_count"] else "not_needed"
+        ),
         "provider_usage": usage,
         "usage_unavailable_reason": None if usage else "not_reported_by_the_route",
         "stop_reason": result.get("stopReason") if isinstance(result, dict) else None,

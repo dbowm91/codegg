@@ -224,7 +224,7 @@ fn apply_batch_compact_projection(
 fn compact_limit(input: &Value, fields: &[&str], default: u64) -> usize {
     for field in fields {
         if let Some(n) = input.get(*field).and_then(tolerant_u64) {
-            return (n.min(30).max(1)) as usize;
+            return n.clamp(1, 30) as usize;
         }
     }
     default as usize

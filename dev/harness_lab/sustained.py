@@ -20,6 +20,7 @@ Fail-closed contract
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import time
 from dataclasses import dataclass
@@ -74,6 +75,31 @@ def lane_cleanup_evidence(lane_root: Path) -> dict[str, Any]:
     return {"daemon_socket_present": socket_present,
             "surviving_processes": survivors,
             "clean": not socket_present and not survivors}
+
+
+def _one_sided_95_upper_bound(events: int, trials: int) -> Optional[float]:
+    """Exact one-sided Clopper-Pearson upper bound for an observed event rate."""
+    if trials <= 0 or events < 0 or events > trials:
+        return None
+    if events == trials:
+        return 1.0
+
+    def cumulative_probability(probability: float) -> float:
+        return sum(
+            math.comb(trials, count)
+            * probability**count
+            * (1.0 - probability) ** (trials - count)
+            for count in range(events + 1)
+        )
+
+    low, high = 0.0, 1.0
+    for _ in range(80):
+        middle = (low + high) / 2
+        if cumulative_probability(middle) > 0.05:
+            low = middle
+        else:
+            high = middle
+    return high
 
 
 def run_sustained_scenario(binary: Path, model: str, *, budget_policy: budget.BudgetPolicy,
@@ -161,6 +187,18 @@ def run_sustained_scenario(binary: Path, model: str, *, budget_policy: budget.Bu
                       input_tokens=int(usage.get("input_tokens") or 0),
                       output_tokens=int(usage.get("output_tokens") or 0))
         cleanup = lane_cleanup_evidence(trial_root)
+        receipt["attempt_id"] = f"{plan.trial_id}:0"
+        receipt.setdefault("agent_terminal", receipt.get("terminal"))
+        receipt.setdefault("event_observation_state", "not_instrumented")
+        receipt.setdefault("event_gap_count", 0)
+        receipt.setdefault("measurement_failures", 0)
+        receipt.setdefault(
+            "measurement_retry_state",
+            "unresolved" if receipt.get("event_gap_count") else "not_needed",
+        )
+        if receipt.get("event_gap_count"):
+            receipt["terminal"] = "infrastructure_error"
+            receipt["ok"] = False
         receipt["trial_index"] = index
         receipt["trial_wallclock_ms"] = int((time.monotonic() - trial_started) * 1000)
         receipt["cleanup"] = cleanup
@@ -168,6 +206,13 @@ def run_sustained_scenario(binary: Path, model: str, *, budget_policy: budget.Bu
         trials.append(receipt)
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
+    instrumented = [
+        trial for trial in trials
+        if trial.get("event_observation_state") in ("observed_complete", "unmeasured_gap")
+        and trial.get("agent_terminal") == "completed"
+    ]
+    gap_trials = sum(1 for trial in instrumented if trial.get("event_gap_count", 0) > 0)
+    gap_upper = _one_sided_95_upper_bound(gap_trials, len(instrumented))
     return {
         "schema_version": 1,
         "model": model,
@@ -181,6 +226,22 @@ def run_sustained_scenario(binary: Path, model: str, *, budget_policy: budget.Bu
         "stopped_reason": stopped_reason,
         "elapsed_ms": elapsed_ms,
         "trials": trials,
+        "measurement_failures": sum(
+            int(trial.get("measurement_failures", 0)) for trial in trials
+        ),
+        "event_gap_measurement": {
+            "unit": "instrumented_completed_trial",
+            "instrumented_trials": len(instrumented),
+            "gap_trials": gap_trials,
+            "observed_rate": gap_trials / len(instrumented) if instrumented else None,
+            "one_sided_95_upper_bound": gap_upper,
+            "qualification_state": (
+                "qualified_at_or_below_5_percent"
+                if gap_upper is not None and gap_upper <= 0.05
+                else "insufficient_evidence"
+            ),
+            "independence_caveat": "Trials sharing a daemon, route, or host may not be independent.",
+        },
         "solved_trials": sum(1 for trial in trials if trial.get("ok")),
         "stopped_trials": sum(1 for trial in trials
                               if trial.get("terminal") in ("cancelled", "abrupt_acp_drop",
