@@ -1011,6 +1011,11 @@ async fn test_read_tool_symlink_outside_allowed() {
     #[cfg(unix)]
     {
         assert!(result.is_err());
+        let message = result.unwrap_err().to_string();
+        assert!(
+            message.contains("refused: symlink target outside workspace"),
+            "symlink escape must use the refused-outside wording, got: {message}"
+        );
     }
 }
 

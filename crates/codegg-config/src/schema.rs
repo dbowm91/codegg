@@ -1303,6 +1303,14 @@ impl ContextPolicyConfig {
 }
 
 /// Web search/fetch backend configuration.
+///
+/// Output caps apply to both the full telemetry envelope and the compact
+/// `detail:"summary"` / `compact:true` projection (canonical_name/path/
+/// description only, mirroring `tool_search` detail). `include_local`
+/// selects eggsearch local retrieval against the daemon-authorized root;
+/// when no authorized root is bound the wrapper falls back to the
+/// invocation workspace_root with a typed reason, otherwise use
+/// list/glob on a local checkout.
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
 #[serde(default)]
 pub struct SearchConfig {

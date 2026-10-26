@@ -55,7 +55,7 @@ impl Tool for ImageTool {
     }
 
     fn description(&self) -> &str {
-        "Generate images using OpenAI's DALL-E model"
+        "Generate images using OpenAI's DALL-E model. Requires OPENAI_API_KEY; if missing: export OPENAI_API_KEY=... (or codegg auth set-key openai); run codegg doctor; see /connect and docs/providers.md."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -100,7 +100,7 @@ impl Tool for ImageTool {
         let api_key = self
             .api_key
             .as_ref()
-            .ok_or_else(|| ToolError::Execution("OPENAI_API_KEY not set".to_string()))?;
+            .ok_or_else(|| ToolError::Execution("OPENAI_API_KEY not set. export OPENAI_API_KEY=... (or codegg auth set-key openai); run codegg doctor; see /connect and docs/providers.md.".to_string()))?;
 
         let prompt = input["prompt"]
             .as_str()

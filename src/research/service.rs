@@ -297,6 +297,12 @@ impl ResearchService {
         depth: ResearchDepth,
         output_profiles: Vec<ResearchOutputProfile>,
     ) -> ResearchRequest {
+        // Depth is a source budget only (low=8, medium=30, high=80); the
+        // corpus is always the local workspace plus gated network sources.
+        // Local ranking (filename-weighted, seeded with scripts/verify.sh,
+        // AGENTS.md, architecture/testing.md) happens in the local adapter
+        // and the coordinator's pre-truncation pass, so even the low budget
+        // keeps the repo-how answer above generic notes.
         let max_sources = match depth {
             ResearchDepth::Low => 8,
             ResearchDepth::Medium => 30,

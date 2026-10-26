@@ -76,6 +76,11 @@ pub struct EggsactConfig {
 
 impl Default for EggsactConfig {
     fn default() -> Self {
+        // R19: stays `codegg_core`/`model` (upstream MATH_TOOLS lacks
+        // `codegg_core`, so `has_tool("math_eval")` is false here by
+        // design). Math exposure is bound in
+        // `build_eggsact_tools()` to a math-capable (`full`) runtime
+        // instead of widening this default.
         Self {
             profile: "codegg_core".to_string(),
             audience: "model".to_string(),
@@ -181,7 +186,30 @@ pub fn to_structured_result(tool_name: &str, result: EggsactCallResult) -> Struc
     StructuredToolResult::with_provenance(result.output, result.success, provenance)
 }
 
+/// Cap for a single echoed command string inside a formatted response.
+///
+/// The command echo is evidence, not the decision: without a cap, a long
+/// command (echoed twice — in `command` and in `subresults.shell_split.argv`)
+/// pushes the verdict past the truncation point and the envelope reads as an
+/// unterminated JSON dump with no decision.
+const MAX_COMMAND_ECHO_CHARS: usize = 512;
+
+/// Cap one echoed command string, keeping a marker with the true length.
+fn cap_command_echo(text: &str) -> String {
+    let chars = text.chars().count();
+    if chars <= MAX_COMMAND_ECHO_CHARS {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(MAX_COMMAND_ECHO_CHARS).collect();
+    format!("{kept}…[truncated command echo {chars} chars to {MAX_COMMAND_ECHO_CHARS}]")
+}
+
 /// Format an eggsact `ToolResponse` into a deterministic text envelope.
+///
+/// D9: the decision (`verdict`/`summary`/`machine_code`/`findings`) is
+/// serialized BEFORE the evidence body (`result`, whose `subresults` and
+/// `shell_split.argv` echo the command), so the verdict survives envelope
+/// truncation. The command echo itself is capped with a truncation marker.
 fn format_response(
     response: &eggsact::mcp::response::ToolResponse,
     max_chars: usize,
@@ -190,12 +218,41 @@ fn format_response(
 
     parts.push(format!("ok: {}", response.ok));
 
-    if let Some(ref mc) = response.machine_code {
-        parts.push(format!("machine_code: {mc}"));
+    // Decision first: verdict and summary live inside `result` for tools
+    // like `command_preflight`, so lift them out before the body.
+    // S4: a raw `block` verdict from preflight is advisory-only at the
+    // harness layer — surface `advisory-block` + enforcement so the tool
+    // result agrees with the bash-time text.
+    let result_object = response.result.as_ref().and_then(|value| value.as_object());
+    if let Some(verdict) = result_object
+        .and_then(|object| object.get("verdict"))
+        .and_then(serde_json::Value::as_str)
+    {
+        let display = if verdict == "block" {
+            "advisory-block"
+        } else {
+            verdict
+        };
+        parts.push(format!("verdict: {display}"));
+        if display == "advisory-block" {
+            parts.push("enforcement: advisory_only".to_string());
+        }
     }
 
-    if let Some(ref result) = response.result {
-        parts.push(format!("result: {result}"));
+    if let Some(ref mc) = response.machine_code {
+        parts.push(format!("machine_code: {mc}"));
+    } else if let Some(code) = result_object
+        .and_then(|object| object.get("machine_code"))
+        .and_then(serde_json::Value::as_str)
+    {
+        parts.push(format!("machine_code: {code}"));
+    }
+
+    if let Some(summary) = result_object
+        .and_then(|object| object.get("summary"))
+        .and_then(serde_json::Value::as_str)
+    {
+        parts.push(format!("summary: {summary}"));
     }
 
     if let Some(ref findings) = response.findings {
@@ -205,6 +262,17 @@ fn format_response(
                 serde_json::to_string_pretty(findings).unwrap_or_default()
             ));
         }
+    } else if let Some(findings) = result_object.and_then(|object| object.get("findings")) {
+        if findings.as_array().is_some_and(|items| !items.is_empty()) {
+            parts.push(format!(
+                "findings: {}",
+                serde_json::to_string_pretty(findings).unwrap_or_default()
+            ));
+        }
+    }
+
+    if let Some(ref result) = response.result {
+        parts.push(format!("result: {}", capped_result_body(result)));
     }
 
     if let Some(ref limits) = response.limits_applied {
@@ -221,6 +289,78 @@ fn format_response(
         output: truncated.text,
         truncated: truncated.truncated,
     }
+}
+
+/// Render the `result` body with the command echo capped and `subresults`
+/// serialized last, so a truncated envelope keeps the decision lines above
+/// and never cuts mid-`argv` before the outer structure closes.
+fn capped_result_body(result: &serde_json::Value) -> serde_json::Value {
+    let Some(object) = result.as_object() else {
+        return result.clone();
+    };
+    let mut ordered = serde_json::Map::with_capacity(object.len() + 1);
+    for (key, value) in object {
+        if key == "subresults" {
+            continue;
+        }
+        if key == "verdict" {
+            if value.as_str() == Some("block") {
+                ordered.insert(
+                    key.clone(),
+                    serde_json::Value::String("advisory-block".to_string()),
+                );
+                ordered.insert(
+                    "enforcement".to_string(),
+                    serde_json::Value::String("advisory_only".to_string()),
+                );
+                continue;
+            }
+        }
+        if key == "command" {
+            if let Some(command) = value.as_str() {
+                ordered.insert(
+                    key.clone(),
+                    serde_json::Value::String(cap_command_echo(command)),
+                );
+                continue;
+            }
+        }
+        ordered.insert(key.clone(), value.clone());
+    }
+    if let Some(subresults) = object.get("subresults") {
+        ordered.insert("subresults".to_string(), cap_subresults_echo(subresults));
+    }
+    serde_json::Value::Object(ordered)
+}
+
+/// Cap the echoed `shell_split.argv` entries inside `subresults` without
+/// touching the analyzed features the verdict was computed from.
+fn cap_subresults_echo(subresults: &serde_json::Value) -> serde_json::Value {
+    let Some(object) = subresults.as_object() else {
+        return subresults.clone();
+    };
+    let mut capped = object.clone();
+    if let Some(shell_split) = capped
+        .get_mut("shell_split")
+        .and_then(|value| value.as_object_mut())
+    {
+        if let Some(argv) = shell_split
+            .get_mut("argv")
+            .and_then(|value| value.as_array_mut())
+        {
+            for entry in argv.iter_mut() {
+                let overlong = entry
+                    .as_str()
+                    .is_some_and(|text| text.chars().count() > MAX_COMMAND_ECHO_CHARS);
+                if overlong {
+                    if let Some(text) = entry.as_str() {
+                        *entry = serde_json::Value::String(cap_command_echo(text));
+                    }
+                }
+            }
+        }
+    }
+    serde_json::Value::Object(capped)
 }
 
 #[cfg(test)]
@@ -271,6 +411,66 @@ mod tests {
         assert!(formatted.output.contains("truncated"));
     }
 
+    /// D9: a `command_preflight`-shaped result echoes a long command twice
+    /// (`command` + `subresults.shell_split.argv`). The envelope must still
+    /// lead with the verdict inside the first bytes, cap the echo with a
+    /// marker, and serialize the decision before the subresults body.
+    #[test]
+    fn format_response_keeps_verdict_before_truncated_command_echo() {
+        let long_command = format!("python3 -c 'import os'; echo {}", "x".repeat(2000));
+        let shell_split = serde_json::json!({
+            "argv": ["python3", "-c", long_command],
+            "features": {"has_control_operator": true},
+        });
+        let result = serde_json::json!({
+            "verdict": "warn",
+            "command": long_command,
+            "summary": "Command warn under default policy (1 finding(s))",
+            "machine_code": "RISKY_SHELL_FEATURE",
+            "findings": [{"type": "has_control_operator"}],
+            "subresults": {"shell_split": shell_split},
+        });
+        let mut response = ok_response(Some(result));
+        response.machine_code = Some("RISKY_SHELL_FEATURE".to_string());
+        let formatted = format_response(&response, 800);
+        assert!(formatted.truncated);
+        let verdict_pos = formatted
+            .output
+            .find("verdict: warn")
+            .expect("verdict line survives truncation");
+        assert!(
+            verdict_pos < 64,
+            "verdict must sit in the first bytes, found at {verdict_pos}"
+        );
+        let marker_pos = formatted
+            .output
+            .find("[truncated command echo")
+            .expect("echo carries a truncation marker");
+        assert!(
+            verdict_pos < marker_pos,
+            "decision lines must precede the capped echo"
+        );
+        assert!(formatted
+            .output
+            .contains("machine_code: RISKY_SHELL_FEATURE"));
+    }
+
+    /// D9: a short command passes through uncapped and keeps its argv.
+    #[test]
+    fn format_response_leaves_short_command_echo_intact() {
+        let result = serde_json::json!({
+            "verdict": "allow",
+            "command": "ls -la",
+            "summary": "Command allow under default policy (0 finding(s))",
+            "subresults": {"shell_split": {"argv": ["ls", "-la"]}},
+        });
+        let response = ok_response(Some(result));
+        let formatted = format_response(&response, 2000);
+        assert!(!formatted.truncated);
+        assert!(formatted.output.contains("verdict: allow"));
+        assert!(!formatted.output.contains("truncated command echo"));
+    }
+
     #[test]
     fn format_response_at_limit_not_truncated() {
         let result_str = "a".repeat(90);
@@ -278,6 +478,28 @@ mod tests {
         // Output includes "ok: true\nresult: \"aaa...\"" ~ 112 chars, so use 200
         let formatted = format_response(&response, 200);
         assert!(!formatted.truncated);
+    }
+
+    #[test]
+    fn format_response_maps_block_to_advisory_block_with_enforcement() {
+        let result = serde_json::json!({
+            "verdict": "block",
+            "summary": "would block",
+        });
+        let response = ok_response(Some(result));
+        let formatted = format_response(&response, 1000);
+        assert!(formatted.output.contains("verdict: advisory-block"));
+        assert!(formatted.output.contains("enforcement: advisory_only"));
+        assert!(!formatted.output.contains("verdict: block\n"));
+        let body = capped_result_body(response.result.as_ref().expect("result present"));
+        assert_eq!(
+            body.get("verdict").and_then(|v| v.as_str()),
+            Some("advisory-block")
+        );
+        assert_eq!(
+            body.get("enforcement").and_then(|v| v.as_str()),
+            Some("advisory_only")
+        );
     }
 
     #[test]

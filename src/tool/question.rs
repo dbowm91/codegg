@@ -100,7 +100,7 @@ impl Tool for QuestionTool {
     }
 
     fn description(&self) -> &str {
-        "Ask the user one or more clarifying questions. Returns answers to continue the agent loop."
+        "Ask the user one or more clarifying questions. Returns answers to continue the agent loop. Blocks the turn on human input, so it is invisible in non-interactive replays — prefer it only when a decision genuinely needs the user."
     }
 
     fn parameters(&self) -> serde_json::Value {

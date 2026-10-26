@@ -79,6 +79,7 @@ fn ctx_for(effect: &str, submission_key: Option<String>) -> BrokerInvocationCont
         audit_emitter: None,
         execution_authorization: None,
         process_admission: None,
+        plan_mode: false,
     }
 }
 

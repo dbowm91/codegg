@@ -793,6 +793,8 @@ CORS wildcards, and bind-all addresses.
   chmod, sed -i, perl -pi, git push
 - Low: cargo test/check/build/clippy, git read-only, ls, cat, grep
 
+Policy: test strings without execution context are not findings in `inspect_text` (secrets/unsafe-deps/CORS/supply-chain, not shell); shell risk lives in `classify_command` (`rm -rf /` returns critical) — see `docs/security-semantics.md`.
+
 ### Sensitive Path Matching (`mod.rs:64`)
 
 ```rust

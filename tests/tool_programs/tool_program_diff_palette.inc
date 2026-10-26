@@ -103,6 +103,7 @@ fn program_ctx(
         audit_emitter: None,
         execution_authorization: None,
         process_admission: None,
+        plan_mode: false,
     }
 }
 
@@ -156,6 +157,7 @@ fn agent_ctx(workspace: &Path) -> BrokerInvocationContext {
         audit_emitter: None,
         execution_authorization: None,
         process_admission: None,
+        plan_mode: false,
     }
 }
 
@@ -583,7 +585,9 @@ async fn program_diff_missing_original_fails_deterministically() {
     let (dir, registry) = workspace_registry();
     write_workspace_file(dir.path(), "f.txt", "a\n");
     let broker = ToolBroker::new(&registry);
-    let result = broker
+    // The input schema now requires both `path` and `original`, so the
+    // broker's input validation rejects the call before dispatch.
+    let err = broker
         .execute(
             &registry,
             "diff",
@@ -591,12 +595,11 @@ async fn program_diff_missing_original_fails_deterministically() {
             program_ctx(&registry, dir.path(), &["diff"], "m001-prog-noorig"),
         )
         .await
-        .unwrap();
-    assert_eq!(
-        result.value.terminal_status,
-        ToolTerminalStatus::InfrastructureError
+        .expect_err("missing original must fail input validation");
+    assert!(
+        err.to_string().contains("original"),
+        "unexpected validation error: {err}"
     );
-    assert!(result.value.display.contains("original content required"));
 }
 
 // ── Bounds ────────────────────────────────────────────────────────────────

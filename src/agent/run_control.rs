@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, watch, Mutex};
 
 const MAX_NOTIFICATION_BYTES: usize = 2 * 1024;
@@ -44,12 +45,33 @@ pub struct ControlActor {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlOutcome {
     Queued(AgentRunMailboxMessage),
+    /// The control is durably queued but could not be handed to a live run
+    /// loop: no live handle is attached, or the live channel is full/closed.
+    /// The `reason` names the cause plus the run's own status and
+    /// `cancellation_requested` flag, so "cancel recorded, delivery pending"
+    /// reads differently from "cancel lost".
+    DeliveryPending {
+        message: AgentRunMailboxMessage,
+        reason: String,
+    },
     Terminal(AgentRunStatus),
     Status(AgentRunRecord),
     Wait {
         run: AgentRunRecord,
         timed_out: bool,
     },
+}
+
+/// What one delivery pass over the pending mailbox decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DispatchOutcome {
+    /// A live handle was attached (terminal runs: pending controls were
+    /// superseded instead). Anything still queued replays on the next attach.
+    Delivered,
+    /// No live handle is attached to this non-terminal run. The control
+    /// stays durably queued and replays on attach — this is not a channel
+    /// failure, so it must never be reported as `ChannelClosed`.
+    PendingNoLiveHandle,
 }
 
 /// The grant a continuation request earns once every denial case has been
@@ -186,6 +208,15 @@ impl RunControlService {
         if let Err(error) = self.dispatch_pending(&run_id, true).await {
             tracing::warn!(run_id = %run_id, %error, "failed to replay run controls on live attach");
         }
+    }
+
+    /// Whether a live run loop is currently attached to this run.
+    ///
+    /// The parent-visible progress surface (`task get`) reads this: a
+    /// non-terminal run with no live loop attached is queued or between
+    /// attempts, not executing.
+    pub async fn is_live(&self, run_id: &AgentRunId) -> bool {
+        self.live.lock().await.contains_key(run_id)
     }
 
     pub async fn unregister_live(&self, run_id: &AgentRunId) {
@@ -484,8 +515,69 @@ impl RunControlService {
                 },
             );
         }
-        self.dispatch_pending(&target, false).await?;
-        Ok(ControlOutcome::Queued(message))
+        // The control is durably queued at this point, so a failed live
+        // handoff must not fail the send: the parent needs "cancel recorded,
+        // delivery pending", not "live run control channel is unavailable"
+        // for a cancel that is already durable. A store-level failure still
+        // errors.
+        match self.dispatch_pending(&target, false).await {
+            Ok(DispatchOutcome::Delivered) => Ok(ControlOutcome::Queued(message)),
+            Ok(DispatchOutcome::PendingNoLiveHandle) => Ok(self
+                .delivery_pending(&target, kind, message, "no live run is attached")
+                .await),
+            Err(error @ (RunControlError::ChannelFull | RunControlError::ChannelClosed)) => {
+                let cause = format!("live handoff failed ({error})");
+                Ok(self.delivery_pending(&target, kind, message, &cause).await)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Build the explanatory queued-but-undelivered outcome.
+    ///
+    /// The `reason` names the handoff cause plus the run's own status and
+    /// `cancellation_requested` flag, so a recorded cancel that is still
+    /// waiting for a live loop reads differently from a lost one. A cancel
+    /// the store already shows as `cancelling`/`cancelled` (or flagged
+    /// `cancellation_requested`) leads with "Cancel acknowledged, draining"
+    /// — the live-handoff detail is secondary, and "queued for later" stays
+    /// reserved for a control with no live loop attached.
+    async fn delivery_pending(
+        &self,
+        target: &AgentRunId,
+        kind: AgentRunControlKind,
+        message: AgentRunMailboxMessage,
+        cause: &str,
+    ) -> ControlOutcome {
+        let (state_note, acknowledged) = match self.runs.get_run(target).await {
+            Ok(Some(run)) => (
+                format!(
+                    "run status '{}', cancellation_requested={}",
+                    run.status.as_str(),
+                    run.cancellation_requested
+                ),
+                kind == AgentRunControlKind::Cancel
+                    && (run.status == AgentRunStatus::Cancelling
+                        || run.status == AgentRunStatus::Cancelled
+                        || run.cancellation_requested),
+            ),
+            _ => ("run state unreadable".to_string(), false),
+        };
+        let recorded = if kind == AgentRunControlKind::Cancel {
+            " the cancel itself is durably recorded;"
+        } else {
+            ""
+        };
+        let reason = if acknowledged {
+            format!(
+                "Cancel acknowledged, draining (run '{target}'); {cause} ({state_note});{recorded} the control stays queued and replays on attach"
+            )
+        } else {
+            format!(
+                "{cause} ({state_note});{recorded} the control stays queued and replays on attach"
+            )
+        };
+        ControlOutcome::DeliveryPending { message, reason }
     }
 
     pub async fn status(
@@ -498,6 +590,12 @@ impl RunControlService {
         ))
     }
 
+    /// Wait for a run to turn terminal, up to `timeout`.
+    ///
+    /// A timeout returns the *current* run with `timed_out: true` — the same
+    /// snapshot `status` would return, never a bare timeout. The parent
+    /// (`task wait`) layers the durable `get` snapshot on top, so a timeout
+    /// carries the recorded result, liveness and transcript tail.
     pub async fn wait(
         &self,
         actor: &ControlActor,
@@ -670,7 +768,7 @@ impl RunControlService {
         &self,
         run_id: &AgentRunId,
         replay_delivered: bool,
-    ) -> Result<(), RunControlError> {
+    ) -> Result<DispatchOutcome, RunControlError> {
         if let Some(run) = self
             .runs
             .get_run(run_id)
@@ -681,31 +779,49 @@ impl RunControlService {
                 for message in self.controls.pending(run_id).await? {
                     self.controls.supersede(&message.message_id).await?;
                 }
-                return Ok(());
+                return Ok(DispatchOutcome::Delivered);
             }
         }
         let Some(handle) = self.live.lock().await.get(run_id).cloned() else {
-            return Ok(());
+            // No live loop is attached to this non-terminal run. The control
+            // stays durably queued and replays on attach — this is not a
+            // channel failure, so it must never surface as `ChannelClosed`.
+            return Ok(DispatchOutcome::PendingNoLiveHandle);
         };
         for message in self.controls.pending(run_id).await? {
             if message.state == MailboxState::Delivered && !replay_delivered {
                 continue;
             }
             let delivered = self.controls.mark_delivered(&message.message_id).await?;
-            let sent: Result<(), ()> = match delivered.kind {
+            // A full channel and a closed channel are different facts: a full
+            // channel may drain, while a closed one means the live loop is
+            // gone. Mapping both to `ChannelClosed` told the parent its
+            // cancel was lost when it was merely back-pressured.
+            match delivered.kind {
                 AgentRunControlKind::Message => handle
                     .follow_up_tx
                     .try_send(format!("Message from parent: {}", delivered.payload))
-                    .map_err(|_| ()),
+                    .map_err(|error| match error {
+                        TrySendError::Full(_) => RunControlError::ChannelFull,
+                        TrySendError::Closed(_) => RunControlError::ChannelClosed,
+                    })?,
                 AgentRunControlKind::Interrupt => {
                     handle.interrupt_flag.store(true, Ordering::SeqCst);
-                    handle.steer_tx.try_send("Interrupt requested by the owning parent; reconsider before the next safe action.".into()).map_err(|_| ())
+                    handle
+                        .steer_tx
+                        .try_send("Interrupt requested by the owning parent; reconsider before the next safe action.".into())
+                        .map_err(|error| match error {
+                            TrySendError::Full(_) => RunControlError::ChannelFull,
+                            TrySendError::Closed(_) => RunControlError::ChannelClosed,
+                        })?
                 }
-                AgentRunControlKind::Cancel => handle.cancel_tx.send(true).map_err(|_| ()),
+                // A `watch` send fails only when no receiver remains, so
+                // this one really is a closed channel.
+                AgentRunControlKind::Cancel => handle
+                    .cancel_tx
+                    .send(true)
+                    .map_err(|_| RunControlError::ChannelClosed)?,
             };
-            if sent.is_err() {
-                return Err(RunControlError::ChannelClosed);
-            }
             self.controls.acknowledge(&delivered.message_id).await?;
             if let Err(error) = self
                 .append(
@@ -725,7 +841,7 @@ impl RunControlService {
                 );
             }
         }
-        Ok(())
+        Ok(DispatchOutcome::Delivered)
     }
 
     async fn send_group_notice(
@@ -1289,5 +1405,223 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    fn owner_actor() -> ControlActor {
+        ControlActor {
+            session_id: Some("owner-session".into()),
+            turn_id: Some("owner-turn".into()),
+            run_id: None,
+        }
+    }
+
+    fn live_handle(
+        follow_up_tx: mpsc::Sender<String>,
+        steer_tx: mpsc::Sender<String>,
+    ) -> LiveRunHandle {
+        let (cancel_tx, _) = watch::channel(false);
+        LiveRunHandle {
+            follow_up_tx,
+            steer_tx,
+            cancel_tx,
+            interrupt_flag: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_full_live_channel_reports_backpressure_not_a_lost_control() {
+        let runs: Arc<dyn AgentRunStore> =
+            Arc::new(codegg_core::agent_run::InMemoryAgentRunStore::new());
+        let run = running_run(&runs, "owner-session").await;
+        let service = RunControlService::in_memory(runs.clone());
+        let (follow_tx, _live_receiver) = mpsc::channel(1);
+        follow_tx
+            .try_send("filler".into())
+            .expect("the one-slot channel takes exactly one message");
+        let (steer_tx, _steer_rx) = mpsc::channel(4);
+        service
+            .register_live(run.run_id.clone(), live_handle(follow_tx, steer_tx))
+            .await;
+        let outcome = service
+            .send(
+                &owner_actor(),
+                run.run_id.clone(),
+                AgentRunControlKind::Message,
+                "back-pressured".into(),
+                "full-1".into(),
+            )
+            .await
+            .unwrap();
+        match outcome {
+            ControlOutcome::DeliveryPending { message, reason } => {
+                assert_eq!(message.run_id, run.run_id);
+                assert!(
+                    reason.contains("full"),
+                    "a full channel must read as back-pressure, got: {reason}"
+                );
+            }
+            other => panic!("a full channel must not fail the send, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_closed_live_channel_reports_unavailable_delivery_pending() {
+        let runs: Arc<dyn AgentRunStore> =
+            Arc::new(codegg_core::agent_run::InMemoryAgentRunStore::new());
+        let run = running_run(&runs, "owner-session").await;
+        let service = RunControlService::in_memory(runs.clone());
+        let (follow_tx, receiver) = mpsc::channel(4);
+        drop(receiver);
+        let (steer_tx, _steer_rx) = mpsc::channel(4);
+        service
+            .register_live(run.run_id.clone(), live_handle(follow_tx, steer_tx))
+            .await;
+        let outcome = service
+            .send(
+                &owner_actor(),
+                run.run_id.clone(),
+                AgentRunControlKind::Message,
+                "gone".into(),
+                "closed-1".into(),
+            )
+            .await
+            .unwrap();
+        match outcome {
+            ControlOutcome::DeliveryPending { message, reason } => {
+                assert_eq!(message.run_id, run.run_id);
+                assert!(
+                    reason.contains("unavailable"),
+                    "a closed channel must read as unavailable, got: {reason}"
+                );
+            }
+            other => panic!("a closed channel must not fail the send, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_missing_live_handle_queues_delivery_pending_instead_of_channel_closed() {
+        let runs: Arc<dyn AgentRunStore> =
+            Arc::new(codegg_core::agent_run::InMemoryAgentRunStore::new());
+        let run = running_run(&runs, "owner-session").await;
+        let service = RunControlService::in_memory(runs);
+        let outcome = service
+            .send(
+                &owner_actor(),
+                run.run_id.clone(),
+                AgentRunControlKind::Message,
+                "nobody home".into(),
+                "nolive-1".into(),
+            )
+            .await
+            .unwrap();
+        match outcome {
+            ControlOutcome::DeliveryPending { message, reason } => {
+                assert_eq!(message.run_id, run.run_id);
+                assert!(
+                    reason.contains("no live run is attached"),
+                    "a missing handle must read as queued-for-attach, got: {reason}"
+                );
+            }
+            other => panic!("a missing live handle must not fail the send, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_without_a_live_handle_records_the_cancel_as_delivery_pending() {
+        let runs: Arc<dyn AgentRunStore> =
+            Arc::new(codegg_core::agent_run::InMemoryAgentRunStore::new());
+        let run = running_run(&runs, "owner-session").await;
+        let service = RunControlService::in_memory(runs.clone());
+        let outcome = service
+            .send(
+                &owner_actor(),
+                run.run_id.clone(),
+                AgentRunControlKind::Cancel,
+                String::new(),
+                "cancel-nolive-1".into(),
+            )
+            .await
+            .unwrap();
+        match outcome {
+            ControlOutcome::DeliveryPending { message, reason } => {
+                assert_eq!(message.run_id, run.run_id);
+                assert!(
+                    reason.contains("durably recorded"),
+                    "a recorded cancel must say so, got: {reason}"
+                );
+                assert!(
+                    reason.contains("cancellation_requested=true"),
+                    "the outcome must carry the run's cancellation flag, got: {reason}"
+                );
+            }
+            other => panic!("a cancel with no live handle must not fail, got: {other:?}"),
+        }
+        let stored = runs.get_run(&run.run_id).await.unwrap().unwrap();
+        assert!(
+            stored.cancellation_requested,
+            "the cancel must be durably recorded even with no live handle"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_without_a_live_handle_leads_with_acknowledged_draining() {
+        let runs: Arc<dyn AgentRunStore> =
+            Arc::new(codegg_core::agent_run::InMemoryAgentRunStore::new());
+        let run = running_run(&runs, "owner-session").await;
+        let service = RunControlService::in_memory(runs.clone());
+        let outcome = service
+            .send(
+                &owner_actor(),
+                run.run_id.clone(),
+                AgentRunControlKind::Cancel,
+                String::new(),
+                "cancel-ack-1".into(),
+            )
+            .await
+            .unwrap();
+        match outcome {
+            ControlOutcome::DeliveryPending { message, reason } => {
+                assert_eq!(message.run_id, run.run_id);
+                assert!(
+                    reason.starts_with(&format!(
+                        "Cancel acknowledged, draining (run '{}')",
+                        run.run_id
+                    )),
+                    "a recorded cancel leads with acknowledgement, got: {reason}"
+                );
+                assert!(
+                    reason.contains("no live run is attached"),
+                    "the handoff detail is demoted, not dropped, got: {reason}"
+                );
+            }
+            other => panic!("a cancel with no live handle must not fail, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn non_cancel_without_a_live_handle_has_no_acknowledgement_lead() {
+        let runs: Arc<dyn AgentRunStore> =
+            Arc::new(codegg_core::agent_run::InMemoryAgentRunStore::new());
+        let run = running_run(&runs, "owner-session").await;
+        let service = RunControlService::in_memory(runs);
+        let outcome = service
+            .send(
+                &owner_actor(),
+                run.run_id.clone(),
+                AgentRunControlKind::Message,
+                "hello".into(),
+                "message-noack-1".into(),
+            )
+            .await
+            .unwrap();
+        match outcome {
+            ControlOutcome::DeliveryPending { reason, .. } => {
+                assert!(
+                    !reason.starts_with("Cancel acknowledged"),
+                    "only a cancel earns the acknowledgement lead, got: {reason}"
+                );
+            }
+            other => panic!("a message with no live handle must not fail, got: {other:?}"),
+        }
     }
 }

@@ -101,7 +101,7 @@ impl Tool for GitQueryTool {
     }
 
     fn description(&self) -> &str {
-        "Query bounded repository state with read-only operations: status, diff, log, and branches. Use git for mutations and recovery."
+        "Query bounded repository state with read-only operations: status, diff, log, and branches. Use git for mutations and recovery (git defaults to the session workspace root when workdir is absent, explicit workdir selects the checkout; git_query resolves the session workspace root and takes no workdir argument)."
     }
 
     fn parameters(&self) -> serde_json::Value {

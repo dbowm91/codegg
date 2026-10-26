@@ -603,7 +603,7 @@ mod tests {
 
     #[test]
     fn reject_excessive_parallel() {
-        let src = "r = parallel({\"t\": 1}, {\"t\": 2}, {\"t\": 3}, {\"t\": 4}, {\"t\": 5}, {\"t\": 6}, {\"t\": 7}, {\"t\": 8}, {\"t\": 9}, {\"t\": 10}, {\"t\": 11})\n";
+        let src = "r = parallel({\"tool\": \"a\"}, {\"tool\": \"b\"}, {\"tool\": \"c\"}, {\"tool\": \"d\"}, {\"tool\": \"e\"}, {\"tool\": \"f\"}, {\"tool\": \"g\"}, {\"tool\": \"h\"}, {\"tool\": \"i\"}, {\"tool\": \"j\"}, {\"tool\": \"k\"})\n";
         let prog = parse_source(src).unwrap();
         let result = analyze(&prog);
         assert!(result.is_err());

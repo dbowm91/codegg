@@ -524,27 +524,42 @@ fn compile_tool_call_descriptor(
     kwargs: &[KwArg],
     compiler: &mut Compiler,
 ) -> Result<(), ToolProgramError> {
-    // Build a dict from the descriptor expression + kwargs
-    compile_expr(descriptor, compiler)?;
-
-    // Add kwargs as additional dict entries
-    for kw in kwargs {
-        let key_idx = compiler.intern_string(&kw.name);
-        compiler.push(IrOp::LoadString { pool_idx: key_idx }, kw.span);
-        compile_expr(&kw.value, compiler)?;
+    // No trailing k=v: the descriptor stands alone (existing behavior).
+    if kwargs.is_empty() {
+        compile_expr(descriptor, compiler)?;
+        return Ok(());
     }
-
-    // If we have kwargs, merge them into the descriptor at compile time
-    if !kwargs.is_empty() {
+    // Trailing k=v merges into a dict-literal descriptor at compile time so
+    // the single ConstructCall pop sees one merged dict. Kwargs win on
+    // duplicate keys. A non-literal descriptor cannot be merged without
+    // runtime dict-insert support, so it is rejected fail-closed (TP011)
+    // rather than silently dropping either side.
+    if let Expr::Dict { keys, values, span } = descriptor {
+        for (k, v) in keys.iter().zip(values.iter()) {
+            compile_expr(k, compiler)?;
+            compile_expr(v, compiler)?;
+        }
+        for kw in kwargs {
+            let key_idx = compiler.intern_string(&kw.name);
+            compiler.push(IrOp::LoadString { pool_idx: key_idx }, kw.span);
+            compile_expr(&kw.value, compiler)?;
+        }
         compiler.push(
             IrOp::MakeDict {
-                count: kwargs.len() as u32,
+                count: (keys.len() + kwargs.len()) as u32,
             },
-            descriptor.span(),
+            *span,
         );
+        return Ok(());
     }
-
-    Ok(())
+    let span = descriptor.span();
+    Err(ToolProgramError::Compile(Diagnostic::new(
+        DiagnosticCode::InvalidCallDescriptor,
+        "call() k=v overrides require a dict literal descriptor; merge them into the dict \
+         or use call(tool=..., ...) with no positional descriptor"
+            .to_string(),
+        SourceSpan::new(span.start, span.len()),
+    )))
 }
 
 fn compile_expr(expr: &Expr, compiler: &mut Compiler) -> Result<(), ToolProgramError> {

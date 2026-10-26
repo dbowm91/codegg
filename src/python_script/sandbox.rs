@@ -61,6 +61,21 @@ pub fn resolve_policy(
             reason: "dynamic code execution (eval/exec/compile) detected".to_string(),
         });
     }
+    // Sensitive and out-of-scope reads are denied under their own names.
+    // Reading is not destruction: these must never surface as
+    // `destructive_fs`.
+    if risk.has_sensitive_read && !profile.allow_sensitive_read {
+        denied.push(CapabilityViolation {
+            capability: "read_sensitive".to_string(),
+            reason: "sensitive path read denied".to_string(),
+        });
+    }
+    if risk.has_out_of_scope_read && !profile.allow_out_of_scope_read {
+        denied.push(CapabilityViolation {
+            capability: "read_out_of_scope".to_string(),
+            reason: "absolute path read outside the workspace/scratch roots denied".to_string(),
+        });
+    }
 
     // Determine enforcement backend
     let (backend, os_fs_isolation, os_net_isolation, warnings) =
@@ -365,6 +380,8 @@ mod tests {
             has_network: true,
             has_destructive_ops: false,
             has_dynamic_execution: false,
+            has_sensitive_read: false,
+            has_out_of_scope_read: false,
             imports: vec![],
             scanner: super::super::types::PythonRiskScanner::Fallback,
         };
@@ -388,6 +405,8 @@ mod tests {
             has_network: false,
             has_destructive_ops: true,
             has_dynamic_execution: false,
+            has_sensitive_read: false,
+            has_out_of_scope_read: false,
             imports: vec![],
             scanner: super::super::types::PythonRiskScanner::Fallback,
         };
@@ -411,6 +430,8 @@ mod tests {
             has_network: false,
             has_destructive_ops: false,
             has_dynamic_execution: false,
+            has_sensitive_read: false,
+            has_out_of_scope_read: false,
             imports: vec![],
             scanner: super::super::types::PythonRiskScanner::Fallback,
         };
@@ -420,6 +441,74 @@ mod tests {
             &risk,
         );
         assert!(profile.allow_subprocess);
+    }
+
+    // ── D3: read-scope denials are distinct from destruction ──────────
+
+    #[test]
+    fn sensitive_read_denied_as_read_sensitive() {
+        let decision = resolve_policy(
+            PythonExecutionMode::Analyze,
+            "open('/etc/passwd').readline()",
+            &ws(),
+        );
+        assert!(decision
+            .denied
+            .iter()
+            .any(|v| v.capability == "read_sensitive"));
+        assert!(decision
+            .denied
+            .iter()
+            .any(|v| v.capability == "read_out_of_scope"));
+        assert!(!decision
+            .denied
+            .iter()
+            .any(|v| v.capability == "destructive_fs"));
+    }
+
+    #[test]
+    fn tmp_outside_read_is_not_a_static_refusal() {
+        // `/tmp` is deliberately outside the narrow static prefix set: no
+        // pre-spawn denial under any read label. The sandbox denies it at
+        // exec instead ("denied by sandbox at exec").
+        let decision = resolve_policy(
+            PythonExecutionMode::Analyze,
+            "open('/tmp/probe_outside.txt').read()",
+            &ws(),
+        );
+        assert!(!decision
+            .denied
+            .iter()
+            .any(|v| v.capability == "read_out_of_scope"));
+        assert!(!decision
+            .denied
+            .iter()
+            .any(|v| v.capability == "read_sensitive"));
+        assert!(!decision
+            .denied
+            .iter()
+            .any(|v| v.capability == "destructive_fs"));
+    }
+
+    #[test]
+    fn relative_read_denies_no_scope_capability() {
+        let decision = resolve_policy(
+            PythonExecutionMode::Analyze,
+            "f = open('notes.txt', 'r')",
+            &ws(),
+        );
+        assert!(!decision
+            .denied
+            .iter()
+            .any(|v| v.capability == "read_sensitive"));
+        assert!(!decision
+            .denied
+            .iter()
+            .any(|v| v.capability == "read_out_of_scope"));
+        assert!(!decision
+            .denied
+            .iter()
+            .any(|v| v.capability == "destructive_fs"));
     }
 
     // ── ExecutableRule tests ──────────────────────────────────────────

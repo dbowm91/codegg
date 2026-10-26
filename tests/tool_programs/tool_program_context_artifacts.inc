@@ -217,6 +217,7 @@ fn program_ctx() -> BrokerInvocationContext {
         audit_emitter: None,
         execution_authorization: None,
         process_admission: None,
+        plan_mode: false,
     }
 }
 
@@ -354,6 +355,7 @@ async fn broker_returns_display_for_agent_calls() {
         audit_emitter: None,
         execution_authorization: None,
         process_admission: None,
+        plan_mode: false,
     };
     let result = broker
         .execute(&registry, "read", json!({"path": "/tmp/test.txt"}), ctx)
@@ -388,7 +390,10 @@ fn program_call_artifact_with_none_handle() {
     };
 
     let json = serde_json::to_value(&artifact).unwrap();
-    assert!(json["artifact_handle"].is_null());
+    // F1: a missing handle is omitted (not `null`) so the strict-string
+    // output schema validates — the broker validator only checks keys
+    // that are present.
+    assert!(json.get("artifact_handle").is_none());
     assert_eq!(json["preview"], "small output");
 }
 

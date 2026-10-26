@@ -3,6 +3,7 @@ use futures_util::StreamExt;
 use serde_json::json;
 use std::path::PathBuf;
 
+use crate::agent::EMERGENCY_DEFAULT_MODEL;
 use crate::config::schema::Config;
 use crate::error::ToolError;
 use crate::git_mutation_projector::project_mutation;
@@ -96,21 +97,71 @@ impl CommitTool {
         let model = config
             .model
             .clone()
-            .unwrap_or_else(|| "openai/gpt-4".to_string());
+            .unwrap_or_else(|| EMERGENCY_DEFAULT_MODEL.to_string());
 
         if let Some(provider) = self.provider.as_deref() {
-            return generate_commit_message_with_provider(diff, provider, &model, context).await;
+            let model_id = split_model_target(&model)?.1;
+            return generate_commit_message_with_provider(diff, provider, &model_id, context).await;
         }
 
         let mut registry = ProviderRegistry::new();
         register_builtin_with_config(&mut registry, &config);
-        let provider = registry
-            .get(&model)
-            .or_else(|| registry.list().first().copied())
-            .ok_or_else(|| ToolError::Execution("no provider available".to_string()))?;
+        let (provider, model_id) = resolve_commit_provider(&registry, &model)?;
 
-        generate_commit_message_with_provider(diff, provider, &model, context).await
+        generate_commit_message_with_provider(diff, provider, &model_id, context).await
     }
+}
+
+/// Split a `provider/model` string into its registry provider name and bare
+/// model id. The registry is keyed by provider id, so looking up the full
+/// `provider/model` string never matches and must not fall through to an
+/// arbitrary provider.
+fn split_model_target(model: &str) -> Result<(String, String), ToolError> {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        return Err(ToolError::Execution(
+            "Model must be specified as 'provider/model'. Set `model` via `codegg edit` or pass `-m provider/model`; run `codegg doctor` to check wiring."
+                .to_string(),
+        ));
+    }
+    let raw_id = match trimmed.split_once('/') {
+        Some((_, id)) => id.trim(),
+        None => {
+            return Err(ToolError::Execution(format!(
+                "Model '{trimmed}' must be specified as 'provider/model'. Set `model` via `codegg edit` or pass `-m provider/model`; run `codegg doctor` to check wiring."
+            )));
+        }
+    };
+    let provider_name =
+        crate::core::session_selection::runtime_model_provider_segment(trimmed).trim();
+    if provider_name.is_empty() || raw_id.is_empty() {
+        return Err(ToolError::Execution(format!(
+            "Model '{trimmed}' must be specified as 'provider/model' with a non-empty model id. Set `model` via `codegg edit` or pass `-m provider/model`; run `codegg doctor` to check wiring."
+        )));
+    }
+    Ok((provider_name.to_string(), raw_id.to_string()))
+}
+
+fn resolve_commit_provider<'a>(
+    registry: &'a ProviderRegistry,
+    model: &str,
+) -> Result<(&'a dyn Provider, String), ToolError> {
+    let (provider_name, model_id) = split_model_target(model)?;
+    let provider = registry.get(&provider_name).ok_or_else(|| {
+        ToolError::Execution(format!(
+            "No active connection matches provider '{provider_name}' (model '{model}'). Open /connect to create one, or set `model` via `codegg edit` / `-m provider/model`; run `codegg doctor` to check wiring."
+        ))
+    })?;
+    Ok((provider, model_id))
+}
+
+fn map_llm_request_error(e: &crate::provider::ProviderError, model: &str) -> ToolError {
+    if e.error_class() == "model_not_found" {
+        return ToolError::Execution(format!(
+            "Model '{model}' was not found by the provider ({e}). Open /connect to create a connection, or set `model` via `codegg edit` / `-m provider/model`; run `codegg doctor` to check wiring."
+        ));
+    }
+    ToolError::Execution(format!("LLM request failed: {e}"))
 }
 
 async fn generate_commit_message_with_provider(
@@ -149,7 +200,7 @@ async fn generate_commit_message_with_provider(
     let mut stream = provider
         .stream(&request)
         .await
-        .map_err(|e| ToolError::Execution(format!("LLM request failed: {}", e)))?;
+        .map_err(|e| map_llm_request_error(&e, &request.model))?;
 
     let mut message = String::new();
     while let Some(event) = stream.next().await {
@@ -214,7 +265,13 @@ impl CommitTool {
                 ToolError::Execution(format!("publication refused: {refusal}"))
             }
             GitMutationError::PublicationFailed(message) => {
-                ToolError::Execution(format!("publication failed: {message}"))
+                if message.contains("CleanSmudgeFilter") && message.contains("publication=None") {
+                    ToolError::Execution(format!("publication failed: {message}"))
+                } else {
+                    ToolError::Execution(format!(
+                        "refusing stage_paths/add: missing capability CleanSmudgeFilter; backend state publication=None; disposition fenced-native; publication failed: {message}; remedy: attach daemon publisher or use contained worktree; do not shell out"
+                    ))
+                }
             }
         }
     }
@@ -638,6 +695,34 @@ mod tests {
         assert_eq!(
             contexts.lock().unwrap().as_slice(),
             &[Some("session-commit".to_string())]
+        );
+    }
+
+    #[test]
+    fn commit_blank_model_shape_guidance() {
+        let err = split_model_target("   ").expect_err("blank model must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("-m provider/model"),
+            "blank model must name -m shape, got: {msg}"
+        );
+        assert!(
+            msg.contains("codegg edit"),
+            "blank model must name codegg edit, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn commit_missing_provider_points_at_connect() {
+        let registry = ProviderRegistry::new();
+        let err = match resolve_commit_provider(&registry, "openai/gpt-4") {
+            Ok(_) => panic!("missing provider must fail offline"),
+            Err(err) => err,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("/connect") && msg.contains("codegg doctor"),
+            "missing provider must carry connect+doctor guidance, got: {msg}"
         );
     }
 }

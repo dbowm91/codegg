@@ -61,6 +61,10 @@ pub struct ProgramCallArtifact {
     pub success: bool,
     /// Artifact handle for the full output content (ctx:// URI).
     /// The caller can use `context_read` to expand this.
+    /// Small outputs carry no handle; the key is omitted (not `null`) so
+    /// the strict-string output schema still validates — the broker
+    /// validator only checks present keys.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub artifact_handle: Option<String>,
     /// Truncated display preview (first ~200 chars).
     pub preview: String,
@@ -155,8 +159,16 @@ impl Tool for ToolProgramTool {
     fn description(&self) -> &str {
         "Submit a read-only program that calls tools. The program is compiled to a safe IR, \
          validated against the tool manifest, and executed in a sandboxed interpreter. \
-         Only read-only and deterministic tools may be called. Intermediate tool call outputs \
-         stay in the program artifact ledger and do not enter the parent transcript."
+         Only tools whose contract is DirectOrProgrammatic or ProgrammaticOnly with a \
+         read-only effect class (ReadOnly, ReadValidate) and an output schema may be called; \
+         DirectOnly and mutating tools are rejected. \
+         Intermediate tool call outputs stay in the program artifact ledger and do not \
+         enter the parent transcript. \
+         Example: result = call({\"tool\": \"read\", \"path\": \"src/main.rs\"}). \
+         Extra tool args may be extra dict keys or trailing k=v pairs, and parallel \
+         takes the same dicts (canonical parallel(d1, d2), e.g. \
+         parallel({\"tool\": \"read\", \"path\": \"a\"}, {\"tool\": \"grep\", \"pattern\": \"TODO\"}); \
+         single-list parallel([d1, d2]) normalizes to the same list, each dict must carry a `tool` key)."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -165,17 +177,23 @@ impl Tool for ToolProgramTool {
             "properties": {
                 "source": {
                     "type": "string",
-                    "description": "Restricted Python source code. Supports: variables, \
-                        assignments, if/elif/else, for loops (with range()), while loops, \
-                        function calls (call()), parallel groups (parallel()), emit(), \
-                        fail(), basic arithmetic, string operations, list/dict literals, \
-                        and indexing."
+                    "description": "Restricted Python source code (no while loops, imports, \
+                        or defs). Supports: variables, assignments, if/elif/else, \
+                        for loops (with range()), call(descriptor_dict[, k=v...]) e.g. \
+                        result = call({\"tool\": \"read\", \"path\": \"src/main.rs\"}), \
+                        parallel groups canonical parallel(d1, d2) e.g. \
+                        parallel({\"tool\": \"read\", \"path\": \"a\"}, {\"tool\": \"grep\", \"pattern\": \"TODO\"}) \
+                        (single-list parallel([d1, d2]) normalizes; each dict needs a `tool` key), \
+                        bare parallel(...) as a statement with discarded target, emit(), fail(), \
+                        basic arithmetic, string operations, list/dict literals, and indexing."
                 },
                 "tools": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Tool names this program may call. All tools must be \
-                        in the read-only palette and have output schemas."
+                    "description": "Tool names this program may call. All tools must hold \
+                        a DirectOrProgrammatic or ProgrammaticOnly caller policy with a \
+                        read-only effect class (ReadOnly or ReadValidate) \
+                        and have output schemas."
                 },
                 "description": {
                     "type": "string",
@@ -279,8 +297,49 @@ impl Tool for ToolProgramTool {
             .unwrap_or("unknown")
             .to_string();
         let success = matches!(display.as_str(), "completed" | "submitted");
+        // A bare `program status: failed` leaves agents with nothing to
+        // debug (no contract predicate, no source diagnostic). Surface
+        // the recorded error/output inline so the failure is actionable
+        // without a second round-trip.
+        let mut output = format!("program status: {display}");
+        if success {
+            // Success is as visible as failure: surface a bounded preview of
+            // the program output plus the spilled artifact handle when the
+            // executor spilled large output (mirrors the 256 KiB spill path).
+            // `program_artifacts` stay non-transcript handles by contract.
+            if let Some(out) = value.get("output") {
+                let rendered = if let Some(s) = out.as_str() {
+                    s.to_string()
+                } else {
+                    out.to_string()
+                };
+                let preview: String = rendered.chars().take(1000).collect();
+                let truncated = rendered.chars().count() > 1000;
+                output.push_str(&format!(
+                    "\noutput preview: {}{}",
+                    preview,
+                    if truncated { "... [truncated]" } else { "" }
+                ));
+                if let Some(handle) = value.get("output_artifact").and_then(|v| v.as_str()) {
+                    output.push_str(&format!("\noutput_artifact: {handle}"));
+                }
+            }
+        }
+        if !success {
+            if let Some(error) = value.get("error").and_then(|e| e.as_str()) {
+                output.push_str(&format!("\nerror: {error}"));
+            } else if let Some(detail) = value.get("output").and_then(|o| o.as_str()) {
+                output.push_str(&format!("\noutput: {detail}"));
+            }
+            output.push_str(
+                "\nOnly tools whose contract is DirectOrProgrammatic or ProgrammaticOnly with a \
+                 read-only effect class (ReadOnly, ReadValidate) may be called; \
+                 DirectOnly and mutating tools are rejected. \
+                 Expected: call({\"tool\": \"<name>\", ...}).",
+            );
+        }
         Ok(StructuredToolResult {
-            output: format!("program status: {}", display),
+            output,
             value: Some(value),
             success,
             provenance: Some(ToolProvenance {

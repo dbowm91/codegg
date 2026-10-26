@@ -163,6 +163,8 @@ also accepts an optional `path`, used only to label findings. `run_profile`
 uses the built-in default `ProfileConfig`; it does not read the user's
 `security` block.
 
+Policy: test strings without execution context are not findings in `inspect_text` (which covers secrets/unsafe-deps/CORS/supply-chain, not shell); shell enforcement happens at `classify_command` / `command_preflight` (advisory) / permission policy (deny) — `classify_command('rm -rf /')` returns critical.
+
 ## Configuration
 
 ```jsonc

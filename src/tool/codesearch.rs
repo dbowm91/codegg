@@ -103,11 +103,15 @@ impl Tool for CodeSearchTool {
         ToolCategory::ReadOnly
     }
 
-    /// M002: the M001 compatibility alias is deferred; the canonical
-    /// `repo_search` stays core. The alias remains registered and
-    /// discoverable via `tool_search`.
+    /// M001 compatibility alias is hidden: the canonical `repo_search`
+    /// stays core. The alias remains registered and callable for compat
+    /// but is excluded from definitions and `tool_search` listings.
     fn defer_loading(&self) -> bool {
-        crate::tool::disclosure::is_deferred_by_default(self.name())
+        true
+    }
+
+    fn expose_in_definitions(&self) -> bool {
+        false
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

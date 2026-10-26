@@ -196,7 +196,12 @@ impl Tool for DiffTool {
     }
 
     fn description(&self) -> &str {
-        "Show differences between two versions of a file. Supports unified diff format."
+        "For pre-checks use text_replace_check; for working-tree state use git_query diff. Show the unified diff between the given original text and the current file at \
+         path. The original parameter is required: pass the full prior file contents; \
+         the tool compares it against the file on disk and truncates long output. \
+         Reserve diff for small files. \
+         For large files prefer git_query diff (working tree against HEAD, no original needed) or text_replace_check. \
+         See tool_search for the file-op chooser."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -209,7 +214,7 @@ impl Tool for DiffTool {
                 },
                 "original": {
                     "type": "string",
-                    "description": "Original content (if comparing against a different version)"
+                    "description": "Required: full prior file contents to compare against the file at path"
                 },
                 "line_range": {
                     "type": "object",
@@ -226,7 +231,7 @@ impl Tool for DiffTool {
                     }
                 }
             },
-            "required": ["path"]
+            "required": ["path", "original"]
         })
     }
 
@@ -433,5 +438,21 @@ mod tests {
         ctx.cwd = workspace.path().join("missing-dir");
         assert_eq!(tool.effective_root(Some(&ctx)), tool.allowed_root);
         assert_eq!(tool.effective_root(None), tool.allowed_root);
+    }
+
+    #[test]
+    fn diff_description_routes_prechecks_to_replace_check() {
+        let tool = DiffTool::new();
+        let description = tool.description();
+        assert!(description.contains("text_replace_check"));
+        assert!(description.contains("small files"));
+        assert!(
+            description.starts_with("For pre-checks use text_replace_check;"),
+            "cross-link must lead the description, got: {description}"
+        );
+        assert!(
+            description.contains("for working-tree state use git_query diff"),
+            "must route working-tree state to git_query diff, got: {description}"
+        );
     }
 }

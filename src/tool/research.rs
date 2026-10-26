@@ -154,6 +154,12 @@ impl Tool for ResearchTool {
     fn description(&self) -> &str {
         "Run a deep, multi-source research pipeline and return a synthesized answer with citations. \
          Use this for open-ended, comparative, or multi-hop questions that go beyond a single websearch lookup. \
+         Corpus: the local workspace is always searched; web sources run only via eggsearch when \
+         [search].backend is not disabled. Depth sets the source budget (low=8, medium=30, high=80); \
+         mode sets framing and upstream workflow, not the corpus. \
+         Local ranking is filename-weighted (path hits outrank content hits) and seeds \
+         scripts/verify.sh, AGENTS.md, and architecture/testing.md for repo-how questions: \
+         for repo mechanics, read scripts/verify.sh + AGENTS.md first. \
          The pipeline collects sources from the configured providers, extracts evidence, constructs claims, \
          verifies citations, and synthesizes a final answer. For a quick lookup, use `websearch` instead."
     }
@@ -168,7 +174,7 @@ impl Tool for ResearchTool {
                 },
                 "mode": {
                     "type": "string",
-                    "description": "Research mode that biases the pipeline",
+                    "description": "Research mode that sets framing and upstream workflow, not the corpus (local workspace is always searched; web only via eggsearch when [search].backend is not disabled)",
                     "enum": [
                         "landscape",
                         "architecture-decision",
@@ -182,7 +188,7 @@ impl Tool for ResearchTool {
                 },
                 "depth": {
                     "type": "string",
-                    "description": "Research depth (low=8 sources, medium=30, high=80)",
+                    "description": "Research depth as a source budget (low=8 sources, medium=30, high=80); does not change the corpus",
                     "enum": ["low", "medium", "high"]
                 }
             },
@@ -259,6 +265,26 @@ mod tests {
         let t = with_default_service();
         let d = t.description();
         assert!(d.contains("websearch"));
+    }
+
+    #[test]
+    fn description_states_local_always_and_web_gated_corpus() {
+        let t = with_default_service();
+        let d = t.description();
+        assert!(d.contains("local workspace is always searched"));
+        assert!(d.contains("[search].backend"));
+        assert!(d.contains("low=8"));
+    }
+
+    #[test]
+    fn mode_and_depth_params_state_corpus_and_budget_roles() {
+        let t = with_default_service();
+        let p = t.parameters();
+        let mode = p["properties"]["mode"]["description"].as_str().unwrap();
+        assert!(mode.contains("not the corpus"));
+        let depth = p["properties"]["depth"]["description"].as_str().unwrap();
+        assert!(depth.contains("low=8"));
+        assert!(depth.contains("does not change the corpus"));
     }
 
     #[test]

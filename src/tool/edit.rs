@@ -67,7 +67,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "Surgically search and replace text in a file"
+        "Replace the first occurrence of literal text in a file (replaces first occurrence only). See tool_search for the file-op chooser."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -234,7 +234,7 @@ impl EditTool {
             }
             .map_err(|error| (error, WriterFenceOutcome::NoEffect))?;
 
-            let result = try_edit(&content, &old_string_for_closure, &new_string_for_closure)
+            let outcome = try_edit(&content, &old_string_for_closure, &new_string_for_closure)
                 .ok_or_else(|| {
                     let hint = find_similar_block(&content, &old_string_for_closure);
                     (
@@ -249,7 +249,7 @@ impl EditTool {
             // `fs::write` truncates before it writes, so a failure here can
             // leave a partially written file behind: the effect is unproven,
             // not absent.
-            std::fs::write(&canonical, &result).map_err(|e| {
+            std::fs::write(&canonical, &outcome.result).map_err(|e| {
                 let message = format!("write failed for '{}': {}", canonical.display(), e);
                 (
                     ToolError::Execution(message.clone()),
@@ -260,7 +260,10 @@ impl EditTool {
             Ok::<_, (ToolError, WriterFenceOutcome)>((
                 canonical.display().to_string(),
                 content,
-                result,
+                outcome.result,
+                outcome.strategy,
+                outcome.start_line,
+                outcome.end_line,
             ))
         })
         .await
@@ -273,7 +276,8 @@ impl EditTool {
             )),
         };
 
-        let (path_display, old_content, _result) = match effect {
+        let (path_display, old_content, new_content, strategy, start_line, end_line) = match effect
+        {
             Ok(written) => {
                 // The edit landed and was observed, so the permit is
                 // released. A failure to release it is reported: the caller
@@ -293,7 +297,7 @@ impl EditTool {
         GlobalEventBus::publish(AppEvent::FileChanged {
             path: path_str.clone(),
             action: "Modified".to_string(),
-            old_content: Some(old_content),
+            old_content: Some(old_content.clone()),
         });
 
         // Config format validation after write
@@ -304,9 +308,9 @@ impl EditTool {
                     .and_then(|e| e.to_str())
                     .unwrap_or("");
                 let config_decision = match ext {
-                    "json" | "jsonc" | "json5" => svc.check_json_valid(&_result).await,
-                    "toml" => svc.check_toml_valid(&_result).await,
-                    _ => svc.check_config(&_result).await,
+                    "json" | "jsonc" | "json5" => svc.check_json_valid(&new_content).await,
+                    "toml" => svc.check_toml_valid(&new_content).await,
+                    _ => svc.check_config(&new_content).await,
                 };
                 match config_decision {
                     PreflightDecision::Block { findings } => {
@@ -321,70 +325,182 @@ impl EditTool {
             }
         }
 
+        let preview = grouped_preview(&old_content, &new_content, &path_str);
+        let preview = truncate_preview(preview, 4000);
         let mut output = format!(
-            "Edited {}\n\n- {}\n+ {}",
+            "Edited {} via {} at lines {}-{} ({} -> {} lines)\n\n{}",
             path_display,
+            strategy,
+            start_line,
+            end_line,
             old_string.lines().count(),
-            new_string.lines().count()
+            new_string.lines().count(),
+            preview
         );
         if !preflight_warnings.is_empty() {
-            output = format!("{}\n\n{}", preflight_warnings.join("\n"), output);
+            output = format!("{}\n\n{}", output, preflight_warnings.join("\n"));
         }
         Ok(output)
     }
 }
 
-fn try_edit(content: &str, old_string: &str, new_string: &str) -> Option<String> {
-    let strategies = [
-        exact_match,
-        line_trimmed_match,
-        whitespace_normalized_match,
-        block_anchored_match,
-        indentation_flexible_match,
-        escape_normalized_match,
-        trimmed_boundary_match,
-        context_aware_match,
-    ];
+struct EditOutcome {
+    result: String,
+    strategy: &'static str,
+    start_line: usize,
+    end_line: usize,
+}
 
-    for strategy in strategies {
-        if let Some(result) = strategy(content, old_string, new_string) {
-            return Some(result);
+fn try_edit(content: &str, old_string: &str, new_string: &str) -> Option<EditOutcome> {
+    let strategies: &[(&'static str, fn(&str, &str, &str) -> Option<EditOutcome>)] = &[
+        ("exact_match", exact_match),
+        ("line_trimmed_match", line_trimmed_match),
+        ("whitespace_normalized_match", whitespace_normalized_match),
+        ("block_anchored_match", block_anchored_match),
+        ("indentation_flexible_match", indentation_flexible_match),
+        ("escape_normalized_match", escape_normalized_match),
+        ("trimmed_boundary_match", trimmed_boundary_match),
+        ("context_aware_match", context_aware_match),
+    ];
+    for (name, strategy) in strategies {
+        if let Some(mut outcome) = strategy(content, old_string, new_string) {
+            outcome.strategy = name;
+            return Some(outcome);
         }
     }
-
     None
 }
 
-fn exact_match(content: &str, old_string: &str, new_string: &str) -> Option<String> {
-    if content.contains(old_string) {
-        Some(content.replacen(old_string, new_string, 1))
+fn min_indent(lines: &[&str]) -> usize {
+    lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start().len())
+        .min()
+        .unwrap_or(0)
+}
+fn reindent_to_base(new_string: &str, base_indent: usize) -> String {
+    let lines: Vec<&str> = new_string.lines().collect();
+    let min_new = min_indent(&lines);
+    let prefix = " ".repeat(base_indent);
+    lines
+        .iter()
+        .map(|l| {
+            if l.trim().is_empty() {
+                (*l).to_string()
+            } else {
+                let stripped = if l.len() >= min_new {
+                    &l[min_new..]
+                } else {
+                    l.trim_start()
+                };
+                format!("{prefix}{stripped}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+fn splice_lines(content_lines: &[&str], start: usize, len: usize, new_text: &str) -> String {
+    let before = content_lines[..start].join("\n");
+    let after = content_lines[start + len..].join("\n");
+    let mut result = if before.is_empty() {
+        String::new()
     } else {
-        None
+        format!("{before}\n")
+    };
+    result.push_str(new_text);
+    if !after.is_empty() {
+        result.push_str(&format!("\n{after}"));
     }
+    result
+}
+fn line_range_for_byte_idx(
+    content: &str,
+    byte_idx: usize,
+    match_len_bytes: usize,
+) -> (usize, usize) {
+    let start_line = content[..byte_idx.min(content.len())]
+        .chars()
+        .filter(|&c| c == '\n')
+        .count()
+        + 1;
+    let end_line = content[..(byte_idx + match_len_bytes).min(content.len())]
+        .chars()
+        .filter(|&c| c == '\n')
+        .count()
+        + 1;
+    (start_line, end_line.max(start_line))
+}
+fn grouped_preview(old: &str, new: &str, path: &str) -> String {
+    use similar::TextDiff;
+    let diff = TextDiff::from_lines(old, new);
+    let mut result = String::new();
+    result.push_str(&format!("--- a/{path}\n"));
+    result.push_str(&format!("+++ b/{path}\n"));
+    for (idx, group) in diff.grouped_ops(3).iter().enumerate() {
+        if idx > 0 {
+            result.push_str("...\n");
+        }
+        for op in group {
+            for change in diff.iter_changes(op) {
+                let sign = match change.tag() {
+                    similar::ChangeTag::Delete => "-",
+                    similar::ChangeTag::Insert => "+",
+                    similar::ChangeTag::Equal => " ",
+                };
+                let line_num = change.old_index().or(change.new_index()).unwrap_or(0) + 1;
+                result.push_str(&format!(
+                    "{}{:>4} {}\n",
+                    sign,
+                    line_num,
+                    change.value().trim_end_matches('\n')
+                ));
+            }
+        }
+    }
+    if result.ends_with(&format!("+++ b/{path}\n")) {
+        result.push_str("(no changes)\n");
+    }
+    result
+}
+fn truncate_preview(preview: String, cap: usize) -> String {
+    if preview.len() <= cap {
+        return preview;
+    }
+    let mut end = cap;
+    while end > 0 && !preview.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n... [preview truncated]", &preview[..end])
+}
+fn exact_match(content: &str, old_string: &str, new_string: &str) -> Option<EditOutcome> {
+    let idx = content.find(old_string)?;
+    let (start_line, end_line) = line_range_for_byte_idx(content, idx, old_string.len());
+    Some(EditOutcome {
+        result: content.replacen(old_string, new_string, 1),
+        strategy: "exact_match",
+        start_line,
+        end_line,
+    })
 }
 
-fn line_trimmed_match(content: &str, old_string: &str, new_string: &str) -> Option<String> {
+fn line_trimmed_match(content: &str, old_string: &str, new_string: &str) -> Option<EditOutcome> {
     let old_trimmed: Vec<&str> = old_string.lines().map(|l| l.trim()).collect();
     let content_lines: Vec<&str> = content.lines().collect();
-
     for window_start in 0..=content_lines.len().saturating_sub(old_trimmed.len()) {
         let window = &content_lines[window_start..window_start + old_trimmed.len()];
         if window.iter().zip(&old_trimmed).all(|(a, b)| a.trim() == *b) {
-            let before = content_lines[..window_start].join("\n");
-            let after = content_lines[window_start + old_trimmed.len()..].join("\n");
-            let mut result = if before.is_empty() {
-                String::new()
-            } else {
-                format!("{}\n", before)
-            };
-            result.push_str(new_string);
-            if !after.is_empty() {
-                result.push_str(&format!("\n{}", after));
-            }
-            return Some(result);
+            let base = min_indent(window);
+            let reindented = reindent_to_base(new_string, base);
+            let result = splice_lines(&content_lines, window_start, old_trimmed.len(), &reindented);
+            return Some(EditOutcome {
+                result,
+                strategy: "line_trimmed_match",
+                start_line: window_start + 1,
+                end_line: window_start + old_trimmed.len(),
+            });
         }
     }
-
     None
 }
 
@@ -392,7 +508,7 @@ fn whitespace_normalized_match(
     content: &str,
     old_string: &str,
     new_string: &str,
-) -> Option<String> {
+) -> Option<EditOutcome> {
     let normalize = |s: &str| -> String {
         s.lines()
             .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
@@ -432,13 +548,24 @@ fn whitespace_normalized_match(
         let mut result = content_chars[..start_char].iter().collect::<String>();
         result.push_str(new_string);
         result.push_str(&content_chars[end_char..].iter().collect::<String>());
-        Some(result)
+        let start_line = content_chars[..start_char]
+            .iter()
+            .filter(|&&c| c == '\n')
+            .count()
+            + 1;
+        let end_line = start_line + old_string.lines().count().saturating_sub(1);
+        Some(EditOutcome {
+            result,
+            strategy: "whitespace_normalized_match",
+            start_line,
+            end_line,
+        })
     } else {
         None
     }
 }
 
-fn block_anchored_match(content: &str, old_string: &str, new_string: &str) -> Option<String> {
+fn block_anchored_match(content: &str, old_string: &str, new_string: &str) -> Option<EditOutcome> {
     let old_lines: Vec<&str> = old_string.lines().collect();
     if old_lines.len() < 3 {
         return None;
@@ -474,18 +601,16 @@ fn block_anchored_match(content: &str, old_string: &str, new_string: &str) -> Op
                 .all(|(expected, actual)| expected == &actual.trim());
 
             if middle_ok {
-                let before = content_lines[..i].join("\n");
-                let after = content_lines[j + 1..].join("\n");
-                let mut result = if before.is_empty() {
-                    String::new()
-                } else {
-                    format!("{}\n", before)
-                };
-                result.push_str(new_string);
-                if !after.is_empty() {
-                    result.push_str(&format!("\n{}", after));
-                }
-                return Some(result);
+                let window = &content_lines[i..=j];
+                let base = min_indent(window);
+                let reindented = reindent_to_base(new_string, base);
+                let result = splice_lines(&content_lines, i, j - i + 1, &reindented);
+                return Some(EditOutcome {
+                    result,
+                    strategy: "block_anchored_match",
+                    start_line: i + 1,
+                    end_line: j + 1,
+                });
             }
         }
     }
@@ -493,7 +618,11 @@ fn block_anchored_match(content: &str, old_string: &str, new_string: &str) -> Op
     None
 }
 
-fn indentation_flexible_match(content: &str, old_string: &str, new_string: &str) -> Option<String> {
+fn indentation_flexible_match(
+    content: &str,
+    old_string: &str,
+    new_string: &str,
+) -> Option<EditOutcome> {
     let old_lines: Vec<&str> = old_string.lines().collect();
     let content_lines: Vec<&str> = content.lines().collect();
 
@@ -536,32 +665,30 @@ fn indentation_flexible_match(content: &str, old_string: &str, new_string: &str)
             .zip(&old_stripped)
             .all(|(a, b)| a == b)
         {
-            let before = content_lines[..window_start].join("\n");
-            let after = content_lines[window_start + old_lines.len()..].join("\n");
             let indent_prefix = " ".repeat(min_window_indent);
             let new_indented: String = new_string
                 .lines()
                 .map(|l| format!("{}{}", indent_prefix, l))
                 .collect::<Vec<_>>()
                 .join("\n");
-
-            let mut result = if before.is_empty() {
-                String::new()
-            } else {
-                format!("{}\n", before)
-            };
-            result.push_str(&new_indented);
-            if !after.is_empty() {
-                result.push_str(&format!("\n{}", after));
-            }
-            return Some(result);
+            let result = splice_lines(&content_lines, window_start, old_lines.len(), &new_indented);
+            return Some(EditOutcome {
+                result,
+                strategy: "indentation_flexible_match",
+                start_line: window_start + 1,
+                end_line: window_start + old_lines.len(),
+            });
         }
     }
 
     None
 }
 
-fn escape_normalized_match(content: &str, old_string: &str, new_string: &str) -> Option<String> {
+fn escape_normalized_match(
+    content: &str,
+    old_string: &str,
+    new_string: &str,
+) -> Option<EditOutcome> {
     let normalize_escapes = |s: &str| -> String {
         s.replace("\\n", "\n")
             .replace("\\t", "\t")
@@ -600,13 +727,28 @@ fn escape_normalized_match(content: &str, old_string: &str, new_string: &str) ->
         let mut result = content_chars[..start].iter().collect::<String>();
         result.push_str(new_string);
         result.push_str(&content_chars[end..].iter().collect::<String>());
-        Some(result)
+        let start_line = content_chars[..start]
+            .iter()
+            .filter(|&&c| c == '\n')
+            .count()
+            + 1;
+        let end_line = start_line + old_string.lines().count().saturating_sub(1);
+        Some(EditOutcome {
+            result,
+            strategy: "escape_normalized_match",
+            start_line,
+            end_line,
+        })
     } else {
         None
     }
 }
 
-fn trimmed_boundary_match(content: &str, old_string: &str, new_string: &str) -> Option<String> {
+fn trimmed_boundary_match(
+    content: &str,
+    old_string: &str,
+    new_string: &str,
+) -> Option<EditOutcome> {
     let old_trimmed = old_string.trim();
     let content_trimmed = content.trim();
 
@@ -615,7 +757,13 @@ fn trimmed_boundary_match(content: &str, old_string: &str, new_string: &str) -> 
         let trailing_ws_len = content.len() - content.trim_end().len();
         let prefix = &content[..leading_ws_len];
         let suffix = &content[content.len() - trailing_ws_len..];
-        return Some(format!("{}{}{}", prefix, new_string, suffix));
+        let total_lines = content.lines().count().max(1);
+        return Some(EditOutcome {
+            result: format!("{}{}{}", prefix, new_string, suffix),
+            strategy: "trimmed_boundary_match",
+            start_line: 1,
+            end_line: total_lines,
+        });
     }
 
     let old_lines: Vec<&str> = old_trimmed.lines().collect();
@@ -646,26 +794,23 @@ fn trimmed_boundary_match(content: &str, old_string: &str, new_string: &str) -> 
 
             let actual_start = first_content_line + window_start;
             let actual_end = actual_start + old_lines.len();
-
-            let before = orig_lines[..actual_start].join("\n");
-            let after = orig_lines[actual_end..].join("\n");
-            let mut result = if before.is_empty() {
-                String::new()
-            } else {
-                format!("{}\n", before)
-            };
-            result.push_str(new_string);
-            if !after.is_empty() {
-                result.push_str(&format!("\n{}", after));
-            }
-            return Some(result);
+            let window_slice = &orig_lines[actual_start..actual_end.min(orig_lines.len())];
+            let base = min_indent(window_slice);
+            let reindented = reindent_to_base(new_string, base);
+            let result = splice_lines(&orig_lines, actual_start, old_lines.len(), &reindented);
+            return Some(EditOutcome {
+                result,
+                strategy: "trimmed_boundary_match",
+                start_line: actual_start + 1,
+                end_line: actual_end,
+            });
         }
     }
 
     None
 }
 
-fn context_aware_match(content: &str, old_string: &str, new_string: &str) -> Option<String> {
+fn context_aware_match(content: &str, old_string: &str, new_string: &str) -> Option<EditOutcome> {
     let old_lines: Vec<&str> = old_string.lines().collect();
     let content_lines: Vec<&str> = content.lines().collect();
 
@@ -703,18 +848,16 @@ fn context_aware_match(content: &str, old_string: &str, new_string: &str) -> Opt
                 .zip(&target_lines)
                 .all(|(a, b)| *a == *b)
             {
-                let before = content_lines[..i].join("\n");
-                let after = content_lines[j + 1..].join("\n");
-                let mut result = if before.is_empty() {
-                    String::new()
-                } else {
-                    format!("{}\n", before)
-                };
-                result.push_str(new_string);
-                if !after.is_empty() {
-                    result.push_str(&format!("\n{}", after));
-                }
-                return Some(result);
+                let window = &content_lines[i..=j];
+                let base = min_indent(window);
+                let reindented = reindent_to_base(new_string, base);
+                let result = splice_lines(&content_lines, i, j - i + 1, &reindented);
+                return Some(EditOutcome {
+                    result,
+                    strategy: "context_aware_match",
+                    start_line: i + 1,
+                    end_line: j + 1,
+                });
             }
         }
     }
@@ -739,15 +882,12 @@ fn is_config_file(path: &str) -> bool {
 fn find_similar_block(content: &str, old_string: &str) -> String {
     let old_lines: Vec<&str> = old_string.lines().collect();
     let content_lines: Vec<&str> = content.lines().collect();
-
     if old_lines.is_empty() || content_lines.is_empty() {
         return String::new();
     }
-
     let mut best_dist = usize::MAX;
     let mut best_start = 0;
     let window_size = old_lines.len().min(5);
-
     for i in 0..=content_lines.len().saturating_sub(window_size) {
         let window: String = content_lines[i..i + window_size].join("\n");
         let dist = levenshtein(
@@ -759,19 +899,73 @@ fn find_similar_block(content: &str, old_string: &str) -> String {
             best_start = i;
         }
     }
-
     let start_line = best_start + 1;
     let end_line = best_start + window_size;
-    format!("\n\nDid you mean lines {}-{}?", start_line, end_line)
+    let closest = if best_dist < old_string.len().max(8) / 2 {
+        "line_trimmed_match"
+    } else {
+        "exact_match"
+    };
+    let snippet_raw =
+        content_lines[best_start..(best_start + window_size).min(content_lines.len())].join("\n");
+    let snippet_redacted = crate::git_network_policy::redact_url_credentials_in_text(&snippet_raw);
+    let mut snippet = snippet_redacted.chars().take(300).collect::<String>();
+    if snippet_redacted.chars().count() > 300 {
+        snippet.push_str("... [truncated]");
+    }
+    let before = best_start.saturating_sub(3);
+    let after = (best_start + window_size + 3).min(content_lines.len());
+    let window = content_lines[before..after].join("\n");
+    let mut window_bounded = window.chars().take(600).collect::<String>();
+    if window.chars().count() > 600 {
+        window_bounded.push_str("\n... [window truncated]");
+    }
+    format!(
+        "\n\nDid you mean lines {start_line}-{end_line}? closest strategy: {closest}\nSnippet (redacted, bounded):\n{snippet}\nBefore/after window lines {}-{}:\n{window_bounded}",
+        before + 1, after,
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::try_edit;
+    use super::{grouped_preview, try_edit};
 
     #[test]
     fn exact_match_replaces_only_the_first_duplicate() {
-        let result = try_edit("same\nsame", "same", "new").expect("match should be found");
-        assert_eq!(result, "new\nsame");
+        let outcome = try_edit("same\nsame", "same", "new").expect("match should be found");
+        assert_eq!(outcome.result, "new\nsame");
+        assert_eq!(outcome.strategy, "exact_match");
+        assert_eq!((outcome.start_line, outcome.end_line), (1, 1));
+    }
+
+    #[test]
+    fn success_reports_strategy_and_lines_with_grouped_preview() {
+        let outcome = try_edit("a\nb\nc\n", "b", "B").expect("match should be found");
+        assert_eq!(outcome.strategy, "exact_match");
+        assert_eq!((outcome.start_line, outcome.end_line), (2, 2));
+        let preview = grouped_preview("a\nb\nc\n", &outcome.result, "f.txt");
+        assert!(preview.contains("--- a/f.txt"));
+        assert!(preview.contains("-"));
+        assert!(preview.contains("+"));
+    }
+
+    #[test]
+    fn trim_hit_reindents_to_window_base_indent() {
+        let content = "fn f() {\n    old\n}\n";
+        let outcome = try_edit(content, "  old  ", "new_line\nsecond")
+            .expect("trim hit should match with indent");
+        assert!(outcome.result.contains("    new_line"));
+        assert!(outcome.result.contains("    second"));
+        assert_eq!(outcome.strategy, "line_trimmed_match");
+        assert_eq!((outcome.start_line, outcome.end_line), (2, 2));
+    }
+
+    #[test]
+    fn failure_hint_includes_snippet_strategy_and_window() {
+        let hint = super::find_similar_block("a\nb\nc\nd\ne\nf\n", "zzz");
+        assert!(hint.contains("Did you mean lines"));
+        assert!(hint.contains("closest strategy:"));
+        assert!(hint.contains("Snippet (redacted, bounded):"));
+        assert!(hint.contains("Before/after window lines"));
     }
 }

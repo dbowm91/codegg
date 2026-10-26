@@ -124,6 +124,7 @@ fn validate_stmt(
         } => {
             for desc in descriptors {
                 validate_expr(desc, scope)?;
+                validate_parallel_descriptor_has_tool(desc)?;
             }
             check_reserved_name(&target.name, target.span)?;
             scope.insert(target.name.clone());
@@ -241,6 +242,7 @@ fn validate_expr(expr: &Expr, scope: &HashSet<String>) -> Result<(), ToolProgram
         Expr::ParallelExpr { descriptors, .. } => {
             for d in descriptors {
                 validate_expr(d, scope)?;
+                validate_parallel_descriptor_has_tool(d)?;
             }
             Ok(())
         }
@@ -283,6 +285,23 @@ fn validate_expr(expr: &Expr, scope: &HashSet<String>) -> Result<(), ToolProgram
             validate_expr(config, scope)
         }
     }
+}
+
+fn validate_parallel_descriptor_has_tool(descriptor: &Expr) -> Result<(), ToolProgramError> {
+    if let Expr::Dict { keys, .. } = descriptor {
+        let has_tool = keys.iter().any(|k| match k {
+            Expr::StringLiteral { value, .. } => value == "tool",
+            _ => false,
+        });
+        if !has_tool {
+            return Err(ToolProgramError::Validate(Diagnostic::new(
+                DiagnosticCode::InvalidCallDescriptor,
+                "parallel() descriptors must be dicts with a `tool` key; canonical form is parallel(d1, d2) e.g. parallel({\"tool\": \"read\"}, {\"tool\": \"grep\"})".to_string(),
+                to_source_span(descriptor.span()),
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn check_reserved_name(name: &str, span: Span) -> Result<(), ToolProgramError> {

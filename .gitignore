@@ -95,4 +95,6 @@ dmypy.json
 
 # Misc
 *.log
+# Local agent review scratch notes (never committed).
+agentfindings.md
 codegg_debug.log

@@ -51,7 +51,7 @@ impl Tool for GlobTool {
     }
 
     fn description(&self) -> &str {
-        "Find files matching a glob pattern"
+        "Find files matching a glob pattern. `read` sees ignored files; discovery skips them unless include_ignored:true. Note: `.codegg/test-runs/*` may be gitignored — use include_ignored:true or read directly."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -65,6 +65,10 @@ impl Tool for GlobTool {
                 "path": {
                     "type": "string",
                     "description": "Directory to search in (default: the session workspace root). A relative path resolves against that root."
+                },
+                "include_ignored": {
+                    "type": "boolean",
+                    "description": "Include gitignored files (default false; read sees ignored files, discovery skips them unless include_ignored:true)"
                 }
             },
             "required": ["pattern"]
@@ -118,6 +122,10 @@ impl Tool for GlobTool {
 
         let search_path_str = input["path"].as_str().unwrap_or(".");
         let search_path = Path::new(search_path_str);
+        let include_ignored = input
+            .get("include_ignored")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let allowed_root = self.allowed_root.clone();
         let unrestricted = self.unrestricted;
@@ -145,10 +153,15 @@ impl Tool for GlobTool {
         let canonical_search = canonical_search.clone();
         let display_search = canonical_search.clone();
         let walk_root = canonical_search.clone();
+        let walk_root_for_skipped = walk_root.clone();
+        let canonical_for_skipped = canonical_search.clone();
+        let matcher_for_skipped = matcher.clone();
 
         let walk = WalkBuilder::new(&walk_root)
             .hidden(false)
-            .git_ignore(true)
+            .git_ignore(!include_ignored)
+            .git_exclude(!include_ignored)
+            .ignore(!include_ignored)
             .follow_links(false)
             .build();
 
@@ -222,11 +235,25 @@ impl Tool for GlobTool {
                     MAX_WALK_ENTRIES
                 ))
             } else {
-                Ok(format!(
+                let mut msg = format!(
                     "No files matching '{}' under '{}'",
                     pattern,
                     display_search.display()
-                ))
+                );
+                if !include_ignored {
+                    let skipped = count_ignored_glob_matches(
+                        &walk_root_for_skipped,
+                        &matcher_for_skipped,
+                        &canonical_for_skipped,
+                        unrestricted,
+                    );
+                    if skipped > 0 {
+                        msg.push_str(&format!(
+                            " [skipped {skipped} ignored (gitignore); retry include_ignored:true]"
+                        ));
+                    }
+                }
+                Ok(msg)
             }
         } else {
             let mut result = format!("[{} files", sorted_matches.len());
@@ -241,6 +268,50 @@ impl Tool for GlobTool {
             Ok(result)
         }
     }
+}
+
+/// Best-effort count of matches visible only when ignored files are included.
+fn count_ignored_glob_matches(
+    walk_root: &std::path::Path,
+    matcher: &globset::GlobMatcher,
+    canonical_search: &std::path::Path,
+    unrestricted: bool,
+) -> usize {
+    let walk = WalkBuilder::new(walk_root)
+        .hidden(false)
+        .git_ignore(false)
+        .git_exclude(false)
+        .ignore(false)
+        .follow_links(false)
+        .build();
+    let mut count = 0usize;
+    for entry in walk.take(MAX_WALK_ENTRIES) {
+        let Ok(entry) = entry else { continue };
+        if entry.file_type().map(|t| t.is_symlink()).unwrap_or(false) {
+            continue;
+        }
+        let path = entry.into_path();
+        if !unrestricted && !path.starts_with(walk_root) {
+            continue;
+        }
+        let Ok(relative) = path.strip_prefix(walk_root) else {
+            continue;
+        };
+        if !matcher.is_match(relative) {
+            continue;
+        }
+        if unrestricted {
+            count += 1;
+        } else if let Ok(canonical) = path.canonicalize() {
+            if canonical.starts_with(canonical_search) {
+                count += 1;
+            }
+        }
+        if count >= 1000 {
+            break;
+        }
+    }
+    count
 }
 
 #[cfg(test)]

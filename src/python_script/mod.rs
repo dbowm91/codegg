@@ -79,6 +79,8 @@ mod tests {
             has_network: true,
             has_destructive_ops: false,
             has_dynamic_execution: false,
+            has_sensitive_read: false,
+            has_out_of_scope_read: false,
             imports: vec!["requests".into()],
             scanner: PythonRiskScanner::Fallback,
         };
@@ -221,6 +223,8 @@ mod tests {
             has_network: true,
             has_destructive_ops: false,
             has_dynamic_execution: false,
+            has_sensitive_read: false,
+            has_out_of_scope_read: false,
             imports: vec![],
             scanner: PythonRiskScanner::Fallback,
         };
@@ -241,6 +245,8 @@ mod tests {
             has_network: false,
             has_destructive_ops: true,
             has_dynamic_execution: false,
+            has_sensitive_read: false,
+            has_out_of_scope_read: false,
             imports: vec![],
             scanner: PythonRiskScanner::Fallback,
         };
@@ -261,6 +267,8 @@ mod tests {
             has_network: false,
             has_destructive_ops: false,
             has_dynamic_execution: false,
+            has_sensitive_read: false,
+            has_out_of_scope_read: false,
             imports: vec![],
             scanner: PythonRiskScanner::Fallback,
         };
@@ -281,6 +289,8 @@ mod tests {
             has_network: false,
             has_destructive_ops: false,
             has_dynamic_execution: false,
+            has_sensitive_read: false,
+            has_out_of_scope_read: false,
             imports: vec![],
             scanner: PythonRiskScanner::Fallback,
         };
@@ -307,6 +317,8 @@ mod tests {
             has_network: true,
             has_destructive_ops: false,
             has_dynamic_execution: false,
+            has_sensitive_read: false,
+            has_out_of_scope_read: false,
             imports: vec![],
             scanner: PythonRiskScanner::Fallback,
         };
@@ -327,6 +339,8 @@ mod tests {
             has_network: false,
             has_destructive_ops: false,
             has_dynamic_execution: false,
+            has_sensitive_read: false,
+            has_out_of_scope_read: false,
             imports: vec![],
             scanner: PythonRiskScanner::Fallback,
         };
@@ -597,6 +611,8 @@ mod tests {
                 has_network: true,
                 has_destructive_ops: false,
                 has_dynamic_execution: false,
+                has_sensitive_read: false,
+                has_out_of_scope_read: false,
                 imports: vec!["requests".into()],
                 scanner: PythonRiskScanner::Fallback,
             },
@@ -770,6 +786,8 @@ mod tests {
                 has_network: false,
                 has_destructive_ops: false,
                 has_dynamic_execution: false,
+                has_sensitive_read: false,
+                has_out_of_scope_read: false,
                 imports: vec![],
                 scanner: PythonRiskScanner::Fallback,
             },

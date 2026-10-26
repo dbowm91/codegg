@@ -1,5 +1,8 @@
 //! M015 accepted-decision authority and frozen-contract convergence.
 
+use codegg::scheduler::tool_program_executor::{
+    contract_snapshots_match, first_contract_divergence,
+};
 use codegg::tool::backend::{ToolBackendKind, ToolExecutionContext};
 use codegg::tool::tool_program_context::{
     build_authority_grant, canonical_contract_digest, resolve_contract_snapshot, to_core_context,
@@ -45,6 +48,7 @@ fn accepted_context() -> ToolExecutionContext {
         audit_emitter: None,
         execution_authorization: None,
         process_admission: None,
+        plan_mode: false,
     }
 }
 
@@ -112,4 +116,32 @@ fn unknown_runtime_contract_is_rejected_instead_of_becoming_empty_snapshot() {
     let registry = ToolRegistry::with_defaults();
     let broker = ToolBroker::new(&registry);
     assert!(resolve_contract_snapshot(&broker, &["not-a-runtime-tool".into()]).is_err());
+}
+
+#[test]
+fn contract_snapshot_admission_compare_is_order_insensitive() {
+    // F1 repro: `call({"tool":"read",...})` + `call({"tool":"glob",...})`
+    // failed admission with three identical digests because the raw `Vec`
+    // comparison is order-sensitive while the digests are
+    // order-insensitive (frozen is canonical-sorted, live is request
+    // order). The executor must compare sorted clones instead.
+    let registry = ToolRegistry::with_defaults();
+    let broker = ToolBroker::new(&registry);
+    let frozen = resolve_contract_snapshot(&broker, &["read".into(), "glob".into()]).unwrap();
+    let current = resolve_contract_snapshot(&broker, &["glob".into(), "read".into()]).unwrap();
+    assert_eq!(
+        canonical_contract_digest(&frozen).unwrap(),
+        canonical_contract_digest(&current).unwrap()
+    );
+    // Request order differs, which is exactly what the old
+    // `frozen_contracts != current_contracts` check tripped on.
+    assert_ne!(frozen, current);
+    // The real executor admission comparator must not see drift here.
+    assert!(contract_snapshots_match(&frozen, &current));
+    assert!(first_contract_divergence(&frozen, &current).is_none());
+    // And it must still catch a genuine content change.
+    let mut tampered = current.clone();
+    tampered[0].implementation_version = "tampered-version".into();
+    assert!(!contract_snapshots_match(&frozen, &tampered));
+    assert!(first_contract_divergence(&frozen, &tampered).is_some());
 }

@@ -99,7 +99,9 @@ pub fn project_tool_output(
                 config.max_success_tokens
             };
             if token_est <= budget {
-                let text = format!("{header}\n{output}");
+                let text = format!(
+                    "{header}\n{output}\n[Full output inline; do not re-fetch via context_read.]"
+                );
                 (text.clone(), text)
             } else if tool_name == "read" || tool_name == "read_file" {
                 let preview = truncate_to_token_estimate(output, budget);
@@ -844,5 +846,13 @@ mod tests {
         let output = "Traceback (most recent call last):\n  File \"app.py\", line 10\n    foo()\nAssertionError: x != y";
         let proj = project_tool_output("python", None, output, false, "ctx://t", &config);
         assert!(!proj.unresolved_errors.is_empty());
+    }
+
+    #[test]
+    fn inline_short_output_tells_model_not_to_refetch() {
+        let config = default_config();
+        let proj = project_tool_output("bash", None, "ok", true, "ctx://t", &config);
+        assert!(proj.model_text.contains("ctx://t"));
+        assert!(proj.model_text.contains("do not re-fetch"));
     }
 }

@@ -64,7 +64,7 @@ impl Tool for GrepTool {
     }
 
     fn description(&self) -> &str {
-        "Search file contents using regular expressions"
+        "Search file contents using regular expressions. `read` sees ignored files; discovery skips them unless include_ignored:true. Note: `.codegg/test-runs/*` may be gitignored — use include_ignored:true or read directly."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -83,6 +83,10 @@ impl Tool for GrepTool {
                     "type": "integer",
                     "minimum": 0,
                     "description": "Number of context lines before and after"
+                },
+                "include_ignored": {
+                    "type": "boolean",
+                    "description": "Include gitignored files (default false; read sees ignored files, discovery skips them unless include_ignored:true)"
                 }
             },
             "required": ["pattern"]
@@ -158,6 +162,10 @@ impl Tool for GrepTool {
         let context = crate::tool::util::json_usize(&input["context"])
             .unwrap_or(0)
             .min(MAX_CONTEXT_LINES);
+        let include_ignored = input
+            .get("include_ignored")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let allowed_root = self.allowed_root.clone();
         let unrestricted = self.unrestricted;
@@ -170,11 +178,14 @@ impl Tool for GrepTool {
 
         let walk = WalkBuilder::new(&canonical_search)
             .hidden(false)
-            .git_ignore(true)
+            .git_ignore(!include_ignored)
+            .git_exclude(!include_ignored)
+            .ignore(!include_ignored)
             .follow_links(false)
             .build();
 
         let canonical_search = canonical_search.clone();
+        let canonical_for_skipped = canonical_search.clone();
 
         let (entries, truncated) = tokio::task::spawn_blocking(move || {
             let mut entries = Vec::new();
@@ -206,7 +217,16 @@ impl Tool for GrepTool {
         .map_err(|e| ToolError::Execution(format!("task join error: {}", e)))?;
 
         if entries.is_empty() {
-            return Ok(format!("No matches for '{}'", pattern));
+            let mut msg = format!("No matches for '{pattern}'");
+            if !include_ignored {
+                let skipped = count_ignored_files(&canonical_for_skipped, unrestricted);
+                if skipped > 0 {
+                    msg.push_str(&format!(
+                        " [skipped {skipped} ignored (gitignore); retry include_ignored:true]"
+                    ));
+                }
+            }
+            return Ok(msg);
         }
 
         let mut result = format!("[searching {} files", entries.len());
@@ -258,6 +278,14 @@ impl Tool for GrepTool {
 
         if results.is_empty() {
             result.push_str("No matches found.");
+            if !include_ignored {
+                let skipped = count_ignored_files(&canonical_for_skipped, unrestricted);
+                if skipped > 0 {
+                    result.push_str(&format!(
+                        " [skipped {skipped} ignored (gitignore); retry include_ignored:true]"
+                    ));
+                }
+            }
         } else {
             result.push_str(&results.join("\n"));
         }
@@ -271,6 +299,44 @@ impl Tool for GrepTool {
         }
         Ok(result)
     }
+}
+
+/// Best-effort count of files hidden by gitignore.
+fn count_ignored_files(canonical_search: &std::path::Path, unrestricted: bool) -> usize {
+    fn count_with(canonical_search: &std::path::Path, unrestricted: bool, ignored: bool) -> usize {
+        let walk = WalkBuilder::new(canonical_search)
+            .hidden(false)
+            .git_ignore(!ignored)
+            .git_exclude(!ignored)
+            .ignore(!ignored)
+            .follow_links(false)
+            .build();
+        let mut count = 0usize;
+        for entry in walk.take(MAX_WALK_ENTRIES) {
+            let Ok(entry) = entry else { continue };
+            if entry.file_type().map(|t| t.is_symlink()).unwrap_or(false) {
+                continue;
+            }
+            if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                continue;
+            }
+            let path = entry.into_path();
+            if unrestricted {
+                count += 1;
+            } else if let Ok(canonical) = path.canonicalize() {
+                if canonical.starts_with(canonical_search) {
+                    count += 1;
+                }
+            }
+            if count >= MAX_WALK_ENTRIES {
+                break;
+            }
+        }
+        count
+    }
+    let enabled = count_with(canonical_search, unrestricted, false);
+    let disabled = count_with(canonical_search, unrestricted, true);
+    disabled.saturating_sub(enabled).min(100_000)
 }
 
 struct GrepSink {

@@ -487,6 +487,7 @@ async fn single_host_trajectory_is_ordered_correlated_and_secret_free() {
         audit_emitter: Some(emitter.clone()),
         execution_authorization: None,
         process_admission: None,
+        plan_mode: false,
     };
     let result = broker
         .execute_with_retry(
@@ -745,6 +746,7 @@ async fn single_host_trajectory_is_ordered_correlated_and_secret_free() {
         audit_emitter: Some(emitter.clone()),
         execution_authorization: None,
         process_admission: None,
+        plan_mode: false,
     };
     broker
         .execute_with_retry(
@@ -944,6 +946,7 @@ async fn credential_git_url_secret_command_and_terminal_input_stay_structural() 
         audit_emitter: Some(emitter.clone()),
         execution_authorization: None,
         process_admission: None,
+        plan_mode: false,
     };
     let command = format!("echo {secret}");
     let result = broker

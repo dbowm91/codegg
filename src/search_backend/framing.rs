@@ -63,6 +63,152 @@ pub fn frame_repo_results(content: &str, source: &str) -> String {
     out
 }
 
+/// Compact projection for search/fetch results (R6).
+///
+/// Keeps only selection-relevant fields (`canonical_name`/`path`/
+/// `description`, plus `title`/`url`/`snippet` and `name`/`repo`/`owner`
+/// aliases) and drops telemetry/evidence-role envelopes. Returns `None`
+/// when the upstream value has no recognizable result array, so callers
+/// retain the full framed envelope instead of emitting an empty success.
+pub fn project_compact_search_value(
+    value: &serde_json::Value,
+    max_items: usize,
+) -> Option<serde_json::Value> {
+    const KEEP: &[&str] = &[
+        "canonical_name",
+        "name",
+        "path",
+        "file",
+        "title",
+        "url",
+        "snippet",
+        "description",
+        "repo",
+        "owner",
+    ];
+    fn compact_item(item: &serde_json::Value) -> serde_json::Value {
+        match item {
+            serde_json::Value::Object(map) => {
+                let mut out = serde_json::Map::new();
+                for key in KEEP {
+                    if let Some(v) = map.get(*key) {
+                        out.insert((*key).to_string(), v.clone());
+                    }
+                }
+                // Preserve at least one identifier so the card stays
+                // actionable; otherwise keep the whole item rather than
+                // an empty object.
+                if out.is_empty() {
+                    item.clone()
+                } else {
+                    serde_json::Value::Object(out)
+                }
+            }
+            other => other.clone(),
+        }
+    }
+    fn find_array(value: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
+        match value {
+            serde_json::Value::Array(items) => Some(items),
+            serde_json::Value::Object(map) => {
+                for key in [
+                    "results", "items", "sources", "cards", "entries", "repos", "files",
+                ] {
+                    if let Some(serde_json::Value::Array(items)) = map.get(key) {
+                        return Some(items);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+    let items = find_array(value)?;
+    let compacted: Vec<serde_json::Value> = items
+        .iter()
+        .take(max_items.max(1))
+        .map(compact_item)
+        .collect();
+    Some(serde_json::Value::Array(compacted))
+}
+
+/// Compact projection for batch-fetch results (F11).
+///
+/// Batch items carry full `text` plus an optional `focus` object with
+/// `chunks`. Keeping both duplicates the content, so the projection keeps
+/// one: when `focus.chunks` is a non-empty array the full `text` is
+/// stripped (the chunks are the selection); otherwise a chunk-less `focus`
+/// is stripped and `text` is kept. Returns `None` when the upstream value
+/// has no recognizable item array, so callers retain the full envelope
+/// instead of emitting an empty success.
+pub fn project_batch_compact_value(
+    value: &serde_json::Value,
+    max_items: usize,
+) -> Option<serde_json::Value> {
+    fn find_items(value: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
+        match value {
+            serde_json::Value::Array(items) => Some(items),
+            serde_json::Value::Object(map) => {
+                for key in ["items", "results", "sources", "fetches", "entries"] {
+                    if let Some(serde_json::Value::Array(items)) = map.get(key) {
+                        return Some(items);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+    fn dedup_item(item: &serde_json::Value) -> serde_json::Value {
+        let Some(map) = item.as_object() else {
+            return item.clone();
+        };
+        let mut out = map.clone();
+        let has_chunks = out
+            .get("focus")
+            .and_then(|focus| focus.get("chunks"))
+            .and_then(|chunks| chunks.as_array())
+            .is_some_and(|chunks| !chunks.is_empty());
+        if has_chunks {
+            out.remove("text");
+        } else {
+            out.remove("focus");
+        }
+        serde_json::Value::Object(out)
+    }
+    let items = find_items(value)?;
+    let compacted: Vec<serde_json::Value> = items
+        .iter()
+        .take(max_items.max(1))
+        .map(dedup_item)
+        .collect();
+    Some(serde_json::Value::Array(compacted))
+}
+
+/// Whether a native search input requests the compact (`summary`)
+/// projection. Accepts `compact:true` / `detail:"summary"`; `detail`
+/// mirrors `tool_search` (`summary` compact, `full`/`schema` full).
+/// Returns an error for any other explicit `detail` value.
+pub fn search_detail_requests_compact(
+    input: &serde_json::Value,
+) -> Result<bool, crate::error::ToolError> {
+    if input
+        .get("compact")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return Ok(true);
+    }
+    match input.get("detail").and_then(|v| v.as_str()) {
+        None => Ok(false),
+        Some("summary") => Ok(true),
+        Some("full") | Some("schema") => Ok(false),
+        Some(other) => Err(crate::error::ToolError::Execution(format!(
+            "'detail' must be either 'summary' or 'full' (alias 'schema' for full), got '{other}'"
+        ))),
+    }
+}
+
 pub fn frame_repo_file(content: &str, source: &str) -> String {
     let mut out = String::with_capacity(content.len() + 192);
     out.push_str(&format!(
@@ -402,5 +548,81 @@ mod tests {
         let out = frame_evidence_bundle("evidence data", "eggsearch");
         assert!(out.contains("trust=external_untrusted"));
         assert!(out.contains("tool=build_evidence_bundle"));
+    }
+
+    #[test]
+    fn compact_projection_keeps_only_selection_fields() {
+        let value = serde_json::json!({
+            "results": [
+                {
+                    "canonical_name": "scripts/verify.sh",
+                    "path": "scripts/verify.sh",
+                    "description": "verify entry",
+                    "providers": ["duckduckgo"],
+                    "trust": "external_untrusted",
+                    "evidence_role": "telemetry"
+                }
+            ]
+        });
+        let compact = project_compact_search_value(&value, 10).expect("compact");
+        let item = &compact[0];
+        assert_eq!(item["canonical_name"], "scripts/verify.sh");
+        assert_eq!(item["path"], "scripts/verify.sh");
+        assert!(item.get("providers").is_none());
+        assert!(item.get("trust").is_none());
+    }
+
+    #[test]
+    fn compact_projection_returns_none_without_result_array() {
+        let value = serde_json::json!({"status": "no_native_tree"});
+        assert!(project_compact_search_value(&value, 10).is_none());
+    }
+
+    #[test]
+    fn batch_compact_projection_strips_text_when_focus_chunks_present() {
+        let value = serde_json::json!({
+            "items": [
+                {
+                    "url": "https://example.com/a",
+                    "text": "full document text",
+                    "focus": {"chunks": ["selected chunk"]},
+                },
+                {
+                    "url": "https://example.com/b",
+                    "text": "other full text",
+                    "focus": {"chunks": []},
+                }
+            ]
+        });
+        let compact = project_batch_compact_value(&value, 10).expect("compact");
+        let items = compact.as_array().expect("item array");
+        assert_eq!(items.len(), 2);
+        assert!(items[0].get("text").is_none());
+        assert!(items[0]["focus"]["chunks"].as_array().unwrap().len() == 1);
+        assert_eq!(items[1]["text"], "other full text");
+        assert!(items[1].get("focus").is_none());
+    }
+
+    #[test]
+    fn batch_compact_projection_returns_none_without_item_array() {
+        let value = serde_json::json!({"status": "no_native_tree"});
+        assert!(project_batch_compact_value(&value, 10).is_none());
+    }
+
+    #[test]
+    fn search_detail_flag_accepts_compact_and_summary_forms() {
+        assert!(search_detail_requests_compact(&serde_json::json!({})).unwrap() == false);
+        assert!(
+            search_detail_requests_compact(&serde_json::json!({"compact": true})).unwrap() == true
+        );
+        assert!(
+            search_detail_requests_compact(&serde_json::json!({"detail": "summary"})).unwrap()
+                == true
+        );
+        assert!(
+            search_detail_requests_compact(&serde_json::json!({"detail": "schema"})).unwrap()
+                == false
+        );
+        assert!(search_detail_requests_compact(&serde_json::json!({"detail": "bogus"})).is_err());
     }
 }

@@ -24,7 +24,7 @@ pub enum TestResolveError {
     AmbiguousEcosystem,
     #[error("no supported test ecosystem detected in {0}")]
     UnsupportedEcosystem(String),
-    #[error("unsupported scope {scope:?} for {language:?} ecosystem")]
+    #[error("unsupported scope {scope:?} for {language:?} ecosystem (file scope supports tests/... only; for src files use custom: cargo test --lib <filter>)")]
     UnsupportedScopeForEcosystem {
         scope: &'static str,
         language: TestLanguage,
@@ -176,6 +176,49 @@ fn resolve_package(workdir: &Path, name: &str) -> Result<ResolvedTestCommand> {
 /// family is only a target because the manifest declares it. The declared
 /// name is authoritative and is not necessarily the directory's name, so this
 /// reads the manifest rather than guessing.
+/// Derive a `cargo test --lib` module filter for `src/**/*.rs`.
+///
+/// Returns `Some(filter)` when `path` is a Rust file under a `src/`
+/// directory. `lib.rs`/`main.rs` map to an empty filter
+/// (`cargo test --lib` with no trailing filter); `foo.rs` maps to `foo`,
+/// `a/b.rs` to `a::b`, and `a/mod.rs` to `a`. Returns `None` otherwise.
+fn rust_lib_module_filter(workdir: &Path, path: &Path) -> Option<String> {
+    if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+        return None;
+    }
+    let rel = path
+        .strip_prefix(workdir)
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|_| path.to_path_buf());
+    let components: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let src_pos = components.iter().rposition(|c| c == "src")?;
+    let after: Vec<&str> = components[src_pos + 1..]
+        .iter()
+        .map(String::as_str)
+        .collect();
+    if after.is_empty() {
+        return None;
+    }
+    if after.len() == 1 && (after[0] == "lib.rs" || after[0] == "main.rs") {
+        return Some(String::new());
+    }
+    if after.last() == Some(&"mod.rs") {
+        let mods = &after[..after.len() - 1];
+        if mods.is_empty() {
+            return Some(String::new());
+        }
+        return Some(mods.join("::"));
+    }
+    let last = after.last()?;
+    let stem = last.strip_suffix(".rs")?;
+    let mut mods: Vec<&str> = after[..after.len() - 1].to_vec();
+    mods.push(stem);
+    Some(mods.join("::"))
+}
+
 fn declared_family_target(workdir: &Path, family_dir: &str) -> Option<String> {
     let manifest = std::fs::read_to_string(workdir.join("Cargo.toml")).ok()?;
     let value: toml::Value = toml::from_str(&manifest).ok()?;
@@ -230,6 +273,19 @@ fn resolve_file(workdir: &Path, path: &Path) -> Result<ResolvedTestCommand> {
                     scope_label: format!("file:{family}/{label}"),
                 });
             }
+        }
+        if let Some(filter) = rust_lib_module_filter(workdir, path) {
+            let mut argv = vec!["cargo".into(), "test".into(), "--lib".into()];
+            if !filter.is_empty() {
+                argv.push("--".into());
+                argv.push(filter);
+            }
+            return Ok(ResolvedTestCommand {
+                language: TestLanguage::Rust,
+                argv,
+                cwd: workdir.to_path_buf(),
+                scope_label: format!("file:{label}"),
+            });
         }
         return Err(TestResolveError::UnsupportedScopeForEcosystem {
             scope: "File",
@@ -453,12 +509,35 @@ mod tests {
     }
 
     #[test]
-    fn rejects_rust_file_outside_tests_directory() {
-        // Rust files outside `tests/` cannot be mapped to a Cargo target
-        // without silently running the whole suite, so the resolver rejects
-        // them explicitly instead of broadening the scope.
+    fn resolves_rust_src_file_to_lib_filter() {
         let dir = temp_dir_with_files("rust-src", &["Cargo.toml", "src/foo.rs"]);
         let path = dir.path().join("src/foo.rs");
+        let result = resolve_test_command(&request(TestScope::File(path), dir.path())).unwrap();
+        assert_eq!(result.language, TestLanguage::Rust);
+        assert_eq!(result.argv, vec!["cargo", "test", "--lib", "--", "foo"]);
+        assert_eq!(result.scope_label, "file:foo.rs");
+    }
+
+    #[test]
+    fn resolves_nested_src_file_to_module_path_filter() {
+        let dir = temp_dir_with_files("rust-src-nested", &["Cargo.toml", "src/a/b.rs"]);
+        let path = dir.path().join("src/a/b.rs");
+        let result = resolve_test_command(&request(TestScope::File(path), dir.path())).unwrap();
+        assert_eq!(result.argv, vec!["cargo", "test", "--lib", "--", "a::b"]);
+    }
+
+    #[test]
+    fn resolves_src_mod_rs_to_parent_module_filter() {
+        let dir = temp_dir_with_files("rust-src-mod", &["Cargo.toml", "src/a/mod.rs"]);
+        let path = dir.path().join("src/a/mod.rs");
+        let result = resolve_test_command(&request(TestScope::File(path), dir.path())).unwrap();
+        assert_eq!(result.argv, vec!["cargo", "test", "--lib", "--", "a"]);
+    }
+
+    #[test]
+    fn rejects_rust_file_outside_tests_and_src() {
+        let dir = temp_dir_with_files("rust-bench", &["Cargo.toml", "benches/foo.rs"]);
+        let path = dir.path().join("benches/foo.rs");
         let result = resolve_test_command(&request(TestScope::File(path), dir.path()));
         assert!(matches!(
             result,
@@ -467,6 +546,15 @@ mod tests {
                 language: TestLanguage::Rust,
             })
         ));
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("custom: cargo test --lib"),
+            "unsupported file error must name the custom alternative, got: {msg}"
+        );
+        assert!(
+            msg.contains("tests/..."),
+            "unsupported file error must name the tests/... file shape, got: {msg}"
+        );
     }
 
     #[test]

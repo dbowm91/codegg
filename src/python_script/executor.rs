@@ -8,8 +8,9 @@ use tokio_util::sync::CancellationToken;
 use super::sandbox::resolve_policy;
 use super::snapshot::WorkspaceSnapshot;
 use super::types::{
-    PythonCapabilityEnvelope, PythonExecutionMode, PythonRiskAssessment, PythonRunResult,
-    PythonRunStatus, PythonScriptRequest, SandboxBackend, SandboxFailureKind, SandboxOutcome,
+    PythonCapabilityEnvelope, PythonExecutionMode, PythonRiskAssessment, PythonRiskScanner,
+    PythonRunResult, PythonRunStatus, PythonScriptRequest, SandboxBackend, SandboxFailureKind,
+    SandboxOutcome,
 };
 use crate::security::sandbox::SandboxLaunchSpec;
 #[cfg(test)]
@@ -187,14 +188,21 @@ pub async fn execute_python_script_with_profile_and_network(
 
     let policy = resolve_policy(request.mode, &request.code, &workspace_root);
 
-    // Check for denied capabilities before execution
+    // Check for denied capabilities before execution. A refusal here is
+    // pre-spawn static analysis, never sandbox enforcement: the script was
+    // not launched. Sandbox denials surface separately as
+    // "denied by sandbox at exec".
     let denied_caps: Vec<String> = policy.denied.iter().map(|v| v.capability.clone()).collect();
     if !denied_caps.is_empty() {
+        let scanner_label = match super::analyze::analyze_python_risk(&request.code).scanner {
+            PythonRiskScanner::Ast => "Ast",
+            PythonRiskScanner::Fallback => "Fallback",
+        };
         return make_result(
             PythonRunStatus::Failed(-3),
             String::new(),
             format!(
-                "[python_script] denied: capability check failed for {}",
+                "[python_script] refused pre-spawn by static analysis (scanner={scanner_label}): denied capability check failed for {}",
                 denied_caps.join(", ")
             ),
             start.elapsed(),
@@ -214,11 +222,15 @@ pub async fn execute_python_script_with_profile_and_network(
     };
     let legacy_violations = capabilities.has_denied_capabilities(&risk);
     if !legacy_violations.is_empty() {
+        let scanner_label = match risk.scanner {
+            PythonRiskScanner::Ast => "Ast",
+            PythonRiskScanner::Fallback => "Fallback",
+        };
         return make_result(
             PythonRunStatus::Failed(-3),
             String::new(),
             format!(
-                "[python_script] denied: capability check failed for {}",
+                "[python_script] refused pre-spawn by static analysis (scanner={scanner_label}): denied capability check failed for {}",
                 legacy_violations.join(", ")
             ),
             start.elapsed(),
@@ -228,6 +240,24 @@ pub async fn execute_python_script_with_profile_and_network(
             capabilities,
             script_body_hash,
         );
+    }
+
+    // D4: transform writes are scoped to the workspace plus the session
+    // scratch dir (`$CODEGG_SCRATCH_DIR`). The scratch root joins the
+    // profile's roots (so it is reported in the effective roots) and the
+    // Landlock write set below; `/tmp` outside the scratch and sensitive
+    // paths stay denied, and `rmtree` is still refused pre-spawn.
+    let mut policy = policy;
+    let session_scratch = session_scratch_for_request(request);
+    if let Some(scratch) = session_scratch.as_ref() {
+        if !policy.profile.read_roots.contains(scratch) {
+            policy.profile.read_roots.push(scratch.clone());
+        }
+        if request.mode == PythonExecutionMode::Transform
+            && !policy.profile.write_roots.contains(scratch)
+        {
+            policy.profile.write_roots.push(scratch.clone());
+        }
     }
 
     if policy.profile.sandbox_requirement != super::types::SandboxRequirement::None
@@ -334,6 +364,7 @@ pub async fn execute_python_script_with_profile_and_network(
                 &workspace_root,
                 &tmp_dir,
                 request.mode == PythonExecutionMode::Transform,
+                session_scratch.as_deref(),
             );
             let spec = SandboxLaunchSpec {
                 env: Vec::new(),
@@ -362,7 +393,9 @@ pub async fn execute_python_script_with_profile_and_network(
                 let mut result = make_result(
                     PythonRunStatus::SpawnError,
                     String::new(),
-                    format!("sandbox policy construction failed: {reason}"),
+                    format!(
+                        "denied by sandbox at exec: sandbox policy construction failed: {reason}"
+                    ),
                     start.elapsed(),
                     request.mode,
                     request.code.len(),
@@ -412,8 +445,23 @@ pub async fn execute_python_script_with_profile_and_network(
     process.cancellation = cancellation;
     process.output_policy =
         crate::managed_process::OutputPolicy::new(crate::managed_process::DEFAULT_MAX_OUTPUT_BYTES);
-    process.environment_policy =
+    // `$CODEGG_SCRATCH_DIR` is the session scratch for transform writes
+    // (D4); without a session it is the run's private temp dir. The
+    // canonical managed-process layer re-applies the same trusted value,
+    // so ambient overrides cannot win.
+    let mut environment_policy =
         python_environment_policy().with_var("TMPDIR", tmp_dir.as_os_str());
+    match session_scratch.as_ref() {
+        Some(scratch) => {
+            environment_policy =
+                environment_policy.with_var("CODEGG_SCRATCH_DIR", scratch.as_os_str());
+        }
+        None => {
+            environment_policy =
+                environment_policy.with_var("CODEGG_SCRATCH_DIR", tmp_dir.as_os_str());
+        }
+    }
+    process.environment_policy = environment_policy;
     process.sandbox = match sandbox_spec {
         Some(spec) => crate::managed_process::SandboxRequest::Required(spec),
         None => crate::managed_process::SandboxRequest::Disabled,
@@ -424,10 +472,19 @@ pub async fn execute_python_script_with_profile_and_network(
     let managed = match crate::managed_process::ManagedProcessService::run(process).await {
         Ok(result) => result,
         Err(error) => {
+            // A sandbox-helper failure is a sandbox denial at exec, not a
+            // pre-spawn static refusal: the script was launched and the
+            // sandbox refused it.
+            let stderr = match &error {
+                crate::managed_process::ManagedProcessError::SandboxFailed(_) => {
+                    format!("denied by sandbox at exec: {error}")
+                }
+                _ => error.to_string(),
+            };
             let mut result = make_result(
                 PythonRunStatus::SpawnError,
                 String::new(),
-                error.to_string(),
+                stderr,
                 start.elapsed(),
                 request.mode,
                 request.code.len(),
@@ -483,7 +540,6 @@ pub async fn execute_python_script_with_profile_and_network(
 
     let (status, stdout, stderr) = run_result;
 
-    let mut policy = policy;
     if let crate::managed_process::SandboxExecutionOutcome::Enforced { backend, abi, .. } =
         managed.sandbox
     {
@@ -617,6 +673,19 @@ fn validate_cwd(cwd: &Path, workspace_root: Option<&Path>) -> Result<PathBuf, St
     Ok(canonical_cwd)
 }
 
+/// Session scratch for transform writes (D4).
+///
+/// The session's persistent scratch dir, when the request carries a session
+/// identity. Transform writes are scoped to the workspace plus this root;
+/// it is also what `$CODEGG_SCRATCH_DIR` points at.
+fn session_scratch_for_request(request: &PythonScriptRequest) -> Option<PathBuf> {
+    request
+        .session_id
+        .as_deref()
+        .filter(|session| !session.is_empty())
+        .and_then(|session| crate::scratch::session_scratch_dir(session).ok())
+}
+
 /// Build an allow-list. Landlock denies handled rights outside these roots;
 /// there is deliberately no pseudo-deny rule list.
 fn build_landlock_paths(
@@ -624,13 +693,25 @@ fn build_landlock_paths(
     workspace_root: &Path,
     tmp_dir: &Path,
     writable: bool,
+    session_scratch: Option<&Path>,
 ) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut read_paths = vec![workspace_root.to_path_buf(), tmp_dir.to_path_buf()];
     // Per-run scratch is temporary output in every mode. Transform's
-    // persistent writes remain limited to the workspace root.
+    // persistent writes are scoped to the workspace root plus the session
+    // scratch dir (`$CODEGG_SCRATCH_DIR`); shared `/tmp` is never granted.
     let mut write_paths = vec![tmp_dir.to_path_buf()];
+    if let Some(scratch) = session_scratch {
+        if !read_paths.contains(&scratch.to_path_buf()) {
+            read_paths.push(scratch.to_path_buf());
+        }
+    }
     if writable {
         write_paths.push(workspace_root.to_path_buf());
+        if let Some(scratch) = session_scratch {
+            if !write_paths.contains(&scratch.to_path_buf()) {
+                write_paths.push(scratch.to_path_buf());
+            }
+        }
     }
     read_paths.push(interpreter.to_path_buf());
 
@@ -879,16 +960,28 @@ mod tests {
     fn python_persistent_writes_are_workspace_only_with_private_scratch() {
         let workspace = tempfile::tempdir().expect("workspace fixture");
         let scratch = tempfile::tempdir().expect("private scratch fixture");
+        let session_scratch = tempfile::tempdir().expect("session scratch fixture");
         let interpreter = resolve_executable_path("python3").expect("python3 interpreter");
 
-        let (_, read_only_writes) =
-            build_landlock_paths(&interpreter, workspace.path(), scratch.path(), false);
+        let (_, read_only_writes) = build_landlock_paths(
+            &interpreter,
+            workspace.path(),
+            scratch.path(),
+            false,
+            Some(session_scratch.path()),
+        );
         assert_eq!(read_only_writes, vec![scratch.path().to_path_buf()]);
 
-        let (_, transform_writes) =
-            build_landlock_paths(&interpreter, workspace.path(), scratch.path(), true);
+        let (_, transform_writes) = build_landlock_paths(
+            &interpreter,
+            workspace.path(),
+            scratch.path(),
+            true,
+            Some(session_scratch.path()),
+        );
         assert!(transform_writes.contains(&workspace.path().to_path_buf()));
         assert!(transform_writes.contains(&scratch.path().to_path_buf()));
+        assert!(transform_writes.contains(&session_scratch.path().to_path_buf()));
         let shared_tmp = std::env::temp_dir()
             .canonicalize()
             .unwrap_or_else(|_| std::env::temp_dir());
@@ -898,6 +991,24 @@ mod tests {
                 .any(|path| path == Path::new("/tmp") || path == &shared_tmp),
             "Python must not receive a shared temporary or HOME cache grant: {transform_writes:?}"
         );
+    }
+
+    #[test]
+    fn transform_write_roots_include_session_scratch_not_shared_tmp() {
+        let workspace = tempfile::tempdir().expect("workspace fixture");
+        let session = tempfile::tempdir().expect("session scratch fixture");
+        let profile = super::super::types::PythonCapabilityProfile::transform(workspace.path());
+        assert!(profile
+            .write_roots
+            .contains(&workspace.path().to_path_buf()));
+        // The session scratch joins the effective write roots at execution
+        // time (see execute_python_script_with_profile_and_network), so a
+        // transform write to `$CODEGG_SCRATCH_DIR` is inside the roots while
+        // shared `/tmp` stays outside the Landlock write set above.
+        let mut roots = profile.write_roots.clone();
+        roots.push(session.path().to_path_buf());
+        assert!(roots.contains(&session.path().to_path_buf()));
+        assert!(!roots.iter().any(|root| root == Path::new("/tmp")));
     }
 
     #[tokio::test]
@@ -1015,6 +1126,148 @@ mod tests {
         );
         assert!(
             result.stderr.contains("subprocess"),
+            "stderr: {}",
+            result.stderr
+        );
+    }
+
+    // ── D3: pre-spawn refusals name the static-analysis scanner ─────
+
+    #[tokio::test]
+    async fn denied_stderr_names_static_analysis_scanner() {
+        let dir = test_cwd("denied_scanner");
+        let request = PythonScriptRequest {
+            code: "import subprocess\nsubprocess.run(['echo', 'should not run'])".to_string(),
+            mode: PythonExecutionMode::Analyze,
+            cwd: dir.clone(),
+            workspace_root: None,
+            timeout_secs: Some(10),
+            session_id: None,
+            intent: None,
+        };
+        let result = execute_python_script(&request).await;
+        assert!(
+            matches!(result.status, PythonRunStatus::Failed(-3)),
+            "pre-spawn refusal must exit -3, got {:?}",
+            result.status
+        );
+        assert!(
+            result
+                .stderr
+                .contains("refused pre-spawn by static analysis (scanner="),
+            "stderr must name the refusal layer and scanner, got: {}",
+            result.stderr
+        );
+    }
+
+    #[tokio::test]
+    async fn etc_passwd_read_refused_as_read_sensitive() {
+        let dir = test_cwd("denied_sensitive");
+        let request = PythonScriptRequest {
+            code: "open('/etc/passwd').readline()".to_string(),
+            mode: PythonExecutionMode::Analyze,
+            cwd: dir.clone(),
+            workspace_root: None,
+            timeout_secs: Some(10),
+            session_id: None,
+            intent: None,
+        };
+        let result = execute_python_script(&request).await;
+        assert!(!result.is_success(), "expected refusal, got success");
+        assert!(
+            result.stderr.contains("read_sensitive"),
+            "stderr: {}",
+            result.stderr
+        );
+        assert!(
+            !result.stderr.contains("destructive_fs"),
+            "a pure read must never deny destructive_fs, got: {}",
+            result.stderr
+        );
+    }
+
+    // ── D4: transform writes are scoped to workspace + session scratch ─
+
+    #[tokio::test]
+    async fn transform_scratch_write_succeeds_and_enters_effective_roots() {
+        let _scratch_root = crate::scratch::isolated_scratch_root("python-d4");
+        let session_id = format!("python-d4-{}", uuid::Uuid::new_v4());
+        let scratch = crate::scratch::session_scratch_dir(&session_id).unwrap();
+        let dir = test_cwd("d4_scratch");
+        let request = PythonScriptRequest {
+            code: "import os\np = os.path.join(os.environ['CODEGG_SCRATCH_DIR'], 'd4_probe.txt')\nopen(p, 'w').write('scratch-ok')".to_string(),
+            mode: PythonExecutionMode::Transform,
+            cwd: dir.clone(),
+            workspace_root: None,
+            timeout_secs: Some(20),
+            session_id: Some(session_id),
+            intent: None,
+        };
+        let result = execute_python_script(&request).await;
+        assert!(result.is_success(), "stderr: {}", result.stderr);
+        assert!(
+            scratch.join("d4_probe.txt").exists(),
+            "transform must write inside $CODEGG_SCRATCH_DIR"
+        );
+        assert!(
+            result.effective_write_roots.contains(&scratch),
+            "session scratch must be an effective write root, got {:?}",
+            result.effective_write_roots
+        );
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[tokio::test]
+    async fn transform_tmp_outside_write_is_denied() {
+        let dir = test_cwd("d4_tmp_outside");
+        let probe = std::env::temp_dir().join(format!(
+            "codegg_d4_outside_{}.txt",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let request = PythonScriptRequest {
+            code: format!("open('{}', 'w').write('must not land')", probe.display()),
+            mode: PythonExecutionMode::Transform,
+            cwd: dir.clone(),
+            workspace_root: None,
+            timeout_secs: Some(20),
+            session_id: None,
+            intent: None,
+        };
+        let result = execute_python_script(&request).await;
+        assert!(!result.is_success(), "outside write must be denied");
+        assert!(
+            !probe.exists(),
+            "denied write must not land outside the roots"
+        );
+        let _ = std::fs::remove_file(&probe);
+    }
+
+    #[tokio::test]
+    async fn transform_rmtree_still_refused_pre_spawn() {
+        let dir = test_cwd("d4_rmtree");
+        let request = PythonScriptRequest {
+            code: "import shutil\nshutil.rmtree('/tmp/codegg_d4_nope')".to_string(),
+            mode: PythonExecutionMode::Transform,
+            cwd: dir.clone(),
+            workspace_root: None,
+            timeout_secs: Some(10),
+            session_id: None,
+            intent: None,
+        };
+        let result = execute_python_script(&request).await;
+        assert!(!result.is_success(), "rmtree must stay refused");
+        assert!(
+            result
+                .stderr
+                .contains("refused pre-spawn by static analysis"),
+            "stderr: {}",
+            result.stderr
+        );
+        assert!(
+            result.stderr.contains("destructive_fs"),
             "stderr: {}",
             result.stderr
         );

@@ -22,12 +22,15 @@ pub struct AgentLoopTerminalOutput {
 }
 
 static PATH_REDACTION_PATTERNS: LazyLock<Vec<regex::Regex>> = LazyLock::new(|| {
+    // P1: anchored with a path-start boundary prefix (captured to preserve it)
+    // and a trailing class that cannot cross quotes/punctuation, so
+    // `let p = "/tmp/x";` keeps its closing quote + semicolon.
     let patterns = [
-        r"/var/[^\s/]+",
-        r"/tmp/[^\s/]+",
-        r"C:\\Users\\[^\s\\]+",
-        r"C:\\Program Files\\[^\s\\]+",
-        r"C:\\Windows\\[^\s\\]+",
+        r#"(^|[\s"'\(\[=:,])/var/[^\s/"';,.)\]}:]+"#,
+        r#"(^|[\s"'\(\[=:,])/tmp/[^\s/"';,.)\]}:]+"#,
+        r#"(^|[\s"'\(\[=:,])C:\\Users\\[^\s\"';,.)\]}:]+"#,
+        r#"(^|[\s"'\(\[=:,])C:\\Program Files\\[^\s\"';,.)\]}:]+"#,
+        r#"(^|[\s"'\(\[=:,])C:\\Windows\\[^\s\"';,.)\]}:]+"#,
     ];
     patterns
         .iter()
@@ -54,7 +57,7 @@ pub(super) fn redact_local_paths(
 
     for re in PATH_REDACTION_PATTERNS.iter() {
         if re.is_match(&result) {
-            result = Cow::Owned(re.replace_all(&result, "[REDACTED_PATH]").into_owned());
+            result = Cow::Owned(re.replace_all(&result, "${1}[REDACTED_PATH]").into_owned());
         }
     }
 
@@ -139,6 +142,41 @@ mod tests {
     #[test]
     fn local_path_redaction_ignores_empty_paths() {
         let paths = (Some(String::new()), Some(String::new()));
+        assert_eq!(redact_local_paths("plain text", &paths), "plain text");
+    }
+
+    #[test]
+    fn redaction_keeps_quoted_tmp_line_tail() {
+        let paths = (None, None);
+        let input = r#"let p = "/tmp/x"; const tail = 1;"#;
+        assert_eq!(
+            redact_local_paths(input, &paths),
+            r#"let p = "[REDACTED_PATH]"; const tail = 1;"#
+        );
+    }
+
+    #[test]
+    fn redaction_keeps_var_log_suffix() {
+        let paths = (None, None);
+        let input = r#"const Q: &str = "/var/log/y";"#;
+        assert_eq!(
+            redact_local_paths(input, &paths),
+            r#"const Q: &str = "[REDACTED_PATH]/y";"#
+        );
+    }
+
+    #[test]
+    fn redaction_does_not_match_inside_private_tmp() {
+        // `/private/tmp/abc` is preceded by `e`, not a path-start boundary,
+        // so the inner `/tmp/` is left alone by design.
+        let paths = (None, None);
+        let input = "/private/tmp/abc";
+        assert_eq!(redact_local_paths(input, &paths), input);
+    }
+
+    #[test]
+    fn redaction_leaves_plain_text_untouched() {
+        let paths = (None, None);
         assert_eq!(redact_local_paths("plain text", &paths), "plain text");
     }
 }

@@ -114,7 +114,7 @@ impl Tool for TestTool {
     }
 
     fn description(&self) -> &str {
-        "Run project tests through codegg's supervised test runner. Prefer this over bash for cargo test, cargo nextest, pytest, uv run pytest, go test, make test, and similar test commands. The tool streams full stdout/stderr to logs, classifies timeouts/failures, and returns a compact report instead of dumping full output into context. Set execution_mode=background to receive a stable JobHandle immediately and a terminal notification on completion without blocking; foreground (default) preserves the current synchronous report."
+        "Routing: use test for test runners only, not for non-test shell (prefer bash for general shell; terminal is compat-only). Run project tests through codegg's supervised test runner. Prefer this over bash for cargo test, cargo nextest, pytest, uv run pytest, go test, make test, and similar test commands. The tool streams full stdout/stderr to logs, classifies timeouts/failures, and returns a compact report instead of dumping full output into context. Set execution_mode=background to receive a stable JobHandle immediately and a terminal notification on completion without blocking; foreground (default) preserves the current synchronous report."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -136,7 +136,7 @@ impl Tool for TestTool {
                 },
                 "command": {
                     "type": "string",
-                    "description": "Custom test command. Requires custom scope and must pass test command safety checks."
+                    "description": "Custom test command (required when scope is custom, ignored otherwise). Must pass test command safety checks. Example: {\"scope\":\"custom\",\"command\":\"cargo test -p mycrate\"}."
                 },
                 "workdir": {
                     "type": "string",
@@ -153,7 +153,7 @@ impl Tool for TestTool {
                 "max_report_bytes": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": "Hard ceiling for the formatted report returned to the model, in bytes. Default 20000. Useful for keeping model-visible output bounded when failure sets are large."
+                    "description": "Hard ceiling for the formatted report returned to the model, in bytes. Default 20000. Useful for keeping model-visible output bounded when failure sets are large. Whole-valued floats (e.g. 20000.0) are coerced to that integer; fractional values fail validation."
                 },
                 "execution_mode": {
                     "type": "string",
@@ -662,7 +662,9 @@ fn parse_test_request_in(
         "previous_failures" => TestScope::PreviousFailures,
         "custom" => {
             let cmd = input["command"].as_str().ok_or_else(|| {
-                ToolError::Execution("custom scope requires 'command' parameter".to_string())
+                ToolError::Execution(
+                    "custom scope requires 'command' parameter. Example: {\"scope\":\"custom\",\"command\":\"cargo test -p mycrate\"}".to_string(),
+                )
             })?;
             if validate_custom_command(cmd).is_err() {
                 return Err(ToolError::Execution(format!(
@@ -703,9 +705,12 @@ fn parse_test_request_in(
     let timeout_secs = parse_positive_seconds(input.get("timeout"), "timeout")?;
     let stall_timeout_secs = parse_positive_seconds(input.get("stall_timeout"), "stall_timeout")?;
 
+    // F1: whole-valued floats coerce (20000.0 -> 20000) via the shared
+    // tolerant parser, matching `timeout` above; fractional or negative
+    // values still fail instead of silently rounding a caller bug.
     let max_report_bytes = match input.get("max_report_bytes") {
         Some(v) => {
-            let n = v.as_u64().ok_or_else(|| {
+            let n = crate::tool::util::json_usize(v).ok_or_else(|| {
                 ToolError::Execution("max_report_bytes must be a positive integer".to_string())
             })?;
             if n == 0 {
@@ -713,7 +718,7 @@ fn parse_test_request_in(
                     "max_report_bytes must be greater than 0".to_string(),
                 ));
             }
-            Some(n as usize)
+            Some(n)
         }
         None => None,
     };
@@ -920,9 +925,14 @@ mod tests {
         let result = tool.execute(input).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
+        let msg = format!("{err}");
         assert!(
-            format!("{err}").contains("custom scope requires 'command'"),
-            "unexpected error: {err}"
+            msg.contains("custom scope requires 'command'"),
+            "unexpected error: {msg}"
+        );
+        assert!(
+            msg.contains("cargo test -p mycrate"),
+            "missing-command error must carry the documented example: {msg}"
         );
     }
 
@@ -1066,6 +1076,13 @@ mod tests {
             req.scope,
             TestScope::CustomCommand("cargo test --lib".to_string())
         );
+        // The documented missing-command example must itself parse.
+        let example = json!({"scope": "custom", "command": "cargo test -p mycrate"});
+        let req = parse_test_request(&example).unwrap();
+        assert_eq!(
+            req.scope,
+            TestScope::CustomCommand("cargo test -p mycrate".to_string())
+        );
     }
 
     #[test]
@@ -1073,6 +1090,24 @@ mod tests {
         let input = json!({"scope": "previous_failures"});
         let req = parse_test_request(&input).unwrap();
         assert_eq!(req.scope, TestScope::PreviousFailures);
+    }
+
+    /// F1: `max_report_bytes` coerces whole-valued floats exactly like
+    /// `timeout` does, so one numeric serializer serves both caps.
+    #[test]
+    fn whole_valued_float_report_cap_coerces_like_timeout() {
+        let root = tempfile::tempdir().expect("workspace fixture");
+        let nested = root.path().join("crates/inner");
+        std::fs::create_dir_all(&nested).expect("nested fixture dir");
+        let input = json!({
+            "scope": "auto",
+            "workdir": nested.to_string_lossy(),
+            "timeout": 120.0,
+            "max_report_bytes": 20000.0,
+        });
+        let req = parse_test_request_in(&input, Some(root.path())).expect("whole floats coerce");
+        assert_eq!(req.timeout_secs, Some(120));
+        assert_eq!(req.max_report_bytes, Some(20_000));
     }
 
     /// An explicit absolute `workdir` is honored when it is inside the

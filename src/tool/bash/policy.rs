@@ -495,6 +495,117 @@ pub(crate) fn validate_child_workspace_command(
     Ok(())
 }
 
+/// D1: pre-spawn argv path-guard — warning, never a deny.
+///
+/// File tools are jailed to the workspace; bash inherits Seatbelt
+/// write-confined/read-broad/credential-deny. When argv names an absolute
+/// path outside `workspace_root`/`scratch`, warn with a REDACTED_PATH-style
+/// hint instead of refusing: the sandbox remains the enforcer.
+///
+/// Reuses the `prepare_command` pipeline: `parsed_argv` for simple shapes,
+/// quote-aware lexical scan of the raw command for complex shells.
+pub(crate) fn outside_workspace_warning(
+    pipeline: &crate::command_intent::pipeline::CommandPipelineResult,
+    workspace_root: Option<&Path>,
+    scratch_root: Option<&Path>,
+) -> Option<String> {
+    if workspace_root.is_none() && scratch_root.is_none() {
+        return None;
+    }
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(argv) = pipeline.intent.parsed_argv.clone() {
+        candidates.extend(argv);
+    } else {
+        // ComplexShell has no typed argv; scan the raw command lexically.
+        // Quoted absolute paths still name the same file, so they count.
+        for token in pipeline.intent.command.split(|ch: char| {
+            ch.is_whitespace() || ";|&<>()".contains(ch) || ch == '"' || ch == '\''
+        }) {
+            if token.is_empty() {
+                continue;
+            }
+            candidates.push(token.to_string());
+        }
+    }
+    let mut outside: Vec<String> = Vec::new();
+    for token in candidates {
+        // Tilde and absolute paths only; relative paths stay inside.
+        let is_abs = token.starts_with('/') || token.starts_with("~/");
+        if !is_abs {
+            continue;
+        }
+        // Device nodes are the common safe redirect (`2>/dev/null`);
+        // warning on every one would train click-through.
+        if token.starts_with("/dev/") {
+            continue;
+        }
+        let inside = |root: &Path| {
+            // Lexical prefix check; canonicalization is best-effort.
+            // A path that fails to canonicalize is treated as outside
+            // only when it names an absolute location neither root covers.
+            let token_path = Path::new(&token);
+            if token.starts_with("~/") {
+                return false;
+            }
+            token_path.starts_with(root)
+        };
+        let in_workspace = workspace_root.is_some_and(inside);
+        let in_scratch = scratch_root.is_some_and(inside);
+        if !in_workspace && !in_scratch && !outside.contains(&token) {
+            outside.push(token);
+        }
+    }
+    if outside.is_empty() {
+        return None;
+    }
+    fn redact_path_for_warning(
+        path: &str,
+        workspace_root: Option<&Path>,
+        scratch_root: Option<&Path>,
+    ) -> String {
+        let mut redacted = path.to_string();
+        if let Some(home) = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .and_then(|p| p.to_str().map(|s| s.to_string()))
+        {
+            if !home.is_empty() {
+                redacted = redacted.replacen(&home, "[HOME]", 1);
+            }
+        }
+        if redacted.starts_with("~/") {
+            redacted = format!("[HOME]/{}", &redacted[2..]);
+        }
+        for root in [workspace_root, scratch_root].into_iter().flatten() {
+            if let Some(root) = root.to_str() {
+                if !root.is_empty() {
+                    redacted = redacted.replacen(root, "[CWD]", 1);
+                }
+            }
+        }
+        // Bound each path so the advisory never dominates the envelope.
+        if redacted.chars().count() > 60 {
+            let kept: String = redacted.chars().take(59).collect();
+            format!("{kept}…")
+        } else {
+            redacted
+        }
+    }
+    let shown = outside
+        .iter()
+        .take(3)
+        .map(|p| redact_path_for_warning(p, workspace_root, scratch_root))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = if outside.len() > 3 {
+        format!(", +{} more", outside.len() - 3)
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "bash path guard (advisory, not a deny): absolute path(s) outside workspace/scratch: {shown}{more} — file tools are jailed to the workspace; bash is Seatbelt write-confined/read-broad/credential-deny; prefer workspace-relative paths or $CODEGG_SCRATCH_DIR ([REDACTED_PATH] style redaction applies)"
+    ))
+}
+
 impl BashTool {
     /// Check if active routing is disabled by any kill switch.
     pub(crate) fn check_kill_switches(&self, family: CommandIntentFamily) -> bool {
@@ -1329,5 +1440,33 @@ mod tests {
         let intent = classify_command("echo hi");
         let plan = plan_execution(&intent);
         assert_eq!(plan_family(&plan), None);
+    }
+
+    #[test]
+    fn outside_workspace_warning_names_absolute_paths_outside_roots() {
+        use crate::command_intent::pipeline::prepare_command;
+        use crate::command_intent::CommandIntentContext;
+        let workspace = std::path::PathBuf::from("/workspace");
+        let scratch = std::path::PathBuf::from("/tmp/scratch");
+        let ctx = CommandIntentContext {
+            workspace_root: Some(workspace.clone()),
+            cwd: Some(workspace.clone()),
+        };
+        let pipeline = prepare_command("cat /etc/passwd", &ctx);
+        let warning = outside_workspace_warning(&pipeline, Some(&workspace), Some(&scratch));
+        assert!(
+            warning.is_some_and(|w| w.contains("/etc/passwd")),
+            "absolute path outside roots must warn"
+        );
+        let inside = prepare_command("cat src/main.rs", &ctx);
+        assert!(
+            outside_workspace_warning(&inside, Some(&workspace), Some(&scratch)).is_none(),
+            "workspace-relative path must not warn"
+        );
+        let devnull = prepare_command("echo hi 2>/dev/null", &ctx);
+        assert!(
+            outside_workspace_warning(&devnull, Some(&workspace), Some(&scratch)).is_none(),
+            "/dev/null redirect must not warn"
+        );
     }
 }

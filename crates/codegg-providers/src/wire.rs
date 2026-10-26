@@ -196,7 +196,24 @@ pub fn encode(
             include_stream_usage,
         },
     )
-    .map_err(|_| ProviderError::api("wire_encode", "shared provider request encoding failed"))?
+    .map_err(|error| {
+        // Keep the kernel's typed reason and structural field: collapsing
+        // every encoding failure into one opaque string made wire breaks
+        // undiagnosable in the field (a broken tool pair after failed
+        // compaction and a genuinely unsupported feature reported
+        // identically). The `wire_encode` code and the historical message
+        // prefix are preserved so existing matchers keep matching.
+        ProviderError::api(
+            "wire_encode",
+            format!(
+                "shared provider request encoding failed: {:?} at {} (source {:?} -> target {:?})",
+                error.reason,
+                error.field.as_deref().unwrap_or("request"),
+                error.source_surface,
+                error.target_surface,
+            ),
+        )
+    })?
     .value;
     // CodeGG's direct OpenAI Chat contract still uses `max_tokens`. The
     // upstream canonical codec uses the newer `max_completion_tokens` form;
@@ -2361,6 +2378,53 @@ mod responses_surface_tests {
         assert!(
             output.iter().any(Result::is_err),
             "Responses error event must surface, got {output:?}"
+        );
+    }
+
+    /// A request the shared kernel cannot represent must fail with the
+    /// kernel's typed reason and structural field, not the historical
+    /// opaque string alone. An empty tool name trips the kernel's
+    /// `tools.name` validation on every surface.
+    #[test]
+    fn wire_encode_error_carries_kernel_reason_and_field() {
+        use std::sync::Arc;
+        let request = ChatRequest {
+            messages: vec![Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("hello".into()),
+                }],
+            }],
+            model: "probe-model".into(),
+            tools: Some(vec![ToolDefinition {
+                name: String::new(),
+                description: "nameless tool".into(),
+                parameters: serde_json::json!({"type": "object"}),
+                defer_loading: None,
+            }]),
+            system: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            context: Default::default(),
+        };
+        let canonical = canonical_request(&request, None);
+        let error = encode(&canonical, WireSurface::OpenaiChatCompletions, true)
+            .expect_err("a nameless tool must fail shared wire encoding");
+        let message = error.to_string();
+        assert!(
+            message.contains("wire_encode"),
+            "error keeps the wire_encode code, got {message}"
+        );
+        assert!(
+            message.contains("shared provider request encoding failed"),
+            "error keeps the historical prefix, got {message}"
+        );
+        assert!(
+            message.contains("tools.name"),
+            "error carries the kernel's structural field, got {message}"
         );
     }
 }

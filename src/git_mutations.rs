@@ -253,6 +253,20 @@ pub enum GitMutationError {
     PublicationFailed(String),
 }
 
+/// Structured refusal when the private index publication backend is absent.
+///
+/// The `Add`/`stage_paths` path is fenced-native: it requires the
+/// `CleanSmudgeFilter` capability via the daemon publisher. Without a
+/// publisher the effect is refused before any mutation — never a raw-shell
+/// fallback. The message carries the operation, the missing capability,
+/// the backend state, the disposition, and the remedy so callers can act
+/// without guessing.
+pub fn publication_backend_missing_message(op: &str) -> String {
+    format!(
+        "refusing {op}: missing capability CleanSmudgeFilter; backend state publication=None; disposition fenced-native; remedy: attach daemon publisher (GitIndexPublisher) or use contained worktree; do not shell out (no raw-shell fallback)"
+    )
+}
+
 impl GitMutationError {
     /// Convenience constructor for an `Execution` variant with the
     /// operation kind inferred from a `GitOperation`. The message
@@ -788,8 +802,12 @@ impl GitMutationExecutor {
             return Err(GitMutationError::Policy(outcome));
         }
         let Some(publisher) = self.publication.as_ref() else {
+            // Typed actionable refusal: no raw-shell fallback. The `Add`
+            // path is fenced-native and requires the CleanSmudgeFilter
+            // capability via the daemon publisher; without it the effect
+            // is refused before any filesystem mutation.
             return Err(GitMutationError::PublicationFailed(
-                "the private index publication backend is not configured".into(),
+                publication_backend_missing_message("stage_paths/add"),
             ));
         };
         let root = resolve_repo_root(repo_root)?;
@@ -1469,6 +1487,26 @@ mod error_context_tests {
         assert_eq!(err.failure_kind(), None);
         assert_eq!(err.exit_code(), None);
         assert_eq!(err.remote_name(), None);
+    }
+
+    #[test]
+    fn publication_missing_backend_message_is_structured() {
+        let msg = super::publication_backend_missing_message("stage_paths/add");
+        for token in [
+            "stage_paths/add",
+            "CleanSmudgeFilter",
+            "publication=None",
+            "fenced-native",
+            "attach daemon publisher",
+            "contained worktree",
+            "do not shell out",
+        ] {
+            assert!(
+                msg.contains(token),
+                "missing backend message must contain `{token}`, got: {msg}"
+            );
+        }
+        assert!(!msg.contains("sh -c"));
     }
 
     #[test]

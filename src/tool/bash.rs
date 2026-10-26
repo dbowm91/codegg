@@ -450,6 +450,26 @@ fn intent_risk_label(
     })
 }
 
+/// F2: trailing `&` inside a background job is redundant — the scheduler
+/// already backgrounds the whole command, and a surviving `&` child keeps
+/// the output pipe open so the job fails opaquely. Detect a single trailing
+/// unquoted `&` (not `&&`) and fail closed with a typed hint.
+///
+/// Quote-awareness comes from the existing shell-split: a quoted `&` is
+/// literal and never yields a `Background` reason, so it cannot trigger.
+fn has_redundant_background_operator(command: &str) -> bool {
+    let trimmed = command.trim_end();
+    if trimmed.is_empty() || !trimmed.ends_with('&') || trimmed.ends_with("&&") {
+        return false;
+    }
+    match crate::command_intent::shell_shape::parse_shell_words(command) {
+        crate::command_intent::shell_shape::ShellShape::ComplexShell { reasons } => {
+            reasons.contains(&crate::command_intent::shell_shape::ShellComplexityReason::Background)
+        }
+        _ => false,
+    }
+}
+
 impl Default for BashTool {
     fn default() -> Self {
         Self::new()
@@ -463,7 +483,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a shell command and return its output. For web search and URL fetching, prefer the `websearch` and `webfetch` tools — they handle rate limits, SSRF protection, and bot detection. `curl`/`wget` to arbitrary URLs is permitted but discouraged; use them only when a tool is genuinely unsuitable. Set execution_mode=background for long builds/tests to receive a stable JobHandle immediately and one terminal notification on completion without blocking or polling."
+        "Routing: use bash for general shell (pipelines/interactive semantics); use terminal only for compat one-shot, test for test runners, python_script for Python. Execute a shell command and return its output. File tools are jailed to the workspace; bash is Seatbelt write-confined/read-broad/credential-deny (writes confined to workspace+scratch, reads broad, credential paths denied). Absolute paths outside workspace/scratch trigger an advisory path-guard warning, not a deny. See tool_search for the shell chooser. For web search and URL fetching, prefer the `websearch` and `webfetch` tools — they handle rate limits, SSRF protection, and bot detection. `curl`/`wget` to arbitrary URLs is permitted but discouraged; use them only when a tool is genuinely unsuitable. Set execution_mode=background for long builds/tests to receive a stable JobHandle immediately and one terminal notification on completion without blocking or polling."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -480,14 +500,16 @@ impl Tool for BashTool {
                 },
                 "timeout": {
                     "type": "number",
+                    "minimum": 1,
+                    "maximum": 3600,
                     "description": format!(
                         "Timeout in seconds (default: {DEFAULT_SHELL_TIMEOUT_SECS}, \
-                         max: {MAX_SHELL_TIMEOUT_SECS}). A command that exceeds it is \
+                         max: {MAX_SHELL_TIMEOUT_SECS}); must be positive integer 1..3600; 0 rejected (use background for no-wait). A command that exceeds it is \
                          terminated and its partial output is returned as the tool result. \
                          Raise this for work that legitimately takes a long time -- a full \
                          build or test suite -- rather than polling in a loop; do not raise \
                          it to wait on something that should be fast, because a hung command \
-                         will hold the turn until it expires."
+                         will hold the turn until it expires. Whole-valued floats coerced; fractions rejected."
                     )
                 },
                 "execution_mode": {
@@ -623,11 +645,26 @@ impl BashTool {
         // child process can never disagree. Falling back to the argument
         // (then the historical 120s default) keeps a direct, unbrokered
         // invocation working.
-        let timeout_secs = audit_ctx
-            .and_then(|ctx| ctx.timeout_ms)
-            .map(|ms| ms.div_ceil(1000))
-            .or_else(|| input["timeout"].as_u64())
-            .unwrap_or(DEFAULT_SHELL_TIMEOUT_SECS);
+        // N3/R6: `timeout` must be a positive integer 1..=3600. Whole-valued
+        // floats coerce (120.0 -> 120) via the shared tolerant parser;
+        // zero, negatives, NaN, and fractions fail with `must be a positive
+        // integer` (mirrors `test.rs::parse_positive_seconds`) instead of
+        // silently clamping or falling back to the default.
+        let timeout_secs = if let Some(ms) = audit_ctx.and_then(|ctx| ctx.timeout_ms) {
+            ms.div_ceil(1000)
+        } else if let Some(raw) = input.get("timeout") {
+            let secs = crate::tool::util::json_usize(raw).ok_or_else(|| {
+                ToolError::Execution("timeout must be a positive integer".to_string())
+            })?;
+            if !(1..=3600).contains(&secs) {
+                return Err(ToolError::Execution(
+                    "timeout must be a positive integer".to_string(),
+                ));
+            }
+            secs as u64
+        } else {
+            DEFAULT_SHELL_TIMEOUT_SECS
+        };
         let execution_timeout = Duration::from_secs(timeout_secs.clamp(1, MAX_SHELL_TIMEOUT_SECS));
 
         let workdir = input["workdir"].as_str().map(str::to_string).or_else(|| {
@@ -701,6 +738,39 @@ impl BashTool {
                 metadata,
             )
         };
+
+        // D1: advisory path-guard warning (never a deny). Reuses the
+        // prepare_command pipeline; the sandbox remains the enforcer.
+        let scratch_root: Option<PathBuf> =
+            std::env::var_os("CODEGG_SCRATCH_DIR").map(PathBuf::from);
+        let path_guard_warning = policy::outside_workspace_warning(
+            &pipeline,
+            self.workspace_root.as_deref(),
+            scratch_root.as_deref(),
+        );
+
+        // P2: plan-mode read-only intent gate for bash. `disclosure::plan_allowed`
+        // keeps `bash` in the plan surface, but a shell string can still mutate
+        // (rm/mv, git commit, cargo publish, build/lint/format, FileWrite), so
+        // the tool refines by intent: only GitReadOnly/SearchReadOnly/FileRead
+        // (managed status/diff/log, grep) run; everything else refuses with
+        // `Permission` naming `plan_exit`. Uses the existing
+        // command-intent classifier; no new error type.
+        if audit_ctx.is_some_and(|ctx| ctx.plan_mode) {
+            let allowed = intent.as_ref().is_some_and(|intent| {
+                matches!(
+                    intent.kind,
+                    crate::command_intent::CommandIntentKind::GitReadOnly
+                        | crate::command_intent::CommandIntentKind::SearchReadOnly
+                        | crate::command_intent::CommandIntentKind::FileRead
+                )
+            });
+            if !allowed {
+                return Err(ToolError::Permission(format!(
+                    "plan mode blocks 'bash': command '{command}' is not read-only in plan mode; use plan_exit to leave plan mode"
+                )));
+            }
+        }
 
         tracing::info!(
             command_digest = %crate::live_execution_audit::command_digest_str(command),
@@ -776,6 +846,16 @@ impl BashTool {
                 )
                 .await?
             } else {
+                // F2: a trailing `&` inside a background job is redundant —
+                // the scheduler already backgrounds the whole command. A
+                // surviving `&` child keeps the output pipe open and fails
+                // the job opaquely; fail closed with a typed hint instead.
+                if has_redundant_background_operator(command) {
+                    return Err(ToolError::Execution(
+                        "redundant `&` — background execution_mode already backgrounds the whole command; drop it"
+                            .to_string(),
+                    ));
+                }
                 // Adopt the canonical scheduler-backed Shell translation for
                 // raw-shell background (same executor/approval/sandbox as the
                 // foreground Shell route); never a detached PID or unsupervised
@@ -1040,8 +1120,15 @@ impl BashTool {
         .await;
 
         // 5. project/redact/persist suffixes and return the structured result.
+        // F3: advisories APPEND (`result + "\n\n" + warning`), never prepend.
+        // Byte/line caps apply to the command output BEFORE merging, so
+        // warnings never eat output.
+        result = output::truncate_output(&result, self.max_output_lines, self.max_output_bytes);
         if let Some(warning) = preflight_warning {
-            result = format!("{}\n\n{}", warning, result);
+            result = format!("{}\n\n{}", result, warning);
+        }
+        if let Some(warning) = path_guard_warning {
+            result = format!("{}\n\n{}", result, warning);
         }
 
         result = output::append_routing_suffix(result, routing_metadata.as_ref());

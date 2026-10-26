@@ -158,7 +158,7 @@ impl Tool for GitTool {
     }
 
     fn description(&self) -> &str {
-        "Execute git operations. Read-only subcommands (status, diff, log, show, blame, branch, tag, remote, worktree, stash, rev-parse, for-each-ref) return structured JSON results via egggit. Prefer the typed `mutation` action (stage_paths, commit, branch_create, merge, revert, push, reset_hard, clean, …) for local, network, and destructive operations — they route through a snapshot-based executor with state-delta, env hardening, and RunStore persistence. For in-progress operations (merge/rebase/cherry-pick/revert), use `operation_state` (read) and `recover` (write: continue | abort | skip) — these inspect plumbing, refuse cross-operation misuse, and return a typed `RecoveryOutcome`. Conflicts are NOT auto-resolved: edit conflict markers in the worktree, `git add <path>` to stage the resolution, then run `recover` with `continue`."
+        "Execute git operations. Read-only subcommands (status, diff, log, show, blame, branch, tag, remote, worktree, stash, rev-parse, for-each-ref) return structured JSON results via egggit — but for bounded reads prefer `git_query` (status, diff, log, branches), which resolves the session workspace root and takes no workdir argument; `git` defaults to the session workspace root when workdir is absent and owns mutations and recovery (explicit workdir selects the checkout for mutations). Prefer the typed `mutation` action (stage_paths, commit, branch_create, merge, revert, push, reset_hard, clean, …) for local, network, and destructive operations — they route through a snapshot-based executor with state-delta, env hardening, and RunStore persistence. For in-progress operations (merge/rebase/cherry-pick/revert), use `operation_state` (read) and `recover` (write: continue | abort | skip) — these inspect plumbing, refuse cross-operation misuse, and return a typed `RecoveryOutcome`. Conflicts are NOT auto-resolved: edit conflict markers in the worktree, `git add <path>` to stage the resolution, then run `recover` with `continue`."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -318,7 +318,7 @@ impl Tool for GitTool {
                 },
                 "workdir": {
                     "type": "string",
-                    "description": "Working directory for git command (default: current directory)"
+                    "description": "Working directory for git command (default: session workspace root; explicit workdir selects the checkout for mutations)"
                 },
                 "timeout": {
                     "type": "number",
@@ -1293,7 +1293,13 @@ fn map_mutation_err(e: GitMutationError) -> ToolError {
             ToolError::Execution(format!("publication refused: {refusal}"))
         }
         GitMutationError::PublicationFailed(message) => {
-            ToolError::Execution(format!("publication failed: {message}"))
+            if message.contains("CleanSmudgeFilter") && message.contains("publication=None") {
+                ToolError::Execution(format!("publication failed: {message}"))
+            } else {
+                ToolError::Execution(format!(
+                    "refusing stage_paths/add: missing capability CleanSmudgeFilter; backend state publication=None; disposition fenced-native; publication failed: {message}; remedy: attach daemon publisher or use contained worktree; do not shell out"
+                ))
+            }
         }
     }
 }

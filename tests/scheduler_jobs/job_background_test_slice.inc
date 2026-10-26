@@ -121,6 +121,7 @@ fn ctx_for(session: &str, turn: Option<&str>, invocation: &str) -> ToolExecution
         // M005 corrective C005: this fixture is not under the restricted
         // shared-checkout profile, so the launch carries no admission policy.
         process_admission: None,
+        plan_mode: false,
     }
 }
 

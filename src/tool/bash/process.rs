@@ -171,6 +171,12 @@ pub(crate) fn bash_environment_policy() -> crate::managed_process::EnvironmentPo
 /// Shell parsing is intentionally limited to raw shell routes; structured
 /// `NativeCommand` and managed argv routes continue to spawn their executable
 /// directly.
+///
+/// Pipeline exit semantics: `sh -c` returns the rightmost command's status
+/// (POSIX default, no `pipefail`), and that status is propagated verbatim
+/// into the result `[exit code: N]` and `DispatchOutcome.output`. A command
+/// that must fail on any nonzero pipeline stage should request
+/// `set -o pipefail` explicitly inside the command text.
 pub(crate) fn shell_argv(
     command: &str,
     configured: Option<crate::config::schema::WindowsShellKind>,
@@ -306,6 +312,13 @@ pub(crate) fn extract_cwd_from_argv(argv: &[String]) -> Option<std::path::PathBu
 /// Synthesize a `std::process::Output` with the given exit code, stdout,
 /// and stderr bytes. Used by dispatchers that produce structured results
 /// but need to fit the legacy `Output` shape.
+///
+/// `ExitStatus::from_raw` takes the raw wait status, not the exit code:
+/// the code lives in the high byte, so the code is shifted in. Without the
+/// shift every nonzero exit (e.g. 127 for command-not-found) decoded as
+/// "no code", and the tool reported success-shaped output for a failure.
+/// Negative synthetic codes (e.g. -1 unknown) have no OS encoding and
+/// decode as absent, which callers already map back to -1.
 pub(crate) fn synth_output(
     exit_code: i32,
     stdout: Vec<u8>,
@@ -314,8 +327,13 @@ pub(crate) fn synth_output(
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
+        let raw = if (0..=255).contains(&exit_code) {
+            exit_code << 8
+        } else {
+            exit_code
+        };
         std::process::Output {
-            status: std::process::ExitStatus::from_raw(exit_code),
+            status: std::process::ExitStatus::from_raw(raw),
             stdout,
             stderr,
         }
@@ -330,6 +348,18 @@ pub(crate) fn synth_output(
             stderr,
         }
     }
+}
+
+/// Extract the real exit code from a scheduler executor summary.
+///
+/// Shell/managed executor summaries open with `{label} exit={code} ...`.
+/// Falling back to a status-derived 0/1 when the summary carries a code
+/// would collapse real codes (127 for command-not-found), so parse first
+/// and let callers fall back only when no code is present.
+pub(crate) fn parse_executor_exit_code(summary: &str) -> Option<i32> {
+    summary
+        .split_whitespace()
+        .find_map(|token| token.strip_prefix("exit=")?.parse::<i32>().ok())
 }
 
 impl BashTool {
@@ -658,6 +688,10 @@ impl BashTool {
 
         // Synthesize a `std::process::Output`-shaped value for code paths
         // that still inspect it (truncation, exit status, persistence).
+        // A test report carries no single exit code, so the scheduler
+        // status maps to 0/1 here; shell/managed routes parse the real
+        // code from the summary header instead (see
+        // `parse_executor_exit_code`).
         let exit_code = match completion.status {
             crate::scheduler::ExecutorStatus::Completed => 0,
             _ => 1,
@@ -1070,12 +1104,20 @@ impl BashTool {
 
         // Execute via the shared GitMutationExecutor. Errors include typed
         // context but never leak credentials (redaction happens inside
-        // `MutationResult` projection).
+        // `MutationResult` projection). The `Add` refusal is fenced-native:
+        // no raw-shell fallback; surface the structured backend state.
         let result = exec
             .execute(&request.operation, repo_root.as_path())
             .await
-            .map_err(|e: GitMutationError| {
-                ToolError::Execution(format!("git dispatch failed: {}", e))
+            .map_err(|e: GitMutationError| match e {
+                GitMutationError::PublicationFailed(message)
+                    if !message.contains("CleanSmudgeFilter") =>
+                {
+                    ToolError::Execution(format!(
+                        "git dispatch failed: refusing stage_paths/add: missing capability CleanSmudgeFilter; backend state publication=None; disposition fenced-native; publication failed: {message}; remedy: attach daemon publisher or use contained worktree; do not shell out"
+                    ))
+                }
+                other => ToolError::Execution(format!("git dispatch failed: {}", other)),
             })?;
 
         // Persist to RunStore using the canonical `git_run_store` helper.
@@ -1266,14 +1308,20 @@ impl BashTool {
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
         let result = completion.summary;
-        let exit_code = if matches!(
-            completion.status,
-            crate::scheduler::ExecutorStatus::Completed
-        ) {
-            0
-        } else {
-            1
-        };
+        // The managed executor records the real code in the summary header
+        // (`{label} exit=N ...`); parse it so real codes (127, 2, ...) reach
+        // `DispatchOutcome.output` instead of collapsing to 0/1. Without a
+        // header the scheduler status maps to 0/1.
+        let exit_code = parse_executor_exit_code(&result).unwrap_or(
+            if matches!(
+                completion.status,
+                crate::scheduler::ExecutorStatus::Completed
+            ) {
+                0
+            } else {
+                1
+            },
+        );
         let output = synth_output(exit_code, result.as_bytes().to_vec(), Vec::new());
 
         self.record_routing_metric(RoutingMetric {
@@ -1367,14 +1415,21 @@ impl BashTool {
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
         let result = completion.summary;
-        let exit_code = if matches!(
-            completion.status,
-            crate::scheduler::ExecutorStatus::Completed
-        ) {
-            0
-        } else {
-            1
-        };
+        // The shell executor records the real code in the summary header
+        // (`{label} exit=N ...`); parse it so real codes (127 for
+        // command-not-found, 1 for `cat` on a missing file) reach
+        // `DispatchOutcome.output` instead of collapsing to 0/1. Without a
+        // header the scheduler status maps to 0/1.
+        let exit_code = parse_executor_exit_code(&result).unwrap_or(
+            if matches!(
+                completion.status,
+                crate::scheduler::ExecutorStatus::Completed
+            ) {
+                0
+            } else {
+                1
+            },
+        );
         let output = synth_output(exit_code, result.as_bytes().to_vec(), Vec::new());
         Ok(DispatchOutcome {
             result,
@@ -2105,15 +2160,32 @@ mod tests {
 
     #[test]
     fn synth_output_preserves_exit_code_and_streams() {
-        // `synth_output` mirrors the pre-split helper: it packs the integer
-        // into the platform `ExitStatus` and carries the streams verbatim.
-        // Only the zero status round-trips through `from_raw` portably, so
-        // assert streams plus the zero-code path here; nonzero terminal
-        // status is covered by the `[exit code: N]` result-string tests.
-        let output = synth_output(0, b"out".to_vec(), b"err".to_vec());
-        assert_eq!(output.status.code(), Some(0));
-        assert_eq!(output.stdout, b"out");
-        assert_eq!(output.stderr, b"err");
+        // `synth_output` packs the integer into the platform `ExitStatus`
+        // with the code in the high byte (`from_raw(code << 8)`), so real
+        // codes round-trip through `code()` instead of decoding as absent.
+        for code in [0, 1, 2, 127] {
+            let output = synth_output(code, b"out".to_vec(), b"err".to_vec());
+            assert_eq!(output.status.code(), Some(code), "exit code {code}");
+            assert_eq!(output.stdout, b"out");
+            assert_eq!(output.stderr, b"err");
+        }
+    }
+
+    #[test]
+    fn scheduler_summary_header_yields_the_real_exit_code() {
+        assert_eq!(
+            parse_executor_exit_code(
+                "shell exit=127 stdout_bytes=10 stderr_bytes=0 truncated=false"
+            ),
+            Some(127)
+        );
+        assert_eq!(
+            parse_executor_exit_code(
+                "managed_process exit=2 stdout_bytes=0 stderr_bytes=3 truncated=false"
+            ),
+            Some(2)
+        );
+        assert_eq!(parse_executor_exit_code("Test report: 3 passed"), None);
     }
 }
 

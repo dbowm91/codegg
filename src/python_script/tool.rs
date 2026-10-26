@@ -7,7 +7,6 @@ use crate::error::ToolError;
 use crate::scheduler::submission::{JobSubmissionService, SubmissionKey};
 use crate::tool::{Tool, ToolCategory};
 
-use super::projection::project_python_run;
 use super::types::{PythonExecutionMode, PythonRunResult, PythonScriptRequest};
 
 /// Upper bound on a model-supplied `timeout`, in seconds.
@@ -407,54 +406,9 @@ impl PythonScriptTool {
             .await
             .map_err(|e| ToolError::Execution(format!("scheduler wait failed: {e}")))?;
 
-        // Build a PythonRunResult from the completion summary for projection
-        let result = PythonRunResult {
-            status: match completion.status {
-                crate::scheduler::executor::ExecutorStatus::Completed => {
-                    crate::python_script::types::PythonRunStatus::Success
-                }
-                crate::scheduler::executor::ExecutorStatus::Cancelled => {
-                    crate::python_script::types::PythonRunStatus::Failed(-4)
-                }
-                crate::scheduler::executor::ExecutorStatus::TimedOut => {
-                    crate::python_script::types::PythonRunStatus::TimedOut
-                }
-                crate::scheduler::executor::ExecutorStatus::Failed
-                | crate::scheduler::executor::ExecutorStatus::Interrupted => {
-                    crate::python_script::types::PythonRunStatus::Failed(-1)
-                }
-            },
-            stdout: completion.summary.clone(),
-            stderr: String::new(),
-            duration: std::time::Duration::from_millis(completion.metrics.elapsed_ms),
-            mode: request.mode,
-            script_length: request.code.len(),
-            risk: crate::python_script::types::PythonRiskAssessment::safe(),
-            capabilities: crate::python_script::types::PythonCapabilityEnvelope::analyze(),
-            changed_files: vec![],
-            interpreter: "python3".to_string(),
-            diff: None,
-            script_body_hash: Some(source_hash),
-            stdout_label: completion
-                .run_id
-                .as_ref()
-                .map(|rid| format!("run://{rid}/stdout")),
-            stderr_label: completion
-                .run_id
-                .as_ref()
-                .map(|rid| format!("run://{rid}/stderr")),
-            diff_label: None,
-            policy_decision: None,
-            denied_capabilities: vec![],
-            os_filesystem_isolation: false,
-            os_network_isolation: false,
-            effective_read_roots: vec![],
-            effective_write_roots: vec![],
-            allowed_subprocesses: vec![],
-            enforcement_warnings: vec![],
-        };
-
-        Ok(project_python_run(&result))
+        // The executor already projected the run (see executors.rs); return its
+        // summary directly instead of re-projecting it into a second header.
+        Ok(completion.summary.clone())
     }
 }
 
@@ -465,7 +419,7 @@ impl Tool for PythonScriptTool {
     }
 
     fn description(&self) -> &str {
-        "Execute Python scripts with static risk analysis, mode-based capability control, and safe projection. Use the least-powerful mode: 'analyze' for read-only analysis, 'transform' for workspace file changes, 'verify' for tests with subprocess. Prefer native tools for simple read/write/edit/test/git operations."
+        "Execute Python scripts with static risk analysis, mode-based capability control, and safe projection. Use the least-powerful mode: 'analyze' for read-only analysis, 'transform' for workspace file changes (writes are scoped to the workspace plus $CODEGG_SCRATCH_DIR; /etc, /tmp-outside and rmtree stay denied), 'verify' for tests with subprocess. Static analysis is textual: importing subprocess denies even if never called; a pure read of a sensitive path denies read_sensitive, never destructive_fs. Prefer native tools for simple read/write/edit/test/git operations."
     }
 
     fn parameters(&self) -> serde_json::Value {

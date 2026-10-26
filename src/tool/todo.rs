@@ -49,7 +49,7 @@ impl Tool for TodoWriteTool {
     }
 
     fn description(&self) -> &str {
-        "Create, update, and manage todo items with persistent state"
+        "Router: use todowrite for in-turn steps; for session intent use goal_get, for the actionable slice use work_plan_get, for future sessions use work_order. Create, update, and manage todo items with persistent state. Canonical map: goal = session intent, work_plan = actionable slice + revision, work_order = future-session queue, todowrite = in-turn steps. See the planning skill decision table."
     }
 
     fn parameters(&self) -> serde_json::Value {

@@ -54,17 +54,39 @@ fn reviewed_catalog() -> (ToolRegistry, ToolBroker) {
 /// This list is the **live catalog**'s read-only set, reviewed. It is
 /// asserted exactly, so a tool that joins or leaves the set fails the test
 /// until the change is reviewed rather than silently absorbed.
+///
+/// Agentfindings 3.2 review (2026-10-25): the 13 `EggsactTool` deterministic
+/// validators below are pure functions of their input text (no filesystem,
+/// process, or network effects; `ToolCategory::ReadOnly`, never
+/// `Mutating`/`ShellExec` — pinned by the sibling
+/// `writer_category_tools_may_not_declare_a_read_only_effect_class` test).
+/// Widening them to `DirectOrProgrammatic` + `ReadOnly` + output schema is
+/// what makes the `tool_program` read-only palette real; each was previously
+/// `DirectOnly` by omission (no `contract()` override, inherited `legacy()`).
 const REVIEWED_READ_ONLY_PALETTE: &[&str] = &[
+    "command_preflight",
+    "config_preflight",
     "diff",
     "git_query",
     "git_read",
     "glob",
     "grep",
+    "identifier_inspect",
     "list",
     "lsp_read",
+    "path_normalize",
     "read",
     "repo_search",
+    "structured_data_compare",
+    "text_diff_explain",
+    "text_equal",
+    "text_fingerprint",
+    "text_inspect",
+    "text_replace_check",
+    "text_security_inspect",
     "tool_program",
+    "validate_json",
+    "validate_toml",
 ];
 
 /// Dispositions that would assert the manifest grants authority. The C001

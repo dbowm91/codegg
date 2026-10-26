@@ -124,6 +124,11 @@ impl SearchRuntimeContext {
     /// Execute local-capable repository search with the invocation's
     /// daemon-authorized workspace root. `None` explicitly disables local
     /// retrieval on the managed child and cannot fall back to static roots.
+    /// Callers (`RepoSearchTool`/`RepoMapTool`) resolve the root first and
+    /// fall back to the invocation workspace_root with a typed
+    /// `[local_scope …]` reason, so a bare upstream `no_native_tree` never
+    /// reaches the model without context. `compact:true` / `detail:"summary"`
+    /// selects the local-only canonical_name/path/description projection.
     pub async fn dispatch_repo_search_host_scoped(
         &self,
         input: &Value,

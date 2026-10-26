@@ -208,6 +208,85 @@ impl ToolSearchTool {
             .map(|available| available.iter().any(|name| name == &metadata.name))
             .unwrap_or(true)
     }
+
+    /// Deferred tools the current policy allows, grouped by task (F15).
+    ///
+    /// Names only — no schemas — so the broad page stays smaller than the
+    /// full census. Derived from the catalog's deferred set through the
+    /// same policy filter as discovery, bucketed by [`deferred_task_group`].
+    /// Groups are emitted in a fixed order with sorted names; empty groups
+    /// are omitted.
+    fn deferred_by_task(&self) -> serde_json::Value {
+        const GROUP_ORDER: &[&str] = &[
+            "validation",
+            "planning",
+            "search-evidence",
+            "shell-process",
+            "memory-mcp",
+            "specialist",
+        ];
+        let mut grouped: std::collections::BTreeMap<&str, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for metadata in self.catalog.deferred_tools() {
+            if !self.policy_allows(&metadata) {
+                continue;
+            }
+            grouped
+                .entry(deferred_task_group(&metadata.name))
+                .or_default()
+                .push(metadata.name);
+        }
+        let mut ordered = serde_json::Map::new();
+        for group in GROUP_ORDER {
+            if let Some(mut names) = grouped.remove(group) {
+                names.sort();
+                names.dedup();
+                if !names.is_empty() {
+                    ordered.insert((*group).to_string(), serde_json::json!(names));
+                }
+            }
+        }
+        serde_json::Value::Object(ordered)
+    }
+}
+
+/// Task group for one deferred tool name (F15).
+///
+/// One-line discovery buckets so an agent that never paged still learns
+/// that `config_preflight`, `security_search`, and the other deferred tools
+/// exist. Unmapped (including future) names fall into `specialist` rather
+/// than vanishing.
+fn deferred_task_group(name: &str) -> &'static str {
+    match name {
+        "config_preflight"
+        | "text_inspect"
+        | "identifier_inspect"
+        | "structured_data_compare"
+        | "text_fingerprint"
+        | "math_eval"
+        | "unit_convert"
+        | "security"
+        | "lsp_preview_apply" => "validation",
+        "skill_proposal" | "review" | "commit" | "replace" | "image" => "planning",
+        "research" | "research_search" | "repo_fetch" | "repo_map" | "security_search"
+        | "batch_fetch" | "evidence_bundle" | "git_query" => "search-evidence",
+        "terminal" | "python_script" | "tool_program" => "shell-process",
+        "memory_search"
+        | "memory_get"
+        | "mcp_resource_search"
+        | "mcp_resource_read"
+        | "extension_search"
+        | "extension_install_request" => "memory-mcp",
+        _ => "specialist",
+    }
+}
+
+/// Pagination hint appended when more matches remain (F7).
+///
+/// Names the exact next offset so an agent that would otherwise stop at
+/// the first page learns to page without already knowing `offset`.
+fn page_hint(remaining: usize, next_offset: usize) -> String {
+    format!("{remaining} more match; call with offset={next_offset}")
 }
 
 #[async_trait]
@@ -219,7 +298,9 @@ impl Tool for ToolSearchTool {
     fn description(&self) -> &str {
         "Search for available tools by name or description. \
          Searches multiple words by relevance and returns compact authorized tool names. \
-         Use query='' to list tools in bounded pages, then request one exact schema by name."
+         Use query='' to list tools in bounded pages, then request one exact schema by name. \
+         Paged results carry a hint with the next offset; an empty query also lists deferred tools grouped by task. \
+         Curated bundles: file ops read/write/edit/apply_patch; validation validate_json/validate_toml/config_preflight; search websearch/repo_search; shell bash/test/python_script."
     }
 
     fn set_available_tools(&mut self, tools: Vec<String>) {
@@ -232,7 +313,7 @@ impl Tool for ToolSearchTool {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Search query to find relevant tools (searches name and description)"
+                    "description": "Search query to find relevant tools (searches name and description). Optional when name plus detail=schema is supplied for an exact lookup; otherwise required (use query='' to browse)."
                 },
                 "name": {
                     "type": "string",
@@ -255,7 +336,7 @@ impl Tool for ToolSearchTool {
                     "description": "Maximum compact descriptors to return (default 10, maximum 50)"
                 }
             },
-            "required": ["query"]
+            "required": []
         })
     }
 
@@ -264,19 +345,35 @@ impl Tool for ToolSearchTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
-        let query = input["query"]
-            .as_str()
-            .ok_or_else(|| ToolError::Execution("query required".into()))?;
         let exact_name = input["name"]
             .as_str()
             .map(str::trim)
-            .filter(|name| !name.is_empty());
+            .filter(|name| !name.is_empty())
+            .map(ToOwned::to_owned);
+        // `query` is optional for an exact `name` + `detail=schema` lookup
+        // (agents asking "give me this tool's schema" should not have to
+        // invent a throwaway query string); every other call still needs
+        // a query, with `""` browsing the authorized set.
+        let query = match input["query"].as_str() {
+            Some(query) => query.to_string(),
+            None if exact_name.is_some() => String::new(),
+            None => {
+                return Err(ToolError::Execution(
+                    "query required (or supply name plus detail=schema for an exact lookup)".into(),
+                ));
+            }
+        };
+        let query = query.as_str();
         let detail = input["detail"].as_str().unwrap_or("summary");
-        let offset = input["offset"].as_u64().unwrap_or(0).min(usize::MAX as u64) as usize;
-        let limit = input["limit"]
-            .as_u64()
-            .unwrap_or(MAX_SEARCH_RESULTS as u64)
-            .clamp(1, MAX_SEARCH_PAGE as u64) as usize;
+        let offset = input
+            .get("offset")
+            .and_then(crate::tool::util::json_usize)
+            .unwrap_or(0);
+        let limit = input
+            .get("limit")
+            .and_then(crate::tool::util::json_usize)
+            .unwrap_or(MAX_SEARCH_RESULTS)
+            .clamp(1, MAX_SEARCH_PAGE);
         if query.len() > MAX_QUERY_BYTES {
             return Err(ToolError::Execution(format!(
                 "query exceeds maximum size of {MAX_QUERY_BYTES} bytes"
@@ -288,8 +385,8 @@ impl Tool for ToolSearchTool {
             ));
         }
 
-        let results = match exact_name {
-            Some(name) => self.catalog.get(name).into_iter().collect(),
+        let results = match &exact_name {
+            Some(name) => self.catalog.get(name.as_str()).into_iter().collect(),
             None if query.trim().is_empty() => self.catalog.list(),
             None => self.catalog.search(query),
         };
@@ -303,11 +400,24 @@ impl Tool for ToolSearchTool {
             .collect();
 
         if filtered.is_empty() && self.advisor_mode != AdvisorMode::Promote {
+            // R20: math/calc/units queries without a registered math tool
+            // still get an actionable fallback instead of a bare no_results.
+            let lower = query.to_lowercase();
+            let looks_like_math = ["math", "calc", "calcul", "arith", "unit", "constant"]
+                .iter()
+                .any(|token| lower.contains(token));
+            let suggestion = if looks_like_math {
+                "No dedicated math tool matched. Use python_script with {\"mode\": \"analyze\", \"code\": \"print(2+2*2)\"} \
+                 for arithmetic, or discover the deferred math_eval / unit_convert tools via query='math' \
+                 (e.g. tool_search {\"query\": \"math eval units\"}). Example: python_script analyze 'print((100/7))'."
+            } else {
+                "Try a shorter task phrase, or query='' with offset/limit to browse authorized tools."
+            };
             return Ok(json!({
                 "status": "no_results",
                 "query": query,
                 "name": exact_name,
-                "suggestion": "Try a shorter task phrase, or query='' with offset/limit to browse authorized tools.",
+                "suggestion": suggestion,
                 "tools": []
             })
             .to_string());
@@ -331,16 +441,27 @@ impl Tool for ToolSearchTool {
                     })
                 })
                 .collect();
-            return Ok(json!({
+            let count = tools.len();
+            let next_offset = (offset + count < total_matches).then_some(offset + count);
+            let mut value = json!({
                 "status": "success",
                 "query": query,
                 "offset": offset,
                 "limit": limit,
-                "count": tools.len(),
+                "count": count,
                 "total_matches": total_matches,
-                "next_offset": (offset + tools.len() < total_matches).then_some(offset + tools.len()),
+                "next_offset": next_offset,
                 "tools": tools
-            }).to_string());
+            });
+            // F7: name the exact next offset while matches remain. F15:
+            // every empty-query page also lists the policy-allowed
+            // deferred tools grouped by task (names only, no schemas).
+            if let Some(next) = next_offset {
+                let remaining = total_matches - (offset + count);
+                value["hint"] = json!(page_hint(remaining, next));
+            }
+            value["deferred_by_task"] = self.deferred_by_task();
+            return Ok(value.to_string());
         }
 
         if exact_name.is_some() && detail == "schema" {
@@ -460,11 +581,18 @@ impl Tool for ToolSearchTool {
             })
             .collect();
 
-        Ok(json!({
+        // F7: echo the paging window and name the next offset while matches
+        // remain, mirroring the empty-query page.
+        let count = tools.len();
+        let next_offset = (offset + count < total_matches).then_some(offset + count);
+        let mut value = json!({
             "status": "success",
             "query": query,
-            "count": tools.len(),
+            "offset": offset,
+            "limit": limit,
+            "count": count,
             "total_matches": total_matches,
+            "next_offset": next_offset,
             "advisor": {
                 "mode": format!("{:?}", self.advisor_mode).to_lowercase(),
                 "promoted": projection.promoted,
@@ -472,8 +600,12 @@ impl Tool for ToolSearchTool {
                 "fallback": projection.fallback,
             },
             "tools": tools
-        })
-        .to_string())
+        });
+        if let Some(next) = next_offset {
+            let remaining = total_matches - (offset + count);
+            value["hint"] = json!(page_hint(remaining, next));
+        }
+        Ok(value.to_string())
     }
 }
 
@@ -665,6 +797,68 @@ mod tests {
         assert!(next["next_offset"].is_null());
     }
 
+    /// F7: a partial empty-query page names the exact next offset so an
+    /// agent that would otherwise stop learns to page.
+    #[tokio::test]
+    async fn empty_query_page_carries_paging_hint() {
+        let search = test_search();
+        let first = search
+            .execute(json!({"query": "", "limit": 2}))
+            .await
+            .expect("first page");
+        let first: serde_json::Value = serde_json::from_str(&first).expect("json");
+        assert_eq!(first["hint"], "1 more match; call with offset=2");
+
+        let last = search
+            .execute(json!({"query": "", "offset": 2, "limit": 50}))
+            .await
+            .expect("last page");
+        let last: serde_json::Value = serde_json::from_str(&last).expect("json");
+        assert!(last.get("hint").is_none());
+        assert!(last["next_offset"].is_null());
+    }
+
+    /// F15: every empty-query page lists the policy-allowed deferred tools
+    /// grouped by task as names only — no schemas, no hidden tools.
+    #[tokio::test]
+    async fn empty_query_page_lists_deferred_tools_grouped_by_task() {
+        let search = test_search();
+        let out = search
+            .execute(json!({"query": "", "limit": 50}))
+            .await
+            .expect("empty query");
+        let out: serde_json::Value = serde_json::from_str(&out).expect("json");
+        let groups = out.get("deferred_by_task").expect("deferred task groups");
+        assert_eq!(groups["specialist"], json!(["git_deferred"]));
+        let rendered = serde_json::to_string(groups).expect("groups serialize");
+        assert!(
+            !rendered.contains("parameters"),
+            "deferred groups must stay names-only, got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("git_read"),
+            "hidden tools must never appear in deferred groups, got: {rendered}"
+        );
+    }
+
+    /// F7: keyword searches echo the paging window and hint at the next
+    /// offset, mirroring the empty-query page.
+    #[tokio::test]
+    async fn keyword_search_echoes_paging_window_with_hint() {
+        let search = test_search();
+        let out = search
+            .execute(json!({"query": "git", "limit": 1}))
+            .await
+            .expect("keyword search");
+        let out: serde_json::Value = serde_json::from_str(&out).expect("json");
+        assert_eq!(out["offset"], 0);
+        assert_eq!(out["limit"], 1);
+        assert_eq!(out["count"], 1);
+        assert_eq!(out["total_matches"], 3);
+        assert_eq!(out["next_offset"], 1);
+        assert_eq!(out["hint"], "2 more match; call with offset=1");
+    }
+
     #[tokio::test]
     async fn rerank_is_opt_in_and_promotion_is_bounded_to_allowed_deferred_tools() {
         let mut search = test_search();
@@ -750,5 +944,28 @@ mod tests {
             "m003 broad lsp search: {full_bytes} -> {broad_bytes} bytes ({}% reduction)",
             100usize.saturating_sub(broad_bytes.saturating_mul(100) / full_bytes.max(1))
         );
+    }
+
+    #[test]
+    fn description_names_curated_bundles() {
+        let catalog = ToolCatalog::new();
+        let search = ToolSearchTool::new(Arc::new(catalog));
+        assert!(search.description().contains("Curated bundles"));
+        assert!(search.description().contains("read/write/edit/apply_patch"));
+    }
+
+    #[tokio::test]
+    async fn math_query_without_match_suggests_python_fallback() {
+        let catalog = ToolCatalog::new();
+        let search = ToolSearchTool::new(Arc::new(catalog));
+        let out = search
+            .execute(json!({"query": "math calculator units"}))
+            .await
+            .expect("math fallback search");
+        let value: serde_json::Value = serde_json::from_str(&out).expect("json");
+        assert_eq!(value["status"], "no_results");
+        let suggestion = value["suggestion"].as_str().unwrap_or_default();
+        assert!(suggestion.contains("python_script"));
+        assert!(suggestion.contains("math_eval"));
     }
 }

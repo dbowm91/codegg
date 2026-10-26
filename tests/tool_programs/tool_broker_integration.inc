@@ -284,6 +284,7 @@ fn make_ctx_with_grant(
         audit_emitter: None,
         execution_authorization: None,
         process_admission: None,
+        plan_mode: false,
     }
 }
 
@@ -324,6 +325,7 @@ fn make_ctx_with_grant_snapshot(
         audit_emitter: None,
         execution_authorization: None,
         process_admission: None,
+        plan_mode: false,
     }
 }
 
@@ -748,6 +750,7 @@ async fn broker_unauthorized_non_agent_non_internal_rejected() {
         audit_emitter: None,
         execution_authorization: None,
         process_admission: None,
+        plan_mode: false,
     };
     let err = broker
         .execute(&registry, "programmatic", json!({}), ctx)
@@ -794,6 +797,7 @@ async fn broker_authorized_programmatic_caller_accepted() {
         audit_emitter: None,
         execution_authorization: None,
         process_admission: None,
+        plan_mode: false,
     };
     let result = broker
         .execute(&registry, "programmatic", json!({}), ctx)
@@ -907,6 +911,7 @@ async fn broker_validate_pre_execution_caller_policy() {
         audit_emitter: None,
         execution_authorization: None,
         process_admission: None,
+        plan_mode: false,
     };
 
     let err = broker

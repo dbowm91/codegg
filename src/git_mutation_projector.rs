@@ -128,9 +128,14 @@ pub fn project_mutation(result: &MutationResult) -> String {
 
 /// Shorten a hash for display (first 7 chars). Returns input unchanged if
 /// it is already ≤ 7 chars.
+///
+/// `head` is a branch name when the oid is unavailable (unborn HEAD), and
+/// branch names are arbitrary Unicode, so this truncates on a char
+/// boundary: byte slicing panics on multi-byte text (`short("日本語…")`
+/// aborted the agent loop at this line).
 fn short(s: &str) -> String {
-    if s.len() > 7 {
-        s[..7].to_string()
+    if s.chars().count() > 7 {
+        s.chars().take(7).collect()
     } else {
         s.to_string()
     }
@@ -351,6 +356,22 @@ mod tests {
         assert!(summary.contains("git reset"));
         assert!(summary.contains("destructive:"));
         assert!(summary.contains("git reflog"));
+    }
+
+    /// Non-ASCII branch names (unborn HEAD keeps the branch name in
+    /// `head`) must truncate on a char boundary, not panic. This is the
+    /// exact input that aborted the agent loop.
+    #[test]
+    fn short_truncates_multibyte_branch_names_without_panicking() {
+        assert_eq!(short("日本語日本語日本語"), "日本語日本語日");
+        assert_eq!(short("abc1234"), "abc1234");
+        assert_eq!(short("abcdef0123456789"), "abcdef0");
+        assert_eq!(short("main"), "main");
+        let mut r = fake_result();
+        r.delta.before.head = "日本語日本語日本語".into();
+        r.delta.after.head = "日本語日本語日本語".into();
+        let summary = project_mutation(&r);
+        assert!(summary.contains("日本語日本語日"));
     }
 
     #[test]

@@ -92,13 +92,16 @@ pub fn validate_path(path: &Path, allowed_root: &Path) -> Result<PathBuf, ToolEr
     check_path_for_symlinks(&candidate)?;
 
     // Errors still name the path the caller sent, not the derived one.
-    let canonical = candidate
-        .canonicalize()
-        .map_err(|_| ToolError::Execution(format!("invalid path: {}", path.display())))?;
+    let canonical = candidate.canonicalize().map_err(|_| {
+        ToolError::Execution(format!(
+            "invalid path: {} (not under workspace root or missing; relative paths resolve against the session workspace root)",
+            path.display()
+        ))
+    })?;
 
     if !canonical.starts_with(&root_canonical) {
         return Err(ToolError::Permission(format!(
-            "path '{}' is outside allowed directory",
+            "path '{}' is outside allowed directory (not under workspace root)",
             path.display()
         )));
     }
@@ -146,7 +149,7 @@ pub fn validate_target_path(path: &Path, allowed_root: &Path) -> Result<PathBuf,
         .map_err(|_| ToolError::Execution(format!("invalid path: {}", existing.display())))?;
     if !existing_canonical.starts_with(&root_canonical) {
         return Err(ToolError::Permission(format!(
-            "path '{}' is outside allowed directory",
+            "path '{}' is outside allowed directory (not under workspace root)",
             path.display()
         )));
     }
@@ -163,7 +166,7 @@ pub fn validate_target_path(path: &Path, allowed_root: &Path) -> Result<PathBuf,
         }
         if !normalized.starts_with(&root_canonical) {
             return Err(ToolError::Permission(format!(
-                "path '{}' is outside allowed directory",
+                "path '{}' is outside allowed directory (not under workspace root)",
                 path.display()
             )));
         }

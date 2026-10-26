@@ -2925,6 +2925,87 @@ emit(total)
         assert_eq!(res.failure_class, Some(FailureClass::BudgetExhausted));
     }
 
+    struct RecordingBroker {
+        requests: std::sync::Mutex<Vec<CallRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl BrokerCallback for RecordingBroker {
+        async fn execute_call(
+            &self,
+            request: &CallRequest,
+        ) -> Result<CallResult, InterpreterError> {
+            self.requests
+                .lock()
+                .expect("broker lock")
+                .push(request.clone());
+            Ok(CallResult {
+                output: ProgramValue::String("mock_result".into()),
+                artifacts: vec![],
+                success: true,
+            })
+        }
+
+        async fn submit_child_job(
+            &self,
+            _request: &ChildJobRequest,
+        ) -> Result<ChildJobResult, InterpreterError> {
+            Err(InterpreterError::BrokerError(
+                "recording broker does not support child jobs".into(),
+            ))
+        }
+    }
+
+    fn run_program_with_broker(source: &str, broker: &RecordingBroker) -> ProgramResult {
+        let result = compile_program(source).unwrap();
+        let limits = RuntimeLimits::from(&result.ir.bounds);
+        let mut interp = MeteredInterpreter::new(result.ir, limits);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(interp.run(broker, None))
+    }
+
+    #[test]
+    fn call_kwargs_sugar_executes_with_synthesized_descriptor() {
+        let broker = RecordingBroker {
+            requests: std::sync::Mutex::new(Vec::new()),
+        };
+        let result = run_program_with_broker(
+            "result = call(tool=\"read\", path=\"src/main.rs\")\nemit(result)\n",
+            &broker,
+        );
+        assert_eq!(result.status, ProgramStatus::Completed);
+        assert_eq!(
+            result.output,
+            Some(ProgramValue::String("mock_result".into()))
+        );
+        let requests = broker.requests.lock().expect("broker lock");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].tool_name, "read");
+        assert_eq!(
+            requests[0].input.get("path").and_then(|v| v.as_str()),
+            Some("src/main.rs")
+        );
+    }
+
+    #[test]
+    fn call_dict_with_kwargs_merges_with_kwargs_winning() {
+        let broker = RecordingBroker {
+            requests: std::sync::Mutex::new(Vec::new()),
+        };
+        let result = run_program_with_broker(
+            "result = call({\"tool\": \"read\", \"path\": \"a.rs\"}, path=\"b.rs\")\nemit(result)\n",
+            &broker,
+        );
+        assert_eq!(result.status, ProgramStatus::Completed);
+        let requests = broker.requests.lock().expect("broker lock");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].tool_name, "read");
+        assert_eq!(
+            requests[0].input.get("path").and_then(|v| v.as_str()),
+            Some("b.rs")
+        );
+    }
+
     #[tokio::test]
     async fn cancellation() {
         let result = compile_program("emit(42)\n").unwrap();

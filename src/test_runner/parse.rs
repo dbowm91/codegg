@@ -27,9 +27,39 @@ pub struct TestParseState {
     pub failures: Vec<TestFailure>,
     pub compile_errors: Vec<TestFailure>,
     pub collection_error_seen: bool,
+    /// Set when captured output shows the dispatched `cargo` argv executed
+    /// a `rustup` toolchain shim instead of cargo itself (`Usage:
+    /// rustup…`, `invalid value … for '[+toolchain]'`). Shim usage text
+    /// mimics clap/cargo error prefixes (`error: …`), so without this the
+    /// run is misclassified as `rust_compile_error`.
+    pub toolchain_shim_seen: bool,
+}
+
+/// True when a captured output line is evidence the dispatched `cargo`
+/// argv executed a `rustup` shim, not cargo.
+fn is_toolchain_shim_line(line: &str) -> bool {
+    line.contains("rustup[EXE]")
+        || line.contains("[+toolchain]")
+        || line.to_lowercase().contains("usage: rustup")
+        || (line.contains("rustup") && line.contains("to pass"))
+}
+
+/// True for clap-style usage diagnostics that carry no rustc evidence
+/// (no `E`-code, no `-->` location, no `.rs` file): the `rustup` shim's
+/// `unexpected argument` / `invalid value` errors, and real cargo
+/// rejections of a malformed argv. Neither is a compile error in the
+/// code under test.
+fn is_usage_error_without_rustc_evidence(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    lower.contains("unexpected argument")
+        || lower.contains("invalid value")
+        || lower.contains("tip: to pass")
 }
 
 pub fn ingest_stdout_line(state: &mut TestParseState, line: &str) {
+    if is_toolchain_shim_line(line) {
+        state.toolchain_shim_seen = true;
+    }
     let line = strip_ansi_escapes(line);
     let line = line.as_str();
     let mut rust_matched = false;
@@ -181,6 +211,9 @@ pub fn ingest_stdout_line(state: &mut TestParseState, line: &str) {
 }
 
 pub fn ingest_stderr_line(state: &mut TestParseState, line: &str) {
+    if is_toolchain_shim_line(line) {
+        state.toolchain_shim_seen = true;
+    }
     let line = strip_ansi_escapes(line);
     let line = line.as_str();
     if let Some(rest) = line.strip_prefix("E   ") {
@@ -313,6 +346,13 @@ fn find_panic_message_end(s: &str) -> usize {
 }
 
 fn extract_compile_error(line: &str) -> Option<TestFailure> {
+    // A `cargo` argv that resolved to a `rustup` shim (or a genuinely
+    // malformed custom argv) prints clap usage errors with no rustc
+    // evidence. Recording those as `RustCompileError` blames the code
+    // under test for an environment/dispatch failure.
+    if is_usage_error_without_rustc_evidence(line) {
+        return None;
+    }
     let error_code = if let Some(rest) = line.strip_prefix("error[E") {
         let code_end = rest.find(']')?;
         Some(format!("E{}", &rest[..code_end]))
@@ -409,6 +449,17 @@ pub fn failure_class_summary(
     failures: &[TestFailure],
     compile_errors: &[TestFailure],
 ) -> FailureClass {
+    // A shim-dispatched run never executed cargo: surface the
+    // environment failure even if a stray line also parsed as something
+    // else. The runner inserts the `toolchain-shim` marker entry at the
+    // front of `failures`; belt-and-braces here keeps direct callers of
+    // this summary honest too.
+    if failures
+        .iter()
+        .any(|f| f.name.as_deref() == Some("toolchain-shim"))
+    {
+        return FailureClass::SpawnError;
+    }
     if !compile_errors.is_empty() {
         return FailureClass::RustCompileError;
     }
@@ -703,5 +754,33 @@ mod tests {
         );
         assert_eq!(state.compile_errors.len(), 1);
         assert_eq!(state.language, Some(TestLanguage::Rust));
+    }
+
+    #[test]
+    fn toolchain_shim_output_marks_state_without_compile_error() {
+        let mut state = TestParseState::default();
+        ingest_stdout_line(
+            &mut state,
+            "Usage: rustup[EXE] [OPTIONS] [+toolchain] [COMMAND]",
+        );
+        ingest_stderr_line(&mut state, "error: invalid value 'test' for '[+toolchain]'");
+        ingest_stdout_line(&mut state, "error: unexpected argument '-p' found");
+        assert!(state.toolchain_shim_seen);
+        assert!(state.compile_errors.is_empty());
+    }
+
+    #[test]
+    fn shim_marker_failure_summarizes_as_spawn_error() {
+        let failures = vec![TestFailure {
+            name: Some("toolchain-shim".to_string()),
+            file: None,
+            line: None,
+            message: "shim".to_string(),
+            failure_class: FailureClass::SpawnError,
+        }];
+        assert_eq!(
+            failure_class_summary(&failures, &[]),
+            FailureClass::SpawnError
+        );
     }
 }

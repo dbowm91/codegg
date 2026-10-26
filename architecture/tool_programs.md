@@ -192,7 +192,8 @@ the hidden `ProgrammaticOnly` operation-scoped adapters (M003).
 
 ### Read-Only Tool Palette
 
-Eight tools are eligible for programmatic invocation:
+Eight file/search/adapter tools plus the thirteen deterministic validators
+below are eligible for programmatic invocation:
 
 | Tool | Caller Policy | Effect Class | Output Schema | Cache TTL |
 |------|--------------|--------------|---------------|-----------|
@@ -204,6 +205,19 @@ Eight tools are eligible for programmatic invocation:
 | `repo_search` | `DirectOrProgrammatic` | `ReadOnly` | upstream eggsearch JSON object (backend-versioned) | disabled (nondeterministic external read) |
 | `git_read` | `ProgrammaticOnly` (hidden) | `ReadOnly` | `operation`, `truncated`, `results` (unwrapped `GitPayload`) | disabled (workspace-version dependent) |
 | `lsp_read` | `ProgrammaticOnly` (hidden) | `ReadOnly` | `operation`, `result_count`, `truncated`, `results` (canonical `LspToolOutput`) | disabled (server-state dependent) |
+
+Thirteen deterministic validators (`src/tool/deterministic.rs`, shared
+`EggsactTool::contract()` override) are additionally eligible, all
+`DirectOrProgrammatic` / `ReadOnly` / `Idempotent` with the shared
+eggsact result-envelope output schema (`ok`, `machine_code`, `result`,
+`findings`): `text_equal`, `text_diff_explain`, `text_replace_check`,
+`text_inspect`, `text_fingerprint`, `text_security_inspect`,
+`identifier_inspect`, `structured_data_compare`, `path_normalize`,
+`command_preflight`, `validate_json`, `validate_toml`, `config_preflight`.
+All are pure functions of their input text (no filesystem, process, or
+network effects); previously `DirectOnly` by omission (no `contract()`
+override, inherited `legacy()`). Reviewed palette pin:
+`tests/tool_programs/writer_disposition_guards.inc::REVIEWED_READ_ONLY_PALETTE`.
 
 ### Manifest Resolution
 
@@ -785,7 +799,10 @@ versions (v33 `migrate_v33` at
 Verified 2026-10-06 against source. Corrected: `ProgramStatus` `:242` → `:243`,
 `BrokerCallback` `:675` → `:679`, and `ProgramValue` was attributed to
 `crates/codegg-core/src/tool_program/mod.rs` but is defined in
-`interpreter.rs:32`. Verified accurate: `ProgramResult` (`:229`),
+`interpreter.rs:32`. Re-verified 2026-10-25: read-only palette now 8
+file/search/adapter tools plus 13 deterministic validators
+(`EggsactTool::contract()` in `src/tool/deterministic.rs`;
+`REVIEWED_READ_ONLY_PALETTE` pin updated with the review note). Verified accurate: `ProgramResult` (`:229`),
 `FailureClass` 13 classes with the listed names, `ProgramStatus` 7 variants,
 `RuntimeLimits` (`:359`), `InterpreterCheckpoint` (`:450`), `ProgramStore`
 (`store.rs:29`), `ToolProgramTool` (`src/tool/tool_program.rs:79`),

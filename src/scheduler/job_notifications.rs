@@ -2016,7 +2016,7 @@ fn format_delegated_notice_content(notice: &JobTerminalNotice) -> String {
     };
     format!(
         "Delegated run {run} {state}: {outcome}. Result reference: agent-run-result:{run}. \
-         Read it with the task tool (action=get, task_id) for the full recorded result."
+         Read it with the task tool (action=get, task_id or run_id; the agent-run-result: prefix is accepted) for the full recorded result."
     )
 }
 

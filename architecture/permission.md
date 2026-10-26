@@ -308,7 +308,7 @@ presence test silently discarded a stored `AlwaysAllow` grant. An advisory may
 add a reason to a request that is already escalating; it may never create one
 on its own or override a stored operator decision. Explicit permission Deny,
 security Deny, and the separately configured `block_on_definite` policy remain
-authoritative.
+authoritative. Surfaced command-risk findings are labeled `advisory-block` and stay `Warn` so an advisory never reads as an enforcement verdict.
 
 ## Key Types & APIs
 

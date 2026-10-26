@@ -114,7 +114,18 @@ dict        = '{' [expression ':' expression (',' expression ':' expression)* ['
 call_list   = call_descriptor (',' call_descriptor)*
 call_descriptor = '{' key_value (',' key_value)* '}'
 key_value   = STRING ':' expression
+
+tool_call_expr = 'call' '(' call_args ')'
+call_args      = expression [',' kwargs]
+               | kwargs
+kwargs         = kwarg (',' kwarg)*
+kwarg          = IDENTIFIER '=' expression
 ```
+
+Trailing `k=v` pairs merge into a dict-literal descriptor (kwargs win on
+duplicate keys). Bare `call(tool="name", ...)` builds the descriptor dict
+from the kwargs. `k=v` overrides on a non-literal descriptor are rejected
+(TP011), and `**kwargs` unpacking is rejected (TP001).
 
 ### Targets
 
@@ -130,7 +141,7 @@ lists. Target count must match source count (TP018).
 
 | Name | Signature | Description |
 |------|-----------|-------------|
-| `call` | `(tool: dict) -> Any` | Invoke an approved tool through the Tool Broker |
+| `call` | `(descriptor: dict[, k=v...]) -> Any` | Invoke an approved tool through the Tool Broker; trailing `k=v` merges into a dict-literal descriptor (kwargs win), and bare `call(tool="name", ...)` builds the descriptor from kwargs |
 | `parallel` | `(*calls: dict) -> list` | Execute call descriptors concurrently |
 | `submit_job` | `(op: str, config: dict) -> dict` | Submit a scheduler-owned child job (M007) |
 | `emit` | `(value: Any) -> None` | Emit a structured result value |
@@ -228,7 +239,7 @@ iterations are rejected (TP012).
 | `TP008` | `MaxIrSteps` | IR step budget exceeded |
 | `TP009` | `MaxCallSites` | Too many tool call sites |
 | `TP010` | `UnresolvedIdentifier` | Unknown variable name |
-| `TP011` | `InvalidCallDescriptor` | call() missing descriptor arg |
+| `TP011` | `InvalidCallDescriptor` | call() missing descriptor, or `k=v` overrides on a non-literal descriptor |
 | `TP012` | `MaxTotalIterations` | Total loop iterations exceeded |
 | `TP013` | `SourceTooLarge` | Source exceeds 1 MB |
 | `TP014` | `MaxAstNodes` | AST node count exceeded (10K) |
@@ -430,6 +441,16 @@ cargo test -p codegg-core --lib tool_program::ir_verifier
 - `architecture/tool_broker.md` — Tool Broker pipeline
 
 ## Source Verification
+
+Verified 2026-10-25 against source. Updated: the `call` built-in row and
+the Call Descriptors grammar now document the trailing-`k=v` merge and the
+bare `call(tool="name", ...)` sugar (the `call` arm in
+`crates/codegg-core/src/tool_program/parser.rs`,
+`compile_tool_call_descriptor` in
+`crates/codegg-core/src/tool_program/compiler.rs`); the TP011 row now
+covers `k=v` overrides on a non-literal descriptor. Verified accurate: the
+validator and static-bounds `ToolCallExpr` arms accept the normalized
+(synthesized-dict, empty-kwargs) form unchanged.
 
 Verified 2026-10-23 against source. Corrected:
 

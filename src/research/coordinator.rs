@@ -199,7 +199,7 @@ impl ResearchCoordinator {
             )
             .await
         } else {
-            build_claims(&run_id, &evidence, &sources, false)
+            build_claims(&run_id, &evidence, &sources, &request.question, false)
         };
         for claim in &claims {
             self.store.append_claim(claim).await?;
@@ -475,6 +475,11 @@ impl ResearchCoordinator {
         // and local adapters retain the established URI deduplication.
         let mut seen = std::collections::HashSet::new();
         all_sources.retain(|source| seen.insert(source_dedup_key(source)));
+        // Local adapters already return filename-weighted ranking, but the
+        // merged budget truncation below keeps walk order unless re-ranked
+        // here. Boost repo-how paths (verify, AGENTS, testing) for
+        // verify/testing questions so `scripts/verify.sh` survives the cut.
+        rank_local_sources_for_question(&request.question, &mut all_sources);
         // Apply budget
         let max = request.budget.max_sources.min(all_sources.len());
         all_sources.truncate(max);
@@ -720,6 +725,39 @@ fn source_dedup_key(source: &SourceRecord) -> String {
     format!("uri:{}", source.uri)
 }
 
+/// Boost repo-how sources for verify/testing questions before budget
+/// truncation. Local adapters rank by filename-weighted score already;
+/// this merged-list pass guarantees a `scripts/verify.sh` / `AGENTS.md` /
+/// `architecture/testing.md` hit outranks generic notes when the question
+/// names verify, testing, scoped selection, or the verify script itself.
+fn rank_local_sources_for_question(question: &str, sources: &mut [SourceRecord]) {
+    let lower = question.to_lowercase();
+    let repo_how = ["verify", "testing", "scoped", "quick vs full", "verify.sh"]
+        .iter()
+        .any(|token| lower.contains(token));
+    if !repo_how {
+        return;
+    }
+    sources.sort_by(|left, right| {
+        repo_how_priority(&right.uri)
+            .cmp(&repo_how_priority(&left.uri))
+            .then_with(|| left.uri.cmp(&right.uri))
+    });
+}
+
+fn repo_how_priority(uri: &str) -> u8 {
+    if uri.ends_with("scripts/verify.sh") {
+        3
+    } else if uri.ends_with("AGENTS.md") || uri.ends_with("architecture/testing.md") {
+        2
+    } else if uri.contains("verify") || uri.contains("scoped_selection") || uri.contains("testing")
+    {
+        1
+    } else {
+        0
+    }
+}
+
 fn truncate_short(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
@@ -963,5 +1001,48 @@ mod tests {
     #[test]
     fn truncate_short_empty() {
         assert_eq!(truncate_short("", 10), "");
+    }
+
+    fn how_source(uri: &str) -> SourceRecord {
+        SourceRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            run_id: String::new(),
+            uri: uri.to_string(),
+            title: None,
+            source_type: SourceType::LocalSearchResult,
+            source_quality: SourceQuality::Secondary,
+            retrieved_at: Utc::now(),
+            published_at: None,
+            content_hash: None,
+            locator: SourceLocator::TextSpan {
+                label: "test".to_string(),
+            },
+            notes: vec![],
+        }
+    }
+
+    #[test]
+    fn repo_how_ranking_surfaces_verify_sh_before_generic_notes() {
+        let mut sources = vec![
+            how_source("/repo/research/tui-notes.md"),
+            how_source("/repo/scripts/verify.sh"),
+            how_source("/repo/AGENTS.md"),
+        ];
+        rank_local_sources_for_question(
+            "How does scripts/verify.sh select quick vs full vs scoped?",
+            &mut sources,
+        );
+        assert_eq!(sources[0].uri, "/repo/scripts/verify.sh");
+        assert_eq!(sources[1].uri, "/repo/AGENTS.md");
+    }
+
+    #[test]
+    fn repo_how_ranking_leaves_unrelated_questions_untouched() {
+        let mut sources = vec![
+            how_source("/repo/research/tui-notes.md"),
+            how_source("/repo/scripts/verify.sh"),
+        ];
+        rank_local_sources_for_question("What is the TUI spinner cadence?", &mut sources);
+        assert_eq!(sources[0].uri, "/repo/research/tui-notes.md");
     }
 }

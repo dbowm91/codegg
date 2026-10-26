@@ -27,6 +27,30 @@ const EGGSEARCH_MAX_CACHE_AGE_SECONDS: u64 = 2_592_000;
 /// `eggsearch_unavailable` instead of consulting a process-global slot.
 pub(crate) type McpHandle = std::sync::Arc<tokio::sync::RwLock<crate::mcp::McpService>>;
 
+/// Read a whole-valued JSON number as `u64`.
+///
+/// Model-facing count/size fields are declared `"type": "number"` (see
+/// `crate::tool::util::json_usize`), so a model that follows the schema
+/// literally sends `500.0` for a count. `Value::as_u64()` rejects that,
+/// which made `batch_fetch` fail on `500.0` while other `repo_*` paths
+/// silently defaulted. Accept whole-valued floats (`500.0` → `500`);
+/// still reject fractional values (`1.5`), negatives, and non-finite
+/// numbers rather than rounding caller bugs away.
+fn tolerant_u64(value: &Value) -> Option<u64> {
+    let number = value.as_number()?;
+    if let Some(exact) = number.as_u64() {
+        return Some(exact);
+    }
+    let float = number.as_f64()?;
+    if !float.is_finite() || float < 0.0 || float.fract() != 0.0 {
+        return None;
+    }
+    if float > u64::MAX as f64 {
+        return None;
+    }
+    Some(float as u64)
+}
+
 fn copy_fields(args: &mut Value, input: &Value, fields: &[&str]) {
     for field in fields {
         if let Some(value) = input.get(*field).filter(|value| !value.is_null()) {
@@ -73,9 +97,8 @@ fn optional_u64_in_range(
     let Some(value) = input.get(field).filter(|value| !value.is_null()) else {
         return Ok(None);
     };
-    let number = value
-        .as_u64()
-        .ok_or_else(|| ToolError::Execution(format!("'{field}' must be a non-negative integer")))?;
+    let number = tolerant_u64(value)
+        .ok_or_else(|| ToolError::Execution(format!("'{field}' must be a non-negative integer (whole-valued floats such as 500.0 are accepted)")))?;
     if let Some(maximum) = maximum {
         if number > maximum {
             return Err(ToolError::Execution(format!(
@@ -132,6 +155,79 @@ fn apply_internal_response_detail(input: &Value, args: &mut Value) -> Result<(),
     }
     args["response_detail"] = json!("diagnostic");
     Ok(())
+}
+
+/// Local-only compact projection (R6/F4).
+///
+/// `compact:true` / `detail:"summary"` never reach eggsearch: they select a
+/// CodeGG-side projection that keeps only selection fields
+/// (`canonical_name`/`path`/`description` plus title/url/snippet aliases).
+/// Invalid `detail` values fail before any MCP dispatch; an unrecognized
+/// upstream shape degrades gracefully to the full envelope.
+fn apply_compact_projection(
+    input: &Value,
+    mut result: EggsearchCallResult,
+    max_items: usize,
+    max_output_chars: usize,
+    cap_label: &str,
+    frame: fn(&str, &str) -> String,
+) -> Result<EggsearchCallResult, ToolError> {
+    let wants_compact = super::framing::search_detail_requests_compact(input)?;
+    if !wants_compact {
+        return Ok(result);
+    }
+    let Some(value) = result.value.clone() else {
+        return Ok(result);
+    };
+    let Some(compact) = super::framing::project_compact_search_value(&value, max_items) else {
+        return Ok(result);
+    };
+    let pretty = serde_json::to_string_pretty(&compact).unwrap_or_else(|_| compact.to_string());
+    let (capped, truncated) = super::framing::clamp_output(&pretty, max_output_chars, cap_label);
+    result.output = frame(&capped, "eggsearch");
+    result.value = Some(compact);
+    result.truncated = truncated || result.truncated;
+    Ok(result)
+}
+
+/// Batch-only compact projection (F11).
+///
+/// Mirrors [`apply_compact_projection`] but dedups `text` vs
+/// `focus.chunks` (see `project_batch_compact_value`) instead of selecting
+/// card fields: a batch item's content is the payload, not telemetry, so
+/// field selection would discard the evidence itself.
+fn apply_batch_compact_projection(
+    input: &Value,
+    mut result: EggsearchCallResult,
+    max_items: usize,
+    max_output_chars: usize,
+    cap_label: &str,
+) -> Result<EggsearchCallResult, ToolError> {
+    let wants_compact = super::framing::search_detail_requests_compact(input)?;
+    if !wants_compact {
+        return Ok(result);
+    }
+    let Some(value) = result.value.clone() else {
+        return Ok(result);
+    };
+    let Some(compact) = super::framing::project_batch_compact_value(&value, max_items) else {
+        return Ok(result);
+    };
+    let pretty = serde_json::to_string_pretty(&compact).unwrap_or_else(|_| compact.to_string());
+    let (capped, truncated) = super::framing::clamp_output(&pretty, max_output_chars, cap_label);
+    result.output = frame_batch_results(&capped, "eggsearch");
+    result.value = Some(compact);
+    result.truncated = truncated || result.truncated;
+    Ok(result)
+}
+
+fn compact_limit(input: &Value, fields: &[&str], default: u64) -> usize {
+    for field in fields {
+        if let Some(n) = input.get(*field).and_then(tolerant_u64) {
+            return (n.min(30).max(1)) as usize;
+        }
+    }
+    default as usize
 }
 
 fn add_fetch_controls(input: &Value, args: &mut Value) -> Result<(), ToolError> {
@@ -272,14 +368,14 @@ fn add_repository_locator(args: &mut Value, locator: RepositoryLocator) {
 }
 
 fn range_alias(input: &Value, current: &str, legacy: &str) -> Result<Option<u64>, ToolError> {
-    let current_value = input.get(current).and_then(Value::as_u64);
-    let legacy_value = input.get(legacy).and_then(Value::as_u64);
+    let current_value = input.get(current).and_then(tolerant_u64);
+    let legacy_value = input.get(legacy).and_then(tolerant_u64);
     if input
         .get(current)
         .is_some_and(|_value| current_value.is_none())
     {
         return Err(ToolError::Execution(format!(
-            "'{current}' must be a non-negative integer"
+            "'{current}' must be a non-negative integer (whole-valued floats such as 500.0 are accepted)"
         )));
     }
     if input
@@ -287,7 +383,7 @@ fn range_alias(input: &Value, current: &str, legacy: &str) -> Result<Option<u64>
         .is_some_and(|_value| legacy_value.is_none())
     {
         return Err(ToolError::Execution(format!(
-            "'{legacy}' must be a non-negative integer"
+            "'{legacy}' must be a non-negative integer (whole-valued floats such as 500.0 are accepted)"
         )));
     }
     if let (Some(current_value), Some(legacy_value)) = (current_value, legacy_value) {
@@ -310,7 +406,7 @@ fn build_web_search_args(input: &Value) -> Result<Value, ToolError> {
     let max_results = input
         .get("num_results")
         .or_else(|| input.get("max_results"))
-        .and_then(Value::as_u64)
+        .and_then(tolerant_u64)
         .unwrap_or(8)
         .min(30);
     let mut args = json!({"query": query, "max_results": max_results});
@@ -343,7 +439,7 @@ fn build_web_fetch_args(input: &Value) -> Result<Value, ToolError> {
     let max_chars = input
         .get("max_length")
         .or_else(|| input.get("max_chars"))
-        .and_then(Value::as_u64)
+        .and_then(tolerant_u64)
         .unwrap_or(10_000);
     let mut args = json!({"url": url, "max_chars": max_chars});
     args["extract_mode"] = input
@@ -539,8 +635,8 @@ fn build_batch_fetch_args(input: &Value) -> Result<Value, ToolError> {
 fn bounded_u64(input: &Value, field: &str, default: u64, cap: u64) -> Result<u64, ToolError> {
     match input.get(field) {
         None => Ok(default),
-        Some(value) => value.as_u64().map(|value| value.min(cap)).ok_or_else(|| {
-            ToolError::Execution(format!("'{field}' must be a non-negative integer"))
+        Some(value) => tolerant_u64(value).map(|value| value.min(cap)).ok_or_else(|| {
+            ToolError::Execution(format!("'{field}' must be a non-negative integer (whole-valued floats such as 500.0 are accepted)"))
         }),
     }
 }
@@ -690,9 +786,11 @@ pub async fn call_web_search_structured(
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<EggsearchCallResult, ToolError> {
+    // Validate local-only projection before any MCP dispatch.
+    super::framing::search_detail_requests_compact(input)?;
     let args = build_web_search_args(input)?;
 
-    call_structured_tool_with_service(
+    let result = call_structured_tool_with_service(
         svc,
         mcp_server,
         "web_search",
@@ -702,7 +800,16 @@ pub async fn call_web_search_structured(
         "max_search_output_chars",
         frame_search_results,
     )
-    .await
+    .await?;
+    let limit = compact_limit(input, &["num_results", "max_results"], 10);
+    apply_compact_projection(
+        input,
+        result,
+        limit,
+        max_output_chars,
+        "max_search_output_chars",
+        frame_search_results,
+    )
 }
 
 pub async fn call_web_search(
@@ -728,9 +835,11 @@ pub async fn call_web_fetch_structured(
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<EggsearchCallResult, ToolError> {
+    // Validate local-only projection before any MCP dispatch.
+    super::framing::search_detail_requests_compact(input)?;
     let args = build_web_fetch_args(input)?;
 
-    call_structured_tool_with_service(
+    let result = call_structured_tool_with_service(
         svc,
         mcp_server,
         "web_fetch",
@@ -740,7 +849,15 @@ pub async fn call_web_fetch_structured(
         "max_fetch_output_chars",
         frame_fetched_page,
     )
-    .await
+    .await?;
+    apply_compact_projection(
+        input,
+        result,
+        compact_limit(input, &["max_chars", "max_length"], 10),
+        max_output_chars,
+        "max_fetch_output_chars",
+        frame_fetched_page,
+    )
 }
 
 pub async fn call_web_fetch(
@@ -785,6 +902,7 @@ pub async fn call_repo_search_structured_with_host_scope(
     timeout_ms: u64,
     host_scope: Option<Option<&std::path::Path>>,
 ) -> Result<EggsearchCallResult, ToolError> {
+    super::framing::search_detail_requests_compact(input)?;
     let query = input
         .get("query")
         .and_then(Value::as_str)
@@ -823,12 +941,12 @@ pub async fn call_repo_search_structured_with_host_scope(
     translate_provider_list(input, &mut args)?;
     args["max_results"] = json!(input
         .get("max_results")
-        .and_then(Value::as_u64)
+        .and_then(tolerant_u64)
         .unwrap_or(10)
         .min(30));
     apply_internal_response_detail(input, &mut args)?;
 
-    call_structured_tool_with_service_scope(
+    let result = call_structured_tool_with_service_scope(
         svc,
         mcp_server,
         "repo_search",
@@ -839,7 +957,16 @@ pub async fn call_repo_search_structured_with_host_scope(
         host_scope,
         frame_repo_results,
     )
-    .await
+    .await?;
+    let limit = compact_limit(input, &["max_results"], 10);
+    apply_compact_projection(
+        input,
+        result,
+        limit,
+        max_output_chars,
+        "max_repo_output_chars",
+        frame_repo_results,
+    )
 }
 
 pub async fn call_repo_search(
@@ -884,6 +1011,7 @@ pub async fn call_repo_fetch_structured_with_host_scope(
     timeout_ms: u64,
     host_scope: Option<Option<&std::path::Path>>,
 ) -> Result<EggsearchCallResult, ToolError> {
+    super::framing::search_detail_requests_compact(input)?;
     let path = non_empty_string(input, "path")?
         .ok_or_else(|| ToolError::Execution("missing 'path' parameter".to_string()))?;
     let mut args = json!({"path": path});
@@ -912,7 +1040,7 @@ pub async fn call_repo_fetch_structured_with_host_scope(
     }
     apply_internal_response_detail(input, &mut args)?;
 
-    call_structured_tool_with_service_scope(
+    let result = call_structured_tool_with_service_scope(
         svc,
         mcp_server,
         "repo_fetch",
@@ -923,7 +1051,15 @@ pub async fn call_repo_fetch_structured_with_host_scope(
         host_scope,
         frame_repo_file,
     )
-    .await
+    .await?;
+    apply_compact_projection(
+        input,
+        result,
+        10,
+        max_output_chars,
+        "max_repo_output_chars",
+        frame_repo_file,
+    )
 }
 
 pub async fn call_repo_fetch(
@@ -968,6 +1104,7 @@ pub async fn call_repo_map_structured_with_host_scope(
     timeout_ms: u64,
     host_scope: Option<Option<&std::path::Path>>,
 ) -> Result<EggsearchCallResult, ToolError> {
+    super::framing::search_detail_requests_compact(input)?;
     if input
         .get("path")
         .and_then(Value::as_str)
@@ -994,13 +1131,13 @@ pub async fn call_repo_map_structured_with_host_scope(
     let depth = input
         .get("max_depth")
         .or_else(|| input.get("depth"))
-        .and_then(Value::as_u64)
+        .and_then(tolerant_u64)
         .unwrap_or(2)
         .min(3);
     args["max_depth"] = json!(depth);
     apply_internal_response_detail(input, &mut args)?;
 
-    call_structured_tool_with_service_scope(
+    let result = call_structured_tool_with_service_scope(
         svc,
         mcp_server,
         "repo_map",
@@ -1011,7 +1148,16 @@ pub async fn call_repo_map_structured_with_host_scope(
         host_scope,
         frame_repo_map,
     )
-    .await
+    .await?;
+    let limit = compact_limit(input, &["max_entries"], 10);
+    apply_compact_projection(
+        input,
+        result,
+        limit,
+        max_output_chars,
+        "max_repo_output_chars",
+        frame_repo_map,
+    )
 }
 
 pub async fn call_repo_map(
@@ -1037,6 +1183,7 @@ pub async fn call_security_search_structured(
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<EggsearchCallResult, ToolError> {
+    super::framing::search_detail_requests_compact(input)?;
     let query = input
         .get("query")
         .and_then(Value::as_str)
@@ -1082,12 +1229,12 @@ pub async fn call_security_search_structured(
     }
     args["max_results"] = json!(input
         .get("max_results")
-        .and_then(Value::as_u64)
+        .and_then(tolerant_u64)
         .unwrap_or(10)
         .min(20));
     apply_internal_response_detail(input, &mut args)?;
 
-    call_structured_tool_with_service(
+    let result = call_structured_tool_with_service(
         svc,
         mcp_server,
         "security_search",
@@ -1097,7 +1244,16 @@ pub async fn call_security_search_structured(
         "max_security_output_chars",
         frame_security_results,
     )
-    .await
+    .await?;
+    let limit = compact_limit(input, &["max_results"], 10);
+    apply_compact_projection(
+        input,
+        result,
+        limit,
+        max_output_chars,
+        "max_security_output_chars",
+        frame_security_results,
+    )
 }
 
 pub async fn call_security_search(
@@ -1123,6 +1279,7 @@ pub async fn call_research_search_structured(
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<EggsearchCallResult, ToolError> {
+    super::framing::search_detail_requests_compact(input)?;
     let query = input
         .get("query")
         .and_then(Value::as_str)
@@ -1153,12 +1310,12 @@ pub async fn call_research_search_structured(
     translate_legacy_research_domains(input, &mut args)?;
     args["max_results"] = json!(input
         .get("max_results")
-        .and_then(Value::as_u64)
+        .and_then(tolerant_u64)
         .unwrap_or(10)
         .min(15));
     apply_internal_response_detail(input, &mut args)?;
 
-    call_structured_tool_with_service(
+    let result = call_structured_tool_with_service(
         svc,
         mcp_server,
         "research_search",
@@ -1168,7 +1325,16 @@ pub async fn call_research_search_structured(
         "max_research_output_chars",
         frame_research_results,
     )
-    .await
+    .await?;
+    let limit = compact_limit(input, &["max_results"], 10);
+    apply_compact_projection(
+        input,
+        result,
+        limit,
+        max_output_chars,
+        "max_research_output_chars",
+        frame_research_results,
+    )
 }
 
 pub async fn call_research_search(
@@ -1194,9 +1360,10 @@ pub async fn call_batch_fetch_structured(
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<EggsearchCallResult, ToolError> {
+    super::framing::search_detail_requests_compact(input)?;
     let args = build_batch_fetch_args(input)?;
 
-    call_structured_tool_with_service(
+    let result = call_structured_tool_with_service(
         svc,
         mcp_server,
         "batch_fetch",
@@ -1206,7 +1373,15 @@ pub async fn call_batch_fetch_structured(
         "max_batch_output_chars",
         frame_batch_results,
     )
-    .await
+    .await?;
+    let limit = compact_limit(input, &["max_items"], 10);
+    apply_batch_compact_projection(
+        input,
+        result,
+        limit,
+        max_output_chars,
+        "max_batch_output_chars",
+    )
 }
 
 pub async fn call_batch_fetch(
@@ -1232,10 +1407,11 @@ pub async fn call_build_evidence_bundle_structured(
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<EggsearchCallResult, ToolError> {
+    super::framing::search_detail_requests_compact(input)?;
     let mut args = build_evidence_bundle_args(input)?;
     apply_internal_response_detail(input, &mut args)?;
 
-    call_structured_tool_with_service(
+    let result = call_structured_tool_with_service(
         svc,
         mcp_server,
         "build_evidence_bundle",
@@ -1245,7 +1421,16 @@ pub async fn call_build_evidence_bundle_structured(
         "max_evidence_output_chars",
         frame_evidence_bundle,
     )
-    .await
+    .await?;
+    let limit = compact_limit(input, &["max_sources", "max_fetched_items"], 10);
+    apply_compact_projection(
+        input,
+        result,
+        limit,
+        max_output_chars,
+        "max_evidence_output_chars",
+        frame_evidence_bundle,
+    )
 }
 
 pub async fn call_build_evidence_bundle(
@@ -1436,6 +1621,37 @@ pub async fn call_provider_status_with_service(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whole_valued_floats_coerce_to_integers() {
+        assert_eq!(tolerant_u64(&json!(500.0)), Some(500));
+        assert_eq!(tolerant_u64(&json!(1.0)), Some(1));
+        assert_eq!(tolerant_u64(&json!(12)), Some(12));
+        assert_eq!(tolerant_u64(&json!(1.5)), None);
+        assert_eq!(tolerant_u64(&json!(-1.0)), None);
+        assert_eq!(tolerant_u64(&json!("500")), None);
+    }
+
+    #[test]
+    fn batch_fetch_bounds_accept_whole_valued_floats() {
+        assert_eq!(
+            bounded_u64(
+                &json!({"max_chars_per_item": 500.0}),
+                "max_chars_per_item",
+                10_000,
+                50_000
+            )
+            .unwrap(),
+            500
+        );
+        assert!(bounded_u64(
+            &json!({"max_chars_per_item": 1.5}),
+            "max_chars_per_item",
+            10_000,
+            50_000
+        )
+        .is_err());
+    }
 
     #[test]
     fn provider_hint_auto_omits_selection() {
@@ -1741,6 +1957,130 @@ mod tests {
             normalized.get("repo").is_none(),
             "repo field should not be copied into web-type item"
         );
+    }
+
+    /// F11: the six telemetry-heavy tools expose the same compact/detail
+    /// projection contract as `repo_search`, steering agents to summary
+    /// while keeping full as the default.
+    #[test]
+    fn summary_projection_params_reach_every_telemetry_heavy_tool() {
+        use crate::tool::Tool;
+        let schemas = [
+            crate::tool::batch_fetch::BatchFetchTool::default().parameters(),
+            crate::tool::security_search::SecuritySearchTool::default().parameters(),
+            crate::tool::research_search::ResearchSearchTool::default().parameters(),
+            crate::tool::webfetch::WebFetchTool::default().parameters(),
+            crate::tool::repo_fetch::RepoFetchTool::default().parameters(),
+            crate::tool::evidence_bundle::EvidenceBundleTool::default().parameters(),
+        ];
+        for params in &schemas {
+            let props = &params["properties"];
+            assert!(props.get("compact").is_some());
+            assert_eq!(
+                props["detail"]["enum"],
+                json!(["summary", "full", "schema"])
+            );
+        }
+        let descriptions = [
+            crate::tool::batch_fetch::BatchFetchTool::default()
+                .description()
+                .to_string(),
+            crate::tool::security_search::SecuritySearchTool::default()
+                .description()
+                .to_string(),
+            crate::tool::research_search::ResearchSearchTool::default()
+                .description()
+                .to_string(),
+            crate::tool::webfetch::WebFetchTool::default()
+                .description()
+                .to_string(),
+            crate::tool::repo_fetch::RepoFetchTool::default()
+                .description()
+                .to_string(),
+            crate::tool::evidence_bundle::EvidenceBundleTool::default()
+                .description()
+                .to_string(),
+        ];
+        for description in descriptions {
+            assert!(description.contains("detail='summary'"));
+            assert!(description.contains("default detail='full'"));
+        }
+    }
+
+    /// F11: `detail='summary'` on a batch result keeps the focused chunks
+    /// and drops the duplicated full text (and vice versa), inside the
+    /// batch frame.
+    #[test]
+    fn batch_summary_projection_dedups_text_against_focus_chunks() {
+        let value = json!({
+            "items": [
+                {
+                    "url": "https://example.com/a",
+                    "text": "full document text",
+                    "focus": {"chunks": ["selected chunk"]},
+                },
+                {
+                    "url": "https://example.com/b",
+                    "text": "other full text",
+                    "focus": {"chunks": []},
+                },
+            ],
+        });
+        let result = EggsearchCallResult {
+            output: "full envelope".to_string(),
+            value: Some(value),
+            truncated: false,
+            success: true,
+        };
+        let projected = apply_batch_compact_projection(
+            &json!({"detail": "summary"}),
+            result,
+            10,
+            12000,
+            "max_batch_output_chars",
+        )
+        .expect("summary projection");
+        assert!(!projected.truncated);
+        let items = projected.value.expect("compact value").to_owned();
+        let items = items.as_array().expect("item array");
+        assert_eq!(items.len(), 2);
+        assert!(items[0].get("text").is_none());
+        assert_eq!(items[0]["focus"]["chunks"][0], "selected chunk");
+        assert_eq!(items[1]["text"], "other full text");
+        assert!(items[1].get("focus").is_none());
+        assert!(projected.output.contains("tool=batch_fetch"));
+    }
+
+    /// F11: without `detail='summary'` the batch envelope passes through
+    /// untouched — summary is opt-in, never a silent default change.
+    #[test]
+    fn batch_full_default_preserves_the_complete_envelope() {
+        let value = json!({
+            "items": [
+                {
+                    "url": "https://example.com/a",
+                    "text": "full document text",
+                    "focus": {"chunks": ["selected chunk"]},
+                },
+            ],
+        });
+        let result = EggsearchCallResult {
+            output: "full envelope".to_string(),
+            value: Some(value.clone()),
+            truncated: false,
+            success: true,
+        };
+        let kept = apply_batch_compact_projection(
+            &json!({"detail": "full"}),
+            result,
+            10,
+            12000,
+            "max_batch_output_chars",
+        )
+        .expect("full default");
+        assert_eq!(kept.output, "full envelope");
+        assert_eq!(kept.value, Some(value));
+        assert!(!kept.truncated);
     }
 
     #[tokio::test]

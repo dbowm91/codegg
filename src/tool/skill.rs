@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, Deserialize)]
 struct SkillInput {
     name: String,
+    #[serde(default)]
+    query: Option<String>,
 }
 
 #[derive(Default)]
@@ -48,7 +50,10 @@ impl Tool for SkillTool {
     }
 
     fn description(&self) -> &str {
-        "Load a skill (SKILL.md) by name into context. Returns the skill content and list of resource files."
+        "Load a skill (SKILL.md) by name into context. Returns the skill content and list of resource files. \
+         Skills are discovered by exact name from the pinned asset snapshot or the session workspace; \
+         an unknown name returns did-you-mean suggestions (top matches with one-line descriptions). \
+         Find the full first-party list in the AGENTS.md Skills index or .opencode/skills/."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -58,6 +63,10 @@ impl Tool for SkillTool {
                 "name": {
                     "type": "string",
                     "description": "Name of the skill to load"
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Optional search text used only to rank did-you-mean suggestions when 'name' is not found"
                 }
             },
             "required": ["name"]
@@ -74,13 +83,25 @@ impl Tool for SkillTool {
 
         if let Some(snapshot) = self.snapshot.as_ref() {
             if let Some(pin) = self.asset_pin.as_ref() {
-                pin.lock()
+                let record = pin
+                    .lock()
                     .map_err(|_| ToolError::Execution("asset pin lock poisoned".to_string()))?
                     .record_skill_activation(&parsed.name)
-                    .map_err(|e| ToolError::Execution(e.to_string()))?;
+                    .map(|_| ())
+                    .map_err(|e| e.to_string());
+                if let Err(msg) = record {
+                    if msg.contains("not present in the pinned snapshot") {
+                        return Err(skill_not_found(
+                            &parsed.name,
+                            parsed.query.as_deref(),
+                            &snapshot.skills,
+                        ));
+                    }
+                    return Err(ToolError::Execution(msg));
+                }
             }
             let skill = snapshot.skills.get(&parsed.name).ok_or_else(|| {
-                ToolError::Execution(format!("skill '{}' not found", parsed.name))
+                skill_not_found(&parsed.name, parsed.query.as_deref(), &snapshot.skills)
             })?;
             return render_skill(skill);
         }
@@ -111,9 +132,146 @@ impl Tool for SkillTool {
 
         let skill = registry
             .get(&parsed.name)
-            .ok_or_else(|| ToolError::Execution(format!("skill '{}' not found", parsed.name)))?;
+            .ok_or_else(|| skill_not_found(&parsed.name, parsed.query.as_deref(), &registry))?;
 
         render_skill(skill)
+    }
+}
+
+const MAX_SKILL_SUGGESTIONS: usize = 5;
+
+fn skill_not_found(
+    name: &str,
+    query: Option<&str>,
+    registry: &crate::skills::AssetRegistry,
+) -> ToolError {
+    let hint = query
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(name);
+    let mut matches = registry.find_matching(hint);
+    matches.truncate(MAX_SKILL_SUGGESTIONS);
+    let suggestions: Vec<&crate::skills::EffectiveSkill> = if matches.is_empty() {
+        registry.list().iter().take(MAX_SKILL_SUGGESTIONS).collect()
+    } else {
+        matches
+    };
+    if suggestions.is_empty() {
+        return ToolError::Execution(format!(
+            "skill '{name}' not found (no skills registered; see the AGENTS.md Skills index for first-party skills)"
+        ));
+    }
+    let mut msg = format!("skill '{name}' not found. Did you mean:");
+    for skill in suggestions {
+        let description = skill.description.replace('\n', " ");
+        msg.push_str(&format!("\n- {}: {}", skill.name, description));
+    }
+    msg.push_str("\nSee the AGENTS.md Skills index for first-party skills.");
+    ToolError::Execution(msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tool::Tool;
+    use std::fs;
+
+    fn fixture_registry(
+        dir: &tempfile::TempDir,
+        skills: &[(&str, &str)],
+    ) -> crate::skills::AssetRegistry {
+        for (name, description) in skills {
+            let skill_dir = dir.path().join(".codegg").join("skills").join(name);
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {description}\n---\nBody"),
+            )
+            .unwrap();
+        }
+        let config = crate::skills::AssetDiscoveryConfig::default();
+        crate::skills::AssetRegistry::build_with_home(&config, dir.path(), &[], None)
+    }
+
+    #[test]
+    fn unknown_skill_error_suggests_similar_names() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let registry = fixture_registry(
+            &dir,
+            &[
+                ("testing-ci", "Run the test suite"),
+                ("tool-execution", "Run tools"),
+            ],
+        );
+        let err = skill_not_found("testing", None, &registry);
+        let msg = err.to_string();
+        assert!(msg.contains("did you mean") || msg.contains("Did you mean"));
+        assert!(msg.contains("testing-ci"));
+        assert!(msg.contains("AGENTS.md Skills index"));
+    }
+
+    #[test]
+    fn query_param_re_ranks_suggestions() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let registry = fixture_registry(
+            &dir,
+            &[
+                ("testing-ci", "Run the test suite"),
+                ("tool-execution", "Run tools"),
+            ],
+        );
+        let err = skill_not_found("typo-name", Some("tool"), &registry);
+        let msg = err.to_string();
+        assert!(msg.contains("tool-execution"));
+        assert!(msg.contains("AGENTS.md Skills index"));
+    }
+
+    #[test]
+    fn empty_registry_reports_no_skills_registered() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = crate::skills::AssetDiscoveryConfig::default();
+        let registry =
+            crate::skills::AssetRegistry::build_with_home(&config, dir.path(), &[], None);
+        assert!(registry.list().is_empty());
+        let err = skill_not_found("anything", None, &registry);
+        assert!(err.to_string().contains("no skills registered"));
+    }
+
+    #[test]
+    fn typo_ranks_exact_near_miss_first() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let registry = fixture_registry(
+            &dir,
+            &[
+                ("testing-ci", "Run the test suite"),
+                ("tool-execution", "Run tools"),
+                ("agent", "Delegate work"),
+                ("architecture-review", "Review architecture"),
+            ],
+        );
+        let err = skill_not_found("tseting-ci", None, &registry);
+        let msg = err.to_string();
+        let testing_pos = msg.find("testing-ci").expect("near miss must be suggested");
+        // The near miss must outrank every other candidate in the message.
+        for other in ["tool-execution", "agent", "architecture-review"] {
+            if let Some(pos) = msg.find(other) {
+                assert!(
+                    testing_pos < pos,
+                    "testing-ci must rank before {other}: {msg}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn skill_description_and_params_document_suggestions() {
+        let tool = SkillTool::default();
+        assert!(!tool.description().contains("no skill-listing operation"));
+        assert!(tool.description().contains("did-you-mean"));
+        let params = tool.parameters();
+        let required = params.get("required").and_then(|v| v.as_array()).unwrap();
+        assert!(required.iter().any(|v| v == "name"));
+        assert!(params["properties"].get("query").is_some());
     }
 }
 

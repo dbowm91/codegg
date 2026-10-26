@@ -44,9 +44,9 @@ impl Tool for PlanEnterTool {
         let topic = parsed.topic.as_deref().unwrap_or("general planning");
 
         Ok(format!(
-            "__PLAN_MODE_ENTER__:{topic}\n\n\
+            "__PLAN_MODE_ENTER__:{topic} (exit with plan_exit when ready)\n\n\
             In plan mode you can:\n\
-            - Read files and analyze code (read, glob, grep, list, codesearch, webfetch, lsp, skill)\n\
+            - Read files and analyze code (read, glob, grep, list, repo_search, webfetch, lsp, skill)\n\
             - Use todowrite to record plan steps (this is the recommended planning surface)\n\
             - Use todoread to inspect existing todos\n\
             - Run read-only bash commands (ls, cat, grep, git status, cargo check, etc.)\n\n\
@@ -136,4 +136,20 @@ pub fn detect_plan_mode_change(output: &str) -> Option<PlanModeChange> {
 pub enum PlanModeChange {
     Enter(Option<String>),
     Exit,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tool::Tool;
+
+    #[tokio::test]
+    async fn plan_enter_header_names_plan_exit() {
+        let tool = PlanEnterTool;
+        let output = tool
+            .execute(serde_json::json!({}))
+            .await
+            .expect("plan enter");
+        assert!(output.lines().next().unwrap_or("").contains("plan_exit"));
+    }
 }
