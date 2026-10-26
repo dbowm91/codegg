@@ -6048,7 +6048,7 @@ mod tests {
             .expect("timeout_ms description");
         assert_eq!(
             live_timeout_description,
-            "Bounded wait timeout in milliseconds, clamped to 30000 (30s). Issue waits solo, never batched with other work: a wait holds no batch execution slot and head-of-line-blocks its siblings."
+            "Bounded wait timeout in milliseconds, clamped to 30000 (30s). Whole-valued floats coerced. Issue waits solo, never batched with other work: a wait holds no batch execution slot and head-of-line-blocks its siblings."
         );
         task_properties["timeout_ms"]["description"] =
             serde_json::json!("Bounded wait timeout in milliseconds");
