@@ -6540,6 +6540,25 @@ mod tests {
             historical_schemas.insert(tool.to_string(), schema);
         }
 
+        // The ignored-file discovery control was added to `glob` after the
+        // M003 receipt was frozen. Keep it in the live schema, but exclude it
+        // when reconstructing the receipt's historical input contract.
+        {
+            let schema = historical_schemas
+                .get_mut("glob")
+                .expect("glob schema already restored");
+            let props = schema["properties"]
+                .as_object_mut()
+                .expect("glob properties remain declared");
+            let include_ignored = props
+                .remove("include_ignored")
+                .expect("post-M003 glob.include_ignored remains declared");
+            assert_eq!(
+                include_ignored["type"], "boolean",
+                "unexpected post-M003 glob.include_ignored schema"
+            );
+        }
+
         let historical_effect_fingerprint =
             effect_catalog_fingerprint_with_schema_overrides(&registry, &historical_schemas);
         assert_eq!(
