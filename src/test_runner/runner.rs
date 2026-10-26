@@ -400,15 +400,24 @@ pub async fn run_resolved_test_with_profile_and_network(
         });
     }
 
-    Ok(DelegatedTestRun { report, run_id })
+    Ok(DelegatedTestRun {
+        report,
+        run_id,
+        // A3: thread the vacuous-run flag from the parser so the `test` tool
+        // marker can emit `no_tests` instead of `passed`.
+        no_tests: parse_state.is_no_tests(),
+    })
 }
 
 /// Result of a delegated test run. The `run_id` is `Some` iff a `RunStore`
 /// record was successfully begun — it is the proof of delegated ownership.
+/// `no_tests` threads `TestParseState::is_no_tests`: a vacuous run selected
+/// nothing and must never read as a pass downstream.
 #[derive(Debug, Clone)]
 pub struct DelegatedTestRun {
     pub report: TestReport,
     pub run_id: Option<codegg_core::run_store::RunId>,
+    pub no_tests: bool,
 }
 
 impl DelegatedTestRun {
@@ -417,6 +426,10 @@ impl DelegatedTestRun {
     }
     pub fn report(&self) -> &TestReport {
         &self.report
+    }
+    /// A3: vacuous-run flag for marker mapping.
+    pub fn is_no_tests(&self) -> bool {
+        self.no_tests
     }
 }
 
@@ -1429,9 +1442,52 @@ mod tests {
 
     #[test]
     fn build_summary_no_tests_exits() {
+        // A3: a vacuous run is `no_tests`, never "completed successfully" —
+        // the summary prefix is what the `test` tool marker keys on.
         let state = TestParseState::default();
-        assert_eq!(build_summary(&state, Some(0)), "completed successfully");
-        assert_eq!(build_summary(&state, Some(1)), "process exited with code 1");
+        assert!(state.is_no_tests());
+        assert_eq!(
+            build_summary(&state, Some(0)),
+            "no_tests: 0 tests selected (not a pass)"
+        );
+        assert_eq!(
+            build_summary(&state, Some(1)),
+            "process exited with code 1 (0 tests ran)"
+        );
+    }
+
+    /// A3: the vacuous-run flag threads from the parser through
+    /// `DelegatedTestRun` (exit 0, zero counters) with the `no_tests:`
+    /// summary prefix the marker keys on.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn vacuous_run_threads_no_tests_flag() {
+        let dir = temp_dir_with_files("no-tests-flag", &[]);
+        let resolved = ResolvedTestCommand {
+            language: crate::test_runner::types::TestLanguage::Generic,
+            argv: vec!["true".into()],
+            cwd: dir.path().to_path_buf(),
+            scope_label: "test".into(),
+        };
+        let request = TestRunRequest {
+            scope: TestScope::Auto,
+            workdir: dir.path().to_path_buf(),
+            timeout_secs: Some(30),
+            stall_timeout_secs: None,
+            max_report_bytes: None,
+            session_id: None,
+            parent_run_id: None,
+            execution_cwd: None,
+            cancellation: None,
+        };
+        let delegated = run_resolved_test(&request, resolved, None, None)
+            .await
+            .expect("vacuous run completes");
+        assert!(delegated.is_no_tests(), "vacuous run must thread no_tests");
+        assert!(
+            delegated.report().summary.starts_with("no_tests:"),
+            "vacuous summary must carry the prefix, got: {}",
+            delegated.report().summary
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -1513,6 +1513,9 @@ fn execution_context_for_attempt(
         parent_attempt_id: ctx.attempt_id.clone(),
         provider_name: None,
         backend_policy: None,
+        // A6: the broker has no session-selection handle; the daemon turn
+        // path populates `session_model` when the session is bound.
+        session_model: None,
         cancellation: ctx.cancellation.clone(),
         deadline: ctx.deadline,
         decision_id: authorization

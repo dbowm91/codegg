@@ -56,7 +56,7 @@ impl Tool for ListTool {
     }
 
     fn description(&self) -> &str {
-        "List directory tree with ignore patterns (node_modules, .git, etc.). Limited to 300 files by default. Workspace-scoped; resolves against the session workspace root. `read` sees ignored files; discovery skips them unless include_ignored:true. Note: `.codegg/test-runs/*` may be gitignored — use include_ignored:true or read directly."
+        "List directory tree with ignore patterns (node_modules, .git, etc.). Limited to 300 files by default. Workspace-scoped; resolves against the session workspace root. `read` sees ignored files; discovery skips them unless include_ignored:true. Note: `.codegg/test-runs/*` may be gitignored — use include_ignored:true or read directly. Entries are sorted lexicographically (plain byte order) before display."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -218,6 +218,13 @@ impl Tool for ListTool {
         .await
         .map_err(|e| ToolError::Execution(format!("spawn_blocking failed: {}", e)))??;
 
+        // A10: deterministic order. Plain lexicographic (byte) sort before
+        // join — not dirs-first — so repeated listings compare equal and the
+        // truncation window is stable. The trailing `/` on directories keeps
+        // them grouped naturally without a second ordering rule.
+        let mut entries = entries;
+        entries.sort();
+
         let mut result = entries.join("\n");
         if truncated {
             result.push_str(&format!(
@@ -271,4 +278,40 @@ fn count_ignored_list_entries(dir: &std::path::Path) -> usize {
     let enabled = count_with(dir, false);
     let disabled = count_with(dir, true);
     disabled.saturating_sub(enabled).min(10_000)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A10: entries are sorted plain-lexicographically before join (not
+    /// dirs-first), so repeated listings compare equal.
+    #[tokio::test]
+    async fn entries_are_sorted_plain_lexicographic_before_join() {
+        let dir = tempfile::tempdir().expect("list fixture");
+        for name in ["zebra.txt", "apple.txt", "mango.txt"] {
+            std::fs::write(dir.path().join(name), b"x").expect("fixture file");
+        }
+        std::fs::create_dir(dir.path().join("bdir")).expect("fixture dir");
+        std::fs::write(dir.path().join("bdir/inner.txt"), b"x").expect("nested");
+        let tool = ListTool::new().with_allowed_root(dir.path().to_path_buf());
+        let out = tool
+            .execute(serde_json::json!({}))
+            .await
+            .expect("list must succeed");
+        let lines: Vec<&str> = out
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with("...") && !l.starts_with("[skipped"))
+            .collect();
+        assert!(
+            lines.len() >= 4,
+            "expected files plus dir entry, got: {lines:?}"
+        );
+        let mut sorted = lines.clone();
+        sorted.sort();
+        assert_eq!(
+            lines, sorted,
+            "entries must be plain lexicographic, got: {lines:?}"
+        );
+    }
 }

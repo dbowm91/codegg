@@ -180,6 +180,18 @@ fn apply_compact_projection(
         return Ok(result);
     };
     let Some(compact) = super::framing::project_compact_search_value(&value, max_items) else {
+        // F14 None fallback: a summary was requested but the upstream shape
+        // has no recognizable result array. Strip the heavy envelope keys and
+        // re-frame that instead of returning the full telemetry envelope.
+        let mut stripped = value.clone();
+        super::framing::strip_search_telemetry(&mut stripped);
+        let pretty =
+            serde_json::to_string_pretty(&stripped).unwrap_or_else(|_| stripped.to_string());
+        let (capped, truncated) =
+            super::framing::clamp_output(&pretty, max_output_chars, cap_label);
+        result.output = frame(&capped, "eggsearch");
+        result.value = Some(stripped);
+        result.truncated = truncated || result.truncated;
         return Ok(result);
     };
     let pretty = serde_json::to_string_pretty(&compact).unwrap_or_else(|_| compact.to_string());
@@ -211,6 +223,17 @@ fn apply_batch_compact_projection(
         return Ok(result);
     };
     let Some(compact) = super::framing::project_batch_compact_value(&value, max_items) else {
+        // F14 None fallback, batch form: same envelope strip as the card
+        // projection above, keeping the batch frame label.
+        let mut stripped = value.clone();
+        super::framing::strip_search_telemetry(&mut stripped);
+        let pretty =
+            serde_json::to_string_pretty(&stripped).unwrap_or_else(|_| stripped.to_string());
+        let (capped, truncated) =
+            super::framing::clamp_output(&pretty, max_output_chars, cap_label);
+        result.output = frame_batch_results(&capped, "eggsearch");
+        result.value = Some(stripped);
+        result.truncated = truncated || result.truncated;
         return Ok(result);
     };
     let pretty = serde_json::to_string_pretty(&compact).unwrap_or_else(|_| compact.to_string());
@@ -228,6 +251,19 @@ fn compact_limit(input: &Value, fields: &[&str], default: u64) -> usize {
         }
     }
     default as usize
+}
+
+/// F14: effective `max_results` default for the telemetry-heavy search tools.
+/// The upstream default of 10 routinely exceeds the output cap once the
+/// telemetry envelope is framed, so the normal path was a truncation marker;
+/// 5 keeps the default envelope inside the cap. Explicit caller values still
+/// win, clamped to the per-tool upstream maximum.
+fn capped_max_results(input: &Value, default: u64, max: u64) -> u64 {
+    input
+        .get("max_results")
+        .and_then(tolerant_u64)
+        .unwrap_or(default)
+        .min(max)
 }
 
 fn add_fetch_controls(input: &Value, args: &mut Value) -> Result<(), ToolError> {
@@ -1004,11 +1040,7 @@ pub async fn call_repo_search_structured_with_host_scope(
         ],
     );
     translate_provider_list(input, &mut args)?;
-    args["max_results"] = json!(input
-        .get("max_results")
-        .and_then(tolerant_u64)
-        .unwrap_or(10)
-        .min(30));
+    args["max_results"] = json!(capped_max_results(input, 5, 30));
     apply_internal_response_detail(input, &mut args)?;
 
     let result = call_structured_tool_with_service_scope(
@@ -1023,7 +1055,7 @@ pub async fn call_repo_search_structured_with_host_scope(
         frame_repo_results,
     )
     .await?;
-    let limit = compact_limit(input, &["max_results"], 10);
+    let limit = compact_limit(input, &["max_results"], 5);
     apply_compact_projection(
         input,
         result,
@@ -1302,11 +1334,7 @@ pub async fn call_security_search_structured(
         }
         args["cve_id"] = Value::String(cve);
     }
-    args["max_results"] = json!(input
-        .get("max_results")
-        .and_then(tolerant_u64)
-        .unwrap_or(10)
-        .min(20));
+    args["max_results"] = json!(capped_max_results(input, 5, 20));
     apply_internal_response_detail(input, &mut args)?;
 
     let result = call_structured_tool_with_service(
@@ -1320,7 +1348,7 @@ pub async fn call_security_search_structured(
         frame_security_results,
     )
     .await?;
-    let limit = compact_limit(input, &["max_results"], 10);
+    let limit = compact_limit(input, &["max_results"], 5);
     apply_compact_projection(
         input,
         result,
@@ -1383,11 +1411,7 @@ pub async fn call_research_search_structured(
     );
     translate_provider_list(input, &mut args)?;
     translate_legacy_research_domains(input, &mut args)?;
-    args["max_results"] = json!(input
-        .get("max_results")
-        .and_then(tolerant_u64)
-        .unwrap_or(10)
-        .min(15));
+    args["max_results"] = json!(capped_max_results(input, 5, 15));
     apply_internal_response_detail(input, &mut args)?;
 
     let result = call_structured_tool_with_service(
@@ -1401,7 +1425,7 @@ pub async fn call_research_search_structured(
         frame_research_results,
     )
     .await?;
-    let limit = compact_limit(input, &["max_results"], 10);
+    let limit = compact_limit(input, &["max_results"], 5);
     apply_compact_projection(
         input,
         result,
@@ -2258,6 +2282,132 @@ mod tests {
             result.output.contains("projected to lines 4..5"),
             "got: {}",
             result.output
+        );
+    }
+
+    #[test]
+    fn telemetry_heavy_search_defaults_request_five_results() {
+        // F14: the 10-result default routinely exceeded the output cap once
+        // the telemetry envelope was framed, so the normal path was a
+        // truncation marker. Explicit caller values still win, clamped to
+        // the per-tool upstream maximum.
+        assert_eq!(super::capped_max_results(&json!({}), 5, 30), 5);
+        assert_eq!(
+            super::capped_max_results(&json!({"max_results": 2}), 5, 30),
+            2
+        );
+        assert_eq!(
+            super::capped_max_results(&json!({"max_results": 99}), 5, 20),
+            20
+        );
+        use crate::tool::Tool;
+        let schemas = [
+            (
+                crate::tool::repo_search::RepoSearchTool::default().parameters(),
+                30,
+            ),
+            (
+                crate::tool::security_search::SecuritySearchTool::default().parameters(),
+                20,
+            ),
+            (
+                crate::tool::research_search::ResearchSearchTool::default().parameters(),
+                15,
+            ),
+        ];
+        for (params, max) in schemas {
+            let text = params["properties"]["max_results"]["description"]
+                .as_str()
+                .unwrap_or("");
+            assert!(
+                text.contains("(default: 5, max:"),
+                "schema must advertise the lowered default, got: {text}"
+            );
+            assert!(
+                text.contains(&format!("max: {max}")),
+                "schema must keep the upstream max {max}, got: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn summary_none_fallback_strips_telemetry_instead_of_full_envelope() {
+        // F14: summary requested but the upstream shape has no recognizable
+        // result array — the framed output must not carry the heavy keys.
+        let result = EggsearchCallResult {
+            output: "full envelope".to_string(),
+            value: Some(json!({
+                "status": "ok",
+                "results": "not-an-array",
+                "telemetry": {"elapsed_ms": 12},
+                "providers_queried": ["duckduckgo"],
+                "next_actions": [{"tool": "web_search"}]
+            })),
+            truncated: false,
+            success: true,
+        };
+        let projected = apply_compact_projection(
+            &json!({"detail": "summary"}),
+            result,
+            5,
+            12000,
+            "max_search_output_chars",
+            crate::search_backend::framing::frame_search_results,
+        )
+        .expect("summary projection");
+        assert!(
+            !projected.output.contains("providers_queried"),
+            "framed summary must not carry providers_queried, got: {}",
+            projected.output
+        );
+        assert!(
+            !projected.output.contains("next_actions"),
+            "framed summary must not carry next_actions, got: {}",
+            projected.output
+        );
+        assert!(
+            projected.output.contains("tool=websearch"),
+            "stripped summary keeps its frame, got: {}",
+            projected.output
+        );
+        let value = projected.value.expect("stripped value");
+        assert!(value.get("telemetry").is_none());
+        assert!(value.get("providers_queried").is_none());
+        assert!(value.get("next_actions").is_none());
+        assert_eq!(value["status"], "ok");
+    }
+
+    #[test]
+    fn batch_summary_none_fallback_reframes_and_propagates_truncation() {
+        // F14 batch form: an unrecognized shape still reframes under the
+        // batch label instead of returning the caller's envelope verbatim,
+        // and an already-truncated input stays truncated.
+        let result = EggsearchCallResult {
+            output: "full envelope".to_string(),
+            value: Some(json!({
+                "items": "not-an-array",
+                "telemetry": {"elapsed_ms": 12},
+            })),
+            truncated: true,
+            success: true,
+        };
+        let projected = apply_batch_compact_projection(
+            &json!({"detail": "summary"}),
+            result,
+            10,
+            12000,
+            "max_batch_output_chars",
+        )
+        .expect("batch summary projection");
+        assert_ne!(projected.output, "full envelope");
+        assert!(
+            projected.output.contains("tool=batch_fetch"),
+            "stripped batch summary keeps its frame, got: {}",
+            projected.output
+        );
+        assert!(
+            projected.truncated,
+            "an already-truncated input stays truncated"
         );
     }
 }

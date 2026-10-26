@@ -251,6 +251,10 @@ fn format_response(
         .and_then(|object| object.get("summary"))
         .and_then(serde_json::Value::as_str)
     {
+        // A9: sanitize enforcement-sounding "Command block ..." summaries —
+        // the harness is advisory-only, so a raw block summary must read as
+        // advisory-block like the verdict does.
+        let summary = sanitize_advisory_summary(summary);
         parts.push(format!("summary: {summary}"));
     }
 
@@ -290,13 +294,48 @@ fn format_response(
     }
 }
 
+/// A9: rewrite one enforcement-sounding summary into its advisory-only
+/// form. `Command block under default policy` executes (advisory-only), so
+/// it must read as `Command advisory-block ...` like the verdict does.
+fn sanitize_advisory_summary(summary: &str) -> String {
+    summary
+        .replace("Command block", "Command advisory-block")
+        .replace("COMMAND BLOCK", "COMMAND ADVISORY-BLOCK")
+        .replace("disposition: blocking", "disposition: advisory")
+        .replace("disposition:blocking", "disposition:advisory")
+        .replace(
+            "\"disposition\": \"blocking\"",
+            "\"disposition\": \"advisory\"",
+        )
+        .replace(
+            "\"disposition\":\"blocking\"",
+            "\"disposition\":\"advisory\"",
+        )
+}
+
 /// Render the `result` body with the command echo capped and `subresults`
 /// serialized last, so a truncated envelope keeps the decision lines above
 /// and never cuts mid-`argv` before the outer structure closes.
+///
+/// A9: when the envelope is advisory-only (`enforcement: advisory_only` or a
+/// `block` verdict being mapped to `advisory-block`), `disposition:
+/// blocking` is rewritten to `advisory` in both the top-level body and the
+/// echoed `subresults`, and `Command block` summaries become
+/// `Command advisory-block`.
 fn capped_result_body(result: &serde_json::Value) -> serde_json::Value {
     let Some(object) = result.as_object() else {
         return result.clone();
     };
+    // Advisory-only if the payload already says so or carries the block
+    // verdict we are about to map.
+    let is_advisory = object
+        .get("enforcement")
+        .and_then(|v| v.as_str())
+        .is_some_and(|e| e == "advisory_only")
+        || object
+            .get("verdict")
+            .and_then(|v| v.as_str())
+            .is_some_and(|v| v == "block");
     let mut ordered = serde_json::Map::with_capacity(object.len() + 1);
     for (key, value) in object {
         if key == "subresults" {
@@ -313,6 +352,22 @@ fn capped_result_body(result: &serde_json::Value) -> serde_json::Value {
             );
             continue;
         }
+        if key == "disposition" && value.as_str().is_some_and(|d| d == "blocking") && is_advisory {
+            ordered.insert(
+                key.clone(),
+                serde_json::Value::String("advisory".to_string()),
+            );
+            continue;
+        }
+        if key == "summary" {
+            if let Some(summary) = value.as_str() {
+                ordered.insert(
+                    key.clone(),
+                    serde_json::Value::String(sanitize_advisory_summary(summary)),
+                );
+                continue;
+            }
+        }
         if key == "command" {
             if let Some(command) = value.as_str() {
                 ordered.insert(
@@ -327,6 +382,24 @@ fn capped_result_body(result: &serde_json::Value) -> serde_json::Value {
     if let Some(subresults) = object.get("subresults") {
         ordered.insert("subresults".to_string(), cap_subresults_echo(subresults));
     }
+    // A9: a top-level `blocking` disposition that arrived without an
+    // explicit enforcement marker (but with the mapped advisory-block
+    // verdict) still reads as blocking — normalize it now that enforcement
+    // is advisory_only.
+    if ordered
+        .get("enforcement")
+        .and_then(|v| v.as_str())
+        .is_some_and(|e| e == "advisory_only")
+        && ordered
+            .get("disposition")
+            .and_then(|v| v.as_str())
+            .is_some_and(|d| d == "blocking")
+    {
+        ordered.insert(
+            "disposition".to_string(),
+            serde_json::Value::String("advisory".to_string()),
+        );
+    }
     serde_json::Value::Object(ordered)
 }
 
@@ -337,11 +410,62 @@ fn capped_result_body(result: &serde_json::Value) -> serde_json::Value {
 /// mixes operators with args (`"|"`, `"&&"`, `"ok;"`) and misleads
 /// logging/policy/replay consumers. Emit `argv: null` + `segments: [...]`
 /// (one argv per pipeline/control segment) so downstream sees structure.
+///
+/// A9: `disposition: blocking` inside `subresults` is advisory-only at the
+/// harness layer — map it to `advisory` so a nested echo never reads as an
+/// enforcement verdict while the top-level verdict says `advisory-block`.
 fn cap_subresults_echo(subresults: &serde_json::Value) -> serde_json::Value {
     let Some(object) = subresults.as_object() else {
         return subresults.clone();
     };
     let mut capped = object.clone();
+    // Top-level disposition/summary inside subresults (some tools echo them
+    // per-check). Both are advisory-only at the harness layer.
+    if capped
+        .get("disposition")
+        .and_then(|v| v.as_str())
+        .is_some_and(|d| d == "blocking")
+    {
+        capped.insert(
+            "disposition".to_string(),
+            serde_json::Value::String("advisory".to_string()),
+        );
+    }
+    if let Some(summary) = capped
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+    {
+        capped.insert(
+            "summary".to_string(),
+            serde_json::Value::String(sanitize_advisory_summary(&summary)),
+        );
+    }
+    // Per-check disposition echoes (e.g. one entry per subresult object).
+    for (_key, value) in capped.iter_mut() {
+        if let Some(obj) = value.as_object_mut() {
+            if obj
+                .get("disposition")
+                .and_then(|v| v.as_str())
+                .is_some_and(|d| d == "blocking")
+            {
+                obj.insert(
+                    "disposition".to_string(),
+                    serde_json::Value::String("advisory".to_string()),
+                );
+            }
+            if let Some(summary) = obj
+                .get("summary")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+            {
+                obj.insert(
+                    "summary".to_string(),
+                    serde_json::Value::String(sanitize_advisory_summary(&summary)),
+                );
+            }
+        }
+    }
     if let Some(shell_split) = capped
         .get_mut("shell_split")
         .and_then(|value| value.as_object_mut())
@@ -559,6 +683,57 @@ mod tests {
         assert_eq!(
             body.get("enforcement").and_then(|v| v.as_str()),
             Some("advisory_only")
+        );
+    }
+
+    #[test]
+    fn advisory_block_maps_blocking_disposition_and_command_block_summary() {
+        // A9: `verdict: block` + `Command block under ...` + disposition
+        // `blocking` must surface as advisory-only with no residual
+        // enforcement wording — the command runs.
+        let result = serde_json::json!({
+            "verdict": "block",
+            "summary": "Command block under default policy (1 finding(s))",
+            "disposition": "blocking",
+            "command": "rm -rf /tmp/probe",
+            "subresults": {
+                "disposition": "blocking",
+                "summary": "Command block under default policy",
+                "shell_split": {"argv": ["rm", "-rf", "/tmp/probe"]}
+            },
+        });
+        let response = ok_response(Some(result));
+        let formatted = format_response(&response, 4000);
+        assert!(
+            formatted.output.contains("verdict: advisory-block"),
+            "verdict must map, got: {}",
+            formatted.output
+        );
+        assert!(
+            formatted.output.contains("Command advisory-block"),
+            "summary must sanitize, got: {}",
+            formatted.output
+        );
+        assert!(
+            !formatted.output.contains("Command block under"),
+            "no residual `Command block under`, got: {}",
+            formatted.output
+        );
+        let body = capped_result_body(response.result.as_ref().expect("result present"));
+        assert_eq!(
+            body.get("disposition").and_then(|v| v.as_str()),
+            Some("advisory"),
+            "top-level disposition blocking->advisory, got: {body}"
+        );
+        assert!(
+            !serde_json::to_string(&body).unwrap().contains("blocking"),
+            "no residual blocking disposition, got: {body}"
+        );
+        assert!(
+            !serde_json::to_string(&body)
+                .unwrap()
+                .contains("Command block"),
+            "no residual Command block, got: {body}"
         );
     }
 

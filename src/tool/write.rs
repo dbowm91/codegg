@@ -17,6 +17,32 @@ pub struct WriteTool {
     unrestricted: bool,
 }
 
+/// A large existing file a whole-file `write` must not silently destroy.
+///
+/// Overwriting above this size requires explicit `overwrite:true` and
+/// preserves the previous version at `<path>.bak` (F20). The bound is a
+/// friction point, not a storage cap: small writes keep the historical
+/// default behavior.
+pub(crate) const LARGE_OVERWRITE_THRESHOLD_BYTES: u64 = 64 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriteMode {
+    Overwrite,
+    Append,
+    CreateOnly,
+}
+
+fn parse_write_mode(raw: Option<&str>) -> Result<WriteMode, ToolError> {
+    match raw.unwrap_or("overwrite") {
+        "overwrite" => Ok(WriteMode::Overwrite),
+        "append" => Ok(WriteMode::Append),
+        "create_only" => Ok(WriteMode::CreateOnly),
+        other => Err(ToolError::Execution(format!(
+            "unknown write mode '{other}': expected overwrite, append, or create_only"
+        ))),
+    }
+}
+
 impl WriteTool {
     pub fn new() -> Self {
         Self {
@@ -43,7 +69,7 @@ impl Tool for WriteTool {
     }
 
     fn description(&self) -> &str {
-        "Create or overwrite a file with the given content. Runs auto-formatting after write if configured."
+        "Create or overwrite a file with the given content. Modes: overwrite (default), append, create_only (refuse when the file exists). Overwriting a large existing file requires explicit overwrite:true and preserves the previous version at <path>.bak. Runs auto-formatting after write if configured."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -56,7 +82,18 @@ impl Tool for WriteTool {
                 },
                 "content": {
                     "type": "string",
-                    "description": "Content to write to the file"
+                    "description": "Content to write to the file (appended after existing content in append mode)"
+                },
+                "mode": {
+                    "type": "string",
+                    "description": "Write mode: overwrite (default), append, or create_only (fail when the file exists)",
+                    "enum": ["overwrite", "append", "create_only"],
+                    "default": "overwrite"
+                },
+                "overwrite": {
+                    "type": "boolean",
+                    "description": "Explicit confirmation required to overwrite a large existing file (over the large-file threshold); ignored in append/create_only modes",
+                    "default": false
                 }
             },
             "required": ["path", "content"]
@@ -143,6 +180,9 @@ impl WriteTool {
             .ok_or_else(|| ToolError::Execution("missing 'content' parameter".to_string()))?
             .to_string();
 
+        let mode = parse_write_mode(input["mode"].as_str())?;
+        let overwrite_confirmed = input["overwrite"].as_bool().unwrap_or(false);
+
         let allowed_root = self.allowed_root.clone();
         let allowed_root_for_diff = self.allowed_root.clone();
         let unrestricted = self.unrestricted;
@@ -202,11 +242,72 @@ impl WriteTool {
             } else {
                 String::new()
             };
+            let old_len = old_content.len() as u64;
+
+            if mode == WriteMode::CreateOnly && existed {
+                return Err((
+                    ToolError::Execution(
+                        "file exists; create_only refuses to overwrite (use mode overwrite or append)"
+                            .to_string(),
+                    ),
+                    WriterFenceOutcome::NoEffect,
+                ));
+            }
+            // F20: a whole-file overwrite of a large existing artifact is
+            // destructive with no recovery, so it requires an explicit
+            // `overwrite:true`. The mode flag alone is not confirmation.
+            if mode == WriteMode::Overwrite
+                && existed
+                && old_len > LARGE_OVERWRITE_THRESHOLD_BYTES
+                && !overwrite_confirmed
+            {
+                return Err((
+                    ToolError::Execution(format!(
+                        "refusing to overwrite large existing file ({} bytes > {} bytes) without explicit overwrite:true; re-read the file and retry with overwrite:true (the previous version is preserved at <path>.bak)",
+                        old_len, LARGE_OVERWRITE_THRESHOLD_BYTES
+                    )),
+                    WriterFenceOutcome::NoEffect,
+                ));
+            }
+
+            // F20 recovery: preserve the previous version before a
+            // destructive overwrite of a large file. The sidecar is written
+            // inside the same fenced effect as the overwrite, so the fence
+            // covers both. Only one backup generation is kept.
+            let backup_path: Option<std::path::PathBuf> = if mode == WriteMode::Overwrite
+                && existed
+                && old_len > LARGE_OVERWRITE_THRESHOLD_BYTES
+            {
+                let backup =
+                    std::path::PathBuf::from(format!("{}.bak", validated_path.display()));
+                std::fs::write(&backup, old_content.as_bytes()).map_err(|e| {
+                    (
+                        ToolError::Execution(format!(
+                            "backup write failed for '{}': {}",
+                            backup.display(),
+                            e
+                        )),
+                        WriterFenceOutcome::NoEffect,
+                    )
+                })?;
+                Some(backup)
+            } else {
+                None
+            };
+
+            let bytes_to_write: Vec<u8> = if mode == WriteMode::Append && existed {
+                let mut combined = Vec::with_capacity(old_content.len() + content_for_write.len());
+                combined.extend_from_slice(old_content.as_bytes());
+                combined.extend_from_slice(content_for_write.as_bytes());
+                combined
+            } else {
+                content_for_write.as_bytes().to_vec()
+            };
 
             // `fs::write` truncates before it writes, so a failure here can
             // leave a partially written file behind: the effect is unproven,
             // not absent.
-            std::fs::write(&validated_path, content_for_write.as_bytes()).map_err(|e| {
+            std::fs::write(&validated_path, &bytes_to_write).map_err(|e| {
                 (
                     ToolError::Execution(e.to_string()),
                     WriterFenceOutcome::Unproven(e.to_string()),
@@ -220,6 +321,8 @@ impl WriteTool {
                 old_content,
                 validated_path,
                 formatted,
+                backup_path,
+                mode,
             ))
         })
         .await
@@ -232,7 +335,7 @@ impl WriteTool {
             )),
         };
 
-        let (existed, old_content, final_path, formatted) = match effect {
+        let (existed, old_content, final_path, formatted, backup_path, mode) = match effect {
             Ok(written) => {
                 // The effect landed and was observed, so the permit is
                 // released. A failure to release it is reported: the caller
@@ -262,20 +365,33 @@ impl WriteTool {
         });
 
         let mut format_note = String::new();
-        if formatted != content {
+        // In append mode the expected on-disk bytes are old+new, not the
+        // staged chunk alone.
+        let expected_final = if mode == WriteMode::Append && existed {
+            format!("{old_content}{content}")
+        } else {
+            content.clone()
+        };
+        if formatted != expected_final {
             format_note = "\n\n[auto-formatted]".to_string();
         }
 
-        let action = if existed { "Updated" } else { "Created" };
+        let action = if !existed {
+            "Created"
+        } else if mode == WriteMode::Append {
+            "Appended"
+        } else {
+            "Updated"
+        };
         let diff = generate_diff(
             &old_content,
-            &content,
+            &expected_final,
             &path_for_header,
             Some(allowed_root_for_diff.as_path()),
         );
         let diff = crate::tool::diff::truncate_grouped_preview(diff, 4000);
 
-        Ok(format!(
+        let mut output = format!(
             "{} {}{}{}",
             action,
             path_display,
@@ -285,7 +401,17 @@ impl WriteTool {
             } else {
                 format!("\n\n{diff}")
             }
-        ))
+        );
+        // F20 harness advisory: concurrent writers are last-writer-wins, so
+        // a shared path must be re-read before overwriting. The sidecar is
+        // the recovery path when the advisory arrives too late.
+        if let Some(backup) = backup_path {
+            output.push_str(&format!(
+                "\n\n[backup: previous version preserved at {} — concurrent writes are last-writer-wins; re-read before overwriting shared paths.]",
+                backup.display()
+            ));
+        }
+        Ok(output)
     }
 }
 
@@ -341,6 +467,104 @@ mod diff_format_tests {
         let preview = generate_diff("a\n", "a\nb\n", "[CWD]/tmp/a.txt", None);
         assert!(preview.contains("--- a/tmp/a.txt"), "got: {preview}");
         assert!(!preview.contains("[CWD]"), "got: {preview}");
+    }
+}
+
+#[cfg(test)]
+mod write_mode_tests {
+    use super::*;
+
+    fn tool_in(dir: &tempfile::TempDir) -> WriteTool {
+        WriteTool::new().with_allowed_root(dir.path().to_path_buf())
+    }
+
+    fn input(path: &std::path::Path, content: &str) -> serde_json::Value {
+        serde_json::json!({"path": path.to_string_lossy(), "content": content})
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn append_mode_appends_to_existing_content() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("append.txt");
+        std::fs::write(&path, "head\n").expect("seed");
+        let mut args = input(&path, "tail\n");
+        args["mode"] = serde_json::json!("append");
+        let output = tool_in(&dir).execute(args).await.expect("append executes");
+        assert!(output.starts_with("Appended"), "got: {output}");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            "head\ntail\n"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn create_only_refuses_an_existing_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("exists.txt");
+        std::fs::write(&path, "original").expect("seed");
+        let mut args = input(&path, "replacement");
+        args["mode"] = serde_json::json!("create_only");
+        let err = tool_in(&dir)
+            .execute(args)
+            .await
+            .expect_err("create_only must refuse");
+        assert!(err.to_string().contains("file exists"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            "original"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn overwrite_of_a_large_file_needs_explicit_confirmation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("large.txt");
+        let seed = "x".repeat((LARGE_OVERWRITE_THRESHOLD_BYTES + 8) as usize);
+        std::fs::write(&path, &seed).expect("seed large file");
+        let err = tool_in(&dir)
+            .execute(input(&path, "replacement"))
+            .await
+            .expect_err("large overwrite must need confirmation");
+        assert!(
+            err.to_string().contains("overwrite:true"),
+            "must name the confirmation flag, got: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            seed,
+            "the refused overwrite must leave the file untouched"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn confirmed_large_overwrite_preserves_a_bak_sidecar() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("large.txt");
+        let seed = "y".repeat((LARGE_OVERWRITE_THRESHOLD_BYTES + 8) as usize);
+        std::fs::write(&path, &seed).expect("seed large file");
+        let mut args = input(&path, "replacement");
+        args["overwrite"] = serde_json::json!(true);
+        let output = tool_in(&dir)
+            .execute(args)
+            .await
+            .expect("confirmed overwrite executes");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            "replacement"
+        );
+        let backup = std::path::PathBuf::from(format!("{}.bak", path.display()));
+        assert_eq!(
+            std::fs::read_to_string(&backup).expect("read sidecar"),
+            seed
+        );
+        assert!(output.contains(".bak"), "got: {output}");
+        assert!(output.contains("last-writer-wins"), "got: {output}");
+    }
+
+    #[test]
+    fn unknown_mode_is_rejected() {
+        let err = parse_write_mode(Some("merge")).expect_err("unknown mode");
+        assert!(err.to_string().contains("unknown write mode"));
     }
 }
 

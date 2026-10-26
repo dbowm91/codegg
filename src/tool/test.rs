@@ -589,18 +589,14 @@ impl TestTool {
             .map_err(|e| ToolError::Execution(e.to_string()))?;
         let status = completion.status;
         let summary = completion.summary;
-        let completion_status = match completion.status {
-            crate::scheduler::ExecutorStatus::Completed => "passed",
-            crate::scheduler::ExecutorStatus::Failed => "failed",
-            crate::scheduler::ExecutorStatus::Cancelled => "cancelled",
-            crate::scheduler::ExecutorStatus::TimedOut => "timed_out",
-            crate::scheduler::ExecutorStatus::Interrupted => "unknown",
-        };
+        let completion_status = test_completion_status(completion.status, &summary);
+        let is_no_tests = completion_status == "no_tests";
         let marker = serde_json::json!({
             "job_id": job.job_id.as_str(),
             "kind": "test",
             "status": completion_status,
             "summary": summary,
+            "no_tests": is_no_tests,
         });
         Ok((
             format!(
@@ -651,6 +647,25 @@ fn truncate_report_text(text: &str, cap: usize) -> String {
         end -= 1;
     }
     format!("{}\n[report truncated]", &text[..end])
+}
+
+/// A3: map a scheduler completion to the marker status string, threading the
+/// vacuous-run flag from `TestParseState` (via `DelegatedTestRun` →
+/// formatted summary `no_tests:` prefix): a `Completed` run that selected
+/// zero tests emits `no_tests`, never `passed`.
+pub(crate) fn test_completion_status(
+    status: crate::scheduler::ExecutorStatus,
+    summary: &str,
+) -> &'static str {
+    let is_no_tests = summary.contains("no_tests:");
+    match status {
+        crate::scheduler::ExecutorStatus::Completed if is_no_tests => "no_tests",
+        crate::scheduler::ExecutorStatus::Completed => "passed",
+        crate::scheduler::ExecutorStatus::Failed => "failed",
+        crate::scheduler::ExecutorStatus::Cancelled => "cancelled",
+        crate::scheduler::ExecutorStatus::TimedOut => "timed_out",
+        crate::scheduler::ExecutorStatus::Interrupted => "unknown",
+    }
 }
 
 /// Parse JSON input into a `TestRunRequest` with a synthetic workspace root.
@@ -1095,6 +1110,26 @@ mod tests {
     fn test_tool_category_is_shell_exec() {
         let tool = TestTool::default();
         assert_eq!(tool.category(), ToolCategory::ShellExec);
+    }
+
+    /// A3: a completed run whose summary carries the vacuous prefix maps to
+    /// `no_tests`, never `passed`.
+    #[test]
+    fn completed_vacuous_summary_maps_to_no_tests_status() {
+        use crate::scheduler::ExecutorStatus;
+        assert_eq!(
+            test_completion_status(ExecutorStatus::Completed, "no_tests: 0 selected"),
+            "no_tests"
+        );
+        assert_eq!(
+            test_completion_status(ExecutorStatus::Completed, "12 passed"),
+            "passed"
+        );
+        assert_eq!(
+            test_completion_status(ExecutorStatus::Failed, "no_tests: x"),
+            "failed",
+            "only Completed maps to no_tests"
+        );
     }
 
     #[test]

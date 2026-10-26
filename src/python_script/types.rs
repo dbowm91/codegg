@@ -669,7 +669,11 @@ impl PythonRunResult {
                 self.enforcement_warnings.join(", ")
             ));
         }
-        if matches!(self.status, PythonRunStatus::SpawnError) && !self.stderr.trim().is_empty() {
+        if matches!(
+            self.status,
+            PythonRunStatus::SpawnError | PythonRunStatus::Failed(_)
+        ) && !self.stderr.trim().is_empty()
+        {
             let reason = crate::git_network_policy::redact_url_credentials_in_text(
                 self.stderr.lines().next().unwrap_or_default().trim(),
             );

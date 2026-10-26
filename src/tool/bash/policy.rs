@@ -602,7 +602,7 @@ pub(crate) fn outside_workspace_warning(
         String::new()
     };
     Some(format!(
-        "bash path guard (advisory, not a deny): absolute path(s) outside workspace/scratch: {shown}{more} — file tools are jailed to the workspace; bash is Seatbelt write-confined/read-broad/credential-deny; prefer workspace-relative paths or $CODEGG_SCRATCH_DIR (<workspace>/<home> placeholders are non-literal)"
+        "bash path guard (advisory, not a deny): absolute path(s) outside workspace/scratch: {shown}{more} — file tools are jailed to the workspace; bash is Seatbelt write-confined/read-broad/credential-deny; prefer workspace-relative paths or $CODEGG_SCRATCH_DIR"
     ))
 }
 
@@ -1454,9 +1454,14 @@ mod tests {
         };
         let pipeline = prepare_command("cat /etc/passwd", &ctx);
         let warning = outside_workspace_warning(&pipeline, Some(&workspace), Some(&scratch));
+        let text = warning.expect("absolute path outside roots must warn");
         assert!(
-            warning.is_some_and(|w| w.contains("/etc/passwd")),
-            "absolute path outside roots must warn"
+            text.contains("/etc/passwd"),
+            "warning names the offending path, got: {text}"
+        );
+        assert!(
+            !text.contains("non-literal"),
+            "placeholder aside removed; warning shows real roots, got: {text}"
         );
         let inside = prepare_command("cat src/main.rs", &ctx);
         assert!(

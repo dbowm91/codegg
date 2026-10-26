@@ -113,13 +113,22 @@ impl ReviewTool {
     async fn analyze_diff_with_context(
         &self,
         diff: &str,
+        session_model: Option<&str>,
         context: ProviderRequestContext,
     ) -> Result<String, ToolError> {
+        // A6: prefer the session's active `provider/model` (threaded via
+        // `ToolExecutionContext::session_model` like `session_id`); fall back
+        // to `Config::model` only when no session model is bound, then to the
+        // emergency default. An explicit session value is never synthesized
+        // from tool input or model output.
         let config = Config::load_or_default();
-        let model = config
-            .model
-            .clone()
-            .unwrap_or_else(|| EMERGENCY_DEFAULT_MODEL.to_string());
+        let model = match session_model.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(active) => active.to_string(),
+            None => config
+                .model
+                .clone()
+                .unwrap_or_else(|| EMERGENCY_DEFAULT_MODEL.to_string()),
+        };
 
         if let Some(provider) = self.provider.as_deref() {
             let model_id = split_model_target(&model)?.1;
@@ -278,11 +287,13 @@ impl Tool for ReviewTool {
 
     fn description(&self) -> &str {
         "Read-only tool that analyzes the git diff for the session workspace and provides \
-         structured code review feedback. Requires an active LLM connection (provider/model from \
-         `model`, e.g. `openai/gpt-4o`): without a reachable provider it returns an actionable \
-         offline fallback (diff stats plus a review checklist) instead of failing silently. \
-         Reads the working-tree diff through the \
-         session workspace root, not the process cwd; fails when no workspace is \
+         structured code review feedback. Uses the session's active model when bound (threaded \
+         via the execution context like session_id), falling back to `model` config only when \
+         none is bound (e.g. `openai/gpt-4o`): without a reachable provider it returns an \
+         actionable offline fallback (diff stats plus a review checklist) instead of failing \
+         silently — open /connect to create a connection, or set `model` via `codegg edit` / \
+         `-m provider/model`; run `codegg doctor` to check wiring. Reads the working-tree diff \
+         through the session workspace root, not the process cwd; fails when no workspace is \
          bound (use git_query status to check the binding)."
     }
 
@@ -394,6 +405,11 @@ fn offline_review_fallback(
     // selection path; user-facing text names the default without the
     // parenthetical.
     let clean_reason = strip_offline_remediation(reason);
+    // F11/A6: keep the config-model fallback (None => emergency default) but
+    // state it plainly, and always name both fix paths explicitly: `-m
+    // provider/model` (or `codegg edit`) for the model value and `/connect`
+    // for the live connection. Both live in OFFLINE_REMEDIATION; the model
+    // line only selects which prefix explains the current value.
     let model_line = match model {
         None => format!(
             "no model configured; defaulted to {}. {}. {OFFLINE_REMEDIATION}.",
@@ -403,10 +419,19 @@ fn offline_review_fallback(
             "Configured model `{model}` is unreachable: {clean_reason}. {OFFLINE_REMEDIATION}."
         ),
     };
+    // F11: label the byte count as rendered-excerpt bytes (the excerpt above,
+    // not the full diff) and suppress it when no diff files were counted —
+    // `0 files` with a byte count implies an empty diff was measured, which
+    // hides the untracked-only case below.
+    let bytes_part = if files == 0 {
+        String::new()
+    } else {
+        format!(", {} bytes (excerpt)", excerpt.len())
+    };
     format!(
         "## Code Review (offline fallback — no active LLM connection)\n\n\
          {model_line}\n\n\
-         Diff stats: {files} file(s) changed, +{insertions}/-{deletions} lines, {} bytes.\n\
+         Diff stats: {files} file(s) changed, +{insertions}/-{deletions} lines{bytes_part}.\n\
          {untracked_line}\n\n\
          Checklist:\n\
          - Confirm the change compiles and existing tests cover the touched paths.\n\
@@ -415,11 +440,10 @@ fn offline_review_fallback(
          - Look for style issues (naming, dead code, stale comments).\n\
          - Note anything needing a human decision as a suggestion, not a verdict.\n\n\
          Diff excerpt{}:\n{excerpt}",
-        diff.len(),
         if truncated {
-            " (truncated at 4000 chars)"
+            format!(" (truncated at 4000 bytes, {} total)", diff.len())
         } else {
-            ""
+            String::new()
         },
     )
 }
@@ -454,14 +478,25 @@ impl ReviewTool {
         let staged = input["staged"].as_bool().unwrap_or(true);
         let diff = self.get_diff_with_context(staged, context).await?;
         let provider_context = provider_request_context(context);
+        // A6: session model travels like session_id — via the execution
+        // context, not tool input — with config fallback inside analyze.
+        let session_model = context
+            .and_then(|c| c.session_model.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         match self
-            .analyze_diff_with_context(&diff, provider_context)
+            .analyze_diff_with_context(&diff, session_model, provider_context)
             .await
         {
             Ok(review) => Ok(format!("## Code Review Results\n\n{}", review)),
             Err(e) => {
+                // A6/F11: the fallback echoes the same precedence the live
+                // path used (session model first, then config), so the
+                // offline text names the model the live call attempted.
                 let config = Config::load_or_default();
-                let model_opt = config.model.clone();
+                let model_opt = session_model
+                    .map(ToOwned::to_owned)
+                    .or(config.model.clone());
                 let root = self.effective_root(context);
                 let untracked = untracked_files_for_root(&root).await;
                 Ok(offline_review_fallback(
@@ -534,6 +569,7 @@ mod tests {
         let result = tool
             .analyze_diff_with_context(
                 "diff --git a/src/lib.rs b/src/lib.rs",
+                None,
                 provider_request_context(Some(&execution)),
             )
             .await
@@ -731,6 +767,61 @@ mod tests {
         assert!(
             !output.contains("emergency default"),
             "internal label must not leak, got: {output}"
+        );
+    }
+
+    /// F11: byte count labels the rendered excerpt (not the full diff) and is
+    /// suppressed when no diff files were counted.
+    #[test]
+    fn fallback_labels_excerpt_bytes_and_suppresses_when_no_files() {
+        let untracked: Vec<String> = vec![];
+        let diff = "diff --git a/a b/a\n+line\n";
+        let out = offline_review_fallback(diff, Some("openai/gpt-4o"), "boom", &untracked);
+        assert!(
+            out.contains("bytes (excerpt)"),
+            "bytes must be labelled excerpt, got: {out}"
+        );
+        let empty =
+            offline_review_fallback("", Some("openai/gpt-4o"), "boom", &["u.txt".to_string()]);
+        assert!(
+            empty.contains("0 file(s) changed"),
+            "empty diff must count zero, got: {empty}"
+        );
+        assert!(
+            !empty.contains("bytes"),
+            "bytes suppressed when files==0, got: {empty}"
+        );
+    }
+
+    /// A6: the description states the session-model precedence (context first,
+    /// config fallback) with explicit `-m`/`/connect` fix paths.
+    #[test]
+    fn review_description_states_session_model_precedence() {
+        let tool = ReviewTool::new();
+        let desc = tool.description();
+        assert!(
+            desc.contains("session"),
+            "description must name the session model, got: {desc}"
+        );
+        assert!(
+            desc.contains("-m provider/model") && desc.contains("/connect"),
+            "description must name both fix paths, got: {desc}"
+        );
+    }
+
+    /// A6: an invalid session-model shape fails with `-m` guidance (never a
+    /// silent config fallback).
+    #[tokio::test]
+    async fn session_model_shape_error_carries_fix_guidance() {
+        let tool = ReviewTool::new();
+        let ctx = ProviderRequestContext::default();
+        let err = tool
+            .analyze_diff_with_context("diff", Some("not-a-model"), ctx)
+            .await
+            .expect_err("bad session shape must fail");
+        assert!(
+            err.to_string().contains("-m provider/model"),
+            "shape error must name -m, got: {err}"
         );
     }
 }

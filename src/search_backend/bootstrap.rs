@@ -866,6 +866,18 @@ mod tests {
         let cfg = Config::default();
         let effective = effective_search_config(&cfg);
         assert_eq!(effective.backend(), SearchBackendConfig::Eggsearch);
+        // F14: the caps the tools enforce (and the descriptions advertise)
+        // come from these getters; the summary fixtures below mirror them.
+        assert_eq!(effective.max_search_output_chars(), 12_000);
+        assert_eq!(effective.max_fetch_output_chars(), 20_000);
+        assert_eq!(effective.max_repo_output_chars(), 15_000);
+        assert_eq!(effective.max_repo_search_output_chars(), 15_000);
+        assert_eq!(effective.max_repo_fetch_output_chars(), 15_000);
+        assert_eq!(effective.max_repo_map_output_chars(), 15_000);
+        assert_eq!(effective.max_security_output_chars(), 10_000);
+        assert_eq!(effective.max_research_output_chars(), 15_000);
+        assert_eq!(effective.max_batch_output_chars(), 50_000);
+        assert_eq!(effective.max_evidence_output_chars(), 100_000);
     }
 
     #[test]
@@ -879,13 +891,16 @@ mod tests {
             expose_raw_mcp_tools: false,
             max_search_output_chars: 12_000,
             max_fetch_output_chars: 20_000,
-            max_repo_search_output_chars: 16_000,
-            max_repo_fetch_output_chars: 24_000,
-            max_repo_map_output_chars: 16_000,
-            max_security_output_chars: 18_000,
-            max_research_output_chars: 22_000,
-            max_batch_output_chars: 30_000,
-            max_evidence_output_chars: 30_000,
+            // F14: fixtures use the effective schema defaults (see
+            // `SearchConfig` getters), not invented per-test caps, so the
+            // summary line always echoes the caps the tools actually enforce.
+            max_repo_search_output_chars: 15_000,
+            max_repo_fetch_output_chars: 15_000,
+            max_repo_map_output_chars: 15_000,
+            max_security_output_chars: 10_000,
+            max_research_output_chars: 15_000,
+            max_batch_output_chars: 50_000,
+            max_evidence_output_chars: 100_000,
             timeout_ms: Some(60_000),
             provider_status_ok: true,
             provider_status_summary: Some(r#"{"duckduckgo":"ok"}"#.to_string()),
@@ -910,13 +925,13 @@ mod tests {
         assert!(joined.contains("Default timeout: 60000ms"));
         assert!(joined.contains("search=12000"));
         assert!(joined.contains("fetch=20000"));
-        assert!(joined.contains("repo_search=16000"));
-        assert!(joined.contains("repo_fetch=24000"));
-        assert!(joined.contains("repo_map=16000"));
-        assert!(joined.contains("security=18000"));
-        assert!(joined.contains("research=22000"));
-        assert!(joined.contains("batch=30000"));
-        assert!(joined.contains("evidence=30000"));
+        assert!(joined.contains("repo_search=15000"));
+        assert!(joined.contains("repo_fetch=15000"));
+        assert!(joined.contains("repo_map=15000"));
+        assert!(joined.contains("security=10000"));
+        assert!(joined.contains("research=15000"));
+        assert!(joined.contains("batch=50000"));
+        assert!(joined.contains("evidence=100000"));
         assert!(joined.contains("Provider status: available"));
         assert!(joined.contains("Provider details:"));
     }
@@ -1092,14 +1107,16 @@ mod tests {
             search_backend: Some("eggsearch".to_string()),
             max_search_output_chars: 12_000,
             max_fetch_output_chars: 20_000,
-            max_repo_output_chars: 16_000,
-            max_repo_search_output_chars: 16_000,
-            max_repo_fetch_output_chars: 24_000,
-            max_repo_map_output_chars: 16_000,
-            max_security_output_chars: 18_000,
-            max_research_output_chars: 22_000,
-            max_batch_output_chars: 30_000,
-            max_evidence_output_chars: 30_000,
+            // F14: same effective-default reconciliation as
+            // `report_summary_lists_key_fields`.
+            max_repo_output_chars: 15_000,
+            max_repo_search_output_chars: 15_000,
+            max_repo_fetch_output_chars: 15_000,
+            max_repo_map_output_chars: 15_000,
+            max_security_output_chars: 10_000,
+            max_research_output_chars: 15_000,
+            max_batch_output_chars: 50_000,
+            max_evidence_output_chars: 100_000,
             ..Default::default()
         };
         let lines = report.summary_lines();
@@ -1107,6 +1124,13 @@ mod tests {
         assert!(joined.contains("Output caps:"));
         assert!(joined.contains("search=12000"));
         assert!(joined.contains("fetch=20000"));
+        assert!(joined.contains("repo_search=15000"));
+        assert!(joined.contains("repo_fetch=15000"));
+        assert!(joined.contains("repo_map=15000"));
+        assert!(joined.contains("security=10000"));
+        assert!(joined.contains("research=15000"));
+        assert!(joined.contains("batch=50000"));
+        assert!(joined.contains("evidence=100000"));
     }
 
     #[test]

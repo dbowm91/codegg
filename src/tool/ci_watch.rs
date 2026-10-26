@@ -113,18 +113,8 @@ impl Tool for CiWatchTool {
         // profile, before the tool runs and before any process exists.
         crate::tool::process_admission::admit_tool_process("ci_watch", ctx.as_ref()).await?;
         let value = self.execute_impl(input.clone(), ctx).await?;
-        let output = if input.get("action").and_then(|a| a.as_str()) == Some("list") {
-            let count = value.get("count").and_then(|c| c.as_u64()).unwrap_or(0);
-            format!("ci watch list: {count} watches")
-        } else {
-            let status = value
-                .get("state")
-                .and_then(|s| s.as_str())
-                .or_else(|| value.get("status").and_then(|s| s.as_str()))
-                .unwrap_or("unknown")
-                .to_string();
-            format!("ci watch {status}")
-        };
+        let action = input.get("action").and_then(|a| a.as_str()).unwrap_or("");
+        let output = format_ci_watch_output(action, &value);
         Ok(StructuredToolResult {
             output,
             value: Some(value),
@@ -138,6 +128,62 @@ impl Tool for CiWatchTool {
                 trust: ToolTrust::LocalTrusted,
             }),
         })
+    }
+}
+
+/// A5: model-facing output shaping. Every non-list output names its
+/// `watch_id`; `create` additionally names `owner/repo/run_id`; `list`
+/// renders each `watch_id:state` (sorted) instead of a bare count.
+pub(crate) fn format_ci_watch_output(action: &str, value: &serde_json::Value) -> String {
+    if action == "list" {
+        let watches = value
+            .get("watches")
+            .and_then(|w| w.as_array())
+            .cloned()
+            .unwrap_or_default();
+        if watches.is_empty() {
+            return "ci watch list: 0 watches".to_string();
+        }
+        let mut pairs: Vec<String> = watches
+            .iter()
+            .map(|w| {
+                let id = w
+                    .get("watch_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let state = w.get("state").and_then(|v| v.as_str()).unwrap_or("unknown");
+                format!("{id}:{state}")
+            })
+            .collect();
+        pairs.sort();
+        return format!("ci watch list: {}", pairs.join(", "));
+    }
+    let watch_id = value
+        .get("watch_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let state = value
+        .get("state")
+        .and_then(|s| s.as_str())
+        .or_else(|| value.get("status").and_then(|s| s.as_str()))
+        .unwrap_or("unknown");
+    if action == "create" {
+        let owner = value.get("owner").and_then(|v| v.as_str()).unwrap_or("?");
+        let repo = value.get("repo").and_then(|v| v.as_str()).unwrap_or("?");
+        let run = value
+            .get("run_id")
+            .and_then(|v| v.as_i64())
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| {
+                value
+                    .get("commit_sha")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?")
+                    .to_string()
+            });
+        format!("ci watch {watch_id}:{state} {owner}/{repo} run {run}")
+    } else {
+        format!("ci watch {watch_id}:{state}")
     }
 }
 
@@ -295,5 +341,44 @@ mod tests {
                     || err.to_string().contains("action")
             );
         });
+    }
+
+    /// A5: non-list outputs name `watch_id`; `create` also names
+    /// `owner/repo/run_id`.
+    #[test]
+    fn watch_output_names_id_and_create_target() {
+        let create = format_ci_watch_output(
+            "create",
+            &json!({"watch_id": "ciw-abc", "state": "pending", "owner": "acme", "repo": "app", "run_id": 42}),
+        );
+        assert!(
+            create.contains("ciw-abc")
+                && create.contains("pending")
+                && create.contains("acme/app")
+                && create.contains("42"),
+            "create output must carry id+target, got: {create}"
+        );
+        let status = format_ci_watch_output(
+            "status",
+            &json!({"watch_id": "ciw-abc", "state": "observing"}),
+        );
+        assert_eq!(status, "ci watch ciw-abc:observing");
+    }
+
+    /// A5: `list` renders each `watch_id:state`, not just a count.
+    #[test]
+    fn watch_list_renders_each_id_state_pair() {
+        let out = format_ci_watch_output(
+            "list",
+            &json!({"watches": [{"watch_id": "ciw-b", "state": "pending"}, {"watch_id": "ciw-a", "state": "observing"}], "count": 2}),
+        );
+        assert!(
+            out.contains("ciw-a:observing") && out.contains("ciw-b:pending"),
+            "list must render each pair, got: {out}"
+        );
+        assert_eq!(
+            format_ci_watch_output("list", &json!({"watches": [], "count": 0})),
+            "ci watch list: 0 watches"
+        );
     }
 }

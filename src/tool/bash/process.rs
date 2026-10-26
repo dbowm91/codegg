@@ -937,6 +937,31 @@ impl BashTool {
             .await
             .map_err(|e| ToolError::Execution(format!("scheduler wait failed: {e}")))?;
 
+        // Preserve the static denial evidence the executor computed: the
+        // scheduler completion only carries the projected summary, so the
+        // synthetic rebuild would otherwise return `safe()`/`analyze()`
+        // empties with no `policy_decision`. Re-derive the same policy the
+        // executor used from the request body.
+        let policy_workspace = request
+            .workspace_root
+            .clone()
+            .unwrap_or_else(|| request.cwd.clone());
+        let policy_workspace = policy_workspace.canonicalize().unwrap_or(policy_workspace);
+        let policy =
+            crate::python_script::resolve_policy(request.mode, &request.code, &policy_workspace);
+        let risk = crate::python_script::analyze_python_risk(&request.code);
+        let capabilities =
+            crate::python_script::types::PythonCapabilityEnvelope::from_mode_and_risk(
+                request.mode,
+                &risk,
+            );
+        let mut denied_combined: Vec<String> =
+            policy.denied.iter().map(|v| v.capability.clone()).collect();
+        for violation in capabilities.has_denied_capabilities(&risk) {
+            if !denied_combined.contains(&violation) {
+                denied_combined.push(violation);
+            }
+        }
         let result = crate::python_script::types::PythonRunResult {
             status: match completion.status {
                 crate::scheduler::executor::ExecutorStatus::Completed => {
@@ -958,8 +983,8 @@ impl BashTool {
             duration: Duration::from_millis(completion.metrics.elapsed_ms),
             mode: request.mode,
             script_length: request.code.len(),
-            risk: crate::python_script::types::PythonRiskAssessment::safe(),
-            capabilities: crate::python_script::types::PythonCapabilityEnvelope::analyze(),
+            risk,
+            capabilities,
             changed_files: vec![],
             interpreter: "python3".to_string(),
             diff: None,
@@ -973,14 +998,14 @@ impl BashTool {
                 .as_ref()
                 .map(|rid| format!("run://{rid}/stderr")),
             diff_label: None,
-            policy_decision: None,
-            denied_capabilities: vec![],
-            os_filesystem_isolation: false,
-            os_network_isolation: false,
-            effective_read_roots: vec![],
-            effective_write_roots: vec![],
-            allowed_subprocesses: vec![],
-            enforcement_warnings: vec![],
+            policy_decision: Some(policy.clone()),
+            denied_capabilities: denied_combined,
+            os_filesystem_isolation: policy.os_filesystem_isolation,
+            os_network_isolation: policy.os_network_isolation,
+            effective_read_roots: policy.profile.read_roots.clone(),
+            effective_write_roots: policy.profile.write_roots.clone(),
+            allowed_subprocesses: policy.profile.allowed_subprocesses.clone(),
+            enforcement_warnings: policy.warnings.clone(),
         };
 
         let stdout = result.stdout.clone();

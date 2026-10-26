@@ -336,9 +336,23 @@ pub(crate) fn is_macos_system_alias(path: &Path) -> bool {
 /// Drop every other ESC/OSC/DCS sequence (clear-screen `ESC[2J`, clipboard
 /// `ESC]52;…BEL`, hyperlink `OSC 8`, …) and neutralise NUL/C0 except
 /// `\n`/`\t`. Lone `ESC` is dropped. Reuse instead of a third impl.
+///
+/// A11: NUL is escaped as the literal `\x00` (not lossy U+FFFD) and reported
+/// via [`sanitize_tool_output_with_presence`]'s `binary_present` flag, so a
+/// binary payload stays distinguishable from text with replacements.
 pub fn sanitize_tool_output(text: &str) -> String {
+    sanitize_tool_output_with_presence(text).0
+}
+
+/// Sanitizer plus a binary-presence flag.
+///
+/// Returns `(cleaned, binary_present)` where `binary_present` is true when a
+/// NUL byte was seen. NUL escapes as `\x00`; other C0 bytes (except `\n`,
+/// `\t`) still neutralise to U+FFFD.
+pub fn sanitize_tool_output_with_presence(text: &str) -> (String, bool) {
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
+    let mut binary_present = false;
     let mut i = 0;
     while i < bytes.len() {
         let b = bytes[i];
@@ -386,8 +400,14 @@ pub fn sanitize_tool_output(text: &str) -> String {
             continue;
         }
         if b < 0x20 && b != b'\n' && b != b'\t' {
-            // NUL/C0: neutralise.
-            out.push('�');
+            // A11: NUL escapes as `\x00` with `binary_present:true`; other
+            // C0 neutralise to U+FFFD so binary stays distinguishable.
+            if b == 0x00 {
+                binary_present = true;
+                out.push_str("\\x00");
+            } else {
+                out.push('�');
+            }
             i += 1;
             continue;
         }
@@ -399,7 +419,7 @@ pub fn sanitize_tool_output(text: &str) -> String {
             i += 1;
         }
     }
-    out
+    (out, binary_present)
 }
 
 /// Tool schemas declared integer parameters as `"type": "number"`, and a
@@ -409,15 +429,29 @@ pub fn sanitize_tool_output(text: &str) -> String {
 /// caller meant. A fractional number is still rejected: rounding a real
 /// `1.5` would hide a caller bug rather than absorb a formatting quirk.
 pub fn json_usize(value: &serde_json::Value) -> Option<usize> {
+    json_u64(value).and_then(|v| usize::try_from(v).ok())
+}
+
+/// Whole-valued JSON number as `u64`.
+///
+/// Same tolerance as [`json_usize`]: an integer-valued float like `1.0`
+/// carries exactly the integer the caller meant (schemas declare `"type":
+/// "number"`), while `1.5`, negatives, `NaN`, and non-numbers are rejected.
+pub fn json_u64(value: &serde_json::Value) -> Option<u64> {
     let number = value.as_number()?;
     if let Some(exact) = number.as_u64() {
-        return usize::try_from(exact).ok();
+        return Some(exact);
     }
     let float = number.as_f64()?;
     if !float.is_finite() || float < 0.0 || float.fract() != 0.0 {
         return None;
     }
-    usize::try_from(float as u64).ok()
+    // `as_u64` already failed, so this is a whole-valued float outside the
+    // `u64` integer encoding (e.g. `1.0`); range-check through the float.
+    if float > u64::MAX as f64 {
+        return None;
+    }
+    Some(float as u64)
 }
 
 fn whole_number_error(value: &serde_json::Value) -> String {
@@ -477,6 +511,17 @@ mod tests {
         assert_eq!(json_usize(&serde_json::json!(500.0)), Some(500));
         assert_eq!(json_usize(&serde_json::json!(0.0)), Some(0));
         assert_eq!(json_usize(&serde_json::json!(12)), Some(12));
+        assert_eq!(json_u64(&serde_json::json!(1.0)), Some(1));
+        assert_eq!(json_u64(&serde_json::json!(32.0)), Some(32));
+    }
+
+    #[test]
+    fn whole_float_u64_rejects_fractional_negative_and_nan() {
+        assert_eq!(json_u64(&serde_json::json!(1.5)), None);
+        assert_eq!(json_u64(&serde_json::json!(-1.0)), None);
+        assert_eq!(json_u64(&serde_json::json!(f64::NAN)), None);
+        assert_eq!(json_u64(&serde_json::json!("1")), None);
+        assert_eq!(json_u64(&serde_json::Value::Null), None);
     }
 
     #[test]
@@ -666,5 +711,23 @@ mod tests {
         let clean = sanitize_tool_output(osc);
         assert!(!clean.contains('\x1b'), "OSC must not survive: {clean:?}");
         assert!(!clean.contains('\x07'), "BEL must not survive: {clean:?}");
+    }
+
+    /// A11: NUL escapes as `\x00` with `binary_present:true` instead of lossy
+    /// U+FFFD; other C0 still neutralise, `\n`/`\t` survive.
+    #[test]
+    fn nul_escapes_with_binary_flag_not_lossy_replacement() {
+        let (clean, present) = sanitize_tool_output_with_presence("a\x00b");
+        assert!(present, "NUL must raise binary_present");
+        assert_eq!(clean, "a\\x00b", "NUL must escape, got: {clean:?}");
+        assert_eq!(sanitize_tool_output("a\x00b"), "a\\x00b");
+        let (text, absent) = sanitize_tool_output_with_presence("plain text");
+        assert!(!absent, "text without NUL must not flag binary");
+        assert_eq!(text, "plain text");
+        assert_eq!(
+            sanitize_tool_output("a\x01b\n\t"),
+            "a�b\n\t",
+            "non-NUL C0 still neutralises while \\n/\\t survive"
+        );
     }
 }

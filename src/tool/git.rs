@@ -158,7 +158,7 @@ impl Tool for GitTool {
     }
 
     fn description(&self) -> &str {
-        "Execute git operations. Read-only subcommands (status, diff, log, show, blame, branch, tag, remote, worktree, stash, rev-parse, for-each-ref) return structured JSON results via egggit — but for bounded reads prefer `git_query` (status, diff, log, branches), which resolves the session workspace root and takes no workdir argument; `git` defaults to the session workspace root when workdir is absent and owns mutations and recovery (explicit workdir selects the checkout for mutations). Prefer the typed `mutation` action (stage_paths, commit, branch_create, merge, revert, push, reset_hard, clean, …) for local, network, and destructive operations — they route through a snapshot-based executor with state-delta, env hardening, and RunStore persistence. For in-progress operations (merge/rebase/cherry-pick/revert), use `operation_state` (read) and `recover` (write: continue | abort | skip) — these inspect plumbing, refuse cross-operation misuse, and return a typed `RecoveryOutcome`. Conflicts are NOT auto-resolved: edit conflict markers in the worktree, `git add <path>` to stage the resolution, then run `recover` with `continue`."
+        "Execute git operations. Split: `git` owns summaries plus typed mutations and recovery (explicit workdir selects the checkout for mutations; defaults to the session workspace root when workdir is absent). Read-only subcommands (status, diff, log, show, blame, branch, tag, remote, worktree, stash, rev-parse, for-each-ref) return structured JSON results via egggit — but for bounded reads prefer `git_query` (status, diff, log, branches), which resolves the session workspace root, takes no workdir argument, and returns porcelain display plus JSON results. Prefer the typed `mutation` action (stage_paths, commit, branch_create, merge, revert, push, reset_hard, clean, …) for local, network, and destructive operations — they route through a snapshot-based executor with state-delta, env hardening, and RunStore persistence. For in-progress operations (merge/rebase/cherry-pick/revert), use `operation_state` (read) and `recover` (write: continue | abort | skip) — these inspect plumbing, refuse cross-operation misuse, and return a typed `RecoveryOutcome`. Conflicts are NOT auto-resolved: edit conflict markers in the worktree, `git add <path>` to stage the resolution, then run `recover` with `continue`."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -1719,5 +1719,22 @@ mod schema_tests {
                 "a read-only agent must not be refused `git status`: {error:?}"
             );
         }
+    }
+
+    /// F12: the `git` description documents the split (summaries plus typed
+    /// mutations/recovery live here; bounded porcelain+JSON reads live in
+    /// `git_query`) without changing any shape.
+    #[test]
+    fn git_description_documents_summary_mutation_split() {
+        let tool = GitTool::new();
+        let desc = tool.description();
+        assert!(
+            desc.contains("summaries") && desc.contains("porcelain display plus JSON"),
+            "git description must document the split, got: {desc}"
+        );
+        assert!(
+            desc.contains("git_query"),
+            "git description must point at git_query, got: {desc}"
+        );
     }
 }

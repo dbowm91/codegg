@@ -1118,6 +1118,9 @@ fn prioritize_actionable_text_signal(output: &str) -> String {
 /// tool output so an advisory finding never reads as an enforcement verdict.
 /// Detection is unchanged (callers still match on the raw `output`/structured
 /// fields); only the surfaced text changes. Severity stays `Warn`.
+/// A9: also rewrites `Command block ...` summaries and `blocking`
+/// dispositions — the command runs (advisory-only), so a residual "Command
+/// block under default policy" / `disposition: blocking` is a wording bug.
 fn sanitize_advisory_output(output: &str) -> String {
     output
         .replace("verdict: block", "verdict: advisory-block")
@@ -1135,6 +1138,18 @@ fn sanitize_advisory_output(output: &str) -> String {
         .replace(
             "\"risk_level\":\"high\"",
             "\"risk_level\":\"advisory-high\"",
+        )
+        .replace("Command block", "Command advisory-block")
+        .replace("COMMAND BLOCK", "COMMAND ADVISORY-BLOCK")
+        .replace("disposition: blocking", "disposition: advisory")
+        .replace("disposition:blocking", "disposition:advisory")
+        .replace(
+            "\"disposition\": \"blocking\"",
+            "\"disposition\": \"advisory\"",
+        )
+        .replace(
+            "\"disposition\":\"blocking\"",
+            "\"disposition\":\"advisory\"",
         )
 }
 
@@ -1725,5 +1740,29 @@ mod tests {
         assert_eq!(segs.len(), 2);
         assert!(segs[0].contains("echo"));
         assert!(segs[1].contains("rm"));
+    }
+
+    #[test]
+    fn advisory_sanitizer_rewrites_command_block_and_blocking_disposition() {
+        // A9: advisory-only surface must not read as enforcement.
+        let sanitized = sanitize_advisory_output(
+            "summary: Command block under default policy\nverdict: block\ndisposition: blocking",
+        );
+        assert!(
+            sanitized.contains("Command advisory-block"),
+            "Command block must sanitize, got: {sanitized}"
+        );
+        assert!(
+            !sanitized.contains("Command block under"),
+            "no residual `Command block under`, got: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("disposition: advisory"),
+            "blocking disposition must map, got: {sanitized}"
+        );
+        assert!(
+            !sanitized.contains("blocking"),
+            "no residual blocking, got: {sanitized}"
+        );
     }
 }

@@ -35,6 +35,16 @@ pub struct TestParseState {
     pub toolchain_shim_seen: bool,
 }
 
+impl TestParseState {
+    /// A3: vacuous-run detector. True when the parser saw zero tests in every
+    /// counter — the run selected nothing, so it is `no_tests`, never a
+    /// pass. Callers thread this through `DelegatedTestRun` to the `test`
+    /// tool marker instead of re-deriving counts.
+    pub fn is_no_tests(&self) -> bool {
+        self.tests_seen == 0 && self.tests_passed == 0 && self.tests_failed == 0
+    }
+}
+
 /// True when a captured output line is evidence the dispatched `cargo`
 /// argv executed a `rustup` shim, not cargo.
 fn is_toolchain_shim_line(line: &str) -> bool {

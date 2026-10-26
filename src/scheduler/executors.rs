@@ -207,6 +207,11 @@ impl JobExecutor for TestJobExecutor {
                     crate::test_runner::types::TestStatus::Cancelled => ExecutorStatus::Cancelled,
                     crate::test_runner::types::TestStatus::Error => ExecutorStatus::Failed,
                 };
+                // A3: `no_tests` threads via the formatted summary: a vacuous
+                // `Passed` still completes as `Completed` here (scheduler
+                // status has no vacuous variant), but the summary keeps the
+                // `no_tests:` prefix from `build_summary`, which the `test`
+                // tool marker keys on to emit `status: no_tests`.
                 ExecutorCompletion {
                     status,
                     summary: crate::test_runner::format_test_report_with_cap(

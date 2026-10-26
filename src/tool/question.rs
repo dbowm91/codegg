@@ -235,4 +235,32 @@ mod tests {
         assert!(out.contains("dry_run"), "got: {out}");
         assert!(out.contains("Proceed?"), "got: {out}");
     }
+
+    #[tokio::test]
+    async fn dry_run_never_fabricates_an_answer() {
+        use crate::tool::Tool;
+        let tool = QuestionTool;
+        let out = tool
+            .execute(json!({
+                "questions": [{"question": "dry-run probe: which color?"}],
+                "dry_run": true
+            }))
+            .await
+            .expect("dry_run must succeed");
+        let value: serde_json::Value =
+            serde_json::from_str(&out).expect("dry_run echo must be JSON");
+        assert_eq!(
+            value.get("dry_run"),
+            Some(&serde_json::Value::Bool(true)),
+            "got: {out}"
+        );
+        assert!(
+            value.get("answer").is_none(),
+            "dry_run must not fabricate an answer, got: {out}"
+        );
+        assert!(
+            !out.to_lowercase().contains("\"green\""),
+            "dry_run must not invent a human reply, got: {out}"
+        );
+    }
 }

@@ -91,7 +91,8 @@ impl DiffTool {
                 "diff": {"type": "string"},
                 "truncated": {"type": "boolean"},
                 "original_bytes": {"type": "integer"},
-                "current_bytes": {"type": "integer"}
+                "current_bytes": {"type": "integer"},
+                "newline_changed": {"type": "boolean"}
             },
             "required": ["path", "has_changes", "diff", "truncated"]
         })
@@ -175,6 +176,7 @@ impl DiffTool {
             parsed.line_range.as_ref(),
         );
         let has_changes = unified != "(no changes)";
+        let newline_changed = trailing_newline_only_change(&original, &current);
         let (display, truncated) = truncate_diff_display(unified);
         let value = serde_json::json!({
             "path": parsed.path,
@@ -183,6 +185,7 @@ impl DiffTool {
             "truncated": truncated,
             "original_bytes": original.len(),
             "current_bytes": current.len(),
+            "newline_changed": newline_changed,
         });
         Ok(DiffOutcome {
             display: value["diff"].as_str().unwrap_or_default().to_string(),
@@ -365,12 +368,11 @@ pub fn format_grouped_diff(
     // Head omission: first shown row does not start at line 1.
     if let Some(first_group) = groups.first() {
         if let Some(first_op) = first_group.first() {
-            for change in diff.iter_changes(first_op) {
+            if let Some(change) = diff.iter_changes(first_op).next() {
                 let first_idx = change.new_index().or(change.old_index()).unwrap_or(0);
                 if first_idx > 0 {
                     result.push_str("...\n");
                 }
-                break;
             }
         }
     }
@@ -457,12 +459,49 @@ pub fn truncate_grouped_preview(preview: String, cap: usize) -> String {
     format!("{}\n... [preview truncated]", &preview[..end])
 }
 
+/// True when the only difference is the trailing newline.
+///
+/// `TextDiff::from_lines` compares line bodies and reports a trailing-newline
+/// flip as "no changes", which renders as an identical `-`/`+` pair (or as
+/// "(no changes)" while the bytes differ). The bytes differ but every line
+/// body matches, so callers must surface the `\ No newline` marker instead
+/// of claiming the files are identical.
+pub fn trailing_newline_only_change(old: &str, new: &str) -> bool {
+    if old == new {
+        return false;
+    }
+    if old.lines().collect::<Vec<_>>() != new.lines().collect::<Vec<_>>() {
+        return false;
+    }
+    old.ends_with('\n') != new.ends_with('\n')
+}
+
 fn generate_unified_diff(
     old: &str,
     new: &str,
     path: &str,
     line_range: Option<&LineRange>,
 ) -> String {
+    // A trailing-newline-only change must never render as an identical
+    // `-`/`+` pair (or as "(no changes)" while the bytes differ). Emit the
+    // conventional marker up front, regardless of how `similar` tokenizes
+    // the newline boundary.
+    if trailing_newline_only_change(old, new) && line_range.is_none() {
+        let mut marked = String::new();
+        marked.push_str(&format!("--- a/{}\n", relative_diff_path(path, None)));
+        marked.push_str(&format!("+++ b/{}\n", relative_diff_path(path, None)));
+        let last = old.lines().last().unwrap_or_default();
+        if !old.ends_with('\n') {
+            marked.push_str(&format!("-{last}\n"));
+            marked.push_str("\\ No newline at end of file\n");
+            marked.push_str(&format!("+{last}\n"));
+        } else {
+            marked.push_str(&format!("-{last}\n"));
+            marked.push_str(&format!("+{last}\n"));
+            marked.push_str("\\ No newline at end of file\n");
+        }
+        return marked;
+    }
     let diff = TextDiff::from_lines(old, new);
     let mut result = String::new();
 
@@ -511,6 +550,22 @@ fn generate_unified_diff(
         .any(|line| line.starts_with('+') || line.starts_with('-'));
 
     if !has_changes {
+        if trailing_newline_only_change(old, new) && line_range.is_none() {
+            let mut marked = String::new();
+            marked.push_str(&format!("--- a/{}\n", relative_diff_path(path, None)));
+            marked.push_str(&format!("+++ b/{}\n", relative_diff_path(path, None)));
+            let last = old.lines().last().unwrap_or_default();
+            if !old.ends_with('\n') {
+                marked.push_str(&format!("-{last}\n"));
+                marked.push_str("\\ No newline at end of file\n");
+                marked.push_str(&format!("+{last}\n"));
+            } else {
+                marked.push_str(&format!("-{last}\n"));
+                marked.push_str(&format!("+{last}\n"));
+                marked.push_str("\\ No newline at end of file\n");
+            }
+            return marked;
+        }
         return String::from("(no changes)");
     }
 
@@ -644,5 +699,37 @@ mod tests {
             "tail cap must be marked, got: {preview}"
         );
         assert!(preview.contains("--- a/t.txt"), "got: {preview}");
+    }
+
+    #[test]
+    fn trailing_newline_only_change_emits_no_newline_marker() {
+        let old = "PROBE line 3 via patch";
+        let new = "PROBE line 3 via patch\n";
+        assert!(trailing_newline_only_change(old, new));
+        assert!(trailing_newline_only_change(new, old));
+        assert!(!trailing_newline_only_change(new, new));
+        let result = generate_unified_diff(old, new, "probe.txt", None);
+        assert_ne!(result, "(no changes)", "newline-only must not be silent");
+        assert!(
+            result.contains("\\ No newline at end of file"),
+            "must carry the marker, got: {result}"
+        );
+        assert!(result.contains("-PROBE"), "got: {result}");
+        assert!(result.contains("+PROBE"), "got: {result}");
+        let reverse = generate_unified_diff(new, old, "probe.txt", None);
+        assert!(
+            reverse.contains("\\ No newline at end of file"),
+            "reverse direction must also mark, got: {reverse}"
+        );
+    }
+
+    #[test]
+    fn identical_content_is_not_a_newline_change() {
+        assert!(!trailing_newline_only_change("a\n", "a\n"));
+        assert!(!trailing_newline_only_change("a\nb\n", "a\nc\n"));
+        assert_eq!(
+            generate_unified_diff("a\n", "a\n", "t.txt", None),
+            "(no changes)"
+        );
     }
 }

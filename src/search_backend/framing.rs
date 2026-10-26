@@ -63,6 +63,28 @@ pub fn frame_repo_results(content: &str, source: &str) -> String {
     out
 }
 
+/// Envelope keys that dominate default search output (F14).
+///
+/// Stripped when a `summary` projection is requested but the upstream shape
+/// has no recognizable result array, so `detail='summary'` never returns the
+/// full telemetry envelope by accident. `telemetry` and `providers_queried`
+/// are accounting; `next_actions` guidance is only useful in the full
+/// envelope that already carries the results it refers to.
+pub const SEARCH_ENVELOPE_TELEMETRY_KEYS: &[&str] =
+    &["telemetry", "providers_queried", "next_actions"];
+
+/// Remove the heavy envelope keys from a structured search value in place.
+/// No-op for non-object values. Keeps result arrays and selection fields.
+pub fn strip_search_telemetry(value: &mut serde_json::Value) {
+    if let Some(map) = value.as_object_mut() {
+        for key in SEARCH_ENVELOPE_TELEMETRY_KEYS {
+            map.remove(*key);
+        }
+    }
+}
+
+/// Compact projection for search/fetch results (R6).
+///
 /// Keeps only selection-relevant fields (`canonical_name`/`path`/
 /// `description`, plus `title`/`url`/`snippet` and `name`/`repo`/`owner`
 /// aliases) and drops telemetry/evidence-role envelopes. Returns `None`
@@ -627,6 +649,31 @@ mod tests {
     fn compact_projection_returns_none_without_result_array() {
         let value = serde_json::json!({"status": "no_native_tree"});
         assert!(project_compact_search_value(&value, 10).is_none());
+    }
+
+    #[test]
+    fn strip_search_telemetry_removes_envelope_keys_but_keeps_results() {
+        let mut value = serde_json::json!({
+            "results": [{"title": "t", "url": "https://example.com"}],
+            "telemetry": {"elapsed_ms": 12},
+            "providers_queried": ["duckduckgo"],
+            "next_actions": [{"tool": "web_search"}]
+        });
+        strip_search_telemetry(&mut value);
+        assert!(value.get("results").is_some());
+        for key in SEARCH_ENVELOPE_TELEMETRY_KEYS {
+            assert!(
+                value.get(*key).is_none(),
+                "envelope key {key} must be stripped"
+            );
+        }
+    }
+
+    #[test]
+    fn strip_search_telemetry_ignores_non_object_values() {
+        let mut value = serde_json::json!(["telemetry", "providers_queried"]);
+        strip_search_telemetry(&mut value);
+        assert_eq!(value, serde_json::json!(["telemetry", "providers_queried"]));
     }
 
     #[test]

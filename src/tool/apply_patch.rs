@@ -78,7 +78,7 @@ impl Tool for ApplyPatchTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file to patch"
+                    "description": "Path to the file to patch; relative paths resolve against the session workspace root like all file-op modes. mode=delete and mode=update require an existing file at path."
                 },
                 "patch": {
                     "type": "string",
@@ -168,7 +168,9 @@ impl ApplyPatchTool {
             if unrestricted {
                 canonicalize_path(original_path)
             } else {
-                validate_path(original_path, &allowed_root)
+                validate_path(original_path, &allowed_root).map_err(|err| {
+                    map_existing_path_error(original_path, &allowed_root, unrestricted, err)
+                })
             }
         })
         .await
@@ -506,7 +508,9 @@ impl ApplyPatchTool {
             let old_full = if unrestricted {
                 canonicalize_path(old_original)?
             } else {
-                validate_path(old_original, &allowed_root)?
+                validate_path(old_original, &allowed_root).map_err(|err| {
+                    map_existing_path_error(old_original, &allowed_root, unrestricted, err)
+                })?
             };
 
             let new_full = if unrestricted {
@@ -610,7 +614,9 @@ impl ApplyPatchTool {
             let validated_path = if unrestricted {
                 canonicalize_path(original_path)?
             } else {
-                validate_path(original_path, &allowed_root)?
+                validate_path(original_path, &allowed_root).map_err(|err| {
+                    map_existing_path_error(original_path, &allowed_root, unrestricted, err)
+                })?
             };
 
             let original = std::fs::read_to_string(&validated_path)
@@ -755,6 +761,31 @@ fn parse_rename(patch: &str) -> Option<(String, String)> {
     }
 
     None
+}
+
+/// Map a `validate_path` failure on an existing-file mode (delete/update)
+/// to file-not-found vs outside-root.
+///
+/// `validate_path` canonicalizes, so a missing file and an outside-root
+/// path both surface as an error; the former must read as file-not-found
+/// (with the same parent/suggestion hint `read` uses) while the latter
+/// stays a permission refusal.
+fn map_existing_path_error(
+    original: &Path,
+    allowed_root: &Path,
+    unrestricted: bool,
+    err: ToolError,
+) -> ToolError {
+    if matches!(err, ToolError::Permission(_)) {
+        return err;
+    }
+    if let Some(hint) = crate::tool::read::missing_path_hint(original, allowed_root, unrestricted) {
+        // `read`'s hint is prefixed for its own surface; the file-op
+        // surface names the same missing file without that prefix.
+        let msg = hint.replacen("read failed: ", "", 1);
+        return ToolError::Execution(msg);
+    }
+    ToolError::Execution(format!("file not found: {} ({err})", original.display()))
 }
 
 fn validate_target_path_unrestricted(path: &Path) -> Result<PathBuf, ToolError> {
@@ -1037,5 +1068,91 @@ mod tests {
         let updated = crate::tool::patch_util::apply_unified_diff(original, patch)
             .expect("patch should apply");
         assert_eq!(updated, "fn main() {\n    new_name();\n}\n");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn delete_accepts_relative_path_like_read_and_update() {
+        let temp = TempDir::new().expect("temp dir");
+        std::fs::write(temp.path().join("scratch_probe_test.txt"), "probe\n").expect("seed");
+        let tool = ApplyPatchTool::new().with_allowed_root(temp.path().to_path_buf());
+        let out = tool
+            .execute(serde_json::json!({
+                "path": "scratch_probe_test.txt",
+                "mode": "delete",
+                "patch": "",
+            }))
+            .await
+            .expect("relative delete must succeed like read/update");
+        assert!(out.contains("Deleted"), "got: {out}");
+        assert!(!temp.path().join("scratch_probe_test.txt").exists());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn delete_missing_maps_to_file_not_found_not_invalid_path() {
+        let temp = TempDir::new().expect("temp dir");
+        let tool = ApplyPatchTool::new().with_allowed_root(temp.path().to_path_buf());
+        let err = tool
+            .execute(serde_json::json!({
+                "path": "does_not_exist_12345.txt",
+                "mode": "delete",
+                "patch": "",
+            }))
+            .await
+            .expect_err("missing delete must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("file not found"),
+            "missing delete must read as file-not-found, got: {msg}"
+        );
+        assert!(
+            !msg.contains("invalid path"),
+            "must not conflate missing with outside-root, got: {msg}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn update_missing_maps_to_file_not_found_with_parent_hint() {
+        let temp = TempDir::new().expect("temp dir");
+        let tool = ApplyPatchTool::new().with_allowed_root(temp.path().to_path_buf());
+        let err = tool
+            .execute(serde_json::json!({
+                "path": "does_not_exist_12345.txt",
+                "mode": "update",
+                "patch": "@@ -1,1 +1,1 @@\n-old\n+new\n",
+            }))
+            .await
+            .expect_err("missing update must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("file not found"),
+            "missing update must read as file-not-found, got: {msg}"
+        );
+        assert!(
+            msg.contains("Parent directory exists: ."),
+            "root-level parent must render as '.', got: {msg}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn delete_outside_root_stays_permission() {
+        let temp = TempDir::new().expect("temp dir");
+        let root = temp.path().join("root");
+        std::fs::create_dir_all(&root).expect("create root");
+        // An existing file outside the root must refuse as permission: the
+        // canonical path resolves, so containment (not existence) decides.
+        std::fs::write(temp.path().join("outside.txt"), "outside\n").expect("seed outside");
+        let tool = ApplyPatchTool::new().with_allowed_root(root.clone());
+        let err = tool
+            .execute(serde_json::json!({
+                "path": "../outside.txt",
+                "mode": "delete",
+                "patch": "",
+            }))
+            .await
+            .expect_err("outside-root delete must fail");
+        assert!(
+            matches!(err, ToolError::Permission(_)),
+            "outside-root must stay permission, got: {err:?}"
+        );
     }
 }

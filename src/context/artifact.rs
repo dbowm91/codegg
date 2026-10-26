@@ -184,6 +184,13 @@ pub fn gc_context_artifacts_dir(base_dir: &Path, now_ms: i64) -> usize {
 /// Workspace-local artifact store used by production sessions. Artifacts are
 /// written as bounded JSON records under `.codegg/context_artifacts`, so a
 /// broker handle remains resolvable after the daemon restarts.
+///
+/// F20: the `write` tool's large-overwrite sidecar (`<path>.bak`) is a
+/// filesystem recovery path, not an artifact-store version: the artifact
+/// store keeps bounded *projections* of tool output (capped JSON records),
+/// never full file bodies, so it cannot reconstruct an overwritten document.
+/// A caller that needs a restorable version must keep its own copy (the
+/// `.bak` sidecar) rather than reading it back through a handle.
 pub struct FileArtifactStore {
     base_dir: PathBuf,
 }
