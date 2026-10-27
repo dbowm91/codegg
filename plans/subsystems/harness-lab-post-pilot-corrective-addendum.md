@@ -142,3 +142,12 @@ The conditional C004/C006 dispositions remain historical facts; they are **not**
 - **CI exact-HEAD E001/E002 ready, separately owned** — October 26 Rust 1.99 all-targets Clippy failure and the October 25 Tool Programs M015 SQLite restart failure. Do not claim green current main until these are resolved and run on the exact implementation SHA.
 
 No VM requirement, blanket permission escalation, automatically merged candidates, or routine paid provider runs are introduced.
+
+
+## 10. C004 historical control disposition and successor (2026-10-27)
+
+C004 remains **conditionally closed** on a live protected-control branch that did not execute in five model trials. The historical v1 control expected terminal `stalled`; since accepted ADR-0040 Option B and the closed Agent Recovery C002 intentionally remove that unreachable terminal, reintroducing it merely to make C004 green would be an architectural regression.
+
+The newly registered successor `plans/subsystems/harness-lab-mainline-and-long-horizon-qualification-addendum.md` H002 will **version** a truthful, provably exercised deterministic non-stall/confirmed-nonprogress control, keeping all v1 fixtures, digests and negative observations immutable. Once independently qualified, an explicit roadmap/registry reconciliation must decide whether accepted ADR supersession resolves C004's legacy benchmark acceptance condition, or it remains a historical conditional status. **No automatic promotion** occurs from writing this handoff.
+
+The same successor H001 first promotes the previously verified continuation code into actual main and checks exact resulting-head CI; H003/H004 deepen coherent long-duration Rust and job scenarios. Only the CodeGG `opencode_go` provider integration is in scope; upstream serving models proxied through it are not multiple CodeGG provider integrations and must not become gating requirements.
