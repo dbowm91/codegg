@@ -25,15 +25,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use codegg::core::daemon::CoreDaemon;
 use codegg::core::new_request;
 use codegg::core::runtime_deps::CoreRuntimeDeps;
+use codegg::core::CoreClient;
+use codegg::error::AppError;
 use codegg::lsp::service::LspService;
+use codegg_client::{DocumentController, DocumentTransport};
 use codegg_core::identity::ProjectId;
 use codegg_core::team::{PrincipalKind, ProjectRole, TeamStore};
 use codegg_core::transport_auth::AuthenticatedPrincipal;
 use codegg_core::transport_auth::PersonalTokenStore;
-use codegg_protocol::core::{CoreEvent, CoreRequest, CoreResponse};
+use codegg_protocol::core::{CoreEvent, CoreRequest, CoreResponse, EventEnvelope, RequestEnvelope};
 use codegg_protocol::document::DocumentScope;
 use codegg_protocol::lsp::{
     LspDiagnosticsGetRequestDto, LspDiagnosticsStatus, LspReadOperation, LspReadPayloadDto,
@@ -42,6 +46,7 @@ use codegg_protocol::lsp::{
 use egglsp::{LspConfig, LspRule};
 use serde_json::{json, Value};
 use tempfile::TempDir;
+use tokio::sync::mpsc;
 
 const M002_LATENCY_SAMPLE_COUNT: usize = 31;
 
@@ -160,7 +165,7 @@ struct Fixture {
     root: PathBuf,
     workspace_id: String,
     service: Arc<LspService>,
-    daemon: CoreDaemon,
+    daemon: Arc<CoreDaemon>,
     project_id: String,
     session_id: String,
 }
@@ -190,6 +195,115 @@ impl Fixture {
             other => panic!("document open failed: {other:?}"),
         }
     }
+}
+
+#[derive(Clone)]
+struct TuiDaemonAdapter {
+    daemon: Arc<CoreDaemon>,
+    client_id: String,
+}
+
+#[async_trait]
+impl CoreClient for TuiDaemonAdapter {
+    async fn request(
+        &self,
+        request: RequestEnvelope<CoreRequest>,
+    ) -> Result<CoreResponse, AppError> {
+        self.daemon
+            .handle_request_for_client(request, &self.client_id)
+            .await
+    }
+
+    fn subscribe(&self) -> mpsc::Receiver<EventEnvelope<CoreEvent>> {
+        let (_tx, rx) = mpsc::channel(1);
+        rx
+    }
+}
+
+#[async_trait]
+impl DocumentTransport for TuiDaemonAdapter {
+    async fn request(&self, request: CoreRequest) -> Result<CoreResponse, String> {
+        self.daemon
+            .handle_request_for_client(
+                new_request(format!("req-tui-doc-{}", uuid::Uuid::new_v4()), request),
+                &self.client_id,
+            )
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn production_tui_hover_uses_the_live_daemon_request_coordinator() {
+    let fixture = fixture(RustBehaviour::Hover, go_only_warming()).await;
+    fixture.open_lib().await;
+
+    let adapter = Arc::new(TuiDaemonAdapter {
+        daemon: fixture.daemon.clone(),
+        client_id: MEMBER.to_owned(),
+    });
+    let controller = Arc::new(DocumentController::new(adapter.clone()));
+    controller
+        .open(
+            fixture.project_id.clone(),
+            fixture.workspace_id.clone(),
+            "src/lib.rs".to_owned(),
+            false,
+            DocumentScope::Workspace,
+        )
+        .await
+        .expect("TUI document attachment uses the authorized live daemon client");
+
+    let mut app = codegg::tui::app::App::new_for_testing(fixture.root.display().to_string());
+    let tab = app.active_tab_mut().expect("default project tab");
+    tab.project_id = Some(fixture.project_id.clone());
+    tab.workspace_id = Some(fixture.workspace_id.clone());
+    tab.workspace_root = Some(fixture.root.clone());
+    tab.session_id = Some(fixture.session_id.clone());
+    app.ui_state
+        .routes
+        .navigate_to(codegg::tui::route::Route::Editor);
+    app.ui_state.input_mode = codegg::tui::input::InputMode::Normal;
+    let mut session =
+        codegg::tui::document_session::TuiDocumentSession::from_controller(controller);
+    session.presentation_mut().mode = codegg::tui::editor::EditorMode::Normal;
+    app.editor_state.session = Some(session);
+    app.editor_state.path = Some("src/lib.rs".to_owned());
+    app.editor_state.status = codegg::tui::app::state::editor::EditorStatus::Synced;
+    app.set_core_client(adapter);
+    let (tx, mut rx) = mpsc::channel(4);
+    app.tui_cmd_tx = Some(tx);
+
+    app.on_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char(' '),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    app.on_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('k'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+
+    let completion = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("the asynchronous TUI hover returns")
+        .expect("TUI command channel remains open");
+    match completion {
+        codegg::tui::app::TuiCommand::EditorLspReadFinished {
+            operation,
+            result: Some(result),
+            error: None,
+            ..
+        } => {
+            assert_eq!(operation, LspReadOperation::Hover);
+            assert_eq!(result.status, LspReadStatus::Ready);
+            assert!(matches!(
+                result.payload,
+                Some(LspReadPayloadDto::Hover { text, .. }) if text.contains("from rust")
+            ));
+        }
+        other => panic!("expected a successful coordinated hover, got {other:?}"),
+    }
+    assert_eq!(fixture.service.client_keys().await.len(), 1);
 }
 
 async fn test_pool() -> sqlx::SqlitePool {
@@ -341,7 +455,7 @@ async fn fixture(behaviour: RustBehaviour, go_steps: Vec<Value>) -> Fixture {
         root,
         workspace_id,
         service,
-        daemon,
+        daemon: Arc::new(daemon),
         project_id,
         session_id,
     }
