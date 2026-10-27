@@ -557,7 +557,9 @@ async fn explicit_read_only_isolated_new_refuses_a_repositoryless_workspace() {
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
 async fn explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts() {
+    use codegg::agent::run_control::RunControlService;
     use codegg::scheduler::{JobScheduler, JobSubmissionService, ResolvedSchedulerConfig};
+    use codegg_core::agent_run_group::AgentRunGroupService;
     use codegg_core::jobs::{
         ExecutionTarget, IdempotencyClass, InMemoryJobStore, JobPriority, JobSource, JobStore,
         NewJob, ResourceRequest, RetryPolicy,
@@ -680,6 +682,13 @@ async fn explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts()
             scheduler.clone(),
             workspace_services.clone(),
             generation,
+        );
+        let durable_runs: Arc<dyn AgentRunStore> = run_store.clone();
+        pool.configure_durable_delegation(
+            submission.clone(),
+            durable_runs.clone(),
+            RunControlService::in_memory(durable_runs.clone()),
+            AgentRunGroupService::in_memory(durable_runs),
         );
         run_store
             .transition(&run_id, codegg_core::agent_run::AgentRunStatus::Queued)
