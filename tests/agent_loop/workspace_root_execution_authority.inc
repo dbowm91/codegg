@@ -381,7 +381,7 @@ async fn explicit_read_only_isolated_new_fails_closed_without_contained_creator(
         pool,
         run_store.clone(),
         None,
-        worktrees,
+        worktrees.clone(),
     );
     let mut job = subagent_job_without_allowed_paths();
     job.job_id = JobId::new_unchecked("a001-explicit-isolated-new");
@@ -440,6 +440,113 @@ async fn explicit_read_only_isolated_new_fails_closed_without_contained_creator(
         reason.contains("Git backend unavailable"),
         "the in-memory WorktreeService has no configured ContainedWorktreeCreator, so explicit isolation must report that typed failure: {reason}"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn explicit_read_only_isolated_new_refuses_a_repositoryless_workspace() {
+    let workspace = tempfile::tempdir().expect("non-repository workspace");
+    let managed_root = tempfile::tempdir().expect("managed worktree root");
+    let run_store = Arc::new(InMemoryAgentRunStore::new());
+    let task_id = AgentTaskId::new();
+    let run_id = AgentRunId::new();
+    let workspace_id = WorkspaceId::new_unchecked("a001-repositoryless-workspace");
+    run_store
+        .create_or_get(
+            NewAgentTask {
+                task_id: task_id.clone(),
+                parent_task_id: None,
+                originating_session_id: "a001-repositoryless-session".into(),
+                originating_turn_id: Some("a001-repositoryless-turn".into()),
+                project_id: ProjectId::new(),
+                repository_id: None,
+                workspace_id: workspace_id.clone(),
+                requested_agent: CHILD_AGENT.into(),
+                delegation_key: "a001-repositoryless-placement".into(),
+                request_fingerprint: "a001-repositoryless-fingerprint".into(),
+                description: "read-only isolated placement without a repository".into(),
+            },
+            NewAgentRun {
+                run_id: run_id.clone(),
+                parent_run_id: None,
+                depth: 1,
+                workspace_id: workspace_id.clone(),
+                agent_name: CHILD_AGENT.into(),
+                agent_digest: None,
+                provider: PROVIDER_ID.into(),
+                model: format!("{PROVIDER_ID}/model"),
+                authority_digest: "a001-repositoryless-authority".into(),
+                budget: AgentRunBudget::default(),
+                shared_scratch: Vec::new(),
+            },
+        )
+        .await
+        .expect("create durable run");
+    let (_, _, pool) = build_executor("README").await;
+    let worktrees = codegg_core::worktree_service::WorktreeService::memory(
+        managed_root.path().to_path_buf(),
+        Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
+    );
+    let executor = SubagentJobExecutor::new_with_agent_runs_and_control_and_worktree(
+        pool,
+        run_store.clone(),
+        None,
+        worktrees.clone(),
+    );
+    let mut job = subagent_job_without_allowed_paths();
+    job.job_id = JobId::new_unchecked("a001-repositoryless-isolated-new");
+    job.workspace_id = workspace_id.clone();
+    job.payload = JobPayload::SubagentRun {
+        prompt: "Read without changing files.".into(),
+        agent: CHILD_AGENT.into(),
+        model: Some(format!("{PROVIDER_ID}/model")),
+        parent_id: None,
+        denied_tools: MUTATING_TOOLS.iter().map(|name| (*name).into()).collect(),
+        allowed_paths: Vec::new(),
+        max_tool_calls: None,
+        task_id,
+        run_id: run_id.clone(),
+        delegation_key: "a001-repositoryless-placement".into(),
+        base_commit: None,
+        placement: codegg_core::run_placement::RunPlacement::IsolatedNew,
+        default_working_directory: None,
+    };
+    let context = JobExecutionContext {
+        job,
+        attempt_id: AttemptId::new_unchecked("a001-repositoryless-attempt"),
+        daemon_generation: DaemonGeneration::new_unchecked("a001-repositoryless-generation"),
+        workspace_id,
+        workspace_root: workspace.path().to_path_buf(),
+        run_store: None,
+        subject_store: None,
+        source_subject_started: None,
+        cancellation: CancellationToken::new(),
+        progress: Arc::new(NoopProgressSink),
+        resources: ResourcePermitGuard::new_orphan(Default::default()),
+        process_admission: None,
+    };
+
+    run_store
+        .transition(&run_id, codegg_core::agent_run::AgentRunStatus::Queued)
+        .await
+        .expect("mark durable run queued before dispatch");
+    let completion = executor.execute(context).await;
+    assert_eq!(
+        completion.status,
+        codegg::scheduler::executor::ExecutorStatus::Failed,
+        "explicit isolation cannot execute in place without repository identity"
+    );
+    let run = run_store.get_run(&run_id).await.unwrap().unwrap();
+    assert!(run.status.is_terminal());
+    assert_eq!(
+        run.failure_class.as_deref(),
+        Some("explicit_isolation_unavailable")
+    );
+    assert!(run
+        .failure_message
+        .as_deref()
+        .unwrap_or_default()
+        .contains("requires a registered repository"));
+    assert!(worktrees.list(Default::default()).await.unwrap().is_empty());
 }
 
 /// A001 strict-success regression: explicit read-only placement must produce
@@ -623,11 +730,12 @@ async fn explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts()
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
-        assert_eq!(
-            completion.state,
-            JobState::Completed,
-            "contained creator or read-only child failed: {completion:#?}"
-        );
+        if completion.state != JobState::Completed {
+            let failed_run = run_store.get_run(&run_id).await.unwrap();
+            panic!(
+                "contained creator or read-only child failed: job={completion:#?}; run={failed_run:#?}"
+            );
+        }
         scheduler
             .shutdown(codegg::scheduler::SchedulerShutdownMode::ImmediateInterrupt)
             .await;
