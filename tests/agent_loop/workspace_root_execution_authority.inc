@@ -558,6 +558,8 @@ async fn explicit_read_only_isolated_new_refuses_a_repositoryless_workspace() {
 #[tokio::test(flavor = "multi_thread")]
 async fn explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts() {
     use codegg::agent::run_control::RunControlService;
+    use codegg::core::writer_fence::DaemonWriterFenceFactory;
+    use codegg::core::writer_permit::{WorktreePermitAuthority, WriterPermitService};
     use codegg::scheduler::{JobScheduler, JobSubmissionService, ResolvedSchedulerConfig};
     use codegg_core::agent_run_group::AgentRunGroupService;
     use codegg_core::jobs::{
@@ -569,6 +571,7 @@ async fn explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts()
         ProductionWorkspaceServicesFactory, WorkspaceServicePolicy, WorkspaceServiceRegistry,
     };
     use codegg_core::worktree_service::WorktreeService;
+    use codegg_core::writer_permit::WriterPermitStore;
 
     let workspace = tempfile::tempdir().expect("job workspace");
     common::blackboard::init_repository(workspace.path());
@@ -591,6 +594,18 @@ async fn explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts()
     )
     .with_contained_creator(creator);
     let run_store = Arc::new(InMemoryAgentRunStore::new());
+    let permit_pool = common::pool::isolated_pool().await;
+    let writer_permits = WriterPermitService::new(
+        WriterPermitStore::new(permit_pool),
+        WorktreePermitAuthority::new(worktrees.clone()),
+    );
+    let writer_fences = DaemonWriterFenceFactory::with_team_state(
+        writer_permits,
+        worktrees.clone(),
+        run_store.clone(),
+        None,
+        None,
+    ) as Arc<dyn codegg::tool::writer_fence::WriterFenceFactory>;
     let workspace_registry = WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))
         .await
         .expect("workspace registry");
@@ -615,7 +630,11 @@ async fn explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts()
             run_store.clone(),
             None,
             worktrees.clone(),
-        );
+        )
+        .with_authority(codegg::scheduler::executors::SubagentAuthority {
+            writer_fences: Some(writer_fences.clone()),
+            ..Default::default()
+        });
         let task_id = AgentTaskId::new();
         let run_id = AgentRunId::new();
         run_store
