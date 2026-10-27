@@ -515,7 +515,7 @@ pub(crate) fn apply_editor_opened(
     request_editor_semantic_tokens(app);
 }
 
-fn current_lsp_scope(app: &App) -> Option<EditorLspScope> {
+pub(crate) fn current_lsp_scope(app: &App) -> Option<EditorLspScope> {
     let context = app.project_execution_context().ok()?;
     let session_id = context.session_id?;
     let project_id = context.project_id?;
@@ -543,13 +543,55 @@ pub(crate) fn refresh_editor_diagnostics(app: &mut App) {
     let Some(scope) = current_lsp_scope(app) else {
         return;
     };
+    let Some(attachment) = app
+        .editor_state
+        .session
+        .as_ref()
+        .and_then(|session| session.attachment_info())
+    else {
+        return;
+    };
+    let coordinator_scope = codegg_client::LspRequestScope {
+        frontend_id: "tui".to_owned(),
+        attachment_id: attachment.document_id.clone(),
+        route_generation: scope.generation,
+        connection_generation: app
+            .core_client
+            .as_ref()
+            .map_or(0, |client| client.connection_generation()),
+        project_id: scope.project_id.clone(),
+        workspace_id: scope.workspace_id.clone(),
+        session_id: scope.session_id.clone(),
+        document_id: None,
+        path: None,
+        server_id: None,
+    };
+    let coordinator_key = codegg_client::LspRequestKey {
+        scope: coordinator_scope.clone(),
+        operation: codegg_client::LspRequestOperation::Diagnostics,
+        document_generation: scope.generation,
+        position: None,
+        argument: None,
+    };
     // The diagnostics panel takes the centered surface; a completion popup
     // underneath would be stale context, so the explicit gesture wins.
     app.editor_state.completion.dismiss();
     let Some(request_id) = app.editor_state.lsp.begin_diagnostics(&scope) else {
         return;
     };
+    let coordinator = app.lsp_request_coordinator.clone();
+    let ticket = match coordinator.begin(coordinator_key) {
+        codegg_client::LspRequestStart::Started(ticket) => ticket,
+        codegg_client::LspRequestStart::AlreadyInFlight
+        | codegg_client::LspRequestStart::AtCapacity => {
+            app.editor_state.lsp.diagnostics_loading = false;
+            return;
+        }
+    };
     let Some(client) = app.core_client.clone() else {
+        let _ = app
+            .lsp_request_coordinator
+            .finish(&ticket, &coordinator_scope, scope.generation);
         app.editor_state.lsp.diagnostics_loading = false;
         app.editor_state.lsp.diagnostics_status =
             crate::tui::editor_lsp::DiagnosticsViewStatus::Unavailable;
@@ -558,6 +600,9 @@ pub(crate) fn refresh_editor_diagnostics(app: &mut App) {
     };
     let tx = app.tui_cmd_tx.clone();
     let tab_id = app.active_tab_id().map(|id| id.to_string());
+    let response_ticket = ticket.clone();
+    let response_scope = coordinator_scope.clone();
+    let document_generation = scope.generation;
     let task_id = spawn_scoped_registered_tui_task(
         tx,
         &mut app.task_registry,
@@ -567,17 +612,26 @@ pub(crate) fn refresh_editor_diagnostics(app: &mut App) {
         None,
         None,
         async move {
-            let response = client
-                .request(crate::core::new_request(
-                    uuid::Uuid::new_v4().to_string(),
-                    crate::protocol::core::CoreRequest::LspDiagnosticsGet {
-                        request: LspDiagnosticsGetRequestDto {
-                            project_id: scope.project_id.clone(),
-                            session_id: scope.session_id.clone(),
-                        },
+            let cancellation = response_ticket.cancellation_token();
+            let request = crate::core::new_request(
+                uuid::Uuid::new_v4().to_string(),
+                crate::protocol::core::CoreRequest::LspDiagnosticsGet {
+                    request: LspDiagnosticsGetRequestDto {
+                        project_id: scope.project_id.clone(),
+                        session_id: scope.session_id.clone(),
                     },
-                ))
-                .await;
+                },
+            );
+            let response = tokio::select! {
+                _ = cancellation.cancelled() => {
+                    let _ = coordinator.finish(&response_ticket, &response_scope, document_generation);
+                    return None;
+                },
+                response = client.request(request) => response,
+            };
+            if !coordinator.finish(&response_ticket, &response_scope, document_generation) {
+                return None;
+            }
             let (result, error) = match response {
                 Ok(crate::protocol::core::CoreResponse::LspDiagnosticsGetResult { result }) => {
                     (Some(result), None)
@@ -600,6 +654,9 @@ pub(crate) fn refresh_editor_diagnostics(app: &mut App) {
         },
     );
     if task_id.is_none() {
+        let _ =
+            app.lsp_request_coordinator
+                .finish(&ticket, &coordinator_scope, document_generation);
         app.editor_state.lsp.diagnostics_loading = false;
         app.editor_state.lsp.diagnostics_status =
             crate::tui::editor_lsp::DiagnosticsViewStatus::Unavailable;
@@ -731,8 +788,56 @@ fn start_editor_lsp_read(
         app.editor_state.lsp.panel = Some(crate::tui::editor_lsp::EditorLspPanel::ReadResult);
         return;
     }
+    let Some(attachment) = app
+        .editor_state
+        .session
+        .as_ref()
+        .and_then(|session| session.attachment_info())
+    else {
+        fail_lsp_read(app, "document attachment unavailable");
+        return;
+    };
+    let document_generation = app
+        .editor_state
+        .session
+        .as_ref()
+        .and_then(|session| session.try_snapshot())
+        .map_or(scope.generation, |snapshot| snapshot.revision().get());
+    let coordinator_scope = codegg_client::LspRequestScope {
+        frontend_id: "tui".to_owned(),
+        attachment_id: attachment.document_id.clone(),
+        route_generation: scope.generation,
+        connection_generation: app
+            .core_client
+            .as_ref()
+            .map_or(0, |client| client.connection_generation()),
+        project_id: scope.project_id.clone(),
+        workspace_id: scope.workspace_id.clone(),
+        session_id: scope.session_id.clone(),
+        document_id: Some(attachment.document_id),
+        path: (!request.path.is_empty()).then(|| request.path.clone()),
+        server_id: request.server_id.clone(),
+    };
+    let coordinator_key = codegg_client::LspRequestKey {
+        scope: coordinator_scope.clone(),
+        operation: codegg_client::LspRequestOperation::Read(operation),
+        document_generation,
+        position: line.zip(column),
+        argument: request.query.clone().or_else(|| request.new_name.clone()),
+    };
+    let coordinator = app.lsp_request_coordinator.clone();
+    let ticket = match coordinator.begin(coordinator_key) {
+        codegg_client::LspRequestStart::Started(ticket) => ticket,
+        codegg_client::LspRequestStart::AlreadyInFlight
+        | codegg_client::LspRequestStart::AtCapacity => {
+            fail_lsp_read(app, "an equivalent LSP request is already in flight");
+            return;
+        }
+    };
     let tx = app.tui_cmd_tx.clone();
     let tab_id = app.active_tab_id().map(|id| id.to_string());
+    let response_ticket = ticket.clone();
+    let response_scope = coordinator_scope.clone();
     let task_id = spawn_scoped_registered_tui_task(
         tx,
         &mut app.task_registry,
@@ -742,12 +847,21 @@ fn start_editor_lsp_read(
         None,
         None,
         async move {
-            let response = client
-                .request(crate::core::new_request(
-                    uuid::Uuid::new_v4().to_string(),
-                    crate::protocol::core::CoreRequest::LspReadGet { request },
-                ))
-                .await;
+            let cancellation = response_ticket.cancellation_token();
+            let request = crate::core::new_request(
+                uuid::Uuid::new_v4().to_string(),
+                crate::protocol::core::CoreRequest::LspReadGet { request },
+            );
+            let response = tokio::select! {
+                _ = cancellation.cancelled() => {
+                    let _ = coordinator.finish(&response_ticket, &response_scope, document_generation);
+                    return None;
+                },
+                response = client.request(request) => response,
+            };
+            if !coordinator.finish(&response_ticket, &response_scope, document_generation) {
+                return None;
+            }
             let (result, error) = match response {
                 Ok(crate::protocol::core::CoreResponse::LspReadResult { result }) => {
                     (Some(result), None)
@@ -762,12 +876,17 @@ fn start_editor_lsp_read(
                 request_id,
                 scope,
                 operation,
+                document_revision: document_generation,
+                request_position: line.zip(column),
                 result,
                 error,
             })
         },
     );
     if task_id.is_none() {
+        let _ =
+            app.lsp_request_coordinator
+                .finish(&ticket, &coordinator_scope, document_generation);
         app.editor_state.lsp.read_loading = false;
         app.editor_state.lsp.read_error = Some("TUI command channel unavailable".to_string());
         app.editor_state.lsp.panel = Some(crate::tui::editor_lsp::EditorLspPanel::ReadResult);
@@ -862,6 +981,43 @@ pub(crate) fn apply_editor_lsp_read(
     if let Some(candidate) = app.editor_state.lsp.preview_candidate.clone() {
         crate::tui::commands::change_review::open_carried(app, candidate);
     }
+}
+
+pub(crate) fn apply_editor_lsp_read_fresh(
+    app: &mut App,
+    request_id: u64,
+    scope: EditorLspScope,
+    operation: LspReadOperation,
+    document_revision: u64,
+    request_position: Option<(u32, u32)>,
+    result: Option<LspReadResultDto>,
+    error: Option<String>,
+) {
+    let Some(session) = app.editor_state.session.as_ref() else {
+        return;
+    };
+    let Some(snapshot) = session.try_snapshot() else {
+        return;
+    };
+    if snapshot.revision().get() != document_revision {
+        return;
+    }
+    if request_position.is_some_and(|requested| editor_lsp_position(session) != Some(requested)) {
+        return;
+    }
+    apply_editor_lsp_read(app, request_id, scope, operation, result, error);
+}
+
+fn editor_lsp_position(session: &TuiDocumentSession) -> Option<(u32, u32)> {
+    let snapshot = session.try_snapshot()?;
+    let cursor = session.presentation().cursor_byte.min(snapshot.len_bytes());
+    let line = crate::tui::editor::cursor_line(&snapshot, cursor);
+    let start = crate::tui::editor::line_start(&snapshot, line)?;
+    let prefix = snapshot.read_bytes(start, cursor).ok()?;
+    Some((
+        u32::try_from(line).ok()?,
+        u32::try_from(prefix.encode_utf16().count()).ok()?,
+    ))
 }
 
 fn validate_semantic_tokens(
@@ -991,19 +1147,8 @@ pub(crate) fn start_editor_completion(app: &mut App) {
             return;
         }
     };
-    let request_id = app.editor_state.completion.begin(&scope);
-    // C003/F2: the epoch travels with the completion so a pre-reset answer
-    // can never satisfy a post-reset request, even when scope and request
-    // id coincide after a clear, reconnect, or scope ping-pong.
-    let epoch = app.editor_state.completion.epoch();
     let Some(client) = app.core_client.clone() else {
-        app.editor_state.completion.apply(
-            request_id,
-            epoch,
-            &scope,
-            None,
-            Some("daemon unavailable".to_string()),
-        );
+        app.messages_state.toasts.warning("daemon unavailable");
         return;
     };
     let request = LspCompletionRequestDto {
@@ -1017,20 +1162,57 @@ pub(crate) fn start_editor_completion(app: &mut App) {
         max_candidates: codegg_protocol::lsp::MAX_LSP_COMPLETION_CANDIDATES as u32,
     };
     if let Err(error) = request.validate() {
-        app.editor_state.completion.apply(
-            request_id,
-            epoch,
-            &scope,
-            None,
-            Some(format!("invalid completion request: {error:?}")),
-        );
+        app.messages_state
+            .toasts
+            .warning(&format!("invalid completion request: {error:?}"));
         return;
     }
+    let coordinator_scope = codegg_client::LspRequestScope {
+        frontend_id: "tui".to_owned(),
+        attachment_id: scope.document_id.clone(),
+        route_generation: scope.read_scope.generation,
+        connection_generation: app
+            .core_client
+            .as_ref()
+            .map_or(0, |client| client.connection_generation()),
+        project_id: scope.read_scope.project_id.clone(),
+        workspace_id: scope.read_scope.workspace_id.clone(),
+        session_id: scope.read_scope.session_id.clone(),
+        document_id: Some(scope.document_id.clone()),
+        path: Some(scope.read_scope.path.clone()),
+        server_id: None,
+    };
+    let coordinator_key = codegg_client::LspRequestKey {
+        scope: coordinator_scope.clone(),
+        operation: codegg_client::LspRequestOperation::Completion,
+        document_generation: scope.revision,
+        position: Some((scope.line, scope.character)),
+        argument: request.trigger_character.clone(),
+    };
+    let coordinator = app.lsp_request_coordinator.clone();
+    let ticket = match coordinator.begin(coordinator_key) {
+        codegg_client::LspRequestStart::Started(ticket) => ticket,
+        codegg_client::LspRequestStart::AlreadyInFlight => return,
+        codegg_client::LspRequestStart::AtCapacity => {
+            app.messages_state
+                .toasts
+                .warning("LSP request queue is full");
+            return;
+        }
+    };
+    let request_id = app.editor_state.completion.begin(&scope);
+    // C003/F2: the epoch travels with the completion so a pre-reset answer
+    // can never satisfy a post-reset request, even when scope and request
+    // id coincide after a clear, reconnect, or scope ping-pong.
+    let epoch = app.editor_state.completion.epoch();
     let tx = app.tui_cmd_tx.clone();
     let tab_id = app.active_tab_id().map(|tab_id| tab_id.to_string());
     // The completion keeps `scope` for the spawn-failure path below; the
     // task gets its own clone.
     let task_scope = scope.clone();
+    let response_ticket = ticket.clone();
+    let response_scope = coordinator_scope.clone();
+    let document_generation = scope.revision;
     let task_id = spawn_scoped_registered_tui_task(
         tx,
         &mut app.task_registry,
@@ -1040,12 +1222,21 @@ pub(crate) fn start_editor_completion(app: &mut App) {
         None,
         None,
         async move {
-            let response = client
-                .request(crate::core::new_request(
-                    uuid::Uuid::new_v4().to_string(),
-                    crate::protocol::core::CoreRequest::LspCompletionGet { request },
-                ))
-                .await;
+            let cancellation = response_ticket.cancellation_token();
+            let request = crate::core::new_request(
+                uuid::Uuid::new_v4().to_string(),
+                crate::protocol::core::CoreRequest::LspCompletionGet { request },
+            );
+            let response = tokio::select! {
+                _ = cancellation.cancelled() => {
+                    let _ = coordinator.finish(&response_ticket, &response_scope, document_generation);
+                    return None;
+                },
+                response = client.request(request) => response,
+            };
+            if !coordinator.finish(&response_ticket, &response_scope, document_generation) {
+                return None;
+            }
             let (result, error) = match response {
                 Ok(crate::protocol::core::CoreResponse::LspCompletionResult { result }) => {
                     (Some(result), None)
@@ -1069,6 +1260,9 @@ pub(crate) fn start_editor_completion(app: &mut App) {
         },
     );
     if task_id.is_none() {
+        let _ =
+            app.lsp_request_coordinator
+                .finish(&ticket, &coordinator_scope, document_generation);
         app.editor_state.completion.apply(
             request_id,
             epoch,

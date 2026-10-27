@@ -1200,13 +1200,90 @@ pub(crate) async fn desktop_document_diagnostics(
     state: State<'_, Arc<HostState>>,
     route_generation: u64,
 ) -> Result<EditorDiagnosticsView, String> {
-    let (project_id, _workspace_id, _) = state.route_selection(route_generation, false).await?;
+    let (project_id, workspace_id, _) = state.route_selection(route_generation, false).await?;
     let session_id = route_session(&state).await?;
     let (client, _) = state.route_request().await?;
-    let result = client
-        .lsp_diagnostics(project_id, session_id)
-        .await
-        .map_err(|error| format!("the diagnostics could not be read: {error}"))?;
+    let coordinator_scope = codegg_client::LspRequestScope {
+        frontend_id: "desktop".to_owned(),
+        attachment_id: format!("route:{route_generation}"),
+        route_generation,
+        connection_generation: state.current_generation(),
+        project_id: project_id.clone(),
+        workspace_id: workspace_id.clone(),
+        session_id: session_id.clone(),
+        document_id: None,
+        path: None,
+        server_id: None,
+    };
+    let document_generation = state.current_generation();
+    let ticket = match state
+        .lsp_request_coordinator
+        .begin(codegg_client::LspRequestKey {
+            scope: coordinator_scope.clone(),
+            operation: codegg_client::LspRequestOperation::Diagnostics,
+            document_generation,
+            position: None,
+            argument: None,
+        }) {
+        codegg_client::LspRequestStart::Started(ticket) => ticket,
+        codegg_client::LspRequestStart::AlreadyInFlight => {
+            return Err("a diagnostics request is already in flight".to_owned());
+        }
+        codegg_client::LspRequestStart::AtCapacity => {
+            return Err("the LSP request queue is full".to_owned());
+        }
+    };
+    let cancellation = ticket.cancellation_token();
+    let response = tokio::select! {
+        _ = cancellation.cancelled() => {
+            let _ = state.lsp_request_coordinator.finish(&ticket, &coordinator_scope, document_generation);
+            return Err("the diagnostics request was superseded".to_owned());
+        },
+        response = client.lsp_diagnostics(project_id, session_id) => response,
+    }
+    .map_err(|error| format!("the diagnostics could not be read: {error}"));
+    let (active_project, active_workspace, _) =
+        match state.route_selection(route_generation, false).await {
+            Ok(selection) => selection,
+            Err(_) => {
+                let _ = state.lsp_request_coordinator.finish(
+                    &ticket,
+                    &coordinator_scope,
+                    document_generation,
+                );
+                return Err("the editor route changed during the diagnostics request".to_owned());
+            }
+        };
+    let active_session = match route_session(&state).await {
+        Ok(session) => session,
+        Err(error) => {
+            let _ = state.lsp_request_coordinator.finish(
+                &ticket,
+                &coordinator_scope,
+                document_generation,
+            );
+            return Err(error);
+        }
+    };
+    let active_scope = codegg_client::LspRequestScope {
+        frontend_id: "desktop".to_owned(),
+        attachment_id: format!("route:{route_generation}"),
+        route_generation,
+        connection_generation: state.current_generation(),
+        project_id: active_project,
+        workspace_id: active_workspace,
+        session_id: active_session,
+        document_id: None,
+        path: None,
+        server_id: None,
+    };
+    if !state
+        .lsp_request_coordinator
+        .finish(&ticket, &active_scope, document_generation)
+    {
+        return Err("the diagnostics response belongs to a stale editor route".to_owned());
+    }
+    let result = response?;
     Ok(diagnostics_view(result))
 }
 
@@ -1227,7 +1304,7 @@ pub(crate) async fn desktop_document_completion(
     let request = LspCompletionRequestDto {
         session_id: route_session(&state).await?,
         path: session.relative_path().await,
-        document_id: attachment.document_id,
+        document_id: attachment.document_id.clone(),
         revision,
         line,
         character,
@@ -1235,10 +1312,111 @@ pub(crate) async fn desktop_document_completion(
         max_candidates: MAX_EDITOR_COMPLETIONS as u32,
     };
     let (client, _) = state.route_request().await?;
-    let result = client
-        .lsp_completion(request)
-        .await
-        .map_err(|error| format!("the completion could not be read: {error}"))?;
+    let coordinator_scope = codegg_client::LspRequestScope {
+        frontend_id: "desktop".to_owned(),
+        attachment_id: attachment.document_id.clone(),
+        route_generation: state.current_generation(),
+        connection_generation: state.current_generation(),
+        project_id: attachment.project_id.clone(),
+        workspace_id: attachment.workspace_id.clone(),
+        session_id: request.session_id.clone(),
+        document_id: Some(attachment.document_id.clone()),
+        path: Some(request.path.clone()),
+        server_id: None,
+    };
+    let document_generation = revision;
+    let ticket = match state
+        .lsp_request_coordinator
+        .begin(codegg_client::LspRequestKey {
+            scope: coordinator_scope.clone(),
+            operation: codegg_client::LspRequestOperation::Completion,
+            document_generation,
+            position: Some((line, character)),
+            argument: request.trigger_character.clone(),
+        }) {
+        codegg_client::LspRequestStart::Started(ticket) => ticket,
+        codegg_client::LspRequestStart::AlreadyInFlight => {
+            return Err("an equivalent completion request is already in flight".to_owned());
+        }
+        codegg_client::LspRequestStart::AtCapacity => {
+            return Err("the LSP request queue is full".to_owned());
+        }
+    };
+    let cancellation = ticket.cancellation_token();
+    let response = tokio::select! {
+        _ = cancellation.cancelled() => {
+            let _ = state.lsp_request_coordinator.finish(&ticket, &coordinator_scope, document_generation);
+            return Err("the completion request was superseded".to_owned());
+        },
+        response = client.lsp_completion(request) => response,
+    }
+    .map_err(|error| format!("the completion could not be read: {error}"));
+    let active = match live_session(&state).await {
+        Ok(active) => active,
+        Err(_) => {
+            let _ = state.lsp_request_coordinator.finish(
+                &ticket,
+                &coordinator_scope,
+                document_generation,
+            );
+            return Err("the editor attachment changed during completion".to_owned());
+        }
+    };
+    let active_attachment = match active.controller().try_attachment_info() {
+        Some(attachment) => attachment,
+        None => {
+            let _ = state.lsp_request_coordinator.finish(
+                &ticket,
+                &coordinator_scope,
+                document_generation,
+            );
+            return Err("the editor attachment changed during completion".to_owned());
+        }
+    };
+    let active_session_id = match route_session(&state).await {
+        Ok(session_id) => session_id,
+        Err(error) => {
+            let _ = state.lsp_request_coordinator.finish(
+                &ticket,
+                &coordinator_scope,
+                document_generation,
+            );
+            return Err(error);
+        }
+    };
+    let active_scope = codegg_client::LspRequestScope {
+        frontend_id: "desktop".to_owned(),
+        attachment_id: active_attachment.document_id.clone(),
+        route_generation: state.current_generation(),
+        connection_generation: state.current_generation(),
+        project_id: active_attachment.project_id,
+        workspace_id: active_attachment.workspace_id,
+        session_id: active_session_id,
+        document_id: Some(active_attachment.document_id),
+        path: Some(active.relative_path().await),
+        server_id: None,
+    };
+    let (active_snapshot, active_revision) = match active.snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let _ =
+                state
+                    .lsp_request_coordinator
+                    .finish(&ticket, &active_scope, document_generation);
+            return Err(error);
+        }
+    };
+    let active_caret = active.frontend.lock().await.cursor.caret;
+    let active_position = utf16_position(&active_snapshot, active_caret).ok();
+    if !state
+        .lsp_request_coordinator
+        .finish(&ticket, &active_scope, active_revision)
+        || active_revision != document_generation
+        || active_position != Some((line, character))
+    {
+        return Err("the completion response belongs to a stale editor attachment".to_owned());
+    }
+    let result = response?;
     Ok(completion_view(result))
 }
 
@@ -1251,6 +1429,10 @@ pub(crate) async fn desktop_document_navigate(
     let session = live_session(&state).await?;
     let read = navigation_operation(&operation)
         .ok_or_else(|| format!("`{operation}` is not a navigation this host serves"))?;
+    let attachment = session
+        .controller()
+        .try_attachment_info()
+        .ok_or_else(|| "the document attachment is unavailable".to_owned())?;
     let (snapshot, _) = session.snapshot()?;
     let caret = session.frontend.lock().await.cursor.caret;
     let (line, character) = utf16_position(&snapshot, caret)?;
@@ -1265,10 +1447,114 @@ pub(crate) async fn desktop_document_navigate(
         new_name: None,
     };
     let (client, _) = state.route_request().await?;
-    let result = client
-        .lsp_read(request)
-        .await
-        .map_err(|error| format!("the navigation could not be read: {error}"))?;
+    let coordinator_scope = codegg_client::LspRequestScope {
+        frontend_id: "desktop".to_owned(),
+        attachment_id: attachment.document_id.clone(),
+        route_generation: state.current_generation(),
+        connection_generation: state.current_generation(),
+        project_id: attachment.project_id.clone(),
+        workspace_id: attachment.workspace_id.clone(),
+        session_id: request.session_id.clone(),
+        document_id: Some(attachment.document_id.clone()),
+        path: Some(request.path.clone()),
+        server_id: request.server_id.clone(),
+    };
+    let document_generation = attachment.revision;
+    let ticket = match state
+        .lsp_request_coordinator
+        .begin(codegg_client::LspRequestKey {
+            scope: coordinator_scope.clone(),
+            operation: codegg_client::LspRequestOperation::Read(read),
+            document_generation,
+            position: Some((line, character)),
+            argument: None,
+        }) {
+        codegg_client::LspRequestStart::Started(ticket) => ticket,
+        codegg_client::LspRequestStart::AlreadyInFlight => {
+            return Err("an equivalent navigation request is already in flight".to_owned());
+        }
+        codegg_client::LspRequestStart::AtCapacity => {
+            return Err("the LSP request queue is full".to_owned());
+        }
+    };
+    let cancellation = ticket.cancellation_token();
+    let response = tokio::select! {
+        _ = cancellation.cancelled() => {
+            let _ = state.lsp_request_coordinator.finish(&ticket, &coordinator_scope, document_generation);
+            return Err("the navigation request was superseded".to_owned());
+        },
+        response = client.lsp_read(request) => response,
+    }
+    .map_err(|error| format!("the navigation could not be read: {error}"));
+    let active_session = match live_session(&state).await {
+        Ok(active) => active,
+        Err(_) => {
+            let _ = state.lsp_request_coordinator.finish(
+                &ticket,
+                &coordinator_scope,
+                document_generation,
+            );
+            return Err("the editor attachment changed during navigation".to_owned());
+        }
+    };
+    let active_attachment = active_session.controller().try_attachment_info();
+    let active_scope = match active_attachment {
+        Some(info) => {
+            let active_session_id = match route_session(&state).await {
+                Ok(session_id) => session_id,
+                Err(error) => {
+                    let _ = state.lsp_request_coordinator.finish(
+                        &ticket,
+                        &coordinator_scope,
+                        document_generation,
+                    );
+                    return Err(error);
+                }
+            };
+            codegg_client::LspRequestScope {
+                frontend_id: "desktop".to_owned(),
+                attachment_id: info.document_id.clone(),
+                route_generation: state.current_generation(),
+                connection_generation: state.current_generation(),
+                project_id: info.project_id,
+                workspace_id: info.workspace_id,
+                session_id: active_session_id,
+                document_id: Some(info.document_id),
+                path: Some(active_session.relative_path().await),
+                server_id: None,
+            }
+        }
+        None => {
+            let _ = state.lsp_request_coordinator.finish(
+                &ticket,
+                &coordinator_scope,
+                document_generation,
+            );
+            return Err("the editor attachment changed during navigation".to_owned());
+        }
+    };
+    let (active_snapshot, active_revision) = match active_session.snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let _ = state.lsp_request_coordinator.finish(
+                &ticket,
+                &coordinator_scope,
+                document_generation,
+            );
+            return Err(error);
+        }
+    };
+    let active_caret = active_session.frontend.lock().await.cursor.caret;
+    let active_position = utf16_position(&active_snapshot, active_caret).ok();
+    if !state
+        .lsp_request_coordinator
+        .finish(&ticket, &active_scope, active_revision)
+        || active_revision != document_generation
+        || active_position != Some((line, character))
+    {
+        return Err("the navigation response belongs to a stale editor attachment".to_owned());
+    }
+    let result = response?;
     Ok(navigation_view(result))
 }
 

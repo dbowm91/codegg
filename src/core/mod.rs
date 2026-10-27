@@ -83,6 +83,30 @@ pub trait CoreClient: Send + Sync {
         request: RequestEnvelope<CoreRequest>,
     ) -> Result<CoreResponse, AppError>;
     fn subscribe(&self) -> mpsc::Receiver<EventEnvelope<CoreEvent>>;
+    /// Loss-aware event stream for clients that can surface transport gaps.
+    /// Adapters without transport gap reporting inherit the ordinary stream.
+    fn subscribe_loss_aware(&self) -> mpsc::Receiver<codegg_client::ClientEvent> {
+        let (tx, rx) = mpsc::channel(CORE_EVENT_CHANNEL_CAPACITY);
+        let mut events = self.subscribe();
+        tokio::spawn(async move {
+            while let Some(event) = events.recv().await {
+                if tx
+                    .send(codegg_client::ClientEvent::Event(Box::new(event)))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            let _ = tx.send(codegg_client::ClientEvent::Closed).await;
+        });
+        rx
+    }
+    /// Connection identity used to fence asynchronous request results.
+    /// In-process clients have one stable connection for their lifetime.
+    fn connection_generation(&self) -> u64 {
+        0
+    }
     /// Narrow this connection to a session-scoped event filter.
     ///
     /// The handshake subscription uses `session_id: None`, which the daemon

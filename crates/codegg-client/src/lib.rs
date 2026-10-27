@@ -31,7 +31,10 @@ pub use driver::{
 };
 pub use local::{ClientEvent, LocalSocketClient};
 pub use lsp::{
-    operation_label, DiagnosticsReconciler, LspReadClient, LspReadClientError, ReconcileDecision,
+    operation_label, DiagnosticsReconciler, DiagnosticsStreamUpdate, DiagnosticsSubscriptionError,
+    LspDiagnosticsStream, LspReadClient, LspReadClientError, LspRequestCoordinator, LspRequestKey,
+    LspRequestOperation, LspRequestScope, LspRequestStart, LspRequestTicket, ReconcileDecision,
+    StreamedDiagnosticDecision,
 };
 pub use paths::{LocalDaemonPaths, LocalEndpoint};
 #[cfg(windows)]

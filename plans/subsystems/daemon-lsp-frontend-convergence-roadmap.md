@@ -1,6 +1,6 @@
 # Daemon LSP and Frontend Editor Convergence Roadmap
 
-Status: active planning — M001 ready; M002–M006 sequenced or decision-gated
+Status: active — M001 implementation underway; M002–M006 sequenced or decision-gated
 
 Planning baseline: `main` at `80171f45295bebb9ab0b521262c0b295acb93074` (2026-10-27). Implementation agents MUST revalidate the current head and preserve intervening changes.
 
@@ -41,7 +41,7 @@ No renderer/host/CLI may create a competing daemon-session LSP process, bypass `
 
 | ID | Primary class | Deliverable / exit | Dependencies | Status |
 |---|---|---|---|---|
-| M001 | infrastructure | Shared `codegg-client` LSP request lifecycle + diagnostics reconciliation, consumed by one real editor path in each frontend | Existing ADR-0011/0012/0021 interfaces (closed) | **ready** |
+| M001 | infrastructure | Shared `codegg-client` LSP request lifecycle + diagnostics reconciliation, consumed by one real editor path in each frontend | Existing ADR-0011/0012/0021 interfaces (closed) | **active** |
 | M002 | capability/polish | Both editors use shared coordination for remaining LSP gestures, bounded debounce/coalescing and stale drop; measurable local vs IPC latency | M001 **hard** | **blocked — M001 closure** |
 | M003 | capability | Typed daemon LSP server inspection, status, restart/stop/cache controls and low-frequency `/lsp-*` command parity (M007-F part 1) | ADR-0055 **hard** | **blocked — proposed ADR** |
 | M004 | capability | Daemon LSP semantic repair/review recipe parity and checked human preview flow (M007-F part 2) | M003 **hard**, accepted ADR-0055 interface | **blocked — M003/ADR** |

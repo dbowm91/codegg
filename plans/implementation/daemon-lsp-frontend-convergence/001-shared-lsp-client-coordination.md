@@ -1,10 +1,10 @@
 # M001 — Shared Frontend LSP Request Coordinator
 
-Status: ready for handoff
+Status: active
 
 Primary class: infrastructure (vertically qualified in both rich frontends).
 
-Repository planning baseline: `80171f45295bebb9ab0b521262c0b295acb93074` (`main`, 2026-10-27); before implementation inspect current branch HEAD, update file paths and record drift. Source roadmap: `plans/subsystems/daemon-lsp-frontend-convergence-roadmap.md`. Planning governance: `plans/003-planning-process.md`. Do not edit accepted ADRs or historical closure records.
+Repository planning baseline: `48929a172eaf5267b8d1a0255b1a6ac25f6a0837` (requested branch tip before implementation, rebased on `origin/main` at `80171f45295bebb9ab0b521262c0b295acb93074`). Source roadmap: `plans/subsystems/daemon-lsp-frontend-convergence-roadmap.md`. Planning governance: `plans/003-planning-process.md`. Do not edit accepted ADRs or historical closure records.
 
 Accepted ADRs: ADR-0010, ADR-0011, ADR-0012, ADR-0018, ADR-0021. Long-term §§4, 13, 24–25 in `plans/000-long-term-specification.md`. Hard dependencies: closed M005 document foundation and M006-B daemon LSP read surface. No new ADR, capability, transport family or migration is required.
 
@@ -14,7 +14,9 @@ Replace divergent *transport/request lifecycle decisions*, not frontend renderin
 
 ## Current evidence
 
-`crates/codegg-client/src/lsp.rs` exposes `LocalSocketClient::{lsp_read,lsp_completion,lsp_diagnostics}` and `DiagnosticsReconciler`. `src/tui/commands/editor.rs` independently dispatches and invalidates `LspReadGet`/diagnostics, `src/tui/editor_completion.rs` retains a separate revision/epoch policy, while `apps/desktop/src-tauri/src/document.rs` wraps its own diagnostic/completion/navigation requests and views. Daemon endpoints in `src/core/daemon_lsp.rs` and `src/core/daemon_lsp_completion.rs` already have typed statuses and revisions. Never mistake these duplicated presentation structures for duplicated LSP servers.
+`crates/codegg-client/src/lsp.rs` exposes `LocalSocketClient::{lsp_read,lsp_completion,lsp_diagnostics}`, `LspRequestCoordinator`, and `DiagnosticsReconciler`. The current implementation wires the coordinator into TUI diagnostic/read/completion requests and desktop diagnostic/completion/navigation requests. The frontends still own their transport dispatch and response mapping; `DiagnosticsReconciler` has no production call site, and neither frontend consumes the project diagnostics subscription. Daemon endpoints in `src/core/daemon_lsp.rs` and `src/core/daemon_lsp_completion.rs` already have typed statuses and revisions. Never mistake duplicated presentation structures for duplicated LSP servers.
+
+Current closure readiness audit: `plans/implementation/daemon-lsp-frontend-convergence/artifacts/M001-closure-readiness-20261027.md`.
 
 ## Invariants and non-goals
 

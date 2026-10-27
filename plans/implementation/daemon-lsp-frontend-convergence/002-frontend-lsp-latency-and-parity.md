@@ -4,7 +4,7 @@ Status: blocked — M001 strict closure (hard)
 
 Primary class: capability/polish.
 
-Repository planning baseline: `80171f45295bebb9ab0b521262c0b295acb93074` (`main`, 2026-10-27); before implementation inspect current branch HEAD, update file paths and record drift. Source roadmap: `plans/subsystems/daemon-lsp-frontend-convergence-roadmap.md`. Planning governance: `plans/003-planning-process.md`. Do not edit accepted ADRs or historical closure records.
+Repository planning baseline: `48929a172eaf5267b8d1a0255b1a6ac25f6a0837` (requested branch tip before implementation, rebased on `origin/main` at `80171f45295bebb9ab0b521262c0b295acb93074`). Source roadmap: `plans/subsystems/daemon-lsp-frontend-convergence-roadmap.md`. Planning governance: `plans/003-planning-process.md`. Do not edit accepted ADRs or historical closure records.
 
 Accepted ADRs: ADR-0010, ADR-0011, ADR-0012, ADR-0018, ADR-0021. Explicitly depends on `001-shared-lsp-client-coordination.md`. No ADR-0034 parser dependency: this milestone optimizes existing asynchronous LSP reads, not syntax-tree editing.
 

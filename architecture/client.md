@@ -91,10 +91,23 @@ capability negotiation, and bidirectional TuiMessage event loop.
 | `crates/codegg-client/src/driver.rs` | `SessionProjectionDriver`, `StoppedDriver` |
 | `crates/codegg-client/src/document.rs` | `DocumentController` |
 | `crates/codegg-client/src/compose.rs` | `compose_turn_submit`, `PromptIntent` |
-| `crates/codegg-client/src/lsp.rs` | `LspReadClient`, `DiagnosticsReconciler` |
+| `crates/codegg-client/src/lsp.rs` | typed LSP accessors, `DiagnosticsReconciler`, and the shared scoped request coordinator |
 | `crates/codegg-protocol/src/tui.rs` | `TuiMessage`, `REMOTE_TUI_PROTOCOL_VERSION` |
 
 ## How It Works
+
+### LSP request coordination
+
+`codegg-client::LspRequestCoordinator` is the shared admission/freshness
+contract used by the native TUI and desktop host. A request key binds the
+frontend attachment, route generation, project/workspace/session, optional
+document/path/server, document generation, operation, and position/argument.
+Equivalent in-flight work is collapsed; a newer request of the same operation
+supersedes older positions or scopes; the outstanding set is bounded. A
+completed response is delivered only when its ticket remains current and the
+active scope and document generation still match. The coordinator owns no
+transport, editor text, or rendering state, and no lock is held across an
+await. Each frontend still maps typed outcomes into its own view state.
 
 ### Entry Point
 

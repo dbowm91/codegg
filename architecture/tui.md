@@ -7403,6 +7403,12 @@ the existing `DocumentOpen`, which performs final containment and
 `file.read` authorization. Older or outside-workspace locations remain
 display-only.
 
+Daemon-backed diagnostics, reads, and completion requests enter the shared
+`codegg-client::LspRequestCoordinator`. It collapses equivalent pending
+gestures, bounds outstanding work, and drops responses superseded by a newer
+gesture or attachment. The TUI still owns the presentation result and applies
+its editor-generation, revision, and completion-epoch checks before painting.
+
 The presentation state is bound to session, project, workspace, path, and
 editor generation. Semantic-token overlays are accepted only for the same
 controller snapshot revision and valid non-overlapping UTF-16 ranges;

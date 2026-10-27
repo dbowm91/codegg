@@ -32,6 +32,12 @@ that re-exports `egglsp::*` and bridges:
 - `crate::config::schema::LspConfig` → `egglsp::LspConfig` (via `From` impl in the wrapper)
 - `egglsp::LspError` → `crate::error::LspError` (delegates to the existing codegg-side error variant)
 
+The native TUI and desktop host issue typed daemon LSP operations through the
+shared `codegg-client::LspRequestCoordinator`. It scopes outstanding work to
+the frontend attachment and document generation, collapses equivalent pending
+requests, bounds concurrency, and refuses superseded responses. Frontends keep
+their own presentation DTO mapping and rendering state.
+
 Linux constrained turns use `src/lsp/m004.rs` to create an immutable service
 scope for the daemon-resolved profile and canonical workspace. That adapter
 uses the canonical managed-process helper for every LSP generation and leaves

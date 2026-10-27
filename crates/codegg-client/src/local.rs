@@ -176,6 +176,12 @@ impl LocalSocketClient {
         self.client_id.lock().await.clone()
     }
 
+    /// Generation of the currently installed event/request connection.
+    /// A reconnect increments it before new events can be observed.
+    pub fn connection_generation(&self) -> u64 {
+        self.connection_generation.load(Ordering::Acquire)
+    }
+
     /// `true` once the reader task has observed peer death, a protocol
     /// version mismatch, or an explicit reconnect teardown. Event
     /// subscribers must treat this as terminal: the shared broadcast

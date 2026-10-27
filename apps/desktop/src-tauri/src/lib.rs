@@ -54,6 +54,8 @@ fn bound_projects(projects: impl IntoIterator<Item = ProjectSummary>) -> Vec<Pro
 }
 
 struct HostState {
+    /// Shared frontend-neutral admission and freshness policy for LSP reads.
+    lsp_request_coordinator: codegg_client::LspRequestCoordinator,
     /// Single lifecycle transition serialization boundary.
     ///
     /// Linearization points (all under this gate):
@@ -100,6 +102,7 @@ struct HostState {
 impl Default for HostState {
     fn default() -> Self {
         Self {
+            lsp_request_coordinator: codegg_client::LspRequestCoordinator::default(),
             lifecycle: Mutex::new(()),
             client: Mutex::new(None),
             daemon_id: Mutex::new(None),
@@ -197,6 +200,7 @@ impl HostState {
             // disconnect linearizes (Finding C).
             self.connect_serial.fetch_add(1, Ordering::AcqRel);
             self.connection_generation.fetch_add(1, Ordering::AcqRel);
+            self.lsp_request_coordinator.invalidate_frontend("desktop");
             let taken = self.subscriptions.take_active().await;
             *self.client.lock().await = None;
             *self.daemon_id.lock().await = None;
@@ -280,6 +284,7 @@ impl HostState {
             *self.client.lock().await = Some(client);
             *self.daemon_id.lock().await = Some(daemon_id);
             let generation = self.connection_generation.fetch_add(1, Ordering::AcqRel) + 1;
+            self.lsp_request_coordinator.invalidate_frontend("desktop");
             (taken.map(|(_, task)| task), generation)
         };
         if let Some(task) = previous.0 {
