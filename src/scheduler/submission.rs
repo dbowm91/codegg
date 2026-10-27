@@ -1082,7 +1082,36 @@ mod tests {
         use std::process::Command;
         use std::time::Instant;
 
-        #[derive(Clone)]
+        let source_revision = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .expect("read source revision");
+        assert!(source_revision.status.success());
+        let rustc_version = Command::new("rustc")
+            .args(["--version", "--verbose"])
+            .output()
+            .expect("read rustc version");
+        assert!(rustc_version.status.success());
+        let cargo_version = Command::new("cargo")
+            .arg("--version")
+            .output()
+            .expect("read cargo version");
+        assert!(cargo_version.status.success());
+        let host = Command::new("uname")
+            .arg("-a")
+            .output()
+            .expect("read host facts");
+        assert!(host.status.success());
+        println!(
+            "A003 host: source={} os={} rustc={} cargo={} target_dirs=fresh,separate dependencies=none,offline",
+            String::from_utf8_lossy(&source_revision.stdout).trim(),
+            String::from_utf8_lossy(&host.stdout).trim(),
+            String::from_utf8_lossy(&rustc_version.stdout).trim().replace('\n', "; "),
+            String::from_utf8_lossy(&cargo_version.stdout).trim(),
+        );
+
+        #[derive(Clone, Debug)]
         struct BuildCase {
             workspace_id: WorkspaceId,
             root: std::path::PathBuf,
@@ -1277,8 +1306,17 @@ mod tests {
                     codegg_core::jobs::JobState::Completed,
                     "{job:#?}"
                 );
-                reports.push(std::fs::read_to_string(&case.report).expect("GNU time report"));
-                target_sizes.push(target_bytes(&case.target));
+                let report = std::fs::read_to_string(&case.report).expect("GNU time report");
+                for field in ["wall=", "user=", "system=", "maxrss_kb="] {
+                    assert!(
+                        report.contains(field),
+                        "incomplete resource report: {report}"
+                    );
+                }
+                reports.push(report);
+                let bytes = target_bytes(&case.target);
+                assert!(bytes > 0, "Cargo target directory stayed empty: {case:#?}");
+                target_sizes.push(bytes);
             }
             scheduler
                 .shutdown(crate::scheduler::SchedulerShutdownMode::ImmediateInterrupt)
