@@ -127,7 +127,7 @@ pub fn project_compact_search_value(
         .take(max_items.max(1))
         .map(compact_item)
         .collect();
-    Some(serde_json::json!({"results": compacted}))
+    Some(serde_json::Value::Array(compacted))
 }
 
 /// Compact projection for batch-fetch results (F11).
@@ -563,7 +563,7 @@ mod tests {
             ]
         });
         let compact = project_compact_search_value(&value, 10).expect("compact");
-        let item = &compact["results"][0];
+        let item = &compact[0];
         assert_eq!(item["canonical_name"], "scripts/verify.sh");
         assert_eq!(item["path"], "scripts/verify.sh");
         assert!(item.get("providers").is_none());
