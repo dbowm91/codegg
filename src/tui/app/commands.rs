@@ -1298,6 +1298,35 @@ pub enum TuiCommand {
         error: Option<String>,
         unsupported: bool,
     },
+    /// M003: one bounded page of a delegated run's recorded transcript.
+    ///
+    /// The completion of one authorized `AgentRunTranscriptRead`. It carries
+    /// the fence the read was issued under — the per-tab request id, the
+    /// route token, the tab it belongs to, the run it names, and the cursor
+    /// it asked from — so a completion that arrives after a session switch,
+    /// a project switch, a reconnect, a tab close, a task-id reuse or a run
+    /// replacement can be recognised as stale and dropped.
+    SubagentTranscriptPage {
+        request_id: u64,
+        route: crate::tui::app::state::UiRouteToken,
+        tab_id: String,
+        run_id: String,
+        from_ordinal: i64,
+        page: Option<crate::protocol::projection::dto::AgentRunTranscriptPageDto>,
+        error: Option<String>,
+        error_code: Option<String>,
+    },
+    /// C001: the next bounded catch-up pass for one delegated tab.
+    ///
+    /// A pass reads at most four pages. When the store still holds rows
+    /// beyond the page that was last read, the tab yields and schedules
+    /// another pass through the event loop, so a long transcript is walked
+    /// over several passes instead of dead-ending at the fourth page. The
+    /// command carries the tab it belongs to; the tab's own cache holds
+    /// the cursor the pass reads from.
+    SubagentTranscriptPass {
+        tab_id: String,
+    },
     /// Project Collaboration M002: explicit refresh of one project's
     /// chat window (channel ensure + history through `CoreClient`).
     RefreshChat {

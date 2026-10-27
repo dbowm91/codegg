@@ -2222,6 +2222,12 @@ impl App {
                         &subscription_id,
                         outcome,
                     );
+                    // M003: a delegated run's recorded transcript advanced.
+                    // The watermark is body-free and advisory: it says the
+                    // run reached an ordinal, never what it recorded. The
+                    // rows come from the authorized page read that this
+                    // schedules for the focused tab.
+                    crate::tui::commands::transcript_follow::on_snapshot_watermarks(self);
                 }
                 true
             }
@@ -4491,6 +4497,9 @@ impl App {
             Some(InputAction::CloseSubagentTab) => {
                 self.process_msg(TuiMsg::CloseSubagentTab);
             }
+            Some(InputAction::RetryTranscriptFollow) => {
+                self.retry_transcript_follow();
+            }
             Some(InputAction::ToggleComposerMode) => {
                 self.process_msg(TuiMsg::ToggleComposerMode);
             }
@@ -5646,6 +5655,11 @@ impl App {
                 .toasts
                 .warning("That subagent finished, so your next prompt starts a normal turn again.");
         }
+        // M003: the snapshot is also where a delegated run's transcript
+        // watermark and its lifecycle status arrive. Both feed the live
+        // follow, so the funnel that every "the projection spoke" path goes
+        // through is also where the follow is told to look.
+        crate::tui::commands::transcript_follow::on_snapshot_watermarks(self);
     }
 
     /// Dispatch one built-in slash command.
@@ -15367,21 +15381,49 @@ impl App {
             }
         }
         if opened {
-            // The tab reads the delegated run's transcript when it opens, so
-            // the snapshot it reads from has to be the one the store holds
-            // now. This is a boundary read at the user's request — never a
-            // timer — and it leaves the open rows alone while it runs.
-            self.refresh_delegated_transcript();
+            // The tab follows the delegated run's recorded transcript from
+            // the canonical durable run id the authorized projection
+            // vouched for. This is a **typed incremental read** — one
+            // bounded page from the store's own cursor — not a replacement
+            // of the whole session subscription. The session refresh stays
+            // as the fallback for a daemon that does not serve the page
+            // read at all.
+            if let Some(tab_id) = self.ui_state.subagents.tabs.active_tab_id().cloned() {
+                crate::tui::commands::transcript_follow::on_tab_focused(self, &tab_id);
+            }
         }
         opened
+    }
+
+    /// Re-read the delegated run's recorded transcript for the open tab.
+    ///
+    /// The explicit retry for a follow that broke: a read the daemon
+    /// refused, a daemon that went away, or a read that failed. It re-reads
+    /// from the tab's own cursor, so it never re-fetches what the tab
+    /// already holds.
+    ///
+    /// A no-op when no subagent tab is open, and a no-op when the tab's
+    /// follow is healthy — a working follow is not re-issued.
+    fn retry_transcript_follow(&mut self) {
+        let Some(tab_id) = self.ui_state.subagents.tabs.active_tab_id().cloned() else {
+            return;
+        };
+        crate::tui::commands::transcript_follow::retry(self, &tab_id);
     }
 
     /// Re-read the active session's projection so the delegated tab's
     /// transcript is current.
     ///
+    /// This is the **older-daemon fallback** for the delegated tab: a
+    /// daemon that does not serve the typed transcript page read is still
+    /// answered by the session snapshot, exactly as before. A daemon that
+    /// does serve the page read never comes through here — replacing a
+    /// whole session subscription to refresh one run's transcript is a far
+    /// larger blast radius than the read itself.
+    ///
     /// A no-op when there is no active session or project: there is nothing
     /// to re-read, and the tab keeps the transcript it already has.
-    fn refresh_delegated_transcript(&mut self) {
+    pub(crate) fn refresh_delegated_transcript(&mut self) {
         let (Some(project_id), Some(session_id)) = (
             self.active_project_id().map(str::to_owned),
             self.active_session_id().map(str::to_owned),
@@ -15399,7 +15441,16 @@ impl App {
     /// subagent tabs open is not a failure: the conversation stays selected,
     /// which is the same "no dead key" rule `toggle_tasks_list` follows.
     fn cycle_subagent_tab(&mut self, offset: isize) -> bool {
-        self.ui_state.subagents.cycle_tabs(offset)
+        let cycled = self.ui_state.subagents.cycle_tabs(offset);
+        if cycled {
+            // A tab that gains focus catches up from the authoritative
+            // cursor. A background tab is not read: it stays dirty and
+            // waits, so a hidden tab generates no traffic.
+            if let Some(tab_id) = self.ui_state.subagents.tabs.active_tab_id().cloned() {
+                crate::tui::commands::transcript_follow::on_tab_focused(self, &tab_id);
+            }
+        }
+        cycled
     }
 
     /// `Shift+N`: show the next subagent tab, wrapping through the

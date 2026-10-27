@@ -91,6 +91,9 @@ pub mod tui_composer_undo;
 #[path = "tui_composer_wrap.inc"]
 pub mod tui_composer_wrap;
 
+#[path = "transcript_follow.inc"]
+pub mod transcript_follow;
+
 #[path = "tui_formatted_json_detail_view.inc"]
 pub mod tui_formatted_json_detail_view;
 

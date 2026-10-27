@@ -30,12 +30,27 @@ use std::sync::Arc;
 use super::daemon::CoreDaemon;
 use super::project_activation::{self, ProjectActivation, ProjectHealthSnapshot};
 use crate::error::AppError;
-use crate::protocol::core::{CoreEvent, CoreResponse};
+use crate::protocol::core::{CoreEvent, CoreRequest, CoreResponse};
 use chrono::Utc;
 use codegg_core::context::{
     ContextResolutionError, ProjectContext, ProjectContextRequest, SessionId,
 };
 use codegg_core::workspace::WorkspaceRecord;
+
+/// The refusal a delegated-run read answers with when the named session does
+/// not own the run, or the run does not exist.
+///
+/// Both cases get the **same** answer, so a guessed run id reveals neither
+/// the run's existence nor its size. It is deliberately not the "absent"
+/// page: an absent page is the statement "this run exists and nothing was
+/// recorded", and that statement must not be made about a run the caller
+/// does not own.
+fn agent_run_not_found() -> CoreResponse {
+    CoreResponse::Error {
+        code: "agent_run_not_found".to_string(),
+        message: "delegated run not found".to_string(),
+    }
+}
 
 impl CoreDaemon {
     /// The session's durable record, when the daemon has a store.
@@ -75,6 +90,129 @@ impl CoreDaemon {
             )
                 as std::sync::Arc<dyn codegg_core::agent_run_transcript::AgentRunTranscriptStore>
         })
+    }
+
+    /// M002: serve one bounded page of a delegated run's recorded transcript.
+    ///
+    /// The authority is the run's **own durable ownership**. The run's task
+    /// origin names the session that owns it, and that durable origin — not
+    /// the session id the client sent — is what authorizes a read of its
+    /// transcript. The client's session id is a claim that is checked, never
+    /// a grant.
+    ///
+    /// Three answers, and they are three different facts:
+    ///
+    /// - **Not yours, or not there.** A run the named session does not own
+    ///   and a run id that does not exist get the *same* answer, so a
+    ///   guessed run id reveals neither the run's existence nor its size.
+    /// - **Yours, but nothing recorded.** An owned run with no recorded
+    ///   transcript is a *page* whose status is absent. That is not the
+    ///   refusal above, and the client can tell them apart.
+    /// - **Temporarily unavailable.** A store that cannot be read gets its
+    ///   own answer, because "could not read it" is not "not yours".
+    ///
+    /// The read is bounded three ways, independently: the store's own read
+    /// limit, the declared page row ceiling, and the declared byte ceiling
+    /// applied to the already-redacted bodies. The page answers with the
+    /// store's authoritative cursor, so a client walks past the initial
+    /// preview without re-fetching the session.
+    ///
+    /// A retired parent turn does not close this door: ownership is
+    /// session-scoped and durable, so a run whose parent turn has ended is
+    /// still readable by the session that owns it.
+    pub(crate) async fn handle_agent_run_request(
+        &self,
+        request: CoreRequest,
+        trusted_client_id: &str,
+        authority: codegg_core::transport_auth::RequestAuthorityContext,
+        authz_decision: codegg_core::authorization::AuthorizationDecision,
+    ) -> Result<CoreResponse, AppError> {
+        let _ = (trusted_client_id, &authority, &authz_decision);
+        let CoreRequest::AgentRunTranscriptRead {
+            session_id,
+            run_id,
+            from_ordinal,
+            limit,
+        } = request
+        else {
+            return Ok(CoreResponse::Error {
+                code: "unsupported_request".to_string(),
+                message: "the delegated run family does not serve this request".to_string(),
+            });
+        };
+
+        // A run id that is not a well-formed identity cannot name a run, so
+        // it gets the same answer as a run that does not exist.
+        let Ok(run_id) = codegg_core::identity::AgentRunId::parse(&run_id) else {
+            return Ok(agent_run_not_found());
+        };
+
+        // The ownership check. The run's own task origin is the authority:
+        // the session that originated the task owns the run, and only that
+        // session may read its transcript.
+        //
+        // A store read that fails is answered like a missing run, so a
+        // failing run store cannot be used to probe which run ids exist.
+        let run = match self.deps.agent_run_store.get_run(&run_id).await {
+            Ok(Some(run)) => run,
+            Ok(None) => return Ok(agent_run_not_found()),
+            Err(error) => {
+                tracing::warn!(%error, %run_id, "delegated run ownership read failed");
+                return Ok(agent_run_not_found());
+            }
+        };
+        let task = match self.deps.agent_run_store.get_task(&run.task_id).await {
+            Ok(Some(task)) => task,
+            Ok(None) => return Ok(agent_run_not_found()),
+            Err(error) => {
+                tracing::warn!(%error, %run_id, "delegated run task ownership read failed");
+                return Ok(agent_run_not_found());
+            }
+        };
+        if task.originating_session_id != session_id {
+            return Ok(agent_run_not_found());
+        }
+
+        let Some(store) = self.transcript_store() else {
+            return Ok(CoreResponse::Error {
+                code: "transcript_unavailable".to_string(),
+                message: "the delegated run transcript store is not available".to_string(),
+            });
+        };
+
+        match codegg_core::projection_replay::agent_run_transcript_page(
+            store.as_ref(),
+            &run_id,
+            from_ordinal,
+            limit as usize,
+        )
+        .await
+        {
+            Ok(page) => Ok(CoreResponse::AgentRunTranscriptRead { page }),
+            Err(codegg_core::projection_replay::AgentRunTranscriptPageError::Storage(error)) => {
+                // The message carries no body and no ordinal count: a
+                // failed read says nothing about what is in the store.
+                tracing::warn!(%error, %run_id, "delegated run transcript page read failed");
+                Ok(CoreResponse::Error {
+                    code: "transcript_unavailable".to_string(),
+                    message: "the delegated run transcript could not be read".to_string(),
+                })
+            }
+            Err(codegg_core::projection_replay::AgentRunTranscriptPageError::BoundExceeded(
+                error,
+            )) => {
+                // Refused, not shortened: a page over the declared bound is
+                // not shipped, and the client is told to re-read with a
+                // smaller cursor step rather than be handed a short page
+                // that reads as the whole transcript.
+                tracing::warn!(%error, %run_id, "refused an over-bound delegated run transcript page");
+                Ok(CoreResponse::Error {
+                    code: "transcript_bound_exceeded".to_string(),
+                    message: "the delegated run transcript page is over the declared bound"
+                        .to_string(),
+                })
+            }
+        }
     }
 
     /// Build the durable portion of a session projection from authoritative
@@ -1542,5 +1680,302 @@ mod tests {
             "a run that recorded nothing must be absent, not an empty conversation"
         );
         assert_eq!(run_id.as_str(), snapshot.agent_runs[0].run_id);
+    }
+
+    /// M002: ask the delegated-run family for one bounded transcript page.
+    ///
+    /// The handler is called the way the daemon's dispatcher calls it, with
+    /// a local-owner authority and the decision the authorization layer
+    /// already made. The ownership gate under test is the handler's own:
+    /// it must resolve the run's durable owner rather than trust the
+    /// session id in the request.
+    async fn transcript_page(
+        daemon: &CoreDaemon,
+        session_id: &str,
+        run_id: &codegg_core::identity::AgentRunId,
+        from_ordinal: i64,
+        limit: u32,
+    ) -> CoreResponse {
+        let request = CoreRequest::AgentRunTranscriptRead {
+            session_id: session_id.to_string(),
+            run_id: run_id.to_string(),
+            from_ordinal,
+            limit,
+        };
+        daemon
+            .handle_agent_run_request(
+                request,
+                "test-client",
+                codegg_core::transport_auth::RequestAuthorityContext::local(
+                    "test-client",
+                    "test-correlation",
+                ),
+                codegg_core::authorization::AuthorizationDecision {
+                    principal_id: codegg_core::identity::PrincipalId::new(),
+                    operation: "agent_run_transcript_read".to_string(),
+                    capability: Some("session.read".to_string()),
+                    project_id: None,
+                    membership_revision: None,
+                    policy: codegg_core::authorization::PolicyKind::LocalOwnerBroad,
+                    decision_id: "test-decision".to_string(),
+                    correlation_id: "test-correlation".to_string(),
+                    reason: "test".to_string(),
+                    decided_at_ms: 0,
+                },
+            )
+            .await
+            .expect("the handler answers with a response")
+    }
+
+    /// The page carried by a transcript response.
+    fn page_of(
+        response: &CoreResponse,
+    ) -> codegg_protocol::projection::dto::AgentRunTranscriptPageDto {
+        match response {
+            CoreResponse::AgentRunTranscriptRead { page } => page.clone(),
+            other => panic!("expected a transcript page, got {other:?}"),
+        }
+    }
+
+    /// The error code carried by an error response.
+    fn error_code(response: &CoreResponse) -> String {
+        match response {
+            CoreResponse::Error { code, .. } => code.clone(),
+            other => panic!("expected an error response, got {other:?}"),
+        }
+    }
+
+    /// The error message carried by an error response.
+    fn error_message(response: &CoreResponse) -> String {
+        match response {
+            CoreResponse::Error { message, .. } => message.clone(),
+            other => panic!("expected an error response, got {other:?}"),
+        }
+    }
+
+    /// Append `count` rows of `body` to a run's durable transcript.
+    async fn append_rows(
+        daemon: &CoreDaemon,
+        run_id: &codegg_core::identity::AgentRunId,
+        count: usize,
+        body: &str,
+    ) {
+        use codegg_core::agent_run_transcript::{
+            AgentRunTranscriptStore, SqliteAgentRunTranscriptStore, TranscriptKind, TranscriptRole,
+        };
+        let store = SqliteAgentRunTranscriptStore::new(
+            daemon
+                .pool
+                .clone()
+                .expect("a pool-backed daemon has a pool"),
+        );
+        for index in 0..count {
+            store
+                .append(
+                    run_id,
+                    TranscriptRole::Orchestrator,
+                    TranscriptKind::ModelMessage,
+                    &format!("{body}-{index}"),
+                )
+                .await
+                .expect("append a transcript row");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_owner_reads_the_tail_past_the_preview_ceiling() {
+        let pool = transcript_pool().await;
+        let daemon = CoreDaemon::with_deps(crate::core::runtime_deps::CoreRuntimeDeps::with_jobs(
+            pool, None, None,
+        ));
+        let workspace = daemon
+            .workspaces
+            .get_or_register(&workspace_root("tail"))
+            .await
+            .expect("register workspace");
+        let run_id = delegated_run(&daemon, "session-tail", &workspace.id).await;
+        // More rows than one page may carry, so the tail is genuinely past
+        // the preview ceiling.
+        append_rows(&daemon, &run_id, 70, "row").await;
+
+        let first = page_of(&transcript_page(&daemon, "session-tail", &run_id, 0, 64).await);
+        assert!(
+            first.has_more,
+            "a page that stopped at the row ceiling must say the store holds more"
+        );
+        assert_eq!(
+            first.entries.len(),
+            64,
+            "one page carries at most the declared row ceiling"
+        );
+
+        let second = page_of(
+            &transcript_page(&daemon, "session-tail", &run_id, first.next_ordinal, 64).await,
+        );
+        assert!(
+            !second.has_more,
+            "the last page must not claim the store holds more"
+        );
+        assert!(
+            !second.source.recording_stopped,
+            "a run that recorded to the end did not stop recording"
+        );
+
+        let mut ordinals: Vec<i64> = first
+            .entries
+            .iter()
+            .chain(second.entries.iter())
+            .map(|entry| entry.ordinal)
+            .collect();
+        ordinals.sort_unstable();
+        ordinals.dedup();
+        assert_eq!(
+            ordinals.len(),
+            70,
+            "the two pages must cover every recorded row exactly once, got {ordinals:?}"
+        );
+        assert_eq!(
+            first.next_ordinal, 64,
+            "the cursor is the store's ordinal, not a count of returned rows"
+        );
+        assert_eq!(
+            second.next_ordinal, 70,
+            "the final cursor is the end of the recorded transcript"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_foreign_session_gets_the_same_answer_as_a_run_that_does_not_exist() {
+        let pool = transcript_pool().await;
+        let daemon = CoreDaemon::with_deps(crate::core::runtime_deps::CoreRuntimeDeps::with_jobs(
+            pool, None, None,
+        ));
+        let workspace = daemon
+            .workspaces
+            .get_or_register(&workspace_root("foreign"))
+            .await
+            .expect("register workspace");
+        let owned = delegated_run(&daemon, "session-owner", &workspace.id).await;
+        append_rows(&daemon, &owned, 3, "secret").await;
+
+        let foreign = transcript_page(&daemon, "session-other", &owned, 0, 64).await;
+        let nonexistent = transcript_page(
+            &daemon,
+            "session-other",
+            &codegg_core::identity::AgentRunId::new(),
+            0,
+            64,
+        )
+        .await;
+        assert_eq!(
+            error_code(&foreign),
+            error_code(&nonexistent),
+            "a guessed run id must not reveal whether the run exists"
+        );
+        assert_eq!(
+            error_message(&foreign),
+            error_message(&nonexistent),
+            "a guessed run id must not reveal whether the run exists"
+        );
+        assert_eq!(
+            error_code(&foreign),
+            "agent_run_not_found",
+            "a run the session does not own is refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_with_no_recorded_transcript_is_absent_not_refused() {
+        let pool = transcript_pool().await;
+        let daemon = CoreDaemon::with_deps(crate::core::runtime_deps::CoreRuntimeDeps::with_jobs(
+            pool, None, None,
+        ));
+        let workspace = daemon
+            .workspaces
+            .get_or_register(&workspace_root("absent"))
+            .await
+            .expect("register workspace");
+        let run_id = delegated_run(&daemon, "session-empty", &workspace.id).await;
+
+        let page = page_of(&transcript_page(&daemon, "session-empty", &run_id, 0, 64).await);
+        assert_eq!(
+            page.status,
+            codegg_protocol::projection::dto::AgentRunTranscriptPageStatus::Absent,
+            "an owned run that recorded nothing is absent, which is not the same as a refusal"
+        );
+        assert!(page.entries.is_empty());
+        assert_eq!(page.source.total_entries, 0);
+    }
+
+    #[tokio::test]
+    async fn a_negative_cursor_reads_from_the_beginning() {
+        let pool = transcript_pool().await;
+        let daemon = CoreDaemon::with_deps(crate::core::runtime_deps::CoreRuntimeDeps::with_jobs(
+            pool, None, None,
+        ));
+        let workspace = daemon
+            .workspaces
+            .get_or_register(&workspace_root("cursor"))
+            .await
+            .expect("register workspace");
+        let run_id = delegated_run(&daemon, "session-cursor", &workspace.id).await;
+        append_rows(&daemon, &run_id, 2, "row").await;
+
+        let page = page_of(&transcript_page(&daemon, "session-cursor", &run_id, -5, 64).await);
+        assert_eq!(
+            page.entries.first().map(|entry| entry.ordinal),
+            Some(0),
+            "a negative cursor is clamped to the beginning of the transcript"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_requested_limit_is_clamped_to_the_page_row_ceiling() {
+        let pool = transcript_pool().await;
+        let daemon = CoreDaemon::with_deps(crate::core::runtime_deps::CoreRuntimeDeps::with_jobs(
+            pool, None, None,
+        ));
+        let workspace = daemon
+            .workspaces
+            .get_or_register(&workspace_root("limit"))
+            .await
+            .expect("register workspace");
+        let run_id = delegated_run(&daemon, "session-limit", &workspace.id).await;
+        append_rows(&daemon, &run_id, 70, "row").await;
+
+        let page = page_of(&transcript_page(&daemon, "session-limit", &run_id, 0, 10_000).await);
+        assert_eq!(
+            page.entries.len(),
+            64,
+            "an over-large request is clamped to the declared row ceiling"
+        );
+        assert!(
+            page.has_more,
+            "the clamped page still reports the remaining rows"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_retired_parent_turn_still_reads_its_transcript() {
+        let pool = transcript_pool().await;
+        let daemon = CoreDaemon::with_deps(crate::core::runtime_deps::CoreRuntimeDeps::with_jobs(
+            pool, None, None,
+        ));
+        let workspace = daemon
+            .workspaces
+            .get_or_register(&workspace_root("retired"))
+            .await
+            .expect("register workspace");
+        // The run's task names a parent turn that no longer exists: the
+        // delegated run has finished and its turn has been retired.
+        let run_id = delegated_run(&daemon, "session-retired", &workspace.id).await;
+        append_rows(&daemon, &run_id, 2, "row").await;
+
+        let page = page_of(&transcript_page(&daemon, "session-retired", &run_id, 0, 64).await);
+        assert_eq!(
+            page.entries.len(),
+            2,
+            "ownership is session-scoped and durable, so a retired parent turn does not close the read"
+        );
     }
 }

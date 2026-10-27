@@ -50,6 +50,7 @@ pub mod subagent_steer;
 pub(super) mod tasks;
 pub(super) mod team;
 pub(super) mod test;
+pub(super) mod transcript_follow;
 pub(super) mod turn_control;
 pub(super) mod work_orders;
 pub(super) mod workspace_dashboard;

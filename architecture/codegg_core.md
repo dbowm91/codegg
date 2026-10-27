@@ -249,18 +249,30 @@ Three properties are load-bearing:
   `BEGIN IMMEDIATE` transaction, so the bound check costs the same on the
   hundredth append as on the first.
 
-The transcript is written by the child's own capture path
-(`src/agent/worker.rs`), where the child's messages are produced. A
-transcript write failure is logged and the delegated work continues.
+The transcript is written by the child's own capture path, **while the child
+runs**. `src/agent/transcript_capture.rs` owns the sink;
+`src/agent/loop.rs` reports the semantic checkpoints it reaches, and
+`src/agent/worker.rs` installs the sink on the child's loop before the run
+starts. A transcript write failure is logged and the delegated work continues.
 
 A tool result in the transcript is the **outcome the loop actually executed**,
-not an event the provider chose to emit. The loop retains the executed
-outcomes per run (`src/agent/loop.rs`, `ExecutedToolOutcomes`), bounded, and
-the capture path writes one `ToolResult` row per retained outcome. The reason
-is that no provider adapter emits a tool-result event: the child's event
-vector carries the tool *calls*, and the tool *outputs* exist only where the
-tools ran. Reading the outputs from the event stream would therefore record a
-transcript whose tool results are empty in production.
+not an event the provider chose to emit. The loop records one `ToolResult` row
+at the point it delivers the result to the model, so a recorded result is one
+the model actually received. The reason the result comes from the loop is that
+no provider adapter emits a tool-result event: the child's event vector carries
+the tool *calls*, and the tool *outputs* exist only where the tools ran.
+Reading the outputs from the event stream would therefore record a transcript
+whose tool results are empty in production.
+
+A tool *call* is recorded when the loop accepts it — before any tool runs — so
+a reader sees a call that is still pending rather than a transcript that only
+appears once the child has finished. A call the child never executed stays a
+call with no result; nothing fabricates an outcome for it.
+
+The model's own words are recorded once per provider response, at the
+response boundary — never one row per text delta, and never the provider's
+private reasoning. A child that dies mid-turn keeps the observations it had
+already made.
 
 The retained output is the path-redacted text the loop published and the model
 received, kept as a bounded **excerpt**: a head, the truncation marker, and a
@@ -269,6 +281,64 @@ head-only cut would discard exactly the line a caller reads the output for.
 The capture path never writes into the child's event vector: that vector is
 what the parent's turn transcript is built from, so a tool call with no
 matching result must stay `Pending`.
+
+### The M002 tail read (authorized page)
+
+`agent_run_transcript` gained a **tail read** in M002: `read(run_id,
+from_ordinal, limit)` is the store's own cursor-addressed page, and
+`projection_replay::agent_run_transcript_page` is the adapter that turns one
+store page into the wire page (`AgentRunTranscriptPageDto`).
+
+Three server-side clamps are applied by the adapter, in this order, and each
+is a separate bound:
+
+| Clamp | Value | Where |
+|-------|-------|-------|
+| Cursor | non-negative | the adapter; a negative `from_ordinal` reads from zero |
+| Rows | `MAX_PROJECTION_TRANSCRIPT_PAGE_ROWS` (64) | the adapter, before the store is asked |
+| Bytes | `MAX_PROJECTION_TRANSCRIPT_PAGE_BYTES` (8 KiB) | the adapter, on the **already-redacted** bodies |
+
+The byte ceiling is applied *after* the store's write-time redaction and
+*before* serialization, so a page can never widen what the store already
+withheld. The cut is always at a row boundary: the page's `next_ordinal` is
+the first row it did **not** carry, and `has_more` is true whenever the store
+holds rows beyond the page. A full last page therefore does not read as
+exhausted history — the store's own `recording_stopped` is reported
+separately, in `AgentRunTranscriptSourceState`.
+
+The adapter refuses an over-bound page rather than shipping a short one:
+`AgentRunTranscriptPageDto::checked` returns
+`AgentRunTranscriptPageError::BoundExceeded`, which is a *different* fact from
+a storage failure (`…::Storage`). A failed read says nothing about what is in
+the store; it never renders as "absent".
+
+### The M002 advisory (body-free)
+
+The **advisory** is how a delegated run's transcript growth is signalled. It
+is not the transcript: it carries the run id, the committed high-water
+ordinal, and whether the run's recording stopped. No text, no tool arguments,
+no reasoning, no credentials.
+
+Its rules are:
+
+- **Post-commit.** The capture sink calls the publisher only after the
+  store's append has returned, so a hint can never claim a row the store
+  does not hold. The transcript's write transaction is never held across the
+  publication.
+- **Per run, not per child task.** The watermark is per `AgentRunId`, so a
+  continuation that appends to the same run id advances the same watermark
+  rather than starting a new one. The canonical storage ordinal dominates:
+  a duplicate or out-of-order advisory never moves it backwards.
+- **Coalesced.** `src/agent/transcript_publisher.rs` collapses a run's
+  appends under a row cap (`ADVANCE_ROW_CAP`) and an interval
+  (`ADVANCE_INTERVAL`), and publishes immediately when the run's recording
+  stopped — that is the run's last word, and holding it back would lose it.
+- **Injected, never global.** The delegated child's runtime holds an
+  `Arc<dyn TranscriptAdvancePublisher>`. The daemon installs it on the
+  subagent pool it owns; there is no process-wide registry, no TUI
+  dependency, and no direct call into the projection replay handle. The
+  publisher reaches the daemon's canonical `EventLog`, which is the only
+  producer.
 
 ## Configuration Surface
 

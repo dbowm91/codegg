@@ -27,6 +27,7 @@ pub mod subagent_addressee;
 pub mod subagent_tabs;
 pub mod subagents;
 pub mod tasks;
+pub mod transcript_cache;
 pub mod ui;
 pub mod view_switch;
 pub mod work_orders;
@@ -82,6 +83,11 @@ pub use subagent_tabs::{
     BAR_SEPARATOR, MAIN_TAB_GLYPH, MAIN_TAB_LABEL, MAX_OPEN_SUBAGENT_TABS, MIN_STRIP_PERSONA_COLS,
 };
 pub use subagents::{SubagentRow, SubagentState};
+pub use transcript_cache::{
+    PageOutcome, TranscriptCache, TranscriptFollowStatus, MAX_TRANSCRIPT_CACHE_ENTRIES,
+    MAX_TRANSCRIPT_FETCHES_PER_PASS, MAX_TRANSCRIPT_GAP_RECOVERIES, MAX_TRANSCRIPT_PAGES_PER_PASS,
+    MAX_TRANSCRIPT_PAGE_ROWS,
+};
 pub use ui::{AppMode, UiState};
 pub use view_switch::ViewSwitchCoordinator;
 pub use work_orders::{

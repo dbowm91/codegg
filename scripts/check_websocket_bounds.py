@@ -11,6 +11,9 @@ Two properties are checked:
    ``MAX_PROJECTION_TRANSCRIPT_BYTES`` of transcript body, so the worst
    case is the product of the two. A bound that is declared but not
    covered here is a bound nothing holds.
+3. The M002 transcript PAGE bounds must be declared, must fit one frame,
+   and must actually be READ. A declared bound nobody applies is a bound
+   nothing holds, which is the same defect as an absent bound.
 """
 
 from pathlib import Path
@@ -22,6 +25,14 @@ ROOT = Path(__file__).resolve().parent.parent
 SERVER_ROOT = ROOT / "src" / "server"
 LIMITS = ROOT / "crates" / "codegg-protocol" / "src" / "projection" / "limits.rs"
 WS = ROOT / "src" / "server" / "ws.rs"
+# Where a declared bound must be *read* for it to hold. The declaration
+# site itself does not count: reading your own name is not applying a
+# bound.
+BOUND_READ_ROOTS = (
+    ROOT / "crates" / "codegg-protocol" / "src",
+    ROOT / "crates" / "codegg-core" / "src",
+    ROOT / "src",
+)
 
 
 def read_const(path: Path, name: str) -> int | None:
@@ -96,6 +107,67 @@ def transcript_bound_failures(
     return failures
 
 
+def bound_is_read(name: str) -> bool:
+    """Whether a declared bound is actually applied somewhere.
+
+    The declaration site does not count: a constant that only names itself
+    is a comment, not a bound.
+    """
+    for root in BOUND_READ_ROOTS:
+        if not root.exists():
+            continue
+        for path in root.rglob("*.rs"):
+            if path == LIMITS:
+                continue
+            if name in path.read_text():
+                return True
+    return False
+
+
+def page_bound_failures(
+    page_bytes: int | None,
+    page_rows: int | None,
+    ws_max: int | None,
+    page_bytes_read: bool,
+    page_rows_read: bool,
+) -> list[str]:
+    """The failures implied by the M002 transcript page's declared bound."""
+    failures: list[str] = []
+    if page_bytes is None:
+        failures.append(
+            f"{LIMITS.relative_to(ROOT)}: MAX_PROJECTION_TRANSCRIPT_PAGE_BYTES is not declared; "
+            "the delegated run transcript page has no declared byte bound"
+        )
+    if page_rows is None:
+        failures.append(
+            f"{LIMITS.relative_to(ROOT)}: MAX_PROJECTION_TRANSCRIPT_PAGE_ROWS is not declared; "
+            "the delegated run transcript page has no declared row bound"
+        )
+    if ws_max is None:
+        failures.append(
+            f"{WS.relative_to(ROOT)}: WS_MAX_MESSAGE_SIZE is not declared; "
+            "the WebSocket frame bound is unknown"
+        )
+    if page_bytes is not None and not page_bytes_read:
+        failures.append(
+            f"{LIMITS.relative_to(ROOT)}: MAX_PROJECTION_TRANSCRIPT_PAGE_BYTES is declared but "
+            "never read; a bound nobody applies is not a bound"
+        )
+    if page_rows is not None and not page_rows_read:
+        failures.append(
+            f"{LIMITS.relative_to(ROOT)}: MAX_PROJECTION_TRANSCRIPT_PAGE_ROWS is declared but "
+            "never read; a bound nobody applies is not a bound"
+        )
+    if failures:
+        return failures
+    if page_bytes > ws_max:
+        failures.append(
+            f"{LIMITS.relative_to(ROOT)}: the delegated run transcript page is not covered by "
+            f"the WebSocket bound: {page_bytes} bytes over WS_MAX_MESSAGE_SIZE ({ws_max} bytes)"
+        )
+    return failures
+
+
 def check_unbounded_channels() -> list[str]:
     failures: list[str] = []
     for path in sorted(SERVER_ROOT.rglob("*.rs")):
@@ -120,6 +192,20 @@ def self_test() -> int:
         failures.append("self-test: an over-bound transcript payload was accepted")
     if not transcript_bound_failures(None, 64, 4 * 1024 * 1024):
         failures.append("self-test: a missing transcript bound was accepted")
+    # The M002 page bound: in-bound passes, over-bound fails, missing fails,
+    # and a bound nobody reads fails.
+    if page_bound_failures(8 * 1024, 64, 4 * 1024 * 1024, True, True):
+        failures.append("self-test: an in-bound transcript page was rejected")
+    if not page_bound_failures(8 * 1024 * 1024, 64, 4 * 1024 * 1024, True, True):
+        failures.append("self-test: an over-bound transcript page was accepted")
+    if not page_bound_failures(None, 64, 4 * 1024 * 1024, True, True):
+        failures.append("self-test: a missing transcript page bound was accepted")
+    if not page_bound_failures(8 * 1024, None, 4 * 1024 * 1024, True, True):
+        failures.append("self-test: a missing transcript page row bound was accepted")
+    if not page_bound_failures(8 * 1024, 64, 4 * 1024 * 1024, False, True):
+        failures.append("self-test: a transcript page byte bound nobody reads was accepted")
+    if not page_bound_failures(8 * 1024, 64, 4 * 1024 * 1024, True, False):
+        failures.append("self-test: a transcript page row bound nobody reads was accepted")
     for failure in failures:
         print(f"ERROR: {failure}")
     if failures:
@@ -139,6 +225,17 @@ def main() -> int:
             read_const(WS, "WS_MAX_MESSAGE_SIZE"),
         )
     )
+    page_bytes = read_const(LIMITS, "MAX_PROJECTION_TRANSCRIPT_PAGE_BYTES")
+    page_rows = read_const(LIMITS, "MAX_PROJECTION_TRANSCRIPT_PAGE_ROWS")
+    failures.extend(
+        page_bound_failures(
+            page_bytes,
+            page_rows,
+            read_const(WS, "WS_MAX_MESSAGE_SIZE"),
+            bound_is_read("MAX_PROJECTION_TRANSCRIPT_PAGE_BYTES"),
+            bound_is_read("MAX_PROJECTION_TRANSCRIPT_PAGE_ROWS"),
+        )
+    )
     if failures:
         for failure in failures:
             print(f"ERROR: {failure}")
@@ -146,6 +243,7 @@ def main() -> int:
 
     print("OK: server WebSocket adapters use bounded outbound channels.")
     print("OK: the delegated run transcript payload fits the WebSocket frame bound.")
+    print("OK: the delegated run transcript page bounds are declared, applied, and in-frame.")
     return 0
 
 

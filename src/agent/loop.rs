@@ -494,6 +494,7 @@ impl AgentLoop {
             services: AgentLoopServices {
                 provider,
                 credential_observer: None,
+                transcript_capture: None,
                 permission_checker,
                 tool_registry,
                 hook_registry,
@@ -1015,6 +1016,93 @@ impl AgentLoop {
         observer: crate::agent::provider_qualification::SharedProviderCredentialObserver,
     ) {
         self.services.credential_observer = Some(observer);
+    }
+
+    /// Bind this turn to a durable delegated run's recorded conversation.
+    ///
+    /// The capture is installed only for a durable delegated run; a turn
+    /// without one holds no capture and records nothing. The loop reports the
+    /// semantic checkpoints it reaches — the model's assistant message, an
+    /// accepted tool call, an executed tool's result — and the sink decides
+    /// where they land. The loop never writes a transcript itself.
+    pub fn set_transcript_capture(
+        &mut self,
+        capture: Option<Arc<dyn crate::agent::transcript_capture::AgentRunTranscriptCapture>>,
+    ) {
+        self.services.transcript_capture = capture;
+    }
+
+    /// Record the model's assistant message for one turn.
+    ///
+    /// The text is the model-visible assistant content of the turn, taken at
+    /// the provider-response boundary: never a partial delta, and never the
+    /// provider's private reasoning.
+    async fn capture_assistant_message(&self, text: &str) {
+        let Some(capture) = self.services.transcript_capture.clone() else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        capture
+            .record(
+                crate::agent::transcript_capture::TranscriptCheckpoint::AssistantMessage {
+                    text: text.to_string(),
+                },
+            )
+            .await;
+    }
+
+    /// Record the tool calls the loop accepted from the provider.
+    ///
+    /// The calls are recorded when the loop accepts them — before any tool
+    /// runs — so a reader sees a call that is still pending. The sink keeps
+    /// one logical call to one row.
+    async fn capture_accepted_tool_calls(&self, tool_calls: &[crate::provider::ToolCall]) {
+        let Some(capture) = self.services.transcript_capture.clone() else {
+            return;
+        };
+        for call in tool_calls {
+            capture
+                .record(
+                    crate::agent::transcript_capture::TranscriptCheckpoint::ToolCall {
+                        tool_call_id: call.id.as_str().to_string(),
+                        tool_name: call.name.as_str().to_string(),
+                        arguments: call.arguments.to_string(),
+                    },
+                )
+                .await;
+        }
+    }
+
+    /// Record an executed tool's result.
+    ///
+    /// Called at the point the loop delivered the result to the model, so a
+    /// recorded result is one the model actually received. The output is the
+    /// redacted, bounded text the model saw, and `success` is the tool's
+    /// actual outcome — a failed tool records its failure.
+    async fn capture_tool_result(
+        &self,
+        tool_call_id: &str,
+        tool_name: &str,
+        success: bool,
+        output_truncated: bool,
+        output: &str,
+    ) {
+        let Some(capture) = self.services.transcript_capture.clone() else {
+            return;
+        };
+        capture
+            .record(
+                crate::agent::transcript_capture::TranscriptCheckpoint::ToolResult {
+                    tool_call_id: tool_call_id.to_string(),
+                    tool_name: tool_name.to_string(),
+                    success,
+                    output_truncated,
+                    output: output.to_string(),
+                },
+            )
+            .await;
     }
 
     pub fn session_id(&self) -> &str {
@@ -1720,6 +1808,11 @@ impl AgentLoop {
             for event in &events {
                 processor.process(event);
             }
+            // The provider's response for this turn is complete. Record the
+            // model's assistant message here, at the response boundary, so a
+            // reader sees the child's own words while the turn is still
+            // running rather than only once the child finishes.
+            self.capture_assistant_message(processor.text()).await;
             all_events.extend(events);
 
             // Record provider finish usage into context cache stats exactly
@@ -1778,6 +1871,11 @@ impl AgentLoop {
                     }
                 }
             }
+
+            // The loop has accepted these calls. Record them before any tool
+            // runs, so a reader sees a call that is still pending rather than
+            // a transcript that only appears once the child finishes.
+            self.capture_accepted_tool_calls(&tool_calls).await;
 
             if tool_calls.is_empty() {
                 // NOTE: Narration-based recovery (detecting "let me", "I'll", etc.
@@ -2235,6 +2333,21 @@ impl AgentLoop {
                 };
                 self.services.context_tracker.add_message(&msg);
                 request.messages.push(msg);
+                // The loop has delivered this result to the model. Record it
+                // here, so a recorded result is one the model actually
+                // received. The output is the redacted, bounded text the model
+                // saw, and the flag is the tool's actual outcome — a failed
+                // tool records its failure, never a synthetic success.
+                let (delivered_output, delivered_truncated) =
+                    bound_retained_tool_output(&redacted_content);
+                self.capture_tool_result(
+                    id.as_str(),
+                    &tool_name_str,
+                    tool_outcome_is_success(outcome),
+                    delivered_truncated,
+                    &delivered_output,
+                )
+                .await;
             }
 
             // Append the newly observed peer state only after the assistant's

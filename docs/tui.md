@@ -799,6 +799,7 @@ Five surfaces show this, and all five read one projection:
 | Sessions dialog | `/sessions` | The session list plus its live `Subagents` and `Jobs` sections |
 | Working strip | always on, above the input box | One row per in-flight subagent |
 | Buffer tabs | `Shift+N` / `Shift+P` / `Shift+X` | One subagent's run view per tab, in the main buffer |
+| Retry the delegated transcript read | `Ctrl+Alt+R` in `INS` or `NOR` | Re-reads the open tab's recorded transcript from its own cursor |
 
 `Ctrl+T` works in **both** modes — the app boots in `[INS]`, and a chord that
 first needs an `Esc` is a chord most people never find.
@@ -911,11 +912,59 @@ were all of them. A tool call renders as a tool call and a tool result as a
 tool result, and a large tool output is cut at the display bound with the
 number of bytes left out stated on screen.
 
-The transcript is read when the tab opens — a boundary read, not a poll — so
-opening a tab on a run that is still working shows what has been recorded so
-far, and reopening it shows the later rows.
+#### The live follow
 
-Closing it cancels nothing — the run keeps going whether or not you are
+The tab **follows** the run: it reads the recorded transcript through the
+daemon's authorized page read and keeps up as the run records more. There is
+no timer behind it. Three things make it read, and none of them is a poll:
+
+- the daemon publishes a **body-free hint** when a delegated run's recording
+  advances; the hint says *that* the run advanced, never *what* it recorded,
+  and the rows come from the page read;
+- a **tab boundary** — opening or focusing a tab catches up from the store's
+  own cursor, so a tab opened on a run that has been working for a while shows
+  the rows recorded while it was closed;
+- a **terminal run** still owes its last rows, so a finished run triggers one
+  final catch-up.
+
+Only the **focused** tab reads eagerly. A background tab remembers that it is
+behind and reads when it is focused, so a hidden tab generates no traffic. One
+read is outstanding per tab, the total number of outstanding reads across the
+open tabs is bounded too, so one busy child cannot spend the whole budget
+while the others wait.
+
+A catch-up **pass** reads a bounded number of pages. That bound is one pass,
+not the tab's lifetime: when the store still holds rows beyond the page that
+was last read, the tab yields and schedules the next bounded pass, so a long
+transcript is walked to its end without a new hint, a retry or a refocus —
+and the tab says **catching up** until the final page.
+
+The tab keeps a **bounded window** of the recorded rows. When the window has
+evicted earlier rows the tab says `earlier entries not loaded`, so a view
+scrolled to the top of a bounded window never passes for the whole
+conversation.
+
+The follow's **state** is stated on screen, and these are different facts:
+
+| State | What the tab says |
+| --- | --- |
+| **following** | the run may still record more; the tab does not claim the transcript is complete |
+| **catching up** | the tab is behind and is walking the store's cursor |
+| **complete** | the run finished and every row the store holds is here |
+| **truncated** | the run's own recording stopped at the store's per-run bound, so the missing rows were never written |
+| **absent** | the run recorded no transcript at all |
+| **unavailable** | the run has no durable identity, or the connected daemon does not serve the delegated transcript read |
+| **denied** | the daemon refused this session's read of the run |
+| **disconnected** | the daemon is unreachable; the follow is paused, not broken |
+| **read failed** | the read failed; the reason is on screen |
+
+A failed follow offers an explicit retry (`Ctrl+Alt+R`, or closing and
+reopening the tab). A follow that is working is not re-issued, and a failed
+one does **not** re-issue itself either: it waits for the retry, so a daemon
+that is refusing the read cannot turn the projection's own updates into a
+storm of reads.
+
+Closing the tab cancels nothing — the run keeps going whether or not you are
 watching it. When a run drops out of the projection the tab stays open and
 stops claiming to be live, so the buffer cannot show "running" for something
 the daemon has stopped vouching for.

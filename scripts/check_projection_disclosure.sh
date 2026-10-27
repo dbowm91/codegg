@@ -16,6 +16,11 @@
 #    AND be populated by production code. A field that is declared but
 #    never populated is a payload that crosses as nothing while the
 #    contract claims it crosses.
+# 6. The M002 transcript-advanced ADVISORY must stay body-free. The
+#    advisory is how a delegated run's transcript growth is signalled; it
+#    carries a run id, a committed ordinal, and a flag. If it ever grew a
+#    body, the transcript would cross on a stream that is not the
+#    authorized page read, and no gate would be looking at it.
 
 set -euo pipefail
 
@@ -43,11 +48,84 @@ pub fn populate(summary: &mut AgentRunSummary) {
     summary.transcript = Some(AgentRunTranscriptProjection::Absent);
 }
 EOF
+  cat > "$fixture/crates/codegg-protocol/src/core.rs" <<'EOF'
+pub enum CoreEvent {
+    AgentRunTranscriptAdvanced {
+        session_id: String,
+        run_id: String,
+        ordinal: i64,
+        recording_stopped: bool,
+    },
+}
+EOF
+  cat > "$fixture/crates/codegg-protocol/src/projection/event.rs" <<'EOF'
+pub enum ProjectionEvent {
+    AgentRunTranscriptAdvanced {
+        run_id: String,
+        ordinal: i64,
+        recording_stopped: bool,
+        at: i64,
+    },
+}
+EOF
+  cat > "$fixture/crates/codegg-core/src/projection_replay/safe_publication.rs" <<'EOF'
+pub fn classify(event: &CoreEvent) -> SafePublicationClass {
+    match event {
+        CoreEvent::AgentRunTranscriptAdvanced { .. } => SafePublicationClass::Safe,
+    }
+}
+EOF
   if ! CODEGG_GUARD_ROOT="$fixture" "$0" >/dev/null 2>&1; then
     echo "ERROR: self-test — the guard rejected a populated transcript field."
     return 1
   fi
   echo "OK: self-test — a declared and populated transcript field passes."
+
+  # The injected violation: the advisory grew a body. The advisory is the
+  # signal; a body on it would put the transcript on a stream that no
+  # authorized page read gates.
+  cat > "$fixture/crates/codegg-protocol/src/core.rs" <<'EOF'
+pub enum CoreEvent {
+    AgentRunTranscriptAdvanced {
+        session_id: String,
+        run_id: String,
+        ordinal: i64,
+        recording_stopped: bool,
+        body: String,
+    },
+}
+EOF
+  if CODEGG_GUARD_ROOT="$fixture" "$0" >/dev/null 2>&1; then
+    echo "ERROR: self-test — the guard accepted a body-bearing transcript advisory."
+    return 1
+  fi
+  echo "OK: self-test — a body-bearing transcript advisory is rejected."
+  cat > "$fixture/crates/codegg-protocol/src/core.rs" <<'EOF'
+pub enum CoreEvent {
+    AgentRunTranscriptAdvanced {
+        session_id: String,
+        run_id: String,
+        ordinal: i64,
+        recording_stopped: bool,
+    },
+}
+EOF
+
+  # The injected violation: the advisory is no longer classified, so it has
+  # no disclosure policy and therefore no bound.
+  rm -f "$fixture/crates/codegg-core/src/projection_replay/safe_publication.rs"
+  if CODEGG_GUARD_ROOT="$fixture" "$0" >/dev/null 2>&1; then
+    echo "ERROR: self-test — the guard accepted an unclassified transcript advisory."
+    return 1
+  fi
+  echo "OK: self-test — an unclassified transcript advisory is rejected."
+  cat > "$fixture/crates/codegg-core/src/projection_replay/safe_publication.rs" <<'EOF'
+pub fn classify(event: &CoreEvent) -> SafePublicationClass {
+    match event {
+        CoreEvent::AgentRunTranscriptAdvanced { .. } => SafePublicationClass::Safe,
+    }
+}
+EOF
   # The injected violation: the field is declared and nothing populates it.
   cat > "$fixture/crates/codegg-core/src/projection_replay/agent_runs.rs" <<'EOF'
 pub fn populate(summary: &mut AgentRunSummary) {
@@ -160,6 +238,46 @@ if [ -n "$oversized_matches" ]; then
     violations=1
   done <<< "$oversized_matches"
 fi
+
+# ── 6. The M002 transcript-advanced advisory is body-free ─────────────
+CORE_RS="$ROOT/crates/codegg-protocol/src/core.rs"
+EVENT_RS="$ROOT/crates/codegg-protocol/src/projection/event.rs"
+SAFE_RS="$REPLAY_DIR/safe_publication.rs"
+ADVISORY="AgentRunTranscriptAdvanced"
+
+if ! grep -qE "^[[:space:]]*$ADVISORY[[:space:]]*\{" "$CORE_RS" 2>/dev/null; then
+  echo "ERROR: $CORE_RS does not declare the $ADVISORY core event."
+  echo "  The body-free advisory is how a delegated run's transcript growth"
+  echo "  is signalled; the transcript itself crosses only through the"
+  echo "  authorized page read."
+  violations=1
+fi
+if ! grep -qE "^[[:space:]]*$ADVISORY[[:space:]]*\{" "$EVENT_RS" 2>/dev/null; then
+  echo "ERROR: $EVENT_RS does not declare the $ADVISORY projection event."
+  echo "  The advisory must be reduced on the projection stream, not dropped."
+  violations=1
+fi
+if ! grep -q "CoreEvent::$ADVISORY" "$SAFE_RS" 2>/dev/null; then
+  echo "ERROR: $SAFE_RS does not classify CoreEvent::$ADVISORY."
+  echo "  An unclassified event has no disclosure policy, so it has no bound."
+  violations=1
+fi
+for file in "$CORE_RS" "$EVENT_RS"; do
+  [ -f "$file" ] || continue
+  advisory_block=$(awk -v name="$ADVISORY" '
+    index($0, name " {") > 0 { inblock = 1 }
+    inblock { print }
+    inblock && $0 ~ /^    \}/ { exit }
+  ' "$file")
+  body_field=$(echo "$advisory_block" | grep -nE '^[[:space:]]*(pub[[:space:]]+)?(body|entries|redacted_body|text|content|arguments)[[:space:]]*:' || true)
+  if [ -n "$body_field" ]; then
+    echo "ERROR: $file declares a body-bearing field on $ADVISORY:"
+    echo "$body_field"
+    echo "  The advisory is body-free by contract: a body on it would put the"
+    echo "  transcript on a stream that no authorized page read gates."
+    violations=1
+  fi
+done
 
 # ── Result ────────────────────────────────────────────────────────────
 if [ "$violations" -ne 0 ]; then

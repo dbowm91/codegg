@@ -70,6 +70,9 @@ pub mod identity_live_execution_audit;
 #[path = "identity_m002_live_audit_hooks.inc"]
 pub mod identity_m002_live_audit_hooks;
 
+#[path = "delegated_transcript_m002.inc"]
+pub mod delegated_transcript_m002;
+
 #[path = "identity_m003_daemon_authorization.inc"]
 pub mod identity_m003_daemon_authorization;
 

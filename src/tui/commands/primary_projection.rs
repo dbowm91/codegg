@@ -71,6 +71,11 @@ pub(crate) fn bind_active_session(app: &mut App) {
         // switch must not leave the previous session's children visible or
         // keep the composer armed to one of them.
         app.ui_state.subagents.set_rows(Vec::new());
+        // The fetched transcript rows are bodies the **previous** session's
+        // daemon authorized. They go with the session: keeping them would
+        // leave one session's conversation on screen under another
+        // session's header.
+        app.ui_state.subagents.tabs.clear_transcript_caches();
         app.prompt_state.subagent_addressee = None;
     }
     let Some(session_id) = active_session_id else {

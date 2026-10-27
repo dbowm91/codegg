@@ -247,6 +247,10 @@ impl App {
         // transport epoch. Do not keep session work rows or an addressed
         // child visible while the replacement snapshot is loading.
         self.ui_state.subagents.set_rows(Vec::new());
+        // The fetched transcript rows were authorized under the **old**
+        // transport epoch, and the reconnect may have changed who owns the
+        // view. They go with it.
+        self.ui_state.subagents.tabs.clear_transcript_caches();
         self.prompt_state.subagent_addressee = None;
         self.interactive_terminals.note_transport_disconnect();
         // Presence M002: lag/resync replaces stale presentation from the

@@ -10,15 +10,16 @@ use std::collections::VecDeque;
 
 use crate::projection::caps::PROJECTION_PROTOCOL_VERSION;
 use crate::projection::dto::{
-    AgentRunGroupSummaryProjection, AgentRunSummary, ConvergenceSummaryProjection, JobProjection,
-    RunProjection, SessionSummaryProjection, ShellRunProjection, ToolContractProjection,
-    ToolProgramSummary, WorkspaceSummaryProjection, WorktreeSummaryProjection,
+    AgentRunGroupSummaryProjection, AgentRunSummary, AgentRunTranscriptWatermarkProjection,
+    ConvergenceSummaryProjection, JobProjection, RunProjection, SessionSummaryProjection,
+    ShellRunProjection, ToolContractProjection, ToolProgramSummary, WorkspaceSummaryProjection,
+    WorktreeSummaryProjection,
 };
 use crate::projection::limits::{
     MAX_PROJECTION_AGENT_RUNS, MAX_PROJECTION_DIAGNOSTICS, MAX_PROJECTION_JOBS,
     MAX_PROJECTION_RUNS, MAX_PROJECTION_RUN_GROUPS, MAX_PROJECTION_SESSION_SUBAGENTS,
     MAX_PROJECTION_SHELL_RUNS, MAX_PROJECTION_TOOL_CONTRACTS, MAX_PROJECTION_TOOL_PROGRAMS,
-    MAX_PROJECTION_WORKTREES,
+    MAX_PROJECTION_TRANSCRIPT_WATERMARKS, MAX_PROJECTION_WORKTREES,
 };
 
 /// Bounded projection of one session plus its surrounding context.
@@ -83,6 +84,15 @@ pub struct SessionProjectionSnapshot {
     /// Durable bounded convergence summaries.
     #[serde(default)]
     pub convergences: VecDeque<ConvergenceSummaryProjection>,
+    /// Per-run transcript watermarks: how far the last
+    /// transcript-advanced hint said each run's recording had reached.
+    ///
+    /// Advisory metadata, never a transcript. The reducer does not invent
+    /// transcript entries from it, and the canonical cursor always comes
+    /// from the store. Bounded by
+    /// [`crate::projection::limits::MAX_PROJECTION_TRANSCRIPT_WATERMARKS`].
+    #[serde(default)]
+    pub transcript_watermarks: VecDeque<AgentRunTranscriptWatermarkProjection>,
     /// Bounded diagnostic list emitted by the reducer.
     pub diagnostics: VecDeque<ProjectionDiagnostic>,
 }
@@ -142,6 +152,7 @@ impl SessionProjectionSnapshot {
             worktrees: VecDeque::new(),
             run_groups: VecDeque::new(),
             convergences: VecDeque::new(),
+            transcript_watermarks: VecDeque::new(),
             diagnostics: VecDeque::new(),
         }
     }
@@ -330,6 +341,44 @@ impl SessionProjectionSnapshot {
             self.agent_runs.pop_front();
         }
         self.agent_runs.push_back(run);
+    }
+
+    /// Record a run's transcript watermark.
+    ///
+    /// The watermark is **monotonic per run**: the canonical storage
+    /// ordinal dominates, so a duplicate or out-of-order hint never moves
+    /// it backwards. `recording_stopped` is sticky for the same reason —
+    /// once the store has refused further appends for a run, that fact does
+    /// not become untrue.
+    pub fn upsert_transcript_watermark(
+        &mut self,
+        watermark: AgentRunTranscriptWatermarkProjection,
+    ) {
+        if let Some(slot) = self
+            .transcript_watermarks
+            .iter_mut()
+            .find(|w| w.run_id == watermark.run_id)
+        {
+            if watermark.ordinal > slot.ordinal {
+                slot.ordinal = watermark.ordinal;
+            }
+            slot.recording_stopped |= watermark.recording_stopped;
+            return;
+        }
+        if self.transcript_watermarks.len() >= MAX_PROJECTION_TRANSCRIPT_WATERMARKS {
+            self.transcript_watermarks.pop_front();
+        }
+        self.transcript_watermarks.push_back(watermark);
+    }
+
+    /// The watermark recorded for a run, if any.
+    pub fn transcript_watermark(
+        &self,
+        run_id: &str,
+    ) -> Option<&AgentRunTranscriptWatermarkProjection> {
+        self.transcript_watermarks
+            .iter()
+            .find(|w| w.run_id == run_id)
     }
 
     pub fn upsert_worktree(&mut self, mut worktree: WorktreeSummaryProjection) {

@@ -346,6 +346,27 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::Opaque,
             Some(Capability::SessionRead),
         ),
+        // M002: the delegated-run transcript page read.
+        //
+        // The scope is the **session**, so the authorization boundary
+        // resolves the session's project and checks the caller's
+        // capability over it — a client-supplied session id is a claim
+        // that gets checked, never a grant.
+        //
+        // The capability is `session.read`, not `session.observe`: the page
+        // carries the child's recorded conversation, which is content, and
+        // `session.observe` is the narrower "may see that this session
+        // exists and how it is going" capability. A principal that holds
+        // only `session.observe` is refused the body.
+        //
+        // The exact-owner check (this run belongs to *this* session) is a
+        // second, handler-level gate: the descriptor cannot express it,
+        // because the run id is the thing being claimed, not the scope.
+        R::AgentRunTranscriptRead { .. } => OperationDescriptor::new(
+            "agent_run_transcript_read",
+            ScopeKind::ViaSession,
+            Some(Capability::SessionRead),
+        ),
         R::SessionFork { .. } => OperationDescriptor::new(
             "session_fork",
             ScopeKind::ViaSession,

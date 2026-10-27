@@ -455,6 +455,36 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::RefreshChat { project_id } => {
             super::super::commands::chat::start_chat_history(app, project_id);
         }
+        TuiCommand::SubagentTranscriptPage {
+            request_id,
+            route,
+            tab_id,
+            run_id,
+            from_ordinal,
+            page,
+            error,
+            error_code,
+        } => {
+            super::super::commands::transcript_follow::apply_page(
+                app,
+                super::super::commands::transcript_follow::TranscriptPageCompletion {
+                    request_id,
+                    route,
+                    tab_id,
+                    run_id,
+                    from_ordinal,
+                    page,
+                    error,
+                    error_code,
+                },
+            );
+        }
+        TuiCommand::SubagentTranscriptPass { tab_id } => {
+            super::super::commands::transcript_follow::continue_pass(
+                app,
+                &crate::tui::app::state::subagent_tabs::SubagentTabId::new(tab_id),
+            );
+        }
         TuiCommand::ChatHistoryLoaded {
             request_id,
             project_id,

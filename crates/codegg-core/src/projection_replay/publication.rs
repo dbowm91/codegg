@@ -306,6 +306,25 @@ pub fn projection_events_from_core(
                 at: envelope.timestamp_ms,
             },
         )),
+        // M002: the body-free transcript-advanced hint. It carries the run
+        // id, the committed high-water ordinal, and the recording-stopped
+        // flag — and nothing else. There is no body to copy here, which is
+        // the point: the hint cannot leak what the page read is gated on.
+        CoreEvent::AgentRunTranscriptAdvanced {
+            session_id,
+            run_id,
+            ordinal,
+            recording_stopped,
+        } => Some((
+            session_id.clone(),
+            None,
+            ProjectionEvent::AgentRunTranscriptAdvanced {
+                run_id: run_id.clone(),
+                ordinal: *ordinal,
+                recording_stopped: *recording_stopped,
+                at: envelope.timestamp_ms,
+            },
+        )),
         CoreEvent::WorktreeUpserted {
             session_id,
             worktree,

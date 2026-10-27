@@ -1682,6 +1682,15 @@ pub enum CoreResponse {
         byte_offset: usize,
         total_bytes: u64,
     },
+    /// M002: one bounded page of a delegated run's recorded transcript.
+    ///
+    /// The page carries redacted bodies only, the authoritative cursor to
+    /// pass back, and the store's own record of whether the run's recording
+    /// stopped. It never carries a claim of completeness it cannot back:
+    /// `has_more` and `recording_stopped` are separate facts.
+    AgentRunTranscriptRead {
+        page: crate::projection::dto::AgentRunTranscriptPageDto,
+    },
     /// A rerun was accepted by the daemon scheduler. The child RunStore
     /// identity is emitted by the normal completion projection after the
     /// executor persists it.
@@ -2779,6 +2788,26 @@ pub enum CoreRequest {
     },
     SessionMessageCounts {
         session_ids: Vec<String>,
+    },
+    /// M002: read one bounded page of a delegated run's recorded transcript.
+    ///
+    /// The read is **session-scoped**: `session_id` names the session the
+    /// caller claims, and the daemon re-resolves the run's *own* owning
+    /// session from the durable run/task origin before reading a single
+    /// row. A client-supplied session id is a claim, never a proof.
+    ///
+    /// `from_ordinal` is the store's own durable cursor. The daemon clamps
+    /// it to a non-negative value and clamps `limit` to the declared page
+    /// row ceiling; the response carries the authoritative cursor to pass
+    /// back.
+    AgentRunTranscriptRead {
+        session_id: String,
+        /// The canonical durable run id.
+        run_id: String,
+        /// The cursor to read from. Negative values are clamped to zero.
+        from_ordinal: i64,
+        /// The requested row count. Clamped to the declared page ceiling.
+        limit: u32,
     },
     SessionFork {
         session_id: String,
@@ -4814,6 +4843,29 @@ pub enum CoreEvent {
         run_id: String,
         control_status: String,
         cancellation_requested: bool,
+    },
+    /// M002: a delegated run's recorded transcript advanced.
+    ///
+    /// This is a **body-free advisory**. It carries the run id, the
+    /// committed high-water ordinal, and whether the run's own recording
+    /// stopped at the store's per-run bound. It carries no text, no tool
+    /// arguments, no provider reasoning, and no credentials — the transcript
+    /// itself is read through the authorized
+    /// [`CoreRequest::AgentRunTranscriptRead`] page.
+    ///
+    /// It is published only **after** the corresponding store append
+    /// commits, so a hint can never claim a row the store does not hold.
+    /// The ordinal is per **run**, not per child task: a continuation on
+    /// the same run id advances the same watermark rather than starting a
+    /// new one.
+    AgentRunTranscriptAdvanced {
+        session_id: String,
+        run_id: String,
+        /// The run's committed high-water ordinal.
+        ordinal: i64,
+        /// The run's recording stopped at the store's per-run bound, so
+        /// the recorded transcript is itself incomplete and will not grow.
+        recording_stopped: bool,
     },
     WorktreeUpserted {
         session_id: String,

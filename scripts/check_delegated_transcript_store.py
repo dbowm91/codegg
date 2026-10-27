@@ -75,6 +75,28 @@ SCHEMA_MODULE = "crates/codegg-core/src/session/schema.rs"
 # The production capture path.
 CAPTURE_MODULE = "src/agent/worker.rs"
 
+# The module that owns the in-execution capture seams. The transcript is only
+# useful while the child is still running, so the capture has to happen inside
+# the run rather than after it.
+LOOP_MODULE = "src/agent/loop.rs"
+
+# The in-execution capture seams, as the call sites that reach them. Each is
+# `self.<helper>(`, so the helper's own definition does not satisfy the rule:
+# the capture has to be *called* from the loop, not merely declared there.
+IN_EXECUTION_CAPTURE_CALLS: Tuple[str, ...] = (
+    "self.capture_assistant_message(",
+    "self.capture_accepted_tool_calls(",
+    "self.capture_tool_result(",
+)
+
+# The markers of the post-run batch reconstruction this replaced. A batch
+# reconstruction can only ever describe a child that had already finished, so
+# its return means the capture is no longer in execution.
+POST_RUN_CAPTURE_MARKERS: Tuple[str, ...] = (
+    "calls_by_id",
+    "captured_call_ids",
+)
+
 # The row whose declared shape the store must write.
 ROW_STRUCT = "AgentRunTranscriptEntry"
 
@@ -600,18 +622,102 @@ def check_capture_path(root: Path) -> List[Finding]:
     return findings
 
 
+def check_in_execution_capture(root: Path) -> List[Finding]:
+    """The capture must happen inside the run, not after it.
+
+    A post-run batch can only describe a child that had already finished. The
+    whole point of the live transcript is that a parent can read what the
+    child has done *so far*, so the seams have to be reached from the loop
+    while it runs, and the batch reconstruction must be gone.
+    """
+    findings: List[Finding] = []
+    loop_path = root / LOOP_MODULE
+    if not loop_path.is_file():
+        findings.append(
+            Finding(
+                rule="delegated-transcript-capture-not-in-execution",
+                file=LOOP_MODULE,
+                line=1,
+                message=(
+                    "the agent loop module is missing; the delegated transcript cannot be "
+                    "captured while the child runs"
+                ),
+            )
+        )
+        return findings
+    loop_masked = _mask_non_code(loop_path.read_text(encoding="utf-8"))
+    for call in IN_EXECUTION_CAPTURE_CALLS:
+        at = loop_masked.find(call)
+        if at == -1:
+            findings.append(
+                Finding(
+                    rule="delegated-transcript-capture-not-in-execution",
+                    file=LOOP_MODULE,
+                    line=1,
+                    message=(
+                        f"the agent loop never calls `{call}`: the delegated transcript is "
+                        "captured outside the run, so it can only describe a child that had "
+                        "already finished"
+                    ),
+                )
+            )
+
+    capture_path = root / CAPTURE_MODULE
+    if not capture_path.is_file():
+        findings.append(
+            Finding(
+                rule="delegated-transcript-capture-not-in-execution",
+                file=CAPTURE_MODULE,
+                line=1,
+                message="the capture path module is missing; the transcript is never written",
+            )
+        )
+        return findings
+    capture_masked = _mask_non_code(capture_path.read_text(encoding="utf-8"))
+    if "set_transcript_capture(" not in capture_masked:
+        findings.append(
+            Finding(
+                rule="delegated-transcript-capture-not-in-execution",
+                file=CAPTURE_MODULE,
+                line=1,
+                message=(
+                    "the capture path never installs the transcript capture on the loop: the "
+                    "in-execution seams have no sink to reach"
+                ),
+            )
+        )
+    for marker in POST_RUN_CAPTURE_MARKERS:
+        at = capture_masked.find(marker)
+        if at == -1:
+            continue
+        findings.append(
+            Finding(
+                rule="delegated-transcript-capture-not-in-execution",
+                file=CAPTURE_MODULE,
+                line=_line_of(capture_masked, at),
+                message=(
+                    f"the capture path reconstructs the transcript after the run (`{marker}`): "
+                    "a batch reconstruction can only describe a child that had already "
+                    "finished, so the capture belongs in the run"
+                ),
+            )
+        )
+    return findings
+
+
 def check_tree(root: Path) -> List[Finding]:
     """Check the whole tree for a live delegated transcript store."""
     findings: List[Finding] = []
     findings.extend(check_store(root))
     findings.extend(check_production_use(root))
     findings.extend(check_capture_path(root))
+    findings.extend(check_in_execution_capture(root))
     return findings
 
 
 def _copy_tree(root: Path, target: Path) -> None:
     """Copy the files this guard reads into a scratch tree."""
-    for relative in (STORE_MODULE, SCHEMA_MODULE, CAPTURE_MODULE):
+    for relative in (STORE_MODULE, SCHEMA_MODULE, CAPTURE_MODULE, LOOP_MODULE):
         source = root / relative
         if not source.is_file():
             continue
@@ -669,6 +775,35 @@ def _self_test_cases() -> List[Tuple[str, str, str, str, str]]:
             re.escape("let events = events?;"),
             "let events = events?;\n    let _synthetic = crate::provider::ChatEvent::ToolResult {",
             "delegated-transcript-tool-result-constructed",
+            CAPTURE_MODULE,
+        ),
+        (
+            "the loop never records the model's assistant message",
+            re.escape("self.capture_assistant_message(processor.text()).await;"),
+            "let _assistant_text = processor.text();",
+            "delegated-transcript-capture-not-in-execution",
+            LOOP_MODULE,
+        ),
+        (
+            "the loop never records the tool calls it accepted",
+            re.escape("self.capture_accepted_tool_calls(&tool_calls).await;"),
+            "let _accepted_tool_calls = &tool_calls;",
+            "delegated-transcript-capture-not-in-execution",
+            LOOP_MODULE,
+        ),
+        (
+            "the loop never records a delivered tool result",
+            re.escape("self.capture_tool_result("),
+            "let _delivered_tool_result = (",
+            "delegated-transcript-capture-not-in-execution",
+            LOOP_MODULE,
+        ),
+        (
+            "the capture path reinstalls a post-run batch reconstruction",
+            re.escape("let report = serde_json::from_str::<SubAgentReport>(&output).ok();"),
+            "let calls_by_id = HashMap::new();\n    let captured_call_ids = HashSet::new();\n"
+            "    let report = serde_json::from_str::<SubAgentReport>(&output).ok();",
+            "delegated-transcript-capture-not-in-execution",
             CAPTURE_MODULE,
         ),
     ]

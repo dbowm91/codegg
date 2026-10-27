@@ -829,6 +829,17 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
 /// credential, bearer-mint, config) to this list merely to pass the
 /// guard; instrument it instead.
 pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
+    // M002: a session-scoped read of a delegated run's **recorded
+    // transcript**. It is the same shape as `session_messages_load` — a
+    // read of content the caller is authorized to see — and it mutates
+    // nothing, so it does not earn a dedicated audit action.
+    //
+    // The capability denial *is* audited upstream by `authorize_request`.
+    // The exact-owner refusal is deliberately **not** audited as a denial:
+    // a foreign run is answered as "not found" precisely so that the
+    // refusal cannot be used as an existence oracle, and auditing it would
+    // record which run ids exist.
+    "agent_run_transcript_read",
     "human_shell_run_capabilities",
     "human_shell_run_read",
     "human_shell_promotions_get",

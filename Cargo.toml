@@ -141,7 +141,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 
 # TUI
-ratatui = { version = "0.30", default-features = false, features = ["crossterm", "underline-color"] }
+# `unstable-rendered-line-info` exposes `Paragraph::line_count`, which is the
+# only way to measure how tall a transcript is **after** wrapping. The
+# delegated tab's scroll extent has to be the wrapped height: a body that
+# wraps onto three visual rows is three rows on screen, and a count taken
+# from the number of logical lines would stop short of the real end.
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "underline-color", "unstable-rendered-line-info"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
 unicode-width = "0.2"
 
