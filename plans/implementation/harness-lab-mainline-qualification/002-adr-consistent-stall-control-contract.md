@@ -1,6 +1,6 @@
 # Harness Lab Mainline Qualification H002 — Versioned ADR-0040 Control Replacement
 
-Status: **ready**
+Status: **closed** — see `plans/closure/harness-lab-mainline-qualification/002-status.md`.
 Source roadmap: `plans/subsystems/harness-lab-mainline-and-long-horizon-qualification-addendum.md`.
 Reviewed baseline: `plans/harness-lab-continuation-20261026@cd9fde42491c85941c31efbc2d5d200e8db4d638`. Refresh on entry.
 Historical inputs: C004 `plans/closure/harness-lab-post-pilot-corrective/004-status.md` §5(4); C005 `plans/closure/harness-lab-post-pilot-corrective/005-status.md` §10; accepted `plans/adrs/ADR-0040-evidence-based-agent-recovery-termination.md`; `plans/closure/agent-recovery-escalation-authority/002-status.md`. Long-term: `plans/000-long-term-specification.md` §§26–29. Primary class: invariant.

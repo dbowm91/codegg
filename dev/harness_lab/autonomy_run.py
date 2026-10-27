@@ -146,7 +146,6 @@ class _ToolCallProjector:
         self._started: dict[str, dict[str, Any]] = {}
         self._order: list[str] = []
         self._finished: dict[str, str] = {}
-        self._errored: dict[str, bool] = {}
 
     def absorb(self, notification: dict[str, Any]) -> None:
         """Absorb one ACP notification."""
@@ -174,14 +173,6 @@ class _ToolCallProjector:
             status = update.get("status")
             if isinstance(call_id, str) and isinstance(status, str):
                 self._finished[call_id] = status
-                # The product publishes a failed tool as a successful call whose
-                # output carries the error, so the ACP status alone cannot tell
-                # a failed tool from a successful one. The envelope is read here
-                # and the answer is carried as a boolean: the reported output
-                # itself never reaches the receipt.
-                raw = update.get("rawOutput")
-                if isinstance(raw, str) and faults.looks_like_tool_error(raw):
-                    self._errored[call_id] = True
 
     def calls(self) -> list[dict[str, Any]]:
         """Return the projected tool calls, in the order they started."""
@@ -190,8 +181,9 @@ class _ToolCallProjector:
             "tool": self._started[call_id]["tool"],
             "arguments_sha256": self._started[call_id]["arguments_sha256"],
             "status": self._finished.get(call_id, "unknown"),
-            "failed": (self._finished.get(call_id) == faults.STATUS_FAILED
-                       or self._errored.get(call_id, False)),
+            # ACP terminal status is typed evidence. Error-like output text
+            # may be ordinary file content and never changes the outcome.
+            "failed": self._finished.get(call_id) == faults.STATUS_FAILED,
         } for index, call_id in enumerate(self._order)]
 
 

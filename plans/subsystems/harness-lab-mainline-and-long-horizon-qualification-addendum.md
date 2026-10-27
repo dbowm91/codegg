@@ -1,6 +1,6 @@
 # Harness Lab — Mainline Integration and Long-Horizon Qualification Addendum
 
-Status: **active planning**; H001 and H002 ready; H003 ready for offline fixture work (soft interface with H002); H004 blocked on H001–H003 closure and fresh live-budget admission.
+Status: **active integration**; H001 is reconciling onto current `main` and requires ordinary review/merge plus exact resulting-head CI; H002 is closed with an ADR-0040-consistent v2 control; H003 is closed for the deterministic native Rust/job fixture; H004 remains blocked on H001 and fresh live-budget admission.
 
 Reviewed base: `plans/harness-lab-continuation-20261026@cd9fde42491c85941c31efbc2d5d200e8db4d638` (2026-10-27). Re-read latest refs and status before modifying source.
 
@@ -36,10 +36,10 @@ No obligatory VM/container, disposable enterprise infrastructure, SBC compilatio
 
 | Milestone | Primary class | Status | Dependency |
 |---|---|---|---|
-| H001 — Merge-ready mainline promotion with exact-merge-head evidence | invariant | **ready** | Existing continuation branch and source CI success |
-| H002 — Versioned replacement for obsolete stall-stop control | invariant | **ready** | Accepted ADR-0040 and closed Recovery C002 |
-| H003 — Realistic long-horizon Rust/job test corpus | capability | **ready for offline work** | Existing native Harness Lab; H002 interface is **soft** for later score aggregation |
-| H004 — Single-provider live qualification and final status reconciliation | capability | **blocked** | H001 **hard**; H002 and H003 **hard**; **operational** fresh `opencode_go` budget approval and host feasibility |
+| H001 — Merge-ready mainline promotion with exact-merge-head evidence | invariant | **in progress; review/merge gate open** | Existing continuation branch and source CI success; rebase to latest `main`, PR review, resulting-head CI and maintainer merge remain |
+| H002 — Versioned replacement for obsolete stall-stop control | invariant | **closed** | Accepted ADR-0040 and closed Recovery C002; v2 deterministic native controls qualified |
+| H003 — Realistic long-horizon Rust/job test corpus | capability | **closed for offline native qualification** | Coherent Rust repair, real background jobs, holdout verifier and two isolated lanes; context epoch instrumentation remains unavailable |
+| H004 — Single-provider live qualification and final status reconciliation | capability | **blocked** | H001 **hard**; H002 and H003 **closed**; **operational** fresh `opencode_go` budget approval and host feasibility |
 
 H001–H003 may progress in parallel in distinct worktrees; H004 is a separately admitted handoff. CI may verify offline fixtures at low cost without a provider account.
 
@@ -82,7 +82,7 @@ After H001–H003 close, run **one explicitly approved** `opencode_go/<model-id>
 
 | Milestone | Status | Plan | Closure |
 |---|---|---|---|
-| H001 | ready | `plans/implementation/harness-lab-mainline-qualification/001-mainline-integration-and-exact-head-verification.md` | pending |
-| H002 | ready | `plans/implementation/harness-lab-mainline-qualification/002-adr-consistent-stall-control-contract.md` | pending |
-| H003 | ready for offline work | `plans/implementation/harness-lab-mainline-qualification/003-long-horizon-rust-and-job-fixtures.md` | pending |
+| H001 | integration/review pending | `plans/implementation/harness-lab-mainline-qualification/001-mainline-integration-and-exact-head-verification.md` | pending actual main merge and exact resulting-head CI |
+| H002 | closed | `plans/implementation/harness-lab-mainline-qualification/002-adr-consistent-stall-control-contract.md` | `plans/closure/harness-lab-mainline-qualification/002-status.md` |
+| H003 | closed for offline qualification | `plans/implementation/harness-lab-mainline-qualification/003-long-horizon-rust-and-job-fixtures.md` | `plans/closure/harness-lab-mainline-qualification/003-status.md` |
 | H004 | blocked | `plans/implementation/harness-lab-mainline-qualification/004-single-opencode-go-sustained-qualification.md` | H001–H003 and fresh spending authorization |

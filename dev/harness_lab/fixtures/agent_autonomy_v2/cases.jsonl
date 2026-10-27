@@ -1,0 +1,5 @@
+{"suite_version":2}
+{"case_id":"repeated-identical-failure-bounded","expected_observation":"repeated_failure_bounded","expected_stop_owner":"agent_completed","protected":true}
+{"case_id":"changed-state-read-is-progress","expected_observation":"changed_state_not_stalled","expected_stop_owner":"agent_completed","protected":true}
+{"case_id":"event-gap-is-unknown","expected_observation":"unknown_gap","expected_stop_owner":"unknown","protected":true}
+{"case_id":"turn-budget-owner-is-explicit","expected_observation":"hard_budget_stop","expected_stop_owner":"agent_turn_budget","protected":true}

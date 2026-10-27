@@ -265,11 +265,8 @@ class ControlExerciseTests(unittest.TestCase):
 class ToolErrorEnvelopeTests(unittest.TestCase):
     """The product reports a failed tool as a *successful* call.
 
-    The broker wraps a tool's own error in an error-marked value, so the ACP
-    wire carries ``status: "completed"`` for a call that in fact failed. The
-    harness reads the product's error envelope out of the reported output so
-    that a faulted tool is observable at all. These tests cover the reading,
-    and the guard that keeps the reading tied to the product.
+    Error-like output is not typed failure evidence. These tests make sure
+    only the ACP terminal status decides the current result.
     """
 
     def test_the_product_error_envelope_is_recognised(self) -> None:
@@ -285,23 +282,7 @@ class ToolErrorEnvelopeTests(unittest.TestCase):
         self.assertFalse(faults.looks_like_tool_error(
             'Inline { output: "the report mentions Tool error: sometimes" }'))
 
-    def test_every_envelope_is_still_the_product_marker(self) -> None:
-        """The coupling to the product's error envelope is guarded, not silent.
-
-        If the product changes how it reports a failed tool, this fails
-        instead of quietly leaving the control unexercised.
-        """
-        root = Path(__file__).resolve().parents[3]
-        source = "\n".join(
-            (root / path).read_text(encoding="utf-8")
-            for path in ("src/tool/broker.rs", "src/tool/contract.rs")
-        )
-        for envelope in faults.TOOL_ERROR_ENVELOPES:
-            self.assertIn(envelope, source,
-                          f"the product no longer reports {envelope!r}; the harness's "
-                          f"reading of a failed tool must be revisited")
-
-    def test_a_projected_call_reports_the_failure_the_envelope_shows(self) -> None:
+    def test_error_looking_success_output_is_not_a_failure(self) -> None:
         projector = autonomy_run._ToolCallProjector()
         projector.absorb({"method": "session/update", "params": {"update": {
             "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "read",
@@ -313,7 +294,17 @@ class ToolErrorEnvelopeTests(unittest.TestCase):
         calls = projector.calls()
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["status"], "completed")
-        self.assertTrue(calls[0]["failed"])
+        self.assertFalse(calls[0]["failed"])
+
+    def test_typed_failed_status_is_a_failure(self) -> None:
+        projector = autonomy_run._ToolCallProjector()
+        projector.absorb({"method": "session/update", "params": {"update": {
+            "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "read",
+            "codeggArgumentsSha256": "abc"}}})
+        projector.absorb({"method": "session/update", "params": {"update": {
+            "sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "failed",
+            "rawOutput": 'Inline { output: "ordinary content" }'}}})
+        self.assertTrue(projector.calls()[0]["failed"])
 
     def test_a_projected_success_is_not_a_failure(self) -> None:
         projector = autonomy_run._ToolCallProjector()

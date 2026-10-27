@@ -1,6 +1,6 @@
 # Harness Lab Mainline Qualification H003 — Coherent Long-Horizon Rust and Job Fixtures
 
-Status: **ready for offline implementation**
+Status: **closed for offline native qualification** — see `plans/closure/harness-lab-mainline-qualification/003-status.md`.
 Source roadmap: `plans/subsystems/harness-lab-mainline-and-long-horizon-qualification-addendum.md`.
 Reviewed baseline: `plans/harness-lab-continuation-20261026@cd9fde42491c85941c31efbc2d5d200e8db4d638`.
 Existing owners: `plans/subsystems/long-horizon-work-execution-roadmap.md` (M001–M005 closed), `plans/subsystems/agent-loop-operational-reliability-roadmap.md` (closed), CodeGG job scheduler/tool-programs and worktree/agent workstream plan lines.
