@@ -1,6 +1,6 @@
 # Harness Lab Continuation D003 — Sustained-Trial Gap Parity and Measured Reliability Bound
 
-Status: closed (implementation); C006 live rate remains not established
+Status: closed
 Baseline: `main@957fcbf00e17bf108429f0d75dcbf760736ae511`; refresh latest before implementation.
 Roadmap: `plans/subsystems/harness-lab-continuation-corrective-addendum.md`.
 Prior conditional evidence: `plans/closure/harness-lab-post-pilot-corrective/006-status.md`, `004-status.md`, live C006 14-trial receipt; no change to historical milestone status until separately demonstrated.

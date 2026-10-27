@@ -1,6 +1,6 @@
 # Harness Lab Post-Pilot Corrective Milestone 006 — Closure Status
 
-Status: conditionally closed
+Status: closed
 Source implementation plan: `plans/implementation/harness-lab-post-pilot-corrective/006-live-trial-integrity-and-cumulative-resume-deadline.md`
 Source subsystem roadmap: `plans/subsystems/harness-lab-post-pilot-corrective-addendum.md`
 Repository baseline reviewed: `1ee4e3aa2`
@@ -383,6 +383,32 @@ it sets `umask 002`, builds the lane environment, and asserts that all
 twelve lane roots are `0700`. It restores the umask in a `finally`, because
 the umask is process-global.
 
-**This amendment changes no milestone status.** C006 stays **conditionally
-closed** — the live flake rate is still not established, which is what the
-milestone says — and `plans/registry.md` needs no transition for it.
+**At the time of this amendment, it changed no milestone status.** The later
+live-rate reconciliation below supersedes that status statement.
+
+## 14. Live-rate reconciliation (2026-10-27)
+
+The earlier §10 high finding is resolved for the preregistered sample profile.
+The approved D003 evaluation completed 63 instrumented trials on the pinned
+source revision and binary, using the Muse Spark route and alternating
+`worklog` / `ranges` fixtures. It observed 0/63 event gaps and 63/63 complete
+observation records. The one-sided 95% Clopper–Pearson upper bound is
+4.643845%, within the predeclared ≤5% target. Provider-request and cumulative
+wall-clock caps were admitted before execution and respected; all lanes
+cleaned up. Detailed review, provider usage, exact digests, and the complete
+receipt stream are in
+[`../harness-lab-continuation/003-live-event-gap-sample-20261027.md`](../harness-lab-continuation/003-live-event-gap-sample-20261027.md)
+and `plans/closure/harness-lab-continuation/003-live-event-gap-sample-20261027.jsonl`.
+
+The rate qualification is scoped to that binary, host, route and case mix. The
+trials used fresh lanes and daemons and ran sequentially, but all shared the
+same host and provider route. The bound therefore remains conditional on
+trial independence and is not a cross-host or cross-provider claim. The
+historical 0/14 result is not pooled. No causal claim is made about the earlier
+C003 infrastructure error.
+
+**Disposition:** C006 is now **closed**. The live-rate condition that left the
+milestone conditional has met its preregistered threshold with the limitation
+recorded above. The medium and low residual findings in §10 remain bounded
+scope notes; none is a blocker to the D003/C006 event-gap qualification.
+Update `plans/registry.md` and the affected subsystem roadmaps to closed.

@@ -1,6 +1,6 @@
 # Harness Lab Post-Pilot C006 — Live-Trial Integrity and the Cumulative Resume Deadline
 
-Status: ready for handoff
+Status: closed
 Repository baseline: `plans/harness-lab-post-pilot-correctives@ff651895b` (2026-10-22; inspect latest at handoff).
 Source roadmap: `plans/subsystems/harness-lab-post-pilot-corrective-addendum.md#5-milestones`
 Corrects C004 `plans/closure/harness-lab-post-pilot-corrective/004-status.md` §5 conditions 4 and 5; preserves the closed C001–C003 records and the preserved comparison receipt `plans/closure/harness-lab/evidence/autonomy-comparison-20261022.json`.
