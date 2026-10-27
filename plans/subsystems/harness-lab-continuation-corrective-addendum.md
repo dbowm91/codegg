@@ -67,3 +67,10 @@ Each plan requires a new, independently reviewed closure record with implementat
 ## Closure verification (2026-10-26)
 
 D001–D003 implementation closures and the Recovery C002 cross-reference were recorded against source head `56279dfc7dc8ee82f0239d6412b4fa50a42a74d6`. Exact-head `CI / verify` run [40383901325](https://github.com/dbowm91/codegg/actions/runs/40383901325) passed. A separately authorized D003 sample then completed 63/63 instrumented trials with no observed gaps and a one-sided 95% upper bound of 4.643845%; the scoped result, raw receipts and independence caveat are recorded in `plans/closure/harness-lab-continuation/003-live-event-gap-sample-20261027.md`. C006's live-rate condition is closed for that preregistered profile, conditional on trial independence.
+
+
+## Handoff after D003 (2026-10-27)
+
+D001–D003 implementation closed and D003's scoped 63-trial live event-loss measurement passed its preregistered threshold. **These closures do not mean the continuation source is merged into main or that a prolonged coherent coding session has been tested.** The separately owned successor is `plans/subsystems/harness-lab-mainline-and-long-horizon-qualification-addendum.md`, with H001 exact resulting-main integration, H002 ADR-0040-consistent versioned control, H003 deeper Rust/job fixtures, and H004 a separately authorized real long-session qualification.
+
+**Provider constraint:** exactly one CodeGG provider integration, `opencode_go`, throughout the successor. Its upstream model-serving organizations are not extra CodeGG providers, and no route/provider diversity comparison is required. H004 requires fresh operator-approved budget authority and remains blocked until H001–H003 close. Historical D003 63/63 event integrity and cost-null caveats are unchanged.
