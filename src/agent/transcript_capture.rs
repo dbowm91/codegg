@@ -60,6 +60,10 @@ pub enum TranscriptCheckpoint {
 /// The loop holds one of these only when the turn belongs to a durable
 /// delegated run; every other turn holds none and records nothing.
 #[async_trait::async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait AgentRunTranscriptCapture: Send + Sync {
     /// Record one semantic checkpoint.
     ///

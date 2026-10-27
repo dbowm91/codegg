@@ -435,7 +435,7 @@ fn is_spurious_ident_collision(item: &serde_json::Value) -> bool {
                 let parts: Vec<&str> = long
                     .split(|c: char| !c.is_alphanumeric() && c != '_')
                     .collect();
-                if !parts.iter().any(|p| *p == short.as_str()) {
+                if !parts.contains(&short.as_str()) {
                     return true;
                 }
                 return true;

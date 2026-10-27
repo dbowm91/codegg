@@ -71,6 +71,10 @@ pub struct TranscriptAdvance {
 /// It is injected into the child's runtime; it is not a global singleton,
 /// and it exposes no way to publish an arbitrary event.
 #[async_trait::async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait TranscriptAdvancePublisher: Send + Sync {
     /// Note that the run's committed transcript advanced.
     ///
@@ -87,6 +91,10 @@ pub trait TranscriptAdvancePublisher: Send + Sync {
 
 /// Where a coalesced advisory is published.
 #[async_trait::async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait TranscriptAdvanceSink: Send + Sync {
     /// Publish one advisory.
     async fn publish(&self, advance: &TranscriptAdvance);

@@ -611,18 +611,10 @@ mod tests {
 
     #[test]
     fn search_detail_flag_accepts_compact_and_summary_forms() {
-        assert!(search_detail_requests_compact(&serde_json::json!({})).unwrap() == false);
-        assert!(
-            search_detail_requests_compact(&serde_json::json!({"compact": true})).unwrap() == true
-        );
-        assert!(
-            search_detail_requests_compact(&serde_json::json!({"detail": "summary"})).unwrap()
-                == true
-        );
-        assert!(
-            search_detail_requests_compact(&serde_json::json!({"detail": "schema"})).unwrap()
-                == false
-        );
+        assert!(!search_detail_requests_compact(&serde_json::json!({})).unwrap());
+        assert!(search_detail_requests_compact(&serde_json::json!({"compact": true})).unwrap());
+        assert!(search_detail_requests_compact(&serde_json::json!({"detail": "summary"})).unwrap());
+        assert!(!search_detail_requests_compact(&serde_json::json!({"detail": "schema"})).unwrap());
         assert!(search_detail_requests_compact(&serde_json::json!({"detail": "bogus"})).is_err());
     }
 }
