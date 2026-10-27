@@ -68,5 +68,5 @@ C001 and C002 each require closure records under plans/closure/delegated-run-liv
 
 | Milestone | Status | Plan | Closure |
 |---|---|---|---|
-| C001 | ready | plans/implementation/delegated-run-live-transcript-post-closure-corrective/001-progress-and-advisory-liveness.md | pending |
-| C002 | blocked (hard C001) | plans/implementation/delegated-run-live-transcript-post-closure-corrective/002-exact-head-ci-and-handoff-qualification.md | pending |
+| C001 | closed | plans/implementation/delegated-run-live-transcript-post-closure-corrective/001-progress-and-advisory-liveness.md | closed (`plans/closure/delegated-run-live-transcript-post-closure-corrective/001-status.md`) |
+| C002 | closed | plans/implementation/delegated-run-live-transcript-post-closure-corrective/002-exact-head-ci-and-handoff-qualification.md | closed (`plans/closure/delegated-run-live-transcript-post-closure-corrective/002-status.md`) |

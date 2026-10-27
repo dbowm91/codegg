@@ -1,6 +1,6 @@
 # Delegated Run Live Transcript — Roadmap
 
-Status: closed on feature branch — M001–M003 closed; post-closure integration corrective C001 ready / C002 blocked (PR #203 remains unmerged)
+Status: closed on feature branch — M001–M003 closed; post-closure integration corrective C001 and C002 closed (PR #203 remains unmerged)
 Original planning baseline: main at 0be3e0a53ba97ee51f6d64aba2235bdef92452e7 (2026-10-26). The §4 observations and §6 original dependency graph describe the historical baseline, not the current branch implementation.
 Feature branch closure baseline: plan/delegated-run-live-transcript at 21dca074 (M001–M003 closed on branch). Current integration corrective: plans/subsystems/delegated-run-live-transcript-post-closure-corrective-addendum.md (C001–C002).
 
@@ -135,4 +135,4 @@ The roadmap closes only after M001–M003 have independent closure records, test
 
 ## 13. Post-closure integration tracking (new corrective line)
 
-This original feature line is closed **on the feature branch**, not merged to main. PR #203 remains draft. The additional liveness and exact-head verification findings opened a new additive corrective line rather than rewriting M001–M003's closure evidence: plans/subsystems/delegated-run-live-transcript-post-closure-corrective-addendum.md. **C001 ready** (four-page catch-up forward progress, quiet-run advisory flush); **C002 blocked on C001** (Rust 1.99 CI Clippy remediation, composed daemon/TUI verification, exact-head hosted qualification). No claim of merge readiness until that line has evidence.
+This original feature line is closed **on the feature branch**, not merged to main. PR #203 remains draft. The additional liveness and exact-head verification findings opened a new additive corrective line rather than rewriting M001–M003's closure evidence: plans/subsystems/delegated-run-live-transcript-post-closure-corrective-addendum.md. **C001 closed** (`plans/closure/delegated-run-live-transcript-post-closure-corrective/001-status.md`): the four-page catch-up dead-end became a bounded pass lifecycle that yields through the event loop, and the quiet-run advisory gained a bounded producer-owned flush. **C002 closed** (`plans/closure/delegated-run-live-transcript-post-closure-corrective/002-status.md`): the Rust 1.99 CI Clippy failure is repaired with narrow site-scoped suppressions plus mechanical upstream fixes, and the composed daemon/TUI chain is proven against the real daemon, store, projection reducer and renderer. **No claim of merge readiness**: PR #203 stays draft, and the exact-head hosted receipts are recorded with their observed status in the C002 record.
