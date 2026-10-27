@@ -1116,6 +1116,7 @@ mod tests {
             root: std::path::PathBuf,
             target: std::path::PathBuf,
             report: std::path::PathBuf,
+            output: std::path::PathBuf,
         }
 
         fn init_rust_repository(root: &std::path::Path) {
@@ -1242,10 +1243,12 @@ mod tests {
                         "/usr/bin/env".into(),
                         format!("CARGO_TARGET_DIR={}", case.target.display()),
                         "CARGO_BUILD_JOBS=2".into(),
-                        "cargo".into(),
-                        "check".into(),
-                        "--locked".into(),
-                        "--offline".into(),
+                        "CARGO_TERM_COLOR=never".into(),
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "exec cargo check --locked --offline > \"$1\" 2>&1".into(),
+                        "a003-cargo".into(),
+                        case.output.to_string_lossy().into_owned(),
                     ],
                     cwd: Some(case.root.to_string_lossy().into_owned()),
                     sandbox_profile: None,
@@ -1298,6 +1301,7 @@ mod tests {
             let wall_ms = started.elapsed().as_millis();
             let mut reports = Vec::new();
             let mut target_sizes = Vec::new();
+            let mut cargo_lock_waits = Vec::new();
             for (case, job_id) in cases.iter().zip(job_ids.iter()) {
                 let job = store.get_job(job_id).await.unwrap().unwrap();
                 assert_eq!(
@@ -1313,6 +1317,17 @@ mod tests {
                     );
                 }
                 reports.push(report);
+                let output = std::fs::read_to_string(&case.output).expect("Cargo output log");
+                assert!(
+                    !output.is_empty(),
+                    "Cargo output log stayed empty: {case:#?}"
+                );
+                cargo_lock_waits.push(
+                    output
+                        .lines()
+                        .filter(|line| line.contains("Blocking waiting for file lock"))
+                        .count(),
+                );
                 let bytes = target_bytes(&case.target);
                 assert!(bytes > 0, "Cargo target directory stayed empty: {case:#?}");
                 target_sizes.push(bytes);
@@ -1320,6 +1335,7 @@ mod tests {
             scheduler
                 .shutdown(crate::scheduler::SchedulerShutdownMode::ImmediateInterrupt)
                 .await;
+            println!("Cargo lock waits per job: {cargo_lock_waits:?}");
             (wall_ms, reports, target_sizes)
         }
 
@@ -1420,6 +1436,7 @@ mod tests {
                     root: roots[index].clone(),
                     target: target_root.join(format!("{tag}-{index}")),
                     report: fixture.path().join(format!("{tag}-{index}.time")),
+                    output: fixture.path().join(format!("{tag}-{index}.cargo.log")),
                 })
             };
 
