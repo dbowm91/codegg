@@ -1,7 +1,7 @@
 # Harness Lab Mainline Qualification H001 — Integration and Exact-Resulting-Head Verification
 
-Status: **ready**
-Baseline reviewed: `main@957fcbf00e17bf108429f0d75dcbf760736ae511`; continuation implementation `56279dfc7dc8ee82f0239d6412b4fa50a42a74d6`; continuation head `cd9fde42491c85941c31efbc2d5d200e8db4d638` (2026-10-27). Refresh all refs and outstanding PRs on entry.
+Status: **active; PR #205 open, review/merge and exact resulting-main CI pending**
+Baseline reviewed: `origin/main@09dc761c7663316066e0f7f427dab89e71600e98`; integration candidate `7b2e51b5a2547058a319f097743812a9a1e4978f` on `plans/harness-lab-integration-20261027` (2026-10-27). PR: https://github.com/dbowm91/codegg/pull/205. Hosted candidate checks were queued at submission; resulting-main verification remains mandatory after merge.
 Source roadmap: `plans/subsystems/harness-lab-mainline-and-long-horizon-qualification-addendum.md`. Long-term references: `plans/000-long-term-specification.md` §§23,26,29; `plans/003-planning-process.md`; original D001–D003 and E001/E002 closures. Primary class: invariant. No ADR required unless merge reveals authority change.
 
 ## 1. Objective

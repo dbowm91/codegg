@@ -1,6 +1,6 @@
 # Harness Lab — Mainline Integration and Long-Horizon Qualification Addendum
 
-Status: **active integration**; H001 is reconciling onto current `main` and requires ordinary review/merge plus exact resulting-head CI; H002 is closed with an ADR-0040-consistent v2 control; H003 is closed for the deterministic native Rust/job fixture; H004 remains blocked on H001 and fresh live-budget admission.
+Status: **active integration**; H001 PR #205 is open against current `main` and requires ordinary review/merge plus exact resulting-head CI; H002 is closed with an ADR-0040-consistent v2 control; H003 is closed for the deterministic native Rust/job fixture; H004 has fresh live-budget authorization but remains blocked on H001.
 
 Reviewed base: `plans/harness-lab-continuation-20261026@cd9fde42491c85941c31efbc2d5d200e8db4d638` (2026-10-27). Re-read latest refs and status before modifying source.
 
@@ -36,10 +36,10 @@ No obligatory VM/container, disposable enterprise infrastructure, SBC compilatio
 
 | Milestone | Primary class | Status | Dependency |
 |---|---|---|---|
-| H001 — Merge-ready mainline promotion with exact-merge-head evidence | invariant | **in progress; review/merge gate open** | Existing continuation branch and source CI success; rebase to latest `main`, PR review, resulting-head CI and maintainer merge remain |
+| H001 — Merge-ready mainline promotion with exact-merge-head evidence | invariant | **PR #205 open; hosted candidate CI running; review/merge gate open** | Candidate `7b2e51b` based on `09dc761c76`; local full verification passed. Ordinary PR review, resulting-main CI and maintainer merge remain |
 | H002 — Versioned replacement for obsolete stall-stop control | invariant | **closed** | Accepted ADR-0040 and closed Recovery C002; v2 deterministic native controls qualified |
 | H003 — Realistic long-horizon Rust/job test corpus | capability | **closed for offline native qualification** | Coherent Rust repair, real background jobs, holdout verifier and two isolated lanes; context epoch instrumentation remains unavailable |
-| H004 — Single-provider live qualification and final status reconciliation | capability | **blocked** | H001 **hard**; H002 and H003 **closed**; **operational** fresh `opencode_go` budget approval and host feasibility |
+| H004 — Single-provider live qualification and final status reconciliation | capability | **blocked on H001** | H001 **hard**; H002 and H003 **closed**; fresh authorization received for Muse Spark 1.3 Contributor at 60 requests / 60 minutes. No live call until H001 merge and resulting-main CI; stop below 10 GiB free disk |
 
 H001–H003 may progress in parallel in distinct worktrees; H004 is a separately admitted handoff. CI may verify offline fixtures at low cost without a provider account.
 
