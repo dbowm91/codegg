@@ -1,8 +1,8 @@
 # Delegated Run Live Transcript — Post-Closure Corrective Addendum
 
-Status: ready for staged handoff — C001 ready; C002 blocked on C001
+Status: closed on feature branch — C001 and C002 closed (§9); PR #203 remains unmerged
 Review baseline: plan/delegated-run-live-transcript at 21dca074b09eb00c34527ff13067352d0641897d, 2026-10-26
-Target PR: #203 (draft; not merged; not merge-ready at review).
+Target PR: #203 (draft; not merged; not merge-ready).
 Source roadmap (historical implementation line): plans/subsystems/delegated-run-live-transcript-roadmap.md (M001–M003 closed *on the feature branch*).
 Historical closures (retain, do not rewrite): plans/closure/delegated-run-live-transcript/001-status.md, 002-status.md, 003-status.md.
 Canonical planning: plans/000-long-term-specification.md; plans/001-terminology-and-domain-model.md; plans/002-long-term-roadmap.md; plans/003-planning-process.md.
@@ -38,17 +38,19 @@ Owners: C001 is transcript publication/TUI follow forward progress; C002 is exac
 
 ## 4. Target corrections
 
-**C001: Live-follow forward progress and notification liveness (invariant, ready).**
+**C001: Live-follow forward progress and notification liveness (invariant; closed — §9).**
 Plan: plans/implementation/delegated-run-live-transcript-post-closure-corrective/001-progress-and-advisory-liveness.md.
 Mandatory: a stale source with >4 pages progresses across bounded passes without manual retry, while other open tabs retain fair scheduling; a 1–7 row coalesced update is signalled to an open active tab after a bounded quiet period even if the child stays blocked; both are tested against failing baseline. Producer and consumer must remain bounded with no TUI poll. Close C001 only on code and regression evidence, not the old M003 closure.
 
-**C002: Hosted verification, narrow lint gate, and status reconciliation (integration/polish, blocked until C001).**
+**C002: Hosted verification, narrow lint gate, and status reconciliation (integration/polish; closed — §9).**
 Plan: plans/implementation/delegated-run-live-transcript-post-closure-corrective/002-exact-head-ci-and-handoff-qualification.md.
 Mandatory: the three new async-trait lint errors are absent, remaining lint baseline is dispositioned without blanket suppression, relevant CI workflow is green on an exact source head or a named external blocker remains explicitly open; a composed daemon/TUI fixture and interruption/reconnect test demonstrates actual forward progress; status tables/registry/PR evidence agree. C002 may be prepared in parallel, but cannot claim closure before C001.
 
 ## 5. Dependencies
 
 M001–M003 (closed on branch) -> C001 (ready) -> C002 (hard; blocked on C001).
+
+This graph is the **authoring-time dependency**, recorded when the line was opened; it is not the current status. The live status is §9: C001 and C002 are both closed on the feature branch, and the hosted-receipt condition each closure names is recorded in that closure record.
 
 Interface considerations: C001 touches src/tui/commands/transcript_follow.rs, transcript_cache.rs and src/agent/transcript_publisher.rs plus narrowly scoped tests. C002 may touch the two async-trait files, CI tooling/docs, and the exact list of baseline lint sites only if safely needed; coordinate shared-file changes with C001.
 
