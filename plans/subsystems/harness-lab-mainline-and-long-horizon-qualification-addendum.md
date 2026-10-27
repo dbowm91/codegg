@@ -1,6 +1,6 @@
 # Harness Lab — Mainline Integration and Long-Horizon Qualification Addendum
 
-Status: **conditionally closed**; H001 PR #205 merged at `9185b9c34ce30fd52a41aacd0aaae75f39e54895` and all exact-resulting-head checks passed; H002 and H003 remain closed at their recorded scopes; H004's single approved live measurement completed within caps and passed its verifier, but the 30–60 minute sustained-horizon target was not demonstrated (112.7-second run). Further sustained qualification requires a new plan and explicit budget authorization.
+Status: **conditionally closed**; H001 PR #205 merged at `9185b9c34ce30fd52a41aacd0aaae75f39e54895` and all exact-resulting-head checks passed; H002 and H003 remain closed at their recorded scopes; H004's single approved live measurement completed within caps and passed its verifier, but the 30–60 minute sustained-horizon target was not demonstrated (112.7-second run). H005 now designs a genuinely multi-stage sustained workload; its live phase remains blocked pending separate explicit budget authorization.
 
 Reviewed base: `plans/harness-lab-continuation-20261026@cd9fde42491c85941c31efbc2d5d200e8db4d638` (2026-10-27). Re-read latest refs and status before modifying source.
 
@@ -40,8 +40,9 @@ No obligatory VM/container, disposable enterprise infrastructure, SBC compilatio
 | H002 — Versioned replacement for obsolete stall-stop control | invariant | **closed** | Accepted ADR-0040 and closed Recovery C002; v2 deterministic native controls qualified |
 | H003 — Realistic long-horizon Rust/job test corpus | capability | **closed for offline native qualification** | Coherent Rust repair, real background jobs, holdout verifier and two isolated lanes; context epoch instrumentation remains unavailable |
 | H004 — Single-provider live qualification and final status reconciliation | capability | **conditionally closed; measurement complete, sustained target not demonstrated** | One authorized Muse Spark 1.3 Contributor run used 18/60 requests, solved the fixture, passed the hidden verifier and observed zero event gaps in 112.7 seconds. A 30–60 minute task and prolonged job wait were not demonstrated; future work requires a new plan and authorization. Closure: `plans/closure/harness-lab-mainline-qualification/004-status.md` |
+| H005 — Genuine sustained multi-stage Rust workload | capability | **active; separate live authorization received; offline gates in progress** | New dependency-free multi-crate event-ledger task, two recovery sequences, real asynchronous workspace validation during continued coding, and a 30–60 minute qualification threshold. One live attempt is authorized on Muse Spark with 300 requests / 60 minutes / 10 GiB disk floor; the live stage remains gated on offline verification. Plan: `plans/implementation/harness-lab-mainline-qualification/005-genuine-sustained-multi-stage-rust-workload.md`. |
 
-H001–H004 are recorded in their closure documents. H002 and H003 remain closed at their original scope. H004's limited measurement does not establish sustained reliability; future live work is separately admitted. CI may verify offline fixtures without a provider account.
+H001–H004 are recorded in their closure documents. H002 and H003 remain closed at their original scope. H004's limited measurement does not establish sustained reliability. H005 is a separately designed successor with its own one-run budget approved on 2026-10-27; the live request remains gated on the offline verifier, native job overlap proof and cleanup path. CI may verify offline fixtures without a provider account.
 
 ## 4. Milestone contracts
 
@@ -69,6 +70,12 @@ Add/extend meaningful, isolated Rust edit→compile→test→failure repair cycl
 
 One explicitly approved `opencode_go/muse-spark-1.3-contributor` session ran after H001–H003 closed. It used 18/60 admitted requests, completed in 112.7 seconds, solved the fixture, passed the hidden verifier, and observed zero tool-event gaps. The task completed far below the 30–60 minute sustained-horizon target; the run therefore closes as a measurement with a named qualification limit, not as long-session reliability evidence. The live authorization is consumed. Any longer coherent task requires its own design and fresh approval. See `plans/closure/harness-lab-mainline-qualification/004-status.md` and its frozen JSONL receipt.
 
+### H005 — Genuine sustained multi-stage Rust development and continuation
+
+`plans/implementation/harness-lab-mainline-qualification/005-genuine-sustained-multi-stage-rust-workload.md`
+
+H005 defines a new multi-crate event-ledger project with dependent ingestion, indexing, journal-recovery and CLI stages; a substantial deterministic corpus; two measured failure-recovery cycles; and a CodeGG-owned workspace test job that must remain active while the same agent implements downstream work. It is not a longer H003 fixture run. The proposed live ceiling is 300 provider requests and 60 minutes with a 10 GiB free-disk floor, through one explicitly selected `opencode_go` route; provider USD cost may be unreported. **No live request is authorized by this plan.** The agent must complete the offline fixture and verifier first, then obtain fresh explicit operator approval for the route and caps. Successful completion under 30 minutes does not satisfy the sustained target.
+
 ## 5. Cross-cutting security, compatibility and closure
 
 - **Session/worktree correctness:** daemon-owned root, no scope widening through shared Cargo output; isolated jobs/subagents only when their public contracts are closed/verified for the actual selected mode.
@@ -86,3 +93,4 @@ One explicitly approved `opencode_go/muse-spark-1.3-contributor` session ran aft
 | H002 | closed | `plans/implementation/harness-lab-mainline-qualification/002-adr-consistent-stall-control-contract.md` | `plans/closure/harness-lab-mainline-qualification/002-status.md` |
 | H003 | closed for offline qualification | `plans/implementation/harness-lab-mainline-qualification/003-long-horizon-rust-and-job-fixtures.md` | `plans/closure/harness-lab-mainline-qualification/003-status.md` |
 | H004 | conditionally closed — measurement complete; sustained target not demonstrated | `plans/implementation/harness-lab-mainline-qualification/004-single-opencode-go-sustained-qualification.md` | One authorized Muse Spark 1.3 Contributor session used 18/60 requests, completed in 112.7 seconds, passed the independent verifier, and observed zero event gaps. A 30–60 minute coherent task remains future work requiring separate design and authorization; see `plans/closure/harness-lab-mainline-qualification/004-status.md`. |
+| H005 | active — separate budget approved; offline implementation and gates in progress | `plans/implementation/harness-lab-mainline-qualification/005-genuine-sustained-multi-stage-rust-workload.md` | Multi-crate event-ledger implementation, two failure-recovery cycles, real test-job overlap while coding continues, same-session staged completion, schema-v3 evidence and at least 30 minutes of active provider-backed work. One attempt: Muse Spark / 300 requests / 60 minutes / stop below 10 GiB free disk. USD cost may be unreported. |

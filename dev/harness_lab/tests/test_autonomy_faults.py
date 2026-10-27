@@ -323,6 +323,26 @@ class ToolErrorEnvelopeTests(unittest.TestCase):
             "rawOutput": 'Inline { output: "secret file content" }'}}})
         self.assertNotIn("secret file content", repr(projector.calls()))
 
+    def test_job_projection_keeps_only_allowlisted_action_id_status_and_timing(self) -> None:
+        projector = autonomy_run._ToolCallProjector()
+        projector.absorb({"method": "session/update", "_received_elapsed_ms": 120,
+                          "params": {"update": {
+                              "sessionUpdate": "tool_call", "toolCallId": "j1", "title": "job",
+                              "codeggArgumentsSha256": "a" * 64, "codeggAction": "wait"}}})
+        projector.absorb({"method": "session/update", "_received_elapsed_ms": 180,
+                          "params": {"update": {
+                              "sessionUpdate": "tool_call_update", "toolCallId": "j1",
+                              "status": "completed", "rawOutput":
+                              'Inline { output: "job running\\njob_id: '
+                              '12345678-1234-1234-1234-123456789abc\\nprivate output" }'}}})
+        projected = projector.calls()[0]
+        self.assertEqual(projected["started_elapsed_ms"], 120)
+        self.assertEqual(projected["finished_elapsed_ms"], 180)
+        self.assertEqual(projected["job"], {
+            "job_id": "12345678-1234-1234-1234-123456789abc",
+            "action": "wait", "status": "running"})
+        self.assertNotIn("private output", repr(projected))
+
 
 class ObserveFaultFailureFlagTests(unittest.TestCase):
     def test_a_call_the_envelope_marked_is_counted_as_a_failure(self) -> None:

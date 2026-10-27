@@ -111,6 +111,9 @@ impl Tool for JobTool {
         // retrievable from the transcript. Surface the bounded terminal
         // summary (or the still-running hint) inline.
         let mut output = format!("job {status}");
+        if let Some(job_id) = value.get("job_id").and_then(|id| id.as_str()) {
+            output.push_str(&format!("\njob_id: {job_id}"));
+        }
         if let Some(summary) = value.get("summary").and_then(|s| s.as_str()) {
             if !summary.is_empty() {
                 output.push_str(&format!("\n{summary}"));

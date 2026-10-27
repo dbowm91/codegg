@@ -902,6 +902,23 @@ async fn handle_event(
                     return Ok(false);
                 }
                 if !prompt.close_requested {
+                    let safe_action = if tool_name == "job" {
+                        serde_json::from_str::<serde_json::Value>(arguments)
+                            .ok()
+                            .and_then(|value| {
+                                value
+                                    .get("action")
+                                    .and_then(|action| action.as_str())
+                                    .map(str::to_owned)
+                            })
+                            .filter(|action| {
+                                matches!(action.as_str(), "status" | "wait" | "output" | "cancel")
+                            })
+                    } else if tool_name == "test" {
+                        Some("submit".to_owned())
+                    } else {
+                        None
+                    };
                     update(
                         stdout,
                         &prompt.session_id,
@@ -911,6 +928,7 @@ async fn handle_event(
                             "title":tool_name,
                             "status":"in_progress",
                             "codeggArgumentsSha256":sha256_text(arguments),
+                            "codeggAction":safe_action,
                         }),
                     )
                     .await?;

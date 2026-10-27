@@ -1,0 +1,1 @@
+{"format":"timestamp|id|kind|amount|source","kinds":["open","close","transfer"],"alias_groups":[["src","source"]],"duplicate_policy":"identical_deduplicate_conflict_reject","window_size":60,"journal_version":1,"torn_tail":"ignore_only_final_line","summary_order":["window","id"],"shards":"merge_all_arguments_deterministically"}

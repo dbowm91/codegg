@@ -30,6 +30,7 @@ Fail-closed contract
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -109,7 +110,7 @@ def build_transcript(case: AutonomyCase, tool_calls: list[dict[str, Any]], *,
     rather than left out.
     """
     return {
-        "schema_version": 1,
+        "schema_version": 3 if case.case_id == "sustained-event-ledger" else 1,
         "case_id": case.case_id,
         "family": case.family,
         "group_id": case.group_id,
@@ -147,6 +148,8 @@ class _ToolCallProjector:
         self._started: dict[str, dict[str, Any]] = {}
         self._order: list[str] = []
         self._finished: dict[str, str] = {}
+        self._elapsed: dict[str, int] = {}
+        self._job: dict[str, dict[str, Any]] = {}
 
     def absorb(self, notification: dict[str, Any]) -> None:
         """Absorb one ACP notification."""
@@ -168,12 +171,25 @@ class _ToolCallProjector:
             self._started[call_id] = {
                 "tool": title if isinstance(title, str) else "unknown",
                 "arguments_sha256": digest if isinstance(digest, str) else None,
+                "started_elapsed_ms": notification.get("_received_elapsed_ms"),
+                "action": update.get("codeggAction") if update.get("codeggAction") in
+                          {"submit", "status", "wait", "output", "cancel"} else None,
             }
         elif kind == "tool_call_update":
             call_id = update.get("toolCallId")
             status = update.get("status")
             if isinstance(call_id, str) and isinstance(status, str):
                 self._finished[call_id] = status
+                elapsed = notification.get("_received_elapsed_ms")
+                if isinstance(elapsed, int):
+                    self._elapsed[call_id] = elapsed
+                title = self._started.get(call_id, {}).get("tool")
+                raw_output = update.get("rawOutput")
+                if title in {"job", "test"} and isinstance(raw_output, str):
+                    job = _project_job_result(raw_output, title,
+                                              self._started.get(call_id, {}).get("action"))
+                    if job is not None:
+                        self._job[call_id] = job
 
     def calls(self) -> list[dict[str, Any]]:
         """Return the projected tool calls, in the order they started."""
@@ -182,10 +198,79 @@ class _ToolCallProjector:
             "tool": self._started[call_id]["tool"],
             "arguments_sha256": self._started[call_id]["arguments_sha256"],
             "status": self._finished.get(call_id, "unknown"),
+            "started_elapsed_ms": self._started[call_id].get("started_elapsed_ms"),
+            "finished_elapsed_ms": self._elapsed.get(call_id),
+            "job": self._job.get(call_id),
             # ACP terminal status is typed evidence. Error-like output text
             # may be ordinary file content and never changes the outcome.
             "failed": self._finished.get(call_id) == faults.STATUS_FAILED,
         } for index, call_id in enumerate(self._order)]
+
+
+_JOB_ID_PATTERN = re.compile(r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b", re.I)
+
+
+def _project_job_result(raw_output: str, tool: str,
+                        action: Optional[str]) -> Optional[dict[str, Any]]:
+    """Extract bounded job metadata without retaining tool output."""
+    job_id = _JOB_ID_PATTERN.search(raw_output)
+    status = re.search(r"\bjob\s+(queued|running|completed|failed|cancelled|canceled|timed_out|still-running)\b", raw_output, re.I)
+    if job_id is None and status is None:
+        return None
+    return {
+        "job_id": job_id.group(1).lower() if job_id else None,
+        "action": action or ("submit" if tool == "test" else "unknown"),
+        "status": status.group(1).lower() if status else None,
+    }
+
+
+class _DiskFloorWatcher:
+    def __init__(self, path: Path, floor_bytes: int, client: AcpClient,
+                 session_id: str, *, poll_seconds: float = 1.0) -> None:
+        self.path = path
+        self.floor_bytes = floor_bytes
+        self.client = client
+        self.session_id = session_id
+        self.poll_seconds = poll_seconds
+        self.stop_event = threading.Event()
+        self.thread: Optional[threading.Thread] = None
+        self.free_bytes: Optional[int] = None
+        self.minimum_free_bytes: Optional[int] = None
+        self.triggered = False
+        self.error: Optional[str] = None
+
+    def start(self) -> None:
+        self._sample()
+        if self.error is not None or self.triggered:
+            self.client.notify("session/cancel", {"sessionId": self.session_id})
+            return
+        self.thread = threading.Thread(target=self._run, name="harness-disk-floor", daemon=True)
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        if self.thread is not None:
+            self.thread.join(timeout=2.0)
+
+    def _sample(self) -> None:
+        try:
+            self.free_bytes = shutil.disk_usage(self.path).free
+            if self.minimum_free_bytes is None or self.free_bytes < self.minimum_free_bytes:
+                self.minimum_free_bytes = self.free_bytes
+            if self.free_bytes < self.floor_bytes:
+                self.triggered = True
+        except OSError as error:
+            self.error = type(error).__name__
+
+    def _run(self) -> None:
+        while not self.stop_event.wait(self.poll_seconds):
+            self._sample()
+            if self.error is not None or self.triggered:
+                try:
+                    self.client.notify("session/cancel", {"sessionId": self.session_id})
+                except (HarnessError, OSError, BrokenPipeError):
+                    pass
+                return
 
 
 def _observed_tool_calls(client: AcpClient) -> list[dict[str, Any]]:
@@ -348,7 +433,8 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
              repository: Optional[Path] = None, profile: str = "workspace-write",
              timeout: float = 900.0, agent: str = "build",
              credential: Optional[str] = None,
-             guard: Optional[budget.SpendGuard] = None) -> dict[str, Any]:
+             guard: Optional[budget.SpendGuard] = None,
+             min_free_disk_bytes: Optional[int] = None) -> dict[str, Any]:
     """Run one taxonomy case against a live provider route and return a receipt.
 
     The receipt separates three things that are easy to conflate: what the
@@ -368,6 +454,15 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     """
     if "/" not in model:
         raise HarnessError("model must be a provider/model composite")
+    if case.case_id == "sustained-event-ledger":
+        if model != "opencode_go/muse-spark-1.3-contributor":
+            raise HarnessError("H005 is authorized only for opencode_go/muse-spark-1.3-contributor")
+        if timeout <= 0 or timeout > 3600:
+            raise HarnessError("H005 timeout must be positive and no greater than 3600 seconds")
+        if min_free_disk_bytes != 10 * 1024**3:
+            raise HarnessError("H005 requires the approved 10 GiB free-disk floor")
+    elif min_free_disk_bytes is not None and min_free_disk_bytes <= 0:
+        raise HarnessError("minimum free disk bytes must be a positive integer")
     if profile not in {"full-host", "workspace-write"}:
         raise HarnessError("profile must be full-host or workspace-write")
     if case.support != "supported":
@@ -392,11 +487,20 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
             raise HarnessError("budget admission refused before the autonomy case started: "
                                + json.dumps(admission.as_dict(), sort_keys=True))
         guard = budget.SpendGuard(budget_policy)
-    # The request cap is enforced before the prompt is submitted.
-    guard.admit()
-
     lane_root = lane_root.resolve()
+    disk_probe = lane_root if lane_root.exists() else lane_root.parent
+    try:
+        initial_free_bytes = shutil.disk_usage(disk_probe).free
+    except OSError as error:
+        if min_free_disk_bytes is not None:
+            raise HarnessError("free disk state is unreadable; refusing the live case") from error
+        initial_free_bytes = None
+    if min_free_disk_bytes is not None and initial_free_bytes is not None \
+            and initial_free_bytes < min_free_disk_bytes:
+        raise HarnessError("free disk is below the required floor; refusing the live case")
     supervisor.private_dir(lane_root)
+    # The request cap is reserved only after the disk floor's initial sample.
+    guard.admit()
     # The daemon binds its control socket inside the lane. A lane whose socket
     # path does not fit the platform's ``sun_path`` limit cannot start, and
     # the daemon's own failure message names the socket rather than the
@@ -422,6 +526,11 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     private_root.mkdir(parents=True, exist_ok=True)
     _copy_tree(source / "fixture", fixture_destination)
     _copy_tree(source / "verifier", private_root / "verifier")
+    if case.case_id == "sustained-event-ledger":
+        metadata = repository / "dev/harness_lab/fixtures/sustained_event_ledger.case.json"
+        if not metadata.is_file():
+            raise HarnessError("the H005 frozen case metadata is missing")
+        shutil.copy2(metadata, private_root / "case-metadata.json")
 
     spec = SubjectSpec.create(f"autonomy-{case.case_id}", binary, agent_root, lane_root, repository)
     env = spec.environment()
@@ -462,6 +571,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     session_id: Optional[str] = None
     policy_receipt: Any = None
     watcher: Optional[_FaultWatcher] = None
+    disk_watcher: Optional[_DiskFloorWatcher] = None
     event_observer_drained = False
     try:
         client.request("initialize", {"protocolVersion": ACP_PROTOCOL_VERSION,
@@ -478,6 +588,16 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
             # the agent never gives up.
             watcher = _FaultWatcher(client, fault_spec, session_id, applied=applied_fault)
             watcher.start()
+        if min_free_disk_bytes is not None:
+            disk_watcher = _DiskFloorWatcher(lane_root, min_free_disk_bytes,
+                                             client, session_id)
+            disk_watcher.start()
+            if disk_watcher.error is not None or disk_watcher.triggered:
+                stop_reason = "disk_floor"
+                terminal = "infrastructure_error"
+                failure = {"kind": "DiskFloor", "category": "infrastructure_error",
+                           "usage_reason": disk_watcher.error or "minimum_free_space_breached"}
+                raise HarnessError("disk floor unavailable or already breached")
         result = client.request("session/prompt", {
             "sessionId": session_id,
             "model": model,
@@ -495,6 +615,8 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         terminal = "timeout"
         result = {"error": str(error)}
     finally:
+        if disk_watcher is not None:
+            disk_watcher.stop()
         if watcher is not None:
             watcher.stop()
         try:
@@ -524,6 +646,10 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         terminal = "infrastructure_error"
         failure = {"kind": "EventStreamGap", "category": "infrastructure_error",
                    "usage_reason": None}
+    if disk_watcher is not None and (disk_watcher.triggered or disk_watcher.error is not None):
+        terminal = "infrastructure_error"
+        failure = {"kind": "DiskFloor", "category": "infrastructure_error",
+                   "usage_reason": disk_watcher.error or "minimum_free_space_breached"}
 
     fault_receipt: Optional[dict[str, Any]] = None
     if fault_spec is not None:
@@ -589,7 +715,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     solved = bool(verifier_confirmed and terminal == "completed" and not case.protected)
 
     receipt: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 3 if case.case_id == "sustained-event-ledger" else 1,
         "case_id": case.case_id,
         "family": case.family,
         "group_id": case.group_id,
@@ -599,10 +725,18 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         "profile": profile,
         "binary_sha256": spec.binary_sha256,
         "source_revision": spec.revision,
+        "session_id": session_id,
         "terminal": terminal,
         "agent_terminal": agent_terminal,
         "stop_reason": stop_reason,
         "duration_ms": duration_ms,
+        "disk_floor": None if disk_watcher is None else {
+            "minimum_free_bytes": min_free_disk_bytes,
+            "last_free_bytes": disk_watcher.free_bytes,
+            "lowest_observed_free_bytes": disk_watcher.minimum_free_bytes,
+            "triggered": disk_watcher.triggered,
+            "measurement_error": disk_watcher.error,
+        },
         "tool_call_count": len(tool_calls),
         "tool_calls": tool_calls,
         "provider_usage": usage,
@@ -629,6 +763,15 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         "lane_root": str(lane_root),
         "transcript_path": str(transcript_path),
     }
+    if case.case_id == "sustained-event-ledger":
+        metadata_path = repository / "dev/harness_lab/fixtures/sustained_event_ledger.case.json"
+        receipt["fixture_metadata_sha256"] = hashlib.sha256(metadata_path.read_bytes()).hexdigest()
+        receipt["continuation_evidence"] = {
+            "job_observations": [call["job"] for call in tool_calls if call.get("job")],
+            "timed_tool_calls": sum(1 for call in tool_calls
+                                     if isinstance(call.get("started_elapsed_ms"), int)
+                                     and isinstance(call.get("finished_elapsed_ms"), int)),
+        }
     if failure is not None:
         receipt["terminal_failure"] = failure
     else:
@@ -641,7 +784,8 @@ def run_suite(binary: Path, suite: AutonomySuite, model: str, *,
               repository: Optional[Path] = None, profile: str = "workspace-write",
               timeout: float = 900.0, agent: str = "build",
               credential: Optional[str] = None,
-              case_ids: Optional[list[str]] = None) -> dict[str, Any]:
+              case_ids: Optional[list[str]] = None,
+              min_free_disk_bytes: Optional[int] = None) -> dict[str, Any]:
     """Run every supported case of a suite in its own private lane.
 
     Each case gets its own lane so a case that leaves a daemon behind, a
@@ -673,7 +817,8 @@ def run_suite(binary: Path, suite: AutonomySuite, model: str, *,
             receipt = run_case(binary, case, model, budget_policy=budget_policy,
                                lane_root=case_lane, repository=repository,
                                profile=profile, timeout=timeout, agent=agent,
-                               credential=credential, guard=guard)
+                               credential=credential, guard=guard,
+                               min_free_disk_bytes=min_free_disk_bytes)
         except HarnessError as error:
             receipt = {"case_id": case_id, "terminal": "refused", "ok": False,
                        "error": str(error), "solved": False, "protected": case.protected}
