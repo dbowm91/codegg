@@ -878,9 +878,6 @@ async fn handle_event(
         }
         match &envelope.payload {
             ProjectionEvent::MessageAppended { message } if message.visibility == crate::protocol::projection::dto::VisibilityClass::Public => update(stdout, &prompt.session_id, json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":message.text}})).await?,
-            // Tool notifications use the ordered core event stream below.
-            // Projection publication is asynchronous and may trail the direct
-            // turn terminal, which would otherwise leave an unreported hole.
             ProjectionEvent::ToolStarted { .. } | ProjectionEvent::ToolCompleted { .. } => {}
             _ => {}
         }
