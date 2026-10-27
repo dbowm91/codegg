@@ -62,7 +62,7 @@ authoritative language server is daemon-owned, and a frontend cannot own
 one. It is also, today, **mostly unserved**.
 
 - **2** forms are served: `/lsp-status` and `/lsp-errors`
-  (`src/core/daemon_commands.rs:611` — one row serves both).
+  (`src/core/daemon_commands.rs:609` — one row serves both).
 - **24** forms have **no daemon request at all**. The daemon owns the
   language server but exposes no request for the preview surface, the
   repair and review surfaces, the cache controls, the restart and stop
@@ -70,24 +70,34 @@ one. It is also, today, **mostly unserved**.
 
 The TUI's own `/lsp-*` arms therefore **keep their local execution**, and
 every one of the 26 carries an `LSP not available` refusal
-(`src/tui/app/mod.rs:7501`, `:7517`, `:7534`, `:7559`, `:7586`, `:7675`,
-`:7690`, `:7712`, `:7733`, `:7747`, `:7763`, `:7780`, `:7810`, `:7839`,
-`:7866`, `:7887`, `:7915`, `:7945`, `:7976`, `:8007`, `:8039`, `:8077`,
-`:8093`, `:8111`, `:8120`, `:8141`).
+(`src/tui/app/mod.rs:7521`, `:7537`, `:7554`, `:7579`, `:7606`, `:7695`,
+`:7710`, `:7732`, `:7753`, `:7767`, `:7783`, `:7800`, `:7830`, `:7859`,
+`:7886`, `:7907`, `:7935`, `:7965`, `:7996`, `:8027`, `:8059`, `:8097`,
+`:8113`, `:8131`, `:8140`, `:8161`).
 
 **Whether the refusal is reached depends on the mode**, and the difference
 is load-bearing:
 
 - In the **socket** (daemon-connected) configuration `app.lsp_tool` is
-  `None`, so every arm answers with the refusal. `src/main.rs:4013` guards
-  the attachment with `if !is_socket_mode`, and `:4015` is the assignment
+  `None`, so every arm answers with the refusal. `src/main.rs:4021` guards
+  the attachment with `if !is_socket_mode`, and `:4023` is the assignment
   itself, so the TUI's own `LspTool` exists **only** when the TUI is *not*
   in socket mode. The TUI's default construction leaves the field `None`
-  (`src/tui/app/mod.rs:1253`, in `App::with_config`), and the test
-  constructor does the same (`:1842`, in `App::new_for_testing`).
+  (`src/tui/app/mod.rs:1254`, in `App::with_config`), and the test
+  constructor does the same (`:1844`, in `App::new_for_testing`).
 - In **local** mode `app.lsp_tool` is `Some`, and the same arm works —
   against the TUI's **own** language server, which is the second,
   non-authoritative one.
+
+**The daemon does not yet hold a language server in the socket
+configuration.** `CoreRuntimeDeps::with_jobs` sets `lsp_service: None`
+(`src/core/runtime_deps.rs:540`), and `run_daemon` builds the daemon with
+exactly that constructor (`src/main.rs:4571`), so the daemon-ownership
+statement above is the **decided contract**, not the current state of the
+tree. The classification of the `/lsp-*` forms as daemon effects is
+therefore correct *against the contract* and wrong *against the code*.
+**M007-F** carries the work: **ADR-0056** is reserved for it, and the record
+is not yet written.
 
 `/lsp-preview-apply` is the sharpest case: it reaches the daemon only
 inside the `else if let Some(ref lsp_tool)` branch
@@ -4960,7 +4970,7 @@ served rows, so **24** have no daemon request. And the claim that the TUI's
 configuration, and in local mode they work against the TUI's own second,
 non-authoritative server. The mode split is now stated where the arms are
 described, and the attachment site is cited as the guard it is
-(`src/main.rs:4013`) rather than as the assignment.
+(`src/main.rs:4021`) rather than as the assignment.
 
 **M007-D's decision, recorded here so the document and the closure agree:**
 `/lsp-status` and `/lsp-errors` are served by the daemon and are **not**

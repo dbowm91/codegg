@@ -745,7 +745,7 @@ _arm(
 _arm(
     "/shell-ask",
     "subsystem move",
-    "the arm drives 45 daemon requests; moving it is a subsystem, not a table row",
+    "the arm drives {n} daemon requests; moving it is a subsystem, not a table row",
 )
 _arm(
     "/shell-include",
@@ -782,7 +782,7 @@ _arm(
 _arm(
     "/diff",
     "subsystem move",
-    "the arm drives 40 daemon requests; moving it is a subsystem, not a table row",
+    "the arm drives {n} daemon requests; moving it is a subsystem, not a table row",
 )
 _arm(
     "/memory-consolidate",
@@ -792,7 +792,7 @@ _arm(
 _arm(
     "/skill-promote",
     "subsystem move",
-    "the arm drives 44 daemon requests; moving it is a subsystem, not a table row",
+    "the arm drives {n} daemon requests; moving it is a subsystem, not a table row",
 )
 
 # The research forms read the TUI's own research service over the local
@@ -1274,6 +1274,10 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
         if verdict is None:
             continue
         kind, reason = verdict
+        # The request count is **derived**, never asserted: a hardcoded number
+        # in this table drifts from the row it describes, and the row's own
+        # `requests` column is the only count the artifact carries.
+        reason = reason.replace("{n}", str(len(row["arm_requests"])))
         write(f"| `{row['name']}` | {row['domain']} | {kind} | {reason} |")
     write("")
     arm_undecided = [row for row in with_request if row["name"] not in ARM_VERDICTS]
