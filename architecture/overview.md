@@ -172,8 +172,8 @@ Built-in tools live in `src/tool/` (plus `src/tool/bash/`) and `src/context/`. T
 | Source intelligence | `lsp`, `lsp_read`, `lsp_preview_apply`, `codesearch`, `repo_map`, `ci_watch` |
 | Version control | `git`, `git_query`, `git_read`, `commit` |
 | Research / evidence | `research`, `research_search`, `repo_search`, `repo_fetch`, `security_search`, `batch_fetch`, `evidence_bundle`, `websearch`, `webfetch` |
-| Planning / tasks | `task`, `job`, `todoread`, `todowrite`, `plan_enter`, `plan_exit`, `goal_get`, `goal_request_completion`, `goal_update_progress`, `work_order`, `work_plan_get`, `work_plan_update_item` |
-| Review / quality | `review`, `security`, plus 13 eggsact deterministic validators: `text_equal`, `text_diff_explain`, `text_replace_check`, `text_inspect`, `text_fingerprint`, `text_security_inspect`, `validate_json`, `validate_toml`, `path_normalize`, `identifier_inspect`, `structured_data_compare`, `command_preflight`, `config_preflight` |
+| Planning / tasks | `task`, `job`, `todoread`, `todowrite`, `plan_enter`, `plan_exit`, `goal_get`, `goal_request_completion`, `goal_update_progress`, `work_order`, `work_plan_get`, `work_plan_update_item`, `session_working_directory` (session-relative default cwd, ADR-0055) |
+| Review / quality | `review`, `security`, plus 15 eggsact deterministic validators: `text_equal`, `text_diff_explain`, `text_replace_check`, `text_inspect`, `text_fingerprint`, `text_security_inspect`, `validate_json`, `validate_toml`, `path_normalize`, `identifier_inspect`, `structured_data_compare`, `command_preflight`, `config_preflight`, `math_eval`, `unit_convert` |
 | Extension / resource | `mcp_resource_read`, `mcp_resource_search`, `extension_search`, `extension_install_request`, `memory_get`, `memory_search` |
 | Programmatic / meta | `tool_program`, `tool_search`, `question`, `skill`, `skill_proposal`, `image`, `context_read`, `invalid` |
 
@@ -199,11 +199,11 @@ The core layer owns the singleton daemon lifecycle, transport adapters, request 
 | Command Catalog | **The daemon's single definition of every command** — identity, name, aliases, description, kind, argument forms, and the catalog's bounds | `crates/codegg-core/src/command_catalog.rs` | [command.md](command.md) |
 | Frontend Actions | The **declared, finite** set of actions a frontend may execute for a frontend-effect form — closed and non-mutating | `crates/codegg-core/src/frontend_action.rs` | [command.md](command.md) |
 | Command Executor | The daemon's table-driven dispatch from a catalog form to a daemon request, its serve-ability predicate, and its audit as a canonical `Run` | `src/core/daemon_commands.rs` | [command.md](command.md) |
-| Workspace | Workspace registry, canonical root tracking, immutable `Arc`-wrapped execution context | `crates/codegg-core/src/workspace.rs` | [workspace.md](workspace.md) |
+| Workspace | Workspace registry, canonical root tracking, immutable `Arc`-wrapped execution context; session-relative default cwd (`SessionWorkingDirectory`, ADR-0055) | `crates/codegg-core/src/workspace.rs`, `crates/codegg-core/src/session/working_directory.rs` | [workspace.md](workspace.md) |
 | Workspace Services | Per-workspace service bundles, single-flight activation, user-scoped catalog | `crates/codegg-core/src/workspace_services.rs` | [workspace_services.md](workspace_services.md) |
 | Jobs | Durable jobs, attempts, schedules, recovery, idempotency | `crates/codegg-core/src/jobs/` | [jobs.md](jobs.md) |
 | Scheduler | Global admission control, fair queue, executor dispatch, permit lifecycle | `src/scheduler/` | [scheduler.md](scheduler.md) |
-| Session | SQLite session storage, message history, migrations, checkpointing | `crates/codegg-core/src/session/` | [session.md](session.md) |
+| Session | SQLite session storage, message history, migrations, checkpointing; session-relative working directory (`working_directory` store, migration 91) | `crates/codegg-core/src/session/` | [session.md](session.md) |
 | Storage | SQLite initialization and pooling — user-scoped catalog + project store | `crates/codegg-core/src/storage/` | [storage.md](storage.md) |
 | Bus | Event bus publish/subscribe, `PermissionRegistry`, `QuestionRegistry` | `crates/codegg-core/src/bus/` | [bus.md](bus.md) |
 | Projection | Frontend-neutral derived view, deterministic reducer, scoped subscriptions, durable replay | `crates/codegg-core/src/projection_replay/` | [projection.md](projection.md) |
@@ -217,8 +217,8 @@ The core layer owns the singleton daemon lifecycle, transport adapters, request 
 | Presence | Ephemeral project-scoped presence — leases, heartbeat, expiry | `crates/codegg-core/src/presence.rs` | [presence.md](presence.md) |
 | Workstream Claims | Durable group-scoped task/path/interface claims and prerequisite edges; intent only | `crates/codegg-core/src/workstream_claim.rs` | [workstream_claims.md](workstream_claims.md) |
 | Checkout Writer Permit | Durable, generation-fenced per-checkout writer token; state machine, CAS, quarantine, bounded waiter | `crates/codegg-core/src/writer_permit.rs` | [writer_permit.md](writer_permit.md) |
-| Build Admission | Counted, workspace-scoped build quota; configuration-owned limit; coarse authorized group status | `crates/codegg-core/src/jobs/quota.rs` | [build_admission.md](build_admission.md) |
-| Session Launch | Durable, idempotent session launch into an isolated managed checkout; stage machine, saga, binding | `crates/codegg-core/src/session_launch.rs` | [session_launch.md](session_launch.md) |
+| Build Admission | Counted build quotas — required per-workspace `Build` plus opt-in per-repository `RepositoryBuild`; configuration-owned limits; coarse authorized group status | `crates/codegg-core/src/jobs/quota.rs` | [build_admission.md](build_admission.md) |
+| Session Launch | Durable, idempotent session launch into an isolated managed checkout; stage machine, saga, binding; placement via `RunPlacement` (`Auto`/`IsolatedNew`/`SerializedShared`) | `crates/codegg-core/src/session_launch.rs`, `crates/codegg-core/src/run_placement.rs` | [session_launch.md](session_launch.md) |
 | Server | Axum HTTP/WS server (feature `server`) — remote TUI, REST, SSE, token auth | `src/server/` | [server.md](server.md) |
 | Client | Remote TUI WebSocket client with resume/replay | `src/client/` | [client.md](client.md) |
 | Exec | Non-interactive exec mode for CI/CD with JSON I/O | `src/exec.rs` | [exec.md](exec.md) |
@@ -576,8 +576,8 @@ fifth reconciliations recorded. The full reconciliation is in
 |------|-------|--------|
 | Architecture docs | 92 | `architecture/*.md` |
 | Tool registrations in `with_options()` | 67 (53 `register` + 14 `register_boxed`) | `ToolRegistry::with_options()` (`src/tool/mod.rs`) — the registrations are the `registry.register(..)` / `registry.register_boxed(..)` calls in that constructor's body, not the constructor's own call sites |
-| Distinct production tool names | 78 | `impl Tool for …` `name()` across `src/` (the whole tree — a production `Tool` impl may live with the subsystem that owns the tool's behaviour, e.g. `src/python_script/tool.rs`), **plus** the 16 eggsact validator names at their `EggsactTool::new()` call sites in `src/tool/deterministic.rs` — that family's `impl Tool for EggsactTool` returns `self.codegg_name`, so a literal-name scan cannot see it. 67 production `impl Tool for` blocks, of which 5 resolve their name at runtime; excludes the 9 test-only mock impls under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs`, `tool_search.rs`, `disabled.rs`, `broker.rs` and `src/scheduler/tool_program_executor.rs`. The runtime-named families that only *substitute* for an already-counted tool add no new name: `DisabledTool` carries the name of the tool it replaces (`lsp`, `lsp_read`, `security`) and `UnrootedTool` forwards its inner tool's name |
-| Tool source files | 83 | `src/tool/**.rs` (incl. `bash/`; excl. the `bash/tests/` fixture, which is test support, not tool source) |
+| Distinct production tool names | 79 | `impl Tool for …` `name()` across `src/` (the whole tree — a production `Tool` impl may live with the subsystem that owns the tool's behaviour, e.g. `src/python_script/tool.rs`), **plus** the 16 eggsact validator names at their `EggsactTool::new()` call sites in `src/tool/deterministic.rs` — that family's `impl Tool for EggsactTool` returns `self.codegg_name`, so a literal-name scan cannot see it. 68 production `impl Tool for` blocks, of which 5 resolve their name at runtime; excludes the 9 test-only mock impls under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs`, `tool_search.rs`, `disabled.rs`, `broker.rs` and `src/scheduler/tool_program_executor.rs`. The 16th eggsact name (`probe`) is a `#[cfg(test)]`-only constructor the script's regex still counts; true production is 78 (63 literal + 15 eggsact). The runtime-named families that only *substitute* for an already-counted tool add no new name: `DisabledTool` carries the name of the tool it replaces (`lsp`, `lsp_read`, `security`) and `UnrootedTool` forwards its inner tool's name |
+| Tool source files | 84 | `src/tool/**.rs` (incl. `bash/`; excl. the `bash/tests/` fixture, which is test support, not tool source) |
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 58 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 61 | `crates/codegg-core/src/bus/events.rs` |
@@ -597,8 +597,19 @@ fifth reconciliations recorded. The full reconciliation is in
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
 | Integration test files | 355 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 102 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 68 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Guard scripts (all) | 104 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 70 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+
+### Count reconciliation — session cwd + repository build admission (2026-10-27)
+
+Four code-count rows moved since the delegated live-transcript reconciliation, each re-measured in this tree with `python3 scripts/measure_overview_counts.py` rather than incremented:
+
+- *Distinct production tool names* is **79** (63 literal + 16 eggsact as measured; true production 78 — the 16th eggsact name `probe` is `#[cfg(test)]`-only). The +1 is the new `session_working_directory` tool (`src/tool/session_working_directory.rs`, registered in `src/tool/factory.rs`, `ToolCategory::Mutating`, get/set/reset over `SessionWorkingDirectoryStore`).
+- *Tool source files* is **84** — the same new file, `src/tool/session_working_directory.rs` (`bash/tests/` fixture still excluded).
+- *Guard scripts (all)* is **104** (`ls scripts/check_*`) and *CI guard scripts* is **70** (distinct `scripts/check_*` names in `.github/workflows/ci.yml`). Both run in `verify.sh quick` and CI, so the quick-only difference is unchanged at **14** (quick runs 84 including `check-client-boundary.sh`, `check-core-boundary.sh`, `check-desktop-boundary.sh`; CI runs 70 including `check-core-boundary.sh`).
+- The *Tools and capabilities at a glance* table now lists `session_working_directory` and the two production eggsact validators the table had missed (`math_eval`, `unit_convert`); the *Build Admission* module-map row now names both quotas (`Build` required per-workspace + `RepositoryBuild` opt-in per-repository); the *Workspace*/*Session* rows now name the session-relative default cwd (`SessionWorkingDirectory`, ADR-0055, migration 91); and *Session Launch* names its placement type (`RunPlacement`).
+
+Every other row was confirmed unchanged by measurement: architecture docs 92, tool registrations 67 (53 `register` + 14 `register_boxed`), LSP server definitions 39, `codegg-core` modules 58, `AppEvent` variants 61, `CoreRequest` variants 271 (245 struct + 26 unit), `CoreResponse` variants 179 (178 struct + 1 unit), `CoreEvent` variants 97, `ProjectionEvent` variants 50, authorized operations 265, identity newtypes 19, built-in slash commands 169, built-in agents 10, bundled themes 50, TUI state modules 34 (35 `.rs` files incl. `mod.rs`), database tables 100 statements / 96 tables, storage layout version 91, Git operation variants 54, Git risk classes 11, workspace member crates 11 (+ root), integration test files 355.
 
 ### Count reconciliation — delegated live transcript, M001–M003 (2026-10-26)
 
@@ -1402,17 +1413,17 @@ python3 scripts/generate_builtin_agents.py --check              # agent asset st
 python3 scripts/check_projection_transport_isolation.py          # projection transport guard
 ```
 
-Full `check_*` inventory lives in `scripts/` (99 guards) and additionally covers audit coverage/invariants, authorization matrix, command catalog ownership, discovery invariants, frontend action set, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, TUI composer key ownership, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
+Full `check_*` inventory lives in `scripts/` (104 guards) and additionally covers audit coverage/invariants, authorization matrix, command catalog ownership, discovery invariants, frontend action set, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, TUI composer key ownership, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
 
 ## Source verification
 
-Every row of the `## Verified counts` table was re-measured on **2026-10-23** against the tree at `12999178a`, each against its own listed `Source`, using `scripts/measure_overview_counts.py`. All rows agree with the published values.
+Every row of the `## Verified counts` table was re-measured on **2026-10-27** against the current tree, each against its own listed `Source`, using `scripts/measure_overview_counts.py`. All rows agree with the published values. Four rows moved since the 2026-10-26 reconciliation (distinct tool names 78 → 79, tool source files 83 → 84, guard scripts 102 → 104, CI guards 68 → 70); the reconciliation note above records the cause for each.
 
 Three coverage properties were also verified on the same tree, and each is now enforced by the structure of this document rather than by prose:
 
 - **Every architecture document is linked from this index.** All 92 documents under `architecture/` are reachable from the module map or the deep-dive index below.
 - **Every `src/` module directory has an owning deep dive.** Each of the 34 module directories under `src/` maps to a document named in the module map above.
-- **The tool catalog table is exact.** The names in *Tools and capabilities at a glance* were cross-checked against the measured production tool names — the two sets are identical, with no name in one and absent from the other.
+- **The tool catalog table is exact.** The names in *Tools and capabilities at a glance* were cross-checked against the measured production tool names — the two sets are identical for true production (63 literal + 15 eggsact = 78). The script's measured 79th name (`probe`) is a `#[cfg(test)]`-only `EggsactTool::new` the regex counts; it is not a production tool and is excluded from the table by design.
 
 ### What the deep-dive pass changed
 
