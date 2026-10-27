@@ -182,6 +182,49 @@ impl EditorLspState {
         true
     }
 
+    /// Apply a complete project diagnostics set from the authorized project
+    /// stream. The view remains scoped to its active file; a stale set is
+    /// retained for display with an explicit stale marker until a pull repairs it.
+    pub fn apply_streamed_diagnostics(
+        &mut self,
+        scope: &EditorLspScope,
+        result: LspDiagnosticsResultDto,
+        stale: bool,
+    ) -> bool {
+        if self.scope.as_ref() != Some(scope)
+            || result.project_id != scope.project_id
+            || result.status != codegg_protocol::lsp::LspDiagnosticsStatus::Ready
+        {
+            return false;
+        }
+        if stale {
+            self.diagnostics_stale = !self.diagnostics.is_empty();
+            return true;
+        }
+        let mut diagnostics = Vec::new();
+        for file in result
+            .files
+            .into_iter()
+            .filter(|file| file.path == scope.path)
+        {
+            for mut diagnostic in file.diagnostics {
+                if diagnostics.len() == MAX_EDITOR_DIAGNOSTICS {
+                    break;
+                }
+                diagnostic.message =
+                    truncate_chars(&diagnostic.message, MAX_EDITOR_DIAGNOSTIC_MESSAGE_CHARS);
+                diagnostics.push(diagnostic);
+            }
+            if diagnostics.len() == MAX_EDITOR_DIAGNOSTICS {
+                break;
+            }
+        }
+        self.diagnostics = diagnostics;
+        self.diagnostics_status = DiagnosticsViewStatus::Ready;
+        self.diagnostics_stale = false;
+        true
+    }
+
     pub fn begin_read(&mut self, scope: &EditorLspScope) -> Option<u64> {
         if self.scope.as_ref() != Some(scope) {
             self.reset_for_scope(scope.clone());

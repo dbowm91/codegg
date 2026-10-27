@@ -27,6 +27,14 @@ not add implicit polling in a presentation-only change, and do not move the
 cadence onto a frontend — a frontend-triggered poll would put the "may start a
 server" decision on whichever client happens to be open.
 
+Route native TUI and desktop diagnostics/read/completion gestures through
+`codegg-client::LspRequestCoordinator`. Its key must retain attachment,
+project/workspace/session, document/path/server, generation, operation, and
+position/argument identity. Keep frontend rendering and status vocabulary
+separate; discard a response when the ticket is superseded or the active
+attachment/revision changed. Do not hold a renderer or route lock across an
+await.
+
 Reads resolve **which** warm server answers in four steps: an explicit
 `server_id`, then an extension match (only when exactly one warm client claims
 it), then the single warm client, then an `Ambiguous` result naming the

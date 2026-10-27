@@ -1942,15 +1942,39 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app, request_id, scope, result, error,
             );
         }
+        TuiCommand::EditorDiagnosticsStreamUpdated {
+            scope,
+            result,
+            stale,
+        } => {
+            if app.editor_state.generation == scope.generation
+                && super::super::commands::editor::current_lsp_scope(app).as_ref() == Some(&scope)
+                && result.project_id == scope.project_id
+                && result.status == crate::protocol::lsp::LspDiagnosticsStatus::Ready
+            {
+                app.editor_state
+                    .lsp
+                    .apply_streamed_diagnostics(&scope, result, stale);
+            }
+        }
         TuiCommand::EditorLspReadFinished {
             request_id,
             scope,
             operation,
+            document_revision,
+            request_position,
             result,
             error,
         } => {
-            super::super::commands::editor::apply_editor_lsp_read(
-                app, request_id, scope, operation, result, error,
+            super::super::commands::editor::apply_editor_lsp_read_fresh(
+                app,
+                request_id,
+                scope,
+                operation,
+                document_revision,
+                request_position,
+                result,
+                error,
             );
         }
         TuiCommand::EditorCompletionFinished {

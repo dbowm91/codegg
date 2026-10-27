@@ -8,6 +8,8 @@ Repository planning baseline: `80171f45295bebb9ab0b521262c0b295acb93074` (`main`
 
 Controlling proposed ADR: `plans/adrs/ADR-0055-daemon-lsp-command-and-runtime-control-surface.md`. Accepted ADRs: ADR-0008, ADR-0010–0012, ADR-0018, ADR-0052. Existing M007-F registration: desktop frontend roadmap; do not open a duplicate command catalog.
 
+Current-head research: `plans/implementation/daemon-lsp-frontend-convergence/artifacts/ADR-0055-current-head-disposition-20261027.md`. This inventory does not accept ADR-0055 or resolve its authority decisions; retain the blocked status until the ADR owner records those decisions.
+
 ## Objective
 
 Make low-frequency language-server status/health/capabilities/selection and authorized restart/stop/cache controls truly executable against the daemon's authoritative LSP instance from both TUI and GUI, with accurate availability publication. Split composite repair/review recipes to M004.

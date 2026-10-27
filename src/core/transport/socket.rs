@@ -29,6 +29,10 @@ impl SocketCoreClient {
         self.inner.subscribe_events()
     }
 
+    pub fn connection_generation(&self) -> u64 {
+        self.inner.connection_generation()
+    }
+
     pub async fn connect(endpoint: &str) -> Result<Self, AppError> {
         Self::connect_with_descriptor(
             endpoint,
@@ -154,6 +158,14 @@ impl CoreClient for SocketCoreClient {
 
     fn subscribe(&self) -> mpsc::Receiver<EventEnvelope<CoreEvent>> {
         self.inner.subscribe()
+    }
+
+    fn subscribe_loss_aware(&self) -> mpsc::Receiver<codegg_client::ClientEvent> {
+        self.inner.subscribe_events()
+    }
+
+    fn connection_generation(&self) -> u64 {
+        self.inner.connection_generation()
     }
 
     async fn subscribe_session_events(

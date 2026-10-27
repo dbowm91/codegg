@@ -481,6 +481,8 @@ pub struct App {
         mpsc::Receiver<crate::protocol::core::EventEnvelope<crate::protocol::core::CoreEvent>>,
     >,
     pub core_client: Option<Arc<dyn CoreClient>>,
+    pub lsp_request_coordinator: codegg_client::LspRequestCoordinator,
+    pub lsp_diagnostics_stream_cancel: Option<tokio_util::sync::CancellationToken>,
     pub config_watcher: Option<crate::config::ConfigWatcher>,
     pub theme_registry: Arc<crate::theme::ThemeRegistry>,
     /// Whether `persist_theme_selection` may mirror the active theme id into
@@ -1234,6 +1236,8 @@ impl App {
             remote_send_tx: None,
             core_event_rx: None,
             core_client: None,
+            lsp_request_coordinator: codegg_client::LspRequestCoordinator::default(),
+            lsp_diagnostics_stream_cancel: None,
             run_store,
             config_watcher: Some(
                 cfg.and_then(|c| c.watcher.as_ref())
@@ -1827,6 +1831,8 @@ impl App {
             remote_send_tx: None,
             core_event_rx: None,
             core_client: None,
+            lsp_request_coordinator: codegg_client::LspRequestCoordinator::default(),
+            lsp_diagnostics_stream_cancel: None,
             run_store: None,
             config_watcher: None, // No config watcher for tests
             theme_registry: Arc::new(crate::theme::ThemeRegistry::load_builtins()),
@@ -2728,9 +2734,19 @@ impl App {
     /// finished in the daemon. Binding both together makes that ordering
     /// unrepresentable.
     pub fn attach_core_client(&mut self, client: Arc<dyn CoreClient>) {
+        if let Some(cancel) = self.lsp_diagnostics_stream_cancel.take() {
+            cancel.cancel();
+        }
+        self.lsp_request_coordinator.invalidate_frontend("tui");
         let events = client.subscribe();
         self.set_core_event_rx(events);
         self.set_core_client(client);
+    }
+
+    pub fn cancel_lsp_diagnostics_stream(&mut self) {
+        if let Some(cancel) = self.lsp_diagnostics_stream_cancel.take() {
+            cancel.cancel();
+        }
     }
 
     /// Narrow the daemon's event filter to `session_id` for this connection.

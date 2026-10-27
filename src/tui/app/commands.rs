@@ -156,11 +156,18 @@ pub enum TuiCommand {
         result: Option<crate::protocol::lsp::LspDiagnosticsResultDto>,
         error: Option<String>,
     },
+    EditorDiagnosticsStreamUpdated {
+        scope: crate::tui::editor_lsp::EditorLspScope,
+        result: crate::protocol::lsp::LspDiagnosticsResultDto,
+        stale: bool,
+    },
     /// Completion of one guarded existing LSP read operation.
     EditorLspReadFinished {
         request_id: u64,
         scope: crate::tui::editor_lsp::EditorLspScope,
         operation: crate::protocol::lsp::LspReadOperation,
+        document_revision: u64,
+        request_position: Option<(u32, u32)>,
         result: Option<crate::protocol::lsp::LspReadResultDto>,
         error: Option<String>,
     },
