@@ -200,3 +200,14 @@ execution inputs" appeared twice, byte-identical (verified by diff), once
 before and once after the Windows raw-shell paragraph. One copy was removed;
 no claim changed.
 
+Added 2026-10-27: two pointers for the session-cwd milestone (`5194e543a`).
+`session_working_directory` (`src/tool/session_working_directory.rs`) is a
+workspace-bound mutating tool — a new writer surface needs an explicit
+disposition in `docs/writer-disposition.toml` (see
+`architecture/tool.md`). Bash, test, and Python execution resolve a missing
+`workdir` from the session default, falling back to the workspace root; the
+workspace root stays the authorization and sandbox ceiling. And the build
+admission bound is now dual — required per-workspace `Build` plus opt-in
+per-repository `RepositoryBuild` (`crates/codegg-core/src/jobs/quota.rs`,
+`architecture/build_admission.md`, scheduler skill).
+

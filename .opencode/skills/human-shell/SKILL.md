@@ -218,6 +218,8 @@ disables one family.
 
 - `architecture/human_shell.md` — full module contract (10-phase projection pipeline: `projection.rs`, `projector.rs`, `redactor.rs`, `rtk.rs`, `projection_bridge.rs`)
 - `.opencode/skills/tui/SKILL.md` — TUI command registration and async dispatch rules
+- `.opencode/skills/tool-execution/SKILL.md` — workspace roots, the session
+  default cwd (`session_working_directory`), and execution ceilings
 
 ## Source verification
 

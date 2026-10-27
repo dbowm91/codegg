@@ -47,13 +47,13 @@ and invariants that are easy to violate.
    classifier turns into capability `DestructiveFileMutation` with default
    `Deny` (`src/command_intent/mod.rs:581`); `clean -f` classifies
    `DestructiveWorktree` the same way. Only a *broad* clean is refused
-   outright — `CleanRequest::is_broad()` (`src/git_network_ops.rs:731`) is
-   `ignored && paths.is_empty()`, rejected at the tool dispatch layer
-   (`src/tool/git.rs:978`). Dangerous `git config` keys are denied by
-   `CONFIG_DENIED_KEY_PATTERNS` (`src/git_network_ops.rs:467`):
-   `credential.*`, `http.*`, `url.*`, `core.gitProxy`, `core.sshCommand`,
-   `core.sshVariant`. Merge strategies are allowlisted
-   (`src/git_mutations_ops.rs:421`).
+  outright — `CleanRequest::is_broad()` (`src/git_network_ops.rs:723`) is
+  `ignored && paths.is_empty()`, rejected at the tool dispatch layer
+  (`src/tool/git.rs:978`). Dangerous `git config` keys are denied by
+  `CONFIG_DENIED_KEY_PATTERNS` (`src/git_network_ops.rs:458`):
+  `credential.*`, `http.*`, `url.*`, `core.gitProxy`, `core.sshCommand`,
+  `core.sshVariant`. Merge strategies are allowlisted
+  (`ALLOWED_MERGE_STRATEGIES` at `src/git_mutations_ops.rs:414`).
 5. **Recovery re-reads state.** `assert_action_matches` re-reads operation
    state from disk immediately before acting (TOCTOU defense); mismatch is
    `GitMutationError::StateMismatch`. Recovery is never auto-resolved:

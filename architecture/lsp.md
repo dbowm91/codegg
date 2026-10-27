@@ -4801,10 +4801,14 @@ Spot-checked 2026-10-06 against `crates/egglsp/src/` (authoritative), the
 This document is large (4300+ lines), so the load-bearing numeric and
 structural claims were verified rather than every line.
 
+Corrected 2026-10-27: **40 LSP servers** (was 39): `server_definitions()` in
+`crates/egglsp/src/server.rs:27` returns 40 `LspServerDef` entries
+(counted in-tree; `docs/LSP.md` updated to match).
+
 Confirmed accurate, no change needed:
-- **39 LSP servers**: `server_definitions()` in `crates/egglsp/src/server.rs:27`
-  returns exactly 39 `LspServerDef` entries, matching the Phase 6 verification
-  count.
+- **40 LSP servers**: `server_definitions()` in `crates/egglsp/src/server.rs:27`
+  returns exactly 40 `LspServerDef` entries (was 39 at Phase 6 verification;
+  re-counted 2026-10-27).
 - **Backend abstraction**: `ToolImplementationBackendSchema`
   (`crates/codegg-config/src/schema.rs`) has exactly the 4 documented values —
   `Native`, `Mcp`, `Builtin`, `Disabled`. The

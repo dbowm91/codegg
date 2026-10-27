@@ -253,13 +253,13 @@ default were cited as `schema.rs:715-768`; the struct is at `:1025` and the
 accessor at `:1076`, so the range is now `:1025-1080`. `ContextCacheStats` on
 `AgentLoopServices` was cited at `src/agent/coordinator.rs:77` (actually
 `:89`); the per-turn `AgentLoop` construction at `src/agent/turn_runtime.rs:725`
-(actually `:953`).
+(actually `:953`, now `:1092` — see the agent skill).
 
 Corrected a count: "all 8 `project_tool_output` call sites" was wrong — the
-production call sites are **two**: `src/agent/loop.rs:1989` and
-`src/agent/follow_up.rs:737` (the other 54 mentions are the function's own
+production call sites are **two**: `src/agent/loop.rs:2326` and
+`src/agent/follow_up.rs:742` (the other 54 mentions are the function's own
 tests and its definition). The two cited line numbers were also stale
-(`loop.rs:1819` → `:1989`, `follow_up.rs:341` → `:737`).
+(`loop.rs:1819` → `:1989` → `:2326`, `follow_up.rs:341` → `:737` → `:742`).
 
 Added the missing `## See Also` section, naming the authoritative
 `architecture/cache-aware-context.md` alongside the related context,

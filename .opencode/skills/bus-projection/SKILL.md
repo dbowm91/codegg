@@ -137,11 +137,11 @@ Fifth pass (2026-10-23): re-verified against
 scripts. Confirmed unchanged: the 4096 broadcast capacity
 (`crates/codegg-core/src/bus/global.rs:13`); the sync (non-`async`) registry
 signatures `register` / `respond` / `answer_question`
-(`crates/codegg-core/src/bus/mod.rs:149,177,364,392`); the full projection
+(`crates/codegg-core/src/bus/mod.rs:146,174,361,389`); the full projection
 module inventory — `adapters`, `caps`, `consumer`, `controller`, `dto`,
 `event`, `fixtures`, `limits`, `mod`, `reducer`, `replay`, `snapshot`,
-`workstream`; the `#[cfg(all(test, unix))]` gate on
-`src/core/transport/daemon_socket.rs:1367` that
+`workstream`; the `#[cfg(all(test, unix))]` gates on
+`src/core/transport/daemon_socket.rs:1453` and `:1892` that
 `check_projection_transport_lifecycle.py:25` strips; and that none of the
 five projection guards appear in `scripts/verify.sh`.
 

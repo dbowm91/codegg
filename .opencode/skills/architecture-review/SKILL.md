@@ -33,13 +33,16 @@ Do not trust any snapshot, including this one. Re-measure with
 `python3 scripts/measure_overview_counts.py`, which applies each row's
 `Source` method from the `overview.md` table and prints one row per count.
 
-Snapshot re-measured 2026-10-23 (a stale-trip alarm, not evidence): 67 tool
-registrations in `src/tool/mod.rs::with_options()` (54 `register` + 13
-`register_boxed`), 75 distinct production tool names, 39 LSP server
+Snapshot re-measured 2026-10-27 (a stale-trip alarm, not evidence): 67 tool
+registrations in `src/tool/mod.rs::with_options()` (53 `register` + 14
+`register_boxed`), 79 measured distinct production tool names (63 literal +
+16 counted `eggsact` names, of which the 16th — `probe` — is
+`#[cfg(test)]`-only, so true production is 78), 40 LSP server
 definitions (`crates/egglsp/src/server.rs::server_definitions()`), 61
-`AppEvent` variants, 168 built-in slash commands, 10 built-in agents, 91
-`CREATE TABLE` tables / storage layout 88, 321 integration test files, 92
-architecture docs, 80 `check_*` guards of which CI runs 40.
+`AppEvent` variants, 169 built-in slash commands, 10 built-in agents, 100
+`CREATE TABLE` statements / 96 tables / storage layout 91, 355
+integration test files, 92
+architecture docs, 104 `check_*` guards of which CI runs 70.
 
 **Scope the production-tool row to the whole `src/` tree.** It previously
 measured `src/tool/` + `src/context/` only, which hid `python_script` — a
@@ -48,10 +51,12 @@ production tool registered unconditionally by `with_options()` that lives in
 something will not find the thing that lives somewhere else.
 
 **A literal-name scan is not a name inventory.** The same row also missed the
-13 `eggsact` deterministic validators, whose `impl Tool for EggsactTool`
+15 production `eggsact` deterministic validators (`text_equal` …
+`unit_convert`; a 16th counted name, `probe`, is test-only), whose
+`impl Tool for EggsactTool` (`src/tool/deterministic.rs:72`)
 returns `self.codegg_name` instead of a literal — so they are counted at
-their `EggsactTool::new()` call sites, giving 75 (62 literal + 13
-runtime-named). The same caution applies to a row whose *label* is narrower
+their `EggsactTool::new()` call sites, giving 79 measured (63 literal + 16
+runtime-counted; true production 78). The same caution applies to a row whose *label* is narrower
 than its measure: "CI guard scripts" was published as 76 (every
 `scripts/check_*`) when CI ran 36 of them, and the row is now split into
 "Guard scripts (all)" and "CI guard scripts".
@@ -256,4 +261,18 @@ are superseded: the `## Verified counts` table is now at
 `crates/codegg-core/src/storage/mod.rs:56`. The lesson stands: name the
 section, and re-measure rather than trusting a snapshot — including this
 one.
+
+Sixth pass (2026-10-27, after the session-cwd + repository-build-admission
+milestone `5194e543a` landed on `main`): re-ran
+`python3 scripts/measure_overview_counts.py` against the live tree and
+updated the snapshot above — **tool registrations 54+13 -> 53+14**,
+**measured names 75 -> 79** (63 literal + 16 counted; true production 78
+with the test-only `probe` excluded; new names `session_working_directory`,
+`math_eval`, `unit_convert`), **LSP servers 39 -> 40**, **slash commands
+168 -> 169** (tripwire now at `src/tui/command.rs:1277`), **tables 91 ->
+100 statements / 96 tables / layout 91**, **test files 321 -> 355**,
+**guard scripts 80 -> 104**, **CI guards 40 -> 70**. `overview.md` itself
+was refreshed in the same pass (new reconciliation note, exact tool
+table). Earlier passes' pinned ranges stay as their record and are
+superseded the same way.
 

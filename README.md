@@ -212,6 +212,7 @@ gotchas that matter, and the full key reference, are in
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Symptom-driven fixes. |
 | [docs/execution-ownership.md](docs/execution-ownership.md) | Which component owns process spawning. |
 | [docs/dependency-maintenance.md](docs/dependency-maintenance.md) | Dependency and lint policy. |
+| [docs/windows-acl-leases.md](docs/windows-acl-leases.md) | Windows sandbox ACL lease semantics. |
 | [architecture/overview.md](architecture/overview.md) | Architecture index — 92 documents: this overview, 90 component deep dives, and the count audit. |
 | [CHANGELOG.md](CHANGELOG.md) | Project changes. |
 

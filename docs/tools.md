@@ -102,16 +102,17 @@ system; see `docs/security-semantics.md`.
 | Source intelligence | `lsp`, `lsp_read`, `lsp_preview_apply`, `codesearch`, `repo_map`, `ci_watch` | Diagnostics, definitions, references, impact, repair |
 | Version control | `git`, `git_query`, `git_read`, `commit` | Typed repository facts. `git_read` is program-only; `git` and `commit` are mutating operations, routed through the risk-classified mutation executor |
 | Research and evidence | `research`, `research_search`, `repo_search`, `repo_fetch`, `security_search`, `batch_fetch`, `evidence_bundle`, `websearch`, `webfetch` | Evidence-backed external lookups |
-| Planning and tasks | `task`, `job`, `todoread`, `todowrite`, `plan_enter`, `plan_exit`, `goal_get`, `goal_request_completion`, `goal_update_progress`, `work_order`, `work_plan_get`, `work_plan_update_item` | Delegation, planning, and progress |
-| Review and quality | `review`, `security`, plus 13 `eggsact`-backed deterministic validators: `text_equal`, `text_diff_explain`, `text_replace_check`, `text_inspect`, `text_fingerprint`, `text_security_inspect`, `validate_json`, `validate_toml`, `path_normalize`, `identifier_inspect`, `structured_data_compare`, `command_preflight`, `config_preflight` | Deterministic text, config, and identifier checking |
+| Planning and tasks | `task`, `job`, `todoread`, `todowrite`, `plan_enter`, `plan_exit`, `goal_get`, `goal_request_completion`, `goal_update_progress`, `work_order`, `work_plan_get`, `work_plan_update_item`, `session_working_directory` | Delegation, planning, and progress; `session_working_directory` owns the session-relative default cwd (see above) |
+| Review and quality | `review`, `security`, plus 15 `eggsact`-backed deterministic validators: `text_equal`, `text_diff_explain`, `text_replace_check`, `text_inspect`, `text_fingerprint`, `text_security_inspect`, `validate_json`, `validate_toml`, `path_normalize`, `identifier_inspect`, `structured_data_compare`, `command_preflight`, `config_preflight`, `math_eval`, `unit_convert` | Deterministic text, config, identifier, and math checking |
 | Extension and resources | `mcp_resource_read`, `mcp_resource_search`, `extension_search`, `extension_install_request`, `memory_get`, `memory_search` | MCP resources and extensions, and durable memory |
 
-The table lists all **75** distinct production tool names. 62 of them come from
-a `Tool` impl whose `name()` returns a literal; the 13 `eggsact` deterministic
-validators resolve their name at runtime from `self.codegg_name`, so a
-literal-name scan cannot see them — they are counted at their
-`EggsactTool::new()` call sites in `src/tool/deterministic.rs`. The
-`eggsact` family is split 8 always-visible / 5 deferred; the deferred half is
+The table lists all **79** distinct production tool names as measured (63 from
+a `Tool` impl whose `name()` returns a literal, plus the 16 `eggsact`
+deterministic validator names counted at their `EggsactTool::new()` call sites
+in `src/tool/deterministic.rs` — true production is 78, because the 16th
+counted name, `probe`, is a `#[cfg(test)]`-only constructor the scan still
+counts; see `architecture/overview.md` §"Verified counts" for the reconciliation).
+The `eggsact` family is split 8 always-visible / 7 deferred; the deferred third is
 discoverable through `tool_search`.
 
 `verify` defaults to an offline workspace check. Rust lint does not enable every
@@ -160,10 +161,10 @@ backend: native
 profile: codegg_core
 expose_expert_tools: false
 max_output_chars: 12000
-model tools: 8 always-visible, 5 deferred
+model tools: 8 always-visible, 7 deferred
 ```
 
-Thirteen tools are registered, split by whether the model sees them up front:
+Fifteen tools are registered, split by whether the model sees them up front:
 
 | Always visible | Deferred — discover via `tool_search` |
 |----------------|---------------------------------------|
@@ -172,8 +173,8 @@ Thirteen tools are registered, split by whether the model sees them up front:
 | `text_replace_check` | `identifier_inspect` |
 | `validate_json` | `structured_data_compare` |
 | `validate_toml` | `text_fingerprint` |
-| `command_preflight` | |
-| `path_normalize` | |
+| `command_preflight` | `math_eval` |
+| `path_normalize` | `unit_convert` |
 | `text_security_inspect` | |
 
 `tool_search` is how the model finds the deferred half.
@@ -525,17 +526,19 @@ Checked 2026-10-23 against the source tree.
   `src/tool/goal.rs`, `src/tool/plan.rs`, `src/tool/work_order.rs`,
   `src/tool/work_plan.rs` (`work_plan_get`, `work_plan_update_item`), and
   `src/tool/mcp_resource.rs`. The family table was reconciled with
-  `architecture/overview.md` §"Tools and capabilities at a glance"; the 75
-  distinct production tool names it lists are the same 75.
-- Tool counts: 67 registry registrations and 75 distinct production tool names
-  per `architecture/overview.md`'s verified-counts table (62 literal + the 13
-  runtime-named `eggsact` validators).
+  `architecture/overview.md` §"Tools and capabilities at a glance"; the 78
+  true-production names it lists are the measured 79 minus the test-only
+  `probe` constructor.
+- Tool counts: 67 registry registrations and 79 measured distinct production tool names
+  per `architecture/overview.md`'s verified-counts table (63 literal + 16 counted
+  `eggsact` names at their `EggsactTool::new()` call sites; true production 78 —
+  the 16th counted name, `probe`, is `#[cfg(test)]`-only).
 - Deterministic tools: `src/tool/deterministic.rs` — 8 always-visible
   (`text_equal`, `text_diff_explain`, `text_replace_check`, `validate_json`,
   `validate_toml`, `command_preflight`, `path_normalize`,
-  `text_security_inspect`) and 5 deferred (`text_inspect`,
+  `text_security_inspect`) and 7 deferred (`text_inspect`,
   `config_preflight`, `identifier_inspect`, `structured_data_compare`,
-  `text_fingerprint`), and `crates/codegg-config/src/schema.rs`
+  `text_fingerprint`, `math_eval`, `unit_convert`), and `crates/codegg-config/src/schema.rs`
   `DeterministicToolsConfig` defaults (`enabled`, `backend`, `profile`,
   `model_audience`, `harness_audience`, `expose_expert_tools`,
   `max_output_chars`).

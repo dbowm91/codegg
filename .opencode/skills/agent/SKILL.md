@@ -205,22 +205,27 @@ it guards `src/core/**` plus `src/agent/turn_runtime.rs` and
 `src/agent/worker.rs`, not all of `src/agent/`.
 
 Corrected: the per-turn loop construction was cited at
-`src/agent/turn_runtime.rs:725` (actually `:953`, where
-`crate::agent::agent_loop_factory::build_agent_loop` is called; the factory
-itself is at `src/agent/agent_loop_factory.rs:74`); `TurnPhase` at
-`src/agent/coordinator.rs:110` (actually `:141`); `MAX_ATTEMPTS` at
+`src/agent/turn_runtime.rs:725`, then `:953`; the
+`crate::agent::agent_loop_factory::build_agent_loop` call is now at
+`src/agent/turn_runtime.rs:1092`, and the factory
+itself is at `src/agent/agent_loop_factory.rs:74`; `TurnPhase` at
+`src/agent/coordinator.rs:110` (actually `:146`); `MAX_ATTEMPTS` at
 `provider_turn.rs:64` (actually `:65`); and the sync-registry range
 `crates/codegg-core/src/bus/mod.rs:104-305` (the entry points are now at
-`:149`, `:177`, `:364`, `:392`, `:188`, `:401`).
+`:146`, `:174`, `:361`, `:389` — plus the `_scoped` variants at `:185`,
+`:398`).
 
 Corrected a stale enumeration: the `task` tool's action set was recorded as
 "sixteen" at `src/tool/task.rs:799`. There is no Rust enum at that line — the
-action set is the JSON schema `enum` array at `src/tool/task.rs:1278`, and it
-now has **twenty-two** entries: `scratch_create`, `scratch_revoke`, `spawn`,
-`converge`, `convergence_status`, `convergence_decide`, `convergence_cancel`,
-`spawn_many`, `create_group`, `status`, `get`, `message`, `interrupt`, `wait`,
-`cancel`, `status_group`, `wait_group`, `cancel_group`, `board`, `claim`,
-`release_claim`, `request_handoff`. The body's hard rule — that `board`,
+action set is the JSON schema `enum` array at `src/tool/task.rs:1848`
+(was `:1278`), and it now has **twenty-three** entries (`scratch_create`,
+`scratch_revoke`, `spawn`, `converge`, `convergence_status`,
+`convergence_decide`, `convergence_cancel`, `spawn_many`, `create_group`,
+`status`, `get`, `message`, `interrupt`, `wait`, `cancel`, `continue`,
+`status_group`, `wait_group`, `cancel_group`, `board`, `claim`,
+`release_claim`, `request_handoff`): the previous twenty-two plus `continue`,
+which starts one new attempt of a failed durable child run under the same
+authority. The body's hard rule — that `board`,
 `claim`, `release_claim`, and `request_handoff` expose bounded same-group
 coordination facts and advisory intent only — was re-verified against
 `src/tool/task.rs:539,656,713,754`; `request_handoff` returns "ownership is

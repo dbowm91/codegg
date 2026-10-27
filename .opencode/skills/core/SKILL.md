@@ -83,7 +83,7 @@ turns family) and `daemon_workspace_dashboard.rs`
   as `pub(crate)`; lifecycle helpers live canonically in their owning
   lifecycle modules below, not in request handlers.
 - Only `Initialize` is genuinely unhandled: `DaemonRequestFamily::of` maps it
-  to `Turns` (`daemon_family.rs:345`) but `daemon_turns.rs` has no arm for
+  to `Turns` (`daemon_family.rs:386`) but `daemon_turns.rs` has no arm for
   it, so it hits the family `_ =>` `unimplemented` response. Everything else,
   including `Subscribe` (a `current_seq` probe) and `Resume` (replay or
   `ResyncRequired`), is really handled.

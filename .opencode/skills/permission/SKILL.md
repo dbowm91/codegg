@@ -57,14 +57,14 @@ layers still apply on top and can only narrow further.
 ## Key Invariants
 
 - **The registries are synchronous.** `PermissionRegistry::register`
-  (`crates/codegg-core/src/bus/mod.rs:149`), `respond` (`:177`), and
-  `QuestionRegistry::register` (`:364`) / `answer_question` (`:392`) are plain
+  (`crates/codegg-core/src/bus/mod.rs:146`), `respond` (`:174`), and
+  `QuestionRegistry::register` (`:361`) / `answer_question` (`:389`) are plain
   `fn`, not `async`. They hand out `oneshot::Sender`s.
 - **Register before publishing.** Register the responder FIRST, then publish
   the `Pending` event. Publishing first leaves a window where the human answers
   before anyone is listening and the answer is dropped.
-- **Prefer the scoped variants.** `respond_scoped` (`:188`) and
-  `answer_question_scoped` (`:401`) key on `(session_id, id)`. Use them
+- **Prefer the scoped variants.** `respond_scoped` (`:185`) and
+  `answer_question_scoped` (`:398`) key on `(session_id, id)`. Use them
   whenever a session identity is available so a stale answer cannot land in a
   different session.
 - **Approval and sandbox are orthogonal axes.** `ApprovalMode` controls who
@@ -237,4 +237,11 @@ hundreds of lines — the `Escalate`/`Automatic` arm is at `:897-913`, not
 integration-test commands named targets that do not exist; the members live
 in the `security_permission` family, so `cargo test --test <member>` selected
 zero tests and exited 0.
+
+Corrected 2026-10-27: the registry entries moved three lines up
+(`:149` → `:146`, `:177` → `:174`, `:188` → `:185`, `:364` → `:361`,
+`:392` → `:389`, `:401` → `:398`); the `tool_batch.rs`
+`Escalate`/`Automatic` arms are now at `:926-1040`,
+`resolve_general_ask_via_human` at `:1100` (called at `:1012`), and
+`resolve_automatic_escalation` at `src/permission/reviewer.rs:987`.
 

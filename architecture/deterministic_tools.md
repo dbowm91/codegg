@@ -94,7 +94,7 @@ pub struct EggsactCallResult {
 Structured fields (`result`, `findings`, `warnings`) are populated from
 eggsact `ToolResponse` when available.
 
-### EggsactTool (`src/tool/deterministic.rs:17-26`, impl `:28`)
+### EggsactTool (`src/tool/deterministic.rs:17-26`, impl `:72`)
 
 Generic wrapper mapping a Codegg tool name to an eggsact tool name.
 Implements `Tool` trait. Both `execute()` and `execute_structured()`
@@ -102,16 +102,19 @@ delegate to `EggsactRuntime::call_json()`.
 
 `name()` returns `self.codegg_name` — a **runtime-supplied** name, not a
 literal in the `impl Tool` block. A single `impl Tool for EggsactTool` block
-therefore resolves all 13 names, so a scan of `impl Tool for … name()` for a
+therefore resolves all 15 production names, so a scan of `impl Tool for … name()` for a
 string literal cannot see any of them. They are counted instead at their
-`EggsactTool::new()` call sites in `src/tool/deterministic.rs`, and they *do*
+`EggsactTool::new()` call sites in `src/tool/deterministic.rs` (16 call
+sites; the 16th, `probe`, is a `#[cfg(test)]`-only constructor the scan
+still counts), and they *do*
 appear in the catalogued set of distinct production tool names in
-`architecture/tool.md` — 75 in total (62 literal + these 13).
+`architecture/tool.md` — 79 measured in total (63 literal + these 16 counted;
+true production 78).
 `defer_loading()` returns `self.defer` and `expose_in_definitions()` returns
 `self.expose`, which is how the always-visible / deferred split is carried
 per instance.
 
-### build_eggsact_tools (`src/tool/deterministic.rs:106-289`)
+### build_eggsact_tools (`src/tool/deterministic.rs:628-855`)
 
 ```rust
 pub fn build_eggsact_tools(runtime: Arc<EggsactRuntime>)
@@ -163,7 +166,7 @@ Exposed to the model via `expose_in_definitions = true`:
 | `path_normalize` | Normalize a filesystem path: collapse dot segments, resolve components | ReadOnly |
 | `text_security_inspect` | Security-oriented text hygiene: detect hidden chars, confusables, prompt injection | ReadOnly |
 
-### Deferred / Contextual Tools (5)
+### Deferred / Contextual Tools (7)
 
 Discoverable via `tool_search` and flagged as deferred to the provider:
 
@@ -174,10 +177,12 @@ Discoverable via `tool_search` and flagged as deferred to the provider:
 | `identifier_inspect` | Inspect identifiers for validity and collisions |
 | `structured_data_compare` | Compare structured config/data output (JSON) |
 | `text_fingerprint` | Compute a deterministic SHA-256 fingerprint of text |
+| `math_eval` | Evaluate arithmetic/calculator/scientific expressions deterministically (bound to the math-capable `full` runtime, since the default runtime profile lacks them) |
+| `unit_convert` | Convert a numeric value between units deterministically (same `full`-runtime binding as `math_eval`) |
 
 Deferred tools are constructed with `defer_loading = true` and
 `expose_in_definitions = true`
-(`src/tool/deterministic.rs:222-286`). They **are** present in the
+(`src/tool/deterministic.rs:743-852`). They **are** present in the
 model-facing tool definitions; `defer_loading` is a provider-level
 extension flag on the emitted `ToolDefinition`
 (`crates/codegg-providers/src/provider_core.rs:439`, serialized as
@@ -360,14 +365,30 @@ deterministic tool names and why the production tool-name count needs a
 second source — their `EggsactTool::new()` call sites in
 `src/tool/deterministic.rs`.
 
+Corrected 2026-10-27: the family grew from 13 to 15 production validators —
+`math_eval` and `unit_convert` (`deterministic.rs:827-852`, bound to a
+math-capable `full` `EggsactRuntime` because the default runtime profile
+cannot see them). The measured distinct-name count is now 79 (63 literal +
+16 counted `EggsactTool::new()` call sites), with true production at 78
+because the 16th call site, `probe` (`deterministic.rs:995-997`), is
+`#[cfg(test)]`-only. `build_eggsact_tools` moved to
+`deterministic.rs:628-855` with an 8 always-visible / 7 deferred split, and
+the `impl Tool for EggsactTool` block is at `:72`.
+
 Corrected 2026-10-23: the note above said the 13 names "do not appear in the
 62 distinct production tool names catalogued in `architecture/tool.md`". The
 count was wrong twice over — it is 75, not 62 (the 13 are now counted at
 their constructor call sites), and the names *do* appear in the catalogued set.
 The mechanism the note was explaining is unchanged and still correct: one
-`impl Tool for EggsactTool` block resolves all 13 names at runtime.
+`impl Tool for EggsactTool` block resolves all production names at runtime.
 
-Verified accurate: `EggsactRuntime` struct `adapter.rs:88-91` + impl
+Verified accurate 2026-10-27: `EggsactTool` `deterministic.rs:17-26` + impl
+`:72`; `build_eggsact_tools` `:628-855` and its 8 always-visible / 7
+deferred split (names and order); all 15 production tools `ToolCategory::ReadOnly`;
+the `#[cfg(test)]`-only `probe` at `:995-997`.
+
+Verified accurate 2026-10-06 (carried forward; re-verify line numbers on next
+pass): `EggsactRuntime` struct `adapter.rs:88-91` + impl
 `:93-150`; `EggsactConfig` `:68-75` + `Default` `:77`; `EggsactCallResult`
 `:153-169` (10 fields); `EggsactTool` `deterministic.rs:17-26` + impl
 `:28`; `build_eggsact_tools` `:106-289` and its 8 always-visible / 5
@@ -383,13 +404,14 @@ model `12_000`; and the registration gate
 `det_cfg.enabled && det_cfg.backend != "disabled"`
 (`src/tool/mod.rs:1263`).
 
-Verified 2026-10-06 against source. Corrected: `EggsactRuntime`
+Verified 2026-10-06 against source (line numbers since moved — see the
+2026-10-27 addendum above). Corrected: `EggsactRuntime`
 `adapter.rs:88-145` → struct `:88-91` + impl `:93-150`;
 `EggsactConfig` `adapter.rs:68-85` → struct `:68-75` + `Default` impl `:77`;
 `EggsactCallResult` `adapter.rs:148-164` → `:153-169`; `EggsactTool`
-`deterministic.rs:17-91` → struct `:17-26` + impl `:28`; added a
+`deterministic.rs:17-91` → struct `:17-26` + impl `:28` (now `:72`); added a
 see-source pointer for the `EggsactRuntime` method list. Verified accurate:
-`build_eggsact_tools` (`deterministic.rs:106-289`) and its 8 always-visible +
+`build_eggsact_tools` (then `deterministic.rs:106-289`) and its then 8 always-visible +
 5 deferred split, `truncate_utf8_safe` (`adapter.rs:18-57`), the 10
 `EggsactCallResult` fields, the two `EggsactConfig`/`EggsactTool` field sets
 listed, eggsact `1.2.5`, `format_response` (`adapter.rs:185`),

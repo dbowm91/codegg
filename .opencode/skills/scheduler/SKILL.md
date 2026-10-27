@@ -109,9 +109,9 @@ scheduler.register_executor(my_exec).await?;
 ## Configuration
 
 The on-disk schema lives in `crates/codegg-config/src/schema.rs`:
-`SchedulerConfig` (`:2250`) with `SchedulerRolloutConfig` (`:2296`, default
-`Observe`), `SchedulerResourceConfig` (`:2305`),
-`SchedulerQueueConfig` (`:2324`), and `SchedulerFairnessConfig` (`:2333`).
+`SchedulerConfig` (`:2442`) with `SchedulerRolloutConfig` (`:2488`, default
+`Observe`), `SchedulerResourceConfig` (`:2497`),
+`SchedulerQueueConfig` (`:2516`), and `SchedulerFairnessConfig` (`:2525`).
 The full `[scheduler]` TOML with defaults is in `architecture/scheduler.md`.
 
 Two behaviours matter more than the numbers:
@@ -325,19 +325,23 @@ process the parent could not.
 ## The build quota is admission, not a writer permit
 
 M007 added a third thing, and it is easy to confuse with the other two: the
-**per-workspace build quota** (`crates/codegg-core/src/jobs/quota.rs`,
-`architecture/build_admission.md`).
+**counted build quotas** (`crates/codegg-core/src/jobs/quota.rs`,
+`architecture/build_admission.md`) — a required per-workspace `Build` quota
+plus an opt-in per-repository `RepositoryBuild` quota
+(`ResourceClass::Build` / `ResourceClass::RepositoryBuild`).
 
-It answers "how many build-class jobs may run in *this* workspace at once".
-It is **admission**, and it is not the checkout writer permit:
+It answers "how many build-class jobs may run in *this* workspace (or
+repository) at once". It is **admission**, and it is not the checkout writer permit:
 
-- The quota is a **counted, scoped** bound (`build:<workspace_id>`), where an
+- The quota is a **counted, scoped** bound (`build:<workspace_id>` for `Build`,
+  `repository-build:<repository_id>` for `RepositoryBuild`), where an
   exclusivity key is a binary mutex over a name. The scope is the canonical
-  `WorkspaceId`, so unrelated workspaces never share a bucket.
+  `WorkspaceId` (or repository id), so unrelated workspaces never share a bucket.
 - The limit is **configuration-owned** (`scheduler.quota
-  .max_concurrent_builds_per_workspace`, default 1). A job may ask for
-  slots; it may never widen the bound it is measured against. An unknown
-  quota namespace is **refused**, not ignored.
+  .max_concurrent_builds_per_workspace`, default 1;
+  `scheduler.quota.max_concurrent_builds_per_repository`, opt-in `None`).
+  A job may ask for slots; it may never widen the bound it is measured against.
+  An unknown quota namespace is **refused**, not ignored.
 - The scope is bound at the **submission boundary**
   (`JobSubmissionService::apply_resource_policy`), and the binding is
   applied unconditionally — a caller that supplies its own resource request
@@ -379,16 +383,27 @@ Confirmed unchanged: every row of the module map (all fourteen listed
 `idle_continuation.rs`, `schedule_driver.rs`, `schedule_materializer.rs`,
 and others not listed here); `executor_kind_for_job`
 (`src/scheduler/executor.rs:440`); `JobSubmissionService::apply_resource_policy`
-(`src/scheduler/submission.rs:603`); `JobScheduler::recover_at_startup`
-(`src/scheduler/scheduler.rs:2175`); `RecoveryReportSummary`
+(`src/scheduler/submission.rs:652`); `JobScheduler::recover_at_startup`
+(`src/scheduler/scheduler.rs:2186`); `RecoveryReportSummary`
 (`src/job_recovery.rs:19`) and `CoreDaemon::recover_jobs`
-(`src/core/daemon_bootstrap.rs:367`); `WokeReason::Reconciled`
-(`src/scheduler/events.rs:96`); the quota key
-`scheduler.quota.max_concurrent_builds_per_workspace` defaulting to one
-(`crates/codegg-config/src/schema.rs:2353-2356`); and
+(`src/core/daemon_bootstrap.rs:393`); `WokeReason::Reconciled`
+(`src/scheduler/events.rs:105`); the quota keys
+`scheduler.quota.max_concurrent_builds_per_workspace` defaulting to one and
+the opt-in `scheduler.quota.max_concurrent_builds_per_repository`
+(`crates/codegg-config/src/schema.rs:2548`); and
 `QUALIFIED_SHARED_CHECKOUT_PLATFORMS` being exactly `["linux", "macos"]`
-(`crates/codegg-core/src/run_placement.rs:94`), which is the basis of the
+(`crates/codegg-core/src/run_placement.rs:101`), which is the basis of the
 "Linux and macOS are qualified; Windows lacks a backend" statement.
+
+Corrected 2026-10-27: the config-schema struct lines moved again
+(`SchedulerConfig` `:2250` → `:2442`, `SchedulerRolloutConfig` `:2296` →
+`:2488`, `SchedulerResourceConfig` `:2305` → `:2497`, `SchedulerQueueConfig`
+`:2324` → `:2516`, `SchedulerFairnessConfig` `:2333` → `:2525`);
+`apply_resource_policy` `:603` → `:652`, `recover_at_startup` `:2175` →
+`:2186`, `recover_jobs` `:367` → `:393`, `WokeReason::Reconciled` `:96` →
+`:105`, quota keys `:2353-2356` → `:2548`, platform table `:94` → `:101`.
+The quota section above now names both quotas (`Build` required per-workspace
++ `RepositoryBuild` opt-in per-repository).
 
 Corrected: the config-schema line references had all drifted by ~550 lines —
 `SchedulerConfig` `:1704` → `:2250`, `SchedulerRolloutConfig` `:1717` →

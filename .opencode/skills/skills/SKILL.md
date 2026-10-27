@@ -326,5 +326,14 @@ and `with_global_root(config_dir)`) is at `src/core/daemon_refresh.rs:314-320`.
 dialog-close code; `/skill-promote` is parsed at `src/tui/app/mod.rs:6800` and
 `/skill-proposal` at `:6897`.
 
+Corrected 2026-10-27: those corrected references drifted again —
+`daemon_refresh.rs:314-320` is now worktree code; the two
+`with_global_root(config_dir)` registry constructions (with the
+`dirs::config_dir()` parent-root comment) are at
+`src/core/daemon_refresh.rs:530` and `:717`. `/skill-promote` dispatches at
+`src/tui/app/mod.rs:6896` and `/skill-proposal` at `:6995`. The
+`CopilotProject = 26` rank mapping is at `src/skills/registry.rs:288`
+(was `:264`).
+
 Added the missing `## See Also` section, naming the authoritative
 `architecture/skills.md` that the body already pointed at.

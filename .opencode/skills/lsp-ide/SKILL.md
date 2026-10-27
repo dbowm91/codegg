@@ -128,10 +128,10 @@ Confirmed unchanged: `crates/egglsp` owning the implementation with
 `src/lsp/` as a thin shim (the shim holds `mod.rs`, `mutation.rs`,
 `semantic_context.rs`, the `hunk_nav*` modules, and `m004.rs` — no language
 server implementation); `CoreDaemon::start_lsp_diagnostics_driver`
-(`src/core/daemon_lsp.rs:1469`), called from `src/main.rs:4580,4860`;
+(`src/core/daemon_lsp.rs:1456`), called from `src/main.rs:4580,4860`;
 `build_apply_request` (`src/tui/commands/change_review.rs:77`) as the single
 place a `CoreRequest::LspPreviewApply` is built;
-`CoreRequest::LspPreviewApply` (`crates/codegg-protocol/src/core.rs:3176`);
+`CoreRequest::LspPreviewApply` (`crates/codegg-protocol/src/core.rs:3530`);
 `scripts/check_tui_editor_apply_path.py` enforcing that single apply path;
 and the two distinct test-server binaries — `codegg-lsp-test-server` is the
 root package's `[[bin]]` behind `lsp-test-support`

@@ -55,7 +55,7 @@ workspace-bound must NOT do that — thread an `ExecutionContext` instead
 - **Every config struct is `#[serde(default)]`.** Existing user files must keep
   loading when you add a field. Do not make a new field required.
 - **`CONFIG_VERSION` is `"1"`** (`schema.rs:5`) and `Config::migrate()`
-  (`schema.rs:3386`) upgrades `"0"` → `"1"`. Do not bump it without a migration
+  (`schema.rs:3594`) upgrades `"0"` → `"1"`. Do not bump it without a migration
   branch and a test.
 - **A new `Config` field is invisible until `merge_configs` handles it.**
   `merge_configs` (`paths.rs:172`) is an explicit whitelist, not a derived
@@ -157,16 +157,16 @@ the `CODEGG_TUI_CONFIG` probe (`:15`), `find_project_config_from` (`:46`),
 `global_config_path` (`:64`), `system_config_path` (`:75`), and
 `ConfigWatcher::reload_config` calling `merge_configs`
 (`crates/codegg-config/src/watcher.rs:154`) — and confirmed `CONFIG_VERSION`
-(`schema.rs:5`), the inert `autoupdate` field (`schema.rs:236`), the
+(`schema.rs:5`), the inert `autoupdate` field (`schema.rs:424`), the
 `encrypt_provider_keys` / `decrypt_provider_keys` no-ops
 (`encryption.rs:549`, `:544`), `parse_yaml` (`document.rs:92`), the
 `serde_norway` 0.9.42 pin (`crates/codegg-config/Cargo.toml:14`), and the
 `WindowsShellKind` variant set (`powershell`, `cmd`, `git-bash`, `wsl`;
-`schema.rs:3919-3932`).
+`schema.rs:4129`).
 
 Corrected: `merge_configs` was cited at `paths.rs:164` (actually `:172`); and
-`Config::migrate()` was cited at `schema.rs:2739` (actually `:3386` — the
-cited line is inside a section `merge()` impl). The whole-value-replace list
+`Config::migrate()` was cited at `schema.rs:2739`, then `:3386` (now `:3594` —
+both cited lines are inside section `merge()` impls). The whole-value-replace list
 was `security`, `provider_connections`, `deterministic_tools`; `security` is
 in fact a whole-value replace **with a carry-forward** of
 `gates.deny_critical_commands` (`paths.rs:460-468`), so it is now described

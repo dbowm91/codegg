@@ -6,9 +6,11 @@ Rust 1.89+, edition 2021.
 
 ```bash
 scripts/verify.sh quick   # canonical sanity: rustfmt, the generated-asset
-                          # checks, 82 guard scripts, and a workspace check
-scripts/verify.sh full    # quick + clippy (-D warnings) + workspace tests +
-                          # cargo test -p codegg --features server,plugins,lsp-test-support
+                          # checks, 84 guard scripts, and a workspace check
+scripts/verify.sh full    # quick + clippy (-D warnings) + nextest workspace sweep
+                          # (profile ci) + bounded feature pass: nextest -p codegg
+                          # --features server,plugins,lsp-test-support --profile subset
+                          # --lib --test lsp_test_support --test server_feature
 scripts/verify.sh scoped  # quick's guards + only the tests the change can affect
 cargo fmt                 # rustfmt: max_width 100, 4-space; non-Rust files use 2-space
 ```
@@ -95,7 +97,7 @@ scripts/verify.sh scoped [base-ref]  # quick's guards + only the tests the chang
   The `--test` name is the **family** (the Cargo target, declared in the root
   `Cargo.toml`), and the trailing filter is the member. A member name can
   coincide with a family name — `tui_render` is both — so `--test tui_render`
-  alone runs the whole 41-member family, and `--test tui_render -- tui_render`
+  alone runs the whole 53-member family, and `--test tui_render -- tui_render`
   runs just that member. A test id is `<family>::<member>::<test>`.
 - `scripts/verify.sh scoped` selects tests from `docs/test-ownership.toml`. A
   change in a crate **another crate depends on** widens to every transitive
@@ -109,12 +111,12 @@ scripts/verify.sh scoped [base-ref]  # quick's guards + only the tests the chang
 ## Change-triggered guards
 
 `verify.sh quick` runs the routine subset: rustfmt, the two generated-asset
-checks, 82 guard scripts, and a workspace `cargo check`. CI
+checks, 84 guard scripts, and a workspace `cargo check`. CI
 (`.github/workflows/ci.yml`) is one bounded `verify` job: the same generated-asset
-checks, 68 guard scripts, fmt, clippy, and the workspace test sweep.
+checks, 70 guard scripts, fmt, clippy, and the workspace test sweep.
 
 CI is a strict **subset** of `quick` — it runs nothing that quick does not.
-As measured on 2026-10-25, quick runs **14 guards CI omits**: the client and
+As measured on 2026-10-27, quick runs **14 guards CI omits**: the client and
 desktop boundaries, `check_daemon_listing_authority`, `check_first_party_skills`,
 `check_network_intent_owner_wiring`, `check_no_hardcoded_selection_colours`,
 `check_eggwork_target_routing`, `check_openai_endpoint_composition`, and the
@@ -129,17 +131,20 @@ diff <(awk '/^run_guards\(\)/,/^}/' scripts/verify.sh | grep -oE 'scripts/check[
      <(grep -oE 'scripts/check[-_][a-z0-9_.-]+\.(py|sh)' .github/workflows/ci.yml | sort -u)
 ```
 
-Everything outside both is change-triggered (`ls scripts/check_*` for the full
-list):
+Run the matching guard focused when touching its surface
+(`ls scripts/check_*` for the full list). Most of the guards below also run in
+`quick` (and CI); the notes name the ones that do not:
 
-- `codegg-core` or workspace deps → `bash scripts/check-core-boundary.sh`
+- `codegg-core` or workspace deps → `./scripts/check-core-boundary.sh`
 - Daemon-internal admission surfaces → `python3 scripts/check_queue_delivery_callsites.py`
   (M003 queue delivery, ADR-0038 — **three** permitted callers: the post-terminal
   wake, the bounded restart twin, and M007's bounded advance tick, which ADR-0039
   accepted; the guard also **fails when none is wired**, and `--self-test` injects a
   **fourth** caller to prove it is not vacuous).
   Its sibling `check_idle_continuation_callsites.py` covers ADR-0031's delegated
-  entry. Both live in `scripts/verify.sh quick` and in CI. Widening either guard's
+  entry. The queue-delivery guard lives in `scripts/verify.sh quick` and in CI;
+  the idle-continuation guard passes today but is not yet wired into either,
+  so run it focused until it is. Widening either guard's
   caller set is a recorded decision, never a quiet extra call site.
 - Queue **store** transaction shape → `python3 scripts/check_queue_write_transaction_shape.py`
   (C002). A queue write path that reads before it writes must open its transaction
@@ -174,7 +179,8 @@ list):
   the guard's `PROCESS_SURFACE_FILES`: a new launcher is a deliberate
   addition there *and* in the manifest, never a silent omission;
   projection
-  transport → `check_projection_*.py` +
+  transport → `check_projection_disclosure.sh` +
+  `check_projection_publication_seam.sh` + `check_projection_transport_isolation.py` +
   `check_websocket_bounds.py`; provider lifecycle → `check_provider_connections_*.sh`
 - Test bodies → `python3 scripts/check_test_assertion_quality.py` (every body must
   assert a checkable property, delegate to a named helper that does, or be recorded
@@ -270,7 +276,7 @@ injects the defect and proves the guard rejects it:
   authority: it calls no `invoke`, imports no bridge module, holds no Tauri
   capability, reaches no filesystem or process, and keeps no durable
   frontend-owned store. The desktop's bridge targets are a **recorded** set
-  (23), so a new one is a deliberate edit to the guard rather than a side
+  (40), so a new one is a deliberate edit to the guard rather than a side
   effect of the tree. A panel that needs daemon data names the existing
   variant or stops — that is the plan's stop condition, and the guard is its
   mechanical form.
@@ -293,7 +299,7 @@ comm -12 <(awk '/^run_guards\(\)/,/^}/' scripts/verify.sh | grep -oE 'scripts/ch
          <(grep -oE 'scripts/check[-_][a-z0-9_.-]+\.(py|sh)' .github/workflows/ci.yml | sort -u)
 ```
 
-The eight named above are the guards whose classification was **decided** in
+The ten named above are the guards whose classification was **decided** in
 the work that added each of them; the derived set is larger, and the command
 is what says which.
 
@@ -397,8 +403,9 @@ is what says which.
   are **latched** in `SessionState::last_error` and cleared only by `TurnStarted`;
   `report_turn_error` is for turn failures alone, not for shell/clipboard/theme
   feedback. There is one cadence (`tui::components::spinner`, one frame table, 100ms)
-  and one `ActivityPhase` enum — a second spinner or a free-form label is how the
-  indicator a user watches became ten times slower than the one nobody looked at.
+  and one `ActivityPhase` enum (`tui::components::messages`) — a second spinner or a
+  free-form label is how the indicator a user watches became ten times slower than
+  the one nobody looked at.
 - **Leaving the program takes two deliberate presses.** `q` and `Ctrl+C` each need a
   second press of the same key within three seconds (`EXIT_ARM_WINDOW`); the first
   `Ctrl+C` clears the input and arms the exit, and the row above the input names the
@@ -509,11 +516,11 @@ is what says which.
   own config then its conventional env var, so defining a provider in config
   does NOT disable env-var auto-registration for the others. The
   `if registry.list().is_empty() { register_builtin(registry) }` fallback at
-  `crates/codegg-providers/src/provider_core.rs:1416` is a redundant safety
+  `crates/codegg-providers/src/provider_core.rs:1380` is a redundant safety
   net that only fires when config-based registration produced zero results
   (`architecture/provider.md` §"17 Config+Env Providers").
 - `AssetRegistry::build` takes each global root as the *parent* dir and appends
-  `<vendor>/skills` (`src/skills/registry.rs:250-303`). Pass
+  `<vendor>/skills` (`src/skills/registry.rs:20`, vendor join at `:372-380`). Pass
   `default_global_discovery_root()` — exactly `dirs::config_dir()` — never an
   already-joined `…/codegg/skills` path, which double-joins to
   `…/codegg/skills/codegg/skills`. Because `resolve_source_roots` skips a
@@ -585,7 +592,7 @@ Rules that keep the surfaces honest:
 | User guides (linked from the README) | `install.md`, `cli.md`, `configuration.md`, `providers.md`, `daemon.md`, `tui.md`, `agents-skills.md`, `tools.md` |
 | Integration notes | `LSP.md`, `MCP.md`, `PLUGINS.md`, `themes.md`, `playwright.md`, `repository-init.md` |
 | Reference | `security-semantics.md`, `TROUBLESHOOTING.md`, `execution-ownership.md` (+ `execution-ownership.toml` manifest), `dependency-maintenance.md`, `windows-acl-leases.md` |
-| Guard manifests (machine-read; do not hand-edit) | `test-ownership.toml`, `test-assertion-quality.toml`, `test-duplication.toml`, `security-test-filters.toml`, `writer-disposition.toml` |
+| Guard manifests (machine-read; do not hand-edit) | `test-ownership.toml`, `test-assertion-quality.toml`, `test-duplication.toml`, `security-test-filters.toml`, `writer-disposition.toml`, `comment-budget.toml` |
 | Historical evidence | `validation/` (closure records; line numbers are pinned to old SHAs by design — do not "refresh" them) |
 
 `codegg.example.jsonc` is the annotated config example; validate it with

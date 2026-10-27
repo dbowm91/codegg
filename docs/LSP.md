@@ -239,7 +239,7 @@ Checked 2026-10-23 against the source tree.
   `diagnostics.rs`, and `operations/` containing `code_actions.rs`,
   `completion.rs`, `formatting.rs`, `navigation.rs`, `overlay_ops.rs`,
   `rename.rs`, `semantic_tokens.rs`, `signature.rs`.
-- **39** server definitions and the `server_definitions()` ids
+- **40** server definitions and the `server_definitions()` ids
   (`rust-analyzer`, `gopls`, `pyright`, `typescript-language-server`,
   `jdtls`, `clangd`, …): `crates/egglsp/src/server.rs`. `rust-analyzer` is the
   only definition carrying a `download:` spec.

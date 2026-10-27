@@ -196,14 +196,28 @@ Fourth pass (2026-10-23): re-verified against
 `scripts/check-core-boundary.sh`, and
 `scripts/check_project_catalog_invariants.py`.
 
+Corrected 2026-10-27: the migration chain runs to `migrate_v91`
+(`crates/codegg-core/src/session/schema.rs:437`), and
+`STORAGE_LAYOUT_VERSION` is **91**
+(`crates/codegg-core/src/storage/mod.rs:56`). Migration 91 adds the
+session-relative working-directory store (`SessionWorkingDirectory`,
+ADR-0055); the session's launch placement type is `RunPlacement`
+(`crates/codegg-core/src/run_placement.rs`), and the build quotas are dual
+(`Build` required per-workspace + `RepositoryBuild` opt-in per-repository) —
+see `architecture/overview.md` §"Verified counts" and the scheduler skill for
+the current figures. `bind_runtime_for_session` is at
+`src/core/daemon_refresh.rs:1201`.
+
 Confirmed unchanged: the migration chain runs to `migrate_v87`, and
 `STORAGE_LAYOUT_VERSION` is **87** (`crates/codegg-core/src/storage/mod.rs:48`)
 — it tracks the highest migration, which is exactly what
-`scripts/check_project_catalog_invariants.py` enforces. Also confirmed:
+`scripts/check_project_catalog_invariants.py` enforces. (The 2026-10-23
+pass confirmed the chain at `migrate_v87` / version 87; superseded by the
+2026-10-27 correction above.) Also confirmed:
 `migrate_v22` (the workspace-table migration), `migrate_v79` (workstream
 claims), and `migrate_v82` (`run_at_ms`) all exist; `shared_pool()`
 (`tests/common/pool.rs:37`) and `isolated_pool()` (`:52`) are the two pool
-helpers; `bind_runtime_for_session` lives in `src/core/daemon_refresh.rs:985`;
+helpers; `bind_runtime_for_session` lives in `src/core/daemon_refresh.rs:1201`;
 and the body deliberately copies no schema, migration, table, or event totals
 — it points at `architecture/overview.md` instead.
 
