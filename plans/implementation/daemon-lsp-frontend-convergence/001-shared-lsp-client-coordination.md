@@ -1,6 +1,6 @@
 # M001 — Shared Frontend LSP Request Coordinator
 
-Status: active
+Status: closed
 
 Primary class: infrastructure (vertically qualified in both rich frontends).
 
@@ -14,9 +14,9 @@ Replace divergent *transport/request lifecycle decisions*, not frontend renderin
 
 ## Current evidence
 
-`crates/codegg-client/src/lsp.rs` exposes `LocalSocketClient::{lsp_read,lsp_completion,lsp_diagnostics}`, `LspRequestCoordinator`, and `DiagnosticsReconciler`. The current implementation wires the coordinator into TUI diagnostic/read/completion requests and desktop diagnostic/completion/navigation requests. The frontends still own their transport dispatch and response mapping; `DiagnosticsReconciler` has no production call site, and neither frontend consumes the project diagnostics subscription. Daemon endpoints in `src/core/daemon_lsp.rs` and `src/core/daemon_lsp_completion.rs` already have typed statuses and revisions. Never mistake duplicated presentation structures for duplicated LSP servers.
+`crates/codegg-client/src/lsp.rs` owns scoped request tickets, cancellation, latest-wins/coalescing, bounded outstanding work and diagnostics stream reconciliation. TUI diagnostics/read/completion and desktop diagnostics/completion/navigation use the coordinator. Both frontends establish a project diagnostics subscription from an authoritative snapshot/cursor and recover by pull after loss or a gap. Their transport adapters and view mapping remain frontend-owned. The live-daemon TUI hover trajectory and visible desktop diagnostics E2E are recorded in `plans/closure/daemon-lsp-frontend-convergence/001-status.md`.
 
-Current closure readiness audit: `plans/implementation/daemon-lsp-frontend-convergence/artifacts/M001-closure-readiness-20261027.md`.
+Historical closure-readiness audit: `plans/implementation/daemon-lsp-frontend-convergence/artifacts/M001-closure-readiness-20261027.md`. Final qualification: `plans/closure/daemon-lsp-frontend-convergence/001-status.md`.
 
 ## Invariants and non-goals
 

@@ -1,6 +1,6 @@
 # M002 — Cross-Frontend LSP Parity and Latency Discipline
 
-Status: blocked — M001 strict closure (hard)
+Status: active
 
 Primary class: capability/polish.
 
@@ -15,6 +15,8 @@ Migrate remaining TUI and desktop editor LSP gesture request coordination to the
 ## Evidence and correctness constraints
 
 The TUI already has `EditorLspState`, `EditorCompletionState` and direct `LspReadGet`/completion callers; desktop has `desktop_document_diagnostics`, `desktop_document_completion`, `desktop_document_navigate` with separate DTO-to-view mapping. The daemon's `NotReady` means cold, not empty; `Unsynced` completion means a revision witness is missing. `LspReadGet` and `LspCompletionGet` differ legitimately. Do not erase those differences or claim the GUI offers all TUI semantic-token affordances if unimplemented.
+
+M001 closed on 2026-10-27; its requirement/evidence matrix is `plans/closure/daemon-lsp-frontend-convergence/001-status.md`.
 
 ## Work packages
 

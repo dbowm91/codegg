@@ -1,6 +1,6 @@
 # Daemon LSP and Frontend Editor Convergence Roadmap
 
-Status: active — M001 implementation underway; M002–M006 sequenced or decision-gated
+Status: active — M001 closed; M002 implementation and closure underway; M003–M006 sequenced or decision-gated
 
 Planning baseline: `main` at `80171f45295bebb9ab0b521262c0b295acb93074` (2026-10-27). Implementation agents MUST revalidate the current head and preserve intervening changes.
 
@@ -41,8 +41,8 @@ No renderer/host/CLI may create a competing daemon-session LSP process, bypass `
 
 | ID | Primary class | Deliverable / exit | Dependencies | Status |
 |---|---|---|---|---|
-| M001 | infrastructure | Shared `codegg-client` LSP request lifecycle + diagnostics reconciliation, consumed by one real editor path in each frontend | Existing ADR-0011/0012/0021 interfaces (closed) | **active** |
-| M002 | capability/polish | Both editors use shared coordination for remaining LSP gestures, bounded debounce/coalescing and stale drop; measurable local vs IPC latency | M001 **hard** | **blocked — M001 closure** |
+| M001 | infrastructure | Shared `codegg-client` LSP request lifecycle + diagnostics reconciliation, consumed by one real editor path in each frontend | Existing ADR-0011/0012/0021 interfaces (closed) | **closed — 2026-10-27** |
+| M002 | capability/polish | Both editors use shared coordination for remaining LSP gestures, bounded debounce/coalescing and stale drop; measurable local vs IPC latency | M001 **hard — closed** | **active; closure evidence in progress** |
 | M003 | capability | Typed daemon LSP server inspection, status, restart/stop/cache controls and low-frequency `/lsp-*` command parity (M007-F part 1) | ADR-0055 **hard** | **blocked — proposed ADR** |
 | M004 | capability | Daemon LSP semantic repair/review recipe parity and checked human preview flow (M007-F part 2) | M003 **hard**, accepted ADR-0055 interface | **blocked — M003/ADR** |
 | M005 | infrastructure | Bounded local syntax/structural gesture engine or alternative selected by ADR-0034; no server process in a frontend | ADR-0034 **hard**; M001 interface **soft** | **blocked — proposed ADR** |
