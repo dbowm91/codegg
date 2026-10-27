@@ -188,8 +188,25 @@ results are quoted as observed.
 |---|---|
 | `cargo ck` | clean, no errors |
 | `cargo fmt --check` | clean |
+| `rustup run 1.99.0 cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0, no warnings |
 | `rustup run 1.90.0 cargo check --all-targets` (in `apps/desktop/src-tauri`) | clean |
 | `rustup run 1.90.0 cargo clippy --all-targets -- -D warnings` (in `apps/desktop/src-tauri`) | clean, no warnings |
+
+**The root clippy must run at CI's toolchain, not at the MSRV's.** CI's
+`verify` lane installs `dtolnay/rust-toolchain@stable`, which was **1.99.0**
+when this milestone's lanes ran; the repository's MSRV is **1.89** and the
+local default toolchain is 1.89. `needless_borrows_for_generic_args` fires
+on 1.99 and not on 1.89, so the MSRV toolchain **accepts** code CI
+**rejects** — `scripts/verify.sh quick` does not run clippy at all, and
+`scripts/verify.sh full` runs it at whatever the default toolchain is
+(`scripts/verify.sh:603`). The
+first run of this milestone's `verify` lane failed on exactly that lint
+(`src/shell/daemon.rs:1187`, `serde_json::to_value(&origin)` against a
+`Copy` `HumanShellOriginDto`); the fix is one word, and the branch is
+clippy-clean at **1.99.0** over `--workspace --all-targets --locked`. A
+milestone that wants its `verify` lane to pass on the first attempt should
+run the root clippy at 1.99.0 itself, and treat the local 1.89 clippy as
+the MSRV floor rather than as the gate.
 
 ### 4.2 The scoped test runs
 
@@ -244,6 +261,39 @@ The desktop is a separate Cargo workspace and the root check does not
 compile it. The desktop's lane is therefore its own `clippy`, its own
 `cargo test`, its own TypeScript build and its own bindings guard, all of
 which are recorded in §4.1, §4.2 and §4.3.
+
+### 4.6 Hosted
+
+The lanes that qualify this milestone are `verify`, `e2e`,
+`restricted-userns-fails-closed` and `process-ipc`; the whole-workspace
+suite runs in `verify`.
+
+The hosted runs this milestone has produced, in order:
+
+| Run | Head | Workflow | Conclusion |
+|---|---|---|---|
+| `40219661610` | `9e9404a2e` | CI / verify | **failure** — the **Workspace Clippy** step rejected `src/shell/daemon.rs:1187` under clippy 1.99; every step before it was green |
+| `40219661652` | `9e9404a2e` | Desktop E2E | **success** — 18 green steps, the built-app WebDriver trajectory |
+| `40219658631` | `9e9404a2e` | Linux M004 process and IPC qualification | **success** — `process-ipc` and `restricted-userns-fails-closed` both green |
+| `40221224433` | `006c27c03` | CI / verify | **success** — 135 green steps and one skipped (the Eggwork live fixture): the guard steps, formatting, workspace clippy and the workspace test sweep |
+| `40221224520` | `006c27c03` | Desktop E2E | **success** — 18 green steps |
+| `40221224456` | `006c27c03` | Linux M004 process and IPC qualification | **success** — `process-ipc` (18 green steps) and `restricted-userns-fails-closed` (13 green steps) both green |
+
+`9e9404a2e` is this milestone's merge head and `006c27c03` is its clippy
+corrective; the two differ by **one word in one test**
+(`src/shell/daemon.rs:1187`), so the qualification of `006c27c03` is the
+qualification of the milestone's implementation.
+
+The one failure is recorded because it is the evidence for the toolchain
+note in §4.1. The lint fires on clippy 1.99 and not on the MSRV's 1.89, so
+the local `scripts/verify.sh quick` and `scripts/verify.sh full` runs were
+**green on a tree CI rejected** — the defect was reachable only by running
+the root clippy at CI's toolchain.
+
+This closure's own head's hosted run is recorded on its own pull-request
+head, in the same way closure 017 §4.2 records its own: the run ids belong
+to the pull request, not to this document, and naming them here would name
+a head this commit is not.
 
 ## 5. Invariant review
 
@@ -496,3 +546,10 @@ the listing shows `done exit=0 1.2s` as it always did.
   `MAX_VISIBLE_TOOL_CONTRACTS = 32`), so a session with more contracts
   than that shows the desktop a bounded slice. Both bounds are named in the
   code beside their use.
+- **The toolchain to verify against.** CI's `verify` lane installs
+  `dtolnay/rust-toolchain@stable`, and its clippy is therefore **newer than
+  the repository's MSRV** — it was 1.99.0 when this milestone's lanes ran,
+  against an MSRV of 1.89. A lint can pass under the local toolchain and
+  fail under CI's. Before pushing, run the root clippy at CI's toolchain —
+  `rustup run 1.99.0 cargo clippy --workspace --all-targets --locked -- -D warnings`
+  — and treat the MSRV clippy as the floor, not as the gate (§4.1).
