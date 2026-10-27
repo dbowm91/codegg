@@ -756,7 +756,7 @@ mod tests {
     }
 
     async fn wait_for_job_terminal(store: &dyn JobStore, job_id: &JobId) {
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::time::timeout(std::time::Duration::from_secs(180), async {
             loop {
                 if store
                     .get_job(job_id)
@@ -1069,6 +1069,361 @@ mod tests {
         assert_ne!(first_workspace, second_workspace);
         release.add_permits(1);
         wait_for_job_terminal(&*store, &second_job_id).await;
+    }
+
+    /// A003 composed measurement: real Rust builds must cross the normal
+    /// submission boundary and execute through ManagedArgvExecutor. Separate
+    /// target directories keep this experiment from authorizing a shared
+    /// writable Cargo cache; the quota under study is scheduler admission.
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "A003 native production Cargo admission and resource measurement"]
+    async fn repository_quota_controls_production_cargo_build_admission() {
+        use std::process::Command;
+        use std::time::Instant;
+
+        #[derive(Clone)]
+        struct BuildCase {
+            workspace_id: WorkspaceId,
+            root: std::path::PathBuf,
+            target: std::path::PathBuf,
+            report: std::path::PathBuf,
+        }
+
+        fn init_rust_repository(root: &std::path::Path) {
+            std::fs::create_dir_all(root.join("src")).expect("create fixture source");
+            std::fs::write(
+                root.join("Cargo.toml"),
+                "[package]\nname = \"admission-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            )
+            .expect("write fixture manifest");
+            std::fs::write(
+                root.join("Cargo.lock"),
+                "version = 4\n\n[[package]]\nname = \"admission-fixture\"\nversion = \"0.1.0\"\n",
+            )
+            .expect("write fixture lockfile");
+            let mut source = String::new();
+            for index in 0..2_000_u32 {
+                source.push_str(&format!(
+                    "pub fn generated_{index}(value: u64) -> u64 {{ value.wrapping_mul({}).wrapping_add({index}) }}\n",
+                    index + 3
+                ));
+            }
+            std::fs::write(root.join("src/lib.rs"), source).expect("write Rust fixture");
+            assert!(Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(root)
+                .status()
+                .expect("git init")
+                .success());
+            for (key, value) in [
+                ("user.name", "CodeGG quota fixture"),
+                ("user.email", "codegg-quota@example.invalid"),
+            ] {
+                assert!(Command::new("git")
+                    .args(["config", key, value])
+                    .current_dir(root)
+                    .status()
+                    .expect("git config")
+                    .success());
+            }
+            assert!(Command::new("git")
+                .args(["add", "."])
+                .current_dir(root)
+                .status()
+                .expect("git add")
+                .success());
+            assert!(Command::new("git")
+                .args(["commit", "--quiet", "-m", "Rust admission fixture"])
+                .current_dir(root)
+                .status()
+                .expect("git commit")
+                .success());
+            let repository_name = root
+                .file_name()
+                .expect("fixture repository name")
+                .to_string_lossy();
+            assert!(Command::new("git")
+                .args(["remote", "add", "origin"])
+                .arg(format!("https://example.test/a003/{repository_name}.git"))
+                .current_dir(root)
+                .status()
+                .expect("git remote add")
+                .success());
+        }
+
+        fn target_bytes(root: &std::path::Path) -> u64 {
+            let mut pending = vec![root.to_path_buf()];
+            let mut total = 0_u64;
+            while let Some(path) = pending.pop() {
+                let Ok(entries) = std::fs::read_dir(path) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Ok(metadata) = entry.metadata() {
+                        if metadata.is_dir() {
+                            pending.push(path);
+                        } else {
+                            total = total.saturating_add(metadata.len());
+                        }
+                    }
+                }
+            }
+            total
+        }
+
+        async fn run_build_pair(
+            services: Arc<WorkspaceServiceRegistry>,
+            resolver: Arc<codegg_core::context::ProjectContextResolver>,
+            repository_quota: Option<u32>,
+            cases: [BuildCase; 2],
+            expect_single_admission: bool,
+        ) -> (u128, Vec<String>, Vec<u64>) {
+            let store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
+            let mut config = crate::scheduler::config::ResolvedSchedulerConfig::default();
+            config.quota.max_concurrent_builds_per_repository = repository_quota;
+            config.resources.max_process_slots = 4;
+            let generation = DaemonGeneration::new_unchecked(format!(
+                "repository-build-measurement-{}",
+                uuid::Uuid::new_v4()
+            ));
+            let scheduler =
+                JobScheduler::new(store.clone(), services.clone(), config, generation.clone());
+            scheduler
+                .register_executor(Arc::new(
+                    crate::scheduler::executors::ManagedArgvExecutor::new("a003_cargo"),
+                ))
+                .await
+                .expect("register production managed process executor");
+            let submission =
+                JobSubmissionService::new(store.clone(), scheduler.clone(), services, generation);
+            submission.set_context_resolver(resolver);
+            let mut job_ids = Vec::new();
+            for (ordinal, case) in cases.iter().enumerate() {
+                let mut build = spec(case.workspace_id.clone());
+                build.kind = JobKind::Build;
+                build.resource_request = ResourceRequest::for_kind(JobKind::Build);
+                build.payload = JobPayload::ManagedArgv {
+                    argv: vec![
+                        "/usr/bin/time".into(),
+                        "-f".into(),
+                        "wall=%e user=%U system=%S maxrss_kb=%M".into(),
+                        "-o".into(),
+                        case.report.to_string_lossy().into_owned(),
+                        "/usr/bin/env".into(),
+                        format!("CARGO_TARGET_DIR={}", case.target.display()),
+                        "CARGO_BUILD_JOBS=2".into(),
+                        "cargo".into(),
+                        "check".into(),
+                        "--locked".into(),
+                        "--offline".into(),
+                    ],
+                    cwd: Some(case.root.to_string_lossy().into_owned()),
+                    sandbox_profile: None,
+                    network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+                };
+                build.idempotency = IdempotencyClass::SafeRepeat;
+                build.priority = JobPriority::Interactive;
+                build.source = JobSource::Interactive;
+                build.timeout = Some(std::time::Duration::from_secs(180));
+                let submitted = submission
+                    .submit(None, build)
+                    .await
+                    .unwrap_or_else(|error| panic!("submit Cargo build {ordinal}: {error}"));
+                job_ids.push(submitted.job_id);
+            }
+
+            scheduler.reconcile().await.expect("queue measured builds");
+            let started = Instant::now();
+            let first_admission = Arc::clone(&scheduler).admit_and_dispatch_batch().await;
+            if expect_single_admission {
+                assert_eq!(first_admission, 1, "same-repository quota admits one build");
+                let mut first_id = None;
+                for id in &job_ids {
+                    if store
+                        .get_job(id)
+                        .await
+                        .unwrap()
+                        .is_some_and(|job| job.state != codegg_core::jobs::JobState::Queued)
+                    {
+                        first_id = Some(id.clone());
+                        break;
+                    }
+                }
+                let first_id = first_id.expect("one build is admitted");
+                wait_for_job_terminal(&*store, &first_id).await;
+                scheduler.reconcile().await.expect("requeue quota waiter");
+                assert_eq!(
+                    Arc::clone(&scheduler).admit_and_dispatch_batch().await,
+                    1,
+                    "waiting sibling resumes after the first Cargo process exits"
+                );
+                let second_id = job_ids.iter().find(|id| **id != first_id).unwrap();
+                wait_for_job_terminal(&*store, second_id).await;
+            } else {
+                assert_eq!(first_admission, 2, "independent builds dispatch together");
+                for job_id in &job_ids {
+                    wait_for_job_terminal(&*store, job_id).await;
+                }
+            }
+            let wall_ms = started.elapsed().as_millis();
+            let mut reports = Vec::new();
+            let mut target_sizes = Vec::new();
+            for (case, job_id) in cases.iter().zip(job_ids.iter()) {
+                let job = store.get_job(job_id).await.unwrap().unwrap();
+                assert_eq!(
+                    job.state,
+                    codegg_core::jobs::JobState::Completed,
+                    "{job:#?}"
+                );
+                reports.push(std::fs::read_to_string(&case.report).expect("GNU time report"));
+                target_sizes.push(target_bytes(&case.target));
+            }
+            scheduler
+                .shutdown(crate::scheduler::SchedulerShutdownMode::ImmediateInterrupt)
+                .await;
+            (wall_ms, reports, target_sizes)
+        }
+
+        let fixture = tempfile::tempdir().expect("measurement fixture");
+        let repository = fixture.path().join("same-repository");
+        init_rust_repository(&repository);
+        let sibling_root = fixture.path().join("sibling-worktree");
+        assert!(Command::new("git")
+            .args(["worktree", "add", "--quiet", "--detach"])
+            .arg(&sibling_root)
+            .arg("HEAD")
+            .current_dir(&repository)
+            .status()
+            .expect("create sibling build worktree")
+            .success());
+        let unrelated_root = fixture.path().join("unrelated-repository");
+        init_rust_repository(&unrelated_root);
+
+        let pool = goal_test_pool().await;
+        let workspace_store: Arc<dyn codegg_core::workspace::WorkspaceStore> = Arc::new(
+            codegg_core::workspace::SqliteWorkspaceStore::new(pool.clone()),
+        );
+        let workspace_registry = WorkspaceRegistry::load(workspace_store.clone())
+            .await
+            .expect("workspace registry");
+        let catalog = codegg_core::project_catalog::ProjectCatalog::new(pool.clone());
+        let project_storage = codegg_core::project_storage::ProjectStorage::new(pool.clone());
+        let same_workspace = workspace_registry
+            .get_or_register(&repository)
+            .await
+            .expect("register source workspace");
+        let same_project = catalog
+            .register_local_project(
+                codegg_core::project_catalog::RegisterLocalProject {
+                    display_name: "A003 same repository".into(),
+                    description: None,
+                    tags: Vec::new(),
+                    primary_repository_id: None,
+                },
+                &same_workspace.id,
+                "a003-production-build-measurement",
+            )
+            .await
+            .expect("register source repository");
+        let same_binding = project_storage
+            .workspace_binding(&same_workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let repository_id = same_binding.repository_id.unwrap();
+        let sibling_workspace = workspace_registry
+            .get_or_register(&sibling_root)
+            .await
+            .expect("register sibling workspace");
+        project_storage
+            .bind_checkout_workspace(
+                &sibling_workspace,
+                &same_project.project_id,
+                &repository_id,
+                &codegg_core::identity::WorktreeId::new(),
+                "a003-production-build-measurement",
+            )
+            .await
+            .expect("bind sibling to source repository");
+        let unrelated_workspace = workspace_registry
+            .get_or_register(&unrelated_root)
+            .await
+            .expect("register unrelated workspace");
+        catalog
+            .register_local_project(
+                codegg_core::project_catalog::RegisterLocalProject {
+                    display_name: "A003 unrelated repository".into(),
+                    description: None,
+                    tags: Vec::new(),
+                    primary_repository_id: None,
+                },
+                &unrelated_workspace.id,
+                "a003-production-build-measurement",
+            )
+            .await
+            .expect("register unrelated repository");
+        let resolver = Arc::new(codegg_core::context::ProjectContextResolver::new(
+            project_storage,
+            catalog,
+            workspace_store,
+        ));
+        let services = WorkspaceServiceRegistry::new(
+            workspace_registry,
+            Arc::new(ProductionWorkspaceServicesFactory),
+            WorkspaceServicePolicy::default(),
+        );
+        let target_root = fixture.path().join("targets");
+        std::fs::create_dir_all(&target_root).expect("create isolated target roots");
+        let make_cases =
+            |workspaces: [WorkspaceId; 2], roots: [std::path::PathBuf; 2], tag: &str| {
+                std::array::from_fn(|index| BuildCase {
+                    workspace_id: workspaces[index].clone(),
+                    root: roots[index].clone(),
+                    target: target_root.join(format!("{tag}-{index}")),
+                    report: fixture.path().join(format!("{tag}-{index}.time")),
+                })
+            };
+
+        let baseline_cases = make_cases(
+            [same_workspace.id.clone(), sibling_workspace.id.clone()],
+            [repository.clone(), sibling_root.clone()],
+            "quota-disabled-same-repository",
+        );
+        let (baseline_wall_ms, baseline_reports, baseline_targets) = run_build_pair(
+            services.clone(),
+            resolver.clone(),
+            None,
+            baseline_cases,
+            false,
+        )
+        .await;
+        let limited_cases = make_cases(
+            [same_workspace.id.clone(), sibling_workspace.id.clone()],
+            [repository.clone(), sibling_root.clone()],
+            "quota-one-same-repository",
+        );
+        let (limited_wall_ms, limited_reports, limited_targets) = run_build_pair(
+            services.clone(),
+            resolver.clone(),
+            Some(1),
+            limited_cases,
+            true,
+        )
+        .await;
+        let unrelated_cases = make_cases(
+            [same_workspace.id.clone(), unrelated_workspace.id.clone()],
+            [repository, unrelated_root],
+            "quota-one-unrelated-repositories",
+        );
+        let (unrelated_wall_ms, unrelated_reports, unrelated_targets) =
+            run_build_pair(services, resolver, Some(1), unrelated_cases, false).await;
+
+        println!("A003 production Cargo admission, Linux, CARGO_BUILD_JOBS=2");
+        println!("quota disabled, sibling worktrees: wall={baseline_wall_ms}ms reports={baseline_reports:?} target_bytes={baseline_targets:?}");
+        println!("repository quota=1, sibling worktrees: wall={limited_wall_ms}ms reports={limited_reports:?} target_bytes={limited_targets:?}");
+        println!("repository quota=1, unrelated repositories: wall={unrelated_wall_ms}ms reports={unrelated_reports:?} target_bytes={unrelated_targets:?}");
     }
 
     fn spec(workspace_id: WorkspaceId) -> NewJob {
