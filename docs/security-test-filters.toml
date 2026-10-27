@@ -71,6 +71,15 @@ security = "The private-index publisher must stage and publish under containment
 [[filter]]
 workflow = ".github/workflows/linux-m004-native.yml"
 job = "process-ipc"
+step = "A001 explicit read-only isolated placement obtains distinct contained checkouts"
+command = "cargo test --locked --test agent_loop explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts -- --nocapture --test-threads=1"
+filter = "explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts"
+tests = ["explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts"]
+security = "Explicit read-only isolation must obtain two distinct contained managed checkouts before child execution; this native Linux test must not silently select zero tests."
+
+[[filter]]
+workflow = ".github/workflows/linux-m004-native.yml"
+job = "process-ipc"
 step = "M004 constrained PTY live-owner qualification"
 command = "cargo test --locked -p codegg --lib interactive_process::tests::m004_live_owner_preserves_tty_and_private_process_view -- --test-threads=1 --nocapture"
 filter = "interactive_process::tests::m004_live_owner_preserves_tty_and_private_process_view"
