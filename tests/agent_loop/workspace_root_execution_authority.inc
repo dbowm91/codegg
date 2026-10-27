@@ -463,6 +463,11 @@ async fn explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts()
 
     let workspace = tempfile::tempdir().expect("job workspace");
     common::blackboard::init_repository(workspace.path());
+    // Diverge the parent working file from HEAD. A read of "base" proves the
+    // model-visible tool resolved in the managed checkout rather than in the
+    // unchanged parent path.
+    std::fs::write(workspace.path().join("README"), "parent-only\n")
+        .expect("mark the parent checkout distinctly");
     let managed_root = tempfile::tempdir().expect("managed worktree root");
     let scratch_root = tempfile::tempdir().expect("contained Git scratch root");
     let creator = Arc::new(
@@ -633,7 +638,7 @@ async fn explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts()
             .clone()
             .unwrap_or_default();
         assert!(
-            read_result.contains("base"),
+            read_result.contains("base") && !read_result.contains("parent-only"),
             "child must read the tracked marker from its checkout: {read_result}"
         );
         let run = run_store.get_run(&run_id).await.unwrap().unwrap();
@@ -658,7 +663,7 @@ async fn explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts()
     assert!(workspace.path().join("README").is_file());
     assert_eq!(
         std::fs::read_to_string(workspace.path().join("README")).unwrap(),
-        "base\n",
+        "parent-only\n",
         "the parent checkout remains unchanged"
     );
 }
