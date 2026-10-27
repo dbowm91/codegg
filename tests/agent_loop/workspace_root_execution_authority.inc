@@ -227,6 +227,17 @@ async fn build_executor(
     Arc<codegg::agent::worker::SubAgentPool>,
 ) {
     let pool = common::pool::isolated_pool().await;
+    build_executor_with_pool(marker, pool).await
+}
+
+async fn build_executor_with_pool(
+    marker: &str,
+    pool: sqlx::SqlitePool,
+) -> (
+    SubagentJobExecutor,
+    Arc<Mutex<Option<String>>>,
+    Arc<codegg::agent::worker::SubAgentPool>,
+) {
     let provider = RelativeReadProvider {
         marker: marker.to_string(),
         turn: Arc::new(Mutex::new(0)),
@@ -593,10 +604,12 @@ async fn explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts()
         Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
     )
     .with_contained_creator(creator);
-    let run_store = Arc::new(InMemoryAgentRunStore::new());
     let permit_pool = common::pool::isolated_pool().await;
+    let run_store = Arc::new(codegg_core::agent_run::SqliteAgentRunStore::new(
+        permit_pool.clone(),
+    ));
     let writer_permits = WriterPermitService::new(
-        WriterPermitStore::new(permit_pool),
+        WriterPermitStore::new(permit_pool.clone()),
         WorktreePermitAuthority::new(worktrees.clone()),
     );
     let writer_fences = DaemonWriterFenceFactory::with_team_state(
@@ -624,7 +637,8 @@ async fn explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts()
     let mut checkout_paths = Vec::new();
 
     for ordinal in 0..2 {
-        let (_, observed_tool_result, pool) = build_executor("README").await;
+        let (_, observed_tool_result, pool) =
+            build_executor_with_pool("README", permit_pool.clone()).await;
         let executor = SubagentJobExecutor::new_with_agent_runs_and_control_and_worktree(
             pool.clone(),
             run_store.clone(),
