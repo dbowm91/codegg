@@ -597,6 +597,8 @@ async fn explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts()
         .await
         .expect("register parent workspace");
     let workspace_id = workspace_record.id.clone();
+    let project_id = ProjectId::new();
+    let repository_id = RepositoryId::new();
     let workspace_services = WorkspaceServiceRegistry::new(
         workspace_registry,
         Arc::new(ProductionWorkspaceServicesFactory),
@@ -621,8 +623,8 @@ async fn explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts()
                     parent_task_id: None,
                     originating_session_id: "a001-contained-session".into(),
                     originating_turn_id: Some("a001-contained-turn".into()),
-                    project_id: ProjectId::new(),
-                    repository_id: Some(RepositoryId::new()),
+                    project_id: project_id.clone(),
+                    repository_id: Some(repository_id.clone()),
                     workspace_id: workspace_id.clone(),
                     requested_agent: CHILD_AGENT.into(),
                     delegation_key: format!("a001-contained-{ordinal}"),
@@ -759,6 +761,8 @@ async fn explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts()
             .expect("managed worktree record");
         assert_ne!(record.path, workspace.path());
         assert!(record.path.starts_with(managed_root.path()));
+        assert_eq!(record.project_id, project_id);
+        assert_eq!(record.repository_id, repository_id);
         assert!(record.path.join("README").is_file());
         assert_eq!(
             record.state,
