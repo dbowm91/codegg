@@ -22,11 +22,13 @@ Implementation commits or pull requests:
   re-bank.
 - `06916912f` — `docs(plans): record ADR-0054 and the C001 implementation
   plan`. ADR-0054, plan 001, and the subsystem addendum.
-- This closure record, the registry rows and the M003 receipt drift note are
-  in the following `docs(closure)` commit.
+- `91e9a053a` — `docs(closure): close C001 and reconcile the registry`. This
+  record, the registry rows, and the M003 receipt drift note.
+- Pull request `#204` — https://github.com/dbowm91/codegg/pull/204, branch
+  `feat/auto-20261026-7c94ea67` against `main`.
 
-Branch: `feat/auto-20261026-7c94ea67`, opened as a pull request against
-`main`. The hosted `CI / verify` job remains the merge gate.
+The hosted `CI / verify` job remains the merge gate; no hosted run was
+obtained for this branch.
 
 ## 1. Executive finding
 
