@@ -58,7 +58,7 @@ the TUI still has no timer of its own.
 | No body appears on the event path | `TranscriptAdvance` carries only `{ run_id, ordinal, recording_stopped }`; `EventLogTranscriptAdvanceSink` copies only those fields; `check_projection_publication_seam.sh` passes | pass | No text, no tool arguments, no reasoning, no credentials |
 | Mixed 16-run concurrency creates no unbounded producer/task state and no runaway TUI fetches | `src/agent/transcript_publisher.rs::sixteen_concurrent_runs_stay_within_the_publication_bounds`; `MAX_TRACKED_RUNS = 256` with oldest-first eviction; a finished run's entry is dropped at its completion flush | pass | One worker per publisher, never one per append; the tracked map is capped |
 | The source is authoritative when events drop | The durable store remains the only source of rows; a lost advisory is recovered by a cursor read; the tab's `next_ordinal` is the store's authoritative cursor | pass | Unchanged from M002/M003 |
-| Route/session switches, reconnect and close/reopen never display stale foreign rows | The existing fences are unchanged (request id → route token → run id → cursor → session → project); `a_completion_for_a_superseded_request_is_discarded` still passes | pass | Re-read authorization, redaction, scroll and eviction behaviour are unchanged |
+| Route/session switches, reconnect and close/reopen never display stale foreign rows | The existing fences are unchanged (request id → route token → run id → cursor → session → project); `a_completion_for_a_superseded_request_is_discarded` still passes; `::a_reconnect_drops_the_fetched_rows_and_the_tab_reads_them_again` proves the reconnect crossing end to end against a real store | pass | Re-read authorization, redaction, scroll and eviction behaviour are unchanged |
 | Deterministic tests **fail on baseline** for both defects, pass with the corrections | Baseline run in a detached worktree at `af7f1ff57` with the new test module spliced over the pre-fix production code | pass | See §4 for the exact failures |
 | A real-daemon composition receipt | `::the_tab_catches_up_a_real_daemons_long_transcript`, `::the_daemons_advisory_drives_the_tuis_live_follow` (real daemon → real store → real projection reducer → real TUI hint → painted row) | pass | The second one is C002-C's composed chain and is recorded in the C002 record as well |
 
@@ -171,15 +171,16 @@ the four defects.
 
 | Suite | Result |
 |---|---|
-| `cargo test --lib -- transcript_follow` | 12 passed, 0 failed |
+| `cargo test --lib -- transcript_follow` | 13 passed, 0 failed |
 | `cargo test --lib -- transcript_publisher` | 13 passed, 0 failed |
+| `cargo test --lib -- transcript` (every transcript-named unit test) | 61 passed, 0 failed |
 | `cargo test --test agent_loop -- delegated_transcript` | 11 passed, 0 failed (including the new blocked-child composition) |
-| `cargo test --test tui_render` (whole family) | see §4 receipts in the C002 record; the family is green |
-| `cargo test --test core_daemon -- delegated_transcript` | green |
-| `cargo test --test projection_replay -- delegated_transcript` | green |
+| `cargo test --test tui_render` (whole family) | 1109 passed, 0 failed |
+| `cargo test --test core_daemon -- delegated_transcript` | 4 passed, 0 failed |
+| `cargo test --test projection_replay -- delegated_transcript` | 10 passed, 0 failed |
 | The twelve guard scripts above | all pass |
 | `cargo fmt --all -- --check` | clean |
-| `bash scripts/verify.sh quick` | green |
+| `bash scripts/verify.sh quick` | green — "Quick verification passed." |
 
 `cargo clippy --workspace --all-targets --locked -- -D warnings` was also run on the **CI
 toolchain** (`+1.99.0`) and reports **0 errors**; that receipt belongs to the C002 record.

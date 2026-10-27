@@ -152,6 +152,12 @@ bash scripts/verify.sh quick
 # The hosted receipts, fetched after the push.
 gh run list --branch plan/delegated-run-live-transcript --limit N
 gh run view <run-id>
+
+# PR #203's diff and the branch against main.
+git fetch origin main
+git merge-tree --write-tree --name-only origin/main HEAD
+git rev-list --left-right --count origin/main...HEAD
+gh pr view 203 --json state,isDraft,headRefOid
 ```
 
 ### Results
@@ -180,6 +186,14 @@ are therefore **pre-existing upstream**; the branch introduced only the three `d
 errors, and those are repaired. The plan's "13" is locally reproducible as 12 under Rust 1.89 and
 13 under the CI's Rust 1.99 (the `double_must_use` lint itself only exists on the newer toolchain),
 which is consistent with the CI run's 16 = 13 + 3.
+
+**The branch against main.** `git rev-list --left-right --count origin/main...HEAD` reports
+**5 behind, 15 ahead**: `origin/main` advanced to `09dc761c7` (PR #204) after this branch was cut.
+`git merge-tree --write-tree --name-only origin/main HEAD` reports **three conflicting files** —
+`docs/comment-budget.toml`, `src/tool/edit.rs` and `src/test_runner/runner.rs` — and PR #204 has
+already repaired six of the nine lint files with the same mechanical fixes, so those six are now
+byte-identical to main. The finding and its resolution are in §10. PR #203 remains **open and
+draft**; nothing is merged and no merge readiness is claimed.
 
 **Hosted receipts.** See the table in §10 and the PR summary. They are fetched, not predicted.
 
@@ -266,6 +280,7 @@ with its counts.
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
 | medium | The hosted CI, Desktop E2E and platform workflows for the pushed head must be fetched and observed. This record is written before that fetch completes. | The implementation is locally green on the CI toolchain, but the hosted receipt is the plan's own gate for C002 | Fetch the runs for the pushed head and record the observed outcome here and in the PR summary. If a required workflow is red, classify and reproduce it — do not declare green |
+| medium | The branch conflicts with `origin/main` in three files. `origin/main` advanced to `09dc761c7` (PR #204) **after** this branch was cut, and that PR already repaired six of the nine lint files with the same mechanical fixes — `src/eggsact/adapter.rs`, `src/search_backend/framing.rs`, `src/test_runner/index.rs`, `src/tool/deterministic.rs`, `src/tool/skill.rs` and `src/tool/task.rs` are now byte-identical to main. The conflicts are `docs/comment-budget.toml`, `src/tool/edit.rs` and `src/test_runner/runner.rs`, where main's version of the last two already carries the lint fix in its own form. | The branch is 5 commits behind main and 15 ahead. The merge would need these three files resolved by taking main's version (the lint fix is already upstream) and re-banking `docs/comment-budget.toml` on the merged tree, because the manifest recorded the branch's own measurement | Resolve at merge time, before PR #203's merge gate: take main's version of `src/tool/edit.rs` and `src/test_runner/runner.rs`, re-bank the comment budget, and drop this branch's now-redundant copies of the six identical lint fixes. **No merge is performed or claimed by this record** |
 | low | The lint inventory is 12 diagnostics under Rust 1.89 and 13 under Rust 1.99; the plan says 13 | None: the difference is the `double_must_use` lint's own age, and the CI run's 16 = 13 + 3 is consistent | none |
 | low | The full workspace sweep is not green on this branch: the prior baseline's 30 failures and 1 timeout are inherited | Disclosed, not concealed; none of them is in the delegated-transcript surface, and the branch's `codegg --lib` failures are a strict subset of the baseline's | none for C002; the baseline sweep is a separate, registered concern |
 | low | The reconnect test models the projection renegotiation with the client's own capabilities | A test fixture simplification: it restores the same negotiated mode and version the daemon's handshake would | none |
