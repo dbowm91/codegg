@@ -627,6 +627,9 @@ impl Provider for OpenAiCompatibleProvider {
                 &self.config.credential.authorization_header_value(),
             );
 
+        if self.id == "opencode_go" {
+            crate::request_budget::admit_opencode_go_request()?;
+        }
         let mut response = match request.send().await {
             Ok(response) => response,
             Err(error) => {

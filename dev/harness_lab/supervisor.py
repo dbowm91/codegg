@@ -198,6 +198,11 @@ class SubjectSpec:
     def environment(self) -> dict[str, str]:
         home = self.root / "home"
         env = os.environ.copy()
+        has_request_limit = bool(env.get("CODEGG_HARNESS_MAX_PROVIDER_REQUESTS"))
+        if has_request_limit:
+            env["CODEGG_HARNESS_PROVIDER_REQUEST_RECEIPT"] = str(
+                self.root / "artifacts" / "provider-request-admissions.jsonl"
+            )
         # Remove ambient CodeGG routing/config overrides before adding the
         # lane's private roots. Retain provider variables only when the caller
         # explicitly opts into a model-backed experiment (not used by smoke).
@@ -220,7 +225,10 @@ class SubjectSpec:
             "TMPDIR": str(self.root / "scratch"),
             "TMP": str(self.root / "scratch"),
             "TEMP": str(self.root / "scratch"),
-            "RUST_LOG": "error",
+            "RUST_LOG": (
+                "error,codegg_providers::request_budget=info"
+                if has_request_limit else "error"
+            ),
         })
         for key in ("config", "codegg", "daemon", "data", "home", "xdg-data", "cache", "state", "runtime", "scratch", "artifacts", "cargo-home"):
             private_dir(self.root / key)
