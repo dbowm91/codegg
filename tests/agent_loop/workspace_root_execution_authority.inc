@@ -611,7 +611,7 @@ async fn explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts()
     for ordinal in 0..2 {
         let (_, observed_tool_result, pool) = build_executor("README").await;
         let executor = SubagentJobExecutor::new_with_agent_runs_and_control_and_worktree(
-            pool,
+            pool.clone(),
             run_store.clone(),
             None,
             worktrees.clone(),
