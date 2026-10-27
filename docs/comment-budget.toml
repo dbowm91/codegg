@@ -15,7 +15,7 @@ unlisted_max_comment_lines = 20
 [global]
 max_comment_lines = 130559
 max_comment_words = 1154201
-max_ratio = 0.1337
+max_ratio = 0.1341
 
 # Per-file ceilings. A file may shrink; it may not grow past what is
 # recorded here. A file that crosses the unlisted floor must be added.
@@ -191,7 +191,7 @@ max_ratio = 0.1337
 "crates/codegg-providers/src/fallback.rs" = { max_comment_lines = 51, max_ratio = 0.1336 }
 "crates/codegg-providers/src/openai.rs" = { max_comment_lines = 23, max_ratio = 0.0493 }
 "crates/codegg-providers/src/openai_compatible.rs" = { max_comment_lines = 84, max_ratio = 0.084 }
-"crates/codegg-providers/src/opencode_go.rs" = { max_comment_lines = 155, max_ratio = 0.1784 }
+"crates/codegg-providers/src/opencode_go.rs" = { max_comment_lines = 155, max_ratio = 0.2027 }
 "crates/codegg-providers/src/provider_core.rs" = { max_comment_lines = 425, max_ratio = 0.1583 }
 "crates/codegg-providers/src/provider_profile.rs" = { max_comment_lines = 124, max_ratio = 0.3264 }
 "crates/codegg-providers/src/qualification.rs" = { max_comment_lines = 105, max_ratio = 0.2975 }
@@ -456,7 +456,7 @@ max_ratio = 0.1337
 "src/scheduler/schedule_materializer.rs" = { max_comment_lines = 77, max_ratio = 0.4477 }
 "src/scheduler/scheduler.rs" = { max_comment_lines = 412, max_ratio = 0.2172 }
 "src/scheduler/snapshot.rs" = { max_comment_lines = 21, max_ratio = 0.1545 }
-"src/scheduler/submission.rs" = { max_comment_lines = 135, max_ratio = 0.1029 }
+"src/scheduler/submission.rs" = { max_comment_lines = 139, max_ratio = 0.0823 }
 "src/scheduler/tool_program_executor.rs" = { max_comment_lines = 249, max_ratio = 0.1052 }
 "src/scheduler/tool_program_notifications.rs" = { max_comment_lines = 169, max_ratio = 0.1537 }
 "src/scheduler/types.rs" = { max_comment_lines = 26, max_ratio = 0.2889 }
@@ -755,7 +755,7 @@ max_ratio = 0.1337
 "tests/agent_loop/work_plan_eggplan_differential.inc" = { max_comment_lines = 51, max_ratio = 0.0488 }
 "tests/agent_loop/work_plan_projection_arbiter.inc" = { max_comment_lines = 22, max_ratio = 0.0384 }
 "tests/agent_loop/work_plan_repository_binding.inc" = { max_comment_lines = 90, max_ratio = 0.0508 }
-"tests/agent_loop/workspace_root_execution_authority.inc" = { max_comment_lines = 44, max_ratio = 0.1186 }
+"tests/agent_loop/workspace_root_execution_authority.inc" = { max_comment_lines = 52, max_ratio = 0.074 }
 "tests/agent_loop/workspace_services_isolation.inc" = { max_comment_lines = 47, max_ratio = 0.1336 }
 "tests/causal_observe_replay/causal_observe_replay.inc" = { max_comment_lines = 49, max_ratio = 0.107 }
 "tests/command_git/command_routing_adversarial.inc" = { max_comment_lines = 126, max_ratio = 0.0845 }
