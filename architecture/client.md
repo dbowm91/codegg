@@ -109,6 +109,18 @@ active scope and document generation still match. The coordinator owns no
 transport, editor text, or rendering state, and no lock is held across an
 await. Each frontend still maps typed outcomes into its own view state.
 
+### Project LSP diagnostics stream
+
+`LspDiagnosticsStream` shares project-stream cursor and per-file sequence
+reconciliation through `codegg-client::LspDiagnosticsStream`. Both production
+frontends create their loss-aware event receiver before the dedicated
+`LspDiagnosticsSubscribe` request. The subscription snapshot has no readiness
+status, so it seeds stream ordering only; the frontend follows it with the
+authorized `LspDiagnosticsGet` and renders only that pull's `Ready` or
+`NotReady` result. `Ready(empty)` clears the view and `NotReady` retains the
+last complete set. A stream gap, local receiver lag, transport gap, or close
+marks the view stale and starts a fresh subscription plus authoritative pull.
+
 ### Entry Point
 
 ```rust
@@ -351,6 +363,12 @@ Verified 2026-10-23 against `src/client/attach.rs`, `src/client/sdk.rs`,
 `document.rs`, `compose.rs`, `connect.rs`, `paths.rs`, `lsp.rs`),
 `crates/codegg-core/src/error.rs`, and
 `crates/codegg-protocol/src/tui.rs`.
+- Re-verified 2026-10-27 against `crates/codegg-client/src/lsp.rs`,
+  `src/tui/commands/editor.rs`, and
+  `apps/desktop/src-tauri/src/document.rs`: the common diagnostics stream
+  validates subscription metadata and per-file sequences, while both
+  frontends obtain readiness through a separate authorized pull and recover
+  after stream loss.
 - **Removed a dead reference**: `ClientEvent` was documented at
   `crates/codegg-client/src/event.rs`. No such file exists; the type lives
   in `crates/codegg-client/src/local.rs:39`. Retargeted the reference and

@@ -1950,7 +1950,11 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             if app.editor_state.generation == scope.generation
                 && super::super::commands::editor::current_lsp_scope(app).as_ref() == Some(&scope)
                 && result.project_id == scope.project_id
-                && result.status == crate::protocol::lsp::LspDiagnosticsStatus::Ready
+                && matches!(
+                    result.status,
+                    crate::protocol::lsp::LspDiagnosticsStatus::Ready
+                        | crate::protocol::lsp::LspDiagnosticsStatus::NotReady
+                )
             {
                 app.editor_state
                     .lsp

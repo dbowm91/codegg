@@ -34,7 +34,7 @@ pub use lsp::{
     operation_label, DiagnosticsReconciler, DiagnosticsStreamUpdate, DiagnosticsSubscriptionError,
     LspDiagnosticsStream, LspReadClient, LspReadClientError, LspRequestCoordinator, LspRequestKey,
     LspRequestOperation, LspRequestScope, LspRequestStart, LspRequestTicket, ReconcileDecision,
-    StreamedDiagnosticDecision,
+    StreamedDiagnosticDecision, LSP_INTERACTIVE_DEBOUNCE,
 };
 pub use paths::{LocalDaemonPaths, LocalEndpoint};
 #[cfg(windows)]

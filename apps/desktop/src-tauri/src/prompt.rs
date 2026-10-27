@@ -147,6 +147,15 @@ impl HostState {
         let response = match response {
             Ok(response) => response,
             Err(error) => {
+                let stale = {
+                    let route = self.route.lock().await;
+                    self.current_generation() != connection_generation
+                        || route.connection_generation != connection_generation
+                        || route.route_generation != expected_generation
+                };
+                if stale {
+                    return Err("stale route; prompt result discarded".into());
+                }
                 self.fail_stored_intent(&intent, expected_generation, &error)
                     .await;
                 return Err(error);

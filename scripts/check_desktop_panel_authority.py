@@ -116,10 +116,13 @@ HOST_COMMAND_TABLE = Path("apps/desktop/src-tauri/src/lib.rs")
 #   adds them.
 # * M007-E adds the fifteen `desktop_document_*` commands: the editor's
 #   bounded document operations, which the host owns and the renderer names.
+# * M001 adds `desktop_document_diagnostics_subscribe` and
+#   `desktop_document_diagnostics_unsubscribe`: the bounded loss-aware LSP
+#   stream lifecycle, kept as two named read/cleanup commands.
 #
-# The baseline was re-measured once **both** sets were present: 40 targets,
-# and the same 40 the host's `generate_handler!` table registers. The two
-# sets are disjoint and the union is what the guard holds.
+# The baseline was re-measured once all three additions were present: 42
+# targets, and the same 42 the host's `generate_handler!` table registers.
+# The sets are disjoint and the union is what the guard holds.
 RECORDED_BRIDGE_TARGETS = frozenset(
     {
         "desktop_artifact_read",
@@ -133,6 +136,8 @@ RECORDED_BRIDGE_TARGETS = frozenset(
         "desktop_document_completion",
         "desktop_document_cursor",
         "desktop_document_diagnostics",
+        "desktop_document_diagnostics_subscribe",
+        "desktop_document_diagnostics_unsubscribe",
         "desktop_document_edit",
         "desktop_document_navigate",
         "desktop_document_open",

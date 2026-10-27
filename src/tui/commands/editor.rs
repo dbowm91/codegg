@@ -30,8 +30,8 @@ use codegg_client::{DocumentController, DocumentControllerError, DocumentState};
 use codegg_protocol::document::DocumentScope;
 use codegg_protocol::lsp::{
     LspCompletionApplicabilityDto, LspCompletionRequestDto, LspCompletionResultDto,
-    LspCompletionUnsupportedReason, LspDiagnosticsGetRequestDto, LspDiagnosticsResultDto,
-    LspReadOperation, LspReadRequestDto, LspReadResultDto, LspReadStatus,
+    LspCompletionUnsupportedReason, LspDiagnosticsResultDto, LspReadOperation, LspReadRequestDto,
+    LspReadResultDto, LspReadStatus,
 };
 
 use crate::tui::app::state::editor::{EditorNotice, EditorOperation, EditorState, EditorStatus};
@@ -151,6 +151,7 @@ pub(crate) fn open_editor(app: &mut App, raw_path: &str) {
 /// itself — it names the scope and the daemon decides — so the containment
 /// rule for a global agent lives in exactly one place.
 pub(crate) fn open_editor_in(app: &mut App, raw_path: &str, scope: DocumentScope) {
+    app.cancel_lsp_diagnostics_stream();
     let path = match normalize_relative_path(raw_path) {
         Ok(path) => path,
         Err(error) => {
@@ -598,13 +599,18 @@ pub(crate) fn refresh_editor_diagnostics(app: &mut App) {
         app.editor_state.lsp.diagnostics_stale = !app.editor_state.lsp.diagnostics.is_empty();
         return;
     };
+    if let Some(cancel) = app.lsp_diagnostics_stream_cancel.take() {
+        cancel.cancel();
+    }
+    let stream_cancel = tokio_util::sync::CancellationToken::new();
+    app.lsp_diagnostics_stream_cancel = Some(stream_cancel.clone());
     let tx = app.tui_cmd_tx.clone();
     let tab_id = app.active_tab_id().map(|id| id.to_string());
     let response_ticket = ticket.clone();
     let response_scope = coordinator_scope.clone();
     let document_generation = scope.generation;
     let task_id = spawn_scoped_registered_tui_task(
-        tx,
+        tx.clone(),
         &mut app.task_registry,
         TuiTaskKind::Editor,
         "editor_lsp_diagnostics",
@@ -612,45 +618,291 @@ pub(crate) fn refresh_editor_diagnostics(app: &mut App) {
         None,
         None,
         async move {
-            let cancellation = response_ticket.cancellation_token();
-            let request = crate::core::new_request(
-                uuid::Uuid::new_v4().to_string(),
-                crate::protocol::core::CoreRequest::LspDiagnosticsGet {
-                    request: LspDiagnosticsGetRequestDto {
-                        project_id: scope.project_id.clone(),
-                        session_id: scope.session_id.clone(),
+            let command_tx = tx?;
+            let ticket_cancel = response_ticket.cancellation_token();
+            // Install the event receiver before the subscribe request so an
+            // update published after its snapshot cannot fall into the gap.
+            let mut events = client.subscribe_loss_aware();
+            let mut first = true;
+            loop {
+                let request = crate::core::new_request(
+                    uuid::Uuid::new_v4().to_string(),
+                    crate::protocol::core::CoreRequest::LspDiagnosticsSubscribe {
+                        request: crate::protocol::lsp::LspDiagnosticsSubscribeRequestDto {
+                            project_id: scope.project_id.clone(),
+                            cursor: None,
+                            projection_version:
+                                crate::protocol::projection::PROJECTION_PROTOCOL_VERSION,
+                        },
                     },
-                },
-            );
-            let response = tokio::select! {
-                _ = cancellation.cancelled() => {
-                    let _ = coordinator.finish(&response_ticket, &response_scope, document_generation);
-                    return None;
-                },
-                response = client.request(request) => response,
-            };
-            if !coordinator.finish(&response_ticket, &response_scope, document_generation) {
-                return None;
+                );
+                let response = tokio::select! {
+                    _ = stream_cancel.cancelled() => break,
+                    _ = ticket_cancel.cancelled() => break,
+                    response = client.request(request) => response,
+                };
+                let (subscription_id, descriptor, snapshot, cursor) = match response {
+                    Ok(crate::protocol::core::CoreResponse::ProjectionSubscribed {
+                        subscription_id,
+                        descriptor,
+                        snapshot,
+                        cursor,
+                        ..
+                    }) => (subscription_id, descriptor, snapshot, cursor),
+                    Ok(crate::protocol::core::CoreResponse::Error { message, .. }) => {
+                        if first {
+                            let _ = coordinator.finish(
+                                &response_ticket,
+                                &response_scope,
+                                document_generation,
+                            );
+                            let _ = command_tx
+                                .send(TuiCommand::EditorDiagnosticsFinished {
+                                    request_id,
+                                    scope: scope.clone(),
+                                    result: None,
+                                    error: Some(message),
+                                })
+                                .await;
+                        }
+                        break;
+                    }
+                    Ok(other) => {
+                        if first {
+                            let _ = coordinator.finish(
+                                &response_ticket,
+                                &response_scope,
+                                document_generation,
+                            );
+                            let _ = command_tx
+                                .send(TuiCommand::EditorDiagnosticsFinished {
+                                    request_id,
+                                    scope: scope.clone(),
+                                    result: None,
+                                    error: Some(format!(
+                                        "unexpected diagnostics subscription response: {other:?}"
+                                    )),
+                                })
+                                .await;
+                        }
+                        break;
+                    }
+                    Err(error) => {
+                        if first {
+                            let _ = coordinator.finish(
+                                &response_ticket,
+                                &response_scope,
+                                document_generation,
+                            );
+                            let _ = command_tx
+                                .send(TuiCommand::EditorDiagnosticsFinished {
+                                    request_id,
+                                    scope: scope.clone(),
+                                    result: None,
+                                    error: Some(error.to_string()),
+                                })
+                                .await;
+                        }
+                        break;
+                    }
+                };
+                let mut stream = match codegg_client::LspDiagnosticsStream::from_subscription(
+                    &scope.project_id,
+                    subscription_id.clone(),
+                    &descriptor,
+                    &snapshot,
+                    &cursor,
+                ) {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        let _ = client
+                            .request(crate::core::new_request(
+                                uuid::Uuid::new_v4().to_string(),
+                                crate::protocol::core::CoreRequest::ProjectionUnsubscribe {
+                                    subscription_id,
+                                },
+                            ))
+                            .await;
+                        if first {
+                            let _ = coordinator.finish(
+                                &response_ticket,
+                                &response_scope,
+                                document_generation,
+                            );
+                            let _ = command_tx
+                                .send(TuiCommand::EditorDiagnosticsFinished {
+                                    request_id,
+                                    scope: scope.clone(),
+                                    result: None,
+                                    error: Some(error.to_string()),
+                                })
+                                .await;
+                        }
+                        break;
+                    }
+                };
+                let pull = tokio::select! {
+                    _ = stream_cancel.cancelled() => None,
+                    _ = ticket_cancel.cancelled() => None,
+                    response = client.request(crate::core::new_request(
+                        uuid::Uuid::new_v4().to_string(),
+                        crate::protocol::core::CoreRequest::LspDiagnosticsGet {
+                            request: crate::protocol::lsp::LspDiagnosticsGetRequestDto {
+                                project_id: scope.project_id.clone(),
+                                session_id: scope.session_id.clone(),
+                            },
+                        },
+                    )) => Some(response),
+                };
+                let initial = match pull {
+                    Some(Ok(crate::protocol::core::CoreResponse::LspDiagnosticsGetResult {
+                        result,
+                    })) => result,
+                    Some(Ok(crate::protocol::core::CoreResponse::Error { message, .. })) => {
+                        let _ = client
+                            .request(crate::core::new_request(
+                                uuid::Uuid::new_v4().to_string(),
+                                crate::protocol::core::CoreRequest::ProjectionUnsubscribe {
+                                    subscription_id,
+                                },
+                            ))
+                            .await;
+                        if first {
+                            let _ = coordinator.finish(
+                                &response_ticket,
+                                &response_scope,
+                                document_generation,
+                            );
+                            let _ = command_tx
+                                .send(TuiCommand::EditorDiagnosticsFinished {
+                                    request_id,
+                                    scope: scope.clone(),
+                                    result: None,
+                                    error: Some(message),
+                                })
+                                .await;
+                        }
+                        break;
+                    }
+                    Some(Err(error)) => {
+                        let _ = client
+                            .request(crate::core::new_request(
+                                uuid::Uuid::new_v4().to_string(),
+                                crate::protocol::core::CoreRequest::ProjectionUnsubscribe {
+                                    subscription_id,
+                                },
+                            ))
+                            .await;
+                        if first {
+                            let _ = coordinator.finish(
+                                &response_ticket,
+                                &response_scope,
+                                document_generation,
+                            );
+                            let _ = command_tx
+                                .send(TuiCommand::EditorDiagnosticsFinished {
+                                    request_id,
+                                    scope: scope.clone(),
+                                    result: None,
+                                    error: Some(error.to_string()),
+                                })
+                                .await;
+                        }
+                        break;
+                    }
+                    _ => {
+                        let _ = client
+                            .request(crate::core::new_request(
+                                uuid::Uuid::new_v4().to_string(),
+                                crate::protocol::core::CoreRequest::ProjectionUnsubscribe {
+                                    subscription_id,
+                                },
+                            ))
+                            .await;
+                        break;
+                    }
+                };
+                let _ = stream.apply_authoritative(initial.clone());
+                let request_is_current =
+                    coordinator.finish(&response_ticket, &response_scope, document_generation);
+                if !request_is_current {
+                    let _ = client
+                        .request(crate::core::new_request(
+                            uuid::Uuid::new_v4().to_string(),
+                            crate::protocol::core::CoreRequest::ProjectionUnsubscribe {
+                                subscription_id,
+                            },
+                        ))
+                        .await;
+                    break;
+                }
+                if first {
+                    first = false;
+                    if command_tx
+                        .send(TuiCommand::EditorDiagnosticsFinished {
+                            request_id,
+                            scope: scope.clone(),
+                            result: Some(initial),
+                            error: None,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                } else if command_tx
+                    .send(TuiCommand::EditorDiagnosticsStreamUpdated {
+                        scope: scope.clone(),
+                        result: initial,
+                        stale: false,
+                    })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+
+                let mut resubscribe = false;
+                loop {
+                    tokio::select! {
+                        _ = stream_cancel.cancelled() => break,
+                        _ = ticket_cancel.cancelled() => break,
+                        event = events.recv() => match event {
+                            Some(event) => match stream.accept_client_event(&event) {
+                                codegg_client::DiagnosticsStreamUpdate::Updated(result) => {
+                                    if command_tx.send(TuiCommand::EditorDiagnosticsStreamUpdated {
+                                        scope: scope.clone(), result, stale: false,
+                                    }).await.is_err() { break; }
+                                }
+                                codegg_client::DiagnosticsStreamUpdate::ReconcileRequired => {
+                                    if let Some(current) = stream.current().cloned() {
+                                        let _ = command_tx.send(TuiCommand::EditorDiagnosticsStreamUpdated {
+                                            scope: scope.clone(), result: current, stale: true,
+                                        }).await;
+                                    }
+                                    resubscribe = true;
+                                    break;
+                                }
+                                codegg_client::DiagnosticsStreamUpdate::Ignored => {}
+                            },
+                            None => break,
+                        }
+                    }
+                }
+                let _ = client
+                    .request(crate::core::new_request(
+                        uuid::Uuid::new_v4().to_string(),
+                        crate::protocol::core::CoreRequest::ProjectionUnsubscribe {
+                            subscription_id,
+                        },
+                    ))
+                    .await;
+                if !resubscribe || stream_cancel.is_cancelled() || ticket_cancel.is_cancelled() {
+                    break;
+                }
             }
-            let (result, error) = match response {
-                Ok(crate::protocol::core::CoreResponse::LspDiagnosticsGetResult { result }) => {
-                    (Some(result), None)
-                }
-                Ok(crate::protocol::core::CoreResponse::Error { message, .. }) => {
-                    (None, Some(message))
-                }
-                Ok(other) => (
-                    None,
-                    Some(format!("unexpected diagnostics response: {other:?}")),
-                ),
-                Err(error) => (None, Some(error.to_string())),
-            };
-            Some(TuiCommand::EditorDiagnosticsFinished {
-                request_id,
-                scope,
-                result,
-                error,
-            })
+            let _ = coordinator.finish(&response_ticket, &response_scope, document_generation);
+            None
         },
     );
     if task_id.is_none() {
@@ -848,6 +1100,15 @@ fn start_editor_lsp_read(
         None,
         async move {
             let cancellation = response_ticket.cancellation_token();
+            if operation == LspReadOperation::Hover {
+                tokio::select! {
+                    _ = cancellation.cancelled() => {
+                        let _ = coordinator.finish(&response_ticket, &response_scope, document_generation);
+                        return None;
+                    }
+                    _ = tokio::time::sleep(codegg_client::LSP_INTERACTIVE_DEBOUNCE) => {}
+                }
+            }
             let request = crate::core::new_request(
                 uuid::Uuid::new_v4().to_string(),
                 crate::protocol::core::CoreRequest::LspReadGet { request },
@@ -1223,6 +1484,13 @@ pub(crate) fn start_editor_completion(app: &mut App) {
         None,
         async move {
             let cancellation = response_ticket.cancellation_token();
+            tokio::select! {
+                _ = cancellation.cancelled() => {
+                    let _ = coordinator.finish(&response_ticket, &response_scope, document_generation);
+                    return None;
+                }
+                _ = tokio::time::sleep(codegg_client::LSP_INTERACTIVE_DEBOUNCE) => {}
+            }
             let request = crate::core::new_request(
                 uuid::Uuid::new_v4().to_string(),
                 crate::protocol::core::CoreRequest::LspCompletionGet { request },
@@ -1471,6 +1739,7 @@ fn accept_selected_completion(app: &mut App) {
 /// route whose attachment is going away; the completion is still guarded so
 /// a late result cannot be applied to a future attachment.
 pub(crate) fn close_editor(app: &mut App) {
+    app.cancel_lsp_diagnostics_stream();
     if !app.editor_state.is_open() {
         leave_editor_view(app);
         return;

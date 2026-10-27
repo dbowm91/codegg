@@ -191,10 +191,15 @@ impl EditorLspState {
         result: LspDiagnosticsResultDto,
         stale: bool,
     ) -> bool {
-        if self.scope.as_ref() != Some(scope)
-            || result.project_id != scope.project_id
-            || result.status != codegg_protocol::lsp::LspDiagnosticsStatus::Ready
-        {
+        if self.scope.as_ref() != Some(scope) || result.project_id != scope.project_id {
+            return false;
+        }
+        if result.status == codegg_protocol::lsp::LspDiagnosticsStatus::NotReady {
+            self.diagnostics_status = DiagnosticsViewStatus::NotReady;
+            self.diagnostics_stale = !self.diagnostics.is_empty();
+            return true;
+        }
+        if result.status != codegg_protocol::lsp::LspDiagnosticsStatus::Ready {
             return false;
         }
         if stale {
@@ -530,6 +535,31 @@ mod tests {
         assert!(state.apply_diagnostics(request, &scope, None, Some("offline".into())));
         assert_eq!(state.diagnostics.len(), 1);
         assert_eq!(state.diagnostics_status, DiagnosticsViewStatus::Unavailable);
+    }
+
+    #[test]
+    fn streamed_not_ready_retains_contents_but_ready_empty_clears_them() {
+        let scope = scope();
+        let mut state = EditorLspState::default();
+        let request = state.begin_diagnostics(&scope).unwrap();
+        assert!(state.apply_diagnostics(request, &scope, Some(ready(&scope, 1)), None));
+        let prior = state.diagnostics.clone();
+
+        assert!(state.apply_streamed_diagnostics(&scope, not_ready(&scope), false));
+        assert_eq!(state.diagnostics, prior);
+        assert_eq!(state.diagnostics_status, DiagnosticsViewStatus::NotReady);
+        assert!(state.diagnostics_stale);
+
+        let empty = crate::protocol::lsp::LspDiagnosticsResultDto {
+            project_id: scope.project_id.clone(),
+            status: crate::protocol::lsp::LspDiagnosticsStatus::Ready,
+            files: Vec::new(),
+            truncated: false,
+        };
+        assert!(state.apply_streamed_diagnostics(&scope, empty, false));
+        assert!(state.diagnostics.is_empty());
+        assert_eq!(state.diagnostics_status, DiagnosticsViewStatus::Ready);
+        assert!(!state.diagnostics_stale);
     }
 
     #[test]

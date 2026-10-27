@@ -3,6 +3,7 @@
 #
 # Usage (from anywhere; paths resolve internally):
 #   CODEGG_DAEMON_EXECUTABLE=/path/to/codegg apps/desktop/e2e/run-e2e.sh
+#   CODEGG_DAEMON_EXECUTABLE=/path/to/codegg apps/desktop/e2e/run-e2e.sh session
 #
 # Flow per phase (lifecycle, then autostart — separate phases because the
 # embedded WebDriver provider spawns the desktop app once per WebdriverIO
@@ -79,6 +80,22 @@ wait_for_socket() {
   done
 }
 
+cleanup_app_process() {
+  local wdio_log="$app_root/e2e/logs/wdio.log"
+  [[ -f "$wdio_log" ]] || return 0
+  local app_pid
+  app_pid="$(sed -nE 's/.*Tauri app spawned \(PID: ([0-9]+)\).*/\1/p' "$wdio_log" | tail -1)"
+  [[ "$app_pid" =~ ^[0-9]+$ ]] || return 0
+  kill -0 "$app_pid" 2>/dev/null || return 0
+  local app_command
+  app_command="$(ps -p "$app_pid" -o command= 2>/dev/null | sed 's/^[[:space:]]*//' || true)"
+  [[ "$app_command" == "$app_root/src-tauri/target/debug/codegg-desktop"* ]] || return 0
+  # WebdriverIO normally closes the app, but an assertion or service failure
+  # can leave its embedded server on the fixed phase port. Reap only the PID
+  # this invocation logged and only when it is still this E2E app binary.
+  kill "$app_pid" 2>/dev/null || true
+}
+
 run_phase() {
   local name="$1" spec="$2" prestart="$3" wdio_port="$4"
   local home server_pid status=0
@@ -125,6 +142,7 @@ run_phase() {
     echo "phase $name FAILED" >&2
     status=1
   fi
+  cleanup_app_process
   # Keep the fixture server log and the isolated daemon log beside the
   # runner logs (supplementary artifacts for post-mortems); the phase home
   # itself is always removed.
@@ -162,9 +180,26 @@ run_phase() {
 }
 
 overall=0
-run_phase lifecycle m003-lifecycle.e2e.ts start 4445 || overall=1
-run_phase autostart m003-autostart.e2e.ts start-then-stop 4446 || overall=1
-run_phase session m004-session.e2e.ts start 4447 || overall=1
+case "${1:-all}" in
+  all)
+    run_phase lifecycle m003-lifecycle.e2e.ts start 4445 || overall=1
+    run_phase autostart m003-autostart.e2e.ts start-then-stop 4446 || overall=1
+    run_phase session m004-session.e2e.ts start 4447 || overall=1
+    ;;
+  lifecycle)
+    run_phase lifecycle m003-lifecycle.e2e.ts start 4445 || overall=1
+    ;;
+  autostart)
+    run_phase autostart m003-autostart.e2e.ts start-then-stop 4446 || overall=1
+    ;;
+  session)
+    run_phase session m004-session.e2e.ts start 4447 || overall=1
+    ;;
+  *)
+    echo "usage: run-e2e.sh [all|lifecycle|autostart|session]" >&2
+    exit 2
+    ;;
+esac
 if ((overall != 0)); then
   echo "E2E trajectory FAILED" >&2
 fi

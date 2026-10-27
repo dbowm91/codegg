@@ -21,6 +21,7 @@ export interface TestBrowser {
   ): Promise<void>;
   refresh(): Promise<void>;
   closeWindow(): Promise<void>;
+  keys(...value: string[]): Promise<void>;
   // Raw script execution (proven working). Used only for read-only
   // in-page diagnostics (document state, host snapshot/project counts via
   // the page's own bundled Tauri API) — never to drive the app.

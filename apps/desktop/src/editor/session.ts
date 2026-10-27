@@ -24,6 +24,8 @@ import type {
 export interface EditorSessionOptions {
   /** The route generation the editor's scope is fenced on, or null. */
   routeGeneration: number | null;
+  /** The active route session needed for authorized LSP reads, or null. */
+  sessionId: string | null;
   /** Whether a workspace is selected for the current route. */
   enabled: boolean;
   /**
@@ -50,7 +52,7 @@ function failureMessage(error: unknown): string {
  * blank document.
  */
 export function useEditorSession(options: EditorSessionOptions): EditorPanelProps {
-  const { routeGeneration, enabled, effectiveMap } = options;
+  const { routeGeneration, sessionId, enabled, effectiveMap } = options;
   const [viewport, setViewport] = useState<EditorViewportView | null>(null);
   const [status, setStatus] = useState<EditorStateView | null>(null);
   const [tree, setTree] = useState<EditorTreeView | null>(null);
@@ -186,15 +188,6 @@ export function useEditorSession(options: EditorSessionOptions): EditorPanelProp
     );
   }, [routeGeneration, run]);
 
-  /** Re-read the project's diagnostics. */
-  const refreshDiagnostics = useCallback(async () => {
-    if (routeGeneration === null) return;
-    await run(
-      () => bridge.documentDiagnostics(routeGeneration),
-      (view) => setDiagnostics(view),
-    );
-  }, [routeGeneration, run]);
-
   /** Ask for completion candidates at the caret. */
   const complete = useCallback(async () => {
     await run(() => bridge.documentCompletion(null), (view) => setCompletion(view));
@@ -224,18 +217,41 @@ export function useEditorSession(options: EditorSessionOptions): EditorPanelProp
   useEffect(() => {
     setViewport(null);
     setStatus(null);
+    setDiagnostics(null);
     setCompletion(null);
     setNavigation(null);
     setError(null);
-  }, [routeGeneration]);
+  }, [routeGeneration, sessionId]);
 
-  // The workspace became available: read the file tree and the diagnostics
-  // the editor's affordances show.
+  // The workspace became available: read its file tree.
   useEffect(() => {
     if (!enabled || routeGeneration === null) return;
     void refreshTree();
-    void refreshDiagnostics();
-  }, [enabled, refreshDiagnostics, refreshTree, routeGeneration]);
+  }, [enabled, refreshTree, routeGeneration]);
+
+  // Diagnostics are authorized through the active session. A workspace can
+  // be selected before the user creates or opens a session, so wait for its
+  // identity before installing the loss-aware stream.
+  useEffect(() => {
+    if (!enabled || routeGeneration === null || sessionId === null) return;
+    let disposed = false;
+    let subscriptionId: string | null = null;
+    void bridge.documentDiagnosticsSubscribe(routeGeneration, (view) => {
+      if (mounted.current) setDiagnostics(view);
+    }).then((id) => {
+      if (disposed) {
+        void bridge.documentDiagnosticsUnsubscribe(id);
+      } else {
+        subscriptionId = id;
+      }
+    }).catch((caught) => {
+      if (mounted.current) setError(failureMessage(caught));
+    });
+    return () => {
+      disposed = true;
+      if (subscriptionId) void bridge.documentDiagnosticsUnsubscribe(subscriptionId);
+    };
+  }, [enabled, refreshTree, routeGeneration, sessionId]);
 
   return {
     effectiveMap,

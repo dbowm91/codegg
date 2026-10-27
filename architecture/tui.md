@@ -7236,6 +7236,12 @@ does not add editor widgets, keybindings, or a second TUI text buffer.
 
 ## Source verification
 
+Re-verified the daemon-backed editor diagnostics lifecycle on 2026-10-27
+against `src/tui/commands/editor.rs`, `src/tui/editor_lsp.rs`,
+`src/tui/app/project_session.rs`, and `crates/codegg-client/src/lsp.rs`:
+the editor subscribes after opening/saving/F2, marks a retained view stale on
+stream loss, and uses a separate diagnostics pull to establish readiness.
+
 Verified 2026-10-06 against `src/tui/`: `app/mod.rs` line count
 (14,358), the 27 `app/state/` modules (28 `.rs` files), `App` at
 `app/mod.rs:222`, `Component` at `components/component.rs:183`,
@@ -7387,13 +7393,17 @@ sites are now `tokio::task::block_in_place` waits, and
 ### Editor LSP presentation (M006-C)
 
 The editor consumes the daemon-owned `LspDiagnosticsGet` and `LspReadGet`
-surfaces. Diagnostics are pulled when a document opens, after a successful
-save, and on F2. F2 opens a bounded list with severity, message, and source
-range; gutter markers identify lines with diagnostics. A `Ready` result
-replaces the complete current-file set, including clearing it when empty.
-`NotReady`, request failure, and transport loss preserve the last complete
-set and mark it stale where one exists. The UI does not poll or claim live
-push updates.
+surfaces. Diagnostics are subscribed to when a document opens, after a
+successful save, and on F2. The TUI installs its loss-aware event receiver
+before the project subscription, then performs an authoritative
+`LspDiagnosticsGet`; the status-free subscription snapshot is only a stream
+baseline and can never be shown as `Ready`. F2 opens a bounded list with
+severity, message, and source range; gutter markers identify lines with
+diagnostics. A `Ready` result replaces the complete current-file set,
+including clearing it when empty. `NotReady`, request failure, stream gap,
+and transport loss preserve the last complete set and mark it stale where
+one exists. A gap releases and recreates the authorized subscription; there
+is no frontend readiness polling.
 
 F3 requests hover, F4 definition, F5 references, F6 document symbols, and F7
 workspace symbol search for the word at the cursor. Results are bounded and

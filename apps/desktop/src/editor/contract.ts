@@ -122,6 +122,7 @@ export interface EditorDiagnosticsView {
   message: string;
   diagnostics: EditorDiagnosticView[];
   truncated: boolean;
+  stale?: boolean;
 }
 
 /** One inert completion candidate. */

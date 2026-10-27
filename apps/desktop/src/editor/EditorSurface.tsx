@@ -333,7 +333,11 @@ export function EditorSurface(props: EditorPanelProps) {
           <h3>Diagnostics</h3>
           {diagnostics ? (
             <>
-              <p data-testid="editor-diagnostics-status" data-status={diagnostics.status}>
+              <p
+                data-testid="editor-diagnostics-status"
+                data-status={diagnostics.status}
+                data-stale={diagnostics.stale ?? false}
+              >
                 {diagnostics.message}
               </p>
               <ul>

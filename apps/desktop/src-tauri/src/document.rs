@@ -39,7 +39,10 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use codegg_client::{DocumentController, DocumentState, DocumentTransport};
+use codegg_client::{
+    DiagnosticsStreamUpdate, DocumentController, DocumentState, DocumentTransport,
+    LspDiagnosticsStream,
+};
 use codegg_document::{DocumentSnapshot, TextEdit, TextTransaction};
 use codegg_protocol::core::{CoreRequest, CoreResponse, RequestEnvelope, PROTOCOL_VERSION};
 use codegg_protocol::document::{
@@ -51,7 +54,8 @@ use codegg_protocol::lsp::{
     LspDiagnosticsStatus, LspReadOperation, LspReadRequestDto, LspReadStatus,
 };
 use serde::Serialize;
-use tauri::State;
+use std::time::Duration;
+use tauri::{ipc::Channel, State};
 use tokio::sync::Mutex;
 
 use crate::HostState;
@@ -261,6 +265,8 @@ pub struct EditorDiagnosticsView {
     pub diagnostics: Vec<EditorDiagnosticView>,
     /// Whether the set was trimmed.
     pub truncated: bool,
+    /// The last complete set is retained while a stream gap is reconciled.
+    pub stale: bool,
 }
 
 /// One inert completion candidate.
@@ -1287,6 +1293,372 @@ pub(crate) async fn desktop_document_diagnostics(
     Ok(diagnostics_view(result))
 }
 
+/// Attach a loss-aware, project-scoped diagnostics stream for the active
+/// editor route. The renderer receives the subscription snapshot first and
+/// then complete-file updates; gaps retain the last view as stale while a
+/// fresh authorized subscription establishes a new baseline.
+#[tauri::command]
+pub(crate) async fn desktop_document_diagnostics_subscribe(
+    state: State<'_, Arc<HostState>>,
+    route_generation: u64,
+    channel: Channel<EditorDiagnosticsView>,
+) -> Result<String, String> {
+    let (project_id, workspace_id, _) = state.route_selection(route_generation, false).await?;
+    let session_id = route_session(&state).await?;
+    let (client, _) = state.route_request().await?;
+    let connection_generation = state.current_generation();
+    if let Some((_, previous_daemon_id)) = state
+        .lsp_diagnostics_daemon_subscription
+        .lock()
+        .await
+        .take()
+    {
+        let _ = client
+            .request(RequestEnvelope {
+                protocol_version: PROTOCOL_VERSION,
+                request_id: uuid::Uuid::new_v4().to_string(),
+                payload: CoreRequest::ProjectionUnsubscribe {
+                    subscription_id: previous_daemon_id,
+                },
+            })
+            .await;
+    }
+    let subscription_id = state
+        .lsp_diagnostics_subscriptions
+        .allocate_subscription_id();
+    let owned_id = subscription_id.clone();
+    let task_state = Arc::clone(&state);
+    let task = tokio::spawn(async move {
+        let mut events = client.subscribe_events();
+        'subscribe: loop {
+            if task_state.current_generation() != connection_generation
+                || task_state
+                    .route_selection(route_generation, false)
+                    .await
+                    .is_err()
+            {
+                break;
+            }
+            let request_scope = codegg_client::LspRequestScope {
+                frontend_id: "desktop".to_owned(),
+                attachment_id: format!("route:{route_generation}"),
+                route_generation,
+                connection_generation,
+                project_id: project_id.clone(),
+                workspace_id: workspace_id.clone(),
+                session_id: session_id.clone(),
+                document_id: None,
+                path: None,
+                server_id: None,
+            };
+            let ticket =
+                match task_state
+                    .lsp_request_coordinator
+                    .begin(codegg_client::LspRequestKey {
+                        scope: request_scope.clone(),
+                        operation: codegg_client::LspRequestOperation::Diagnostics,
+                        document_generation: route_generation,
+                        position: None,
+                        argument: None,
+                    }) {
+                    codegg_client::LspRequestStart::Started(ticket) => ticket,
+                    codegg_client::LspRequestStart::AlreadyInFlight
+                    | codegg_client::LspRequestStart::AtCapacity => break,
+                };
+            let cancellation = ticket.cancellation_token();
+            let request = RequestEnvelope {
+                protocol_version: PROTOCOL_VERSION,
+                request_id: uuid::Uuid::new_v4().to_string(),
+                payload: CoreRequest::LspDiagnosticsSubscribe {
+                    request: codegg_protocol::lsp::LspDiagnosticsSubscribeRequestDto {
+                        project_id: project_id.clone(),
+                        cursor: None,
+                        projection_version:
+                            codegg_protocol::projection::PROJECTION_PROTOCOL_VERSION,
+                    },
+                },
+            };
+            let response = tokio::select! {
+                response = client.request(request) => response,
+                _ = cancellation.cancelled() => {
+                    let _ = task_state.lsp_request_coordinator.finish(
+                        &ticket, &request_scope, route_generation,
+                    );
+                    break;
+                }
+                _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                    let _ = task_state.lsp_request_coordinator.finish(
+                        &ticket, &request_scope, route_generation,
+                    );
+                    let _ = channel.send(unavailable_diagnostics(
+                        "the diagnostics subscription timed out".to_owned(),
+                    ));
+                    break;
+                },
+            };
+            let (daemon_subscription, descriptor, snapshot, cursor) = match response {
+                Ok(CoreResponse::ProjectionSubscribed {
+                    subscription_id,
+                    descriptor,
+                    snapshot,
+                    cursor,
+                    ..
+                }) => (subscription_id, descriptor, snapshot, cursor),
+                Ok(CoreResponse::Error { message, .. }) => {
+                    let _ = channel.send(unavailable_diagnostics(message));
+                    break;
+                }
+                Ok(other) => {
+                    let _ = channel.send(unavailable_diagnostics(format!(
+                        "unexpected diagnostics subscription response: {other:?}"
+                    )));
+                    break;
+                }
+                Err(error) => {
+                    let _ = channel.send(unavailable_diagnostics(error.to_string()));
+                    break;
+                }
+            };
+            let mut stream = match LspDiagnosticsStream::from_subscription(
+                &project_id,
+                daemon_subscription.clone(),
+                &descriptor,
+                &snapshot,
+                &cursor,
+            ) {
+                Ok(stream) => stream,
+                Err(_) => {
+                    let _ = client
+                        .request(RequestEnvelope {
+                            protocol_version: PROTOCOL_VERSION,
+                            request_id: uuid::Uuid::new_v4().to_string(),
+                            payload: CoreRequest::ProjectionUnsubscribe {
+                                subscription_id: daemon_subscription,
+                            },
+                        })
+                        .await;
+                    break;
+                }
+            };
+            *task_state.lsp_diagnostics_daemon_subscription.lock().await =
+                Some((owned_id.clone(), daemon_subscription.clone()));
+            let pull = tokio::select! {
+                _ = cancellation.cancelled() => {
+                    let _ = task_state.lsp_request_coordinator.finish(
+                        &ticket, &request_scope, route_generation,
+                    );
+                    let _ = client.request(RequestEnvelope {
+                        protocol_version: PROTOCOL_VERSION,
+                        request_id: uuid::Uuid::new_v4().to_string(),
+                        payload: CoreRequest::ProjectionUnsubscribe {
+                            subscription_id: daemon_subscription.clone(),
+                        },
+                    }).await;
+                    clear_diagnostics_daemon_subscription(&task_state, &owned_id).await;
+                    break;
+                }
+                response = client.request(RequestEnvelope {
+                    protocol_version: PROTOCOL_VERSION,
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    payload: CoreRequest::LspDiagnosticsGet {
+                        request: codegg_protocol::lsp::LspDiagnosticsGetRequestDto {
+                            project_id: project_id.clone(),
+                            session_id: session_id.clone(),
+                        },
+                    },
+                }) => response,
+            };
+            let initial = match pull {
+                Ok(CoreResponse::LspDiagnosticsGetResult { result }) => result,
+                Ok(CoreResponse::Error { message, .. }) => {
+                    let _ = task_state.lsp_request_coordinator.finish(
+                        &ticket,
+                        &request_scope,
+                        route_generation,
+                    );
+                    let _ = channel.send(unavailable_diagnostics(message));
+                    let _ = client
+                        .request(RequestEnvelope {
+                            protocol_version: PROTOCOL_VERSION,
+                            request_id: uuid::Uuid::new_v4().to_string(),
+                            payload: CoreRequest::ProjectionUnsubscribe {
+                                subscription_id: daemon_subscription.clone(),
+                            },
+                        })
+                        .await;
+                    clear_diagnostics_daemon_subscription(&task_state, &owned_id).await;
+                    break;
+                }
+                Ok(other) => {
+                    let _ = task_state.lsp_request_coordinator.finish(
+                        &ticket,
+                        &request_scope,
+                        route_generation,
+                    );
+                    let _ = channel.send(unavailable_diagnostics(format!(
+                        "unexpected diagnostics baseline response: {other:?}"
+                    )));
+                    let _ = client
+                        .request(RequestEnvelope {
+                            protocol_version: PROTOCOL_VERSION,
+                            request_id: uuid::Uuid::new_v4().to_string(),
+                            payload: CoreRequest::ProjectionUnsubscribe {
+                                subscription_id: daemon_subscription.clone(),
+                            },
+                        })
+                        .await;
+                    clear_diagnostics_daemon_subscription(&task_state, &owned_id).await;
+                    break;
+                }
+                Err(error) => {
+                    let _ = task_state.lsp_request_coordinator.finish(
+                        &ticket,
+                        &request_scope,
+                        route_generation,
+                    );
+                    let _ = channel.send(unavailable_diagnostics(error.to_string()));
+                    let _ = client
+                        .request(RequestEnvelope {
+                            protocol_version: PROTOCOL_VERSION,
+                            request_id: uuid::Uuid::new_v4().to_string(),
+                            payload: CoreRequest::ProjectionUnsubscribe {
+                                subscription_id: daemon_subscription.clone(),
+                            },
+                        })
+                        .await;
+                    clear_diagnostics_daemon_subscription(&task_state, &owned_id).await;
+                    break;
+                }
+            };
+            if !task_state
+                .lsp_request_coordinator
+                .finish(&ticket, &request_scope, route_generation)
+            {
+                let _ = client
+                    .request(RequestEnvelope {
+                        protocol_version: PROTOCOL_VERSION,
+                        request_id: uuid::Uuid::new_v4().to_string(),
+                        payload: CoreRequest::ProjectionUnsubscribe {
+                            subscription_id: daemon_subscription.clone(),
+                        },
+                    })
+                    .await;
+                clear_diagnostics_daemon_subscription(&task_state, &owned_id).await;
+                break;
+            }
+            let _ = stream.apply_authoritative(initial.clone());
+            if channel.send(diagnostics_view(initial)).is_err() {
+                let _ = client
+                    .request(RequestEnvelope {
+                        protocol_version: PROTOCOL_VERSION,
+                        request_id: uuid::Uuid::new_v4().to_string(),
+                        payload: CoreRequest::ProjectionUnsubscribe {
+                            subscription_id: daemon_subscription,
+                        },
+                    })
+                    .await;
+                clear_diagnostics_daemon_subscription(&task_state, &owned_id).await;
+                break;
+            }
+            let mut restart = false;
+            let mut tick = tokio::time::interval(Duration::from_millis(250));
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {
+                        if task_state.current_generation() != connection_generation
+                            || task_state.route_selection(route_generation, false).await.is_err()
+                        {
+                            break;
+                        }
+                    }
+                    event = events.recv() => match event {
+                        Some(event) => match stream.accept_client_event(&event) {
+                            DiagnosticsStreamUpdate::Updated(result) => {
+                                if channel.send(diagnostics_view(result)).is_err() { break; }
+                            }
+                            DiagnosticsStreamUpdate::ReconcileRequired => {
+                                if let Some(current) = stream.current().cloned() {
+                                    let mut view = diagnostics_view(current);
+                                    view.stale = true;
+                                    view.message = format!("{}; reconciling missed updates", view.message);
+                                    if channel.send(view).is_err() { break; }
+                                }
+                                restart = true;
+                                break;
+                            }
+                            DiagnosticsStreamUpdate::Ignored => {}
+                        },
+                        None => break,
+                    }
+                }
+            }
+            let _ = client
+                .request(RequestEnvelope {
+                    protocol_version: PROTOCOL_VERSION,
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    payload: CoreRequest::ProjectionUnsubscribe {
+                        subscription_id: daemon_subscription,
+                    },
+                })
+                .await;
+            clear_diagnostics_daemon_subscription(&task_state, &owned_id).await;
+            if !restart {
+                break 'subscribe;
+            }
+        }
+        let _ = task_state
+            .lsp_diagnostics_subscriptions
+            .clear_if_matching(&owned_id)
+            .await;
+    });
+    state
+        .lsp_diagnostics_subscriptions
+        .install_with_id(subscription_id.clone(), connection_generation, task)
+        .await;
+    Ok(subscription_id)
+}
+
+#[tauri::command]
+pub(crate) async fn desktop_document_diagnostics_unsubscribe(
+    state: State<'_, Arc<HostState>>,
+    subscription_id: String,
+) -> Result<(), String> {
+    let daemon_subscription = {
+        let mut active = state.lsp_diagnostics_daemon_subscription.lock().await;
+        match active.as_ref() {
+            Some((owner, _)) if owner == &subscription_id => {
+                active.take().map(|(_, daemon)| daemon)
+            }
+            _ => None,
+        }
+    };
+    if let Some(daemon_subscription) = daemon_subscription {
+        if let Some(client) = state.client.lock().await.clone() {
+            let _ = client
+                .request(RequestEnvelope {
+                    protocol_version: PROTOCOL_VERSION,
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    payload: CoreRequest::ProjectionUnsubscribe {
+                        subscription_id: daemon_subscription,
+                    },
+                })
+                .await;
+        }
+    }
+    let _ = state
+        .lsp_diagnostics_subscriptions
+        .unsubscribe(&subscription_id)
+        .await;
+    Ok(())
+}
+
+async fn clear_diagnostics_daemon_subscription(state: &HostState, owner_id: &str) {
+    let mut active = state.lsp_diagnostics_daemon_subscription.lock().await;
+    if active.as_ref().is_some_and(|(owner, _)| owner == owner_id) {
+        *active = None;
+    }
+}
+
 /// Read the completion candidates for the caret's position.
 #[tauri::command]
 pub(crate) async fn desktop_document_completion(
@@ -1348,7 +1720,15 @@ pub(crate) async fn desktop_document_completion(
             let _ = state.lsp_request_coordinator.finish(&ticket, &coordinator_scope, document_generation);
             return Err("the completion request was superseded".to_owned());
         },
-        response = client.lsp_completion(request) => response,
+        _ = tokio::time::sleep(codegg_client::LSP_INTERACTIVE_DEBOUNCE) => {
+            tokio::select! {
+                _ = cancellation.cancelled() => {
+                    let _ = state.lsp_request_coordinator.finish(&ticket, &coordinator_scope, document_generation);
+                    return Err("the completion request was superseded".to_owned());
+                }
+                response = client.lsp_completion(request) => response,
+            }
+        }
     }
     .map_err(|error| format!("the completion could not be read: {error}"));
     let active = match live_session(&state).await {
@@ -1726,6 +2106,17 @@ pub fn diagnostics_view(
         message: message.to_owned(),
         diagnostics,
         truncated,
+        stale: false,
+    }
+}
+
+fn unavailable_diagnostics(message: String) -> EditorDiagnosticsView {
+    EditorDiagnosticsView {
+        status: "unavailable".to_owned(),
+        message,
+        diagnostics: Vec::new(),
+        truncated: false,
+        stale: false,
     }
 }
 
@@ -1829,3 +2220,62 @@ pub fn navigation_view(result: codegg_protocol::lsp::LspReadResultDto) -> Editor
         truncated,
     }
 }
+
+#[cfg(test)]
+mod lsp_view_tests {
+    use super::*;
+    use codegg_protocol::lsp::{LspDiagnosticsResultDto, LspDiagnosticsStatus};
+
+    #[test]
+    fn diagnostics_readiness_does_not_collapse_not_ready_into_clean() {
+        let not_ready = diagnostics_view(LspDiagnosticsResultDto {
+            project_id: "project-1".to_owned(),
+            status: LspDiagnosticsStatus::NotReady,
+            files: Vec::new(),
+            truncated: false,
+        });
+        let ready_empty = diagnostics_view(LspDiagnosticsResultDto {
+            project_id: "project-1".to_owned(),
+            status: LspDiagnosticsStatus::Ready,
+            files: Vec::new(),
+            truncated: false,
+        });
+
+        assert_eq!(not_ready.status, "no_warm_server");
+        assert!(not_ready.diagnostics.is_empty());
+        assert_eq!(ready_empty.status, "ready");
+        assert!(ready_empty.diagnostics.is_empty());
+        assert_ne!(not_ready.status, ready_empty.status);
+    }
+
+    #[test]
+    fn desktop_completion_keeps_non_ready_status_vocabulary() {
+        use codegg_protocol::lsp::LspCompletionResultDto;
+
+        assert_eq!(
+            completion_view(LspCompletionResultDto::not_ready("doc-1".into())).status,
+            "no_warm_server"
+        );
+        assert_eq!(
+            completion_view(LspCompletionResultDto::stale("doc-1".into(), 3, Some(2))).status,
+            "stale"
+        );
+        assert_eq!(
+            completion_view(LspCompletionResultDto::unsynced("doc-1".into(), 3, Some(2))).status,
+            "unsynced"
+        );
+        assert_eq!(
+            completion_view(LspCompletionResultDto::unsupported(
+                "doc-1".into(),
+                3,
+                Some(3)
+            ))
+            .status,
+            "unsupported"
+        );
+    }
+}
+
+#[cfg(test)]
+#[path = "document_lsp_unicode_tests.rs"]
+mod lsp_unicode_tests;

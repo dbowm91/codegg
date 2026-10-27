@@ -43,6 +43,8 @@ use egglsp::{LspConfig, LspRule};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
+const M002_LATENCY_SAMPLE_COUNT: usize = 31;
+
 const MEMBER: &str = "client-member";
 const SERVER: &str = "rust-analyzer";
 const OTHER_SERVER: &str = "gopls";
@@ -352,6 +354,8 @@ enum RustBehaviour {
     Diagnostics,
     /// Answer a hover, so a point read has something to return.
     Hover,
+    /// Answer enough hovers for the bounded M002 latency sample.
+    LatencySample,
 }
 
 impl RustBehaviour {
@@ -361,10 +365,15 @@ impl RustBehaviour {
             RustBehaviour::Diagnostics => initialized_step(vec![push_diagnostic_step(lib_uri)]),
             _ => initialized_step(vec![]),
         });
-        if let RustBehaviour::Hover = self {
-            steps.push(hover_step(
-                json!({"contents": {"kind": "markdown", "value": "from rust"}}),
-            ));
+        let hover_count = match self {
+            RustBehaviour::Hover => 1,
+            RustBehaviour::LatencySample => 160,
+            RustBehaviour::Diagnostics => 0,
+        };
+        for _ in 0..hover_count {
+            steps.push(hover_step(json!({
+                "contents": {"kind": "markdown", "value": "from rust"}
+            })));
         }
         steps
     }
@@ -751,5 +760,140 @@ async fn a_cold_root_still_answers_not_ready_and_starts_no_process() {
     assert!(
         service.client_keys().await.is_empty(),
         "driving the publisher must not warm anything either"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m002_records_cold_warm_and_cpu_loaded_lsp_request_latency() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread;
+
+    fn percentile_ms(samples: &mut [Duration], percentile: usize) -> f64 {
+        samples.sort_unstable();
+        samples[(samples.len() - 1) * percentile / 100].as_secs_f64() * 1000.0
+    }
+    async fn sample(fixture: &Fixture, coordinated: bool) -> (Vec<Duration>, LspReadStatus) {
+        let mut durations = Vec::with_capacity(M002_LATENCY_SAMPLE_COUNT);
+        let mut last_status = LspReadStatus::NotReady;
+        let coordinator = codegg_client::LspRequestCoordinator::default();
+        let scope = codegg_client::LspRequestScope {
+            frontend_id: "latency-fixture".into(),
+            attachment_id: fixture.session_id.clone(),
+            route_generation: 1,
+            connection_generation: 1,
+            project_id: fixture.project_id.clone(),
+            workspace_id: fixture.workspace_id.clone(),
+            session_id: fixture.session_id.clone(),
+            document_id: None,
+            path: Some("src/lib.rs".into()),
+            server_id: Some(SERVER.into()),
+        };
+        let key = codegg_client::LspRequestKey {
+            scope: scope.clone(),
+            operation: codegg_client::LspRequestOperation::Read(LspReadOperation::Hover),
+            document_generation: 1,
+            position: Some((0, 8)),
+            argument: None,
+        };
+        for _ in 0..M002_LATENCY_SAMPLE_COUNT {
+            let started = Instant::now();
+            let ticket = coordinated.then(|| match coordinator.begin(key.clone()) {
+                codegg_client::LspRequestStart::Started(ticket) => ticket,
+                other => panic!("latency sample was not admitted: {other:?}"),
+            });
+            let result = as_read(
+                call(
+                    &fixture.daemon,
+                    MEMBER,
+                    CoreRequest::LspReadGet {
+                        request: read_request(fixture, Some(SERVER)),
+                    },
+                )
+                .await,
+            );
+            if let Some(ticket) = ticket {
+                assert!(coordinator.finish(&ticket, &scope, 1));
+            }
+            durations.push(started.elapsed());
+            last_status = result.status;
+        }
+        (durations, last_status)
+    }
+
+    let fixture = fixture(RustBehaviour::LatencySample, go_only_warming()).await;
+    let (mut cold_direct, cold_status) = sample(&fixture, false).await;
+    let (mut cold_coordinated, coordinated_cold_status) = sample(&fixture, true).await;
+    assert_eq!(cold_status, LspReadStatus::NotReady);
+    assert_eq!(coordinated_cold_status, LspReadStatus::NotReady);
+    assert!(fixture.service.client_keys().await.is_empty());
+
+    let worker_count = thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(2)
+        .saturating_sub(1)
+        .clamp(1, 4);
+    let start_cpu_load = || {
+        let running = Arc::new(AtomicBool::new(true));
+        let workers: Vec<_> = (0..worker_count)
+            .map(|_| {
+                let running = Arc::clone(&running);
+                thread::spawn(move || {
+                    let mut value = 0_u64;
+                    while running.load(Ordering::Relaxed) {
+                        value = std::hint::black_box(value.wrapping_add(1));
+                    }
+                    std::hint::black_box(value);
+                })
+            })
+            .collect();
+        (running, workers)
+    };
+    let stop_cpu_load = |running: Arc<AtomicBool>, workers: Vec<thread::JoinHandle<()>>| {
+        running.store(false, Ordering::Relaxed);
+        for worker in workers {
+            worker.join().expect("CPU-load worker exits cleanly");
+        }
+    };
+    let (cold_load, cold_workers) = start_cpu_load();
+    let (mut cold_loaded_direct, cold_loaded_status) = sample(&fixture, false).await;
+    let (mut cold_loaded_coordinated, coordinated_cold_loaded_status) =
+        sample(&fixture, true).await;
+    stop_cpu_load(cold_load, cold_workers);
+    assert_eq!(cold_loaded_status, LspReadStatus::NotReady);
+    assert_eq!(coordinated_cold_loaded_status, LspReadStatus::NotReady);
+    assert!(fixture.service.client_keys().await.is_empty());
+
+    fixture.open_lib().await;
+    let (mut warm_direct, warm_status) = sample(&fixture, false).await;
+    let (mut warm_coordinated, coordinated_warm_status) = sample(&fixture, true).await;
+    assert_eq!(warm_status, LspReadStatus::Ready);
+    assert_eq!(coordinated_warm_status, LspReadStatus::Ready);
+
+    let (warm_load, warm_workers) = start_cpu_load();
+    let (mut warm_loaded_direct, loaded_status) = sample(&fixture, false).await;
+    let (mut warm_loaded_coordinated, coordinated_loaded_status) = sample(&fixture, true).await;
+    stop_cpu_load(warm_load, warm_workers);
+    assert_eq!(loaded_status, LspReadStatus::Ready);
+    assert_eq!(coordinated_loaded_status, LspReadStatus::Ready);
+
+    println!(
+        "M002_LSP_REQUEST_MS samples={} cpu_load_workers={worker_count} cold_direct_p50={:.3} cold_direct_p95={:.3} cold_shared_p50={:.3} cold_shared_p95={:.3} cold_loaded_direct_p50={:.3} cold_loaded_direct_p95={:.3} cold_loaded_shared_p50={:.3} cold_loaded_shared_p95={:.3} warm_direct_p50={:.3} warm_direct_p95={:.3} warm_shared_p50={:.3} warm_shared_p95={:.3} warm_loaded_direct_p50={:.3} warm_loaded_direct_p95={:.3} warm_loaded_shared_p50={:.3} warm_loaded_shared_p95={:.3}",
+        M002_LATENCY_SAMPLE_COUNT,
+        percentile_ms(&mut cold_direct, 50),
+        percentile_ms(&mut cold_direct, 95),
+        percentile_ms(&mut cold_coordinated, 50),
+        percentile_ms(&mut cold_coordinated, 95),
+        percentile_ms(&mut cold_loaded_direct, 50),
+        percentile_ms(&mut cold_loaded_direct, 95),
+        percentile_ms(&mut cold_loaded_coordinated, 50),
+        percentile_ms(&mut cold_loaded_coordinated, 95),
+        percentile_ms(&mut warm_direct, 50),
+        percentile_ms(&mut warm_direct, 95),
+        percentile_ms(&mut warm_coordinated, 50),
+        percentile_ms(&mut warm_coordinated, 95),
+        percentile_ms(&mut warm_loaded_direct, 50),
+        percentile_ms(&mut warm_loaded_direct, 95),
+        percentile_ms(&mut warm_loaded_coordinated, 50),
+        percentile_ms(&mut warm_loaded_coordinated, 95),
     );
 }

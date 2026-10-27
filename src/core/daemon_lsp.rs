@@ -1581,10 +1581,23 @@ impl CoreDaemon {
 
         let descriptor = match service
             .store()
-            .get_or_create_project_stream(&request.project_id)
+            .lookup_project_stream(&request.project_id)
             .await
         {
-            Ok((descriptor, _)) => descriptor,
+            Ok(Some(descriptor)) => descriptor,
+            Ok(None) => {
+                if let Err(unsubscribe_error) = service.unsubscribe(&sub_id).await {
+                    tracing::warn!(
+                        error = %unsubscribe_error,
+                        subscription_id = %sub_id.0,
+                        "failed to clean up an LSP diagnostics subscription with a missing descriptor"
+                    );
+                }
+                return Ok(CoreResponse::Error {
+                    code: "projection_descriptor_missing".into(),
+                    message: "project diagnostics stream descriptor missing after subscribe".into(),
+                });
+            }
             Err(error) => {
                 // Never leave a subscription behind because the descriptor
                 // could not be read; the same joined teardown the generic
@@ -1606,17 +1619,15 @@ impl CoreDaemon {
         // The authoritative set travels with the subscription so a client
         // starts from the resync authority rather than from an empty view it
         // would then have to discover by polling.
+        let diagnostics = self.lsp_diagnostics.lock();
+        let files = diagnostics
+            .files_for(&request.project_id)
+            .unwrap_or_default();
+        let truncated = diagnostics.tracker_saturated(&request.project_id);
         let snapshot = ProjectionSnapshotBundle::LspDiagnostics {
             project_id: request.project_id.clone(),
-            files: self
-                .lsp_diagnostics
-                .lock()
-                .files_for(&request.project_id)
-                .unwrap_or_default(),
-            truncated: self
-                .lsp_diagnostics
-                .lock()
-                .tracker_saturated(&request.project_id),
+            files,
+            truncated,
         };
         let cursor = ProjectionCursor {
             stream_id: descriptor.stream_id.clone(),

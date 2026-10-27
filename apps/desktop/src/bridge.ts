@@ -117,6 +117,16 @@ export const bridge = {
     invoke<EditorTreeView>('desktop_document_tree', { prefix, routeGeneration }),
   documentDiagnostics: (routeGeneration: number) =>
     invoke<EditorDiagnosticsView>('desktop_document_diagnostics', { routeGeneration }),
+  documentDiagnosticsSubscribe: (
+    routeGeneration: number,
+    onMessage: (view: EditorDiagnosticsView) => void,
+  ) => {
+    const channel = new Channel<EditorDiagnosticsView>();
+    channel.onmessage = onMessage;
+    return invoke<string>('desktop_document_diagnostics_subscribe', { routeGeneration, channel });
+  },
+  documentDiagnosticsUnsubscribe: (subscriptionId: string) =>
+    invoke<void>('desktop_document_diagnostics_unsubscribe', { subscriptionId }),
   documentCompletion: (trigger: string | null) =>
     invoke<EditorCompletionView>('desktop_document_completion', { trigger }),
   documentNavigate: (operation: string) =>

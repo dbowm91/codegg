@@ -37,6 +37,8 @@ vi.mock('./bridge', () => ({
     documentState: vi.fn(),
     documentTree: vi.fn(),
     documentDiagnostics: vi.fn(),
+    documentDiagnosticsSubscribe: vi.fn(() => Promise.resolve('diagnostics-test')),
+    documentDiagnosticsUnsubscribe: vi.fn(),
     documentCompletion: vi.fn(),
     documentNavigate: vi.fn(),
     subscribeProjection: vi.fn(),

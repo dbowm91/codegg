@@ -894,18 +894,32 @@ async fn out_of_order_completions_drop_the_older_answer() {
     .await;
 
     app.on_key(key(KeyCode::F(8)));
+    tokio::time::sleep(
+        codegg_client::LSP_INTERACTIVE_DEBOUNCE + std::time::Duration::from_millis(10),
+    )
+    .await;
+    app.editor_state
+        .session
+        .as_mut()
+        .expect("session")
+        .presentation_mut()
+        .cursor_byte = 21;
     app.on_key(key(KeyCode::F(8)));
     // Arrival order is nondeterministic: identify the answers by request
     // id, then prove the fence holds in both application orders.
     let first = recv_completion(&mut rx).await;
     let second = recv_completion(&mut rx).await;
-    fn request_id_of(command: &TuiCommand) -> u64 {
+    fn request_version(command: &TuiCommand) -> (u64, u64) {
         match command {
-            TuiCommand::EditorCompletionFinished { request_id, .. } => *request_id,
+            TuiCommand::EditorCompletionFinished {
+                request_id,
+                completion_epoch,
+                ..
+            } => (*completion_epoch, *request_id),
             other => panic!("expected completion finished, got {other:?}"),
         }
     }
-    let (older, newer) = if request_id_of(&first) < request_id_of(&second) {
+    let (older, newer) = if request_version(&first) < request_version(&second) {
         (first, second)
     } else {
         (second, first)
@@ -919,7 +933,10 @@ async fn out_of_order_completions_drop_the_older_answer() {
     assert_eq!(app.editor_state.completion.candidates.len(), 1);
     assert_eq!(
         app.editor_state.completion.request_id,
-        request_id_of(&newer),
+        match &newer {
+            TuiCommand::EditorCompletionFinished { request_id, .. } => *request_id,
+            other => panic!("expected completion finished, got {other:?}"),
+        },
         "the newer answer is the one shown"
     );
     apply_finished(&mut app, &older);
@@ -930,14 +947,17 @@ async fn out_of_order_completions_drop_the_older_answer() {
     );
     assert_eq!(
         app.editor_state.completion.request_id,
-        request_id_of(&newer)
+        match &newer {
+            TuiCommand::EditorCompletionFinished { request_id, .. } => *request_id,
+            other => panic!("expected completion finished, got {other:?}"),
+        }
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn rapid_retrigger_supersedes_without_state_growth() {
-    // Identical content on every reply: tasks race for the script, so the
-    // newest request id — not the label — is what "last wins" means here.
+async fn rapid_equivalent_retrigger_collapses_without_state_growth() {
+    // Exact-scope in-flight reads are shared by the coordinator. Repeating
+    // the same gesture while it is pending must not enqueue duplicate work.
     let same = || vec![applicable("same", (1, 4), (1, 8), "same")];
     let Harness {
         mut app,
@@ -960,22 +980,21 @@ async fn rapid_retrigger_supersedes_without_state_growth() {
     for _ in 0..3 {
         app.on_key(key(KeyCode::F(8)));
     }
-    // The tasks land after the triggers: wait for all three before
-    // asserting what was sent.
-    let mut ids = Vec::new();
-    for _ in 0..3 {
-        let command = recv_completion(&mut rx).await;
-        if let TuiCommand::EditorCompletionFinished { request_id, .. } = &command {
-            ids.push(*request_id);
-        }
-        apply_finished(&mut app, &command);
-    }
-    assert_eq!(fake.seen().len(), 3, "every trigger sends");
+    let command = recv_completion(&mut rx).await;
+    let request_id = match &command {
+        TuiCommand::EditorCompletionFinished { request_id, .. } => *request_id,
+        other => panic!("expected completion finished, got {other:?}"),
+    };
+    apply_finished(&mut app, &command);
+    assert_eq!(
+        fake.seen().len(),
+        1,
+        "equivalent triggers share one request"
+    );
     assert_eq!(app.editor_state.completion.candidates.len(), 1);
     assert_eq!(
-        app.editor_state.completion.request_id,
-        *ids.iter().max().expect("three ids"),
-        "the newest request is the one shown"
+        app.editor_state.completion.request_id, request_id,
+        "the shared request is the one shown"
     );
 }
 
