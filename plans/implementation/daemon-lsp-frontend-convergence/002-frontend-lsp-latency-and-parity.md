@@ -1,6 +1,6 @@
 # M002 — Cross-Frontend LSP Parity and Latency Discipline
 
-Status: active
+Status: closed
 
 Primary class: capability/polish.
 
@@ -17,6 +17,8 @@ Migrate remaining TUI and desktop editor LSP gesture request coordination to the
 The TUI already has `EditorLspState`, `EditorCompletionState` and direct `LspReadGet`/completion callers; desktop has `desktop_document_diagnostics`, `desktop_document_completion`, `desktop_document_navigate` with separate DTO-to-view mapping. The daemon's `NotReady` means cold, not empty; `Unsynced` completion means a revision witness is missing. `LspReadGet` and `LspCompletionGet` differ legitimately. Do not erase those differences or claim the GUI offers all TUI semantic-token affordances if unimplemented.
 
 M001 closed on 2026-10-27; its requirement/evidence matrix is `plans/closure/daemon-lsp-frontend-convergence/001-status.md`.
+
+Historical gesture/source audit: `plans/implementation/daemon-lsp-frontend-convergence/artifacts/M002-gesture-and-latency-audit-20261027.md`. Final qualification and measurement record: `plans/closure/daemon-lsp-frontend-convergence/002-status.md`.
 
 ## Work packages
 
@@ -36,4 +38,4 @@ No Tree-sitter dependency or syntax-node motion, no protocol redesign, no host f
 
 ## Closure
 
-`plans/closure/daemon-lsp-frontend-convergence/002-status.md`: audited gesture matrix, changed call sites, before/after histograms, all focused/hosted test runs, stale/disconnect/permission evidence and remaining GUI/TUI asymmetries. Dependency must be marked closed in the registry before work is declared ready.
+Closure record `plans/closure/daemon-lsp-frontend-convergence/002-status.md` contains the audited gesture matrix, changed call sites, direct/coordinated latency samples, visible-host measurements, focused/root/desktop results, stale/disconnect/permission evidence, and remaining GUI/TUI asymmetries. M001 dependency closure and this milestone closure are recorded in `plans/registry.md`.
