@@ -323,7 +323,10 @@ pub fn catalog_outcome_for_error(error: &ProviderError) -> CatalogOutcome {
             CatalogOutcome::unavailable(CatalogUnavailable::Timeout)
         }
         ProviderError::Api { code, .. } => {
-            if code.parse::<u16>().is_ok_and(|status| status == 404) {
+            if code == "harness_request_budget_exhausted"
+                || code == "harness_request_budget_configuration"
+                || code.parse::<u16>().is_ok_and(|status| status == 404)
+            {
                 CatalogOutcome::rejected(CatalogRejected::UnsupportedApi)
             } else {
                 CatalogOutcome::rejected(CatalogRejected::InvalidJson)

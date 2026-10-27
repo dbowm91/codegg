@@ -16,4 +16,4 @@ Final focused command: `python3 -m unittest dev.harness_lab.tests.test_sustained
 
 Context compaction/epoch transitions are not exposed by this deterministic ACP fixture and remain `unavailable_not_exposed`; this closure makes no compaction-continuation claim. Delegation, MCP/LSP and multi-minute compile cases remain deferred as specified by the plan.
 
-Exact resulting-main CI and integration remain H001-owned. Live-model qualification remains blocked on H001 and fresh H004 authorization.
+At the time this H003 closure was written, exact resulting-main integration and fresh H004 authorization were still pending. H001 subsequently closed on merge SHA `9185b9c34ce30fd52a41aacd0aaae75f39e54895`; H004's one approved live measurement is recorded in `plans/closure/harness-lab-mainline-qualification/004-status.md` and remains conditional because its 112.7-second duration did not demonstrate the planned sustained horizon.

@@ -67,6 +67,23 @@ class BuildTranscriptTests(unittest.TestCase):
         self.assertEqual(len(transcript["tool_calls"]), 2)
         self.assertEqual(transcript["tool_calls"][1]["status"], "failed")
 
+
+class ProviderRequestAccountingTests(unittest.TestCase):
+    def test_counts_only_provider_boundary_admissions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            log = pathlib.Path(temp) / "acp.stderr"
+            log.write_text(
+                "{\"request_number\":1,\"limit\":60}\n"
+                "{\"request_number\":2,\"limit\":60}\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(autonomy_run._provider_request_admissions(log), 2)
+
+    def test_missing_provider_log_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            self.assertIsNone(autonomy_run._provider_request_admissions(
+                pathlib.Path(temp) / "missing.log"))
+
     def test_the_transcript_carries_the_protected_flag(self) -> None:
         case = _case("repeated-identical-failure-stall")
         transcript = autonomy_run.build_transcript(case, [], terminal="stalled",

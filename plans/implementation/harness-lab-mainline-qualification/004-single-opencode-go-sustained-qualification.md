@@ -1,8 +1,8 @@
 # Harness Lab Mainline Qualification H004 — Single-OpenCode-Go Live Long-Horizon Run
 
-Status: **blocked** (H001 mainline integration + H002 v2 controls + H003 offline workload qualifications are hard dependencies; fresh operator-approved budget and route admission are operational prerequisites).
+Status: **conditionally closed** — the approved live measurement completed within all hard caps and passed its hidden verifier, but the 30–60 minute sustained-horizon target was not demonstrated by a 112.7-second run. The single-run authorization is consumed; additional sustained qualification requires a new explicitly approved measurement.
 Source roadmap: `plans/subsystems/harness-lab-mainline-and-long-horizon-qualification-addendum.md`.
-Reviewed baseline: `plans/harness-lab-continuation-20261026@cd9fde42491c85941c31efbc2d5d200e8db4d638`.
+Reviewed baseline: `plans/harness-lab-continuation-20261026@cd9fde42491c85941c31efbc2d5d200e8db4d638`; H001 merge `9185b9c34ce30fd52a41aacd0aaae75f39e54895` passed exact resulting-head CI. Live candidate source `68699fb63136f32e059f78fffa7de39ac19c10eb`; current rebased branch head `83faa880da201075cbf76f85e08aa3862c58cbe0` differs from that candidate only by the later documentation-only PR #206 change. Binary SHA-256: `5df991c4f6564f22647f0ed7b28153057e6882efabd517d476e28b7bd1fa6103`.
 Normative: `plans/000-long-term-specification.md` §§23,24,26,28,29; accepted ADR-0040; H001–H003 planned closure records; D003 `plans/closure/harness-lab-continuation/003-live-event-gap-sample-20261027.md`. Primary class: capability.
 
 ## 1. Objective
@@ -56,7 +56,9 @@ H. **Review and status:** new `plans/closure/harness-lab-mainline-qualification/
 Offline (without contacting OpenCode Go, required before live):
 ```bash
 python3 -m unittest discover -s dev/harness_lab/tests -v
-cargo test -p codegg --test acp_stdio
+cargo test -p codegg --lib acp::tests
+cargo test -p codegg --test agent_loop -- tool_program_foreground_and_background_run_through_agent_broker_and_scheduler
+cargo test -p codegg --test agent_loop -- test_task_tool_async_safety
 cargo test -p codegg --test tool_programs
 scripts/verify.sh quick
 cargo fmt --all -- --check

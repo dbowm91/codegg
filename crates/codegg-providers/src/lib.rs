@@ -29,6 +29,7 @@ pub mod opencode_zen;
 pub mod openrouter;
 pub mod provider_profile;
 pub mod qualification;
+mod request_budget;
 pub mod responses_api;
 pub mod retry;
 pub mod setup_catalog;

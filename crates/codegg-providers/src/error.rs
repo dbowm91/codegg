@@ -208,6 +208,9 @@ impl ProviderError {
     }
 
     fn api_class(code: &str, message: &str) -> &'static str {
+        if code.starts_with("harness_request_budget") {
+            return "request_budget";
+        }
         if let Ok(status) = code.parse::<u16>() {
             return match status {
                 401 | 403 => "auth",
@@ -421,6 +424,7 @@ mod tests {
             ProviderError::api("422", "HTTP 422: unprocessable"),
             ProviderError::api("invalid_request", "bad request"),
             ProviderError::api("http_error", "API error: policy violation"),
+            ProviderError::api("harness_request_budget_exhausted", "cap reached"),
             ProviderError::CircuitOpen("p".to_string()),
         ] {
             assert!(
@@ -437,6 +441,8 @@ mod tests {
                 "unexpected disposition for {err}"
             );
         }
+        let budget = ProviderError::api("harness_request_budget_exhausted", "cap reached");
+        assert_eq!(budget.error_class(), "request_budget");
         // Transient: rate limit, timeout, 5xx, stream interruption, transport.
         for err in [
             ProviderError::RateLimit,

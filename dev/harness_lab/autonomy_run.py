@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -321,6 +322,27 @@ def _run_verifier(command: list[str], cwd: Path, env: dict[str, str],
             "output_tail": tail, "tests_run": tests_run, "failure_summary": failure_summary}
 
 
+def _provider_request_admissions(stderr_path: Path) -> Optional[int]:
+    """Count safe provider-boundary request admissions from JSONL or CodeGG logs."""
+    try:
+        contents = stderr_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if contents.lstrip().startswith("{"):
+        try:
+            rows = [json.loads(line) for line in contents.splitlines() if line.strip()]
+        except (json.JSONDecodeError, UnicodeError):
+            return None
+        if all(isinstance(row, dict)
+               and isinstance(row.get("request_number"), int)
+               and isinstance(row.get("limit"), int) for row in rows):
+            return len(rows)
+        return None
+    return sum(1 for line in contents.splitlines()
+               if "harness provider request admitted" in line
+               and re.search(r"\brequest_number=\d+\b", line))
+
+
 def run_case(binary: Path, case: AutonomyCase, model: str, *,
              budget_policy: budget.BudgetPolicy, lane_root: Path,
              repository: Optional[Path] = None, profile: str = "workspace-write",
@@ -545,7 +567,17 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
             "cached_tokens": raw_usage.get("cachedTokens"),
             "reasoning_tokens": raw_usage.get("reasoningTokens"),
         }
-    guard.observe(provider_requests=1,
+    provider_receipt_path = spec.root / "artifacts" / "provider-request-admissions.jsonl"
+    provider_request_count = _provider_request_admissions(provider_receipt_path)
+    provider_request_count_source = "codegg_provider_boundary_receipt"
+    if provider_request_count is None:
+        provider_request_count = _provider_request_admissions(client.stderr_path)
+        provider_request_count_source = (
+            "codegg_provider_boundary_log" if provider_request_count is not None
+            else "unavailable_conservative_trial_reservation"
+        )
+    guard.observe(provider_requests=(provider_request_count if provider_request_count is not None
+                                    else 1),
                   input_tokens=int((usage or {}).get("input_tokens") or 0),
                   output_tokens=int((usage or {}).get("output_tokens") or 0))
 
@@ -574,6 +606,8 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         "tool_call_count": len(tool_calls),
         "tool_calls": tool_calls,
         "provider_usage": usage,
+        "provider_request_count": provider_request_count,
+        "provider_request_count_source": provider_request_count_source,
         "usage_unavailable_reason": None if usage else "not_reported_by_the_route",
         "verification": verification,
         "verifier_confirmed": verifier_confirmed,

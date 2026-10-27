@@ -1,12 +1,12 @@
 # Harness Lab Mainline Qualification H001 — Integration and Exact-Resulting-Head Verification
 
-Status: **active; PR #205 open, review/merge and exact resulting-main CI pending**
-Baseline reviewed: `origin/main@09dc761c7663316066e0f7f427dab89e71600e98`; integration candidate `7b2e51b5a2547058a319f097743812a9a1e4978f` on `plans/harness-lab-integration-20261027` (2026-10-27). PR: https://github.com/dbowm91/codegg/pull/205. Hosted candidate checks were queued at submission; resulting-main verification remains mandatory after merge.
+Status: **closed; PR #205 merged and exact resulting-main checks passed**
+Baseline reviewed: `origin/main@09dc761c7663316066e0f7f427dab89e71600e98`; integration candidate `7b2e51b5a2547058a319f097743812a9a1e4978f` on `plans/harness-lab-integration-20261027` (2026-10-27). PR #205 merged at `9185b9c34ce30fd52a41aacd0aaae75f39e54895` on 2026-10-27. Exact resulting-main CI and applicable platform workflows passed; evidence is in `plans/closure/harness-lab-mainline-qualification/001-status.md`.
 Source roadmap: `plans/subsystems/harness-lab-mainline-and-long-horizon-qualification-addendum.md`. Long-term references: `plans/000-long-term-specification.md` §§23,26,29; `plans/003-planning-process.md`; original D001–D003 and E001/E002 closures. Primary class: invariant. No ADR required unless merge reveals authority change.
 
 ## 1. Objective
 
-Make the proven continuation fixes actually available on `main` while preserving an accurate qualification boundary. The continuation source passed hosted `CI / verify` at `56279dfc7dc8` (run `40383901325`); the two later commits were closure and a separately authorized 63-trial event-gap sample. That **does not** establish a green result on the eventual merge/rebase head, and the continuation branch had no PR at review.
+Make the proven continuation fixes actually available on `main` while preserving an accurate qualification boundary. At planning time, continuation CI run `40383901325` at `56279dfc7dc8` and the later 63-trial event-gap sample did not establish a result on the merge head. PR #205 supplied that integration; its exact resulting main SHA and hosted gates are now recorded in the closure evidence.
 
 This plan is for a reviewable conventional integration, not an instruction to silently merge, automatically push unreviewed candidates or reopen closed Harness Lab features.
 

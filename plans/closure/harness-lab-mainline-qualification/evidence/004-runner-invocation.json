@@ -1,0 +1,16 @@
+{
+  "argv": [
+    "python3",
+    "-"
+  ],
+  "budget_policy_file_contents": "evidence/004-budget-policy.json",
+  "budget_policy_file_location": "/tmp/h004-budget-20261027.json",
+  "candidate_source_revision": "68699fb63136f32e059f78fffa7de39ac19c10eb",
+  "controller": "dev.harness_lab.autonomy_run.run_case through CodeGG native ACP",
+  "first_preflight_attempt": "refused before ACP/provider admission because the temporary case resolver pointed at the taxonomy fixture root; zero provider requests; corrected before the live session",
+  "live_attempt": "one coherent session, 60-request and 3,600-second hard caps",
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "profile": "workspace-write",
+  "schema_version": 1,
+  "shell_command": "rtk python3 - <<'PY' ... PY"
+}
