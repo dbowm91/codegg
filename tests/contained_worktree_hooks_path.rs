@@ -13,7 +13,8 @@
 //! is closed: the shared root stays writable, and the sandbox remains the
 //! security property.
 
-#![cfg(unix)]
+// Composing the launch refuses off Linux, so the whole target is a Linux qualification.
+#![cfg(target_os = "linux")]
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -122,10 +123,9 @@ fn child_paths(
     }
 }
 
-/// The production argv with the hooks-path pin pair removed.
-///
-/// This is the control, and it is derived from the production argv rather than
-/// written out separately, so it cannot drift from what the child really runs.
+/// The production argv with the hooks-path pin pair removed, derived from the
+/// production argv rather than written out separately, so it cannot drift from
+/// what the child really runs.
 fn without_the_pin(argv: &[OsString]) -> Vec<OsString> {
     let pin = WORKTREE_CHILD_HOOKS_PATH_PIN;
     let mut control: Vec<OsString> = Vec::with_capacity(argv.len());
@@ -147,8 +147,7 @@ fn without_the_pin(argv: &[OsString]) -> Vec<OsString> {
 /// Run the contained child's own launch, without the sandbox.
 ///
 /// The sandbox is not what this target proves: the claim is about the argv the
-/// child is given, and running it unsandboxed is what lets the control's hook
-/// actually run.
+/// child is given, and running it unsandboxed lets the control's hook run.
 async fn run_the_child(argv: Vec<OsString>, cwd: PathBuf, environment: EnvironmentPolicy) {
     let mut request = ManagedProcessRequest::new(
         argv,

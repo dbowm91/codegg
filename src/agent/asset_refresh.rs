@@ -577,7 +577,7 @@ mod tests {
     struct BlockingBuilder {
         inner: ProjectAssetSnapshotBuilder,
         started: Arc<Notify>,
-        thread: Arc<std::sync::Mutex<Option<std::thread::Thread>>>,
+        threads: Arc<std::sync::Mutex<Vec<std::thread::Thread>>>,
         calls: Arc<AtomicUsize>,
     }
 
@@ -587,10 +587,10 @@ mod tests {
             context: &AssetContext,
         ) -> Result<ProjectAssetSnapshot, SnapshotBuildError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
-            *self
-                .thread
+            self.threads
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(std::thread::current());
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(std::thread::current());
             self.started.notify_one();
             std::thread::park();
             self.inner.build(context)
@@ -723,11 +723,11 @@ mod tests {
         let builder = BlockingBuilder {
             inner: ProjectAssetSnapshotBuilder::new(Arc::new(Config::default())),
             started: Arc::new(Notify::new()),
-            thread: Arc::new(std::sync::Mutex::new(None)),
+            threads: Arc::new(std::sync::Mutex::new(Vec::new())),
             calls: Arc::new(AtomicUsize::new(0)),
         };
         let started = builder.started.clone();
-        let thread = builder.thread.clone();
+        let threads = builder.threads.clone();
         let calls = builder.calls.clone();
         let service = Arc::new(AssetRefreshCoordinator::new(Arc::new(builder)));
         let scope = AssetScope::new("project-1", "workspace-1");
@@ -746,23 +746,22 @@ mod tests {
         let second_service = service.clone();
         let second_scope = scope.clone();
         let second_ctx = ctx.clone();
+        let second_started = Arc::new(Notify::new());
+        let second_started_signal = second_started.clone();
         let second = tokio::spawn(async move {
+            second_started_signal.notify_one();
             second_service
                 .refresh(second_scope, second_ctx, RefreshReason::Manual)
                 .await
         });
-        for _ in 0..20 {
-            if service.status(&scope).await.in_flight {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-        thread
+        second_started.notified().await;
+        for thread in threads
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-            .unwrap()
-            .unpark();
+            .drain(..)
+        {
+            thread.unpark();
+        }
 
         let (first, second) = tokio::join!(first, second);
         let first = first.unwrap();

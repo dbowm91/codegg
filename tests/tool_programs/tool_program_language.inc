@@ -628,7 +628,7 @@ fn bounds_with_calls() {
 
 #[test]
 fn bounds_parallel() {
-    let src = "r = parallel({\"t\": 1}, {\"t\": 2}, {\"t\": 3})\n";
+    let src = "r = parallel({\"tool\": \"t1\"}, {\"tool\": \"t2\"}, {\"tool\": \"t3\"})\n";
     let result = compile_program(src).unwrap();
     assert!(result.ir.bounds.max_parallel_width >= 3);
 }

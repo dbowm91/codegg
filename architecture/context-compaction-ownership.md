@@ -83,6 +83,25 @@ precedence, and injects exactly one bounded block. Production selection uses
 the resolved default when `auto=true` and mode is omitted (deterministic
 without a provider/model); legacy helpers are compat-only.
 
+## Cross-turn provider history replacement (C001)
+
+The frontend continues to own and display its full transcript. `TurnRuntime`
+computes a versioned, domain-separated SHA-256 prefix identity from the exact
+frontend message DTOs before provider conversion. At compaction, `rollover`
+compares the source and replacement sequences, records the covered message
+count and identity in the bounded checkpoint only when the dropped prefix and
+retained suffix are unambiguous, and keeps the existing `source_history_digest`
+diagnostic-only. On the next turn, `AgentLoop` drops only an exact incoming
+prefix match, retains every suffix row, and injects the checkpoint projection
+before the current user prompt. Unsupported versions, missing identities,
+ambiguous peer/control rows, conversion mismatches, and invalid counts retain
+the submitted history and emit a bounded diagnostic. A compactor may retain a
+contiguous opening anchor in its immediate provider request; the checkpoint
+frame still supersedes the covered prefix on the next turn, provided the exact
+retained suffix is unambiguous. Any non-contiguous retained row in that prefix
+invalidates the identity and fails closed. Durable session history and the
+public `TurnSubmit` contract are unchanged.
+
 ## Fresh context epochs — M004 handoff integration (consumer, not owner)
 
 `src/context/epoch.rs` is a consumer/path of the canonical owner above, not
@@ -161,4 +180,12 @@ Corrected on 2026-10-23:
   the `57 => migrate_v57(...)` dispatch arm is at `:354`.
 - `ContextCompactionRequest` was cited at `compaction.rs:844`; it is at `:845`.
 
-No ownership claim in this document needed to change.
+Re-checked on 2026-10-26 against the C001 implementation and focused tests:
+`TurnRuntime` hashes the ingress DTO prefixes before conversion; `rollover`
+computes the replaced prefix identity from the exact source/replacement pair;
+the bounded checkpoint stores the version/count/hash; and `AgentLoop` trims
+only an exact match before injecting the installed projection ahead of the
+current user. `source_history_digest` remains diagnostic, the transcript and
+`TurnSubmit` contract are unchanged, and ambiguous cases retain history. The
+new two-run AgentLoop regression and the existing M004, epoch-handoff, and
+long-horizon continuity suites passed locally.

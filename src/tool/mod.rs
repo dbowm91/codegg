@@ -2331,8 +2331,13 @@ mod bash_workdir_wiring_tests {
             .execute(serde_json::json!({ "path": outside_file.to_string_lossy() }))
             .await;
 
+        let refused = match &result {
+            Err(crate::error::ToolError::Permission(_)) => true,
+            Err(crate::error::ToolError::Execution(message)) => message.starts_with("refused:"),
+            _ => false,
+        };
         assert!(
-            matches!(result, Err(crate::error::ToolError::Permission(_))),
+            refused,
             "an absolute path outside the workspace must stay refused; got {:?}",
             result.err()
         );

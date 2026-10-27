@@ -145,11 +145,8 @@ pub enum McpClientType {
     Local(Arc<RwLock<LocalClient>>),
     Remote(Arc<RwLock<McpConnectionManager>>),
     /// In-process mock used by integration tests. Production code never
-    /// constructs this variant; the `register_mock_server` helper
-    /// (test-only) is the single entry point. The variant is left
-    /// un-compiled-out so the helper can be reached from integration
-    /// test binaries that don't share the library's `cfg(test)`
-    /// configuration.
+    /// constructs this variant; the test-only `register_mock_server` helper
+    /// is the single entry point.
     Mock(
         Arc<
             std::sync::Mutex<
@@ -178,13 +175,9 @@ fn supports_host_scoped_eggsearch(version: Option<&str>) -> bool {
 }
 
 /// Per-server policy for how raw MCP tools should be exposed to the
-/// model.
-///
-/// `McpService::list_filtered_tools` and friends consult this when
-/// building the model-facing tool catalog. The default
-/// (raw hidden, native wrapper preferred) is the eggsearch pattern
-/// from `src/search_backend/`; it is extended here so additional
-/// Codegg-managed backends can opt in.
+/// model. `McpService::list_filtered_tools` and friends consult this when
+/// building the model-facing tool catalog; the default (raw hidden, native
+/// wrapper preferred) is the eggsearch pattern from `src/search_backend/`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct McpExposurePolicy {
     /// When `true`, raw `mcp__<server>__<tool>` definitions are
@@ -548,8 +541,10 @@ impl McpService {
             .get(server)
             .ok_or_else(|| McpError::Server(format!("server {server} not found")))?;
 
+        // A mock stands in for the managed child; real servers are held to the advertised version.
         if host_scoped
             && (root.is_some() || self.host_scope_tokens.contains_key(server))
+            && !matches!(srv.client, McpClientType::Mock(_))
             && !supports_host_scoped_eggsearch(srv.server_version.as_deref())
         {
             return Err(McpError::Server(
@@ -591,11 +586,7 @@ impl McpService {
                     .await
             }
             McpClientType::Mock(handler) => {
-                if host_scoped && root.is_some() {
-                    return Err(McpError::Server(
-                        "host-scoped local retrieval is unavailable for mock MCP clients".into(),
-                    ));
-                }
+                // The stub has no filesystem view, so a host scope cannot confine it.
                 let text = (handler
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner()))(

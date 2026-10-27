@@ -153,6 +153,11 @@ fn symlink_escape_message(requested: &Path, allowed_root: &Path) -> Option<Strin
         if !meta.file_type().is_symlink() {
             continue;
         }
+        // The macOS system aliases (`/var`, `/tmp`, `/etc`) resolve to the same
+        // tree and `validate_path` admits them, so this guard must agree.
+        if crate::tool::util::is_macos_system_alias(&current) {
+            continue;
+        }
         let target = std::fs::read_link(&current).ok()?;
         let resolved = if target.is_absolute() {
             target.clone()

@@ -232,7 +232,7 @@ fn property_accepted_programs_have_deterministic_digest() {
         "x = 1\nemit(x)\n",
         "for i in range(5):\n    x = i\nemit(x)\n",
         "if True:\n    x = 1\nelse:\n    x = 0\nemit(x)\n",
-        "r = parallel({\"t\": 1}, {\"t\": 2})\nemit(r)\n",
+        "r = parallel({\"tool\": \"t1\"}, {\"tool\": \"t2\"})\nemit(r)\n",
     ];
     for src in &sources {
         let r1 = compile_program(src).unwrap();
@@ -249,7 +249,7 @@ fn property_bounds_are_conservative() {
         "for i in range(10):\n    x = i\nemit(x)\n",
         "total = 0\nfor i in range(100):\n    total = total + 1\nemit(total)\n",
         "if True:\n    x = 1\nelse:\n    x = 0\nemit(x)\n",
-        "r = parallel({\"t\": 1}, {\"t\": 2})\nemit(r)\n",
+        "r = parallel({\"tool\": \"t1\"}, {\"tool\": \"t2\"})\nemit(r)\n",
     ];
     for src in &sources {
         let steps = reference_eval_steps(src).unwrap();
@@ -319,7 +319,7 @@ fn property_ir_bounds_match_analyzer() {
     let sources = vec![
         "emit({\"ok\": true})\n",
         "for i in range(10):\n    x = i\nemit(x)\n",
-        "r = parallel({\"t\": 1}, {\"t\": 2})\nemit(r)\n",
+        "r = parallel({\"tool\": \"t1\"}, {\"tool\": \"t2\"})\nemit(r)\n",
     ];
     for src in &sources {
         let ast = parse_source(src).unwrap();

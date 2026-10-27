@@ -13,9 +13,9 @@ max_block_lines = 50
 unlisted_max_comment_lines = 20
 
 [global]
-max_comment_lines = 128780
-max_comment_words = 1137205
-max_ratio = 0.1338
+max_comment_lines = 128777
+max_comment_words = 1137177
+max_ratio = 0.1336
 
 # Per-file ceilings. A file may shrink; it may not grow past what is
 # recorded here. A file that crosses the unlisted floor must be added.
@@ -268,15 +268,15 @@ max_ratio = 0.1338
 "src/agent/asset_snapshot.rs" = { max_comment_lines = 60, max_ratio = 0.2632 }
 "src/agent/asset_snapshot_builder.rs" = { max_comment_lines = 25, max_ratio = 0.0906 }
 "src/agent/context_frame.rs" = { max_comment_lines = 31, max_ratio = 0.114 }
-"src/agent/context_runtime.rs" = { max_comment_lines = 253, max_ratio = 0.1112 }
+"src/agent/context_runtime.rs" = { max_comment_lines = 251, max_ratio = 0.0984 }
 "src/agent/convergence.rs" = { max_comment_lines = 21, max_ratio = 0.019 }
 "src/agent/coordinator.rs" = { max_comment_lines = 50, max_ratio = 0.3522 }
 "src/agent/definition.rs" = { max_comment_lines = 153, max_ratio = 0.0778 }
 "src/agent/file_agents.rs" = { max_comment_lines = 90, max_ratio = 0.0682 }
-"src/agent/follow_up.rs" = { max_comment_lines = 59, max_ratio = 0.082 }
+"src/agent/follow_up.rs" = { max_comment_lines = 59, max_ratio = 0.0818 }
 "src/agent/instructions.rs" = { max_comment_lines = 67, max_ratio = 0.1573 }
 "src/agent/job_notification_recovery.rs" = { max_comment_lines = 79, max_ratio = 0.2245 }
-"src/agent/loop.rs" = { max_comment_lines = 357, max_ratio = 0.1691 }
+"src/agent/loop.rs" = { max_comment_lines = 356, max_ratio = 0.1638 }
 "src/agent/progress_recovery.rs" = { max_comment_lines = 182, max_ratio = 0.1916 }
 "src/agent/prompt.rs" = { max_comment_lines = 98, max_ratio = 0.1029 }
 "src/agent/provider_qualification.rs" = { max_comment_lines = 37, max_ratio = 0.5 }
@@ -296,7 +296,7 @@ max_ratio = 0.1338
 "src/agent/tool_surface.rs" = { max_comment_lines = 24, max_ratio = 0.0384 }
 "src/agent/transcript.rs" = { max_comment_lines = 44, max_ratio = 0.1472 }
 "src/agent/turn_completion.rs" = { max_comment_lines = 70, max_ratio = 0.1283 }
-"src/agent/turn_runtime.rs" = { max_comment_lines = 319, max_ratio = 0.1925 }
+"src/agent/turn_runtime.rs" = { max_comment_lines = 319, max_ratio = 0.192 }
 "src/agent/worker.rs" = { max_comment_lines = 390, max_ratio = 0.1635 }
 "src/auth/cli.rs" = { max_comment_lines = 59, max_ratio = 0.1746 }
 "src/bin/codegg-sandbox-helper.rs" = { max_comment_lines = 46, max_ratio = 0.0705 }
@@ -311,7 +311,7 @@ max_ratio = 0.1338
 "src/context/evidence.rs" = { max_comment_lines = 116, max_ratio = 0.1609 }
 "src/context/handle.rs" = { max_comment_lines = 50, max_ratio = 0.0867 }
 "src/context/policy.rs" = { max_comment_lines = 35, max_ratio = 0.0588 }
-"src/context/rollover.rs" = { max_comment_lines = 180, max_ratio = 0.2308 }
+"src/context/rollover.rs" = { max_comment_lines = 180, max_ratio = 0.1253 }
 "src/context/volatile_tail.rs" = { max_comment_lines = 49, max_ratio = 0.0671 }
 "src/core/checkout_mediation.rs" = { max_comment_lines = 121, max_ratio = 0.4939 }
 "src/core/client_registry.rs" = { max_comment_lines = 23, max_ratio = 0.108 }
@@ -366,7 +366,7 @@ max_ratio = 0.1338
 "src/core/writer_permit.rs" = { max_comment_lines = 170, max_ratio = 0.302 }
 "src/directory_listing.rs" = { max_comment_lines = 128, max_ratio = 0.4724 }
 "src/document_service.rs" = { max_comment_lines = 90, max_ratio = 0.0628 }
-"src/eggsact/adapter.rs" = { max_comment_lines = 68, max_ratio = 0.1187 }
+"src/eggsact/adapter.rs" = { max_comment_lines = 68, max_ratio = 0.1191 }
 "src/error.rs" = { max_comment_lines = 20, max_ratio = 0.0661 }
 "src/exec.rs" = { max_comment_lines = 29, max_ratio = 0.0874 }
 "src/execution_subject_capture.rs" = { max_comment_lines = 58, max_ratio = 0.7436 }
@@ -462,7 +462,7 @@ max_ratio = 0.1338
 "src/search_backend/bootstrap.rs" = { max_comment_lines = 128, max_ratio = 0.1147 }
 "src/search_backend/context.rs" = { max_comment_lines = 64, max_ratio = 0.4572 }
 "src/search_backend/eggsearch.rs" = { max_comment_lines = 134, max_ratio = 0.0721 }
-"src/search_backend/framing.rs" = { max_comment_lines = 62, max_ratio = 0.1186 }
+"src/search_backend/framing.rs" = { max_comment_lines = 62, max_ratio = 0.1204 }
 "src/search_backend/mod.rs" = { max_comment_lines = 84, max_ratio = 0.1022 }
 "src/search_backend/state.rs" = { max_comment_lines = 56, max_ratio = 1.3659 }
 "src/search_backend/test_support.rs" = { max_comment_lines = 25, max_ratio = 0.463 }
@@ -509,7 +509,7 @@ max_ratio = 0.1338
 "src/test_runner/index.rs" = { max_comment_lines = 72, max_ratio = 0.1093 }
 "src/test_runner/parse.rs" = { max_comment_lines = 36, max_ratio = 0.0526 }
 "src/test_runner/resolve.rs" = { max_comment_lines = 45, max_ratio = 0.081 }
-"src/test_runner/runner.rs" = { max_comment_lines = 76, max_ratio = 0.0527 }
+"src/test_runner/runner.rs" = { max_comment_lines = 76, max_ratio = 0.0526 }
 "src/theme/halloy.rs" = { max_comment_lines = 131, max_ratio = 0.1973 }
 "src/theme/native.rs" = { max_comment_lines = 26, max_ratio = 0.0826 }
 "src/theme/registry.rs" = { max_comment_lines = 91, max_ratio = 0.0991 }
@@ -530,7 +530,7 @@ max_ratio = 0.1338
 "src/tool/diff.rs" = { max_comment_lines = 20, max_ratio = 0.0511 }
 "src/tool/disabled.rs" = { max_comment_lines = 56, max_ratio = 0.32 }
 "src/tool/disclosure.rs" = { max_comment_lines = 114, max_ratio = 0.3466 }
-"src/tool/edit.rs" = { max_comment_lines = 26, max_ratio = 0.0306 }
+"src/tool/edit.rs" = { max_comment_lines = 26, max_ratio = 0.0305 }
 "src/tool/factory.rs" = { max_comment_lines = 116, max_ratio = 0.3767 }
 "src/tool/git.rs" = { max_comment_lines = 183, max_ratio = 0.1293 }
 "src/tool/git_read.rs" = { max_comment_lines = 72, max_ratio = 0.1663 }
@@ -731,20 +731,20 @@ max_ratio = 0.1338
 "src/work_plan_evidence.rs" = { max_comment_lines = 24, max_ratio = 0.1106 }
 "src/work_plan_repository_binding.rs" = { max_comment_lines = 321, max_ratio = 0.1364 }
 "src/work_plan_todo_sync.rs" = { max_comment_lines = 30, max_ratio = 0.3125 }
-"tests/agent_loop/agent_loop_harness.inc" = { max_comment_lines = 509, max_ratio = 0.0723 }
+"tests/agent_loop/agent_loop_harness.inc" = { max_comment_lines = 509, max_ratio = 0.0722 }
 "tests/agent_loop/blackboard_economics_m008.inc" = { max_comment_lines = 125, max_ratio = 0.2536 }
 "tests/agent_loop/blackboard_trajectory_m008.inc" = { max_comment_lines = 157, max_ratio = 0.1913 }
 "tests/agent_loop/causal_active_m005.inc" = { max_comment_lines = 118, max_ratio = 0.1508 }
 "tests/agent_loop/compaction.inc" = { max_comment_lines = 39, max_ratio = 0.0274 }
-"tests/agent_loop/context_continuity_m004.inc" = { max_comment_lines = 126, max_ratio = 0.1044 }
+"tests/agent_loop/context_continuity_m004.inc" = { max_comment_lines = 126, max_ratio = 0.0875 }
 "tests/agent_loop/context_epoch_handoff.inc" = { max_comment_lines = 66, max_ratio = 0.0836 }
 "tests/agent_loop/delegated_continuation_c004.inc" = { max_comment_lines = 60, max_ratio = 0.0535 }
 "tests/agent_loop/goal_continuation_progress.inc" = { max_comment_lines = 25, max_ratio = 0.0433 }
 "tests/agent_loop/habit_skill_promotion.inc" = { max_comment_lines = 20, max_ratio = 0.0302 }
 "tests/agent_loop/long_horizon_trajectory_qualification.inc" = { max_comment_lines = 158, max_ratio = 0.0616 }
 "tests/agent_loop/opencode_go_connection_trajectory.inc" = { max_comment_lines = 74, max_ratio = 0.1162 }
-"tests/agent_loop/reliability_qualification_m008.inc" = { max_comment_lines = 108, max_ratio = 0.0863 }
-"tests/agent_loop/retry_budget_reconciliation.inc" = { max_comment_lines = 39, max_ratio = 0.0573 }
+"tests/agent_loop/reliability_qualification_m008.inc" = { max_comment_lines = 108, max_ratio = 0.0862 }
+"tests/agent_loop/retry_budget_reconciliation.inc" = { max_comment_lines = 39, max_ratio = 0.0572 }
 "tests/agent_loop/subagent.inc" = { max_comment_lines = 94, max_ratio = 0.0723 }
 "tests/agent_loop/tool_surface_minimization.inc" = { max_comment_lines = 58, max_ratio = 0.117 }
 "tests/agent_loop/work_plan_eggplan_differential.inc" = { max_comment_lines = 51, max_ratio = 0.0489 }
@@ -797,7 +797,7 @@ max_ratio = 0.1338
 "tests/core_daemon/directory_listing_c005.inc" = { max_comment_lines = 47, max_ratio = 0.0816 }
 "tests/core_daemon/directory_listing_c006.inc" = { max_comment_lines = 81, max_ratio = 0.0939 }
 "tests/core_daemon/edit_checkpoint_integration.inc" = { max_comment_lines = 63, max_ratio = 0.0928 }
-"tests/core_daemon/identity_live_execution_audit.inc" = { max_comment_lines = 53, max_ratio = 0.0552 }
+"tests/core_daemon/identity_live_execution_audit.inc" = { max_comment_lines = 53, max_ratio = 0.055 }
 "tests/core_daemon/identity_m002_live_audit_hooks.inc" = { max_comment_lines = 74, max_ratio = 0.0564 }
 "tests/core_daemon/identity_m003_daemon_authorization.inc" = { max_comment_lines = 247, max_ratio = 0.1547 }
 "tests/core_daemon/identity_m003_scheduler_job_complete.inc" = { max_comment_lines = 38, max_ratio = 0.057 }
@@ -844,7 +844,7 @@ max_ratio = 0.1338
 "tests/scheduler_jobs/async_background_c003_idle_lifecycle.inc" = { max_comment_lines = 50, max_ratio = 0.1286 }
 "tests/scheduler_jobs/async_background_c004_live_attention.inc" = { max_comment_lines = 62, max_ratio = 0.1075 }
 "tests/scheduler_jobs/async_background_c005_idle_resume.inc" = { max_comment_lines = 83, max_ratio = 0.0733 }
-"tests/scheduler_jobs/bash_background_m002_routes.inc" = { max_comment_lines = 32, max_ratio = 0.0832 }
+"tests/scheduler_jobs/bash_background_m002_routes.inc" = { max_comment_lines = 32, max_ratio = 0.083 }
 "tests/scheduler_jobs/build_quota_admission.inc" = { max_comment_lines = 24, max_ratio = 0.075 }
 "tests/scheduler_jobs/ci_watch_c001_idle_driver.inc" = { max_comment_lines = 64, max_ratio = 0.1083 }
 "tests/scheduler_jobs/ci_watch_m004_completion.inc" = { max_comment_lines = 50, max_ratio = 0.0652 }
@@ -855,7 +855,7 @@ max_ratio = 0.1338
 "tests/scheduler_jobs/eggwork_remote_execution.inc" = { max_comment_lines = 116, max_ratio = 0.0658 }
 "tests/scheduler_jobs/eggwork_remote_limits.inc" = { max_comment_lines = 41, max_ratio = 0.0523 }
 "tests/scheduler_jobs/eggwork_target_boundary.inc" = { max_comment_lines = 43, max_ratio = 0.0694 }
-"tests/scheduler_jobs/job_background_test_slice.inc" = { max_comment_lines = 35, max_ratio = 0.0867 }
+"tests/scheduler_jobs/job_background_test_slice.inc" = { max_comment_lines = 35, max_ratio = 0.0865 }
 "tests/scheduler_jobs/job_continuation_c002_idle_resume.inc" = { max_comment_lines = 35, max_ratio = 0.0796 }
 "tests/scheduler_jobs/job_continuation_m003_visibility.inc" = { max_comment_lines = 40, max_ratio = 0.0905 }
 "tests/scheduler_jobs/job_notification_m001_contract.inc" = { max_comment_lines = 27, max_ratio = 0.0785 }
@@ -903,18 +903,18 @@ max_ratio = 0.1338
 "tests/tool_programs/python_sandbox_adversarial.inc" = { max_comment_lines = 53, max_ratio = 0.0651 }
 "tests/tool_programs/python_scheduler_execution.inc" = { max_comment_lines = 24, max_ratio = 0.0348 }
 "tests/tool_programs/python_script_completion_wakeup.inc" = { max_comment_lines = 33, max_ratio = 0.375 }
-"tests/tool_programs/tool_broker_integration.inc" = { max_comment_lines = 41, max_ratio = 0.0481 }
+"tests/tool_programs/tool_broker_integration.inc" = { max_comment_lines = 41, max_ratio = 0.0478 }
 "tests/tool_programs/tool_execution.inc" = { max_comment_lines = 89, max_ratio = 0.0907 }
 "tests/tool_programs/tool_program_build_test_matrix.inc" = { max_comment_lines = 27, max_ratio = 0.0928 }
 "tests/tool_programs/tool_program_c002_delegated_ceiling.inc" = { max_comment_lines = 40, max_ratio = 0.1653 }
-"tests/tool_programs/tool_program_cache.inc" = { max_comment_lines = 24, max_ratio = 0.0744 }
+"tests/tool_programs/tool_program_cache.inc" = { max_comment_lines = 24, max_ratio = 0.0741 }
 "tests/tool_programs/tool_program_chaos.inc" = { max_comment_lines = 35, max_ratio = 0.0685 }
 "tests/tool_programs/tool_program_child_jobs.inc" = { max_comment_lines = 26, max_ratio = 0.05 }
 "tests/tool_programs/tool_program_child_recovery.inc" = { max_comment_lines = 29, max_ratio = 0.0958 }
-"tests/tool_programs/tool_program_context_artifacts.inc" = { max_comment_lines = 26, max_ratio = 0.0698 }
-"tests/tool_programs/tool_program_diff_palette.inc" = { max_comment_lines = 58, max_ratio = 0.0802 }
+"tests/tool_programs/tool_program_context_artifacts.inc" = { max_comment_lines = 26, max_ratio = 0.0694 }
+"tests/tool_programs/tool_program_diff_palette.inc" = { max_comment_lines = 58, max_ratio = 0.0799 }
 "tests/tool_programs/tool_program_fault_injection.inc" = { max_comment_lines = 83, max_ratio = 0.0926 }
-"tests/tool_programs/tool_program_git_lsp_palette.inc" = { max_comment_lines = 79, max_ratio = 0.0653 }
+"tests/tool_programs/tool_program_git_lsp_palette.inc" = { max_comment_lines = 79, max_ratio = 0.0652 }
 "tests/tool_programs/tool_program_lifecycle.inc" = { max_comment_lines = 120, max_ratio = 0.1971 }
 "tests/tool_programs/tool_program_m012_authority.inc" = { max_comment_lines = 22, max_ratio = 0.131 }
 "tests/tool_programs/tool_program_m012_child_ownership.inc" = { max_comment_lines = 100, max_ratio = 0.2817 }
@@ -922,7 +922,7 @@ max_ratio = 0.1338
 "tests/tool_programs/tool_program_m012_notifications.inc" = { max_comment_lines = 63, max_ratio = 0.1898 }
 "tests/tool_programs/tool_program_m012_process_recovery.inc" = { max_comment_lines = 66, max_ratio = 0.2013 }
 "tests/tool_programs/tool_program_m012_recovery.inc" = { max_comment_lines = 73, max_ratio = 0.1311 }
-"tests/tool_programs/tool_program_m013_authority.inc" = { max_comment_lines = 37, max_ratio = 0.0987 }
+"tests/tool_programs/tool_program_m013_authority.inc" = { max_comment_lines = 37, max_ratio = 0.0982 }
 "tests/tool_programs/tool_program_m013_descendants.inc" = { max_comment_lines = 44, max_ratio = 0.112 }
 "tests/tool_programs/tool_program_m013_ledger_integrity.inc" = { max_comment_lines = 25, max_ratio = 0.0765 }
 "tests/tool_programs/tool_program_m013_lineage.inc" = { max_comment_lines = 25, max_ratio = 0.0831 }
@@ -934,12 +934,12 @@ max_ratio = 0.1338
 "tests/tool_programs/tool_program_m014_checkpoint_recovery.inc" = { max_comment_lines = 35, max_ratio = 0.0989 }
 "tests/tool_programs/tool_program_m014_daemon_recovery.inc" = { max_comment_lines = 51, max_ratio = 0.3334 }
 "tests/tool_programs/tool_program_m014_lineage_migration.inc" = { max_comment_lines = 24, max_ratio = 0.1138 }
-"tests/tool_programs/tool_program_m017_notification_confirmation.inc" = { max_comment_lines = 50, max_ratio = 0.1095 }
+"tests/tool_programs/tool_program_m017_notification_confirmation.inc" = { max_comment_lines = 50, max_ratio = 0.1092 }
 "tests/tool_programs/tool_program_model_behavior.inc" = { max_comment_lines = 54, max_ratio = 0.1159 }
 "tests/tool_programs/tool_program_notifications.inc" = { max_comment_lines = 23, max_ratio = 0.0719 }
 "tests/tool_programs/tool_program_recovery.inc" = { max_comment_lines = 74, max_ratio = 0.0863 }
 "tests/tool_programs/tool_program_scenarios.inc" = { max_comment_lines = 63, max_ratio = 0.0879 }
-"tests/tool_programs/tool_program_search_palette.inc" = { max_comment_lines = 74, max_ratio = 0.0757 }
+"tests/tool_programs/tool_program_search_palette.inc" = { max_comment_lines = 74, max_ratio = 0.0756 }
 "tests/tool_programs/tool_registry.inc" = { max_comment_lines = 20, max_ratio = 0.0579 }
 "tests/tool_programs/tool_structured_execution.inc" = { max_comment_lines = 45, max_ratio = 0.2094 }
 "tests/tool_programs/writer_disposition_guards.inc" = { max_comment_lines = 83, max_ratio = 0.3739 }

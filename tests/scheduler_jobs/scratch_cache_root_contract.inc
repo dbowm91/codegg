@@ -2,16 +2,11 @@
 //!
 //! The allocator keeps every session's scratch under the per-user CodeGG cache
 //! root (`dirs::cache_dir()/codegg`). These qualifications pin the two halves
-//! of that contract that the allocator itself cannot observe from the inside:
+//! of that contract the allocator cannot observe from the inside: the
+//! **default** resolution and the **explicit** one (an `XDG_CACHE_HOME`).
 //!
-//! * the **default** resolution — with no `XDG_CACHE_HOME` the root is the
-//!   home directory's `.cache` — and
-//! * the **explicit** resolution — an `XDG_CACHE_HOME` the caller supplies is
-//!   the root the allocator uses.
-//!
-//! The unsafe-cache-root refusal and the privacy of a root the product
-//! creates are qualified in `src/scratch.rs`, because both are properties of
-//! the allocator rather than of the environment.
+//! The unsafe-cache-root refusal and root privacy are qualified in
+//! `src/scratch.rs`.
 
 use std::path::{Path, PathBuf};
 
@@ -61,8 +56,8 @@ fn the_default_cache_root_is_the_home_directory_cache() {
     let _guard = env_lock();
     let home = tempfile::tempdir().expect("isolated home");
     // The allocator refuses a path with a symlinked component, and a temporary
-    // directory's ancestors can contain one (`/tmp` is a symlink on macOS), so
-    // the fixture canonicalizes the way the product's own scratch home does.
+    // directory's ancestors can contain one, so the fixture canonicalizes the
+    // way the product's own scratch home does.
     let home_path = std::fs::canonicalize(home.path()).expect("canonical home");
     let _env = EnvGuard::install(&[
         ("HOME", Some(home_path.to_string_lossy().into_owned())),
@@ -72,13 +67,20 @@ fn the_default_cache_root_is_the_home_directory_cache() {
     let session = session_id("default");
     let root = codegg::scratch::session_scratch_dir(&session).expect("session scratch root");
 
+    // The allocator follows the platform's per-user cache convention, so the
+    // expected root is resolved the same way.
+    let expected_cache = dirs::cache_dir().expect("the platform cache directory");
     assert!(
-        root.starts_with(codegg_scratch_root(&home_path.join(".cache"))),
+        root.starts_with(codegg_scratch_root(&expected_cache)),
         "without XDG_CACHE_HOME the scratch root must live under the home directory's cache: {root:?}"
     );
     std::fs::remove_dir_all(&root).ok();
 }
 
+/// The explicit cache-home contract is an XDG-platform property: the
+/// allocator honours `XDG_CACHE_HOME` on Linux and ignores it on macOS, where
+/// the Apple convention applies — so this qualification is a Linux one.
+#[cfg(target_os = "linux")]
 #[test]
 fn an_explicit_cache_home_is_the_root_the_allocator_uses() {
     let _guard = env_lock();
@@ -94,8 +96,8 @@ fn an_explicit_cache_home_is_the_root_the_allocator_uses() {
             .expect("private cache root");
     }
     // The allocator refuses a path with a symlinked component, and a temporary
-    // directory's ancestors can contain one (`/tmp` is a symlink on macOS), so
-    // the fixture canonicalizes the way the product's own scratch home does.
+    // directory's ancestors can contain one, so the fixture canonicalizes the
+    // way the product's own scratch home does.
     let cache_path = std::fs::canonicalize(cache.path()).expect("canonical cache");
     let _env = EnvGuard::install(&[(
         "XDG_CACHE_HOME",

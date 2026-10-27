@@ -2,17 +2,15 @@
 //!
 //! A Git read observes the repository under very different guarantees, and the
 //! difference decides whether the result may feed a generation-bound consumer.
-//! `egggit` supplies the vocabulary ([`GitReadConsistency`], [`GitReadFact`],
-//! [`GenerationConsistent`]); the fence is [`admit_generation_consistent`], and
-//! the root crate's own fence over the same API is
+//! `egggit` supplies the vocabulary and [`admit_generation_consistent`] is the
+//! fence; the root crate's own fence over the same API is
 //! [`codegg::git_consistency::admit_generation_bound`].
 //!
 //! The suite is split in two:
 //!
 //! * **Suite A — the fence itself.** Pure, no repository: a live-class read is
 //!   inadmissible without the capability, a read with no object generation is
-//!   refused, captured classes are admitted, the class cannot be dropped, and
-//!   the composite class is the weakest of its parts.
+//!   refused, captured classes are admitted, and the class cannot be dropped.
 //! * **Suite B — external-writer negatives and provenance.** Real temporary
 //!   repositories: a stale generation after an outside mutation, a concurrent
 //!   outside writer, an alternate object database, a replace ref, a
@@ -479,12 +477,9 @@ async fn a_repeat_read_of_an_unchanged_repository_is_served_from_the_capture_cac
     // The preparation cache is a best-effort mechanism with eviction, not a
     // durability boundary. A cache-served read is therefore a *captured*
     // generation, not an immutable current one — that distinction is what
-    // keeps the receipt truthful under cache eviction.
-    //
-    // The class of the second read depends on the cache's state, so the
-    // fixture holds the cache lock: without it a concurrently running test
-    // could evict this repository's cached generation between the two reads
-    // and the second read would be a rebuilt `ImmutableGeneration` instead.
+    // keeps the receipt truthful under cache eviction. The fixture holds the
+    // cache lock so no concurrent test can evict this repository's cached
+    // generation between the two reads.
     let dir = repository_scratch();
     let _cache_guard = object_view_cache_lock().lock().await;
     let root = dir.path();
@@ -512,10 +507,18 @@ async fn a_repeat_read_of_an_unchanged_repository_is_served_from_the_capture_cac
         "git rev-parse failed: {}",
         String::from_utf8_lossy(&second.stderr)
     );
+    // The preparation cache's watcher is Linux-only (inotify): where it cannot
+    // answer, the cached generation is invalidated and the view is rebuilt. So
+    // the repeat read is captured where the watcher exists, rebuilt elsewhere.
+    let expected = if cfg!(target_os = "linux") {
+        GitReadConsistency::CapturedNotCurrent
+    } else {
+        GitReadConsistency::ImmutableGeneration
+    };
     assert_eq!(
-        second.consistency,
-        GitReadConsistency::CapturedNotCurrent,
-        "a cache-served read is a captured generation, not an immutable current one"
+        second.consistency, expected,
+        "a repeat read is a captured generation where the cache can serve it, \
+         and a rebuilt immutable generation elsewhere"
     );
     assert!(second.consistency.is_generation_consistent());
     assert!(!second.consistency.is_live());

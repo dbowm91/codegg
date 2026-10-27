@@ -1371,3 +1371,241 @@ async fn m004_security_invariants() {
     assert!(degraded_event.checkpoint_id.is_none());
     assert!(degraded_event.continuity_degraded_reason.is_some());
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn c001_agent_loop_replaces_exact_frontend_prefix_across_turns() {
+    use super::common::scripted_provider::ScriptedProvider;
+    use codegg::provider::{ChatEvent, ChatRequest, Message, TokenUsage};
+    use codegg_protocol::dto::{ContentPart as DtoPart, ProviderMessage as DtoMessage};
+
+    let pool = common::pool::isolated_pool().await;
+    let session_id = "sess-c001-two-turn-prefix";
+    seed_session(&pool, session_id).await;
+    let provider = ScriptedProvider::new(vec![
+        vec![
+            ChatEvent::TextDelta(String::from("first answer").into()),
+            ChatEvent::Finish {
+                stop_reason: String::from("stop").into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![
+            ChatEvent::TextDelta(String::from("second answer").into()),
+            ChatEvent::Finish {
+                stop_reason: String::from("stop").into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+    ]);
+    let provider_for_assertions = provider.clone();
+    let config = codegg::config::schema::Config {
+        compaction: Some(codegg::config::schema::CompactionConfig {
+            enabled: Some(true),
+            auto: Some(true),
+            mode: Some(codegg::config::schema::CompactionModeConfig::Programmatic),
+            prune: Some(false),
+            max_tokens: Some(8_192),
+            threshold: Some(0.60),
+            reserved: Some(128),
+            keep_recent_messages: Some(2),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut agent_loop = super::agent_loop_harness::build_test_agent_loop_with_pool_and_config(
+        Box::new(provider),
+        codegg::tool::ToolRegistry::new(),
+        Some(pool.clone()),
+        config,
+    )
+    .await;
+    agent_loop.set_session_id(session_id);
+    agent_loop.set_task_state_policy(codegg::model_profile::types::TaskStatePolicy::disabled());
+
+    let old_prompt = format!(
+        "C001 superseded prompt marker {}",
+        "old-prompt-payload ".repeat(900)
+    );
+    let old_answer = format!(
+        "C001 superseded answer marker {}",
+        "old-answer-payload ".repeat(900)
+    );
+    let first_prompt = "first current prompt marker";
+    let first_answer = "first answer";
+    let first_request = ChatRequest {
+        messages: vec![
+            user("seed objective"),
+            assistant("seed acknowledgement"),
+            user(&old_prompt),
+            assistant(&old_answer),
+            user("intervening old prompt marker"),
+            assistant("intervening old answer marker"),
+            user(first_prompt),
+        ],
+        model: "test/model".to_string(),
+        tools: None,
+        system: Some("C001 test system prompt".to_string()),
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        response_format: None,
+        thinking_budget: None,
+        reasoning_effort: None,
+        context: ProviderRequestContext::default(),
+    };
+    agent_loop
+        .run(first_request)
+        .await
+        .expect("first turn completes");
+
+    let frontend_history = vec![
+        DtoMessage::User {
+            content: vec![DtoPart::Text {
+                text: "seed objective".to_string(),
+            }],
+        },
+        DtoMessage::Assistant {
+            content: vec![DtoPart::Text {
+                text: "seed acknowledgement".to_string(),
+            }],
+            tool_calls: vec![],
+        },
+        DtoMessage::User {
+            content: vec![DtoPart::Text {
+                text: old_prompt.clone(),
+            }],
+        },
+        DtoMessage::Assistant {
+            content: vec![DtoPart::Text {
+                text: old_answer.clone(),
+            }],
+            tool_calls: vec![],
+        },
+        DtoMessage::User {
+            content: vec![DtoPart::Text {
+                text: "intervening old prompt marker".to_string(),
+            }],
+        },
+        DtoMessage::Assistant {
+            content: vec![DtoPart::Text {
+                text: "intervening old answer marker".to_string(),
+            }],
+            tool_calls: vec![],
+        },
+        DtoMessage::User {
+            content: vec![DtoPart::Text {
+                text: first_prompt.to_string(),
+            }],
+        },
+        DtoMessage::Assistant {
+            content: vec![DtoPart::Text {
+                text: first_answer.to_string(),
+            }],
+            tool_calls: vec![],
+        },
+        DtoMessage::User {
+            content: vec![DtoPart::Text {
+                text: "second current prompt marker".to_string(),
+            }],
+        },
+    ];
+    let incoming_prefixes = rollover::provider_visible_prefix_identities(&frontend_history)
+        .expect("frontend-shaped prefix identities");
+    agent_loop.set_incoming_prefix_identities(incoming_prefixes);
+    let second_request = ChatRequest {
+        messages: vec![
+            user("seed objective"),
+            assistant("seed acknowledgement"),
+            user(&old_prompt),
+            assistant(&old_answer),
+            user("intervening old prompt marker"),
+            assistant("intervening old answer marker"),
+            user(first_prompt),
+            assistant(first_answer),
+            user("second current prompt marker"),
+        ],
+        model: "test/model".to_string(),
+        tools: None,
+        system: Some("C001 test system prompt".to_string()),
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        response_format: None,
+        thinking_budget: None,
+        reasoning_effort: None,
+        context: ProviderRequestContext::default(),
+    };
+    agent_loop
+        .run(second_request)
+        .await
+        .expect("second turn completes");
+
+    let requests = provider_for_assertions.get_requests().await;
+    assert_eq!(requests.len(), 2, "one provider request per turn");
+    assert_eq!(
+        count_continuation_frames(&requests[0].messages),
+        1,
+        "the first AgentLoop request was actually compacted before provider dispatch"
+    );
+    let visible = &requests[1].messages;
+    assert_eq!(
+        visible
+            .iter()
+            .filter(|message| matches!(message, Message::System { content } if content.contains("[codegg continuation state v1]")))
+            .count(),
+        1,
+        "one installed continuation projection is present"
+    );
+    let frame_index = visible
+        .iter()
+        .position(|message| matches!(message, Message::System { content } if content.contains("[codegg continuation state v1]")))
+        .expect("installed continuation is provider-visible");
+    let current_user_index = visible
+        .iter()
+        .position(|message| matches!(message, Message::User { content } if content.iter().any(|part| matches!(part, ContentPart::Text { text } if text.contains("second current prompt marker")))))
+        .expect("current human prompt remains provider-visible");
+    assert!(
+        frame_index < current_user_index,
+        "continuation index {frame_index} must precede current prompt index {current_user_index}; visible={:?}",
+        visible
+            .iter()
+            .enumerate()
+            .map(|(index, message)| {
+                let (kind, prefix) = match message {
+                    Message::System { content } => ("system", content.chars().take(96).collect::<String>()),
+                    Message::User { content } => ("user", content.iter().filter_map(|part| match part {
+                        ContentPart::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    }).collect::<String>().chars().take(96).collect::<String>()),
+                    Message::Assistant { content, .. } => ("assistant", content.iter().filter_map(|part| match part {
+                        ContentPart::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    }).collect::<String>().chars().take(96).collect::<String>()),
+                    Message::Tool { content, .. } => ("tool", content.chars().take(96).collect::<String>()),
+                };
+                (index, kind, prefix)
+            })
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        visible.iter().all(|message| match message {
+            Message::User { content } => content.iter().all(
+                |part| !matches!(part, ContentPart::Text { text } if text.contains(&old_prompt))
+            ),
+            Message::Assistant { content, .. } => content.iter().all(
+                |part| !matches!(part, ContentPart::Text { text } if text.contains(&old_answer))
+            ),
+            Message::Tool { content, .. } => !content.contains(&old_answer),
+            Message::System { .. } => true,
+        }),
+        "the exact superseded frontend prefix is absent from the second provider request"
+    );
+    assert!(
+        visible.iter().any(|message| matches!(message,
+            Message::User { content } if content.iter().any(|part| matches!(part,
+                ContentPart::Text { text } if text.contains(first_prompt)
+            ))
+        )),
+        "the un-superseded first-turn suffix remains provider-visible"
+    );
+}

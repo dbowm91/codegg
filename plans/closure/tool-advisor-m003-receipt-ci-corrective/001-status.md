@@ -148,3 +148,53 @@ coverage therefore passed in the completed suite; the previous benchmark
 interruption did not recur. This closes the recorded integration-CI evidence
 gap for this receipt correction without changing its negative disposition or
 M003's separate no-production-admission decision.
+
+### Receipt drift after the agentfindings tool-contract workstream (2026-10-26)
+
+The frozen M003 receipt regressed again, this time on `origin/main` at
+`957fcbf00`: `tool_advisor::causal_frontier::tests::m003_checked_in_receipt_matches_recomputation`
+failed with stored effect-catalog fingerprint
+`94ef4d745c79450f8d4b27a0985551c82fb2f572d7f8eba6aa4718c5edfd7649` against
+recomputed `ca2d852062c33169b56347ce0a28f82e32154567dee23c87f6e3d33b0027d780`.
+
+The defect class is the same as the two repairs above: the receipt is bound to
+the M003-era tool input schemas, and the regression reconstructs those
+historical schemas from the live registry. The agentfindings tool-contract
+workstream merged in PR #202 (`c43c045c0` … `69e19ee54`) added post-M003
+schema deltas the reconstruction did not yet cover:
+
+- `task.run_id` and `task.timeout_ms` live descriptions changed (pasted
+  `agent-run-result:<run_id>` reference wording; whole-valued float coercion
+  sentence), so the regression's live-value assertions failed before the
+  fingerprint comparison was reached.
+- `glob` and `grep` gained the gitignore-aware `include_ignored` discovery
+  property, so the reconstructed historical schemas stopped reproducing the
+  frozen fingerprint.
+- `repo_search.detail` and `repo_search.include_local` descriptions changed.
+  `repo_search` is not a pilot tool, so this delta is not fingerprint-relevant,
+  but the recorded historical schema is kept faithful to the frozen one.
+
+The repair extends the historical-schema reconstruction only. It was derived
+empirically rather than by inspection: the reconstructed schemas were dumped
+at the last commit where the regression passed (`671ab1d85`) and at the
+current head, and the two were diffed per tool. After the repair all 26
+reconstructed tool schemas are byte-identical to the frozen ones, so the
+recorded historical map is no longer merely "close enough" for the fingerprint
+but is exactly the M003-era input set.
+
+The receipt asset `assets/tool-advisor/causal-frontier-m003-result.json` was
+not modified, the negative disposition D is preserved, M002 remains the
+selected runtime frontier, no test was skipped, and no CI waiver was added.
+The repair was required as a prerequisite for the C001 context-continuity
+closure, whose scoped gate selects this regression; it is independent of that
+milestone's own production change and touches no C001 file.
+
+```bash
+cargo test --locked -p codegg --lib tool_advisor::causal_frontier
+```
+
+Causal-frontier suite: **78 passed, 0 failed, 2 ignored**, with
+`m003_checked_in_receipt_matches_recomputation` and
+`m003_end_to_end_negative_on_frozen_benchmark` green. The frozen receipt, the
+negative disposition, and the M002 fallback assertions are unchanged. No
+hosted CI run was obtained for this repair.

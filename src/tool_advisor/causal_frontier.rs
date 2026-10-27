@@ -5937,10 +5937,8 @@ mod tests {
         task_action["description"] = serde_json::json!(frozen_action_description);
         // The action description carries two independent post-M003 edits and
         // the merged wording is their union: the scratch workstream named the
-        // scratch actions and the `main` side named the run_id/task_id/
-        // group_id addressing rules. The pin below follows the merged
-        // description; the receipt and the content-addressed action enum
-        // above are untouched.
+        // scratch actions, the `main` side named the run_id/task_id/group_id
+        // addressing rules.
         assert_eq!(
             task_action["description"],
             serde_json::json!("Action: create/revoke parent-owned shared scratch, spawn children, converge, manage groups/runs, or manage workstream claims. status/wait/message/interrupt/cancel address an AgentRunId through run_id (a durable task_id string is accepted as an alias and resolved to its run); get retrieves a task through task_id (durable AgentTaskId string or legacy numeric ID; a run_id is accepted as an alias and resolved to its task). Group actions use group_id."),
@@ -6027,7 +6025,7 @@ mod tests {
             .expect("run_id description");
         assert_eq!(
             live_run_id_description,
-            "Required for action=status, wait, message, interrupt, or cancel: durable AgentRunId. A durable task_id string is accepted as an alias and resolved to its run."
+            "Required for action=status, wait, message, interrupt, or cancel: durable AgentRunId (or `agent-run-result:<run_id>` pasted ref). A durable task_id string is accepted as an alias and resolved to its run."
         );
         task_properties["run_id"]["description"] =
             serde_json::json!("Durable AgentRunId for control/status/wait");
@@ -6048,7 +6046,7 @@ mod tests {
             .expect("timeout_ms description");
         assert_eq!(
             live_timeout_description,
-            "Bounded wait timeout in milliseconds, clamped to 30000 (30s). Issue waits solo, never batched with other work: a wait holds no batch execution slot and head-of-line-blocks its siblings."
+            "Bounded wait timeout in milliseconds, clamped to 30000 (30s). Whole-valued floats coerced. Issue waits solo, never batched with other work: a wait holds no batch execution slot and head-of-line-blocks its siblings."
         );
         task_properties["timeout_ms"]["description"] =
             serde_json::json!("Bounded wait timeout in milliseconds");
@@ -6251,13 +6249,40 @@ mod tests {
             repo_properties.remove("providers").is_some(),
             "unexpected post-M003 repo_search schema"
         );
+        // The search workstream reworded two `repo_search` property
+        // descriptions after M003; restore the frozen wording.
+        for (property, live_description, historical_description) in [
+            (
+                "detail",
+                "Use summary for the compact canonical_name/path/description projection (default, compact-first); full (schema is an alias) keeps the framed telemetry envelope. Mirrors tool_search detail.",
+                "Use summary for the compact canonical_name/path/description projection; full (default, schema is an alias) keeps the framed telemetry envelope. Mirrors tool_search detail.",
+            ),
+            (
+                "include_local",
+                "Include matching local workspace results when eggsearch provides them (defaults to true when an authorized root is present; daemon-authorized root, workspace_root fallback with typed reason; otherwise use list/glob on a local checkout)",
+                "Include matching local workspace results when eggsearch provides them (daemon-authorized root, workspace_root fallback with typed reason; otherwise use list/glob on a local checkout)",
+            ),
+        ] {
+            let entry = repo_properties
+                .get_mut(property)
+                .unwrap_or_else(|| panic!("repo_search.{property} remains declared"))
+                .as_object_mut()
+                .unwrap_or_else(|| panic!("repo_search.{property} schema property"));
+            let previous = entry.insert(
+                "description".to_string(),
+                serde_json::json!(historical_description),
+            );
+            assert_eq!(
+                previous.as_ref().and_then(|d| d.as_str()),
+                Some(live_description),
+                "unexpected post-M003 repo_search.{property} description"
+            );
+        }
         historical_schemas.insert("repo_search".to_string(), historical_repo_search_schema);
 
         // The agentfindings workstream (F1 integer coercion + F11 compact
-        // projection) extended several pilot-tool schemas after M003. All
-        // are post-M003 edits, so reconstruct the frozen shapes here: the
-        // receipt stays immutable and the live schemas keep the newer
-        // coercion/projection contract.
+        // projection) extended several pilot-tool schemas after M003;
+        // reconstruct the frozen shapes so the receipt keeps matching.
         for tool in ["work_plan_get", "work_plan_update_item", "webfetch"] {
             let mut schema = registry
                 .get(tool)
@@ -6460,12 +6485,8 @@ mod tests {
         }
 
         // Integer parameters were re-declared as `"integer"` (with a
-        // `minimum`) after M003. They were `"number"`, which is why a model
-        // following the schema literally emitted `500.0` for a count and the
-        // call failed to deserialize. Reconstruct that narrower historical
-        // typing so the frozen receipt keeps matching, and fail loudly if the
-        // live schemas ever stop being integers — otherwise this override
-        // would silently stop doing anything.
+        // `minimum`) after M003; they were `"number"`, so a model emitted
+        // `500.0` and the call failed to deserialize.
         for (tool, property, minimum) in [
             ("list", "max_files", 1),
             ("codesearch", "tokens_num", 1),
@@ -6536,6 +6557,31 @@ mod tests {
                 previous.as_ref().and_then(|d| d.as_str()),
                 Some(live_description),
                 "unexpected post-M003 {tool}.{property} description"
+            );
+            historical_schemas.insert(tool.to_string(), schema);
+        }
+
+        // The discovery tools gained a gitignore-aware `include_ignored`
+        // switch after M003; remove that post-M003 property from their
+        // historical schemas.
+        for tool in ["glob", "grep", "list"] {
+            let mut schema = match historical_schemas.remove(tool) {
+                Some(schema) => schema,
+                None => registry
+                    .get(tool)
+                    .unwrap_or_else(|| panic!("{tool} tool remains registered"))
+                    .parameters(),
+            };
+            let props = schema["properties"]
+                .as_object_mut()
+                .unwrap_or_else(|| panic!("{tool} properties remain declared"));
+            assert_eq!(
+                props.remove("include_ignored"),
+                Some(serde_json::json!({
+                    "type": "boolean",
+                    "description": "Include gitignored files (default false; read sees ignored files, discovery skips them unless include_ignored:true)"
+                })),
+                "unexpected post-M003 {tool}.include_ignored property"
             );
             historical_schemas.insert(tool.to_string(), schema);
         }
