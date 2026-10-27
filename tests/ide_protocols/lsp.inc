@@ -2170,7 +2170,10 @@ async fn security_context_limits_risk_markers_precise() {
         .as_bool()
         .unwrap();
     assert_eq!(markers.len(), unbounded_markers.len().min(2));
-    assert_eq!(truncated, unbounded_truncated || unbounded_markers.len() > 2);
+    assert_eq!(
+        truncated,
+        unbounded_truncated || unbounded_markers.len() > 2
+    );
 }
 
 #[tokio::test]
