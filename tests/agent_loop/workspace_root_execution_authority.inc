@@ -441,3 +441,224 @@ async fn explicit_read_only_isolated_new_fails_closed_without_contained_creator(
         "the in-memory WorktreeService has no configured ContainedWorktreeCreator, so explicit isolation must report that typed failure: {reason}"
     );
 }
+
+/// A001 strict-success regression: explicit read-only placement must produce
+/// a real, distinct checkout through the production contained creator before
+/// the read-only child runs. The test is intentionally host-qualified: if the
+/// platform cannot obtain filesystem containment, a successful in-place child
+/// would be a security regression and the executor must fail closed.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts() {
+    use codegg::scheduler::{JobScheduler, JobSubmissionService, ResolvedSchedulerConfig};
+    use codegg_core::jobs::{
+        ExecutionTarget, IdempotencyClass, InMemoryJobStore, JobPriority, JobSource, JobStore,
+        NewJob, ResourceRequest, RetryPolicy,
+    };
+    use codegg_core::workspace::{InMemoryWorkspaceStore, WorkspaceRegistry};
+    use codegg_core::workspace_services::{
+        ProductionWorkspaceServicesFactory, WorkspaceServicePolicy, WorkspaceServiceRegistry,
+    };
+    use codegg_core::worktree_service::WorktreeService;
+
+    let workspace = tempfile::tempdir().expect("job workspace");
+    common::blackboard::init_repository(workspace.path());
+    let managed_root = tempfile::tempdir().expect("managed worktree root");
+    let scratch_root = tempfile::tempdir().expect("contained Git scratch root");
+    let creator = Arc::new(
+        codegg::git_contained_worktree::ContainedGitWorktreeCreator::new(
+            codegg::git_contained_worktree::resolve_git_binary().expect("pinned Git binary"),
+            scratch_root.path().to_path_buf(),
+        ),
+    );
+    let worktrees = WorktreeService::memory(
+        managed_root.path().to_path_buf(),
+        Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
+    )
+    .with_contained_creator(creator);
+    let run_store = Arc::new(InMemoryAgentRunStore::new());
+    let workspace_registry = WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))
+        .await
+        .expect("workspace registry");
+    let workspace_record = workspace_registry
+        .get_or_register(workspace.path())
+        .await
+        .expect("register parent workspace");
+    let workspace_id = workspace_record.id.clone();
+    let workspace_services = WorkspaceServiceRegistry::new(
+        workspace_registry,
+        Arc::new(ProductionWorkspaceServicesFactory),
+        WorkspaceServicePolicy::default(),
+    );
+    let mut checkout_paths = Vec::new();
+
+    for ordinal in 0..2 {
+        let (_, observed_tool_result, pool) = build_executor("README").await;
+        let executor = SubagentJobExecutor::new_with_agent_runs_and_control_and_worktree(
+            pool,
+            run_store.clone(),
+            None,
+            worktrees.clone(),
+        );
+        let task_id = AgentTaskId::new();
+        let run_id = AgentRunId::new();
+        run_store
+            .create_or_get(
+                NewAgentTask {
+                    task_id: task_id.clone(),
+                    parent_task_id: None,
+                    originating_session_id: "a001-contained-session".into(),
+                    originating_turn_id: Some("a001-contained-turn".into()),
+                    project_id: ProjectId::new(),
+                    repository_id: Some(RepositoryId::new()),
+                    workspace_id: workspace_id.clone(),
+                    requested_agent: CHILD_AGENT.into(),
+                    delegation_key: format!("a001-contained-{ordinal}"),
+                    request_fingerprint: format!("a001-contained-fingerprint-{ordinal}"),
+                    description: "read-only explicit isolated placement success".into(),
+                },
+                NewAgentRun {
+                    run_id: run_id.clone(),
+                    parent_run_id: None,
+                    depth: 1,
+                    workspace_id: workspace_id.clone(),
+                    agent_name: CHILD_AGENT.into(),
+                    agent_digest: None,
+                    provider: PROVIDER_ID.into(),
+                    model: format!("{PROVIDER_ID}/model"),
+                    authority_digest: "a001-contained-authority".into(),
+                    budget: AgentRunBudget::default(),
+                    shared_scratch: Vec::new(),
+                },
+            )
+            .await
+            .expect("create durable run");
+
+        let payload = JobPayload::SubagentRun {
+            prompt: "Read the tracked README without changing files.".into(),
+            agent: CHILD_AGENT.into(),
+            model: Some(format!("{PROVIDER_ID}/model")),
+            parent_id: None,
+            denied_tools: MUTATING_TOOLS.iter().map(|name| (*name).into()).collect(),
+            allowed_paths: Vec::new(),
+            max_tool_calls: None,
+            task_id,
+            run_id: run_id.clone(),
+            delegation_key: format!("a001-contained-{ordinal}"),
+            base_commit: None,
+            placement: codegg_core::run_placement::RunPlacement::IsolatedNew,
+            default_working_directory: None,
+        };
+        let job_store = Arc::new(InMemoryJobStore::new());
+        let generation = DaemonGeneration::new_unchecked(format!("a001-contained-{ordinal}"));
+        let scheduler = JobScheduler::new(
+            job_store.clone(),
+            workspace_services.clone(),
+            ResolvedSchedulerConfig::default(),
+            generation.clone(),
+        );
+        scheduler
+            .register_executor(Arc::new(executor))
+            .await
+            .expect("register production subagent executor");
+        let submission = JobSubmissionService::new(
+            job_store.clone(),
+            scheduler.clone(),
+            workspace_services.clone(),
+            generation,
+        );
+        run_store
+            .transition(&run_id, codegg_core::agent_run::AgentRunStatus::Queued)
+            .await
+            .expect("mark durable run queued before scheduler dispatch");
+        let scheduler_task = scheduler.clone().spawn_run();
+        let submitted = submission
+            .submit(
+                None,
+                NewJob {
+                    workspace_id: workspace_id.clone(),
+                    session_id: None,
+                    turn_id: None,
+                    kind: JobKind::Subagent,
+                    source: JobSource::AgentDelegated,
+                    priority: JobPriority::Interactive,
+                    payload,
+                    resource_request: ResourceRequest::default(),
+                    timeout: None,
+                    retry_policy: RetryPolicy::no_retry(),
+                    idempotency: IdempotencyClass::NonIdempotent,
+                    not_before: None,
+                    deadline: None,
+                    schedule_id: None,
+                    depends_on: Vec::new(),
+                    parent_job_id: None,
+                    parent_attempt_id: None,
+                    parent_call_id: None,
+                    parent_program_id: None,
+                    parent_instruction_sequence: None,
+                    relation_kind: None,
+                    target: ExecutionTarget::default(),
+                },
+            )
+            .await
+            .expect("submit isolated child through live scheduler");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let completion = loop {
+            let record = job_store
+                .get_job(&submitted.job_id)
+                .await
+                .expect("read scheduled job")
+                .expect("submitted job exists");
+            if record.state.is_terminal() {
+                break record;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "live scheduler did not finish explicit isolated child: {record:#?}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert_eq!(
+            completion.state,
+            JobState::Completed,
+            "contained creator or read-only child failed: {completion:#?}"
+        );
+        scheduler
+            .shutdown(codegg::scheduler::SchedulerShutdownMode::ImmediateInterrupt)
+            .await;
+        scheduler_task.await.expect("join test scheduler");
+        let read_result = observed_tool_result
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            read_result.contains("base"),
+            "child must read the tracked marker from its checkout: {read_result}"
+        );
+        let run = run_store.get_run(&run_id).await.unwrap().unwrap();
+        let worktree_id = run
+            .worktree_id
+            .expect("successful isolated run has a worktree");
+        let record = worktrees
+            .get(&worktree_id)
+            .await
+            .expect("managed worktree record");
+        assert_ne!(record.path, workspace.path());
+        assert!(record.path.starts_with(managed_root.path()));
+        assert!(record.path.join("README").is_file());
+        assert_eq!(
+            record.state,
+            codegg_core::worktree_service::ManagedWorktreeState::Ready
+        );
+        checkout_paths.push(record.path);
+    }
+
+    assert_ne!(checkout_paths[0], checkout_paths[1]);
+    assert!(workspace.path().join("README").is_file());
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("README")).unwrap(),
+        "base\n",
+        "the parent checkout remains unchanged"
+    );
+}
