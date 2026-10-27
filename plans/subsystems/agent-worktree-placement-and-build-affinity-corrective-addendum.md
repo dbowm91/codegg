@@ -1,6 +1,6 @@
 # Agent Worktree Placement and Build Affinity Corrective Addendum
 
-Status: **active planning** — A001 and A003 conditionally closed; A002/A004/A005 remain gated
+Status: **active planning** — A001/A003 closed; A002/A004 eligible for fresh planning; A005 remains gated
 Repository baseline: `80171f45295bebb9ab0b521262c0b295acb93074` (main, 2026-10-27)
 Source of truth: `plans/registry.md`
 
@@ -31,21 +31,21 @@ No unrestricted co-located shell/build writers; no arbitrary manual-checkout ado
 Preserve `Auto` as backwards-compatible. `IsolatedNew` is an **unconditional** isolated-checkout request, and fails if no qualified managed checkout is creatable. A separate explicit-existing placement may target an authorized managed checkout **read-only**; any mutating shared execution must continue through `SerializedShared` and its restrictive profile, not a new alias. Build admission is layered: existing per-workspace caps plus configurable repository-scoped resource budgets with accurately classified jobs, and coarse observable outcomes. Cache reuse is optional, measured, and trust-partitioned.
 
 ## 6. Dependency graph
-A001 explicit-isolation semantics (conditionally closed)
-  └─ A002 explicit existing managed checkout, read-only (blocked on A001 strict closure)
-A003 repository-scoped build admission (conditionally closed, independent)
-  └─ A004 optional cache economics pilot (blocked on strict A003 closure and cache evidence)
-A002 + A003 (+ A004 decision evidence) → A005 conservative placement/affinity advisor (blocked)
+A001 explicit-isolation semantics (closed)
+  └─ A002 explicit existing managed checkout, read-only (eligible for fresh planning)
+A003 repository-scoped build admission (closed, independent)
+  └─ A004 optional cache economics pilot (eligible for fresh planning; use A003's production measurements)
+A002 + A003 (+ A004 decision evidence) → A005 conservative placement/affinity advisor (blocked on A002 and A004)
 W002 and W004 in the workspace-authority roadmap are closed and independent of A001/A003.
 
 ## 7. Milestones and boundaries
 
 | ID | Class | Objective | Dependency | Exit gate |
 |---|---|---|---|---|
-| A001 | invariant | Honor explicit `isolated_new` even for read-only profiles; fail closed without qualified repository/worktree; preserve `auto` and `serialized_shared`. | Closed M004/C008 | Strict closure still requires production contained-creator success through live scheduler dispatch; no fallthrough |
+| A001 | invariant | Honor explicit `isolated_new` even for read-only profiles; fail closed without qualified repository/worktree; preserve `auto` and `serialized_shared`. | Closed M004/C008 | **Closed:** hosted Linux live-scheduler evidence creates two distinct contained checkouts; no fallthrough |
 | A002 | capability | Typed existing-managed-worktree selection for authorized read-only delegated inspection only; reject occupied/foreign/unmanaged/mutating intents. | A001 closed | End-to-end spawn_many → daemon selector → read-only tool root; no extra worktree or new write authority |
-| A003 | infrastructure | Add canonical repository-scoped quotas/metrics for supported build jobs across sibling worktrees, with opt-in policy/default unchanged. | Closed M007 | Real scheduler admitted/waiting/cancel/restart tests across two workspaces in same repo; paired Cargo resource/lock sample recorded |
-| A004 | polish/performance | Comparative Rust build cost study and opt-in cache candidate, after measured inputs; no global writable target reuse. | A003 closed | Published wall/CPU/disk/cache measurements including negative cases; rollback to isolated target dirs |
+| A003 | infrastructure | Add canonical repository-scoped quotas/metrics for supported build jobs across sibling worktrees, with opt-in policy/default unchanged. | Closed M007 | **Closed:** production scheduler Cargo runs cover quota off/on for sibling worktrees and quota-on unrelated repositories; reports include CPU, RSS, wall time, disk growth, and lock waits |
+| A004 | polish/performance | Comparative Rust build cost study and opt-in cache candidate, after measured inputs; no global writable target reuse. | A003 closed | Fresh planning may decide whether to study a cache; preserve isolated target directories unless separately justified and authorized |
 | A005 | capability/polish | Explicit conservative orchestrator strategy selection and reasoned recommendation; no inference of shared authorization. | A002 + A003, A004 evidence/decision | Real-model before/after multi-language and Rust workloads with failure/collision and cost accounting |
 
 ## 8. Cross-cutting contract
@@ -63,8 +63,8 @@ Every ready milestone receives separate `plans/closure/agent-worktree-placement-
 ## 12. Milestone status
 | Milestone | Status | Plan | Blocker |
 |---|---|---|---|
-| A001 | conditionally closed | `plans/implementation/agent-worktree-placement-and-build-affinity/001-explicit-isolated-placement-contract.md` | Qualified live success through the production contained creator and scheduler remains open |
-| A002 | blocked | to author after A001 | A001 strict closure |
-| A003 | conditionally closed | `plans/implementation/agent-worktree-placement-and-build-affinity/003-repository-scoped-build-admission.md` | Real scheduler admission passes; real Rust builds through the production executor still need comparative resource measurements |
-| A004 | blocked | to author after A003 strict closure | A003 comparative build measurement and cache decision remain open |
-| A005 | blocked | to author after A002/A003 | A002+A003 and economics evidence |
+| A001 | closed | `plans/implementation/agent-worktree-placement-and-build-affinity/001-explicit-isolated-placement-contract.md` | Closure `plans/closure/agent-worktree-placement-and-build-affinity/001-status.md`; hosted Linux production contained-creator and live-scheduler success passed |
+| A002 | eligible for fresh planning | to author after A001 | A001 strict closure completed; existing-checkout selection remains read-only and separately authorized |
+| A003 | closed | `plans/implementation/agent-worktree-placement-and-build-affinity/003-repository-scoped-build-admission.md` | Closure `plans/closure/agent-worktree-placement-and-build-affinity/003-status.md`; hosted production Cargo comparison passed with resource, target-size, and lock-wait evidence |
+| A004 | eligible for fresh planning | to author after A003 | A003's production comparison is complete; fresh plan must scope cache/economics decisions and must not assume shared writable target directories |
+| A005 | blocked | to author after A002/A004 | A002 read-only existing-checkout capability and A004 decision/economics evidence remain open |
