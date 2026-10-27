@@ -99,6 +99,142 @@ pub(crate) fn start_refresh_session(app: &mut App, session_id: String) {
     );
 }
 
+/// Resolve the selected session through the daemon before changing any
+/// active-tab execution context. `SessionList` is project-scoped and its
+/// compatibility directory is not sufficient authority for rebinding.
+pub(crate) async fn load_session_activation(
+    core_client: &dyn crate::core::CoreClient,
+    session_id: &str,
+) -> Result<(crate::session::Session, std::path::PathBuf), String> {
+    let request = crate::core::new_request(
+        format!("session-activate-{}", uuid::Uuid::new_v4()),
+        CoreRequest::SessionLoad {
+            session_id: session_id.to_string(),
+        },
+    );
+    let mut dto = match core_client
+        .request(request)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        CoreResponse::Session { session } => session,
+        CoreResponse::Error { code, message } => return Err(format!("{code}: {message}")),
+        _ => return Err("unexpected response while loading the session".into()),
+    };
+    if dto.id != session_id {
+        return Err("daemon returned a different session than requested".into());
+    }
+    let binding = dto
+        .binding
+        .take()
+        .ok_or_else(|| "session has no resolved workspace binding".to_string())?;
+    let root = binding
+        .compatibility_directory
+        .filter(|root| !root.is_empty())
+        .ok_or_else(|| "session workspace binding has no canonical directory".to_string())?;
+    if binding.binding_state.as_deref() != Some("resolved") {
+        return Err("session workspace binding is unavailable".into());
+    }
+    if dto.project_id != binding.project_id
+        || dto.workspace_id.as_deref() != Some(binding.workspace_id.as_str())
+    {
+        return Err("daemon returned an inconsistent session binding".into());
+    }
+    let root = std::path::PathBuf::from(root);
+    if !root.is_absolute() {
+        return Err("daemon returned a non-absolute session workspace root".into());
+    }
+    dto.directory = root.to_string_lossy().into_owned();
+    let session = crate::protocol_conversions::dto_to_session(dto)
+        .map_err(|error| format!("invalid daemon session data: {error}"))?;
+    Ok((session, root))
+}
+
+pub(crate) fn start_activate_session(app: &mut App, session_id: String) {
+    if session_id.is_empty() {
+        return;
+    }
+    let Some(tab_id) = app.active_tab_id().map(|id| id.as_str().to_owned()) else {
+        app.messages_state
+            .toasts
+            .error("Cannot switch sessions without an active project tab");
+        return;
+    };
+    let request_id = app.dialog_state.session_activation_request.begin();
+    let core_client = app.core_client.clone();
+    spawn_registered_tui_task(
+        app.tui_cmd_tx.clone(),
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "activate_session",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::SessionActivated {
+                    request_id,
+                    tab_id,
+                    session: None,
+                    workspace_root: None,
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
+                });
+            };
+            let (session, workspace_root, error) =
+                match load_session_activation(core_client.as_ref(), &session_id).await {
+                    Ok((session, root)) => (Some(session), Some(root), None),
+                    Err(error) => (None, None, Some(error)),
+                };
+            Some(TuiCommand::SessionActivated {
+                request_id,
+                tab_id,
+                session,
+                workspace_root,
+                error,
+            })
+        },
+    );
+}
+
+pub(crate) fn apply_session_activated(
+    app: &mut App,
+    request_id: u64,
+    tab_id: String,
+    session: Option<crate::session::Session>,
+    workspace_root: Option<std::path::PathBuf>,
+    error: Option<String>,
+) {
+    if !app
+        .dialog_state
+        .session_activation_request
+        .finish(request_id)
+    {
+        return;
+    }
+    if !app
+        .active_tab_id()
+        .is_some_and(|active_tab| active_tab.as_str() == tab_id)
+    {
+        return;
+    }
+    if let Some(error) = error {
+        app.messages_state
+            .toasts
+            .error(&format!("Could not switch sessions: {error}"));
+        return;
+    }
+    let Some(session) = session else {
+        app.messages_state
+            .toasts
+            .error("Could not switch sessions: daemon returned no session");
+        return;
+    };
+    let Some(root) = workspace_root.filter(|root| root.is_absolute()) else {
+        app.messages_state
+            .toasts
+            .error("Could not switch sessions: daemon returned no canonical workspace root");
+        return;
+    };
+    app.set_session_with_workspace_root(session, Some(root));
+}
+
 /// Apply a `SessionRefreshed` completion.
 ///
 /// Only the title is copied. `App::set_session` is deliberately NOT used:
@@ -327,6 +463,9 @@ pub(crate) fn apply_sessions_reloaded(
         .session
         .as_ref()
         .map(|session| session.id.clone());
+    let project_context = app
+        .active_project_display_context()
+        .map(|context| format!("{context} · sessions in this project"));
 
     // `open_dialog(Dialog::Session)` pushes a *clone* of
     // `dialog_state.session_dialog` onto the focus manager, and
@@ -337,6 +476,7 @@ pub(crate) fn apply_sessions_reloaded(
     // focus-manager instance as well.
     let apply = |dialog: &mut crate::tui::components::dialogs::session::SessionDialog| {
         dialog.load_sessions(sessions.clone());
+        dialog.set_project_context(project_context.clone());
         if let Some(session_id) = active_session_id.as_deref() {
             dialog.select_session_id(session_id);
         }
@@ -2129,15 +2269,9 @@ pub(crate) fn apply_new_session_created(
     let Some(session) = session else {
         return;
     };
-    // `set_session` navigates to the session route and mirrors the selection
-    // into the active tab, which is exactly what a fresh session needs.
-    if let Ok(session) = crate::protocol_conversions::dto_to_session(session) {
-        app.set_session(session);
-    } else {
-        app.messages_state
-            .toasts
-            .error("Failed to start a new session: could not read the created session");
-    }
+    // Creation returns a compatibility DTO; resolve the durable binding
+    // before making the new session the tab's execution context.
+    start_activate_session(app, session.id);
 }
 
 pub(crate) fn start_create_from_template(
@@ -2248,12 +2382,7 @@ pub(crate) fn apply_template_session_created(
     let Some(session) = session else {
         return;
     };
-    if !assign_session_from_dto(app, session.clone()) {
-        return;
-    }
-    app.ui_state
-        .routes
-        .navigate_to(crate::tui::Route::Session(session.id.clone()));
+    start_activate_session(app, session.id.clone());
 
     if let Some(agent_name) = agent {
         if let Some(idx) = app
@@ -2901,6 +3030,197 @@ pub(crate) async fn handle_undo_delete(app: &mut App, session_id: String) {
 mod tests {
     use super::*;
 
+    fn bound_session(
+        session_id: &str,
+        project_id: &str,
+        workspace_id: &str,
+        root: &str,
+    ) -> crate::session::Session {
+        crate::session::Session {
+            id: session_id.to_string(),
+            project_id: project_id.to_string(),
+            workspace_id: Some(workspace_id.to_string()),
+            directory: root.to_string(),
+            title: session_id.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn session_activation_rebinds_a_b_a_to_authoritative_worktree_roots() {
+        let mut app = crate::tui::app::App::new_for_testing("/workspace/a".to_string());
+        let tab_id = app.active_tab_id().unwrap().as_str().to_owned();
+        let in_flight_context = app.project_execution_context().unwrap();
+
+        for (session_id, workspace_id, root) in [
+            ("session-a", "workspace-a", "/workspace/a"),
+            ("session-b", "workspace-b", "/worktrees/feature"),
+            ("session-a", "workspace-a", "/workspace/a"),
+        ] {
+            let request_id = app.dialog_state.session_activation_request.begin();
+            apply_session_activated(
+                &mut app,
+                request_id,
+                tab_id.clone(),
+                Some(bound_session(
+                    session_id,
+                    "project-shared",
+                    workspace_id,
+                    root,
+                )),
+                Some(std::path::PathBuf::from(root)),
+                None,
+            );
+            let context = app.project_execution_context().unwrap();
+            assert_eq!(context.session_id.as_deref(), Some(session_id));
+            assert_eq!(context.project_id.as_deref(), Some("project-shared"));
+            assert_eq!(context.workspace_id.as_deref(), Some(workspace_id));
+            assert_eq!(context.workspace_root, std::path::PathBuf::from(root));
+            assert_eq!(
+                in_flight_context.workspace_root,
+                std::path::PathBuf::from("/workspace/a"),
+                "an already-captured execution context must remain bound to A"
+            );
+        }
+    }
+
+    #[test]
+    fn session_activation_changes_projects_only_from_a_daemon_binding() {
+        let mut app = crate::tui::app::App::new_for_testing("/workspace/a".to_string());
+        let tab_id = app.active_tab_id().unwrap().as_str().to_owned();
+        let request_id = app.dialog_state.session_activation_request.begin();
+        apply_session_activated(
+            &mut app,
+            request_id,
+            tab_id,
+            Some(bound_session(
+                "session-c",
+                "project-c",
+                "workspace-c",
+                "/workspace/c",
+            )),
+            Some(std::path::PathBuf::from("/workspace/c")),
+            None,
+        );
+        let context = app.project_execution_context().unwrap();
+        assert_eq!(context.project_id.as_deref(), Some("project-c"));
+        assert_eq!(context.workspace_id.as_deref(), Some("workspace-c"));
+        assert_eq!(
+            context.workspace_root,
+            std::path::PathBuf::from("/workspace/c")
+        );
+    }
+
+    #[test]
+    fn stale_or_unbound_session_activation_does_not_retarget_tab() {
+        let mut app = crate::tui::app::App::new_for_testing("/workspace/a".to_string());
+        let tab_id = app.active_tab_id().unwrap().as_str().to_owned();
+        let current = app.dialog_state.session_activation_request.begin();
+        let _newer = app.dialog_state.session_activation_request.begin();
+        assert!(app.project_execution_context().is_err());
+        apply_session_activated(
+            &mut app,
+            current,
+            tab_id.clone(),
+            Some(bound_session(
+                "stale",
+                "project-b",
+                "workspace-b",
+                "/workspace/b",
+            )),
+            Some(std::path::PathBuf::from("/workspace/b")),
+            None,
+        );
+        assert_eq!(
+            app.project_tabs.active().unwrap().workspace_root,
+            Some(std::path::PathBuf::from("/workspace/a"))
+        );
+        assert!(app.project_execution_context().is_err());
+
+        let current = app.dialog_state.session_activation_request.request_id();
+        apply_session_activated(
+            &mut app,
+            current,
+            tab_id,
+            Some(crate::session::Session {
+                id: "legacy-unbound".into(),
+                ..Default::default()
+            }),
+            None,
+            Some("session has no resolved workspace binding".into()),
+        );
+        assert_eq!(
+            app.project_execution_context().unwrap().workspace_root,
+            std::path::PathBuf::from("/workspace/a")
+        );
+        assert!(app
+            .messages_state
+            .toasts
+            .history()
+            .any(|toast| toast.message.contains("no resolved workspace binding")));
+    }
+
+    #[tokio::test]
+    async fn activation_uses_session_load_and_ignores_the_compatibility_locator() {
+        use async_trait::async_trait;
+        use std::sync::Mutex;
+
+        struct ActivationClient(Mutex<Option<CoreRequest>>);
+
+        #[async_trait]
+        impl crate::core::CoreClient for ActivationClient {
+            async fn request(
+                &self,
+                request: crate::protocol::core::RequestEnvelope<CoreRequest>,
+            ) -> Result<CoreResponse, crate::error::AppError> {
+                let session_id = match request.payload {
+                    CoreRequest::SessionLoad { session_id } => {
+                        *self.0.lock().unwrap() = Some(CoreRequest::SessionLoad {
+                            session_id: session_id.clone(),
+                        });
+                        session_id
+                    }
+                    other => panic!("unexpected request: {other:?}"),
+                };
+                Ok(CoreResponse::Session {
+                    session: crate::protocol::dto::Session {
+                        id: session_id,
+                        project_id: "project-b".into(),
+                        workspace_id: Some("workspace-b".into()),
+                        directory: "/stale/list/locator".into(),
+                        binding: Some(crate::protocol::dto::SessionBindingDto {
+                            project_id: "project-b".into(),
+                            workspace_id: "workspace-b".into(),
+                            repository_id: Some("repository-b".into()),
+                            binding_state: Some("resolved".into()),
+                            binding_revision: Some(2),
+                            compatibility_directory: Some("/worktrees/feature".into()),
+                        }),
+                        ..Default::default()
+                    },
+                })
+            }
+
+            fn subscribe(
+                &self,
+            ) -> tokio::sync::mpsc::Receiver<
+                crate::protocol::core::EventEnvelope<crate::protocol::core::CoreEvent>,
+            > {
+                let (_tx, rx) = tokio::sync::mpsc::channel(1);
+                rx
+            }
+        }
+
+        let client = ActivationClient(Mutex::new(None));
+        let (session, root) = load_session_activation(&client, "session-b").await.unwrap();
+        assert_eq!(session.directory, "/worktrees/feature");
+        assert_eq!(root, std::path::PathBuf::from("/worktrees/feature"));
+        assert!(matches!(
+            client.0.lock().unwrap().as_ref(),
+            Some(CoreRequest::SessionLoad { session_id }) if session_id == "session-b"
+        ));
+    }
+
     /// `/sessions` painted nothing because `open_dialog` pushes a *clone*
     /// of `dialog_state.session_dialog` onto the focus manager, while the
     /// reload path only filled the App-owned field. `render_dialog` draws
@@ -2935,6 +3255,12 @@ mod tests {
             1,
             "App-owned dialog was not filled"
         );
+        assert!(app
+            .dialog_state
+            .session_dialog
+            .project_context
+            .as_deref()
+            .is_some_and(|context| context.contains("sessions in this project")));
 
         let painted = app
             .focus_manager

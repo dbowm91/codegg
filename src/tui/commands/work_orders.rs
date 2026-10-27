@@ -3322,15 +3322,7 @@ pub(crate) fn apply_task_session_focus(
         refresh_task_view(app);
         return;
     };
-    let session = match crate::protocol_conversions::dto_to_session(dto) {
-        Ok(session) => session,
-        Err(error) => {
-            app.messages_state
-                .toasts
-                .warning(&format!("Could not open task session: {error}"));
-            return;
-        }
-    };
+    let selected_session_id = dto.id;
     // Canonical focus path (same machinery as the session dialog):
     // cancel per-session background work, bind the session, refresh
     // git state, close the Task view, and navigate to the session.
@@ -3338,12 +3330,9 @@ pub(crate) fn apply_task_session_focus(
     app.task_registry.cancel_kind(TuiTaskKind::Research);
     app.task_registry.cancel_kind(TuiTaskKind::Memory);
     app.task_registry.cancel_kind(TuiTaskKind::GitStatus);
-    app.set_session(session);
+    crate::tui::commands::sessions::start_activate_session(app, selected_session_id.clone());
     crate::tui::commands::git_sidebar::start_refresh_git_sidebar(app);
     app.close_dialog();
-    app.ui_state
-        .routes
-        .navigate_to(crate::tui::route::Route::Session(session_id));
 }
 
 // ── /tasks migration ─────────────────────────────────────────────────
@@ -4119,11 +4108,12 @@ mod tests {
             None,
         );
 
-        assert_eq!(
-            app.session_state.session.as_ref().map(|s| s.id.as_str()),
-            Some("sess-1")
-        );
-        assert!(matches!(
+        // Session focus is deliberately asynchronous: the listing only
+        // identifies the durable session, and activation resolves its
+        // canonical workspace binding before changing the tab context.
+        assert!(app.session_state.session.is_none());
+        assert!(app.dialog_state.session_activation_request.is_loading());
+        assert!(!matches!(
             app.ui_state.routes.current(),
             crate::tui::route::Route::Session(id) if id == "sess-1"
         ));

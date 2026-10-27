@@ -1139,6 +1139,7 @@ impl App {
                 research_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_reload_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_refresh_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                session_activation_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 task_list_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 task_delete_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 task_sheet_request: crate::tui::app::state::AsyncUiRequestState::new(),
@@ -1731,6 +1732,7 @@ impl App {
                 research_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_reload_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_refresh_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                session_activation_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 task_list_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 task_delete_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 task_sheet_request: crate::tui::app::state::AsyncUiRequestState::new(),
@@ -4905,7 +4907,9 @@ impl App {
                         // live route.
                         match self.dialog_state.session_dialog.activate_selected() {
                             Some(crate::tui::app::TuiMsg::SelectSession(session)) => {
-                                self.set_session(*session);
+                                crate::tui::commands::sessions::start_activate_session(
+                                    self, session.id,
+                                );
                                 self.close_dialog();
                             }
                             Some(msg) => {
@@ -12009,7 +12013,7 @@ impl App {
                     let session = session.clone();
                     self.dialog_state.import_dialog = None;
                     self.close_dialog();
-                    self.set_session(session);
+                    crate::tui::commands::sessions::start_activate_session(self, session.id);
                     self.messages_state.toasts.info("Session imported");
                 }
             }
@@ -12688,6 +12692,17 @@ impl App {
     }
 
     pub fn set_session(&mut self, sess: Session) {
+        self.set_session_with_workspace_root(sess, None);
+    }
+
+    /// Bind a session and, when supplied, its daemon-resolved workspace root
+    /// in one synchronous state transition. The root is a locator from the
+    /// authorized session binding, never one inferred from a display path.
+    pub fn set_session_with_workspace_root(
+        &mut self,
+        sess: Session,
+        resolved_workspace_root: Option<std::path::PathBuf>,
+    ) {
         if self.prompt_state.pending_session_submit.is_some() {
             self.invalidate_pending_session_submit(false);
         }
@@ -12729,9 +12744,10 @@ impl App {
             if workspace_id.is_some() {
                 tab.workspace_id = workspace_id.clone();
             }
-            if tab.workspace_root.is_none() && !session_directory.is_empty() {
-                let root = std::path::PathBuf::from(session_directory);
-                tab.workspace_root = Some(root.canonicalize().unwrap_or(root));
+            if let Some(root) = resolved_workspace_root {
+                tab.workspace_root = Some(root);
+            } else if !session_directory.is_empty() {
+                tab.workspace_root = Some(std::path::PathBuf::from(session_directory));
             }
         }
         // Milestone 3: register the now-open session in the routing
@@ -12750,6 +12766,9 @@ impl App {
             self.routing_registry
                 .register_open_session(tab_id.clone(), sess_id.clone());
         }
+        let project_scope = self.active_project_id().map(str::to_owned);
+        self.sidebar.set_project_scope(project_scope.as_deref());
+        self.refresh_project_command_registry();
         if let Some(ref tx) = self.tui_cmd_tx {
             let _ = send_tui(
                 tx,
@@ -14327,49 +14346,27 @@ impl App {
     ///
     /// Best-effort: any failure is logged and swallowed so the TUI
     /// still starts (with no session) if the daemon is unreachable or
-    /// a specific id is missing. The local `SessionStore` path in
-    /// `main.rs` is the equivalent for inproc mode and is preserved.
+    /// a specific id is missing. Inproc mode uses the same `CoreClient`
+    /// activation request so it observes the same canonical binding rules.
     pub async fn load_initial_session_via_core(&mut self, request: InitialSessionRequest) {
         let Some(core_client) = self.core_client.clone() else {
             return;
         };
         match request {
             InitialSessionRequest::Attach { session_id } => {
-                let req = crate::core::new_request(
-                    uuid::Uuid::new_v4().to_string(),
-                    CoreRequest::SessionAttach {
-                        session_id: session_id.clone(),
-                    },
-                );
-                match core_client.request(req).await {
-                    Ok(CoreResponse::Session { session }) => {
-                        match crate::protocol_conversions::dto_to_session(session) {
-                            Ok(s) => self.set_session(s),
-                            Err(e) => tracing::warn!(
-                                "load_initial_session_via_core(Attach): dto_to_session failed: {}",
-                                e
-                            ),
-                        }
+                match crate::tui::commands::sessions::load_session_activation(
+                    core_client.as_ref(),
+                    &session_id,
+                )
+                .await
+                {
+                    Ok((session, root)) => {
+                        self.set_session_with_workspace_root(session, Some(root));
                     }
-                    Ok(CoreResponse::Error { code, message }) => {
-                        tracing::warn!(
-                            "load_initial_session_via_core(Attach): core error {}: {}",
-                            code,
-                            message
-                        );
-                    }
-                    Ok(other) => {
-                        tracing::warn!(
-                            "load_initial_session_via_core(Attach): unexpected response {:?}",
-                            other
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "load_initial_session_via_core(Attach): request failed: {}",
-                            e
-                        );
-                    }
+                    Err(error) => tracing::warn!(
+                        "load_initial_session_via_core(Attach): session activation failed: {}",
+                        error
+                    ),
                 }
             }
             InitialSessionRequest::Continue { project_dir } => {
@@ -14384,11 +14381,18 @@ impl App {
                 match core_client.request(req).await {
                     Ok(CoreResponse::SessionList { mut sessions }) => {
                         if let Some(sess) = sessions.pop() {
-                            match crate::protocol_conversions::dto_to_session(sess) {
-                                Ok(s) => self.set_session(s),
-                                Err(e) => tracing::warn!(
-                                    "load_initial_session_via_core(Continue): dto_to_session failed: {}",
-                                    e
+                            match crate::tui::commands::sessions::load_session_activation(
+                                core_client.as_ref(),
+                                &sess.id,
+                            )
+                            .await
+                            {
+                                Ok((session, root)) => {
+                                    self.set_session_with_workspace_root(session, Some(root))
+                                }
+                                Err(error) => tracing::warn!(
+                                    "load_initial_session_via_core(Continue): session activation failed: {}",
+                                    error
                                 ),
                             }
                         }
@@ -14426,12 +14430,24 @@ impl App {
                 );
                 match core_client.request(req).await {
                     Ok(CoreResponse::Session { session }) => {
-                        match crate::protocol_conversions::dto_to_session(session) {
-                            Ok(s) => self.set_session(s),
-                            Err(e) => tracing::warn!(
-                                "load_initial_session_via_core(New): dto_to_session failed: {}",
-                                e
-                            ),
+                        match crate::tui::commands::sessions::load_session_activation(
+                            core_client.as_ref(),
+                            &session.id,
+                        )
+                        .await
+                        {
+                            Ok((session, root)) => {
+                                self.set_session_with_workspace_root(session, Some(root))
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    "load_initial_session_via_core(New): session activation failed: {}",
+                                    error
+                                );
+                                self.messages_state.toasts.error(&format!(
+                                    "Session created but could not be activated: {error}"
+                                ));
+                            }
                         }
                     }
                     Ok(CoreResponse::Error { code, message }) => {
@@ -14489,11 +14505,18 @@ impl App {
                 match core_client.request(list_req).await {
                     Ok(CoreResponse::SessionList { mut sessions }) => {
                         if let Some(sess) = sessions.pop() {
-                            match crate::protocol_conversions::dto_to_session(sess) {
-                                Ok(s) => self.set_session(s),
-                                Err(e) => tracing::warn!(
-                                    "load_initial_session_via_core(Fork): dto_to_session failed: {}",
-                                    e
+                            match crate::tui::commands::sessions::load_session_activation(
+                                core_client.as_ref(),
+                                &sess.id,
+                            )
+                            .await
+                            {
+                                Ok((session, root)) => {
+                                    self.set_session_with_workspace_root(session, Some(root))
+                                }
+                                Err(error) => tracing::warn!(
+                                    "load_initial_session_via_core(Fork): session activation failed: {}",
+                                    error
                                 ),
                             }
                         } else {
@@ -17477,7 +17500,7 @@ mod remote_core_loader_tests {
         let now = chrono::Utc::now();
         let workspace = codegg_core::workspace::WorkspaceRecord {
             id: codegg_core::workspace::WorkspaceId::new(),
-            canonical_root: std::path::PathBuf::from("/tmp"),
+            canonical_root: tokio::fs::canonicalize("/tmp").await.unwrap(),
             display_name: "TUI test workspace".to_string(),
             created_at: now,
             last_opened_at: now,
@@ -17625,7 +17648,14 @@ mod remote_core_loader_tests {
             .as_ref()
             .expect("New should create a session");
         assert_eq!(sess.title, "Brand New");
-        assert_eq!(sess.directory, "/tmp");
+        assert_eq!(
+            sess.directory,
+            tokio::fs::canonicalize("/tmp")
+                .await
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

@@ -1012,6 +1012,22 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app, request_id, session_id, title, error,
             );
         }
+        TuiCommand::SessionActivated {
+            request_id,
+            tab_id,
+            session,
+            workspace_root,
+            error,
+        } => {
+            crate::tui::commands::sessions::apply_session_activated(
+                app,
+                request_id,
+                tab_id,
+                session,
+                workspace_root,
+                error,
+            );
+        }
         TuiCommand::SessionMessagesLoaded {
             request_id,
             session_id,

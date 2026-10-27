@@ -4,9 +4,8 @@
 //! scheduler's exclusivity keys in the two ways that matter:
 //!
 //! * **Scope.** A quota key is `<namespace>:<scope>`, where the scope is
-//!   host-computed (today: a canonical `WorkspaceId`). Two workspaces
-//!   never share a key, so an unrelated workspace's build load cannot
-//!   consume another workspace's slots.
+//!   host-computed (a canonical `WorkspaceId`, or an opt-in
+//!   `RepositoryId`). Unrelated scopes never share a key.
 //! * **Count.** A quota grants *N* weighted slots to a scope instead of
 //!   a binary mutex. `N` is owned by configuration, never by the
 //!   request.
@@ -26,6 +25,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::identity::RepositoryId;
 use crate::workspace::WorkspaceId;
 
 /// Maximum bytes in a persisted quota key.
@@ -54,6 +54,8 @@ pub enum ResourceClass {
     /// build class replaces it with a counted, workspace-scoped quota whose
     /// limit is configuration-owned.
     Build,
+    /// Opt-in build concurrency shared by workspaces in one repository.
+    RepositoryBuild,
 }
 
 impl ResourceClass {
@@ -61,6 +63,7 @@ impl ResourceClass {
     pub fn namespace(self) -> &'static str {
         match self {
             ResourceClass::Build => "build",
+            ResourceClass::RepositoryBuild => "repository-build",
         }
     }
 
@@ -122,6 +125,14 @@ impl KeyedQuotaRequest {
     pub fn for_workspace(class: ResourceClass, workspace_id: &WorkspaceId) -> Self {
         Self {
             key: class.quota_key(workspace_id.as_str()),
+            slots: 1,
+        }
+    }
+
+    /// Build-class request scoped to daemon-resolved repository lineage.
+    pub fn for_repository(class: ResourceClass, repository_id: &RepositoryId) -> Self {
+        Self {
+            key: class.quota_key(repository_id.as_str()),
             slots: 1,
         }
     }

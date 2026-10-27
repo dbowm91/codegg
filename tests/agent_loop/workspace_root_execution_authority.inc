@@ -34,6 +34,10 @@ use codegg::provider::{
 use codegg::scheduler::executor::{JobExecutionContext, JobExecutor, NoopProgressSink};
 use codegg::scheduler::executors::SubagentJobExecutor;
 use codegg::scheduler::permit::ResourcePermitGuard;
+use codegg_core::agent_run::{
+    AgentRunBudget, AgentRunStore, InMemoryAgentRunStore, NewAgentRun, NewAgentTask,
+};
+use codegg_core::identity::{AgentRunId, AgentTaskId, ProjectId, RepositoryId};
 use codegg_core::jobs::{
     AttemptId, DaemonGeneration, ExecutionTarget, IdempotencyClass, JobId, JobKind, JobPayload,
     JobPriority, JobRecord, JobSource, JobState, ResourceRequest, RetryPolicy,
@@ -215,7 +219,13 @@ fn subagent_job_without_allowed_paths() -> JobRecord {
     }
 }
 
-async fn build_executor(marker: &str) -> (SubagentJobExecutor, Arc<Mutex<Option<String>>>) {
+async fn build_executor(
+    marker: &str,
+) -> (
+    SubagentJobExecutor,
+    Arc<Mutex<Option<String>>>,
+    Arc<codegg::agent::worker::SubAgentPool>,
+) {
     let pool = common::pool::isolated_pool().await;
     let provider = RelativeReadProvider {
         marker: marker.to_string(),
@@ -241,8 +251,9 @@ async fn build_executor(marker: &str) -> (SubagentJobExecutor, Arc<Mutex<Option<
     );
 
     (
-        SubagentJobExecutor::new(subagent_pool),
+        SubagentJobExecutor::new(subagent_pool.clone()),
         observed_tool_result,
+        subagent_pool,
     )
 }
 
@@ -273,7 +284,7 @@ async fn a_subagent_job_without_allowed_paths_resolves_the_jobs_workspace_root()
         std::env::current_dir().expect("process cwd").display()
     );
 
-    let (exec, observed_tool_result) = build_executor(marker_name).await;
+    let (exec, observed_tool_result, _) = build_executor(marker_name).await;
 
     let ctx = JobExecutionContext {
         job: subagent_job_without_allowed_paths(),
@@ -316,5 +327,117 @@ async fn a_subagent_job_without_allowed_paths_resolves_the_jobs_workspace_root()
          Tool result was: {observed}",
         workspace.path().display(),
         workspace.path().display(),
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn explicit_read_only_isolated_new_fails_closed_without_contained_creator() {
+    let workspace = tempfile::tempdir().expect("job workspace");
+    common::blackboard::init_repository(workspace.path());
+    let managed_root = tempfile::tempdir().expect("managed worktree root");
+    let run_store = Arc::new(InMemoryAgentRunStore::new());
+    let task_id = AgentTaskId::new();
+    let run_id = AgentRunId::new();
+    let workspace_id = WorkspaceId::new_unchecked("a001-explicit-workspace");
+    let repository_id = RepositoryId::new();
+    run_store
+        .create_or_get(
+            NewAgentTask {
+                task_id: task_id.clone(),
+                parent_task_id: None,
+                originating_session_id: "a001-session".into(),
+                originating_turn_id: Some("a001-turn".into()),
+                project_id: ProjectId::new(),
+                repository_id: Some(repository_id),
+                workspace_id: workspace_id.clone(),
+                requested_agent: CHILD_AGENT.into(),
+                delegation_key: "a001-explicit-placement".into(),
+                request_fingerprint: "a001-explicit-placement-fingerprint".into(),
+                description: "read-only explicit placement regression".into(),
+            },
+            NewAgentRun {
+                run_id: run_id.clone(),
+                parent_run_id: None,
+                depth: 1,
+                workspace_id: workspace_id.clone(),
+                agent_name: CHILD_AGENT.into(),
+                agent_digest: None,
+                provider: PROVIDER_ID.into(),
+                model: format!("{PROVIDER_ID}/model"),
+                authority_digest: "a001-authority".into(),
+                budget: AgentRunBudget::default(),
+                shared_scratch: Vec::new(),
+            },
+        )
+        .await
+        .expect("create durable run");
+
+    let (_, _, pool) = build_executor("unused").await;
+    let worktrees = codegg_core::worktree_service::WorktreeService::memory(
+        managed_root.path().to_path_buf(),
+        Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
+    );
+    let executor = SubagentJobExecutor::new_with_agent_runs_and_control_and_worktree(
+        pool,
+        run_store.clone(),
+        None,
+        worktrees,
+    );
+    let mut job = subagent_job_without_allowed_paths();
+    job.job_id = JobId::new_unchecked("a001-explicit-isolated-new");
+    job.workspace_id = workspace_id.clone();
+    job.payload = JobPayload::SubagentRun {
+        prompt: "Read without changing files.".into(),
+        agent: CHILD_AGENT.into(),
+        model: Some(format!("{PROVIDER_ID}/model")),
+        parent_id: None,
+        denied_tools: MUTATING_TOOLS.iter().map(|name| (*name).into()).collect(),
+        allowed_paths: Vec::new(),
+        max_tool_calls: None,
+        task_id,
+        run_id: run_id.clone(),
+        delegation_key: "a001-explicit-placement".into(),
+        base_commit: None,
+        placement: codegg_core::run_placement::RunPlacement::IsolatedNew,
+        default_working_directory: None,
+    };
+    let context = JobExecutionContext {
+        job,
+        attempt_id: AttemptId::new_unchecked("a001-explicit-attempt"),
+        daemon_generation: DaemonGeneration::new_unchecked("a001-generation"),
+        workspace_id,
+        workspace_root: workspace.path().to_path_buf(),
+        run_store: None,
+        subject_store: None,
+        source_subject_started: None,
+        cancellation: CancellationToken::new(),
+        progress: Arc::new(NoopProgressSink),
+        resources: ResourcePermitGuard::new_orphan(Default::default()),
+        process_admission: None,
+    };
+
+    run_store
+        .transition(&run_id, codegg_core::agent_run::AgentRunStatus::Queued)
+        .await
+        .expect("scheduler queued the durable run before dispatch");
+    let completion = executor.execute(context).await;
+    assert_eq!(
+        completion.status,
+        codegg::scheduler::executor::ExecutorStatus::Failed,
+        "unexpected executor outcome: {completion:#?}"
+    );
+    let run = run_store.get_run(&run_id).await.unwrap().unwrap();
+    assert!(
+        run.status.is_terminal(),
+        "run did not finish after executor failure: {run:#?}"
+    );
+    assert_eq!(
+        run.failure_class.as_deref(),
+        Some("explicit_isolation_unavailable")
+    );
+    let reason = run.failure_message.as_deref().unwrap_or_default();
+    assert!(
+        reason.contains("Git backend unavailable"),
+        "the in-memory WorktreeService has no configured ContainedWorktreeCreator, so explicit isolation must report that typed failure: {reason}"
     );
 }

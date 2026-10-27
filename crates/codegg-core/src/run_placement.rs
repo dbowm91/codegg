@@ -53,6 +53,12 @@ impl RunPlacement {
         matches!(self, RunPlacement::SerializedShared { .. })
     }
 
+    /// Whether this request explicitly requires a fresh isolated checkout,
+    /// including for a read-only child.
+    pub fn requires_new_isolated_checkout(&self) -> bool {
+        matches!(self, RunPlacement::IsolatedNew)
+    }
+
     /// The group this placement names, when it names one.
     pub fn shared_group_id(&self) -> Option<&AgentRunGroupId> {
         match self {
@@ -150,6 +156,16 @@ mod tests {
         assert_eq!(placement, RunPlacement::Auto);
         assert!(!placement.is_shared());
         assert!(placement.shared_group_id().is_none());
+        assert!(!placement.requires_new_isolated_checkout());
+    }
+
+    #[test]
+    fn only_isolated_new_requires_a_fresh_checkout() {
+        assert!(RunPlacement::IsolatedNew.requires_new_isolated_checkout());
+        assert!(!RunPlacement::SerializedShared {
+            group_id: AgentRunGroupId::new(),
+        }
+        .requires_new_isolated_checkout());
     }
 
     #[test]

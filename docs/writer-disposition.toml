@@ -361,6 +361,20 @@ kind = "managed-state"
 note = "Work order records land inside the project tree under the project-local .codegg state, and are CodeGG sidecar state rather than checkout content."
 
 [[root]]
+id = "tool.session_working_directory"
+tool = "session_working_directory"
+path = "src/tool/session_working_directory.rs"
+surface = "model-tool"
+scope = "non-checkout"
+disposition = "out-of-contract"
+mediation = "none"
+owner = "SessionWorkingDirectoryTool -> session_working_directory store"
+locator = "session id; workspace root is a containment ceiling only"
+lifetime = "durable session state with revisioned compare-and-set"
+kind = "session-state"
+note = "Changes only the selected session's default relative working directory in user-scoped session storage; it does not write checkout content, change the workspace root, or grant a writer permit."
+
+[[root]]
 id = "tool.image"
 tool = "image"
 path = "src/tool/image.rs"

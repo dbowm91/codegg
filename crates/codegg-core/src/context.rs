@@ -12,7 +12,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
-use crate::identity::{IdentityParseError, ProjectId, WorkspaceId};
+use crate::identity::{IdentityParseError, ProjectId, RepositoryId, WorkspaceId};
 use crate::project_catalog::{CatalogError, ProjectCatalog};
 use crate::project_storage::{
     BindingStatus, ProjectStorage, ProjectStorageError, SessionBindingRecord,
@@ -349,6 +349,58 @@ impl ProjectContextResolver {
     ) -> Result<ProjectContext, ContextResolutionError> {
         let request = ProjectContextRequest::from_raw(project_id, workspace_id, session_id)?;
         self.resolve(request).await
+    }
+
+    /// Resolve repository lineage for an existing workspace from the
+    /// daemon-owned workspace/project binding. No caller path or label is
+    /// accepted as repository identity.
+    pub async fn repository_for_workspace(
+        &self,
+        workspace_id: &WorkspaceId,
+    ) -> Result<Option<RepositoryId>, ContextResolutionError> {
+        let workspace = self
+            .workspace_store
+            .load_by_id(workspace_id.as_str())
+            .await
+            .map_err(map_workspace_error)?
+            .ok_or(ContextResolutionError::WorkspaceNotFound)?;
+        if workspace.is_archived() {
+            return Err(ContextResolutionError::WorkspaceArchived);
+        }
+        let binding = self
+            .project_storage
+            .workspace_binding(workspace_id)
+            .await
+            .map_err(map_storage_error)?
+            .ok_or(ContextResolutionError::BindingMissing)?;
+        if binding.status != crate::project_storage::BindingStatus::Resolved {
+            return Err(ContextResolutionError::BindingNotResolved {
+                status: binding.status,
+            });
+        }
+        let project = self
+            .project_catalog
+            .get_project(&binding.project_id)
+            .await
+            .map_err(|error| ContextResolutionError::CatalogFailure(bounded_error(error)))?;
+        if project.lifecycle != crate::project_storage::ProjectLifecycle::Active {
+            return Err(ContextResolutionError::ProjectArchived);
+        }
+        let Some(repository_id) = binding.repository_id else {
+            return Ok(None);
+        };
+        let repository = self
+            .project_storage
+            .get_repository(&repository_id)
+            .await
+            .map_err(map_storage_error)?
+            .ok_or(ContextResolutionError::BindingMissing)?;
+        if repository.status != crate::project_storage::BindingStatus::Resolved {
+            return Err(ContextResolutionError::BindingNotResolved {
+                status: repository.status,
+            });
+        }
+        Ok(Some(repository_id))
     }
 
     /// Look up an existing context by directory for legacy compatibility.

@@ -713,6 +713,9 @@ impl CoreDaemon {
         // job is refused at submission *and* re-checked at the final
         // executor.
         submission.set_process_admission(process_admission.clone());
+        if let Some(resolver) = context_resolver.clone() {
+            submission.set_context_resolver(resolver);
+        }
         scheduler.set_process_admission(process_admission.clone());
         deps.submission = Some(submission.clone());
         install_job_lifecycle_projection(

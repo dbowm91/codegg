@@ -256,6 +256,7 @@ pub struct PythonScriptTool {
     /// The session's workspace root: the default script `workdir` and the
     /// containment root for the spawned interpreter.
     workspace_root: Option<std::path::PathBuf>,
+    default_workdir: Option<std::path::PathBuf>,
 }
 
 impl PythonScriptTool {
@@ -264,6 +265,7 @@ impl PythonScriptTool {
             run_store: None,
             submission_service: None,
             workspace_root: None,
+            default_workdir: None,
         }
     }
 
@@ -272,6 +274,7 @@ impl PythonScriptTool {
             run_store: Some(store),
             submission_service: None,
             workspace_root: None,
+            default_workdir: None,
         }
     }
 
@@ -285,6 +288,11 @@ impl PythonScriptTool {
         self
     }
 
+    pub fn with_default_workdir(mut self, directory: std::path::PathBuf) -> Self {
+        self.default_workdir = Some(directory);
+        self
+    }
+
     pub fn with_scheduler(
         run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
         submission_service: Option<Arc<JobSubmissionService>>,
@@ -293,6 +301,7 @@ impl PythonScriptTool {
             run_store,
             submission_service,
             workspace_root: None,
+            default_workdir: None,
         }
     }
 }
@@ -304,6 +313,29 @@ impl Default for PythonScriptTool {
 }
 
 impl PythonScriptTool {
+    fn apply_default_workdir(&self, mut input: serde_json::Value) -> serde_json::Value {
+        let base = self
+            .default_workdir
+            .as_ref()
+            .or(self.workspace_root.as_ref());
+        match input["workdir"].as_str() {
+            Some(raw) if !std::path::Path::new(raw).is_absolute() => {
+                if let Some(base) = base {
+                    input["workdir"] =
+                        serde_json::Value::String(base.join(raw).to_string_lossy().into_owned());
+                }
+            }
+            None => {
+                if let Some(directory) = &self.default_workdir {
+                    input["workdir"] =
+                        serde_json::Value::String(directory.to_string_lossy().into());
+                }
+            }
+            _ => {}
+        }
+        input
+    }
+
     /// Execute Python through the scheduler. Creates a durable job, waits
     /// for completion, and returns the projected result.
     async fn execute_via_scheduler(
@@ -463,6 +495,7 @@ impl Tool for PythonScriptTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
+        let input = self.apply_default_workdir(input);
         let request = build_python_request(&input, self.workspace_root.as_deref())?;
 
         // Scheduler-owned path: submit through JobSubmissionService
@@ -488,6 +521,7 @@ impl Tool for PythonScriptTool {
         input: serde_json::Value,
         ctx: Option<crate::tool::backend::ToolExecutionContext>,
     ) -> Result<crate::tool::backend::StructuredToolResult, ToolError> {
+        let input = self.apply_default_workdir(input);
         let request = build_python_request(&input, self.workspace_root.as_deref())?;
         let snapshot = crate::tool::authorization::accepted_execution_snapshot(
             ctx.as_ref()
@@ -617,6 +651,23 @@ fn build_python_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_default_workdir_applies_only_when_per_call_workdir_is_absent() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("crates");
+        std::fs::create_dir(&nested).unwrap();
+        let tool = PythonScriptTool::new()
+            .with_workspace_root(root.path().to_path_buf())
+            .with_default_workdir(nested.clone());
+        let input = tool.apply_default_workdir(serde_json::json!({"code":"print(1)"}));
+        let request = build_python_request(&input, Some(root.path())).unwrap();
+        assert_eq!(request.cwd, nested.canonicalize().unwrap());
+        let explicit =
+            tool.apply_default_workdir(serde_json::json!({"code":"print(1)","workdir":"."}));
+        let request = build_python_request(&explicit, Some(root.path())).unwrap();
+        assert_eq!(request.cwd, nested.canonicalize().unwrap());
+    }
 
     fn constrained_context() -> crate::tool::backend::ToolExecutionContext {
         let mut context = crate::tool::backend::ToolExecutionContext::with_backend(

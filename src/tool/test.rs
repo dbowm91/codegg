@@ -26,6 +26,7 @@ pub struct TestTool {
     /// The session's workspace root. This is the default test `workdir`, and
     /// the base a relative `workdir` resolves against.
     workspace_root: Option<PathBuf>,
+    default_workdir: Option<PathBuf>,
 }
 
 impl TestTool {
@@ -36,6 +37,7 @@ impl TestTool {
             session_id: None,
             job_notifications: None,
             workspace_root: None,
+            default_workdir: None,
         }
     }
 
@@ -46,11 +48,17 @@ impl TestTool {
             session_id: None,
             job_notifications: None,
             workspace_root: None,
+            default_workdir: None,
         }
     }
 
     pub fn with_workspace_root(mut self, root: PathBuf) -> Self {
         self.workspace_root = Some(root);
+        self
+    }
+
+    pub fn with_default_workdir(mut self, directory: PathBuf) -> Self {
+        self.default_workdir = Some(directory);
         self
     }
 
@@ -186,6 +194,7 @@ impl Tool for TestTool {
                     .into(),
             ));
         }
+        let input = self.apply_default_workdir(input);
         let request = parse_test_request_in(&input, self.workspace_root.as_deref())?;
         let max_report_bytes = request.max_report_bytes;
         let (summary, _) = self.run_scheduled_test(request, None).await?;
@@ -262,6 +271,7 @@ impl Tool for TestTool {
                 provenance: Some(provenance),
             });
         }
+        let input = self.apply_default_workdir(input);
         let mut request = parse_test_request_in(&input, self.workspace_root.as_deref())?;
         let snapshot = crate::tool::authorization::accepted_execution_snapshot(
             ctx.as_ref()
@@ -338,6 +348,29 @@ impl Tool for TestTool {
 }
 
 impl TestTool {
+    fn apply_default_workdir(&self, mut input: serde_json::Value) -> serde_json::Value {
+        let base = self
+            .default_workdir
+            .as_ref()
+            .or(self.workspace_root.as_ref());
+        match input["workdir"].as_str() {
+            Some(raw) if !Path::new(raw).is_absolute() => {
+                if let Some(base) = base {
+                    input["workdir"] =
+                        serde_json::Value::String(base.join(raw).to_string_lossy().into_owned());
+                }
+            }
+            None => {
+                if let Some(directory) = &self.default_workdir {
+                    input["workdir"] =
+                        serde_json::Value::String(directory.to_string_lossy().into());
+                }
+            }
+            _ => {}
+        }
+        input
+    }
+
     /// M001 background path: validate, submit durably, subscribe for terminal
     /// delivery, and return a stable `JobHandle` without blocking.
     ///
@@ -388,6 +421,7 @@ impl TestTool {
                 .clone()
                 .or_else(|| c.principal_identity.clone())
         });
+        let input = self.apply_default_workdir(input);
         let mut request = parse_test_request_in(&input, self.workspace_root.as_deref())?;
         request.session_id = Some(session_id.clone());
         let resolved = crate::test_runner::resolve_test_command(&request)
@@ -767,6 +801,22 @@ fn parse_positive_seconds(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn session_default_workdir_applies_only_when_per_call_workdir_is_absent() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("crates");
+        std::fs::create_dir(&nested).unwrap();
+        let tool = TestTool::new()
+            .with_workspace_root(root.path().to_path_buf())
+            .with_default_workdir(nested.clone());
+        let defaulted = tool.apply_default_workdir(json!({"scope":"auto"}));
+        let request = parse_test_request_in(&defaulted, Some(root.path())).unwrap();
+        assert_eq!(request.workdir, nested.canonicalize().unwrap());
+        let explicit = tool.apply_default_workdir(json!({"scope":"auto","workdir":"."}));
+        let request = parse_test_request_in(&explicit, Some(root.path())).unwrap();
+        assert_eq!(request.workdir, nested.canonicalize().unwrap());
+    }
 
     fn constrained_context() -> ToolExecutionContext {
         let mut context = ToolExecutionContext::with_backend(ToolBackendKind::Native);

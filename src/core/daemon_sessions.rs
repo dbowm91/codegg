@@ -462,6 +462,25 @@ impl CoreDaemon {
                             .await
                         {
                             Ok(context) => {
+                                let canonical_root =
+                                    match tokio::fs::canonicalize(&context.workspace_root).await {
+                                        Ok(root) if root.is_dir() => root,
+                                        _ => {
+                                            return Ok(CoreResponse::Error {
+                                                code: "session_workspace_unavailable".to_string(),
+                                                message:
+                                                    "session workspace is missing or unavailable"
+                                                        .to_string(),
+                                            });
+                                        }
+                                    };
+                                if canonical_root != context.workspace_root {
+                                    return Ok(CoreResponse::Error {
+                                        code: "session_workspace_unavailable".to_string(),
+                                        message: "session workspace locator no longer resolves to its canonical root"
+                                            .to_string(),
+                                    });
+                                }
                                 if let Some(workspace) =
                                     self.workspaces.resolve(&context.workspace_id).await
                                 {

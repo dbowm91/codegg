@@ -1,8 +1,8 @@
-# Build Admission — per-workspace build quotas
+# Build Admission — workspace and repository build quotas
 
-M007. This module owns one thing: **how many scheduler-owned build
-jobs may run in one canonical workspace at a time**, and the coarse job
-status a group is allowed to see about them.
+M007/A003. This module owns bounded admission for scheduler-owned build
+jobs: a required per-workspace quota, and an optional aggregate quota shared
+by workspaces in one canonical repository.
 
 It is an *admission* milestone. It does not add a shared target
 directory, a build cache, build coalescing, or a shared checkout, and it
@@ -33,7 +33,7 @@ M007 replaces it with a **counted, scoped quota**:
 | limit | fixed at one | configuration-owned |
 | unrelated workspaces | serialized | independent |
 
-The default limit is **one build-class slot per workspace**. That
+The default limit remains **one build-class slot per workspace**. That
 preserves the old behaviour *within* a workspace — one build-class job
 at a time — while letting unrelated workspaces build concurrently. Raising
 `scheduler.quota.max_concurrent_builds_per_workspace` widens the bound
@@ -45,10 +45,12 @@ directory.
 `codegg-core` owns the typed contract (`crates/codegg-core/src/jobs/quota.rs`):
 
 - `ResourceClass` — the closed taxonomy of resource classes. `Build` is
-  the only class today, and it covers `JobKind::Build` and
+  the required class today, and it covers `JobKind::Build` and
   `JobKind::Format` — precisely the two kinds that used to hold the
-  global key. The taxonomy is closed *in code* so that no caller, and no
-  model, can introduce a namespace to obtain capacity.
+  global key. `RepositoryBuild` is an additional namespace accepted only
+  for a daemon-resolved repository when the optional cap is configured. The
+  taxonomy is closed *in code* so that no caller, and no model, can introduce
+  a namespace to obtain capacity.
   `ResourceClass::for_job_kind` is the only mapping from a job kind to a
   class, and it returns `None` for every other kind.
 - `KeyedQuotaRequest { key, slots }` — a request to consume weighted
@@ -64,8 +66,9 @@ Two enforcement points live outside `codegg-core`:
 - `src/scheduler/admission.rs` — `AdmissionController` owns the
   reservation, the limit lookup (`quota_limit`), and the refusal
   decisions.
-- `src/scheduler/submission.rs` — `JobSubmissionService::apply_resource_policy`
-  owns the scope binding.
+- `src/scheduler/submission.rs` — `JobSubmissionService` owns workspace
+  scope binding and resolves repository scope through the daemon-owned
+  `ProjectContextResolver`.
 
 `ResourceRequest` gained a serde-defaulted `keyed_quotas` field, so a
 request persisted before M007 decodes unchanged and keeps its historical
@@ -76,8 +79,9 @@ admission.
 A job may ask for slots. It may never widen the bound it is measured
 against.
 
-`scheduler.quota.max_concurrent_builds_per_workspace` (default `1`) is
-the only source of the build-class limit. The admission controller
+`scheduler.quota.max_concurrent_builds_per_workspace` (default `1`) and the
+optional `scheduler.quota.max_concurrent_builds_per_repository` are the only
+sources of build-class limits. The admission controller
 resolves a request's namespace to a limit through its own configuration;
 it never reads a limit off the request.
 
@@ -87,10 +91,34 @@ unenforced bound that was silently dropped would be a lie: the job would
 report a reservation it never held.
 
 The controller resolves the limit itself, in
-`AdmissionController::quota_limit`: a request whose namespace is
-`ResourceClass::Build`'s resolves to
-`scheduler.quota.max_concurrent_builds_per_workspace`, and **every other
-namespace resolves to `None`** — which the reservation path refuses.
+`AdmissionController::quota_limit`: `build` resolves to the workspace cap;
+`repository-build` resolves only when the optional repository cap is
+configured. Unknown and disabled namespaces resolve to `None`, which the
+reservation path refuses.
+
+## A003 — repository-scoped opt-in
+
+The optional `scheduler.quota.max_concurrent_builds_per_repository` adds an
+aggregate limit across workspaces that share the same canonical repository.
+It is absent by default, preserving existing configuration and behavior.
+When set, the submission boundary resolves a `RepositoryId` from the
+daemon-owned, resolved workspace binding; a caller path, label, or submitted
+resource request cannot choose the scope. Missing, ambiguous, or unresolved
+lineage refuses Build/Format submission.
+
+Workspace and repository quotas are checked and reserved atomically under the
+admission controller's single short-lived mutex. The admission path aggregates
+duplicate keys and checks them in deterministic key order. A blocked job
+holds no resource or quota permit. The existing RAII permit is held until the
+executor has proved process termination, then releases both dimensions.
+
+Only typed `Build` and `Format` jobs receive repository quota requests. `Test`,
+`Lint`, `Shell`, `Python`, `ManagedProcess`, and `ToolProgram` remain outside
+this classification; arbitrary Bash is not parsed or represented as a
+governed build. This is a deliberate accounting boundary, not a claim that
+every external build process is covered. Repository quota status remains a
+coarse admission reason and does not expose command, environment, path, or
+principal metadata.
 
 ## How one request is resolved
 
@@ -264,10 +292,9 @@ describe them:
   `Impossible(QuotaExceedsLimit)`; `slots > available` →
   `TemporarilyBlocked(QuotaContended)`. Nothing is reserved until every
   step has passed.
-- **`AdmissionController::quota_limit`** (`src/scheduler/admission.rs:579`)
-  resolves `ResourceClass::Build`'s namespace to
-  `scheduler.quota.max_concurrent_builds_per_workspace` and **every other
-  namespace to `None`**, which the reservation path refuses.
+- **`AdmissionController::quota_limit`** resolves `build` to the workspace
+  limit and `repository-build` only when the optional repository limit is
+  configured; unknown and disabled namespaces are refused.
 - **The structural bounds** `MAX_QUOTA_KEY_BYTES` (256) and
   `MAX_QUOTA_SLOTS` (64) (`crates/codegg-core/src/jobs/quota.rs:35` and
   `:41`), and `KeyedQuotaRequest::is_valid()`, which makes an oversized

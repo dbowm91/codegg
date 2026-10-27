@@ -175,6 +175,7 @@ impl AgentLoop {
             max_tool_calls: None,
             parent_model,
             workspace_root: Some(self.workspace_root.clone()),
+            default_working_directory: None,
             workspace_id: None,
             workspace_locks: self.workspace_locks.clone(),
             // M005: security-review fallback inherits the parent ceiling;

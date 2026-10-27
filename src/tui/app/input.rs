@@ -91,7 +91,7 @@ impl App {
                 self.task_registry.cancel_kind(TuiTaskKind::Research);
                 self.task_registry.cancel_kind(TuiTaskKind::Memory);
                 self.task_registry.cancel_kind(TuiTaskKind::GitStatus);
-                self.set_session(*session);
+                crate::tui::commands::sessions::start_activate_session(self, session.id);
                 self.close_dialog();
                 // Refresh sidebar git status for the new project.
                 crate::tui::commands::git_sidebar::start_refresh_git_sidebar(self);

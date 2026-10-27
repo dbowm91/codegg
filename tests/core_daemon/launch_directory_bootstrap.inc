@@ -285,6 +285,94 @@ async fn session_list_recovers_in_a_bootstrap_directory() {
     );
 }
 
+/// Session activation must use the session's durable workspace binding, not
+/// its compatibility directory locator, which may be stale after a checkout
+/// move. `SessionLoad` is the bounded daemon-authorized read used by the TUI.
+#[tokio::test(flavor = "current_thread")]
+async fn session_load_returns_canonical_workspace_binding_for_activation() {
+    let pool = test_pool().await;
+    let daemon = local_tui_daemon(pool.clone()).await;
+    let root = tempfile::tempdir().expect("tempdir");
+    let directory = root
+        .path()
+        .canonicalize()
+        .expect("canonical tempdir")
+        .to_string_lossy()
+        .into_owned();
+    let (project_id, workspace_id) = launch_bootstrap(&daemon, root.path()).await;
+    let created = call(
+        &daemon,
+        "create-for-activation",
+        session_create(
+            &directory,
+            Some(project_id.clone()),
+            Some(workspace_id.clone()),
+        ),
+    )
+    .await;
+    let session_id = match created {
+        CoreResponse::Session { session } => session.id,
+        other => panic!("session creation failed: {other:?}"),
+    };
+
+    sqlx::query("UPDATE session SET directory = ? WHERE id = ?")
+        .bind("/stale/compatibility/locator")
+        .bind(&session_id)
+        .execute(&pool)
+        .await
+        .expect("make the compatibility locator stale");
+
+    let loaded = call(
+        &daemon,
+        "load-for-activation",
+        CoreRequest::SessionLoad {
+            session_id: session_id.clone(),
+        },
+    )
+    .await;
+    match loaded {
+        CoreResponse::Session { session } => {
+            let binding = session.binding.expect("resolved session binding");
+            assert_eq!(binding.project_id, project_id);
+            assert_eq!(binding.workspace_id, workspace_id);
+            assert_eq!(
+                binding.compatibility_directory.as_deref(),
+                Some(directory.as_str())
+            );
+            assert_eq!(session.directory, directory);
+        }
+        other => panic!("session activation read failed: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn session_load_refuses_a_missing_workspace_root() {
+    let pool = test_pool().await;
+    let daemon = local_tui_daemon(pool).await;
+    let root = tempfile::tempdir().expect("tempdir");
+    let directory = root.path().to_string_lossy().into_owned();
+    let (project_id, workspace_id) = launch_bootstrap(&daemon, root.path()).await;
+    let created = call(
+        &daemon,
+        "create-for-missing-root",
+        session_create(&directory, Some(project_id), Some(workspace_id)),
+    )
+    .await;
+    let session_id = match created {
+        CoreResponse::Session { session } => session.id,
+        other => panic!("session creation failed: {other:?}"),
+    };
+    root.close().expect("remove workspace root");
+
+    let loaded = call(
+        &daemon,
+        "load-missing-root",
+        CoreRequest::SessionLoad { session_id },
+    )
+    .await;
+    assert_eq!(error_of(&loaded).0, "session_workspace_unavailable");
+}
+
 /// A path in `project_id` with no `workspace_id` is rejected by construction.
 /// The new-session command used to send exactly that shape, which is why
 /// ctrl+N could only ever fail with "must be provided together".

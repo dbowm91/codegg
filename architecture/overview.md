@@ -591,8 +591,8 @@ fifth reconciliations recorded. The full reconciliation is in
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
 | TUI state modules | 34 (35 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
-| Database tables (`CREATE TABLE`) | 99 statements / 95 tables | `crates/codegg-core/src/session/schema.rs` (96 distinct `CREATE TABLE` names, less the transient `origin_attribution_new` rebuild name; `migration_version`, `origin_attribution` and that rebuild each appear twice) |
-| Storage layout version | 90 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
+| Database tables (`CREATE TABLE`) | 100 statements / 96 tables | `crates/codegg-core/src/session/schema.rs` (97 distinct `CREATE TABLE` names, less the transient `origin_attribution_new` rebuild name; `migration_version`, `origin_attribution` and that rebuild each appear twice) |
+| Storage layout version | 91 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |

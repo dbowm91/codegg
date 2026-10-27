@@ -572,8 +572,8 @@ impl AgentLoop {
             process_admission: self.services.process_admission.clone(),
             backend,
             session_id: Some(self.session_id.clone()),
-            // The workspace root is captured during construction and is the
-            // sole cwd authority for this loop's tool execution context.
+            // Several tools use cwd as their authorization ceiling, so keep
+            // this workspace-root value and configure defaults separately.
             cwd: self.workspace_root.clone(),
             // M003: durable approval mode from the captured batch snapshot,
             // never `None` on production construction paths.

@@ -16,6 +16,11 @@ impl App {
     pub fn project_execution_context(
         &self,
     ) -> Result<crate::tui::app::state::ProjectExecutionContext, String> {
+        if self.dialog_state.session_activation_request.is_loading() {
+            return Err(
+                "session workspace is being resolved; wait before starting new work".into(),
+            );
+        }
         crate::tui::app::state::resolve_active_execution_context(&self.project_tabs)
     }
 

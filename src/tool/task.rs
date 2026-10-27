@@ -392,6 +392,7 @@ pub struct TaskTool {
     parent_model: Option<String>,
     submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
     workspace_root: Option<std::path::PathBuf>,
+    default_working_directory: Option<std::path::PathBuf>,
     workspace_locks: Option<Arc<codegg_core::workspace_services::WorkspaceLockTable>>,
     parent_allowed_paths: Vec<String>,
     agent_runs: Option<Arc<dyn AgentRunStore>>,
@@ -1096,6 +1097,7 @@ impl TaskTool {
             parent_model: None,
             submission: None,
             workspace_root: None,
+            default_working_directory: None,
             workspace_locks: None,
             parent_allowed_paths: Vec::new(),
             agent_runs: None,
@@ -1131,6 +1133,7 @@ impl TaskTool {
             parent_model: None,
             submission: None,
             workspace_root: None,
+            default_working_directory: None,
             workspace_locks: None,
             parent_allowed_paths: Vec::new(),
             agent_runs: None,
@@ -1254,6 +1257,11 @@ impl TaskTool {
 
     pub fn with_workspace_id(mut self, workspace_id: Option<WorkspaceId>) -> Self {
         self.workspace_id = workspace_id;
+        self
+    }
+
+    pub fn with_default_working_directory(mut self, directory: Option<std::path::PathBuf>) -> Self {
+        self.default_working_directory = directory;
         self
     }
 
@@ -1929,7 +1937,7 @@ impl Tool for TaskTool {
                 "placement": {
                     "type": "string",
                     "enum": ["auto", "isolated_new", "serialized_shared"],
-                    "description": "M005 C006: where the delegated run is placed. 'auto' (default) and 'isolated_new' give the run its own managed checkout. 'serialized_shared' places the run on the managed checkout of the group named by group_id: native file and Git writes then serialize through CodeGG's writer permit so exactly one writer holds the checkout at a time, and every process-capable tool is refused for the child. It is honoured for spawn_many, where the group is created with the children as members, and is refused outright on a platform with no native containment evidence."
+                    "description": "M005 C006: where the delegated run is placed. 'auto' (default) allocates a managed checkout for mutating profiles but may inherit the workspace for read-only work. 'isolated_new' explicitly requires its own fresh managed checkout even for read-only work, and fails with a typed placement-unavailable reason if that cannot be honored. 'serialized_shared' places the run on the managed checkout of the group named by group_id: native file and Git writes then serialize through CodeGG's writer permit so exactly one writer holds the checkout at a time, and every process-capable tool is refused for the child. It is honoured for spawn_many, where the group is created with the children as members, and is refused outright on a platform with no native containment evidence."
                 },
                 "join_policy": {
                     "type": "string",
@@ -2301,6 +2309,7 @@ fn continuation_payload(
             run_id,
             base_commit,
             placement,
+            default_working_directory,
             ..
         } => Some(codegg_core::jobs::JobPayload::SubagentRun {
             prompt,
@@ -2315,6 +2324,7 @@ fn continuation_payload(
             delegation_key,
             base_commit,
             placement,
+            default_working_directory,
         }),
         _ => None,
     }
@@ -3139,6 +3149,16 @@ impl TaskTool {
                                     delegation_key,
                                     base_commit: explicit_base_commit.clone(),
                                     placement: placement.clone(),
+                                    default_working_directory: self
+                                        .default_working_directory
+                                        .as_ref()
+                                        .and_then(|path| {
+                                            self.workspace_root
+                                                .as_ref()
+                                                .and_then(|root| path.strip_prefix(root).ok())
+                                        })
+                                        .filter(|path| !path.as_os_str().is_empty())
+                                        .map(|path| path.to_string_lossy().into_owned()),
                                 }
                             } else {
                                 codegg_core::jobs::JobPayload::Subagent {
@@ -3294,6 +3314,16 @@ impl TaskTool {
                     max_tool_calls: None,
                     parent_model: child_model,
                     workspace_root: self.workspace_root.clone(),
+                    default_working_directory: self
+                        .default_working_directory
+                        .as_ref()
+                        .and_then(|path| {
+                            self.workspace_root
+                                .as_ref()
+                                .and_then(|root| path.strip_prefix(root).ok())
+                        })
+                        .filter(|path| !path.as_os_str().is_empty())
+                        .map(std::path::Path::to_path_buf),
                     workspace_id: self.workspace_id.clone(),
                     workspace_locks: self.workspace_locks.clone(),
                     parent_sandbox_profile: Some(parent_sandbox),

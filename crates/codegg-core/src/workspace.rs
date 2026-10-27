@@ -649,6 +649,8 @@ async fn canonicalize_workspace_root(root: &Path) -> Result<(PathBuf, String), W
 pub struct ExecutionContext {
     pub workspace_id: WorkspaceId,
     pub workspace_root: PathBuf,
+    /// Immutable per-turn default directory. It never expands allowed roots.
+    pub working_directory: PathBuf,
     pub session_id: Option<String>,
     /// Additional roots that may be read by tools/cwd requests. Always
     /// starts with `workspace_root`; may be widened by configuration.
@@ -672,6 +674,7 @@ impl ExecutionContext {
         Arc::new(Self {
             workspace_id: workspace.id.clone(),
             workspace_root: root.clone(),
+            working_directory: root.clone(),
             session_id,
             allowed_read_roots: Arc::from([root.clone()]),
             allowed_write_roots: Arc::from([root]),
@@ -704,12 +707,36 @@ impl ExecutionContext {
         }
         Arc::new(Self {
             workspace_id: workspace.id.clone(),
-            workspace_root: root,
+            workspace_root: root.clone(),
+            working_directory: root,
             session_id,
             allowed_read_roots: Arc::from(read.into_boxed_slice()),
             allowed_write_roots: Arc::from(write.into_boxed_slice()),
             cancellation,
         })
+    }
+
+    /// Return a turn-scoped copy with a canonical default directory beneath
+    /// the immutable workspace root. The authorization ceiling is unchanged.
+    pub fn with_working_directory(
+        self: &Arc<Self>,
+        directory: PathBuf,
+    ) -> Result<Arc<Self>, WorkspaceError> {
+        let canonical = directory.canonicalize().map_err(|error| {
+            WorkspaceError::CanonicalizationFailed(directory.clone(), error.to_string())
+        })?;
+        if !canonical.is_dir() || !canonical.starts_with(&self.workspace_root) {
+            return Err(WorkspaceError::InvalidRootPath(canonical));
+        }
+        Ok(Arc::new(Self {
+            workspace_id: self.workspace_id.clone(),
+            workspace_root: self.workspace_root.clone(),
+            working_directory: canonical,
+            session_id: self.session_id.clone(),
+            allowed_read_roots: self.allowed_read_roots.clone(),
+            allowed_write_roots: self.allowed_write_roots.clone(),
+            cancellation: self.cancellation.clone(),
+        }))
     }
 
     /// Pick the directory a command should run in. `None` means "use
@@ -721,8 +748,8 @@ impl ExecutionContext {
         requested: Option<&Path>,
     ) -> Result<PathBuf, PathPolicyError> {
         match requested {
-            None => Ok(self.workspace_root.clone()),
-            Some(p) if p.as_os_str().is_empty() => Ok(self.workspace_root.clone()),
+            None => Ok(self.working_directory.clone()),
+            Some(p) if p.as_os_str().is_empty() => Ok(self.working_directory.clone()),
             Some(p) if p.is_absolute() => {
                 let canonical = self.pick_allowed_root(p, &self.allowed_read_roots).await?;
                 if !path_within_any(&canonical, &self.allowed_write_roots) {
@@ -730,7 +757,7 @@ impl ExecutionContext {
                 }
                 Ok(canonical)
             }
-            Some(p) => resolve_under_root(&self.workspace_root, p).await,
+            Some(p) => resolve_under_root(&self.working_directory, p).await,
         }
     }
 
@@ -763,7 +790,7 @@ impl ExecutionContext {
         let candidate: PathBuf = if requested.is_absolute() {
             requested.to_path_buf()
         } else {
-            self.workspace_root.join(requested)
+            self.working_directory.join(requested)
         };
         // Canonicalize when possible. For paths that don't exist yet,
         // canonicalize the nearest existing ancestor and append the
@@ -869,6 +896,36 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("marker.txt"), label).unwrap();
         dir
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn session_default_working_directory_is_separate_from_workspace_ceiling() {
+        let dir = temp_root("root");
+        let nested = dir.path().join("crates");
+        std::fs::create_dir(&nested).unwrap();
+        let registry = WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))
+            .await
+            .unwrap();
+        let record = registry.get_or_register(dir.path()).await.unwrap();
+        let root_context =
+            ExecutionContext::new(record.clone(), Some("session-1".into()), Default::default());
+        let context = root_context.with_working_directory(nested.clone()).unwrap();
+        assert_eq!(context.workspace_root, record.canonical_root);
+        assert_eq!(context.working_directory, nested.canonicalize().unwrap());
+        assert_eq!(
+            context.resolve_relative_cwd(None).await.unwrap(),
+            context.working_directory
+        );
+        assert_eq!(
+            context
+                .resolve_read_path(Path::new("Cargo.toml"))
+                .await
+                .unwrap(),
+            nested.canonicalize().unwrap().join("Cargo.toml")
+        );
+        assert!(context
+            .with_working_directory(dir.path().parent().unwrap().to_path_buf())
+            .is_err());
     }
 
     #[tokio::test(flavor = "current_thread")]

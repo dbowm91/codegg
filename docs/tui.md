@@ -39,6 +39,11 @@ Two consequences worth knowing:
 - Execution is always scoped to the active tab's workspace. The process working
   directory is never changed; the frontend stores the selected workspace root
   on that tab and passes it as the execution context.
+- A session may keep a separate default subdirectory inside that root. The
+  `session_working_directory` tool reports both paths and persists changes for
+  later turns; in-flight work keeps its captured directory. Changing projects
+  or managed checkouts still uses the authorized session launch/fork/switch
+  flow.
 - The sidebar is keyboard-focusable and includes an Agent Runs tree for nested
   run inspection. The tree renders the active projection turn's bounded run
   nodes parent-first, with status, attention, progress, and joined
@@ -278,7 +283,7 @@ A few commonly used entries:
 | `/help` | Open in-app help |
 | `/status` | Session and runtime status |
 | `/agents` | List available agents |
-| `/sessions` | Session browser — the session list plus **Subagents** and **Jobs** sections for live work (`j`/`k` move across all three, skipping the headings; `Enter` opens a session or a subagent's run view; job rows are read-only). The dialog labels live-work loading or unavailable state separately from an authoritative empty result. |
+| `/sessions` | Session browser scoped to the active project — the list plus **Subagents** and **Jobs** sections for live work (`j`/`k` move across all three, skipping the headings; `Enter` opens a session or a subagent's run view; job rows are read-only). Opening a session re-reads its daemon-authorized workspace binding before updating the tab root; an unavailable or stale binding leaves the current session active. The dialog labels its project scope and live-work loading or unavailable state separately from an authoritative empty result. |
 | `/subagent-send` | Point the next prompt at one running subagent (`/subagent-send off` clears it); the message goes to the agent running the current turn, which decides whether to relay it |
 | `/queue` | Prompts waiting for this session's next turn (`j`/`k` move, `[`/`]` reorder, `a` add, `e` edit, `d` delete, `s` send now, `r` refresh) |
 | `/policy` | Current approval and sandbox policy detail |

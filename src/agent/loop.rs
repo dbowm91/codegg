@@ -275,6 +275,7 @@ pub struct AgentLoop {
     pub(super) submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
     /// Immutable workspace authority captured during construction.
     pub(super) workspace_root: std::path::PathBuf,
+    pub(super) working_directory: std::path::PathBuf,
     pub(super) max_tool_calls: Option<usize>,
     pub(super) goal_wall_clock: std::sync::Mutex<crate::goal::runtime::GoalWallClock>,
     pub(super) cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
@@ -610,6 +611,7 @@ impl AgentLoop {
             compaction_chain_base: None,
             subagent_pool: None,
             submission: None,
+            working_directory: workspace_root.clone(),
             workspace_root,
             max_tool_calls: None,
             checkpoint_batch_seq: 0,
@@ -631,6 +633,12 @@ impl AgentLoop {
             habit_project_namespace,
             habit_actions: Vec::new(),
             habit_had_failure: false,
+        }
+    }
+
+    pub fn set_working_directory(&mut self, directory: std::path::PathBuf) {
+        if directory.starts_with(&self.workspace_root) && directory.is_dir() {
+            self.working_directory = directory;
         }
     }
 

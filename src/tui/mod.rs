@@ -1940,10 +1940,10 @@ mod async_cmd_tests {
     }
 
     #[test]
-    fn apply_new_session_created_attaches_the_session() {
-        // Regression: Ctrl+N used to leave `session_state.session` as None,
-        // so the TUI had no session and session-scoped surfaces (/models,
-        // /sessions) were unusable. A successful completion must attach.
+    fn apply_new_session_created_starts_authoritative_activation() {
+        // Create replies carry compatibility fields only. The tab must stay
+        // on its current binding until SessionLoad returns an authoritative
+        // workspace binding.
         let mut app = make_test_app();
         assert!(app.session_state.session.is_none());
         let id = app.dialog_state.new_session_request.begin();
@@ -1956,14 +1956,8 @@ mod async_cmd_tests {
             !app.dialog_state.new_session_request.is_loading(),
             "the request must be settled"
         );
-        assert!(
-            app.session_state.session.is_some(),
-            "a new session must actually be attached, not left as None"
-        );
-        assert_eq!(
-            app.session_state.session.as_ref().map(|s| s.id.clone()),
-            Some("new-session-1".to_string())
-        );
+        assert!(app.session_state.session.is_none());
+        assert!(app.dialog_state.session_activation_request.is_loading());
     }
 
     #[test]
@@ -1985,10 +1979,8 @@ mod async_cmd_tests {
         let mut session_b = empty_session_dto();
         session_b.id = "session-b".into();
         apply_new_session_created(&mut app, id_b, Some(session_b), None);
-        assert_eq!(
-            app.session_state.session.as_ref().map(|s| s.id.clone()),
-            Some("session-b".to_string())
-        );
+        assert!(app.session_state.session.is_none());
+        assert!(app.dialog_state.session_activation_request.is_loading());
     }
 
     #[test]
