@@ -10,6 +10,7 @@ use crate::core::transport::SocketCoreClient;
 use crate::core::{new_request, CoreClient};
 use crate::protocol::core::{CoreEvent, CoreRequest, CoreResponse, EventEnvelope};
 use crate::protocol::dto::{ContentPart, ProjectRegisterRequestDto, ProviderMessage};
+#[cfg(test)]
 use crate::protocol::projection::dto::ToolArgumentProjection;
 use crate::protocol::projection::event::ProjectionEvent;
 use crate::protocol::projection::replay::{ProjectionStreamKind, ProjectionSubscriptionRequest};
@@ -877,16 +878,82 @@ async fn handle_event(
         }
         match &envelope.payload {
             ProjectionEvent::MessageAppended { message } if message.visibility == crate::protocol::projection::dto::VisibilityClass::Public => update(stdout, &prompt.session_id, json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":message.text}})).await?,
-            ProjectionEvent::ToolStarted { tool } => update(stdout, &prompt.session_id, json!({"sessionUpdate":"tool_call","toolCallId":tool.tool_id,"title":tool.tool_name,"status":"in_progress","codeggArgumentsSha256":tool_arguments_sha256(&tool.arguments)})).await?,
-            ProjectionEvent::ToolCompleted { tool_id, output, success, .. } => update(stdout, &prompt.session_id, json!({"sessionUpdate":"tool_call_update","toolCallId":tool_id,"status":acp_tool_terminal_status(*success),"rawOutput":format!("{output:?}")})).await?,
+            // Tool notifications use the ordered core event stream below.
+            // Projection publication is asynchronous and may trail the direct
+            // turn terminal, which would otherwise leave an unreported hole.
+            ProjectionEvent::ToolStarted { .. } | ProjectionEvent::ToolCompleted { .. } => {}
             _ => {}
         }
-    } else if let CoreEvent::TurnStarted { turn_id, .. } = &event.payload {
-        if !prompt.bind_turn(turn_id) {
-            return Ok(false);
+    } else {
+        match &event.payload {
+            CoreEvent::TurnStarted { turn_id, .. } => {
+                if !prompt.bind_turn(turn_id) {
+                    return Ok(false);
+                }
+            }
+            CoreEvent::ToolStarted {
+                turn_id,
+                tool_name,
+                tool_id,
+                arguments,
+                ..
+            } => {
+                let Some(turn_id) = turn_id.as_deref() else {
+                    return Ok(false);
+                };
+                if !prompt.bind_turn(turn_id) {
+                    return Ok(false);
+                }
+                if !prompt.close_requested {
+                    update(
+                        stdout,
+                        &prompt.session_id,
+                        json!({
+                            "sessionUpdate":"tool_call",
+                            "toolCallId":tool_id,
+                            "title":tool_name,
+                            "status":"in_progress",
+                            "codeggArgumentsSha256":sha256_text(arguments),
+                        }),
+                    )
+                    .await?;
+                }
+            }
+            CoreEvent::ToolCompleted {
+                turn_id,
+                tool_id,
+                output,
+                success,
+                ..
+            } => {
+                let Some(turn_id) = turn_id.as_deref() else {
+                    return Ok(false);
+                };
+                if !prompt.bind_turn(turn_id) {
+                    return Ok(false);
+                }
+                if !prompt.close_requested {
+                    update(
+                        stdout,
+                        &prompt.session_id,
+                        json!({
+                            "sessionUpdate":"tool_call_update",
+                            "toolCallId":tool_id,
+                            "status":acp_tool_terminal_status(*success),
+                            "rawOutput":output,
+                        }),
+                    )
+                    .await?;
+                }
+            }
+            _ => {}
         }
     }
     Ok(true)
+}
+
+fn sha256_text(value: &str) -> String {
+    format!("{:x}", Sha256::digest(value.as_bytes()))
 }
 
 fn event_is_terminal(event: &EventEnvelope<CoreEvent>, prompt: &ActivePrompt) -> bool {
@@ -1091,6 +1158,7 @@ fn terminal_failure_data(prompt: &ActivePrompt, event: &EventEnvelope<CoreEvent>
     })
 }
 
+#[cfg(test)]
 fn tool_arguments_sha256(arguments: &ToolArgumentProjection) -> Option<String> {
     let text = match arguments {
         ToolArgumentProjection::Inline { arguments } => arguments,
@@ -1331,6 +1399,13 @@ mod tests {
             arguments: "{\"path\":\"src/lib.rs\"}".into(),
         })
         .is_some());
+        assert_eq!(
+            sha256_text("{\"path\":\"src/lib.rs\"}"),
+            tool_arguments_sha256(&ToolArgumentProjection::Inline {
+                arguments: "{\"path\":\"src/lib.rs\"}".into(),
+            })
+            .unwrap()
+        );
         assert_eq!(
             tool_arguments_sha256(&ToolArgumentProjection::Handle {
                 handle: "private".into(),
