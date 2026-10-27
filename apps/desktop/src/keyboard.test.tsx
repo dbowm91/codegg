@@ -40,6 +40,8 @@ vi.mock('./bridge', () => ({
     todoRefresh: vi.fn(),
     gitRead: vi.fn(),
     skillCatalogue: vi.fn(),
+    documentDiagnosticsSubscribe: vi.fn(() => Promise.resolve('diagnostics-test')),
+    documentDiagnosticsUnsubscribe: vi.fn(),
     subscribeProjection: vi.fn(),
     subscribe: vi.fn(),
     disconnect: vi.fn(),

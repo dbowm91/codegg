@@ -199,6 +199,7 @@ export function App() {
   // what the session gives it.
   const editor = useEditorSession({
     routeGeneration: currentToken?.routeGeneration ?? null,
+    sessionId: currentToken?.sessionId ?? null,
     enabled: Boolean(currentToken?.workspaceId),
     effectiveMap,
   });

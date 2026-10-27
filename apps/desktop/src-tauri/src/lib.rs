@@ -30,7 +30,8 @@ use codegg_protocol::{
 };
 use document::{
     desktop_document_close, desktop_document_completion, desktop_document_cursor,
-    desktop_document_diagnostics, desktop_document_edit, desktop_document_navigate,
+    desktop_document_diagnostics, desktop_document_diagnostics_subscribe,
+    desktop_document_diagnostics_unsubscribe, desktop_document_edit, desktop_document_navigate,
     desktop_document_open, desktop_document_redo, desktop_document_reload, desktop_document_resync,
     desktop_document_save, desktop_document_state, desktop_document_tree, desktop_document_undo,
     desktop_document_viewport,
@@ -80,6 +81,15 @@ struct HostState {
     /// renderer-visible generation so failures never fabricate a generation.
     connect_serial: AtomicU64,
     subscriptions: SubscriptionRegistry,
+    /// Project-scoped LSP diagnostics stream. Kept separate from the session
+    /// projection forwarder because it has a stronger `file.read` gate.
+    lsp_diagnostics_subscriptions: SubscriptionRegistry,
+    lsp_diagnostics_daemon_subscription: Mutex<
+        Option<(
+            String,
+            codegg_protocol::projection::ProjectionSubscriptionId,
+        )>,
+    >,
     /// M004 route/session controller state (WP B). Separate from the
     /// catalog `SubscriptionRegistry`: project detail, workspace roots,
     /// and session selection live here under route-generation fencing.
@@ -109,6 +119,8 @@ impl Default for HostState {
             connection_generation: AtomicU64::new(0),
             connect_serial: AtomicU64::new(0),
             subscriptions: SubscriptionRegistry::new(),
+            lsp_diagnostics_subscriptions: SubscriptionRegistry::new(),
+            lsp_diagnostics_daemon_subscription: Mutex::new(None),
             route: Mutex::new(route::RouteState::default()),
             document: Mutex::new(None),
             #[cfg(test)]
@@ -202,22 +214,34 @@ impl HostState {
             self.connection_generation.fetch_add(1, Ordering::AcqRel);
             self.lsp_request_coordinator.invalidate_frontend("desktop");
             let taken = self.subscriptions.take_active().await;
-            *self.client.lock().await = None;
+            let diagnostics_taken = self.lsp_diagnostics_subscriptions.take_active().await;
+            *self.lsp_diagnostics_daemon_subscription.lock().await = None;
+            let previous_client = self.client.lock().await.take();
             *self.daemon_id.lock().await = None;
             #[cfg(test)]
             {
                 use std::sync::atomic::Ordering as MemOrder;
                 self.fake_connected.store(false, MemOrder::Release);
             }
-            taken.map(|(_, task)| task)
+            (
+                taken.map(|(_, task)| task),
+                diagnostics_taken.map(|(_, task)| task),
+                previous_client,
+            )
         };
-        if let Some(task) = previous {
+        if let Some(task) = previous.0 {
+            cancel_and_join(task).await;
+        }
+        if let Some(task) = previous.1 {
             cancel_and_join(task).await;
         }
         // The prior connection's projection owner (if any) belongs to the
         // dead generation: stop it (cursor retained for resume) so no
         // stale driver survives a reconnect.
         self.stop_projection_owner().await;
+        if let Some(client) = previous.2 {
+            client.close().await;
+        }
     }
 
     /// Native main-window/app teardown entry point.
@@ -281,20 +305,33 @@ impl HostState {
                 return Err("connection attempt was superseded".into());
             }
             let taken = self.subscriptions.take_active().await;
-            *self.client.lock().await = Some(client);
+            let diagnostics_taken = self.lsp_diagnostics_subscriptions.take_active().await;
+            *self.lsp_diagnostics_daemon_subscription.lock().await = None;
+            let previous_client = self.client.lock().await.replace(client);
             *self.daemon_id.lock().await = Some(daemon_id);
             let generation = self.connection_generation.fetch_add(1, Ordering::AcqRel) + 1;
             self.lsp_request_coordinator.invalidate_frontend("desktop");
-            (taken.map(|(_, task)| task), generation)
+            (
+                taken.map(|(_, task)| task),
+                diagnostics_taken.map(|(_, task)| task),
+                previous_client,
+                generation,
+            )
         };
         if let Some(task) = previous.0 {
+            cancel_and_join(task).await;
+        }
+        if let Some(task) = previous.1 {
             cancel_and_join(task).await;
         }
         // A newly installed connection supersedes any projection owner
         // bound to the prior generation: stop it (cursor retained for
         // resume) so reconnect never leaves a stale driver attached.
         self.stop_projection_owner().await;
-        Ok(previous.1)
+        if let Some(client) = previous.2 {
+            client.close().await;
+        }
+        Ok(previous.3)
     }
 
     /// Create/replace the project-event subscription for the current
@@ -1148,6 +1185,8 @@ pub fn run() {
             desktop_document_state,
             desktop_document_tree,
             desktop_document_diagnostics,
+            desktop_document_diagnostics_subscribe,
+            desktop_document_diagnostics_unsubscribe,
             desktop_document_completion,
             desktop_document_navigate
         ])

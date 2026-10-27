@@ -191,6 +191,27 @@ impl LocalSocketClient {
         self.closed.load(Ordering::Acquire)
     }
 
+    /// Close this shared connection even while cloned handles still exist.
+    ///
+    /// Dropping the last clone closes it automatically, but lifecycle owners
+    /// need an explicit close boundary so a delayed command or subscriber
+    /// clone cannot keep a frontend registered after disconnect.
+    pub async fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        *self.writer.lock().await = None;
+        self.fail_pending();
+        self.hello_notify.notify_waiters();
+        let reader = self
+            .reader_task
+            .lock()
+            .ok()
+            .and_then(|mut task| task.take());
+        if let Some(reader) = reader {
+            reader.abort();
+            let _ = reader.await;
+        }
+    }
+
     pub async fn request(
         &self,
         request: RequestEnvelope<CoreRequest>,

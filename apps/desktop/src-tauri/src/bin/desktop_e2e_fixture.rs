@@ -434,6 +434,13 @@ mod server {
                 .map_err(|e| format!("create daemon home: {e}"))?;
             std::fs::create_dir_all(&workspace_root)
                 .map_err(|e| format!("create workspace root: {e}"))?;
+            std::fs::create_dir_all(workspace_root.join("src"))
+                .map_err(|e| format!("create workspace source directory: {e}"))?;
+            std::fs::write(
+                workspace_root.join("src/lib.rs"),
+                "pub fn latency_fixture() -> u32 { 1234567890 }\n",
+            )
+            .map_err(|e| format!("write workspace LSP fixture: {e}"))?;
             // Process-local daemon-home isolation for LocalDaemonPaths::resolve().
             std::env::set_var("CODEGG_DAEMON_HOME", &daemon_home);
             Ok(Self {
@@ -717,6 +724,13 @@ mod server {
                     .map(|d| d.subsec_nanos())
                     .unwrap_or(0)
             ));
+            std::fs::create_dir_all(root.join("src"))
+                .map_err(|e| format!("create probe workspace source directory: {e}"))?;
+            std::fs::write(
+                root.join("src/lib.rs"),
+                "pub fn latency_fixture() -> u32 { 1234567890 }\n",
+            )
+            .map_err(|e| format!("write probe workspace LSP fixture: {e}"))?;
             let workspace_id = self.register_workspace_at(&root).await?;
             self.workspace_id = Some(workspace_id.clone());
             let response = self

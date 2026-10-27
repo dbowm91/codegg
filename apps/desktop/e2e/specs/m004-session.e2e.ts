@@ -148,6 +148,104 @@ describe('M004 built-app session vertical slice (route, projection, control, pro
     );
   });
 
+  it('measures cold daemon diagnostics request-to-result without starting a server', async () => {
+    await $('[data-testid="panel-tab-editor"]').click();
+    await browser.waitUntil(
+      async () => (await $('[data-testid="editor-diagnostics-status"]').isExisting()),
+      { timeout: 30_000, timeoutMsg: 'diagnostics stream did not render a baseline status' },
+    );
+    const renderedStatus = await $('[data-testid="editor-diagnostics-status"]').getAttribute('data-status');
+    const renderedMessage = await $('[data-testid="editor-diagnostics-status"]').getText();
+    console.log(`LSP_DIAGNOSTICS rendered-baseline ${JSON.stringify({ status: renderedStatus, message: renderedMessage })}`);
+    expect(renderedStatus).toBe('no_warm_server');
+    const routeGeneration = Number.parseInt(await $('[data-testid="route-generation"]').getText(), 10);
+    const measurements = await browser.execute(async (rawGeneration: unknown) => {
+      const generation = Number(rawGeneration);
+      const internals = (window as unknown as {
+        __TAURI_INTERNALS__?: { invoke: (command: string, args?: unknown) => Promise<unknown> };
+      }).__TAURI_INTERNALS__;
+      if (!internals) throw new Error('Tauri invoke bridge is unavailable');
+      const durations: number[] = [];
+      let status = '';
+      for (let sample = 0; sample < 31; sample += 1) {
+        const started = performance.now();
+        const view = await internals.invoke('desktop_document_diagnostics', {
+          routeGeneration: generation,
+        }) as { status: string };
+        durations.push(performance.now() - started);
+        status = view.status;
+      }
+      durations.sort((left, right) => left - right);
+      return {
+        status,
+        samples: durations.length,
+        p50Ms: durations[Math.floor((durations.length - 1) * 0.50)],
+        p95Ms: durations[Math.floor((durations.length - 1) * 0.95)],
+      };
+    }, routeGeneration);
+    console.log(`LSP_LATENCY cold request-to-result ${JSON.stringify(measurements)}`);
+    expect(measurements.status).toBe('no_warm_server');
+    expect(measurements.samples).toBe(31);
+  });
+
+  it('measures visible editor key-to-paint while diagnostics remain cold', async () => {
+    await $('[data-testid="editor-panel"]').waitForExist({ timeout: 60_000 });
+    await browser.waitUntil(
+      async () => {
+        for (const row of await $$('[data-testid="editor-tree-item"]')) {
+          if ((await row.getText()).includes('lib.rs')) return true;
+        }
+        return false;
+      },
+      { timeout: 60_000, timeoutMsg: 'editor tree never listed the LSP fixture file' },
+    );
+    for (const row of await $$('[data-testid="editor-tree-item"]')) {
+      if ((await row.getText()).includes('lib.rs')) {
+        await row.$('[data-testid="editor-open-button"]').click();
+        break;
+      }
+    }
+    await browser.waitUntil(
+      async () => (await $('[data-testid="editor-path"]').getText()) === 'src/lib.rs',
+      { timeout: 60_000, timeoutMsg: 'editor never opened the fixture document' },
+    );
+    await browser.waitUntil(
+      async () =>
+        (await $('[data-testid="editor-diagnostics-status"]').getAttribute('data-status')) ===
+        'no_warm_server',
+      { timeout: 30_000, timeoutMsg: 'cold diagnostics were not kept distinct from a clean result' },
+    );
+
+    const viewport = $('[data-testid="editor-viewport"]');
+    await viewport.click();
+    const caret = $('[data-testid="editor-caret"]');
+    const durations: number[] = [];
+    for (let sample = 0; sample < 31; sample += 1) {
+      const before = Number.parseInt((await caret.getAttribute('data-column')) ?? '0', 10);
+      const started = performance.now();
+      await browser.keys('ArrowRight');
+      await browser.waitUntil(
+        async () =>
+          Number.parseInt((await caret.getAttribute('data-column')) ?? '0', 10) === before + 1,
+        { timeout: 5_000, timeoutMsg: 'local cursor movement did not reach the rendered viewport' },
+      );
+      await browser.execute(
+        () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+      );
+      durations.push(performance.now() - started);
+    }
+    durations.sort((left, right) => left - right);
+    const measurements = {
+      status: await $('[data-testid="editor-diagnostics-status"]').getAttribute('data-status'),
+      samples: durations.length,
+      p50Ms: durations[Math.floor((durations.length - 1) * 0.50)],
+      p95Ms: durations[Math.floor((durations.length - 1) * 0.95)],
+    };
+    console.log(`M002_KEY_TO_PAINT cold ${JSON.stringify(measurements)}`);
+    expect(measurements.status).toBe('no_warm_server');
+    expect(measurements.samples).toBe(31);
+  });
+
   it('refreshes control state and fails prompt submit closed without a provider', async () => {
     await $('[data-testid="control-refresh-button"]').click();
     await browser.waitUntil(

@@ -1257,19 +1257,35 @@ authorization logic of its own and cannot forget the check. A test asserts the
 capability directly, so folding diagnostics back into `ProjectionSubscribe`
 fails rather than silently regressing the gate.
 
-The subscription response carries the authoritative set in a new
-`ProjectionSnapshotBundle::LspDiagnostics`, so a subscriber starts from the
-resync authority rather than from an empty view it would have to discover by
-polling. Session-scoped consumers reject or ignore that variant, exactly as
-they do `BoundedSessionList`: a project-scoped bundle is not something a
-session reducer can fold in, and saying so is better than dropping it.
+The subscription response carries the current file-sequence baseline in a
+new `ProjectionSnapshotBundle::LspDiagnostics`. It does **not** carry
+readiness, so a frontend must not present this status-free snapshot as
+`Ready` (an empty snapshot could mean that no server is warm). Production
+TUI and desktop subscribers install their loss-aware event receiver before
+subscribing, then issue the authorized `LspDiagnosticsGet` and use that
+`Ready`/`NotReady` response as the initial view. The snapshot only seeds the
+stream cursor and per-file sequence checks. Session-scoped consumers reject
+or ignore that variant, exactly as they do `BoundedSessionList`: a
+project-scoped bundle is not something a session reducer can fold in.
 
 `should_persist` excludes `LspDiagnosticsUpdated`, so diagnostics are not
 persisted: they are a replace-set the pull can always re-derive, and ADR-0008's
 ruling that preview and diagnostic state stay bounded and non-durable applies.
 The cost is that after a daemon restart a client has no sequence history and
 must re-pull — which is exactly why the pull, not the stream, is the
-correctness authority.
+correctness authority. A stream gap or loss-aware transport gap retains the
+last complete view as stale, releases the old subscription, and starts a new
+authorized subscription plus authoritative pull. `Ready(empty)` clears the
+view; `NotReady` preserves it. Neither frontend performs readiness work on a
+synchronous keystroke or render path.
+
+Verified 2026-10-27 against `crates/codegg-client/src/lsp.rs`,
+`src/tui/commands/editor.rs`, `src/tui/editor_lsp.rs`,
+`apps/desktop/src-tauri/src/document.rs`, `apps/desktop/src-tauri/src/lib.rs`,
+and `apps/desktop/src/editor/session.ts`: both production clients receive
+events before subscribing, seed stream ordering from the status-free
+snapshot, establish the initial view with `LspDiagnosticsGet`, mark loss stale,
+and unsubscribe before resubscribing.
 
 `LspDiagnosticsResultDto` carries `LspDiagnosticsStatus::{Ready, NotReady}`
 separately from `files`. A complete `Ready` response with no files is an

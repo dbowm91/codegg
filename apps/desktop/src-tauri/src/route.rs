@@ -2135,15 +2135,15 @@ mod tests {
                     },
                 )
                 .await;
-            let (id, payload) = daemon.next_request().await;
+            let (_id, payload) = daemon.next_request().await;
             assert!(
                 matches!(payload, CoreRequest::SessionPromptSubmit { .. }),
                 "expected SessionPromptSubmit, got {payload:?}"
             );
-            // The daemon still accepts the turn; the host must not
-            // report it against the dead route.
+            // The daemon has accepted the request; the host closes its
+            // connection while the route is being invalidated and must not
+            // report the transport failure against that dead route.
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-            daemon.respond(id, CoreResponse::Ack).await;
         });
 
         let state = routed_host(&endpoint).await;

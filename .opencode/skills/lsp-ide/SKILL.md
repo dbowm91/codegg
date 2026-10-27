@@ -27,6 +27,16 @@ not add implicit polling in a presentation-only change, and do not move the
 cadence onto a frontend — a frontend-triggered poll would put the "may start a
 server" decision on whichever client happens to be open.
 
+The production TUI and desktop also subscribe to the daemon's project
+diagnostics stream. Install the loss-aware event receiver before sending
+`LspDiagnosticsSubscribe`; its snapshot has no readiness status and is only a
+cursor/baseline. Follow it with the authorized `LspDiagnosticsGet` and render
+that pull's `Ready` or `NotReady` status. `Ready(empty)` clears diagnostics;
+`NotReady` keeps the last complete set. A sequence gap, receiver lag,
+transport gap, or close marks the view stale and triggers a fresh subscription
+and authoritative pull. Shared cursor/sequence logic belongs in
+`codegg-client::LspDiagnosticsStream`; keep view wording frontend-specific.
+
 Route native TUI and desktop diagnostics/read/completion gestures through
 `codegg-client::LspRequestCoordinator`. Its key must retain attachment,
 project/workspace/session, document/path/server, generation, operation, and
@@ -126,7 +136,7 @@ separately planned edit contract authorizes mutation.
 
 ## Source verification
 
-Verified 2026-10-23 against `crates/egglsp/src/server.rs`,
+Verified 2026-10-27 against `crates/egglsp/src/server.rs`,
 `crates/egglsp/src/bin/`, `crates/egglsp-test-server/src/main.rs`,
 `src/lsp/`, `src/core/daemon_lsp.rs`, `src/tui/commands/change_review.rs`,
 `crates/codegg-protocol/src/core.rs`,
@@ -150,6 +160,15 @@ No claim in this skill was contradicted by the current tree. The only changes
 are the addition of this note and of the missing `## See Also` section, which
 the skill's own intro pointed at (`architecture/lsp.md`, `architecture/tui.md`,
 `architecture/client.md`) but never listed under a `## See Also` heading.
+
+Verified the diagnostics stream contract against
+`crates/codegg-client/src/lsp.rs`, `src/tui/commands/editor.rs`,
+`src/tui/editor_lsp.rs`, `apps/desktop/src-tauri/src/document.rs`,
+`apps/desktop/src-tauri/src/lib.rs`, and `apps/desktop/src/editor/session.ts`:
+both frontends receive events before subscribing, perform an authoritative
+readiness pull, retain complete content on `NotReady`, clear on `Ready(empty)`,
+and resubscribe after loss. This is a stream cursor protocol; the snapshot
+does not carry a ready status.
 
 Not verified: the F2–F7 key bindings and the `space k` / `space s` /
 `space S` / `space d` / `space h` / `gr` / `gd` / `gi` / `space r` / `=` /

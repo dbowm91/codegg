@@ -488,6 +488,12 @@ diagnostics, completion and navigation — over the **shared** document
 foundation, with the daemon owning the buffer and the host holding only a
 bounded viewport slice.
 
+Diagnostics use the same frontend-neutral `codegg-client` coordinator and
+loss-aware project stream as the TUI. The host keeps its own bounded view
+mapping, and it establishes readiness with the authorized diagnostics pull
+after subscribing; the stream snapshot alone is never rendered as a clean
+result.
+
 The **graphical terminal**, a Git UI and the other graphical surfaces remain
 deferred. A third-party editor engine remains deferred too, and would need
 its own ADR, because adopting one changes the renderer's CSP, worker and
@@ -534,6 +540,13 @@ Node, WebKitGTK, or the desktop Cargo workspace; `scripts/check-desktop-boundary
 guards that separation and the renderer authority inventory.
 
 ## Source verification
+
+Re-verified the diagnostics subscription and frontend lifecycle on
+2026-10-27 against `apps/desktop/src-tauri/src/{document,lib}.rs`,
+`apps/desktop/src/{bridge.ts,editor/session.ts,editor/EditorSurface.tsx}`,
+and `crates/codegg-client/src/lsp.rs`: the host owns a bounded subscription,
+uses the shared coordinator and stream reconciler, and performs an
+authoritative readiness pull after subscribing.
 
 Verified 2026-10-23 against `apps/desktop/`: `src-tauri/Cargo.toml`,
 `src-tauri/tauri.conf.json`, `src-tauri/src/{lib,bridge,lifecycle,route,projection,present,prompt,control,artifact}.rs`,

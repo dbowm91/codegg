@@ -20,6 +20,8 @@ vi.mock('../bridge', () => ({
     documentState: vi.fn(),
     documentTree: vi.fn(),
     documentDiagnostics: vi.fn(),
+    documentDiagnosticsSubscribe: vi.fn(),
+    documentDiagnosticsUnsubscribe: vi.fn(),
     documentCompletion: vi.fn(),
     documentNavigate: vi.fn(),
   },
@@ -63,11 +65,14 @@ beforeEach(() => {
     nodes: [],
     truncated: false,
   });
-  vi.mocked(bridge.documentDiagnostics).mockResolvedValue({
-    status: 'no_warm_server',
-    message: 'no language server is warm for this project yet',
-    diagnostics: [],
-    truncated: false,
+  vi.mocked(bridge.documentDiagnosticsSubscribe).mockImplementation(async (_route, onMessage) => {
+    onMessage({
+      status: 'no_warm_server',
+      message: 'no language server is warm for this project yet',
+      diagnostics: [],
+      truncated: false,
+    });
+    return 'diagnostics-1';
   });
   vi.mocked(bridge.documentOpen).mockResolvedValue({
     relativePath: 'src/lib.rs',
@@ -82,22 +87,27 @@ beforeEach(() => {
 
 describe('the editor session', () => {
   it('reads the file tree and the diagnostics when a workspace is selected', async () => {
-    const { result } = renderHook(() =>
+    const { result, rerender } = renderHook(({ sessionId }: { sessionId: string | null }) =>
       useEditorSession({
         routeGeneration: 7,
+        sessionId,
         enabled: true,
         effectiveMap: buildEffectiveMap(ALL_ACTION_DECLARATIONS),
-      }),
+      }), { initialProps: { sessionId: null as string | null } },
     );
     await waitFor(() => expect(result.current.tree).not.toBeNull());
     expect(bridge.documentTree).toHaveBeenCalledWith('', 7);
-    expect(result.current.diagnostics?.status).toBe('no_warm_server');
+    expect(bridge.documentDiagnosticsSubscribe).not.toHaveBeenCalled();
+    rerender({ sessionId: 's-1' });
+    await waitFor(() => expect(result.current.diagnostics?.status).toBe('no_warm_server'));
+    expect(bridge.documentDiagnosticsSubscribe).toHaveBeenCalledWith(7, expect.any(Function));
   });
 
   it('reads nothing while no workspace is selected', async () => {
     const { result } = renderHook(() =>
       useEditorSession({
         routeGeneration: null,
+        sessionId: null,
         enabled: false,
         effectiveMap: buildEffectiveMap(ALL_ACTION_DECLARATIONS),
       }),
@@ -111,6 +121,7 @@ describe('the editor session', () => {
     const { result } = renderHook(() =>
       useEditorSession({
         routeGeneration: 7,
+        sessionId: 's-1',
         enabled: true,
         effectiveMap: buildEffectiveMap(ALL_ACTION_DECLARATIONS),
       }),
@@ -127,6 +138,7 @@ describe('the editor session', () => {
     const { result } = renderHook(() =>
       useEditorSession({
         routeGeneration: 7,
+        sessionId: 's-1',
         enabled: true,
         effectiveMap: buildEffectiveMap(ALL_ACTION_DECLARATIONS),
       }),
@@ -143,6 +155,7 @@ describe('the editor session', () => {
     const { result } = renderHook(() =>
       useEditorSession({
         routeGeneration: 7,
+        sessionId: 's-1',
         enabled: true,
         effectiveMap: buildEffectiveMap(ALL_ACTION_DECLARATIONS),
       }),

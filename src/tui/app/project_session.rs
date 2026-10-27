@@ -195,6 +195,7 @@ impl App {
     pub fn switch_active_tab(&mut self, tab_id: &ProjectTabId) -> bool {
         let switched = self.project_tabs.set_active(tab_id);
         if switched {
+            self.cancel_lsp_diagnostics_stream();
             // M004: a tab switch moves the project context out from under
             // the popup's scope binding, so the popup closes even though
             // the attachment itself survives.

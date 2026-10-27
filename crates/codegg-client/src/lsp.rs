@@ -12,7 +12,9 @@
 //!   and [`DiagnosticsReconciler::reconcile`]; the reconciler decides whether
 //!   a re-pull is required, so no caller has to remember the sequence rule.
 
-use codegg_protocol::core::{CoreRequest, CoreResponse, RequestEnvelope, PROTOCOL_VERSION};
+use codegg_protocol::core::{
+    CoreEvent, CoreRequest, CoreResponse, RequestEnvelope, PROTOCOL_VERSION,
+};
 use codegg_protocol::lsp::{
     LspCompletionRequestDto, LspCompletionResultDto, LspDiagnosticsGetRequestDto,
     LspDiagnosticsResultDto, LspFileDiagnosticsDto, LspReadOperation, LspReadRequestDto,
@@ -27,9 +29,16 @@ use codegg_protocol::projection::replay::{
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+use crate::local::ClientEvent;
 use crate::local::LocalSocketClient;
+
+/// Trailing debounce for high-frequency completion and hover gestures. It is
+/// paid only by the async request task; key handling and rendering remain
+/// local and never wait for it.
+pub const LSP_INTERACTIVE_DEBOUNCE: Duration = Duration::from_millis(40);
 
 fn envelope(request: CoreRequest) -> RequestEnvelope<CoreRequest> {
     RequestEnvelope {
@@ -151,7 +160,7 @@ impl LspRequestTicket {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LspRequestStart {
-    Started(LspRequestTicket),
+    Started(Box<LspRequestTicket>),
     AlreadyInFlight,
     AtCapacity,
 }
@@ -205,11 +214,11 @@ impl LspRequestCoordinator {
             .collect();
         for (pending, sequence) in superseded {
             state.latest.remove(&pending);
-            if let Some((_, cancellation)) = state.outstanding.get(&sequence) {
+            if let Some((_, cancellation)) = state.outstanding.remove(&sequence) {
                 cancellation.cancel();
             }
         }
-        if state.latest.len() >= self.max_outstanding {
+        if state.outstanding.len() >= self.max_outstanding {
             return LspRequestStart::AtCapacity;
         }
         state.next_sequence = state.next_sequence.wrapping_add(1);
@@ -219,11 +228,11 @@ impl LspRequestCoordinator {
             .outstanding
             .insert(sequence, (key.clone(), cancellation.clone()));
         state.latest.insert(key.clone(), sequence);
-        LspRequestStart::Started(LspRequestTicket {
+        LspRequestStart::Started(Box::new(LspRequestTicket {
             key,
             sequence,
             cancellation,
-        })
+        }))
     }
 
     pub fn finish(
@@ -258,7 +267,7 @@ impl LspRequestCoordinator {
                 .collect();
             for (key, sequence) in stale {
                 state.latest.remove(&key);
-                if let Some((_, cancellation)) = state.outstanding.get(&sequence) {
+                if let Some((_, cancellation)) = state.outstanding.remove(&sequence) {
                     cancellation.cancel();
                 }
             }
@@ -275,7 +284,7 @@ impl LspRequestCoordinator {
                 .collect();
             for (key, sequence) in stale {
                 state.latest.remove(&key);
-                if let Some((_, cancellation)) = state.outstanding.get(&sequence) {
+                if let Some((_, cancellation)) = state.outstanding.remove(&sequence) {
                     cancellation.cancel();
                 }
             }
@@ -365,8 +374,32 @@ impl LspDiagnosticsStream {
         &self.subscription_id
     }
 
+    /// Apply a loss-aware socket event to this subscription. Any transport
+    /// loss makes the displayed snapshot stale until an authorized pull is
+    /// applied; unrelated events are ignored.
+    pub fn accept_client_event(&mut self, event: &ClientEvent) -> DiagnosticsStreamUpdate {
+        match event {
+            ClientEvent::Lagged { .. } | ClientEvent::Gap { .. } | ClientEvent::Closed => {
+                self.mark_transport_gap();
+                DiagnosticsStreamUpdate::ReconcileRequired
+            }
+            ClientEvent::Event(event) => match &event.payload {
+                CoreEvent::ProjectionStreamEvent {
+                    subscription_id,
+                    stream_id,
+                    envelope,
+                } => self.accept_projection_event(subscription_id, stream_id, envelope),
+                _ => DiagnosticsStreamUpdate::Ignored,
+            },
+        }
+    }
+
     pub fn needs_reconcile(&self) -> bool {
         self.needs_reconcile
+    }
+
+    pub fn current(&self) -> Option<&LspDiagnosticsResultDto> {
+        self.authoritative.as_ref()
     }
 
     pub fn mark_transport_gap(&mut self) {
@@ -809,6 +842,30 @@ mod coordinator_tests {
         assert!(current_cancel.is_cancelled());
         assert!(!coordinator.finish(&current, &scope, 9));
     }
+
+    #[test]
+    fn coordinator_keeps_only_the_latest_of_one_hundred_rapid_editor_requests() {
+        let coordinator = LspRequestCoordinator::new(2);
+        let scope = scope();
+        let mut previous: Option<Box<LspRequestTicket>> = None;
+        for generation in 1..=100 {
+            let mut request = key(scope.clone(), generation);
+            request.position = Some((generation as u32, 4));
+            let ticket = match coordinator.begin(request) {
+                LspRequestStart::Started(ticket) => ticket,
+                other => panic!("request {generation} was not admitted: {other:?}"),
+            };
+            if let Some(old) = previous.take() {
+                assert!(old.cancellation_token().is_cancelled());
+                assert!(!coordinator.finish(&old, &scope, old.key().document_generation));
+            }
+            assert_eq!(coordinator.outstanding(), 1);
+            previous = Some(ticket);
+        }
+        let latest = previous.expect("one latest request");
+        assert!(coordinator.finish(&latest, &scope, 100));
+        assert_eq!(coordinator.outstanding(), 0);
+    }
 }
 
 #[cfg(test)]
@@ -1009,6 +1066,10 @@ mod tests {
     fn diagnostics_stream_requires_authoritative_pull_after_snapshot() {
         let mut stream = diagnostics_stream();
         assert!(stream.needs_reconcile());
+        assert!(
+            stream.current().is_none(),
+            "the status-free subscription snapshot is not an authoritative Ready result"
+        );
         let ready = authoritative(vec![file("src/lib.rs", 1)]);
         assert_eq!(
             stream.apply_authoritative(ready.clone()),
@@ -1041,6 +1102,73 @@ mod tests {
             DiagnosticsStreamUpdate::ReconcileRequired
         );
         assert!(stream.needs_reconcile());
+    }
+
+    #[test]
+    fn loss_aware_client_event_marks_the_snapshot_stale_and_accepts_project_updates() {
+        use codegg_protocol::core::{CoreEvent, EventEnvelope};
+        use codegg_protocol::projection::replay::{ProjectionStreamId, ProjectionSubscriptionId};
+
+        let mut stream = diagnostics_stream();
+        stream.apply_authoritative(authoritative(vec![file("src/lib.rs", 1)]));
+        let envelope = EventEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            event_seq: 2,
+            timestamp_ms: 1,
+            session_id: None,
+            turn_id: None,
+            payload: CoreEvent::ProjectionStreamEvent {
+                subscription_id: ProjectionSubscriptionId::new("subscription-1"),
+                stream_id: ProjectionStreamId::new("project-stream").expect("stream id"),
+                envelope: projection_event(2, file("src/lib.rs", 2)),
+            },
+        };
+        assert!(matches!(
+            stream.accept_client_event(&ClientEvent::Event(Box::new(envelope))),
+            DiagnosticsStreamUpdate::Updated(_)
+        ));
+        assert_eq!(
+            stream.accept_client_event(&ClientEvent::Lagged { dropped: 1 }),
+            DiagnosticsStreamUpdate::ReconcileRequired
+        );
+        assert!(stream.needs_reconcile());
+    }
+
+    #[test]
+    fn two_frontend_streams_receive_the_same_project_update_independently() {
+        use codegg_protocol::projection::replay::{ProjectionStreamId, ProjectionSubscriptionId};
+
+        let mut tui = diagnostics_stream();
+        let mut desktop = diagnostics_stream();
+        let baseline = authoritative(vec![file("src/lib.rs", 1)]);
+        assert_eq!(
+            tui.apply_authoritative(baseline.clone()),
+            DiagnosticsStreamUpdate::Updated(baseline.clone())
+        );
+        assert_eq!(
+            desktop.apply_authoritative(baseline.clone()),
+            DiagnosticsStreamUpdate::Updated(baseline)
+        );
+        // Each client keeps independent stream state while both observe the
+        // same project stream and diagnostics sequence.
+        let stream_id = ProjectionStreamId::new("project-stream").expect("stream id");
+        let update = projection_event(2, file("src/lib.rs", 2));
+        let tui_update = tui.accept_projection_event(
+            &ProjectionSubscriptionId::new("subscription-1"),
+            &stream_id,
+            &update,
+        );
+        let desktop_update = desktop.accept_projection_event(
+            &ProjectionSubscriptionId::new("subscription-1"),
+            &stream_id,
+            &update,
+        );
+        assert_eq!(tui_update, desktop_update);
+        assert_eq!(tui.current(), desktop.current());
+        assert_eq!(
+            tui.current().map(|result| result.files[0].sequence),
+            Some(2)
+        );
     }
 
     #[test]
