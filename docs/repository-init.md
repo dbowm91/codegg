@@ -41,4 +41,4 @@ Checked 2026-10-23 against the source tree.
 - `a` publishes the root `AGENTS.md` and `Esc` cancels without writing:
   `src/tui/components/dialogs/info.rs` (`ProjectInitApprove`) and
   `src/tui/app/input.rs`.
-- The related `/project-init` slash command: `src/tui/command.rs`.
+- The related `/init` slash command: `src/tui/command.rs`.

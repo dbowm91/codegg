@@ -239,7 +239,7 @@ Checked 2026-10-23 against the source tree.
   `diagnostics.rs`, and `operations/` containing `code_actions.rs`,
   `completion.rs`, `formatting.rs`, `navigation.rs`, `overlay_ops.rs`,
   `rename.rs`, `semantic_tokens.rs`, `signature.rs`.
-- **40** server definitions and the `server_definitions()` ids
+- **39** server definitions and the `server_definitions()` ids
   (`rust-analyzer`, `gopls`, `pyright`, `typescript-language-server`,
   `jdtls`, `clangd`, …): `crates/egglsp/src/server.rs`. `rust-analyzer` is the
   only definition carrying a `download:` spec.
@@ -250,3 +250,8 @@ Checked 2026-10-23 against the source tree.
 - `experimental.lsp_tool` gate: `crates/codegg-config/src/schema.rs`.
 - Diagnostics are reported by workspace-relative path:
   `crates/codegg-protocol/src/`.
+
+- Corrected 2026-10-27: 39 server definitions — `rg -c '^\s+id: "'`
+  `crates/egglsp/src/server.rs` returns 39, confirmed by
+  `python3 scripts/measure_overview_counts.py`. A 2026-10-27 pass wrote 40
+  in error and has been reverted here and in `architecture/lsp.md`.

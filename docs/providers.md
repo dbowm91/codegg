@@ -131,9 +131,12 @@ variable and then the legacy `api_key` / `encrypted_api_key` fields.
 Resolution order for an `api_key` block is: the explicit `env` name, the
 conventional `{PROVIDER}_API_KEY` variable, an inline `value`, and finally an
 `encrypted_value` — which needs a master key to decrypt. One ordering caveat:
-the OpenAI-compatible providers plus `opencode_zen` and `minimax` are
-registered with their conventional variable, and that variable is checked
-before an explicit `env`.
+only Anthropic, OpenAI, Google, and OpenRouter honor an explicit `env`. Every
+other built-in is registered with its conventional variable
+(`register_api_key_provider` / `register_credential_provider` in
+`crates/codegg-providers/src/provider_core.rs`), and that variable is checked
+instead of an explicit `env` — a custom `auth.env` on those providers is
+silently ignored, so set the conventional variable itself.
 
 Prefer an environment variable or the credential store over an inline
 `value`, which is plaintext in a file on disk.
@@ -369,7 +372,7 @@ Checked 2026-10-23 against the source tree.
   OpenAI, Google, OpenRouter, OpenCode Zen, Mistral, Groq, DeepInfra, Cerebras,
   Cohere, Together, Perplexity, xAI, Venice, MiniMax, OpenCode Go,
   GeneralCompute): `crates/codegg-providers/src/provider_core.rs`
-  (`register_builtin`).
+  (`builtin_registration_order`).
 - The `TOGETHERAI_API_KEY` env var for `together`:
   `crates/codegg-providers/src/provider_core.rs`.
 - The API-key-only providers (Anthropic, OpenAI, Google, OpenRouter,
@@ -392,3 +395,12 @@ Checked 2026-10-23 against the source tree.
 - `codegg providers` output shape and the `NO KEY for provider` warning:
   `src/main.rs` `cmd_providers`.
 - `/connect` and `/connections` slash commands: `src/tui/command.rs`.
+
+- Corrected 2026-10-27: an explicit `auth.env` is honored only by Anthropic,
+  OpenAI, Google, and OpenRouter (`register_config_provider` with
+  `env_override: None`); the other thirteen built-ins resolve their
+  conventional variable instead (`crates/codegg-providers/src/provider_core.rs:1251-1380`,
+  `ResolverContext.env_override` at `:803`,
+  `auth_types.rs:393`). The 17-provider registration order lives in
+  `builtin_registration_order` (`provider_core.rs:714-733`), not
+  `register_builtin` (15 env-only branches).

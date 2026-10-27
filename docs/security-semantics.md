@@ -196,9 +196,13 @@ Policy: test strings without execution context are not findings in `inspect_text
 ```
 
 Every field above carries `#[serde(default)]`, so an existing config that
-omits any of them keeps the shown value. `mode` is one of `off`, `ambient`,
-`strict`, `review`; `enabled` defaults to `true` and `mode` to `ambient`.
-`sensitive_paths` entries are `{ "glob": ..., "reason": ... }`.
+omits any of them keeps the shown value — with one exception:
+`deny_critical_commands` is tri-state (`Option<bool>`, default unset), and an
+omitted value stays advisory rather than denying. Set it to `true` only as an
+explicit opt-in to deny critical-risk commands. `mode` is one of `off`,
+`ambient`, `strict`, `review`; `enabled` defaults to `true` and `mode` to
+`ambient`. `sensitive_paths` entries are `{ "glob": ..., "reason": ... }`
+with an optional `"review_level"` override.
 
 ## Limitations
 
@@ -244,3 +248,9 @@ Checked 2026-10-23 against the source tree.
   `src/permission/`, `src/security/`.
 - The `security-review` agent's role, mode, and read-only permission table:
   `assets/agents/security-review.toml`.
+
+- Corrected 2026-10-27: `deny_critical_commands` is `Option<bool>` defaulting
+  to unset (advisory), not `true`
+  (`crates/codegg-config/src/schema.rs:3660,3671`,
+  `src/security/policy.rs:84-101`); `SensitivePathConfig` also carries an
+  optional `review_level` (`schema.rs:3700-3704`).

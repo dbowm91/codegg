@@ -131,6 +131,16 @@ cancel operations take `group_id`. A run ID is not accepted as a task ID.
 Durable spawn ~11-19s (worktree+scheduling); retrieve via wait/get, notice is
 next-turn backstop; don't poll.
 
+Task placement is explicit: the `task` tool's `RunPlacement` (`auto`,
+`isolated_new`, `serialized_shared`) selects an isolated managed checkout or
+the serialized shared checkout behind the writer permit
+(`architecture/writer_permit.md`). `codegg launch` always places in an
+isolated managed checkout (`--worktree new` or a worktree id); there is no
+shared-checkout launch. Process-class work never runs on the shared checkout. Build admission is quota-counted per workspace
+(default 1) with an opt-in per-repository scope
+(`scheduler.quota.max_concurrent_builds_per_repository` in
+`docs/configuration.md`); an unknown quota namespace is refused, not ignored.
+
 `repo_search` forwards `include_local` to Eggsearch (defaults to true when an
 authorized root is present; falls back to the invocation workspace_root with a
 typed `[local_scope reason]` prefix when no authorized root is bound). `repo_map`
@@ -557,3 +567,9 @@ Checked 2026-10-23 against the source tree.
 - `/tool-backends` and `/tool-contracts`: `src/tui/command.rs`.
 - `search.backend` / `fallback_to_builtin` migration errors:
   `crates/codegg-config/src/schema.rs` and `crates/codegg-config/src/paths.rs`.
+
+- Corrected 2026-10-27: `RunPlacement` values and shared-checkout mediation
+  (`crates/codegg-core/src/run_placement.rs:22-75`); per-workspace build
+  quota default 1 with opt-in per-repository scope
+  (`docs/configuration.md`, `src/scheduler/`); `task` run/task/group
+  identities (`src/tool/task.rs:1847`); LSP count 39 held (see `docs/LSP.md`).

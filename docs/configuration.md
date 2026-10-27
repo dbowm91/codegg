@@ -81,8 +81,9 @@ subdirectory beneath it.
 
 ### 1. Unknown keys are ignored, not rejected
 
-The schema does not use `deny_unknown_fields`. A misspelled key parses
-cleanly and does nothing. If a setting appears to be ignored, check the
+The top-level schema does not use `deny_unknown_fields` (the single use in
+the schema is on a nested record, `ReasoningCapabilityRecord`). A misspelled
+key parses cleanly and does nothing. If a setting appears to be ignored, check the
 spelling against [`architecture/config.md`](../architecture/config.md).
 
 ### 2. Several keys are untagged enums with no "object" variant
@@ -294,3 +295,8 @@ Checked 2026-10-23 against the source tree.
   distinction: `crates/codegg-config/src/schema.rs`.
 - `${VAR}` interpolation and the JSON/JSONC/TOML/YAML frontmatter handling:
   `crates/codegg-config/src/`.
+
+- Corrected 2026-10-27: the top-level `Config` carries only
+  `#[serde(default)]` (`crates/codegg-config/src/schema.rs:404-406`); the
+  schema's single `deny_unknown_fields` is on the nested
+  `ReasoningCapabilityRecord` (`:152`).

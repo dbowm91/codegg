@@ -105,8 +105,9 @@ already discoverable. The installer prints that guidance when needed.
 
 ## From source
 
-`cargo install` installs both `codegg` and `codegg-sandbox-helper` — they are
-two `[[bin]]` targets with no required features, so Cargo installs both. It
+`cargo install` installs both `codegg` (the default binary from
+`src/main.rs`) and `codegg-sandbox-helper` (the explicit `[[bin]]` target in
+`Cargo.toml`) with no required features. It
 does **not** produce a working managed bundle, because the third managed
 sibling is missing:
 
@@ -237,3 +238,8 @@ Checked 2026-10-23 against the source tree and the upstream registry.
   `DoctorSubsystem::Installation`.
 - `autoupdate` is inert: it is parsed by
   `crates/codegg-config/src/schema.rs` and read by no other production path.
+
+- Corrected 2026-10-27: `codegg` itself is the default binary from
+  `src/main.rs`; only `codegg-sandbox-helper` (plus the gated
+  `codegg-lsp-test-server`) is an explicit `[[bin]]` target
+  (`Cargo.toml:106-113`).

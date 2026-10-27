@@ -268,7 +268,9 @@ milestone `5194e543a` landed on `main`): re-ran
 updated the snapshot above — **tool registrations 54+13 -> 53+14**,
 **measured names 75 -> 79** (63 literal + 16 counted; true production 78
 with the test-only `probe` excluded; new names `session_working_directory`,
-`math_eval`, `unit_convert`), **LSP servers 39 -> 40**, **slash commands
+`math_eval`, `unit_convert`), **LSP servers 39** (an earlier draft of this
+note wrote 40 in error; `rg -c '^\s+id: "'` on `server.rs` and
+`measure_overview_counts.py` both say 39), **slash commands
 168 -> 169** (tripwire now at `src/tui/command.rs:1277`), **tables 91 ->
 100 statements / 96 tables / layout 91**, **test files 321 -> 355**,
 **guard scripts 80 -> 104**, **CI guards 40 -> 70**. `overview.md` itself

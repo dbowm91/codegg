@@ -207,8 +207,9 @@ second `y`, so no single keypress creates a persistent permission.
 **Symptoms:** Plugin hook never called.
 
 **Solutions:**
-1. Check `manifest.toml` exists and is valid
-2. Verify WASM file is named correctly (`plugin.wasm`)
+1. Check a supported manifest exists and is valid (`manifest.toml`,
+   `plugin.json`, or `.claude-plugin/plugin.json`)
+2. Verify the WASM module path the manifest points at resolves to a file
 3. Ensure plugin API version matches codegg version
 4. Check plugin has required function exports
 5. Review logs for WASM loading errors
@@ -343,9 +344,14 @@ Checked 2026-10-23 against the source tree.
 - `experimental.lsp_tool` gate: `crates/codegg-config/src/schema.rs`.
 - Slash commands referenced here (`/model`, `/new`, `/compact`, `/doctor`,
   `/keybinds`, `/cost`, `/usage`, `/logs`, `/mcps`, `/files`, `/tasks`,
-  `/diff`, `/plan`, `/project-init`, `/security-review`, `/review`,
+  `/diff`, `/plan`, `/init`, `/security-review`, `/review`,
   `/theme`, `/lsp-preview-apply`, `/skills`, `/reload`): `src/tui/command.rs`.
 - The "permission dialog not appearing" checklist: the daemon owns the
   permission registry and the TUI is its client, so the actionable first step
   is daemon reachability (`/doctor`), not a foreground/background mode choice.
   The previous "not daemon mode" advice was stale and was replaced.
+
+- Corrected 2026-10-27: `/project-init` does not exist; the command is
+  `/init` (`src/tui/command.rs:579`). Plugin troubleshooting now names the
+  manifest formats `CodeGG` accepts (`src/plugin/package.rs:73-95`) instead
+  of a fixed `plugin.wasm` name.

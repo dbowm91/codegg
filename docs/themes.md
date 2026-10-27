@@ -32,9 +32,11 @@ the default theme.
 
 The id is the kebab-case slug (e.g. `cyber-red`); the display name is the
 original case-preserved name from the Halloy gallery (e.g. `"Cyber Red"`).
-`/theme use` resolves by id only, so pass the kebab-case slug — the registry is
-keyed by `id` and looked up by exact match, and a display name such as
-`"Cyber Red"` misses and reports `Unknown theme`.
+`/theme use` accepts the id, any spelling that normalizes to it
+(`"Cyber Red"`, `"CYBER-RED"`), or the display name itself
+(case-insensitive): every lookup surface goes through `ThemeRegistry::lookup`
+(`src/theme/registry.rs`), which tries exact id, normalized id, then
+display-name match, so a reference you can see on screen always resolves.
 
 Bundled themes (alphabetical by id):
 
@@ -448,3 +450,8 @@ Checked 2026-10-23 against the source tree.
 - `/theme` accepts `list`, `use <name>`, `reload`, and `diagnostics`, and a
   bare `<name>` is a shorthand for `use <name>`:
   `src/tui/app/mod.rs` (`handle_theme_command`).
+
+- Corrected 2026-10-27: `/theme use` is not id-only —
+  `ThemeRegistry::lookup` tries exact id, normalized id, then a
+  case-insensitive display-name match
+  (`src/theme/registry.rs:565-590`), so `"Cyber Red"` resolves.

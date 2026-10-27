@@ -2356,7 +2356,7 @@ what it is showing says the right thing in each case — `/theme` says
 apply` before that, and `/security-review` drops its `H copy hunk` verb from the
 panel for a reason given below. `/cost`, `/usage`, `/logs`, `/doctor` and the
 rest of the information panels are all one widget, so a single panel of theirs
-says `j/k scroll` and `/project-init` adds `a publish`, because that is the one
+says `j/k scroll` and `/init` adds `a publish`, because that is the one
 of them that has an approve key. Nothing advertises a key the box does not have.
 
 **A docked box never sees the arrow keys, `Esc`, or uppercase `H`/`J`/`K`/`L`.**
@@ -2446,3 +2446,6 @@ Checked 2026-10-23 against the source tree.
   `src/tui/app/mod.rs` (`handle_theme_command`).
 - The 50 bundled Halloy themes and the `cyber-red` default:
   `assets/themes/halloy/`, `src/theme/registry.rs`.
+
+- Corrected 2026-10-27: the information-panel command with the `a publish`
+  key is `/init`, not `/project-init` (`src/tui/command.rs:579`).

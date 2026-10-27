@@ -154,7 +154,11 @@ against a node built on Eggwork's `TrustedLandlockSetup`
 `network.disabled.v1`; otherwise the attempt is refused before workspace
 upload. `network_policy = "unrestricted"` is the default and the explicit
 supported mode — when `network.unrestricted.v1` is unadvertised (a legacy
-node), CodeGG warns and proceeds. Existing node profiles default to
+node), CodeGG warns and proceeds. Three further optional keys constrain a
+node: `required_capabilities` (capability names the node must advertise),
+`resource_limits` (operator ceiling the node may be asked to enforce), and
+`max_concurrent_executions` (per-node admission cap; absent, the
+controller's local process-slot budget applies). Existing node profiles default to
 `isolation_policy = "none"` and `network_policy = "unrestricted"`; those
 choices remain visible in operator posture diagnostics. A policy change
 applies to future attempts and does not alter the durable target selected
@@ -209,3 +213,7 @@ Checked 2026-10-23 against the source tree and the guard script.
   `EggworkIsolationPolicy`, `EggworkNetworkPolicy`).
 - `crates/eggwork-test-node` is workspace-excluded with its own lockfile:
   `Cargo.toml` (`exclude`).
+
+- Corrected 2026-10-27: node-profile keys `required_capabilities`,
+  `resource_limits`, `max_concurrent_executions`
+  (`crates/codegg-config/src/schema.rs:980-995`).
