@@ -1,5 +1,3 @@
-//! Harness-only provider request accounting for bounded live qualifications.
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -35,17 +33,24 @@ impl Budget {
     }
 
     fn admit(&self) -> Result<usize, usize> {
-        self.admitted
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                (current < self.limit).then_some(current + 1)
-            })
-            .map(|previous| previous + 1)
-            .map_err(|_| self.limit)
+        let mut current = self.admitted.load(Ordering::Acquire);
+        loop {
+            if current >= self.limit {
+                return Err(self.limit);
+            }
+            match self.admitted.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(current + 1),
+                Err(observed) => current = observed,
+            }
+        }
     }
 }
 
-/// Admit an outbound OpenCode Go request immediately before transport send.
-/// The env switch is private to controlled harness lanes and absent in normal use.
 pub(crate) fn admit_opencode_go_request() -> Result<(), crate::ProviderError> {
     static BUDGET: OnceLock<Result<Option<Budget>, String>> = OnceLock::new();
     static RECEIPT_LOCK: Mutex<()> = Mutex::new(());
