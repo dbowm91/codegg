@@ -1084,7 +1084,6 @@ mod tests {
 
         let source_revision = Command::new("git")
             .args(["rev-parse", "HEAD"])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
             .output()
             .expect("read source revision");
         assert!(source_revision.status.success());
