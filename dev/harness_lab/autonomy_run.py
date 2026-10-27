@@ -40,12 +40,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Optional
 
-from . import autonomy, budget, faults, scoring, supervisor
+from . import autonomy, budget, event_observation, faults, scoring, supervisor
 
-#: The namespaced session-update kind the ACP adapter uses to report a hole
-#: in the daemon's event stream. It is optional: a consumer that does not
-#: know it ignores it.
-EVENT_GAP_SESSION_UPDATE = "codegg_event_gap"
 from .autonomy import AutonomyCase, AutonomySuite, verify_isolation
 from .pilot import _prepare_lane_home, opencode_go_credential
 from .supervisor import AcpClient, HarnessError, HarnessTimeout, HarnessTurnFailure, SubjectSpec
@@ -93,37 +89,6 @@ def _copy_tree(source: Path, destination: Path) -> None:
     if destination.exists():
         shutil.rmtree(destination)
     shutil.copytree(source, destination, symlinks=False)
-
-
-def _observed_event_gap(client: AcpClient) -> Optional[dict[str, Any]]:
-    """Return the event-stream gap the daemon reported, if it reported one.
-
-    The daemon's event log is a bounded broadcast, so a connection that falls
-    behind it loses events. The daemon says so on an optional, namespaced
-    session update; the adapter forwards it and the turn's result carries the
-    count. When the harness sees one, the trial's observation has a hole in
-    it, so the trial is **unmeasured** — not a candidate failure.
-
-    Before the product reported the gap, this was invisible: the trial simply
-    carried on with fewer events and the missing tool completion read as a
-    tool that never finished.
-    """
-    reported: Optional[dict[str, Any]] = None
-    for notification in client.notifications:
-        if notification.get("method") != "session/update":
-            continue
-        params = notification.get("params", {})
-        update = params.get("update", {}) if isinstance(params, dict) else {}
-        if not isinstance(update, dict):
-            continue
-        if update.get("sessionUpdate") != EVENT_GAP_SESSION_UPDATE:
-            continue
-        dropped = update.get("dropped")
-        reported = {
-            "dropped": dropped if isinstance(dropped, int) and not isinstance(dropped, bool) else 0,
-            "source": update.get("source") if isinstance(update.get("source"), str) else "unknown",
-        }
-    return reported
 
 
 def build_transcript(case: AutonomyCase, tool_calls: list[dict[str, Any]], *,
@@ -181,7 +146,6 @@ class _ToolCallProjector:
         self._started: dict[str, dict[str, Any]] = {}
         self._order: list[str] = []
         self._finished: dict[str, str] = {}
-        self._errored: dict[str, bool] = {}
 
     def absorb(self, notification: dict[str, Any]) -> None:
         """Absorb one ACP notification."""
@@ -209,14 +173,6 @@ class _ToolCallProjector:
             status = update.get("status")
             if isinstance(call_id, str) and isinstance(status, str):
                 self._finished[call_id] = status
-                # The product publishes a failed tool as a successful call whose
-                # output carries the error, so the ACP status alone cannot tell
-                # a failed tool from a successful one. The envelope is read here
-                # and the answer is carried as a boolean: the reported output
-                # itself never reaches the receipt.
-                raw = update.get("rawOutput")
-                if isinstance(raw, str) and faults.looks_like_tool_error(raw):
-                    self._errored[call_id] = True
 
     def calls(self) -> list[dict[str, Any]]:
         """Return the projected tool calls, in the order they started."""
@@ -225,8 +181,9 @@ class _ToolCallProjector:
             "tool": self._started[call_id]["tool"],
             "arguments_sha256": self._started[call_id]["arguments_sha256"],
             "status": self._finished.get(call_id, "unknown"),
-            "failed": (self._finished.get(call_id) == faults.STATUS_FAILED
-                       or self._errored.get(call_id, False)),
+            # ACP terminal status is typed evidence. Error-like output text
+            # may be ordinary file content and never changes the outcome.
+            "failed": self._finished.get(call_id) == faults.STATUS_FAILED,
         } for index, call_id in enumerate(self._order)]
 
 
@@ -483,6 +440,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     session_id: Optional[str] = None
     policy_receipt: Any = None
     watcher: Optional[_FaultWatcher] = None
+    event_observer_drained = False
     try:
         client.request("initialize", {"protocolVersion": ACP_PROTOCOL_VERSION,
                                       "clientInfo": {"name": "codegg-harness-lab", "version": "1"}})
@@ -517,6 +475,11 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     finally:
         if watcher is not None:
             watcher.stop()
+        try:
+            client.drain(timeout=min(2.0, max(0.2, timeout / 10)))
+            event_observer_drained = True
+        except (HarnessError, OSError, subprocess.SubprocessError):
+            pass
         if applied_fault is not None:
             fault_restore_error = applied_fault.restore()
         client.close()
@@ -529,8 +492,11 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
 
     duration_ms = int((time.monotonic() - started) * 1000)
     tool_calls = _observed_tool_calls(client)
-    event_gap = _observed_event_gap(client)
-    if event_gap is not None:
+    observation_receipt = event_observation.observe_notifications(
+        client.notifications, drained=event_observer_drained
+    )
+    agent_terminal = terminal
+    if observation_receipt["event_gap_count"]:
         # The observation has a hole in it. The trial is unmeasured: it says
         # nothing about the candidate, and it is never counted as one.
         terminal = "infrastructure_error"
@@ -602,6 +568,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         "binary_sha256": spec.binary_sha256,
         "source_revision": spec.revision,
         "terminal": terminal,
+        "agent_terminal": agent_terminal,
         "stop_reason": stop_reason,
         "duration_ms": duration_ms,
         "tool_call_count": len(tool_calls),
@@ -613,7 +580,12 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         "solved": solved,
         "repeated_identical_failure": _repeated_identical_failure(tool_calls),
         "fault": fault_receipt,
-        "event_gap": event_gap,
+        "event_gap": observation_receipt,
+        "attempt_id": f"{case.case_id}:0",
+        "measurement_failures": observation_receipt["event_gap_count"],
+        "measurement_retry_state": (
+            "unresolved" if observation_receipt["event_gap_count"] else "not_needed"
+        ),
         "control_exercised": _control_exercised({"fault": fault_receipt,
                                                  "repeated_identical_failure":
                                                  _repeated_identical_failure(tool_calls)}),

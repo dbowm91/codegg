@@ -909,6 +909,33 @@ mod tests {
     }
 
     #[test]
+    fn replay_preserves_a_failed_tool_terminal() {
+        let envelope = EventEnvelope {
+            protocol_version: 1,
+            event_seq: 8,
+            timestamp_ms: 1_700_000_000_001,
+            session_id: Some("s1".into()),
+            turn_id: Some("turn-1".into()),
+            payload: CoreEvent::ToolCompleted {
+                session_id: "s1".into(),
+                turn_id: Some("turn-1".into()),
+                tool_id: "tool-call-1".into(),
+                output: "Error: file not found".into(),
+                success: false,
+            },
+        };
+        let projected = projection_events_from_core(&envelope);
+        assert!(projected.iter().any(|(_, event)| matches!(
+            &event.payload,
+            ProjectionEvent::ToolCompleted {
+                tool_id,
+                success: false,
+                ..
+            } if tool_id == "tool-call-1"
+        )));
+    }
+
+    #[test]
     fn job_lifecycle_projection_uses_the_trusted_event_envelope_owner() {
         let envelope = EventEnvelope {
             protocol_version: 1,

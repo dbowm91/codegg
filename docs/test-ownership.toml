@@ -570,6 +570,13 @@ paths = [
 ]
 targets = ["macos_native_shared_checkout_containment"]
 
+# Headless entry points must bind workspace tools and broker policy to the same root.
+[[groups]]
+id = "root_headless_workspace_path_policy"
+member = "codegg"
+paths = ["src/exec.rs", "src/main.rs", "src/tool/mod.rs"]
+targets = ["exec_workspace_path_policy"]
+
 # The contained managed-worktree creation (C008): the creation seam, the
 # contained child, the grant it runs with, and the mount view. The hosted
 # Linux qualification lane names it by target name.

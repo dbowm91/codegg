@@ -34,15 +34,13 @@ use super::common::scripted_provider::ScriptedProvider;
 // HARNESS DOCUMENTATION
 // =============================================================================
 //
-// This test module provides a harness for testing AgentLoop behavior with
-// scripted providers and fake tools. Use this harness to verify transcript
-// validity, tool execution, permissions, retries, follow-ups, and compaction.
+// This test module harnesses AgentLoop with scripted providers and fake
+// tools: transcript validity, tool execution, permissions, retries, and compaction.
 //
 // HOW TO SCRIPT PROVIDER TURNS
 // ----------------------------
-// Create a ScriptedProvider with a vec of response vecs. Each inner vec represents
-// one provider turn (the response to one stream() call). The harness automatically
-// advances to the next response on each provider call.
+// Create a ScriptedProvider with a vec of response vecs. Each inner vec is one
+// provider turn; the harness advances to the next response on each call.
 //
 // Example:
 //   let responses = vec![
@@ -678,6 +676,16 @@ pub async fn build_test_agent_loop_with_pool(
     tool_registry: ToolRegistry,
     pool: Option<sqlx::SqlitePool>,
 ) -> AgentLoop {
+    build_test_agent_loop_with_pool_and_config(provider, tool_registry, pool, Config::default())
+        .await
+}
+
+pub async fn build_test_agent_loop_with_pool_and_config(
+    provider: Box<dyn Provider>,
+    tool_registry: ToolRegistry,
+    pool: Option<sqlx::SqlitePool>,
+    config: Config,
+) -> AgentLoop {
     let agents = vec![Agent {
         git_read_only: false,
         name: "build".to_string(),
@@ -719,8 +727,6 @@ pub async fn build_test_agent_loop_with_pool(
             ],
             path_rules: vec![],
         });
-
-    let config = Config::default();
 
     let workspace_root = std::env::current_dir()
         .expect("test workspace root")
@@ -3337,9 +3343,14 @@ async fn test_missing_tool_produces_error_result() {
 
     let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry).await;
 
+    let session_id = format!("missing-tool-terminal-{}", uuid::Uuid::new_v4());
+    agent_loop.set_session_id(&session_id);
+    let mut event_collector = EventCollector::with_session(session_id);
+
     let request = make_chat_request("Use nonexistent_tool");
     let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request).await;
     assert!(result.is_ok(), "Loop should continue after missing tool");
+    event_collector.collect();
 
     let requests = scripted_provider.get_requests().await;
     assert!(requests.len() >= 2, "Should have at least 2 provider calls");
@@ -3370,6 +3381,15 @@ async fn test_missing_tool_produces_error_result() {
     assert_tool_result_with_id(&second_request.messages, "call_1", Some("not found"));
     assert_assistant_tool_call_precedes_result(&second_request.messages, "call_1");
     assert_no_orphan_tool_results(&second_request.messages);
+    let terminal = event_collector
+        .find_event(
+            |event| matches!(event, AppEvent::ToolResult { tool_id, .. } if tool_id == "call_1"),
+        )
+        .expect("the failed call must publish a native ToolResult");
+    assert!(
+        matches!(terminal, AppEvent::ToolResult { success: false, .. }),
+        "a missing tool is a typed failure terminal, not a completed success: {terminal:?}"
+    );
 }
 
 #[tokio::test]
@@ -5578,11 +5598,6 @@ async fn task_tool_status_get_group_and_cross_session_contracts_are_model_visibl
                 arguments: serde_json::json!({"action":"status", "run_id":run_id}),
             }),
             ChatEvent::ToolCall(ToolCall {
-                id: "task-wait".to_string().into(),
-                name: "task".to_string().into(),
-                arguments: serde_json::json!({"action":"wait", "run_id":run_id, "timeout_ms":10}),
-            }),
-            ChatEvent::ToolCall(ToolCall {
                 id: "task-get".to_string().into(),
                 name: "task".to_string().into(),
                 arguments: serde_json::json!({"action":"get", "task_id":task_id}),
@@ -5592,6 +5607,24 @@ async fn task_tool_status_get_group_and_cross_session_contracts_are_model_visibl
                 name: "task".to_string().into(),
                 arguments: serde_json::json!({"action":"status_group", "group_id":group_id}),
             }),
+            ChatEvent::Finish {
+                stop_reason: "tool_calls".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![
+            // A blocking wait may not share a batch with other work: own turn.
+            ChatEvent::ToolCall(ToolCall {
+                id: "task-wait".to_string().into(),
+                name: "task".to_string().into(),
+                arguments: serde_json::json!({"action":"wait", "run_id":run_id, "timeout_ms":10}),
+            }),
+            ChatEvent::Finish {
+                stop_reason: "tool_calls".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![
             ChatEvent::ToolCall(ToolCall {
                 id: "task-group-wait".to_string().into(),
                 name: "task".to_string().into(),
@@ -5643,21 +5676,30 @@ async fn task_tool_status_get_group_and_cross_session_contracts_are_model_visibl
     assert!(tool_results
         .iter()
         .any(|(id, output)| id == "task-get" && output.contains("fixture-result-private-marker")));
+    let reports_completed = |output: &str| {
+        output.contains("Status: completed") || output.contains("Run is terminal: completed")
+    };
     assert!(
         tool_results
             .iter()
             .any(|(id, output)| id == "task-status" && output.contains("Status: completed")),
         "status output was not completed: {tool_results:?}"
     );
-    assert!(tool_results
-        .iter()
-        .any(|(id, output)| id == "task-wait" && output.contains("Status: completed")));
+    assert!(
+        tool_results
+            .iter()
+            .any(|(id, output)| id == "task-wait" && reports_completed(output)),
+        "wait output did not report completion: {tool_results:?}"
+    );
     assert!(tool_results
         .iter()
         .any(|(id, output)| id == "task-group-status" && output.contains("Status: completed")));
-    assert!(tool_results
-        .iter()
-        .any(|(id, output)| id == "task-group-wait" && output.contains("Status: completed")));
+    assert!(
+        tool_results
+            .iter()
+            .any(|(id, output)| id == "task-group-wait" && reports_completed(output)),
+        "group wait output did not report completion: {tool_results:?}"
+    );
 
     let attacker_tool = TaskTool::new(
         Arc::new(tokio::sync::Mutex::new(TaskStore::new())),
@@ -6573,13 +6615,12 @@ fn test_default_registry_includes_lsp_tool() {
 // tool calls through `ToolRegistry::execute_capture()` (which in turn
 // calls `Tool::execute_structured`) rather than the legacy
 // `Tool::execute` path. The recording tool overrides
-// `execute_structured`; if the loop ever bypasses the structured path
-// and calls `execute` directly, the counter will not increment and the
-// test will fail.
+// `execute_structured`; if the loop ever bypasses it, the counter will not
+// increment and the test will fail.
 //
 // They also lock down the model-facing shape of the tool result:
-// `Message::Tool::content` is the raw tool output string with no
-// provenance JSON envelope.
+// `Message::Tool::content` is the raw tool output, with no provenance
+// JSON envelope.
 //
 // No network, providers, MCP servers, or LSP servers are required.
 
@@ -6759,8 +6800,8 @@ async fn test_live_dispatcher_uses_execute_capture() {
         "ToolExecutionContext::backend should be resolved by the dispatcher"
     );
 
-    // The model-facing tool result must be the raw string output
-    // (not a structured JSON envelope containing provenance).
+    // The model-facing tool result must be the raw string output, not a
+    // structured JSON envelope containing provenance.
     let requests = scripted_provider.get_requests().await;
     assert!(requests.len() >= 2, "expected at least 2 provider calls");
     let tool_message = requests[1]
@@ -6774,9 +6815,11 @@ async fn test_live_dispatcher_uses_execute_capture() {
             _ => None,
         })
         .expect("expected Message::Tool with tool_call_id=call_1 in second request");
+    // The projection appends a "do not re-fetch" hint, so the payload must be
+    // *present*, not last.
     assert!(
-        tool_message.ends_with(r#"{"value":"hello"}"#),
-        "Model-facing tool result should preserve the raw tool payload at the end; got: {}",
+        tool_message.contains(r#"{"value":"hello"}"#),
+        "Model-facing tool result should preserve the raw tool payload; got: {}",
         tool_message
     );
     for forbidden in [

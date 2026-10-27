@@ -1173,6 +1173,26 @@ mod tests {
     }
 
     #[test]
+    fn failed_tool_result_maps_to_failed_core_terminal() {
+        let event = map_app_event_to_core_event(crate::bus::events::AppEvent::ToolResult {
+            session_id: "session-failure".into(),
+            tool_id: "tool-call-failure".into(),
+            tool_name: "read".into(),
+            output: "Error: file not found".into(),
+            success: false,
+        })
+        .expect("tool result maps to a core event");
+        assert!(matches!(
+            event,
+            CoreEvent::ToolCompleted {
+                tool_id,
+                success: false,
+                ..
+            } if tool_id == "tool-call-failure"
+        ));
+    }
+
+    #[test]
     fn test_run_progress_maps_to_core_event() {
         let ev = map_app_event_to_core_event(crate::bus::events::AppEvent::TestRunProgress {
             session_id: "s1".into(),

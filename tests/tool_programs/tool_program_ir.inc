@@ -42,7 +42,7 @@ fn ir_tool_call_produces_construct_and_execute() {
 
 #[test]
 fn ir_parallel_produces_parallel_instructions() {
-    let src = "r = parallel({\"t\": 1}, {\"t\": 2})\n";
+    let src = "r = parallel({\"tool\": \"read\", \"path\": \"src/main.rs\"}, {\"tool\": \"grep\", \"pattern\": \"TODO\"})\n";
     let result = compile_program(src).unwrap();
     assert!(result
         .ir

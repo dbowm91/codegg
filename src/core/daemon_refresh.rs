@@ -1320,9 +1320,10 @@ mod tests {
         };
 
         let daemon = CoreDaemon::new(None, None, None);
+        let workspace_root = tempfile::tempdir().expect("create workspace root");
         let workspace = daemon
             .workspaces
-            .get_or_register(std::path::Path::new("/tmp"))
+            .get_or_register(workspace_root.path())
             .await
             .expect("register workspace");
         let spec = NewJob {
@@ -1385,9 +1386,10 @@ mod tests {
     #[tokio::test]
     async fn session_projection_snapshot_includes_in_process_live_child_instances() {
         let daemon = CoreDaemon::new(None, None, None);
+        let workspace_root = tempfile::tempdir().expect("create workspace root");
         let workspace = daemon
             .workspaces
-            .get_or_register(std::path::Path::new("/tmp"))
+            .get_or_register(workspace_root.path())
             .await
             .expect("register workspace");
         let runtime = daemon.bind_runtime(

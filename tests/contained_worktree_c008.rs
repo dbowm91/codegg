@@ -23,15 +23,14 @@ use std::sync::{Arc, Mutex};
 // `-D warnings`. The families bind it the same way.
 pub mod common;
 
-use codegg::git_contained_worktree::{
-    build_worktree_grant, obtained_write_root_is_present, ContainedGitWorktreeCreator,
-    WorktreeChildPaths, WorktreeChildStep, WorktreeLaunchTiers,
-};
-// The native proof is the only consumer of the child-launch composition, and
-// it is Linux-only, so the import carries the same gate. Without it the
-// import is unused on every other platform, which is a clippy error.
+use codegg::git_contained_worktree::{obtained_write_root_is_present, ContainedGitWorktreeCreator};
+// The grant, the child step, the launch tiers, the child-path fixture and the
+// child-launch composition are read only by the Linux-gated proofs below.
 #[cfg(target_os = "linux")]
-use codegg::git_contained_worktree::compose_worktree_child_launch;
+use codegg::git_contained_worktree::{
+    build_worktree_grant, compose_worktree_child_launch, WorktreeChildPaths, WorktreeChildStep,
+    WorktreeLaunchTiers,
+};
 use codegg_core::worktree_service::{
     ContainedWorktreeCreator, ContainedWorktreeOutcome, ContainedWorktreeRequest,
     CreateWorktreeRequest, WorktreeService, WorktreeServiceError,
@@ -121,6 +120,7 @@ fn create_request(repository_root: &Path) -> CreateWorktreeRequest {
 /// The administration root is created first — the grant names it, so it has to
 /// exist before the launch — and the checkout is created empty, because Git
 /// refuses to create a worktree in a non-empty directory.
+#[cfg(target_os = "linux")]
 fn child_paths(
     repository: &Path,
     checkout: &Path,
@@ -163,6 +163,7 @@ fn child_paths(
 /// the **shared** administration root — the parent of every linked worktree's
 /// own administration directory — and the repository's Git directory is
 /// readable and immutable.
+#[cfg(target_os = "linux")]
 #[test]
 fn the_grant_names_only_the_shared_administration_root() {
     let workspace = tempfile::tempdir().expect("workspace");
@@ -311,6 +312,7 @@ fn the_grant_names_only_the_shared_administration_root() {
 /// compares the roots it knows about. The **count** is what catches that, and
 /// the count is the property ADR-0048 clause 3 states and
 /// `scripts/check_contained_worktree_grant.py` enforces statically.
+#[cfg(target_os = "linux")]
 #[test]
 fn the_grant_writes_exactly_one_path_under_the_git_directory() {
     let workspace = tempfile::tempdir().expect("workspace");
@@ -879,8 +881,7 @@ fn the_git_execution_policy_is_unchanged() {
 ///
 /// The checkout and the administration directory are both created *after* the
 /// grant is composed, so a resolution that demanded every component to exist
-/// would fail before the child ever ran. That is the defect the hosted lane
-/// caught, and this is its regression: the creator must reach the launch,
+/// would fail before the child ever ran. The creator must reach the launch,
 /// whatever this host can or cannot enforce.
 ///
 /// The test does not care whether the launch then succeeds. A host that cannot

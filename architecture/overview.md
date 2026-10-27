@@ -596,7 +596,7 @@ fifth reconciliations recorded. The full reconciliation is in
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 354 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Integration test files | 355 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
 | Guard scripts (all) | 102 | `scripts/check_*` — every guard the repository ships |
 | CI guard scripts | 68 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
@@ -630,13 +630,15 @@ below was **re-measured** against its own listed `Source` with
 - *TUI state modules* is **34** (35 `.rs` files incl. `mod.rs`) — the new
   `src/tui/app/state/transcript_cache.rs`, the delegated tab's bounded
   per-tab paging cache.
-- *Integration test files* is **354** (`tests/*.rs` + `tests/*/*.inc`, with the
+- *Integration test files* is **355** (`tests/*.rs` + `tests/*/*.inc`, with the
   `tests/common/` helper tree excluded) — by **three**: the new
   `tests/core_daemon/delegated_transcript_m002.inc`,
   `tests/projection_replay/delegated_transcript_advance.inc` and
   `tests/tui_render/transcript_follow.inc`. All three sit inside the
   existing `core_daemon`, `projection_replay` and `tui_render` families, so
-  the root package's **test-target** count did **not** move.
+  the root package's **test-target** count did **not** move. The absolute
+  figure is re-measured on the merged tree (`80171f452`), which carries one
+  further test file from `main` beyond this line's own three.
 - *Distinct production tool names* is **78** — **not** moved by this line: it
   adds no `impl Tool for` block and touches no file under `src/tool/`. The
   row read **75** and the tree already held **78** at `HEAD`, so the **three**
@@ -939,7 +941,7 @@ merged tree and **not** incremented from either parent:
   **56** (which added `command_catalog` and `frontend_action`) plus this line's
   **two** delegated-run modules. Both parents measure **56**; the merged tree
   measures **58**.
-- *Integration test files* is **351** (`tests/*.rs` + `tests/*/*.inc`, with the
+- *Integration test files* is **352** (`tests/*.rs` + `tests/*/*.inc`, with the
   `tests/common/` helper tree excluded) — the base **342**, plus this line's
   **eight** and `main`'s **one**, with no overlap.
 - *Guard scripts (all)* is **102** (`ls scripts/check_*`) — the base **97**,

@@ -187,13 +187,33 @@ errors, and those are repaired. The plan's "13" is locally reproducible as 12 un
 13 under the CI's Rust 1.99 (the `double_must_use` lint itself only exists on the newer toolchain),
 which is consistent with the CI run's 16 = 13 + 3.
 
-**The branch against main.** `git rev-list --left-right --count origin/main...HEAD` reports
-**5 behind, 15 ahead**: `origin/main` advanced to `09dc761c7` (PR #204) after this branch was cut.
-`git merge-tree --write-tree --name-only origin/main HEAD` reports **three conflicting files** —
-`docs/comment-budget.toml`, `src/tool/edit.rs` and `src/test_runner/runner.rs` — and PR #204 has
-already repaired six of the nine lint files with the same mechanical fixes, so those six are now
-byte-identical to main. The finding and its resolution are in §10. PR #203 remains **open and
-draft**; nothing is merged and no merge readiness is claimed.
+**The branch against main.** `origin/main` was **merged into this branch** at `80171f45295b`
+(2026-10-27). Before the merge the branch was **39 behind and 17 ahead**, and
+`git merge-tree --write-tree --name-only origin/main HEAD` reported **five conflicting files** —
+`architecture/overview.md`, `docs/comment-budget.toml`, `plans/registry.md`,
+`src/test_runner/runner.rs` and `src/tool/edit.rs`. All five were resolved:
+
+- `src/tool/edit.rs` and `src/test_runner/runner.rs` take **main's version**. Both were the
+  branch's own `type_complexity` / `field_reassign_with_default` lint repairs, and `main` had
+  already landed the equivalent repair in its own form; taking main's drops the branch's
+  superseded copy rather than keeping a second spelling of the same fix.
+- `docs/comment-budget.toml` is re-banked on the merged tree with the sanctioned mechanism
+  (`python3 scripts/check_comment_budget.py --bank`): **130480** comment lines, **1153425** words,
+  ratio **0.1344**.
+- `plans/registry.md` keeps **both** sides' rows — the registry's tables are cumulative, and each
+  side contributed its own subsystem rows rather than editing the other's.
+- `architecture/overview.md` keeps the branch's delegated-line count reconciliation and re-measures
+  the one contested cell on the merged tree (`Integration test files` = **355**), as that document's
+  own rule requires.
+
+The merge was necessary because the branch had fallen far enough behind that its **hosted CI was
+red on inherited failures**, not on anything this line introduced: the exact-head CI run
+`40539311313` failed on one stale test assertion in `src/search_backend/eggsearch.rs` that `main`
+had already repaired in `baea91a05` ("align search projection test defaults"), and the local
+`--no-fail-fast` sweep of the pre-merge tree showed **33** failures, none of them in the
+delegated-transcript surface. Merging `main` into the **branch** brings those fixes in; it does
+**not** merge PR #203 into `main`. PR #203 remains **open and draft**, and no merge readiness is
+claimed.
 
 **Hosted receipts.** See the table in §10 and the PR summary. They are fetched, not predicted.
 
@@ -280,7 +300,7 @@ with its counts.
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
 | medium | The hosted CI, Desktop E2E and platform workflows for the pushed head must be fetched and observed. This record is written before that fetch completes. | The implementation is locally green on the CI toolchain, but the hosted receipt is the plan's own gate for C002 | Fetch the runs for the pushed head and record the observed outcome here and in the PR summary. If a required workflow is red, classify and reproduce it — do not declare green |
-| medium | The branch conflicts with `origin/main` in three files. `origin/main` advanced to `09dc761c7` (PR #204) **after** this branch was cut, and that PR already repaired six of the nine lint files with the same mechanical fixes — `src/eggsact/adapter.rs`, `src/search_backend/framing.rs`, `src/test_runner/index.rs`, `src/tool/deterministic.rs`, `src/tool/skill.rs` and `src/tool/task.rs` are now byte-identical to main. The conflicts are `docs/comment-budget.toml`, `src/tool/edit.rs` and `src/test_runner/runner.rs`, where main's version of the last two already carries the lint fix in its own form. | The branch is 5 commits behind main and 15 ahead. The merge would need these three files resolved by taking main's version (the lint fix is already upstream) and re-banking `docs/comment-budget.toml` on the merged tree, because the manifest recorded the branch's own measurement | Resolve at merge time, before PR #203's merge gate: take main's version of `src/tool/edit.rs` and `src/test_runner/runner.rs`, re-bank the comment budget, and drop this branch's now-redundant copies of the six identical lint fixes. **No merge is performed or claimed by this record** |
+| medium | The branch had fallen **39 commits behind** `origin/main`, and the consequence was a **red hosted CI that this line did not cause**: the exact-head run `40539311313` failed on one stale assertion in `src/search_backend/eggsearch.rs` that `main` had already repaired in `baea91a05`, and the pre-merge local `--no-fail-fast` sweep showed **33** failures, none in the delegated-transcript surface. `main` was therefore **merged into this branch** at `80171f45295b`; the five merge conflicts were resolved as §4 records. | The branch now carries `main`'s fixes, so the inherited failures are gone, but the branch's own nine lint-repair files are now largely **superseded** by `main`'s — only `src/test_runner/index.rs` and `src/tool/task.rs` remain byte-identical, and `main`'s `src/tool/deterministic.rs` additionally drops a pre-existing redundant `return true;` that this line deliberately preserved, because the plan admits only semantics-preserving repairs | **Discharged by the merge.** The merge resolves the conflicts, re-banks the comment budget on the merged tree, and keeps both sides' registry rows. What remains for PR #203's own merge gate is out of this milestone's scope: the branch must still be reviewed and merged as a PR, and this record claims **no merge readiness** |
 | low | The lint inventory is 12 diagnostics under Rust 1.89 and 13 under Rust 1.99; the plan says 13 | None: the difference is the `double_must_use` lint's own age, and the CI run's 16 = 13 + 3 is consistent | none |
 | low | The full workspace sweep is not green on this branch: the prior baseline's 30 failures and 1 timeout are inherited | Disclosed, not concealed; none of them is in the delegated-transcript surface, and the branch's `codegg --lib` failures are a strict subset of the baseline's | none for C002; the baseline sweep is a separate, registered concern |
 | low | The reconnect test models the projection renegotiation with the client's own capabilities | A test fixture simplification: it restores the same negotiated mode and version the daemon's handshake would | none |

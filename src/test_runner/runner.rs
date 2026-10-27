@@ -1538,7 +1538,7 @@ mod tests {
     fn shim_advice_names_toolchain_diagnostics_not_shim_path() {
         let state = TestParseState {
             toolchain_shim_seen: true,
-            ..Default::default()
+            ..TestParseState::default()
         };
         let report = build_report(
             &SupervisorResult::Completed { exit_code: Some(1) },

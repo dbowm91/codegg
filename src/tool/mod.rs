@@ -1403,10 +1403,19 @@ impl ToolRegistry {
         config: &crate::config::schema::Config,
         search_runtime: crate::search_backend::SearchRuntimeContext,
     ) -> Self {
+        Self::with_config_and_search_runtime_for_workspace(config, search_runtime, None)
+    }
+
+    pub fn with_config_and_search_runtime_for_workspace(
+        config: &crate::config::schema::Config,
+        search_runtime: crate::search_backend::SearchRuntimeContext,
+        workspace_root: Option<std::path::PathBuf>,
+    ) -> Self {
         let tool_backends = ToolBackendConfig::from_config(config);
         let integrated = integrated_config::resolve_integrated_config(config);
         Self::with_options(ToolRegistryOptions {
             git_read_only: None,
+            workspace_root,
             tool_advisor: config.tool_advisor.clone(),
             decision_engine: config.decision_engine.clone(),
             tool_backends,
@@ -1989,6 +1998,65 @@ mod lsp_profile_isolation_tests {
 }
 
 #[cfg(test)]
+mod headless_workspace_binding_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn configured_headless_registry_binds_workspace_tools_to_the_invocation_root() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let outside = tempfile::tempdir().expect("outside workspace");
+        std::fs::write(workspace.path().join("inside.txt"), "inside")
+            .expect("write in-workspace fixture");
+        let outside_path = outside.path().join("outside.txt");
+        std::fs::write(&outside_path, "outside").expect("write outside fixture");
+        let config = crate::config::schema::Config::default();
+        let registry = ToolRegistry::with_config_and_search_runtime_for_workspace(
+            &config,
+            crate::search_backend::SearchRuntimeContext::default(),
+            Some(workspace.path().to_path_buf()),
+        );
+        let read = registry.get("read").expect("read tool is registered");
+
+        let inside = read
+            .execute(serde_json::json!({"path": "inside.txt"}))
+            .await
+            .expect("relative in-workspace read is available");
+        assert!(inside.contains("inside"));
+
+        let outside_result = read
+            .execute(serde_json::json!({"path": outside_path.to_string_lossy()}))
+            .await;
+        assert!(
+            matches!(outside_result, Err(crate::error::ToolError::Permission(_))),
+            "headless workspace tools must refuse sibling paths: {outside_result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rootless_configured_registry_keeps_workspace_tools_fail_closed() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::write(workspace.path().join("inside.txt"), "inside").expect("write fixture");
+        let config = crate::config::schema::Config::default();
+        let registry = ToolRegistry::with_config_and_search_runtime(
+            &config,
+            crate::search_backend::SearchRuntimeContext::default(),
+        );
+        let result = registry
+            .get("read")
+            .expect("read tool is registered")
+            .execute(serde_json::json!({"path": workspace.path().join("inside.txt")}))
+            .await;
+        assert!(
+            matches!(
+                result,
+                Err(crate::error::ToolError::MissingWorkspaceRoot { .. })
+            ),
+            "a rootless registry must not adopt a path supplied by the model: {result:?}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod python_submission_wiring_tests {
     use super::*;
     use crate::error::ToolError;
@@ -2331,8 +2399,13 @@ mod bash_workdir_wiring_tests {
             .execute(serde_json::json!({ "path": outside_file.to_string_lossy() }))
             .await;
 
+        let refused = match &result {
+            Err(crate::error::ToolError::Permission(_)) => true,
+            Err(crate::error::ToolError::Execution(message)) => message.starts_with("refused:"),
+            _ => false,
+        };
         assert!(
-            matches!(result, Err(crate::error::ToolError::Permission(_))),
+            refused,
             "an absolute path outside the workspace must stay refused; got {:?}",
             result.err()
         );

@@ -315,6 +315,12 @@ exactly one current frame; unrelated system/developer instructions are
 preserved. `compact_if_needed` additionally normalizes the legacy
 auto-compact path (which preserves all system messages) to one frame.
 
+At a turn boundary, C001 stores a versioned exact identity and covered message
+count for the provider-visible prefix that compaction actually replaced. The
+next turn drops that prefix only on an exact match; the frontend transcript and
+durable session history remain unchanged. Ambiguous identities fail closed,
+and the installed continuation is placed before the current user message.
+
 Hybrid correctness: `build_programmatic_state_with_baseline` and
 `semantic_checkpoint_with_baseline` receive the authoritative snapshot
 before enrichment, so the model never sees `"unknown"`/`"none"` for a

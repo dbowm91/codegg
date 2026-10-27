@@ -155,6 +155,20 @@ run_guards() {
     echo "==> python3 scripts/check_daemon_cwd_usage.py"
     (cd "$REPO_ROOT" && python3 scripts/check_daemon_cwd_usage.py)
 
+    # Recovery observation fields must have a production writer. The dead
+    # terminal-stall API and parallel-limit knob stay removed under ADR-0040.
+    echo "==> python3 scripts/check_progress_recovery_observation.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_progress_recovery_observation.py --self-test)
+
+    echo "==> python3 scripts/check_progress_recovery_observation.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_progress_recovery_observation.py)
+
+    echo "==> python3 scripts/check_headless_workspace_registry_binding.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_headless_workspace_registry_binding.py --self-test)
+
+    echo "==> python3 scripts/check_headless_workspace_registry_binding.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_headless_workspace_registry_binding.py)
+
     # The scratch reclaim path decides on four facts — containment, real
     # directory, ownership, and the owner record — and it removes a tree only
     # when it holds no entries at all. A reclaim failure that wears the

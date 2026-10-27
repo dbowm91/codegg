@@ -34,6 +34,7 @@ class FixtureProvider:
         self.stalled = threading.Event()
         self.release_stall = threading.Event()
         self.request_summaries: list[dict[str, Any]] = []
+        self.emitted_calls: list[dict[str, Any]] = []
         self._lock = threading.Lock()
         owner = self
 
@@ -129,6 +130,23 @@ class FixtureProvider:
                             return
                         fixture_call["arguments"] = json.loads(json.dumps(fixture_call["arguments"]).replace(
                             "{artifact_handle}", handle.group(1)))
+                    if "{job_id}" in json.dumps(fixture_call):
+                        job_ids = re.findall(
+                            r"background test submitted as job ([A-Za-z0-9_-]+)",
+                            "\n".join(tool_messages))
+                        if not job_ids:
+                            self.send_error(422, "expected a native background-test job id in prior tool output")
+                            return
+                        for previous in reversed(owner.emitted_calls):
+                            if previous.get("name") == "test" and "job_id" not in previous:
+                                previous["job_id"] = job_ids[-1]
+                                break
+                        fixture_call["arguments"] = json.loads(json.dumps(fixture_call["arguments"]).replace(
+                            "{job_id}", job_ids[-1]))
+                    emitted = {"name": fixture_call["name"]}
+                    if fixture_call["name"] == "job":
+                        emitted["job_id"] = fixture_call["arguments"].get("job_id")
+                    owner.emitted_calls.append(emitted)
                     chunks = [
                         {"id": f"fixture-{call}", "object": "chat.completion.chunk",
                          "choices": [{"index": 0,

@@ -351,12 +351,10 @@ struct EditOutcome {
     end_line: usize,
 }
 
-/// Named alias for the strategy matcher signature, keeping the strategy
-/// table below readable.
-type EditStrategy = fn(&str, &str, &str) -> Option<EditOutcome>;
+type EditStrategy = (&'static str, fn(&str, &str, &str) -> Option<EditOutcome>);
 
 fn try_edit(content: &str, old_string: &str, new_string: &str) -> Option<EditOutcome> {
-    let strategies: &[(&'static str, EditStrategy)] = &[
+    let strategies: &[EditStrategy] = &[
         ("exact_match", exact_match),
         ("line_trimmed_match", line_trimmed_match),
         ("whitespace_normalized_match", whitespace_normalized_match),

@@ -247,6 +247,328 @@ impl RolloverSourceRevisions {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderVisiblePrefixIdentity {
+    pub version: u32,
+    pub message_count: usize,
+    pub sha256: String,
+}
+
+pub const PROVIDER_VISIBLE_PREFIX_IDENTITY_VERSION: u32 = 2;
+const PROVIDER_VISIBLE_PREFIX_IDENTITY_DOMAIN: &[u8] = b"codegg/provider-visible-prefix/v2\0";
+
+fn append_identity_field(output: &mut Vec<u8>, value: &[u8]) -> Option<()> {
+    output.extend_from_slice(&u64::try_from(value.len()).ok()?.to_be_bytes());
+    output.extend_from_slice(value);
+    Some(())
+}
+
+fn append_identity_content_parts(
+    output: &mut Vec<u8>,
+    parts: &[codegg_protocol::dto::ContentPart],
+) -> Option<()> {
+    output.extend_from_slice(&u64::try_from(parts.len()).ok()?.to_be_bytes());
+    for part in parts {
+        match part {
+            codegg_protocol::dto::ContentPart::Text { text } => {
+                output.push(b't');
+                append_identity_field(output, text.as_bytes())?;
+            }
+            codegg_protocol::dto::ContentPart::Image { image_url } => {
+                output.push(b'i');
+                append_identity_field(output, image_url.url.as_bytes())?;
+            }
+        }
+    }
+    Some(())
+}
+
+fn canonical_provider_message(message: &codegg_protocol::dto::ProviderMessage) -> Option<Vec<u8>> {
+    use codegg_protocol::dto::ProviderMessage;
+    let mut out = Vec::new();
+    match message {
+        ProviderMessage::System { .. } => return None,
+        ProviderMessage::User { content } => {
+            out.push(b'u');
+            append_identity_content_parts(&mut out, content)?;
+        }
+        ProviderMessage::Assistant {
+            content,
+            tool_calls,
+        } => {
+            out.push(b'a');
+            append_identity_content_parts(&mut out, content)?;
+            out.extend_from_slice(&u64::try_from(tool_calls.len()).ok()?.to_be_bytes());
+            for call in tool_calls {
+                out.push(b'c');
+                append_identity_field(&mut out, call.id.as_bytes())?;
+                append_identity_field(&mut out, call.name.as_bytes())?;
+                let arguments = serde_json::to_vec(&call.arguments).ok()?;
+                append_identity_field(&mut out, &arguments)?;
+            }
+        }
+        ProviderMessage::Tool {
+            tool_call_id,
+            content,
+        } => {
+            out.push(b'r');
+            append_identity_field(&mut out, tool_call_id.as_bytes())?;
+            append_identity_field(&mut out, content.as_bytes())?;
+        }
+    }
+    Some(out)
+}
+
+fn identity_seed(chain_base: Option<&ProviderVisiblePrefixIdentity>) -> Option<([u8; 32], usize)> {
+    use sha2::{Digest, Sha256};
+    match chain_base {
+        Some(base) if base.version == PROVIDER_VISIBLE_PREFIX_IDENTITY_VERSION => {
+            let bytes = hex::decode(&base.sha256).ok()?;
+            Some((bytes.try_into().ok()?, base.message_count))
+        }
+        Some(_) => None,
+        None => Some((
+            Sha256::digest(PROVIDER_VISIBLE_PREFIX_IDENTITY_DOMAIN).into(),
+            0,
+        )),
+    }
+}
+
+fn advance_identity(state: [u8; 32], encoded: &[u8]) -> Option<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(PROVIDER_VISIBLE_PREFIX_IDENTITY_DOMAIN);
+    hasher.update(state);
+    hasher.update(u64::try_from(encoded.len()).ok()?.to_be_bytes());
+    hasher.update(encoded);
+    Some(hasher.finalize().into())
+}
+
+pub fn provider_visible_prefix_identities(
+    messages: &[codegg_protocol::dto::ProviderMessage],
+) -> Option<Vec<ProviderVisiblePrefixIdentity>> {
+    provider_visible_prefix_identities_after(messages, None)
+}
+
+fn provider_visible_prefix_identities_after(
+    messages: &[codegg_protocol::dto::ProviderMessage],
+    chain_base: Option<&ProviderVisiblePrefixIdentity>,
+) -> Option<Vec<ProviderVisiblePrefixIdentity>> {
+    let (mut state, base_count) = identity_seed(chain_base)?;
+    let mut identities = Vec::with_capacity(messages.len());
+    for (index, message) in messages.iter().enumerate() {
+        let encoded = canonical_provider_message(message)?;
+        state = advance_identity(state, &encoded)?;
+        identities.push(ProviderVisiblePrefixIdentity {
+            version: PROVIDER_VISIBLE_PREFIX_IDENTITY_VERSION,
+            message_count: base_count.checked_add(index + 1)?,
+            sha256: hex::encode(state),
+        });
+    }
+    Some(identities)
+}
+
+pub fn matching_provider_prefix_count(
+    expected: &ProviderVisiblePrefixIdentity,
+    incoming_prefixes: &[ProviderVisiblePrefixIdentity],
+) -> Option<usize> {
+    if expected.version != PROVIDER_VISIBLE_PREFIX_IDENTITY_VERSION || expected.message_count == 0 {
+        return None;
+    }
+    let count = expected.message_count;
+    let actual = incoming_prefixes.get(count.checked_sub(1)?)?;
+    (actual.version == expected.version
+        && actual.message_count == count
+        && actual.sha256 == expected.sha256)
+        .then_some(count)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderPrefixReplacement {
+    Replaced {
+        message_count: usize,
+    },
+    RetainedMismatch {
+        expected_version: u32,
+        expected_message_count: usize,
+        incoming_identity_count: usize,
+    },
+}
+
+pub fn replace_provider_prefix<T>(
+    expected: &ProviderVisiblePrefixIdentity,
+    incoming_prefixes: &[ProviderVisiblePrefixIdentity],
+    messages: &mut Vec<T>,
+    offset: usize,
+) -> ProviderPrefixReplacement {
+    let count = matching_provider_prefix_count(expected, incoming_prefixes).filter(|count| {
+        offset
+            .checked_add(*count)
+            .is_some_and(|end| end <= messages.len())
+    });
+    if let Some(count) = count {
+        messages.drain(offset..offset + count);
+        ProviderPrefixReplacement::Replaced {
+            message_count: count,
+        }
+    } else {
+        ProviderPrefixReplacement::RetainedMismatch {
+            expected_version: expected.version,
+            expected_message_count: expected.message_count,
+            incoming_identity_count: incoming_prefixes.len(),
+        }
+    }
+}
+
+pub fn drop_matching_provider_prefix<T>(
+    expected: &ProviderVisiblePrefixIdentity,
+    incoming_prefixes: &[ProviderVisiblePrefixIdentity],
+    messages: &mut Vec<T>,
+    offset: usize,
+) -> Option<usize> {
+    match replace_provider_prefix(expected, incoming_prefixes, messages, offset) {
+        ProviderPrefixReplacement::Replaced { message_count } => Some(message_count),
+        ProviderPrefixReplacement::RetainedMismatch { .. } => None,
+    }
+}
+
+fn provider_content_to_dto(
+    parts: &[crate::provider::ContentPart],
+) -> Option<Vec<codegg_protocol::dto::ContentPart>> {
+    use codegg_protocol::dto::ContentPart as DtoPart;
+    parts
+        .iter()
+        .map(|part| match part {
+            crate::provider::ContentPart::Text { text } => Some(DtoPart::Text {
+                text: text.to_string(),
+            }),
+            crate::provider::ContentPart::Image { image_url } => Some(DtoPart::Image {
+                image_url: codegg_protocol::dto::ImageUrl {
+                    url: image_url.url.to_string(),
+                },
+            }),
+            crate::provider::ContentPart::Reasoning { text, .. } => Some(DtoPart::Text {
+                text: format!("[Reasoning]\\n{text}"),
+            }),
+        })
+        .collect()
+}
+
+fn frontend_projection_from_provider_messages(
+    messages: &[Message],
+) -> Option<Vec<codegg_protocol::dto::ProviderMessage>> {
+    use codegg_protocol::dto::{ProviderMessage as DtoMessage, ToolCall as DtoToolCall};
+    let mut projected = Vec::with_capacity(messages.len());
+    for message in messages {
+        match message {
+            Message::System { .. } => {}
+            Message::User { content } => projected.push(DtoMessage::User {
+                content: provider_content_to_dto(content)?,
+            }),
+            Message::Assistant {
+                content,
+                tool_calls,
+            } => projected.push(DtoMessage::Assistant {
+                content: provider_content_to_dto(content)?,
+                tool_calls: tool_calls
+                    .iter()
+                    .map(|call| DtoToolCall {
+                        id: call.id.to_string(),
+                        name: call.name.to_string(),
+                        arguments: call.arguments.clone(),
+                    })
+                    .collect(),
+            }),
+            Message::Tool {
+                tool_call_id,
+                content,
+            } => projected.push(DtoMessage::Tool {
+                tool_call_id: tool_call_id.to_string(),
+                content: content.to_string(),
+            }),
+        }
+    }
+    Some(projected)
+}
+
+pub fn compacted_provider_visible_prefix_identity(
+    source: &[Message],
+    compacted: &[Message],
+    peer_observations_present: bool,
+    frontend_user_controls_possible: bool,
+    chain_base: Option<&ProviderVisiblePrefixIdentity>,
+) -> Option<ProviderVisiblePrefixIdentity> {
+    if peer_observations_present || frontend_user_controls_possible {
+        return None;
+    }
+    if count_continuation_frames(compacted) == 0 {
+        return None;
+    }
+    let source = frontend_projection_from_provider_messages(source)?;
+    let compacted = frontend_projection_from_provider_messages(compacted)?;
+    let source_encoded = source
+        .iter()
+        .map(canonical_provider_message)
+        .collect::<Option<Vec<_>>>()?;
+    let compacted_encoded = compacted
+        .iter()
+        .map(canonical_provider_message)
+        .collect::<Option<Vec<_>>>()?;
+    let mut retained_suffix = 0usize;
+    while retained_suffix < source_encoded.len()
+        && retained_suffix < compacted_encoded.len()
+        && source_encoded[source_encoded.len() - retained_suffix - 1]
+            == compacted_encoded[compacted_encoded.len() - retained_suffix - 1]
+    {
+        retained_suffix += 1;
+    }
+    let covered_count = source.len().checked_sub(retained_suffix)?;
+    if covered_count == 0 {
+        return None;
+    }
+    let compacted_prefix_end = compacted_encoded.len().checked_sub(retained_suffix)?;
+    let compacted_without_suffix = &compacted_encoded[..compacted_prefix_end];
+    let mut search_from = 0usize;
+    let mut anchored_prefix_count = 0usize;
+    for row in source_encoded.iter().take(covered_count) {
+        let Some(relative_position) = compacted_without_suffix
+            .get(search_from..)?
+            .iter()
+            .position(|candidate| candidate == row)
+        else {
+            break;
+        };
+        search_from = search_from.checked_add(relative_position + 1)?;
+        anchored_prefix_count += 1;
+    }
+    if source_encoded[anchored_prefix_count..covered_count]
+        .iter()
+        .any(|row| {
+            compacted_without_suffix
+                .iter()
+                .any(|candidate| candidate == row)
+        })
+    {
+        return None;
+    }
+    provider_visible_prefix_identities_after(&source[..covered_count], chain_base)?.pop()
+}
+
+pub fn provider_visible_prefix_identity(
+    messages: &[codegg_protocol::dto::ProviderMessage],
+) -> Option<ProviderVisiblePrefixIdentity> {
+    if messages.is_empty() {
+        let (state, _) = identity_seed(None)?;
+        return Some(ProviderVisiblePrefixIdentity {
+            version: PROVIDER_VISIBLE_PREFIX_IDENTITY_VERSION,
+            message_count: 0,
+            sha256: hex::encode(state),
+        });
+    }
+    provider_visible_prefix_identities(messages)?.pop()
+}
+
 /// Deterministic digest over the pre-compaction source history for lineage
 /// debugging. Not a security boundary; the durable payload digest is.
 pub fn source_history_digest(messages: &[Message]) -> String {
@@ -706,6 +1028,7 @@ pub async fn prepare_candidate(
     turn_index: usize,
     existing_tool_handles: &[String],
     original_user: Option<String>,
+    provider_visible_prefix_identity: Option<ProviderVisiblePrefixIdentity>,
 ) -> Result<PreparedCandidate, String> {
     // Step C: select, materialize, and verify required evidence refs.
     let mut selected = crate::context::evidence::select_materializable_evidence(
@@ -743,7 +1066,13 @@ pub async fn prepare_candidate(
     // Build the durable payload: enriched snapshot + verified refs.
     let mut enriched = candidate.snapshot.clone();
     // Ensure the payload's recovery count matches verified handles.
-    let body = build_checkpoint_payload_body(&enriched, &selected, checkpoint_id);
+    let mut body = build_checkpoint_payload_body(&enriched, &selected, checkpoint_id);
+    if let (Some(identity), Some(map)) = (provider_visible_prefix_identity, body.as_object_mut()) {
+        map.insert(
+            "provider_visible_prefix_identity".to_string(),
+            serde_json::to_value(identity).unwrap_or(serde_json::Value::Null),
+        );
+    }
     let payload = codegg_core::session::continuation::ContinuationCheckpointPayload::new(body)
         .map_err(|e| format!("checkpoint payload rejected: {e}"))?;
     let checkpoint_bytes = payload.canonical_json().map(|s| s.len()).unwrap_or(0);
@@ -921,6 +1250,359 @@ pub fn degraded_fallback(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_visible_prefix_identity_is_exact_and_prefix_bounded() {
+        use codegg_protocol::dto::{ContentPart, ProviderMessage, ToolCall};
+        let source = vec![
+            ProviderMessage::User {
+                content: vec![ContentPart::Text { text: "ask".into() }],
+            },
+            ProviderMessage::Assistant {
+                content: vec![],
+                tool_calls: vec![ToolCall {
+                    id: "call-1".into(),
+                    name: "read".into(),
+                    arguments: serde_json::json!({"path":"a"}),
+                }],
+            },
+            ProviderMessage::Tool {
+                tool_call_id: "call-1".into(),
+                content: "result".into(),
+            },
+        ];
+        let identities = provider_visible_prefix_identities(&source).unwrap();
+        assert_eq!(identities.len(), source.len());
+        assert_ne!(identities[0].sha256, identities[1].sha256);
+        assert_ne!(identities[1].sha256, identities[2].sha256);
+        assert_eq!(
+            matching_provider_prefix_count(&identities[1], &identities),
+            Some(2)
+        );
+        let mut with_suffix = vec!["old-1", "old-2", "new-user", "new-tail"];
+        assert_eq!(
+            drop_matching_provider_prefix(&identities[1], &identities, &mut with_suffix, 0),
+            Some(2)
+        );
+        assert_eq!(with_suffix, vec!["new-user", "new-tail"]);
+        let mut mismatch_kept = vec!["old-1", "old-2", "suffix"];
+        let mut wrong_prefix = identities.clone();
+        wrong_prefix[1].sha256 = "mismatch".into();
+        assert_eq!(
+            matching_provider_prefix_count(&identities[1], &wrong_prefix),
+            None
+        );
+        assert_eq!(
+            replace_provider_prefix(&identities[1], &wrong_prefix, &mut mismatch_kept, 0),
+            ProviderPrefixReplacement::RetainedMismatch {
+                expected_version: identities[1].version,
+                expected_message_count: 2,
+                incoming_identity_count: wrong_prefix.len(),
+            }
+        );
+        assert_eq!(mismatch_kept, vec!["old-1", "old-2", "suffix"]);
+        let mut unsupported = identities[1].clone();
+        unsupported.version += 1;
+        assert_eq!(
+            matching_provider_prefix_count(&unsupported, &identities),
+            None
+        );
+        assert_eq!(
+            provider_visible_prefix_identity(&source[..2]).unwrap(),
+            identities[1]
+        );
+
+        let mut changed = source.clone();
+        changed[1] = ProviderMessage::Assistant {
+            content: vec![],
+            tool_calls: vec![ToolCall {
+                id: "call-1".into(),
+                name: "write".into(),
+                arguments: serde_json::json!({"path":"a"}),
+            }],
+        };
+        assert_ne!(
+            provider_visible_prefix_identity(&changed[..2])
+                .unwrap()
+                .sha256,
+            identities[1].sha256
+        );
+        let split_parts = vec![ProviderMessage::User {
+            content: vec![
+                ContentPart::Text { text: "a".into() },
+                ContentPart::Text { text: "b".into() },
+            ],
+        }];
+        let joined_part = vec![ProviderMessage::User {
+            content: vec![ContentPart::Text { text: "ab".into() }],
+        }];
+        assert_ne!(
+            provider_visible_prefix_identity(&split_parts)
+                .unwrap()
+                .sha256,
+            provider_visible_prefix_identity(&joined_part)
+                .unwrap()
+                .sha256
+        );
+        let mut changed_call = source.clone();
+        changed_call[1] = ProviderMessage::Assistant {
+            content: vec![],
+            tool_calls: vec![ToolCall {
+                id: "call-2".into(),
+                name: "read".into(),
+                arguments: serde_json::json!({"path":"b"}),
+            }],
+        };
+        assert_ne!(
+            provider_visible_prefix_identity(&changed_call[..2])
+                .unwrap()
+                .sha256,
+            identities[1].sha256
+        );
+        let changed_result = vec![
+            source[0].clone(),
+            source[1].clone(),
+            ProviderMessage::Tool {
+                tool_call_id: "call-1".into(),
+                content: "changed result".into(),
+            },
+        ];
+        assert_ne!(
+            provider_visible_prefix_identity(&changed_result)
+                .unwrap()
+                .sha256,
+            identities[2].sha256
+        );
+        assert!(provider_visible_prefix_identity(&[ProviderMessage::System {
+            content: "daemon".into()
+        }])
+        .is_none());
+    }
+
+    #[test]
+    fn two_turn_transcript_identity_covers_compacted_user_and_generated_rows() {
+        use crate::provider::{ContentPart as ProviderPart, Message as ProviderMessage, ToolCall};
+        use codegg_protocol::dto::{ContentPart, ProviderMessage as DtoMessage};
+
+        let source = vec![
+            ProviderMessage::User {
+                content: vec![ProviderPart::Text {
+                    text: "prior user".to_string().into(),
+                }],
+            },
+            ProviderMessage::Assistant {
+                content: vec![ProviderPart::Text {
+                    text: "prior answer".to_string().into(),
+                }],
+                tool_calls: vec![ToolCall {
+                    id: "call-1".to_string().into(),
+                    name: "read".to_string().into(),
+                    arguments: serde_json::json!({"path":"src/lib.rs"}),
+                }],
+            },
+            ProviderMessage::Tool {
+                tool_call_id: "call-1".to_string().into(),
+                content: "prior tool result".to_string().into(),
+            },
+            ProviderMessage::User {
+                content: vec![ProviderPart::Text {
+                    text: "turn-one user".to_string().into(),
+                }],
+            },
+            ProviderMessage::Assistant {
+                content: vec![ProviderPart::Text {
+                    text: "generated assistant".to_string().into(),
+                }],
+                tool_calls: vec![ToolCall {
+                    id: "call-2".to_string().into(),
+                    name: "read".to_string().into(),
+                    arguments: serde_json::json!({"path":"src/main.rs"}),
+                }],
+            },
+            ProviderMessage::Tool {
+                tool_call_id: "call-2".to_string().into(),
+                content: "generated tool result".to_string().into(),
+            },
+        ];
+        let next_user = DtoMessage::User {
+            content: vec![ContentPart::Text {
+                text: "turn-two user".into(),
+            }],
+        };
+        let dto_source = frontend_projection_from_provider_messages(&source).unwrap();
+        let mut second_turn = dto_source.clone();
+        second_turn.push(next_user.clone());
+        let prefixes = provider_visible_prefix_identities(&second_turn).unwrap();
+
+        let compacted_summary = vec![ProviderMessage::System {
+            content: "[codegg continuation state v1]\nbounded continuation frame"
+                .to_string()
+                .into(),
+        }];
+        let identity = compacted_provider_visible_prefix_identity(
+            &source,
+            &compacted_summary,
+            false,
+            false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(identity.message_count, source.len());
+        assert!(compacted_provider_visible_prefix_identity(
+            &source,
+            &compacted_summary,
+            true,
+            false,
+            None,
+        )
+        .is_none());
+        assert!(compacted_provider_visible_prefix_identity(
+            &source,
+            &compacted_summary,
+            false,
+            true,
+            None,
+        )
+        .is_none());
+        let mut submitted = second_turn.clone();
+        assert_eq!(
+            drop_matching_provider_prefix(&identity, &prefixes, &mut submitted, 0),
+            Some(source.len())
+        );
+        assert_eq!(
+            provider_visible_prefix_identity(&submitted).unwrap(),
+            provider_visible_prefix_identity(std::slice::from_ref(&next_user)).unwrap()
+        );
+
+        let turn_two_assistant = ProviderMessage::Assistant {
+            content: vec![ProviderPart::Text {
+                text: "turn-two assistant".to_string().into(),
+            }],
+            tool_calls: vec![ToolCall {
+                id: "call-3".to_string().into(),
+                name: "read".to_string().into(),
+                arguments: serde_json::json!({"path":"src/main.rs"}),
+            }],
+        };
+        let turn_two_tool = ProviderMessage::Tool {
+            tool_call_id: "call-3".to_string().into(),
+            content: "turn-two tool result".to_string().into(),
+        };
+        let second_source = vec![
+            ProviderMessage::User {
+                content: vec![ProviderPart::Text {
+                    text: "turn-two user".to_string().into(),
+                }],
+            },
+            turn_two_assistant.clone(),
+            turn_two_tool.clone(),
+        ];
+        let second_compacted = vec![
+            ProviderMessage::System {
+                content: "[codegg continuation state v1]\nnew bounded frame"
+                    .to_string()
+                    .into(),
+            },
+            turn_two_assistant.clone(),
+            turn_two_tool.clone(),
+        ];
+        let extended_identity = compacted_provider_visible_prefix_identity(
+            &second_source,
+            &second_compacted,
+            false,
+            false,
+            Some(&identity),
+        )
+        .unwrap();
+        assert_eq!(extended_identity.message_count, source.len() + 1);
+        let mut third_turn = second_turn.clone();
+        third_turn.push(DtoMessage::Assistant {
+            content: vec![ContentPart::Text {
+                text: "turn-two assistant".into(),
+            }],
+            tool_calls: vec![],
+        });
+        third_turn.push(DtoMessage::Tool {
+            tool_call_id: "call-3".into(),
+            content: "turn-two tool result".into(),
+        });
+        third_turn.push(DtoMessage::User {
+            content: vec![ContentPart::Text {
+                text: "turn-three user".into(),
+            }],
+        });
+        let third_prefixes = provider_visible_prefix_identities(&third_turn).unwrap();
+        assert_eq!(
+            matching_provider_prefix_count(&extended_identity, &third_prefixes),
+            Some(source.len() + 1)
+        );
+
+        let retained = &source[source.len() - 2..];
+        let compacted_with_tail = std::iter::once(ProviderMessage::System {
+            content: "[codegg continuation state v1]\nbounded continuation frame"
+                .to_string()
+                .into(),
+        })
+        .chain(retained.iter().cloned())
+        .collect::<Vec<_>>();
+        let identity = compacted_provider_visible_prefix_identity(
+            &source,
+            &compacted_with_tail,
+            false,
+            false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(identity.message_count, source.len() - retained.len());
+        let anchored_prefix = vec![
+            ProviderMessage::System {
+                content: "[codegg continuation state v1]\nframe".to_string().into(),
+            },
+            source[0].clone(),
+            source[1].clone(),
+            source[source.len() - 2].clone(),
+            source[source.len() - 1].clone(),
+        ];
+        let anchored_identity = compacted_provider_visible_prefix_identity(
+            &source,
+            &anchored_prefix,
+            false,
+            false,
+            None,
+        )
+        .expect("an installed frame can supersede an anchored exact prefix");
+        assert_eq!(anchored_identity.message_count, source.len() - 2);
+
+        let noncontiguous_retention = vec![
+            ProviderMessage::System {
+                content: "[codegg continuation state v1]\nframe".to_string().into(),
+            },
+            source[2].clone(),
+            source[source.len() - 1].clone(),
+        ];
+        assert!(compacted_provider_visible_prefix_identity(
+            &source,
+            &noncontiguous_retention,
+            false,
+            false,
+            None,
+        )
+        .is_none());
+        let mut submitted = second_turn;
+        assert_eq!(
+            drop_matching_provider_prefix(&identity, &prefixes, &mut submitted, 0),
+            Some(identity.message_count)
+        );
+        let expected_suffix = vec![
+            dto_source[dto_source.len() - 2].clone(),
+            dto_source[dto_source.len() - 1].clone(),
+            next_user,
+        ];
+        assert_eq!(
+            provider_visible_prefix_identity(&submitted).unwrap(),
+            provider_visible_prefix_identity(&expected_suffix).unwrap()
+        );
+    }
 
     #[test]
     fn source_revisions_ignore_unrelated_telemetry() {
