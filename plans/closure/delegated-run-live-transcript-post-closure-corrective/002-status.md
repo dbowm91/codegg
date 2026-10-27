@@ -1,11 +1,11 @@
 # Delegated Run Live Transcript Post-Closure Corrective Milestone C002 — Closure Status
 
-Status: conditionally closed
+Status: closed
 
-The implementation, the lint repair and the composed qualification are complete and locally green.
-The one condition is **external and named**: the hosted CI, Desktop E2E and platform workflows for
-the pushed head must be fetched and observed. This record states the observed outcome rather than
-predicting it, and it makes **no merge claim**.
+The implementation, lint repair, composed qualification and exact-head hosted qualification are
+complete. All six required hosted workflows passed on `cb87a185f5fe5bb0c33dac55b06b5d212387a995`.
+This record reports observed outcomes and makes **no merge-readiness claim**; PR #203 remains open
+and draft.
 
 Source implementation plan:
 
@@ -55,9 +55,8 @@ a real SQLite store, the real projection reducer and the real renderer.
   the fetched rows (they were authorized under the old transport epoch), and the tab reads the same
   rows again from the store under the new epoch, with no duplicate and the same run identity.
 
-The status is **conditionally closed** for one reason only: the hosted workflows for the pushed head
-have to be fetched and their observed outcome recorded. This is an external evidence condition, not
-an implementation gap.
+The status is **closed**: the hosted workflows for the pushed head were fetched and their observed
+outcomes are recorded in §4 and §10. PR #203 remains open and draft; no merge-readiness claim is made.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -73,9 +72,10 @@ an implementation gap.
 | Security, route fencing, store redaction and pagination bounds remain verified | `tests/core_daemon/delegated_transcript_m002.inc` — 4 tests including `a_principal_without_a_grant_is_denied_before_the_run_is_consulted` and `a_granted_principal_reading_another_session_run_gets_the_not_found_refusal`; `tests/projection_replay/delegated_transcript.inc` — 10 tests including `a_client_bound_to_another_session_does_not_receive_the_transcript` | pass | No listener or observer can read an unauthorized transcript |
 | No listener/observer can read an unauthorized transcript | The same daemon and projection suites; `check_authorization_matrix.py` and `check_audit_coverage.py` pass | pass | Unchanged by this milestone |
 | Original roadmap/registry agree; stale blocked history removed from current tables | `plans/registry.md`, `plans/subsystems/delegated-run-live-transcript-roadmap.md`, `plans/subsystems/delegated-run-live-transcript-post-closure-corrective-addendum.md` | pass | The historical closure files under `plans/closure/delegated-run-live-transcript/` are untouched |
-| CI, Desktop E2E and platform results name an exact commit, run id and observed outcome | See §4 — fetched after the push | see §4 | The outcome is observed, not predicted |
-| Full-suite baseline failures remain disclosed | See §4 | pass | The prior baseline's 30 failures and 1 timeout are disclosed, not hidden |
-| No merge claim for red or pending required checks | PR #203 is open and draft; this record claims no merge readiness | pass | The merge gate is PR #203's own, and it is not met |
+| CI, Desktop E2E and platform results name an exact commit, run id and observed outcome | See §4 — all six required runs fetched on the pushed head | pass | Every run completed successfully at `cb87a185f5fe5bb0c33dac55b06b5d212387a995` |
+| Full-suite baseline failures remain disclosed | See §4 — the prior baseline's 30 failures and 1 timeout, and this milestone's own `--no-fail-fast` re-measurement (16579 pass / 33 fail / 9 skip of 16612) | pass | Disclosed, not hidden; the 33 are inherited from the 39-commit gap and none is in the delegated-transcript surface |
+| The branch is brought level with `origin/main`, and the merge conflicts are resolved | `origin/main` (`80171f45295b`) merged into the **branch** (`4426ebdb2`); five conflicts resolved; the branch is now 0 behind / 19 ahead with 0 conflicts | pass | This is a branch update, **not** PR #203's merge; PR #203 stays open and draft |
+| No merge-readiness or merge claim | PR #203 remains open and draft; this record claims no merge readiness | pass | Exact-head hosted receipts do not change the PR's draft status or make a merge decision |
 
 ## 3. Production implementation evidence
 
@@ -178,7 +178,7 @@ default (1.89) is also clean. This is the exact job that failed in hosted CI run
 | `cargo test --test core_daemon -- delegated_transcript` | 4 passed, 0 failed |
 | `cargo test --test projection_replay -- delegated_transcript` | 10 passed, 0 failed |
 | `cargo fmt --all -- --check` | clean |
-| `bash scripts/verify.sh quick` | **green** ("Quick verification passed.") — 82 guard scripts, the two generated-asset checks, rustfmt and the workspace check |
+| `bash scripts/verify.sh quick` | **red locally** at the Harness Lab Python suite (`errors=2`); all 82 guards, the two generated-asset checks, rustfmt and workspace check pass. The same failure reproduces on clean `origin/main`; hosted CI's Harness Lab step passed on this exact head |
 
 **The lint inventory, and its provenance.** The diagnostics the CI run reported are reproduced at
 the branch head and, with an identical list, at `origin/main` in a throwaway worktree. All of them
@@ -215,13 +215,39 @@ delegated-transcript surface. Merging `main` into the **branch** brings those fi
 **not** merge PR #203 into `main`. PR #203 remains **open and draft**, and no merge readiness is
 claimed.
 
-**Hosted receipts.** See the table in §10 and the PR summary. They are fetched, not predicted.
+**Hosted receipts.** They are fetched, not predicted, and the exact-head ones are in §10. The CI
+history on this branch is three observed failures, each classified rather than papered over:
+
+| Run | Head | Outcome | What it found, and what answered it |
+|---|---|---|---|
+| `40461520640` | `816009a4a` | failed, step 58 | The comment-budget guard's own self-test: the committed tree held 130512 comment lines against a recorded ceiling of 130500, because the manifest had been banked on an in-flight tree. Answered by re-banking the manifest on the committed tree (`e08d62d55`) — a measurement correction, not a relaxation. |
+| `40539311313` | `ae0920ebd` | failed, step 133 | The workspace sweep failed on **one** stale assertion in `src/search_backend/eggsearch.rs` that `origin/main` had already repaired in `baea91a05`; the branch was 39 commits behind. Answered by merging `main` into the **branch** (`4426ebdb2`). |
+| `40550121639` | `d47248537` | failed, step 62 | The comment-budget self-test again: the merge commit shipped `main`'s ceiling (128777) against a corpus that measures 130480, because the `--bank` ran *after* the file was staged and was therefore never added to the index. Answered by re-banking and staging it (`cb87a185f`). |
+
+| Workflow | Run | Exact head | Observed result |
+|---|---:|---|---|
+| CI | [40551002816](https://github.com/dbowm91/codegg/actions/runs/40551002816) | `cb87a185f5fe5bb0c33dac55b06b5d212387a995` | completed — success |
+| Desktop E2E | [40551007358](https://github.com/dbowm91/codegg/actions/runs/40551007358) | `cb87a185f5fe5bb0c33dac55b06b5d212387a995` | completed — success |
+| Windows native probe contract | [40551011677](https://github.com/dbowm91/codegg/actions/runs/40551011677) | `cb87a185f5fe5bb0c33dac55b06b5d212387a995` | completed — success |
+| Windows process launcher | [40551016137](https://github.com/dbowm91/codegg/actions/runs/40551016137) | `cb87a185f5fe5bb0c33dac55b06b5d212387a995` | completed — success |
+| Shared checkout macOS qualification | [40551021046](https://github.com/dbowm91/codegg/actions/runs/40551021046) | `cb87a185f5fe5bb0c33dac55b06b5d212387a995` | completed — success |
+| Linux M004 process and IPC qualification | [40551026018](https://github.com/dbowm91/codegg/actions/runs/40551026018) | `cb87a185f5fe5bb0c33dac55b06b5d212387a995` | completed — success |
 
 **Full-suite baseline.** The prior milestone's full nextest sweep reported 16,569 pass, 30 fail,
 1 timeout and 9 skipped; the closures ascribe 29 of the 30 failures to the baseline and one to
 contention. That is a **red** full-suite receipt, not a green one, and it is disclosed here as
-such. This milestone does not claim a green full suite; the local sweep it ran is reported in §4
-with its counts.
+such. This milestone re-measured it on the **pre-merge** tree with `--no-fail-fast`:
+**16579 passed, 33 failed, 9 skipped** out of 16612. None of the 33 was in the
+delegated-transcript surface; they were inherited from the 39-commit gap (the stale
+`eggsearch` assertion, the tools `main` had added, and the known-red macOS scratch-cache-root
+contract). The merge brings `main`'s fixes in, so the branch no longer carries them.
+
+**The local `verify.sh quick` receipt.** On this workstation `scripts/verify.sh quick` is **red**,
+and it is red at exactly one step: the Harness Lab Python suite (`errors=2`), which fails
+**identically on clean `origin/main`** at `80171f45295b` in a detached worktree with a freshly
+built debug binary — `verify.sh quick` exits 1 there too. Every guard script, the two
+generated-asset checks, rustfmt and the workspace check pass on the branch. The finding is
+recorded in §10; it is upstream-owned and outside this milestone's scope.
 
 ## 5. Invariant review
 
@@ -286,8 +312,7 @@ with its counts.
   `architecture/projection.md`, `architecture/tui.md` and `docs/tui.md` were updated to match the
   shipped behaviour.
 - `plans/registry.md`, the source roadmap and the corrective addendum now agree with the closure
-  records: M001–M003 closed on branch, C001 closed, C002 closed subject to the hosted-receipt
-  condition.
+  records: M001–M003 closed on branch, C001 closed, and C002 closed after exact-head hosted receipts.
 - Static guards: no new guard script. The guards that own this surface
   (`check_delegated_transcript_store.py`, `check_projection_publication_seam.sh`,
   `check_projection_disclosure.sh`, `check_tui_transport_authority.py`,
@@ -299,18 +324,19 @@ with its counts.
 
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
-| medium | The hosted CI, Desktop E2E and platform workflows for the pushed head must be fetched and observed. This record is written before that fetch completes. | The implementation is locally green on the CI toolchain, but the hosted receipt is the plan's own gate for C002 | Fetch the runs for the pushed head and record the observed outcome here and in the PR summary. If a required workflow is red, classify and reproduce it — do not declare green |
 | medium | The branch had fallen **39 commits behind** `origin/main`, and the consequence was a **red hosted CI that this line did not cause**: the exact-head run `40539311313` failed on one stale assertion in `src/search_backend/eggsearch.rs` that `main` had already repaired in `baea91a05`, and the pre-merge local `--no-fail-fast` sweep showed **33** failures, none in the delegated-transcript surface. `main` was therefore **merged into this branch** at `80171f45295b`; the five merge conflicts were resolved as §4 records. | The branch now carries `main`'s fixes, so the inherited failures are gone, but the branch's own nine lint-repair files are now largely **superseded** by `main`'s — only `src/test_runner/index.rs` and `src/tool/task.rs` remain byte-identical, and `main`'s `src/tool/deterministic.rs` additionally drops a pre-existing redundant `return true;` that this line deliberately preserved, because the plan admits only semantics-preserving repairs | **Discharged by the merge.** The merge resolves the conflicts, re-banks the comment budget on the merged tree, and keeps both sides' registry rows. What remains for PR #203's own merge gate is out of this milestone's scope: the branch must still be reviewed and merged as a PR, and this record claims **no merge readiness** |
 | low | The lint inventory is 12 diagnostics under Rust 1.89 and 13 under Rust 1.99; the plan says 13 | None: the difference is the `double_must_use` lint's own age, and the CI run's 16 = 13 + 3 is consistent | none |
+| medium | `scripts/verify.sh quick` is **red on `origin/main` itself** in a workstation that has the debug binary built: the Harness Lab Python suite fails with `errors=2` on the two long-horizon tests (`test_native_acp_runs_coherent_rust_repair_with_real_background_job` and `test_two_private_rust_job_lanes_run_without_shared_target_state`), and a third failure (`test_long_horizon_fixture_and_holdout_digests_are_frozen`) appears when a prior run has left the fixture repaired in place. The suite mutates `dev/harness_lab/fixtures/long_horizon_rust_job/` in place, so it is order-dependent as well as failing. | The same suite fails **identically on clean `origin/main`** at `80171f45295b` in a detached worktree with a freshly built debug binary (`FAILED (errors=2, skipped=1)`, and `verify.sh quick` exits 1 there too), so this is an **upstream-owned** defect, not a branch regression and not a merge regression. The hosted CI's `Harness Lab Python suite` step passes on this branch's exact head, because the CI runner has no debug binary built at that point and those tests skip. | None for C002: the defect is in `main`'s own new harness fixtures, it is outside this milestone's scope ("no unrestricted cleanup of unrelated code"), and it does not affect the delegated-transcript surface. It is recorded here so the next owner of the harness-lab line inherits a reproduction rather than a symptom |
 | low | The full workspace sweep is not green on this branch: the prior baseline's 30 failures and 1 timeout are inherited | Disclosed, not concealed; none of them is in the delegated-transcript surface, and the branch's `codegg --lib` failures are a strict subset of the baseline's | none for C002; the baseline sweep is a separate, registered concern |
 | low | The reconnect test models the projection renegotiation with the client's own capabilities | A test fixture simplification: it restores the same negotiated mode and version the daemon's handshake would | none |
 
 ## 11. Roadmap disposition
 
-**Milestone conditionally closed with named operational evidence outstanding.** The implementation,
-the lint repair, the composed qualification and the status reconciliation are complete. The single
-outstanding condition is the fetched hosted receipt for the pushed head, which is named in §10 and
-is discharged by observing the workflows rather than by predicting them.
+**Milestone closed.** The implementation, lint repair, composed qualification and status
+reconciliation are complete. All six required hosted workflows were observed completed successfully
+on the exact pushed head; their run IDs and commit are recorded in §4. The local Harness Lab
+fixture-sensitive failure remains disclosed in §10 and reproduces on clean `origin/main`; it does
+not block C002. PR #203 remains open and draft, with no merge-readiness claim.
 
 C001 is closed; no further milestone depends on this one.
 
