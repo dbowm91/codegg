@@ -1,6 +1,6 @@
 # Harness Lab Continuation — Post-C006 Corrective Addendum
 
-Status: D001–D003 implementation closed; D003's live C006 rate condition remains not established. D004 is owned by the closed Agent Recovery C002 milestone; exact-head CI E001/E002 is closed in its own corrective roadmap.
+Status: D001–D003 closed, including D003's preregistered live C006 rate condition for the sampled host, binary, route and case mix; its bound is conditional on trial independence. D004 is owned by the closed Agent Recovery C002 milestone; exact-head CI E001/E002 is closed in its own corrective roadmap.
 
 Reviewed baseline: `main@957fcbf00e17bf108429f0d75dcbf760736ae511` (2026-10-26). Re-check latest main and any successor/PR before implementation.
 
@@ -30,12 +30,12 @@ CodeGG's daemon/broker remains the tool authority. ACP is a projection/transport
 ```
 D001 mainline headless parity / accepted-candidate disposition  ─ closed
 D002 truthful native tool outcomes / ACP contract                ─ closed
-D003 sustained event-gap observer parity                         ─ closed; C006 live rate not established
+  D003 sustained event-gap observer parity                         ─ closed; C006 scoped live rate qualified
 Agent Recovery C002 diagnostics + ADR-0040 reconciliation         ─ closed (owned by other roadmap)
 CI corrective E001/E002                                          ─ closed independently
 ```
 
-All implementation dependencies are discharged and exact-head CI is green. The C006 live event-gap-rate qualification remains not established until a separately approved and reviewed sample is run; this does not reopen the completed D003 observer implementation.
+All implementation dependencies are discharged and exact-head CI is green. The separately approved and reviewed C006 sample met its preregistered upper-bound target for the recorded host, binary, route and case mix; its independence caveat and raw receipts are recorded in the D003 live-sample closure.
 
 ## 4. Milestones
 
@@ -61,9 +61,9 @@ Each plan requires a new, independently reviewed closure record with implementat
 |---|---|---|---|
 | D001 | closed | `implementation/harness-lab-continuation/001-mainline-headless-accepted-fix-disposition.md`; `closure/harness-lab-continuation/001-status.md` | Exact-head CI run 40383901325 passed |
 | D002 | closed | `implementation/harness-lab-continuation/002-tool-terminal-truth-native-to-acp.md`; `closure/harness-lab-continuation/002-status.md` | Exact-head CI run 40383901325 passed |
-| D003 | closed (implementation); live rate not established | `implementation/harness-lab-continuation/003-sustained-trial-gap-and-rate-qualification.md`; `closure/harness-lab-continuation/003-status.md` | No provider-backed sample was run; existing 0/14 remains unqualified |
+| D003 | closed | `implementation/harness-lab-continuation/003-sustained-trial-gap-and-rate-qualification.md`; `closure/harness-lab-continuation/003-status.md` | 63-trial live sample passed the ≤5% one-sided 95% upper-bound target for the recorded profile, conditional on trial independence; evidence and receipts at `closure/harness-lab-continuation/003-live-event-gap-sample-20261027.md` |
 | Recovery C002 (D004 cross-reference) | closed in owning subsystem | `implementation/agent-recovery-escalation-authority/002-observation-diagnostics-and-stall-control.md`; `closure/agent-recovery-escalation-authority/002-status.md` | ADR-0040 Option B unchanged |
 
 ## Closure verification (2026-10-26)
 
-D001–D003 implementation closures and the Recovery C002 cross-reference were recorded against source head `56279dfc7dc8ee82f0239d6412b4fa50a42a74d6`. Exact-head `CI / verify` run [40383901325](https://github.com/dbowm91/codegg/actions/runs/40383901325) passed. D003 did not run a new provider-backed sample; C006's existing zero-of-fourteen observation remains unqualified.
+D001–D003 implementation closures and the Recovery C002 cross-reference were recorded against source head `56279dfc7dc8ee82f0239d6412b4fa50a42a74d6`. Exact-head `CI / verify` run [40383901325](https://github.com/dbowm91/codegg/actions/runs/40383901325) passed. A separately authorized D003 sample then completed 63/63 instrumented trials with no observed gaps and a one-sided 95% upper bound of 4.643845%; the scoped result, raw receipts and independence caveat are recorded in `plans/closure/harness-lab-continuation/003-live-event-gap-sample-20261027.md`. C006's live-rate condition is closed for that preregistered profile, conditional on trial independence.
