@@ -3,8 +3,7 @@
 Plan: `plans/implementation/workspace-authority-and-session-navigation/004-user-directed-main-agent-relative-cwd.md`
 Roadmap: `plans/subsystems/workspace-authority-and-session-navigation-corrective-addendum.md`
 Baseline: `80171f45295bebb9ab0b521262c0b295acb93074`
-Implementation branch head: `5a479cea9924205c8828dcbeef72a40bf3391f63` (worktree changes remain uncommitted)
-Implementation commit/PR: none; source and closure edits are uncommitted in the requested branch worktree.
+Implementation commit/PR: PR #207, merged at `fed10ce13be7fd99a6d5aa5f8b6639ba98d007bc` and included in `origin/main`.
 Closed: 2026-10-27
 Class: capability
 Recommendation: **closed**
