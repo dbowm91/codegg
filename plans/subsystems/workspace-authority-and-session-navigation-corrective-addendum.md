@@ -1,6 +1,6 @@
 # Workspace Authority and Session Navigation Corrective Addendum
 
-Status: active (W001 closed; W002/W003 not started)
+Status: active (W001 closed; W002 ready; W003 not started; W004 blocked pending ADR-0055)
 
 Long-term references:
 
@@ -231,6 +231,15 @@ W001 and W002 are ordered. W003 additionally requires a UX decision recorded in
   - A test drives a two-session scenario where one session holds a pending
     approval and asserts it is listed, selectable, and answerable.
 
+### Milestone W004 — User-directed main-agent relative working directory (blocked)
+
+- **Class:** capability; separate from W002's session-navigation invariant and W003's workspace-dashboard navigation.
+- **Objective:** Permit a user to request a persistent default **subdirectory within the already-authorized session root** for future main-agent tools, with an explicit `get|set|reset` contract. Requests crossing a repo/checkout boundary use the existing authorized session new/fork/switch pathway, not a daemon-global `chdir` or an unguarded in-place session/project rebind.
+- **Blocking decision:** `plans/adrs/ADR-0055-session-relative-working-directory-authority.md` is **proposed**, not accepted. W002 must also strictly close before W004 implementation.
+- **Plan:** `plans/implementation/workspace-authority-and-session-navigation/004-user-directed-main-agent-relative-cwd.md` (**blocked**).
+- **Exit conditions:** the effective cwd is distinct from the immutable workspace security ceiling; tools and UI agree after a session/turn boundary, reconnect and restart; a model-created change cannot widen permissions or retarget in-flight tasks; cross-root intents produce an authorized new/fork/select operation or a typed refusal. No automatic cross-project identity mutation.
+- **Non-goals:** arbitrary path adoption, unrestricted shared writers, a new daemon-process cwd, or W003's optional dashboard UX.
+
 ## 8. Cross-cutting requirements
 
 ### Storage and migration
@@ -315,3 +324,4 @@ discoverable and answerable through the workspace surface.
 | W001 | closed | `plans/implementation/workspace-authority-and-session-navigation/001-workspace-root-execution-authority.md` | `plans/closure/workspace-authority-and-session-navigation/001-status.md` | None |
 | W002 | not started | — | — | W001 |
 | W003 | not started | — | — | W002; UX decision (§10) |
+| W004 | blocked | `plans/implementation/workspace-authority-and-session-navigation/004-user-directed-main-agent-relative-cwd.md` | — | W002 strict closure; ADR-0055 acceptance |
