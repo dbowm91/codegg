@@ -1,0 +1,369 @@
+{
+  "background_jobs": [
+    {
+      "attempts": 1,
+      "completed_epoch_ms": 1793114134856,
+      "duration_seconds": 3.367,
+      "executor": "test",
+      "failure_class": "nonzero_exit",
+      "failure_exit_code": 101,
+      "job_id": "355e6dcb-3597-400e-b3f3-7bbe91fd813f",
+      "kind": "test",
+      "same_owner_session": true,
+      "started_epoch_ms": 1793114131489,
+      "state": "failed"
+    },
+    {
+      "attempts": 1,
+      "completed_epoch_ms": 1793114210594,
+      "duration_seconds": 2.908,
+      "executor": "test",
+      "failure_class": null,
+      "failure_exit_code": null,
+      "job_id": "df7300b3-9306-4aea-ab10-a73d352a4ab8",
+      "kind": "test",
+      "same_owner_session": true,
+      "started_epoch_ms": 1793114207686,
+      "state": "completed"
+    }
+  ],
+  "binary_sha256": "5df991c4f6564f22647f0ed7b28153057e6882efabd517d476e28b7bd1fa6103",
+  "branch_revision_after_rebase": "83faa880da201075cbf76f85e08aa3862c58cbe0",
+  "cost_provenance": "not reported by the route",
+  "cost_usd": null,
+  "daemon_stop_error": null,
+  "disk": {
+    "floor_triggered": false,
+    "minimum_free_bytes": 117218144256
+  },
+  "elapsed_wallclock_seconds": 112.724,
+  "ended_at_utc": "2026-10-27T15:16:59.413266+00:00",
+  "fixture_manifest_sha256": "aacc9fbc2d31304ff6e362128b09d42b05fcddd881d48ffe5bd4db73c9aef5c6",
+  "hard_caps": {
+    "minimum_free_disk_bytes": 10737418240,
+    "provider_requests": 60,
+    "wallclock_seconds": 3600
+  },
+  "hidden_verifier_sha256": "8ec486e216bb0826b7e2af0e0309901b093d422fd37c76e1c30d411e774e1d05",
+  "job_terminal_notices": [
+    {
+      "delivered": false,
+      "job_id": "355e6dcb-3597-400e-b3f3-7bbe91fd813f",
+      "notice_status": "failed",
+      "state": "pending"
+    }
+  ],
+  "job_tool_events": [
+    {
+      "arguments": {
+        "execution_mode": "background",
+        "scope": "workspace"
+      },
+      "event": "tool_call_started",
+      "output_preview": null,
+      "status": null,
+      "time_utc": "2026-10-27T15:15:25.650130Z",
+      "tool": "test"
+    },
+    {
+      "arguments": {},
+      "event": "tool_call_finished",
+      "output_preview": null,
+      "status": "Error",
+      "time_utc": "2026-10-27T15:15:25.653786Z",
+      "tool": "test"
+    },
+    {
+      "arguments": {
+        "execution_mode": "background",
+        "scope": "workspace",
+        "workdir": "fixture"
+      },
+      "event": "tool_call_started",
+      "output_preview": null,
+      "status": null,
+      "time_utc": "2026-10-27T15:15:31.446756Z",
+      "tool": "test"
+    },
+    {
+      "arguments": {},
+      "event": "tool_call_finished",
+      "output_preview": "background test submitted as job 355e6dcb-3597-400e-b3f3-7bbe91fd813f; terminal notification will arrive without polling",
+      "status": "Success",
+      "time_utc": "2026-10-27T15:15:31.450129Z",
+      "tool": "test"
+    },
+    {
+      "arguments": {
+        "action": "wait",
+        "job_id": "355e6dcb-3597-400e-b3f3-7bbe91fd813f",
+        "timeout_ms": 300000
+      },
+      "event": "tool_call_started",
+      "output_preview": null,
+      "status": null,
+      "time_utc": "2026-10-27T15:15:37.535535Z",
+      "tool": "job"
+    },
+    {
+      "arguments": {},
+      "event": "tool_call_finished",
+      "output_preview": null,
+      "status": "Error",
+      "time_utc": "2026-10-27T15:15:37.536194Z",
+      "tool": "job"
+    },
+    {
+      "arguments": {
+        "action": "output",
+        "job_id": "355e6dcb-3597-400e-b3f3-7bbe91fd813f"
+      },
+      "event": "tool_call_started",
+      "output_preview": null,
+      "status": null,
+      "time_utc": "2026-10-27T15:15:38.975005Z",
+      "tool": "job"
+    },
+    {
+      "arguments": {},
+      "event": "tool_call_finished",
+      "output_preview": null,
+      "status": "Error",
+      "time_utc": "2026-10-27T15:15:38.975274Z",
+      "tool": "job"
+    },
+    {
+      "arguments": {
+        "execution_mode": "foreground",
+        "scope": "workspace",
+        "workdir": "fixture"
+      },
+      "event": "tool_call_started",
+      "output_preview": null,
+      "status": null,
+      "time_utc": "2026-10-27T15:16:46.650476Z",
+      "tool": "test"
+    },
+    {
+      "arguments": {},
+      "event": "tool_call_finished",
+      "output_preview": "20 lines of output",
+      "status": "Success",
+      "time_utc": "2026-10-27T15:16:50.596558Z",
+      "tool": "test"
+    }
+  ],
+  "measurement_id": "h004-single-opencode-go-live-20261027",
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "policy_receipt": {
+    "effective": {
+      "approvalMode": "yolo",
+      "revision": "1",
+      "sandbox": "workspace_write"
+    },
+    "requested": {
+      "approvalMode": "yolo",
+      "sandbox": "workspace_write"
+    }
+  },
+  "provider": "opencode_go",
+  "provider_requests": {
+    "actual": 18,
+    "receipt_file": "004-provider-request-admissions.jsonl",
+    "receipt_sha256": "3cbf6e494277d3061104a692b47046c7931acd7bb9931d3b29cd79e27e110e51",
+    "source": "codegg_provider_boundary_receipt"
+  },
+  "provider_usage": {
+    "cached_tokens": null,
+    "input_tokens": 31165,
+    "output_tokens": 450,
+    "reasoning_tokens": null,
+    "turn_id": "turn-65fe21bb-1393-451f-a919-a8e1bb0cef3e"
+  },
+  "public_contract_sha256": "7f65eaf0b371069e816acc4e0d3ec8af2ad8c50749d8ebbe0feffb6a2f58df74",
+  "runtime_source_diff_after_rebase": [
+    "plans/closure/desktop-frontend-ide-foundation/018-status.md"
+  ],
+  "schema_version": 1,
+  "solved": true,
+  "source_revision_used": "68699fb63136f32e059f78fffa7de39ac19c10eb",
+  "started_at_utc": "2026-10-27T15:15:06.679785+00:00",
+  "status": "measurement complete; sustained horizon not demonstrated",
+  "stop_reason": "end_turn",
+  "terminal": "completed",
+  "tool_calls": {
+    "calls": [
+      {
+        "arguments_sha256": "4ae486c3a48f8dc732af672b138b438a1d96960304cc334d46bbc2687d169cbb",
+        "failed": false,
+        "index": 0,
+        "status": "completed",
+        "tool": "list"
+      },
+      {
+        "arguments_sha256": "b84252d2febcb81aa20c5e993fde91bc2a0a8557a3cd3389567f88af6851e7b3",
+        "failed": false,
+        "index": 1,
+        "status": "completed",
+        "tool": "read"
+      },
+      {
+        "arguments_sha256": "9237bc0f0edcf1665ada98ed7808af2936b8f681a66ba555488b5d387ff22fe8",
+        "failed": false,
+        "index": 2,
+        "status": "completed",
+        "tool": "read"
+      },
+      {
+        "arguments_sha256": "f1feb533ddd486cdffbee2f8584c719d6cde3ac6ac8f661f23f4216aeb37b33a",
+        "failed": false,
+        "index": 3,
+        "status": "completed",
+        "tool": "read"
+      },
+      {
+        "arguments_sha256": "2b1577892a0b868e974dc419b232a7ab36ac27c8dafc739a5e972ffaa844ee39",
+        "failed": false,
+        "index": 4,
+        "status": "completed",
+        "tool": "read"
+      },
+      {
+        "arguments_sha256": "80dff910b10d38fd46990795c1d40c93a1be7abf45267b623b9095d5f37272e3",
+        "failed": false,
+        "index": 5,
+        "status": "completed",
+        "tool": "read"
+      },
+      {
+        "arguments_sha256": "1f2f5c09079d4214089318775bd5cbb72cd8a18170c844302648443f6cef67fb",
+        "failed": false,
+        "index": 6,
+        "status": "completed",
+        "tool": "read"
+      },
+      {
+        "arguments_sha256": "8ec38f5f4827e80f1ffffb3e35a540563619e83008a0de862dff39d5b32dc9aa",
+        "failed": false,
+        "index": 7,
+        "status": "completed",
+        "tool": "read"
+      },
+      {
+        "arguments_sha256": "d944f7acda821180f72a8b6e14e5940ff99d961f1594a333a21cabd9e4622b46",
+        "failed": true,
+        "index": 8,
+        "status": "failed",
+        "tool": "test"
+      },
+      {
+        "arguments_sha256": "da36344f0f598b497263d10503c8fb88b4bf02c5c1dd3c9dab4f5b7cda92c33b",
+        "failed": false,
+        "index": 9,
+        "status": "completed",
+        "tool": "bash"
+      },
+      {
+        "arguments_sha256": "9c82e91e2f5c679179e5c5b31220b867b714c6484c0916d6368b131cb57655d0",
+        "failed": false,
+        "index": 10,
+        "status": "completed",
+        "tool": "test"
+      },
+      {
+        "arguments_sha256": "1f2f5c09079d4214089318775bd5cbb72cd8a18170c844302648443f6cef67fb",
+        "failed": false,
+        "index": 11,
+        "status": "completed",
+        "tool": "read"
+      },
+      {
+        "arguments_sha256": "b7f4942911314c23f7b1a2f28822ac2822c889080bf097e750f3b3eec1b8c40a",
+        "failed": true,
+        "index": 12,
+        "status": "failed",
+        "tool": "job"
+      },
+      {
+        "arguments_sha256": "9519ed9bf7e8532d819d26357194e06c26034f35642cf787fbe0bc2c3c424c2a",
+        "failed": true,
+        "index": 13,
+        "status": "failed",
+        "tool": "job"
+      },
+      {
+        "arguments_sha256": "9b4208ee103accea05ea7e722ded7c475215bd2b363b3921aeb977863ba52c6c",
+        "failed": false,
+        "index": 14,
+        "status": "completed",
+        "tool": "bash"
+      },
+      {
+        "arguments_sha256": "8d46f184b5e762cec14477922d0076b958e59932587c10a75f334323f31da5bc",
+        "failed": false,
+        "index": 15,
+        "status": "completed",
+        "tool": "bash"
+      },
+      {
+        "arguments_sha256": "4295495b2d5c0714a0833955f645a1a77446abe9487d9d4831465dcdc43155d9",
+        "failed": false,
+        "index": 16,
+        "status": "completed",
+        "tool": "tool_search"
+      },
+      {
+        "arguments_sha256": "69e512f140d99e61fd73c922104de6126d6a5a6fcef412f927ab91c964c47aed",
+        "failed": false,
+        "index": 17,
+        "status": "completed",
+        "tool": "edit"
+      },
+      {
+        "arguments_sha256": "579a30795271618701429573feb7c5c726b81ad09c4fc0e87ee8d321484a281b",
+        "failed": false,
+        "index": 18,
+        "status": "completed",
+        "tool": "bash"
+      },
+      {
+        "arguments_sha256": "31345044cfef4c3e9c9e70180e06624fdc37a3453da46617f2299588367074b0",
+        "failed": false,
+        "index": 19,
+        "status": "completed",
+        "tool": "edit"
+      },
+      {
+        "arguments_sha256": "7b0fca88649d32db195277bff3f2275ecb763ad1a633125852a18c93c32c0f48",
+        "failed": false,
+        "index": 20,
+        "status": "completed",
+        "tool": "test"
+      },
+      {
+        "arguments_sha256": "9237bc0f0edcf1665ada98ed7808af2936b8f681a66ba555488b5d387ff22fe8",
+        "failed": false,
+        "index": 21,
+        "status": "completed",
+        "tool": "read"
+      },
+      {
+        "arguments_sha256": "f1feb533ddd486cdffbee2f8584c719d6cde3ac6ac8f661f23f4216aeb37b33a",
+        "failed": false,
+        "index": 22,
+        "status": "completed",
+        "tool": "read"
+      }
+    ],
+    "count": 23,
+    "event_gaps": 0,
+    "started": 23,
+    "terminal": 23,
+    "unpaired_starts": 0
+  },
+  "verification": {
+    "exit_code": 0,
+    "output": "hidden Rust contract passed",
+    "timed_out": false
+  }
+}

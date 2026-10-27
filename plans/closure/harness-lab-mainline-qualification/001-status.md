@@ -1,73 +1,66 @@
 # Harness Lab Mainline Qualification H001 — Closure Status
 
-Status: **blocked** (integration PR is open; ordinary review, merge, and exact resulting-main verification remain)
+Status: **closed**
 Source implementation plan: `plans/implementation/harness-lab-mainline-qualification/001-mainline-integration-and-exact-head-verification.md`
 Source subsystem roadmap: `plans/subsystems/harness-lab-mainline-and-long-horizon-qualification-addendum.md`
-Repository baseline reviewed: `origin/main` `09dc761c7663316066e0f7f427dab89e71600e98`
+Repository baseline reviewed: `09dc761c7663316066e0f7f427dab89e71600e98`
 Implementation candidate: `7b2e51b5a2547058a319f097743812a9a1e4978f` on `plans/harness-lab-integration-20261027`
 Integration PR: [#205](https://github.com/dbowm91/codegg/pull/205)
+Merge commit and exact resulting-main head: `9185b9c34ce30fd52a41aacd0aaae75f39e54895` (2026-10-27)
 
 ## 1. Executive finding
 
-The continuation was rebased onto the current main tip, reconciled with the newer mainline behavior, and published as an ordinary review PR. Local full verification passed on candidate `7b2e51b`. H001 is not closed: hosted candidate checks are running, no review decision or merge exists, and the resulting main SHA has not been qualified. H004 must wait for those gates.
+PR #205 merged to `main`. The exact merge SHA passed `CI / verify` on attempt 3 and every applicable platform workflow. H001 is closed. Two earlier exact-head attempts failed in unrelated hosted checks; the final successful attempt is the acceptance evidence.
 
 ## 2. Requirement-to-evidence matrix
 
 | Requirement | Evidence | State |
 |---|---|---|
-| Reconcile continuation on current main | Candidate merge base is `09dc761c7663316066e0f7f427dab89e71600e98`; 90-file integration diff reviewed and rebase conflicts reconciled | Complete on candidate |
-| Preserve current main behavior | Restored compact `repo_search` array shape after exact failing test identified a regression; retained stricter tool identifier collision behavior and current schemas | Locally verified |
-| Reviewable conventional integration | [PR #205](https://github.com/dbowm91/codegg/pull/205), open against `main`; no auto-merge | Pending review |
-| Exact candidate hosted CI | CI run [40456207603](https://github.com/dbowm91/codegg/actions/runs/40456207603); Desktop E2E [40456207767](https://github.com/dbowm91/codegg/actions/runs/40456207767); platform workflows are attached to the PR | In progress at record time |
-| Merge and resulting-main SHA verification | No merge SHA exists yet | Blocked on review and merge |
-| H004 live qualification | Fresh authorization received for one `opencode_go` Muse Spark 1.3 Contributor session, capped at 60 requests / 60 minutes; no request has been made | Blocked on H001 merge and resulting-main CI |
+| Reconcile the continuation on current main | Candidate was based on `09dc761c7663316066e0f7f427dab89e71600e98`; the integration diff reconciled both branches' ownership and tests | Complete |
+| Preserve current main behavior | Compact `repo_search` array shape restored after its exact failing test identified a regression; tool identifier collision behavior and schemas retained | Complete |
+| Reviewable integration | [PR #205](https://github.com/dbowm91/codegg/pull/205), merged 2026-10-27 | Complete |
+| Exact resulting-main CI | [CI run 40509488918, attempt 3](https://github.com/dbowm91/codegg/actions/runs/40509488918/attempts/3), head `9185b9c34ce30fd52a41aacd0aaae75f39e54895`, conclusion `success` | Passed |
+| Applicable platform gates | [Desktop E2E 40509488651](https://github.com/dbowm91/codegg/actions/runs/40509488651), [macOS shared-checkout 40509488936](https://github.com/dbowm91/codegg/actions/runs/40509488936), [Windows native probe 40509488664](https://github.com/dbowm91/codegg/actions/runs/40509488664), [Linux M004 40509488996](https://github.com/dbowm91/codegg/actions/runs/40509488996), [Windows process launcher 40509488658](https://github.com/dbowm91/codegg/actions/runs/40509488658) | Passed on the same SHA |
+| Exact main merge verification | Merge SHA above is the head for every listed workflow | Complete |
 
 ## 3. Production implementation evidence
 
-The candidate contains the continuation reconciliation, H002 versioned recovery controls, H003 Rust/job fixtures, ACP typed terminal and event ordering correction, CI/SQLite corrections, and associated regression coverage and documentation. The separate integration branch preserves the historical continuation branch. No live-provider code path was exercised during this integration.
+The merged integration contains the continuation reconciliation, H002 versioned recovery controls, H003 Rust/job fixtures, ACP typed terminal and event-ordering corrections, CI/SQLite corrections, and associated regression coverage and documentation. The historical continuation branch remains available for traceability. H001 itself did not exercise a live-provider code path.
 
 ## 4. Verification executed
 
-Local command: `ZLIB_NO_PKG_CONFIG=1 LIBLZMA_NO_PKG_CONFIG=1 scripts/verify.sh full`
+Hosted verification is the exact resulting-main evidence above. On the integration candidate, local `scripts/verify.sh full` passed with formatting, generated assets, the guard suite, Harness Lab Python tests, workspace check, strict workspace Clippy, 16,549 workspace tests (9 skipped), and 7,925 feature-gated tests (4 skipped). The exact merge SHA's required hosted checks independently passed afterward.
 
-Passed on candidate `7b2e51b5a2547058a319f097743812a9a1e4978f`:
-
-- `verify.sh quick`: formatting, generated assets, all 82 guards, Harness Lab Python suite (354 passed, 1 skipped), and workspace check.
-- Strict workspace Clippy with `-D warnings`.
-- Workspace nextest: 16,549 passed, 9 skipped.
-- Feature-gated `server,plugins,lsp-test-support` suite: 7,925 passed, 4 skipped.
-
-These are local results. Hosted CI has not completed, and no exact resulting-main verification is claimed.
+Exact resulting-main CI attempt 1 failed the hosted Eggwork remote-execution test because its helper remained alive but never became ready. Attempt 2 failed the M005 holdout timing threshold at 5.280 ms against 5 ms; the focused test passed locally. No unrelated threshold or code was changed to mask either result. Attempt 3 passed.
 
 ## 5. Invariant review
 
-The reconciliation retained typed ACP tool failures, ordered tool lifecycle publication, unmeasured event gaps when evidence is unavailable, existing denial/path boundaries, the current compact repository-search wire shape, and the existing strict lint gate. H002 v1 fixtures and receipts remain immutable; v2 controls are additive.
+The integration retained typed ACP tool failures, ordered tool lifecycle publication, unmeasured event gaps when evidence is unavailable, existing denial and path boundaries, the compact repository-search wire shape, and strict lint gates. H002 v1 fixtures and receipts remain immutable; v2 controls are additive.
 
 ## 6. Failure and recovery review
 
-An initial full verification exposed a compact repository-search shape regression. The implementation was corrected to preserve the mainline array shape and the exact failing test passed; the full local verification then passed. The submitted PR has no hosted result yet.
+The candidate's initial full verification exposed a `repo_search` shape regression. The implementation restored the mainline array contract and the exact failing test passed before merge. Hosted failures on attempts 1 and 2 were investigated as independent readiness/timing failures; the successful exact-head attempt followed without changing the unrelated microbenchmark threshold.
 
 ## 7. Migration and compatibility review
 
-No storage migration or ACP protocol version change is introduced by this integration. H002 uses versioned controls while preserving v1 fixtures and manifest version. H003 fixtures run in private lanes.
+No storage migration or ACP protocol version change was introduced. H002 preserves v1 fixtures and manifest version. H003 fixtures use private lanes. The exact main workflows passed on the merge SHA.
 
 ## 8. Security review
 
-Local guards and tests passed. No provider credentials or live request receipts were added. PR review and hosted security/platform workflows remain outstanding.
+The local guards and hosted required gates passed. No provider credential or live request receipt was included in H001. H004's separately authorized live measurement and request evidence are recorded in `004-status.md`.
 
 ## 9. Documentation and operations
 
-H001–H003 status and evidence are recorded in the registry, roadmap, and closure records. Disk had approximately 107 GiB free after local verification. H004's approved cap is 60 requests and 60 minutes, with the runner required to stop below 10 GiB free disk.
+H001–H003 implementation and closure records are registered. PR #205's merge commit is `9185b9c34ce30fd52a41aacd0aaae75f39e54895`. `origin/main` later advanced to `80171f45295bebb9ab0b521262c0b295acb93074` with a documentation-only PR #206; that later head does not change the SHA qualification recorded here.
 
 ## 10. Unresolved findings
 
-- **Medium / external gate:** PR #205 has no review decision, merge, or exact resulting-main CI yet. Required next evidence is an ordinary review and merge followed by successful required checks on the resulting `main` SHA.
-- **Operational gate:** H004 has fresh operator authorization but remains unrun until the H001 gate above passes.
+No H001 acceptance requirement remains unresolved. H004 is conditionally closed at its own recorded scope because its one live run did not meet the planned 30–60 minute duration; this does not reopen H001.
 
 ## 11. Roadmap disposition
 
-H001 remains blocked at the review/merge gate. H002 and H003 remain closed at their recorded scope. H004 remains blocked on H001.
+H001 is closed. H002 and H003 remain closed at their recorded scopes. H004's live measurement is recorded separately in `plans/closure/harness-lab-mainline-qualification/004-status.md`.
 
 ## 12. Registry updates
 
-The registry points to PR #205, candidate SHA `7b2e51b`, pending hosted checks, and the H004 authorization state. It does not claim H001 landed or H004 completed.
+`plans/registry.md` records PR #205 as merged, the exact merge SHA and green hosted gates. The subsystem roadmap records H001 closed and H004 conditionally closed with its named sustained-horizon limitation.

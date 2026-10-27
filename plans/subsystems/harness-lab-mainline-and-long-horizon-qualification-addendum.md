@@ -1,6 +1,6 @@
 # Harness Lab — Mainline Integration and Long-Horizon Qualification Addendum
 
-Status: **active integration**; H001 PR #205 is open against current `main` and requires ordinary review/merge plus exact resulting-head CI; H002 is closed with an ADR-0040-consistent v2 control; H003 is closed for the deterministic native Rust/job fixture; H004 has fresh live-budget authorization but remains blocked on H001.
+Status: **conditionally closed**; H001 PR #205 merged at `9185b9c34ce30fd52a41aacd0aaae75f39e54895` and all exact-resulting-head checks passed; H002 and H003 remain closed at their recorded scopes; H004's single approved live measurement completed within caps and passed its verifier, but the 30–60 minute sustained-horizon target was not demonstrated (112.7-second run). Further sustained qualification requires a new plan and explicit budget authorization.
 
 Reviewed base: `plans/harness-lab-continuation-20261026@cd9fde42491c85941c31efbc2d5d200e8db4d638` (2026-10-27). Re-read latest refs and status before modifying source.
 
@@ -36,12 +36,12 @@ No obligatory VM/container, disposable enterprise infrastructure, SBC compilatio
 
 | Milestone | Primary class | Status | Dependency |
 |---|---|---|---|
-| H001 — Merge-ready mainline promotion with exact-merge-head evidence | invariant | **PR #205 open; hosted candidate CI running; review/merge gate open** | Candidate `7b2e51b` based on `09dc761c76`; local full verification passed. Ordinary PR review, resulting-main CI and maintainer merge remain |
+| H001 — Merge-ready mainline promotion with exact-merge-head evidence | invariant | **closed** | PR #205 merged at `9185b9c34ce30fd52a41aacd0aaae75f39e54895`; exact resulting-main CI attempt 3 and all applicable platform workflows passed. Closure: `plans/closure/harness-lab-mainline-qualification/001-status.md` |
 | H002 — Versioned replacement for obsolete stall-stop control | invariant | **closed** | Accepted ADR-0040 and closed Recovery C002; v2 deterministic native controls qualified |
 | H003 — Realistic long-horizon Rust/job test corpus | capability | **closed for offline native qualification** | Coherent Rust repair, real background jobs, holdout verifier and two isolated lanes; context epoch instrumentation remains unavailable |
-| H004 — Single-provider live qualification and final status reconciliation | capability | **blocked on H001** | H001 **hard**; H002 and H003 **closed**; fresh authorization received for Muse Spark 1.3 Contributor at 60 requests / 60 minutes. No live call until H001 merge and resulting-main CI; stop below 10 GiB free disk |
+| H004 — Single-provider live qualification and final status reconciliation | capability | **conditionally closed; measurement complete, sustained target not demonstrated** | One authorized Muse Spark 1.3 Contributor run used 18/60 requests, solved the fixture, passed the hidden verifier and observed zero event gaps in 112.7 seconds. A 30–60 minute task and prolonged job wait were not demonstrated; future work requires a new plan and authorization. Closure: `plans/closure/harness-lab-mainline-qualification/004-status.md` |
 
-H001–H003 may progress in parallel in distinct worktrees; H004 is a separately admitted handoff. CI may verify offline fixtures at low cost without a provider account.
+H001–H004 are recorded in their closure documents. H002 and H003 remain closed at their original scope. H004's limited measurement does not establish sustained reliability; future live work is separately admitted. CI may verify offline fixtures without a provider account.
 
 ## 4. Milestone contracts
 
@@ -67,7 +67,7 @@ Add/extend meaningful, isolated Rust edit→compile→test→failure repair cycl
 
 `plans/implementation/harness-lab-mainline-qualification/004-single-opencode-go-sustained-qualification.md`
 
-After H001–H003 close, run **one explicitly approved** `opencode_go/<model-id>` serving route over 30–60 minute *coherent tasks*, not 63 tiny independent trials; record meaningful progress, recovery, job wait, tool errors, code/test verifier output, all prompt/tool provider requests, provider-reported tokens/null costs, timeouts and cleanup. Failure injection is separately marked. Compare reproducibility against an immutable task baseline, **not against a different provider**. Require a genuine independent acceptance test and no invisible retries or hard-coded forced stall terminal. When budget approval or route access is missing, stop and record H004 blocked; do not start live work using past approval.
+One explicitly approved `opencode_go/muse-spark-1.3-contributor` session ran after H001–H003 closed. It used 18/60 admitted requests, completed in 112.7 seconds, solved the fixture, passed the hidden verifier, and observed zero tool-event gaps. The task completed far below the 30–60 minute sustained-horizon target; the run therefore closes as a measurement with a named qualification limit, not as long-session reliability evidence. The live authorization is consumed. Any longer coherent task requires its own design and fresh approval. See `plans/closure/harness-lab-mainline-qualification/004-status.md` and its frozen JSONL receipt.
 
 ## 5. Cross-cutting security, compatibility and closure
 
@@ -82,7 +82,7 @@ After H001–H003 close, run **one explicitly approved** `opencode_go/<model-id>
 
 | Milestone | Status | Plan | Closure |
 |---|---|---|---|
-| H001 | integration/review pending | `plans/implementation/harness-lab-mainline-qualification/001-mainline-integration-and-exact-head-verification.md` | pending actual main merge and exact resulting-head CI |
+| H001 | closed | `plans/implementation/harness-lab-mainline-qualification/001-mainline-integration-and-exact-head-verification.md` | PR #205 merged at `9185b9c34ce30fd52a41aacd0aaae75f39e54895`; exact resulting-main CI and applicable platform workflows passed; `001-status.md` |
 | H002 | closed | `plans/implementation/harness-lab-mainline-qualification/002-adr-consistent-stall-control-contract.md` | `plans/closure/harness-lab-mainline-qualification/002-status.md` |
 | H003 | closed for offline qualification | `plans/implementation/harness-lab-mainline-qualification/003-long-horizon-rust-and-job-fixtures.md` | `plans/closure/harness-lab-mainline-qualification/003-status.md` |
-| H004 | blocked | `plans/implementation/harness-lab-mainline-qualification/004-single-opencode-go-sustained-qualification.md` | H001–H003 and fresh spending authorization |
+| H004 | conditionally closed — measurement complete; sustained target not demonstrated | `plans/implementation/harness-lab-mainline-qualification/004-single-opencode-go-sustained-qualification.md` | One authorized Muse Spark 1.3 Contributor session used 18/60 requests, completed in 112.7 seconds, passed the independent verifier, and observed zero event gaps. A 30–60 minute coherent task remains future work requiring separate design and authorization; see `plans/closure/harness-lab-mainline-qualification/004-status.md`. |
