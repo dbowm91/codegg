@@ -1,6 +1,6 @@
 # Harness Lab Mainline Qualification H005 — Genuine Sustained Multi-Stage Rust Workload
 
-Status: **active; H005 live budget explicitly authorized on 2026-10-27; offline implementation, quick verification, strict Clippy, and the full workspace test wrapper passed on ARM64; live qualification and closure remain**. H004's authorization is consumed and is not reused.
+Status: **active; H005 live budget explicitly authorized on 2026-10-27; offline implementation, quick verification, strict Clippy, and the full workspace test wrapper passed on ARM64; the live route preflight is blocked because OpenCode Go has two unbound stored credentials**. H004's authorization is consumed and is not reused.
 
 Source roadmap: `plans/subsystems/harness-lab-mainline-and-long-horizon-qualification-addendum.md`.
 Reviewed main baseline: `fed10ce13be7fd99a6d5aa5f8b6639ba98d007bc` (2026-10-27).
@@ -95,6 +95,8 @@ H004 authorization is consumed. H005 has its own one-run approval, separate from
 | USD cost | provider may report no cost; no USD ceiling is claimed |
 
 **Authorization received 2026-10-27:** the operator approved this exact route and the 300-request / 60-minute / 10 GiB limits while accepting that USD cost may be unreported. This authorization covers one H005 live attempt only. Verify route availability and budget admission before the first request; if either refuses, do not start or switch routes. The request count, elapsed time and disk guard are cumulative across the single attempt; approval expires when that attempt ends.
+
+**Preflight result (2026-10-27):** the exact model is present in CodeGG's OpenCode Go model listing and the budget is admitted. `codegg doctor providers` cannot resolve the OpenCode Go provider because two stored `opencode_go` credentials have no active provider connection binding. No live task request was sent, no credential was selected or changed, and no live attempt has started. The approved budget remains unused; execution may resume only after the operator binds the intended stored credential to an active CodeGG provider connection and the read-only route check passes.
 
 ## 9. Closure and handoff
 
