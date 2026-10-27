@@ -223,6 +223,13 @@ jobs:
         timeout-minutes: 10
         run: python3 scripts/check_test_filter_execution.py --run -- cargo test --locked --test agent_loop explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts -- --nocapture --test-threads=1
 
+      - name: A003 repository quota production Cargo comparison
+        # This test submits real Cargo builds through JobSubmissionService,
+        # JobScheduler and ManagedArgvExecutor, and prints the measured
+        # disabled/enabled/unrelated-repository cases.
+        timeout-minutes: 10
+        run: cargo test --locked -p codegg --lib repository_quota_controls_production_cargo_build_admission -- --ignored --nocapture --test-threads=1
+
       - name: M004 managed-process host PID and IPC denial probes
         run: cargo test --locked --test linux_git_test_support --features linux-git-test-support -- --nocapture
 
