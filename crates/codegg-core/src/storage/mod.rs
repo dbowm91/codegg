@@ -52,7 +52,8 @@ use crate::error::StorageError;
 /// append-only row table keyed by `AgentRunId`, plus its per-run aggregate.
 ///
 /// Milestone C004 adds **v90**, the delegated run's attempt record.
-pub const STORAGE_LAYOUT_VERSION: u32 = 90;
+/// ADR-0055 adds **v91**, the revisioned session-relative working directory.
+pub const STORAGE_LAYOUT_VERSION: u32 = 91;
 
 pub struct Database {
     pool: SqlitePool,

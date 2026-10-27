@@ -11,6 +11,7 @@ pub mod selection_catalog;
 pub mod state;
 pub mod status;
 pub mod user_prompt_queue;
+pub mod working_directory;
 
 pub mod import;
 pub mod models;
@@ -55,6 +56,9 @@ pub use user_prompt_queue::{
     USER_PROMPT_QUEUE_MAX_ENTRY_BYTES, USER_PROMPT_QUEUE_MAX_PENDING,
     USER_PROMPT_QUEUE_MAX_RECONCILE, USER_PROMPT_QUEUE_MAX_RETAINED_PER_SESSION,
     USER_PROMPT_QUEUE_RENUMBER_BAND_OFFSET, USER_PROMPT_QUEUE_TTL_MS,
+};
+pub use working_directory::{
+    SessionWorkingDirectory, SessionWorkingDirectoryError, SessionWorkingDirectoryStore,
 };
 
 const SESSION_COLUMNS: &str = r#"id, project_id, workspace_id, parent_id, slug, directory,

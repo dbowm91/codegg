@@ -4116,15 +4116,18 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         return Ok(());
     }
 
-    // Session loading. Inproc mode has a local `SessionStore` and
-    // uses it directly; socket/RemoteCore mode has no local store
-    // and must drive session loading through the `CoreClient` via
-    // `App::load_initial_session_via_core`.
+    // The in-process store resolves the requested session id or creates a
+    // fork; attachment in every mode goes back through SessionLoad so the
+    // active tab adopts the daemon/core's canonical workspace binding.
+    use codegg::tui::app::InitialSessionRequest;
     if let Some(ss) = &session_store {
         if let Some(fork_id) = &cli.fork {
             match ss.fork(fork_id).await {
                 Ok(forked) => {
-                    app.set_session(forked);
+                    app.load_initial_session_via_core(InitialSessionRequest::Attach {
+                        session_id: forked.id,
+                    })
+                    .await;
                 }
                 Err(e) => {
                     eprintln!("Failed to fork session: {}", e);
@@ -4132,8 +4135,11 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
             }
         } else if let Some(session_id) = &cli.session {
             match ss.get(session_id).await {
-                Ok(Some(sess)) => {
-                    app.set_session(sess);
+                Ok(Some(session)) => {
+                    app.load_initial_session_via_core(InitialSessionRequest::Attach {
+                        session_id: session.id,
+                    })
+                    .await;
                 }
                 Ok(None) => {
                     eprintln!("Session not found: {}", session_id);
@@ -4145,13 +4151,15 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         } else if cli.continue_session {
             match ss.list(&project_dir, 1).await {
                 Ok(sessions) if !sessions.is_empty() => {
-                    app.set_session(sessions[0].clone());
+                    app.load_initial_session_via_core(InitialSessionRequest::Attach {
+                        session_id: sessions[0].id.clone(),
+                    })
+                    .await;
                 }
                 _ => {}
             }
         }
     } else {
-        use codegg::tui::app::InitialSessionRequest;
         let request = if let Some(fork_id) = &cli.fork {
             InitialSessionRequest::Fork {
                 session_id: fork_id.clone(),

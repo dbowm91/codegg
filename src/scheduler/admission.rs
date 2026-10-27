@@ -105,6 +105,25 @@ pub enum BlockReason {
     },
 }
 
+impl BlockReason {
+    /// Produce an event/aggregate-safe diagnostic that does not expose a
+    /// repository identity to a job observer from another principal.
+    pub fn safe_diagnostic(&self) -> Self {
+        match self {
+            Self::QuotaContended {
+                key,
+                requested,
+                available,
+            } if key.starts_with("repository-build:") => Self::QuotaContended {
+                key: "repository-build:<redacted>".into(),
+                requested: *requested,
+                available: *available,
+            },
+            other => other.clone(),
+        }
+    }
+}
+
 /// Why a request is structurally impossible to admit.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
@@ -137,6 +156,9 @@ pub enum UnschedulableReason {
         key: String,
         requested: u32,
         limit: u32,
+    },
+    QuotaRequestOverflow {
+        key: String,
     },
     /// M007: the request names a quota namespace the controller does
     /// not know.
@@ -376,9 +398,11 @@ impl AdmissionController {
                 available: budget.max_network_slots.saturating_sub(g.used_network) as u16,
             });
         }
-        // M007: keyed quota scopes. A counted bound, not a mutex: a
-        // scope admits several holders up to its configuration-owned
-        // limit, and the scope key keeps unrelated workspaces apart.
+        // M007/A003: keyed quota scopes. Aggregate duplicate keys first so
+        // one request cannot ask for the same scope twice and pass each
+        // individual check against the same stale `held` count. BTreeMap
+        // gives deterministic validation/reservation order.
+        let mut requested_quotas = std::collections::BTreeMap::<String, u32>::new();
         for quota in &dims.keyed_quotas {
             if !quota.is_valid() {
                 g.impossible += 1;
@@ -386,7 +410,21 @@ impl AdmissionController {
                     namespace: quota.namespace().unwrap_or_default().to_string(),
                 });
             }
-            let Some(limit) = self.quota_limit(quota) else {
+            let entry = requested_quotas.entry(quota.key.clone()).or_default();
+            let Some(total) = entry.checked_add(quota.slots) else {
+                g.impossible += 1;
+                return AdmissionDecision::Impossible(UnschedulableReason::QuotaRequestOverflow {
+                    key: quota.key.clone(),
+                });
+            };
+            *entry = total;
+        }
+        // M007: keyed quota scopes. A counted bound, not a mutex: a
+        // scope admits several holders up to its configuration-owned
+        // limit, and the scope key keeps unrelated workspaces apart.
+        for (key, slots) in &requested_quotas {
+            let quota = KeyedQuotaRequest::new(key.clone(), *slots);
+            let Some(limit) = self.quota_limit(&quota) else {
                 // An unknown namespace is refused, never ignored: an
                 // unenforced bound silently dropped would be a lie.
                 g.impossible += 1;
@@ -394,21 +432,21 @@ impl AdmissionController {
                     namespace: quota.namespace().unwrap_or_default().to_string(),
                 });
             };
-            if quota.slots > limit {
+            if *slots > limit {
                 g.impossible += 1;
                 return AdmissionDecision::Impossible(UnschedulableReason::QuotaExceedsLimit {
-                    key: quota.key.clone(),
-                    requested: quota.slots,
+                    key: key.clone(),
+                    requested: *slots,
                     limit,
                 });
             }
-            let held = g.held_quotas.get(&quota.key).copied().unwrap_or(0);
+            let held = g.held_quotas.get(key).copied().unwrap_or(0);
             let available = limit.saturating_sub(held);
-            if quota.slots > available {
+            if *slots > available {
                 g.rejected += 1;
                 return AdmissionDecision::TemporarilyBlocked(BlockReason::QuotaContended {
-                    key: quota.key.clone(),
-                    requested: quota.slots,
+                    key: key.clone(),
+                    requested: *slots,
                     available,
                 });
             }
@@ -441,8 +479,8 @@ impl AdmissionController {
                 *g.held_keys.entry(bare).or_insert(0) += 1;
             }
         }
-        for quota in &dims.keyed_quotas {
-            *g.held_quotas.entry(quota.key.clone()).or_insert(0) += quota.slots;
+        for (key, slots) in requested_quotas {
+            *g.held_quotas.entry(key).or_insert(0) += slots;
         }
         drop(g);
         self.admitted_total.fetch_add(1, Ordering::SeqCst);
@@ -581,6 +619,9 @@ impl AdmissionController {
             Some(namespace) if namespace == ResourceClass::Build.namespace() => {
                 Some(self.cfg.quota.max_concurrent_builds_per_workspace)
             }
+            Some(namespace) if namespace == ResourceClass::RepositoryBuild.namespace() => {
+                self.cfg.quota.max_concurrent_builds_per_repository
+            }
             _ => None,
         }
     }
@@ -610,6 +651,23 @@ mod tests {
 
     fn make() -> AdmissionController {
         AdmissionController::new(ResolvedSchedulerConfig::default())
+    }
+
+    #[test]
+    fn repository_quota_diagnostics_redact_canonical_identity() {
+        let reason = BlockReason::QuotaContended {
+            key: "repository-build:repo-private".into(),
+            requested: 1,
+            available: 0,
+        };
+        assert_eq!(
+            reason.safe_diagnostic(),
+            BlockReason::QuotaContended {
+                key: "repository-build:<redacted>".into(),
+                requested: 1,
+                available: 0,
+            }
+        );
     }
 
     /// A remote reservation for one node, with the abstract tokens a

@@ -1,6 +1,6 @@
 # ADR-0055: Session-relative working directory authority and cross-workspace transitions
 
-Status: **proposed** — decision required before W004 implementation
+Status: **accepted** — Option A (accepted by the user on 2026-10-27)
 Date: 2026-10-27
 Decision owners: project maintainers
 Repository evidence baseline: `80171f45295bebb9ab0b521262c0b295acb93074`
@@ -23,7 +23,7 @@ C. Let the main agent rewrite the session's `workspace_root`, `project_id` and w
 
 D. Have the model attach a different managed worktree by naming an absolute path. **Rejected** as a direct mutation: locator is not checkout ownership or authorization.
 
-## Proposed authority contract
+## Decision
 
 1. Persist **two distinct locators**: immutable session-bound canonical `workspace_root` (permission and sandbox ceiling) and optional `relative_cwd` (tool default for that session). `relative_cwd` must resolve to an existing directory *within* the root, with canonical symlink resolution and revalidation on every use. No outside-root path and no implicit workspace registration.
 2. The daemon and session storage, not the model's prose or a shell environment, own accepted cwd state, revision, audit event, and authorization. A user request to change cwd does not itself prove an agent-supplied path safe; ordinary path and principal checks still apply. The model's `get|set|reset` action may only narrow the default within its existing root. Every mutation requires a matching expected revision, bound session identity and a clearly surfaced effective path.
@@ -38,8 +38,8 @@ A model-authored path is untrusted. Reject `..` traversal, symlink escape, wrong
 ## Consequences and non-goals
 This requires additive session state and protocol/tool/UI wiring, plus reconnect/restart tests. It does not add a general-purpose filesystem `chdir` primitive, arbitrary-root rebind, new sandbox exemptions, or unrestricted shared checkout processes. A shell-only per-invocation workdir remains supported without any new feature.
 
-## Acceptance decision
-**Proposed, not accepted.** W004 must not implement a durable cwd API until the maintainers accept an explicit variant of Option A and its authorization semantics. W002 and the independent worktree/build corrective can proceed without this ADR. Confirm the separate existing-worktree read-only placement contract in its own implementation review; this ADR does not authorize writable sharing.
+## Acceptance record
+The user accepted **Option A** on 2026-10-27. W004 may implement the contract above after W002 strictly closes. W002 and the independent worktree/build corrective proceed under their own plans. The separate existing-worktree read-only placement contract remains subject to its own implementation review; this ADR does not authorize writable sharing.
 
 ## Verification required after decision
 Same-session set/use/reset across tools and turns; A→B→A session switch; two TUIs + one daemon; action while jobs/child runs remain active; reconnect/restart; stale revision and symlink/rename rejection; different-principal denial; no cwd drift in daemon; no migration that silently rewrites existing sessions. Closure evidence must label simulated versus real provider and host coverage.

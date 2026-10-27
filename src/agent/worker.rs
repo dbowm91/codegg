@@ -117,6 +117,9 @@ pub struct SubAgentRequest {
     pub max_tool_calls: Option<usize>,
     pub parent_model: Option<String>,
     pub workspace_root: Option<PathBuf>,
+    /// Relative directory captured from the parent turn. It is resolved
+    /// beneath this child's workspace root, including an isolated checkout.
+    pub default_working_directory: Option<PathBuf>,
     /// The daemon-owned workspace identity this child runs under.
     ///
     /// A tool call is authorized against a workspace identity and a path
@@ -1617,6 +1620,12 @@ async fn execute_agent_task(
 
     let mut tool_registry = ToolRegistry::with_options(crate::tool::ToolRegistryOptions {
         workspace_root: request.workspace_root.clone(),
+        working_directory: request.workspace_root.as_ref().and_then(|root| {
+            request
+                .default_working_directory
+                .as_ref()
+                .map(|relative| root.join(relative))
+        }),
         tool_advisor: config.tool_advisor.clone(),
         decision_engine: config.decision_engine.clone(),
         command_intent: config.command_intent.clone(),
@@ -2456,6 +2465,7 @@ mod admission_tests {
             max_tool_calls: None,
             parent_model: None,
             workspace_root: None,
+            default_working_directory: None,
             workspace_id: None,
             workspace_locks: None,
             parent_sandbox_profile: None,
@@ -2819,6 +2829,7 @@ mod writer_fence_tests {
             max_tool_calls: None,
             parent_model: None,
             workspace_root: None,
+            default_working_directory: None,
             workspace_id: None,
             workspace_locks: None,
             parent_sandbox_profile: None,

@@ -209,6 +209,9 @@ fn submission_error_code(error: &JobSubmissionError) -> String {
         // carried — and like every other refusal it is not recorded, so the
         // occurrence stays retryable once the group finishes.
         JobSubmissionError::ProcessDenied(_) => "process_denied".to_owned(),
+        JobSubmissionError::RepositoryIdentityUnavailable(_) => {
+            "repository_identity_unavailable".to_owned()
+        }
     }
 }
 
@@ -249,6 +252,10 @@ mod tests {
             (
                 JobSubmissionError::Goal(String::new()),
                 "goal_lookup_failed",
+            ),
+            (
+                JobSubmissionError::RepositoryIdentityUnavailable("/private/repo/root".into()),
+                "repository_identity_unavailable",
             ),
         ];
         for (error, expected) in cases {

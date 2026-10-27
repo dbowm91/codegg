@@ -180,6 +180,31 @@ path instead (M006). See `architecture/session_launch.md` and
   `workdir` joins the workspace root, absolute paths must fall under an
   explicitly allowed root, and there is no process-cwd fallback for
   daemon-originated requests.
+- ADR-0055 stores a session-relative default directory with a compare-and-set
+  revision. Each turn resolves and snapshots that directory beneath the
+  unchanged workspace root. Bash, test, and Python use the snapshot only when
+  their call omits `workdir`; the workspace root remains their authorization
+  and sandbox ceiling. `session_working_directory` reports both the relative
+  subdirectory and absolute directory, and requires the ordinary mutating-tool
+  authorization path for changes.
+
+## Session selection and tab execution roots
+
+`/sessions` lists sessions for the active project. A row's `directory` is a
+compatibility locator and is not sufficient authority to retarget a tab. On
+selection, the TUI issues `SessionLoad`; the daemon resolves the session's
+durable project/workspace binding and returns the canonical workspace root in
+`SessionBindingDto`. The TUI rejects a missing, unavailable, or inconsistent
+binding and leaves the current selection intact. Once validated, session ID,
+project ID, workspace ID, tab root, project-local command catalog, and displayed
+directory are updated together.
+
+Selection replies are fenced by the latest request and the initiating tab. New
+tab-scoped work is refused while a selected session's binding is loading. Work
+already dispatched keeps the immutable `ExecutionContext` captured at submit,
+so changing the active session cannot retarget an in-flight turn or job. The
+daemon process cwd is never changed. `/sessions` remains project-scoped and
+labels that scope; cross-project navigation uses the authorized project picker.
 
 ## Static guard
 

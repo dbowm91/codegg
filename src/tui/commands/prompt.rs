@@ -187,6 +187,46 @@ pub(crate) fn apply_session_create_for_prompt(
         return;
     };
 
+    let execution_context =
+        match crate::tui::commands::workspace_dashboard::composer_execution_context(app) {
+            Ok(context) => context,
+            Err(error) => {
+                if app
+                    .prompt_state
+                    .session_submit_request
+                    .fail(request_id, error.to_string())
+                {
+                    apply_prompt_session_failure(
+                        app,
+                        request_id,
+                        &route,
+                        prompt,
+                        &error.to_string(),
+                    );
+                }
+                return;
+            }
+        };
+    if execution_context
+        .project_id
+        .as_deref()
+        .is_some_and(|project_id| project_id != session.project_id)
+        || execution_context
+            .workspace_id
+            .as_deref()
+            .is_some_and(|workspace_id| Some(workspace_id) != session.workspace_id.as_deref())
+    {
+        let error = "SessionCreate returned a session outside the captured workspace";
+        if app
+            .prompt_state
+            .session_submit_request
+            .fail(request_id, error.to_string())
+        {
+            apply_prompt_session_failure(app, request_id, &route, prompt, error);
+        }
+        return;
+    }
+
     let session = match crate::protocol_conversions::dto_to_session(session) {
         Ok(session) => session,
         Err(error) => {
@@ -205,7 +245,13 @@ pub(crate) fn apply_session_create_for_prompt(
         return;
     }
 
-    app.set_session(session);
+    // The create request was scoped to this captured workspace. Keep that
+    // daemon-resolved root; the session DTO's compatibility directory is not
+    // authority to rebind either the tab or its displayed session locator.
+    let workspace_root = execution_context.workspace_root;
+    let mut session = session;
+    session.directory = workspace_root.to_string_lossy().into_owned();
+    app.set_session_with_workspace_root(session, Some(workspace_root));
     // The user message was inserted by send_prompt before SessionCreate.
     // Submit the immutable captured text exactly once; never re-read the
     // latest message because another local edit may have happened meanwhile.
@@ -409,5 +455,40 @@ mod tests {
         assert!(app.session_state.session.is_none());
         assert!(!app.prompt_state.pending_send);
         assert_eq!(app.prompt_state.prompt.get_text(), initial_prompt);
+    }
+
+    #[test]
+    fn session_create_uses_captured_workspace_instead_of_compatibility_directory() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        let request_id = app.prompt_state.session_submit_request.begin();
+        let pending = pending(&app, request_id);
+        let route = pending.route.clone();
+        app.prompt_state.pending_session_submit = Some(pending);
+        app.prompt_state.pending_send = true;
+
+        apply_session_create_for_prompt(
+            &mut app,
+            request_id,
+            route,
+            "hello".to_string(),
+            Some(crate::protocol::dto::Session {
+                id: "created-session".to_string(),
+                directory: "/untrusted/compatibility/path".to_string(),
+                ..crate::protocol::dto::Session::default()
+            }),
+            None,
+        );
+
+        assert_eq!(
+            app.session_state.session.as_ref().unwrap().directory,
+            std::fs::canonicalize("/tmp")
+                .unwrap()
+                .to_string_lossy()
+                .as_ref()
+        );
+        assert_eq!(
+            app.project_tabs.active().unwrap().workspace_root,
+            Some(std::fs::canonicalize("/tmp").unwrap())
+        );
     }
 }

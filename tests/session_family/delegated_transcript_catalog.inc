@@ -277,6 +277,7 @@ async fn a_delegated_run_appears_in_no_session_enumeration_and_leaves_the_catalo
         max_tool_calls: None,
         parent_model: None,
         workspace_root: Some(std::env::current_dir().expect("workspace root")),
+        default_working_directory: None,
         workspace_id: None,
         workspace_locks: None,
         parent_sandbox_profile: None,

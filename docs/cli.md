@@ -58,6 +58,11 @@ codegg -m anthropic/claude-sonnet-4-20250514 --run "Explain this project"   # on
 | `-f`, `--format <text\|json>` | Output format for one-shot mode. `--output-format` is a compatibility alias. Default `text`. |
 | `-q`, `--quiet` | Hide status messages in non-interactive mode. |
 | `--cwd <DIRECTORY>` | Set the working directory before startup. Must exist, or the command fails. Equivalent to launching from that directory. |
+
+`--cwd` chooses the initial workspace. During a session, the model-facing
+`session_working_directory` tool can persist a default subdirectory within
+that workspace; it does not change project identity or the workspace security
+boundary. Use an authorized launch, fork, or session switch to change roots.
 | `-v` | Verbosity: no flag warn, `-v` info, `-vv` debug, `-vvv`+ trace. |
 | `--approval-mode <MODE>` | `interactive`, `automatic`, or `yolo`. |
 | `--sandbox <PROFILE>` | `read-only`, `workspace-write`, or `full-host`. |

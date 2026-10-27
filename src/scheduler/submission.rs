@@ -86,6 +86,8 @@ pub enum JobSubmissionError {
     /// created, so a refused submission leaves no job row and no attempt.
     #[error("process-class job refused: {0}")]
     ProcessDenied(String),
+    #[error("repository-scoped build admission requires verified repository lineage: {0}")]
+    RepositoryIdentityUnavailable(String),
 }
 
 #[derive(Clone)]
@@ -135,6 +137,8 @@ pub struct JobSubmissionService {
     /// ground.
     process_admission:
         parking_lot::RwLock<Option<Arc<codegg_core::process_admission::ProcessAdmissionService>>>,
+    context_resolver:
+        parking_lot::RwLock<Option<Arc<codegg_core::context::ProjectContextResolver>>>,
 }
 
 impl JobSubmissionService {
@@ -153,6 +157,7 @@ impl JobSubmissionService {
             idempotency: Mutex::new(HashMap::new()),
             created_sink: parking_lot::RwLock::new(None),
             process_admission: parking_lot::RwLock::new(None),
+            context_resolver: parking_lot::RwLock::new(None),
         })
     }
 
@@ -175,6 +180,7 @@ impl JobSubmissionService {
             idempotency: Mutex::new(HashMap::new()),
             created_sink: parking_lot::RwLock::new(None),
             process_admission: parking_lot::RwLock::new(None),
+            context_resolver: parking_lot::RwLock::new(None),
         })
     }
 
@@ -204,6 +210,15 @@ impl JobSubmissionService {
         service: Arc<codegg_core::process_admission::ProcessAdmissionService>,
     ) {
         *self.process_admission.write() = Some(service);
+    }
+
+    /// Install the daemon-owned project/workspace resolver used to bind
+    /// opt-in repository quotas from canonical catalog lineage.
+    pub fn set_context_resolver(
+        &self,
+        resolver: Arc<codegg_core::context::ProjectContextResolver>,
+    ) {
+        *self.context_resolver.write() = Some(resolver);
     }
 
     pub async fn workspace_id_for_root(
@@ -313,6 +328,40 @@ impl JobSubmissionService {
         }
 
         apply_resource_policy(&mut spec);
+        if matches!(spec.kind, JobKind::Build | JobKind::Format)
+            && self
+                .scheduler
+                .config()
+                .quota
+                .max_concurrent_builds_per_repository
+                .is_some()
+        {
+            let resolver = self.context_resolver.read().clone().ok_or_else(|| {
+                JobSubmissionError::RepositoryIdentityUnavailable(
+                    "project binding authority is unavailable".into(),
+                )
+            })?;
+            let repository_id = resolver
+                .repository_for_workspace(&spec.workspace_id)
+                .await
+                .map_err(|error| {
+                    JobSubmissionError::RepositoryIdentityUnavailable(error.to_string())
+                })?
+                .ok_or_else(|| {
+                    JobSubmissionError::RepositoryIdentityUnavailable(
+                        "workspace has no canonical repository identity".into(),
+                    )
+                })?;
+            spec.resource_request.keyed_quotas.retain(|quota| {
+                quota.namespace() != Some(ResourceClass::RepositoryBuild.namespace())
+            });
+            spec.resource_request
+                .keyed_quotas
+                .push(KeyedQuotaRequest::for_repository(
+                    ResourceClass::RepositoryBuild,
+                    &repository_id,
+                ));
+        }
         let mut labels = self.goal_provenance_labels(&spec).await?;
         for (name, value) in caller_labels {
             labels.entry(name).or_insert(value);
@@ -676,6 +725,54 @@ mod tests {
     };
     use std::sync::Arc;
 
+    struct RepositoryQuotaGateExecutor {
+        started: tokio::sync::mpsc::UnboundedSender<String>,
+        release: Arc<tokio::sync::Semaphore>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::scheduler::executor::JobExecutor for RepositoryQuotaGateExecutor {
+        fn kind(&self) -> crate::scheduler::executor::ExecutorKind {
+            crate::scheduler::executor::ExecutorKind::ManagedArgv
+        }
+
+        fn supports(&self, kind: JobKind) -> bool {
+            kind == JobKind::Build
+        }
+
+        async fn execute(
+            &self,
+            ctx: crate::scheduler::executor::JobExecutionContext,
+        ) -> crate::scheduler::executor::ExecutorCompletion {
+            let _ = self.started.send(ctx.workspace_id.to_string());
+            let _permit = self.release.clone().acquire_owned().await.unwrap();
+            crate::scheduler::executor::ExecutorCompletion {
+                status: crate::scheduler::executor::ExecutorStatus::Completed,
+                summary: "repository quota gate released".into(),
+                run_id: None,
+                metrics: Default::default(),
+            }
+        }
+    }
+
+    async fn wait_for_job_terminal(store: &dyn JobStore, job_id: &JobId) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if store
+                    .get_job(job_id)
+                    .await
+                    .expect("read submitted job")
+                    .is_some_and(|job| job.state.is_terminal())
+                {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("scheduler execution reaches terminal state");
+    }
+
     async fn goal_test_pool() -> sqlx::SqlitePool {
         use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
         use std::str::FromStr;
@@ -717,6 +814,261 @@ mod tests {
         .await
         .expect("insert session");
         pool
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn opt_in_repository_quota_is_bound_from_catalog_not_request_metadata() {
+        use std::process::Command;
+
+        let root = tempfile::tempdir().expect("workspace");
+        assert!(Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(root.path())
+            .status()
+            .expect("git init")
+            .success());
+        std::fs::write(root.path().join("README.md"), "repository quota fixture\n")
+            .expect("seed repository");
+        assert!(Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(root.path())
+            .status()
+            .expect("git add")
+            .success());
+        assert!(Command::new("git")
+            .args([
+                "-c",
+                "user.name=CodeGG Test",
+                "-c",
+                "user.email=codegg-test@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "fixture",
+            ])
+            .current_dir(root.path())
+            .status()
+            .expect("git commit")
+            .success());
+        assert!(Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://example.test/team/build.git"
+            ])
+            .current_dir(root.path())
+            .status()
+            .expect("git remote")
+            .success());
+
+        let pool = goal_test_pool().await;
+        let workspace_store: Arc<dyn codegg_core::workspace::WorkspaceStore> = Arc::new(
+            codegg_core::workspace::SqliteWorkspaceStore::new(pool.clone()),
+        );
+        let workspace_registry = WorkspaceRegistry::load(workspace_store.clone())
+            .await
+            .expect("workspace registry");
+        let workspace = workspace_registry
+            .get_or_register(root.path())
+            .await
+            .expect("register workspace");
+        let catalog = codegg_core::project_catalog::ProjectCatalog::new(pool.clone());
+        let project = catalog
+            .register_local_project(
+                codegg_core::project_catalog::RegisterLocalProject {
+                    display_name: "Build repository".into(),
+                    description: None,
+                    tags: Vec::new(),
+                    primary_repository_id: None,
+                },
+                &workspace.id,
+                "scheduler-submission-test",
+            )
+            .await
+            .expect("register project binding");
+        let project_binding = codegg_core::project_storage::ProjectStorage::new(pool.clone())
+            .workspace_binding(&workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let repository_id = project_binding.repository_id.unwrap();
+
+        let checkout_parent = tempfile::tempdir().expect("worktree parent");
+        let sibling_root = checkout_parent.path().join("sibling");
+        assert!(Command::new("git")
+            .args(["worktree", "add", "--detach"])
+            .arg(&sibling_root)
+            .arg("HEAD")
+            .current_dir(root.path())
+            .status()
+            .expect("create sibling linked worktree")
+            .success());
+        let sibling_workspace = workspace_registry
+            .get_or_register(&sibling_root)
+            .await
+            .expect("register sibling workspace");
+        codegg_core::project_storage::ProjectStorage::new(pool.clone())
+            .bind_checkout_workspace(
+                &sibling_workspace,
+                &project.project_id,
+                &repository_id,
+                &codegg_core::identity::WorktreeId::new(),
+                "scheduler-submission-test",
+            )
+            .await
+            .expect("bind sibling to the same repository lineage");
+        let resolver = Arc::new(codegg_core::context::ProjectContextResolver::new(
+            codegg_core::project_storage::ProjectStorage::new(pool.clone()),
+            catalog,
+            workspace_store,
+        ));
+
+        let services = WorkspaceServiceRegistry::new(
+            workspace_registry,
+            Arc::new(ProductionWorkspaceServicesFactory),
+            WorkspaceServicePolicy::default(),
+        );
+        let store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
+        let mut config = crate::scheduler::config::ResolvedSchedulerConfig::default();
+        config.quota.max_concurrent_builds_per_repository = Some(1);
+        let scheduler = JobScheduler::new(
+            store.clone(),
+            services.clone(),
+            config,
+            DaemonGeneration::new_unchecked("repository-quota-test"),
+        );
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        scheduler
+            .register_executor(Arc::new(RepositoryQuotaGateExecutor {
+                started: started_tx,
+                release: release.clone(),
+            }))
+            .await
+            .expect("register gated build executor");
+        let submission = JobSubmissionService::new(
+            store.clone(),
+            scheduler.clone(),
+            services,
+            DaemonGeneration::new_unchecked("repository-quota-test"),
+        );
+        submission.set_context_resolver(resolver.clone());
+
+        let mut build = spec(workspace.id.clone());
+        build.kind = JobKind::Build;
+        build.payload = JobPayload::ManagedArgv {
+            argv: vec!["cargo".into(), "check".into()],
+            cwd: Some(root.path().to_string_lossy().into_owned()),
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+        };
+        // Caller-supplied requests and labels cannot choose or suppress the
+        // host-derived repository scope.
+        build.resource_request.keyed_quotas =
+            vec![KeyedQuotaRequest::new("repository-build:fake", 1)];
+        let submitted = submission.submit(None, build).await.expect("submit build");
+        let persisted = store.get_job(&submitted.job_id).await.unwrap().unwrap();
+        let resolved_repository_id = resolver
+            .repository_for_workspace(&workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(persisted.resource_request.keyed_quotas.iter().any(|quota| {
+            quota.key == format!("repository-build:{}", resolved_repository_id.as_str())
+        }));
+        assert!(!persisted
+            .resource_request
+            .keyed_quotas
+            .iter()
+            .any(|quota| quota.key == "repository-build:fake"));
+
+        let mut sibling_build = spec(sibling_workspace.id.clone());
+        sibling_build.kind = JobKind::Build;
+        sibling_build.payload = JobPayload::ManagedArgv {
+            argv: vec!["cargo".into(), "check".into()],
+            cwd: Some(sibling_root.to_string_lossy().into_owned()),
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+        };
+        let sibling_submission = submission
+            .submit(None, sibling_build)
+            .await
+            .expect("submit sibling worktree build");
+        let sibling_persisted = store
+            .get_job(&sibling_submission.job_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            persisted
+                .resource_request
+                .keyed_quotas
+                .iter()
+                .find(|quota| quota.namespace() == Some("repository-build"))
+                .map(|quota| quota.key.as_str()),
+            sibling_persisted
+                .resource_request
+                .keyed_quotas
+                .iter()
+                .find(|quota| quota.namespace() == Some("repository-build"))
+                .map(|quota| quota.key.as_str()),
+            "distinct linked worktree workspaces must bind the same repository bucket"
+        );
+        assert_ne!(
+            persisted.workspace_id, sibling_persisted.workspace_id,
+            "the fixture must use distinct workspace identities"
+        );
+
+        scheduler.reconcile().await.expect("queue submitted builds");
+        assert_eq!(
+            Arc::clone(&scheduler).admit_and_dispatch_batch().await,
+            1,
+            "only one same-repository build may be admitted"
+        );
+        let first_workspace = started_rx
+            .recv()
+            .await
+            .expect("first repository build starts");
+        let first_job_id = if first_workspace == persisted.workspace_id.to_string() {
+            submitted.job_id.clone()
+        } else {
+            sibling_submission.job_id.clone()
+        };
+        let second_job_id = if first_workspace == persisted.workspace_id.to_string() {
+            sibling_submission.job_id.clone()
+        } else {
+            submitted.job_id.clone()
+        };
+        assert_eq!(
+            Arc::clone(&scheduler).admit_and_dispatch_batch().await,
+            0,
+            "the sibling build remains queued while the repository slot is held"
+        );
+        assert!(
+            scheduler.snapshot().await.admission_blocks.total > 0,
+            "the real scheduler records the repository quota wait"
+        );
+        assert!(
+            started_rx.try_recv().is_err(),
+            "the second workspace must not reach its executor early"
+        );
+
+        release.add_permits(1);
+        wait_for_job_terminal(&*store, &first_job_id).await;
+        scheduler.reconcile().await.expect("requeue waiting build");
+        assert_eq!(
+            Arc::clone(&scheduler).admit_and_dispatch_batch().await,
+            1,
+            "the queued sibling is admitted after the first execution releases its slot"
+        );
+        let second_workspace = started_rx
+            .recv()
+            .await
+            .expect("sibling repository build starts after release");
+        assert_ne!(first_workspace, second_workspace);
+        release.add_permits(1);
+        wait_for_job_terminal(&*store, &second_job_id).await;
     }
 
     fn spec(workspace_id: WorkspaceId) -> NewJob {

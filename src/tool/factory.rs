@@ -104,6 +104,8 @@ pub struct RuntimeAssetContext {
 /// immutable runtime-asset surface.
 #[derive(Default)]
 pub struct SessionToolContext {
+    /// Captured durable session default directory for this turn.
+    pub working_directory: Option<std::path::PathBuf>,
     pub submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
     pub agent_run_store: Option<Arc<dyn codegg_core::agent_run::AgentRunStore>>,
     pub run_control: Option<Arc<crate::agent::run_control::RunControlService>>,
@@ -183,6 +185,7 @@ pub fn build_session_tool_registry(
     session_context: SessionToolContext,
 ) -> (ToolRegistry, Arc<dyn ContextArtifactStore>) {
     let SessionToolContext {
+        working_directory,
         submission,
         agent_run_store,
         run_control,
@@ -306,6 +309,7 @@ pub fn build_session_tool_registry(
         command_intent: config.command_intent.clone(),
         windows_shell: config.shell.as_ref().and_then(|shell| shell.windows_shell),
         workspace_root: Some(execution.workspace_root.clone()),
+        working_directory: working_directory.clone(),
         child_git_policy: None,
         asset_snapshot: asset_context.snapshot,
         asset_pin: asset_context.pin,
@@ -324,6 +328,18 @@ pub fn build_session_tool_registry(
         // pre-spawn check see the same authority.
         process_admission: process_admission.clone(),
     });
+
+    if let (Some(pool), Some(session_id), Some(root)) = (
+        pool.clone(),
+        Some(session_id.to_owned()),
+        Some(execution.workspace_root.clone()),
+    ) {
+        tool_registry.register(
+            crate::tool::session_working_directory::SessionWorkingDirectoryTool::new(
+                pool, session_id, root,
+            ),
+        );
+    }
 
     // M005: register the model-facing checked LSP apply adapter only when
     // every daemon-owned dependency is present. The adapter shares the same
@@ -362,6 +378,7 @@ pub fn build_session_tool_registry(
             Vec::new(),
         )
         .with_parent_model(parent_model.clone())
+        .with_default_working_directory(working_directory.clone())
         .with_orchestration_config(config.orchestration.clone())
         .with_workspace_locks(workspace_locks)
         .with_turn_owner(session_id.to_string(), turn_id.clone().unwrap_or_default())

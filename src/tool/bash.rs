@@ -87,6 +87,9 @@ pub struct BashTool {
         Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
     pub(crate) routing_disabled_override: Option<bool>,
     pub(crate) workspace_root: Option<PathBuf>,
+    /// Per-turn default directory; workspace_root remains the independent
+    /// filesystem and sandbox ceiling.
+    pub(crate) default_workdir: Option<PathBuf>,
     /// Root of the isolated child-Git worktree, when the child Git policy is
     /// active. This is the ceiling `validate_child_workspace_command`
     /// enforces, and it is deliberately **separate** from `workspace_root`:
@@ -127,6 +130,7 @@ impl BashTool {
             asset_pin: None,
             routing_disabled_override: None,
             workspace_root: None,
+            default_workdir: None,
             child_workspace_ceiling: None,
             windows_shell: None,
             publication: None,
@@ -150,6 +154,11 @@ impl BashTool {
 
     pub fn with_workspace_root(mut self, root: PathBuf) -> Self {
         self.workspace_root = Some(root);
+        self
+    }
+
+    pub fn with_default_workdir(mut self, directory: PathBuf) -> Self {
+        self.default_workdir = Some(directory);
         self
     }
 
@@ -667,11 +676,31 @@ impl BashTool {
         };
         let execution_timeout = Duration::from_secs(timeout_secs.clamp(1, MAX_SHELL_TIMEOUT_SECS));
 
-        let workdir = input["workdir"].as_str().map(str::to_string).or_else(|| {
-            self.workspace_root
-                .as_ref()
-                .map(|root| root.to_string_lossy().into_owned())
-        });
+        let default_directory = self
+            .default_workdir
+            .as_ref()
+            .or(self.workspace_root.as_ref());
+        let workdir = match input["workdir"].as_str() {
+            Some(raw) => {
+                let requested = PathBuf::from(raw);
+                if requested.is_absolute() {
+                    Some(requested.to_string_lossy().into_owned())
+                } else {
+                    Some(
+                        default_directory
+                            .ok_or_else(|| ToolError::MissingWorkspaceRoot {
+                                context:
+                                    "bash received a relative workdir without a workspace root"
+                                        .to_owned(),
+                            })?
+                            .join(requested)
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
+                }
+            }
+            None => default_directory.map(|root| root.to_string_lossy().into_owned()),
+        };
 
         // Resolve canonical working directory
         let mut canonical_workdir: Option<PathBuf> = None;

@@ -710,6 +710,7 @@ paths = [
 targets = [
   "cached_models_composite_key",
   "continuation_checkpoint",
+  "session_working_directory",
   "session_title_slug",
 ]
 

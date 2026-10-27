@@ -1,6 +1,6 @@
 # Workspace Authority and Session Navigation Corrective Addendum
 
-Status: active (W001 closed; W002 ready; W003 not started; W004 blocked pending ADR-0055)
+Status: active (W001, W002, and W004 closed; W003 not started)
 
 Long-term references:
 
@@ -169,6 +169,7 @@ and the existing cross-session projection rather than inventing a transport.
 | W001 execution-side fail-closed authority | ADR-0033 (accepted) | interface | Contract is stable and accepted. No other unclosed dependency. |
 | W002 session-switch root rebinding | W001 | hard | Adopting a session root is only safe once no execution path silently substitutes a different directory. |
 | W003 workspace session navigation and cross-session pending decisions | W002 | hard | Switching workspaces from the dashboard must not reintroduce the W002 defect. Also depends on a cross-project session enumeration that does not exist today. |
+| W004 user-directed main-agent relative cwd | ADR-0055 Option A + W002 | hard | The default is session-relative within the immutable workspace ceiling; cross-root changes use the authorized session launch/fork/switch path. Both dependencies are closed. |
 
 W001 and W002 are ordered. W003 additionally requires a UX decision recorded in
 §10.
@@ -231,12 +232,12 @@ W001 and W002 are ordered. W003 additionally requires a UX decision recorded in
   - A test drives a two-session scenario where one session holds a pending
     approval and asserts it is listed, selectable, and answerable.
 
-### Milestone W004 — User-directed main-agent relative working directory (blocked)
+### Milestone W004 — User-directed main-agent relative working directory (closed)
 
 - **Class:** capability; separate from W002's session-navigation invariant and W003's workspace-dashboard navigation.
 - **Objective:** Permit a user to request a persistent default **subdirectory within the already-authorized session root** for future main-agent tools, with an explicit `get|set|reset` contract. Requests crossing a repo/checkout boundary use the existing authorized session new/fork/switch pathway, not a daemon-global `chdir` or an unguarded in-place session/project rebind.
-- **Blocking decision:** `plans/adrs/ADR-0055-session-relative-working-directory-authority.md` is **proposed**, not accepted. W002 must also strictly close before W004 implementation.
-- **Plan:** `plans/implementation/workspace-authority-and-session-navigation/004-user-directed-main-agent-relative-cwd.md` (**blocked**).
+- **Dependencies:** `plans/adrs/ADR-0055-session-relative-working-directory-authority.md` Option A was accepted on 2026-10-27; W002 strictly closed. See `plans/closure/workspace-authority-and-session-navigation/002-status.md` and `004-status.md`.
+- **Plan:** `plans/implementation/workspace-authority-and-session-navigation/004-user-directed-main-agent-relative-cwd.md` (**closed**).
 - **Exit conditions:** the effective cwd is distinct from the immutable workspace security ceiling; tools and UI agree after a session/turn boundary, reconnect and restart; a model-created change cannot widen permissions or retarget in-flight tasks; cross-root intents produce an authorized new/fork/select operation or a typed refusal. No automatic cross-project identity mutation.
 - **Non-goals:** arbitrary path adoption, unrestricted shared writers, a new daemon-process cwd, or W003's optional dashboard UX.
 
@@ -244,7 +245,9 @@ W001 and W002 are ordered. W003 additionally requires a UX decision recorded in
 
 ### Storage and migration
 
-None. No schema change. W003 reads existing registry and projection state.
+W001–W003 add no schema change. W004 adds the session-keyed, revisioned
+`session_working_directory` table in migration v91; existing sessions resolve
+to `.` at revision 0. No workspace/project binding is rewritten.
 
 ### Protocol and compatibility
 
@@ -276,11 +279,12 @@ declined to guess.
 
 ### Documentation and operations
 
-`docs/daemon.md` and `architecture/session.md` currently contain no statement of
-daemon cwd inheritance. That fact must be documented, including that the daemon's
-launch directory is deliberately not a tool-execution input after W001.
-`architecture/tui.md` §file-tree root resolution must be reconciled with the
-turn/tab root so the two are not read as the same contract.
+W001/W002/W004 updated `architecture/session.md`, `architecture/workspace.md`,
+`architecture/storage.md`, `docs/tui.md`, `docs/tools.md`, `docs/cli.md`, and
+`docs/configuration.md`. They state that daemon launch cwd is not an execution
+input, session switching rebinds the selected tab, and the persistent relative
+default does not replace the workspace security ceiling. W003 must preserve
+those distinctions when its dashboard capability is planned.
 
 ## 9. Verification strategy
 
@@ -322,6 +326,6 @@ discoverable and answerable through the workspace surface.
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | W001 | closed | `plans/implementation/workspace-authority-and-session-navigation/001-workspace-root-execution-authority.md` | `plans/closure/workspace-authority-and-session-navigation/001-status.md` | None |
-| W002 | not started | — | — | W001 |
+| W002 | closed | `plans/implementation/workspace-authority-and-session-navigation/002-session-switch-root-rebinding.md` | `plans/closure/workspace-authority-and-session-navigation/002-status.md` | None; W001 strictly closed |
 | W003 | not started | — | — | W002; UX decision (§10) |
-| W004 | blocked | `plans/implementation/workspace-authority-and-session-navigation/004-user-directed-main-agent-relative-cwd.md` | — | W002 strict closure; ADR-0055 acceptance |
+| W004 | closed | `plans/implementation/workspace-authority-and-session-navigation/004-user-directed-main-agent-relative-cwd.md` | `plans/closure/workspace-authority-and-session-navigation/004-status.md` | None; ADR-0055 Option A and W002 strict closure satisfied |

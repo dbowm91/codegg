@@ -1213,14 +1213,15 @@ impl JobScheduler {
             AdmissionDecision::Admitted(p) => p,
             AdmissionDecision::TemporarilyBlocked(reason) => {
                 self.admission_blocks.fetch_add(1, Ordering::SeqCst);
+                let diagnostic = reason.safe_diagnostic();
                 {
-                    let label = format!("{:?}", reason);
+                    let label = format!("{:?}", diagnostic);
                     let mut reasons = self.admission_block_reasons.lock().await;
                     *reasons.entry(label).or_insert(0) += 1;
                 }
                 self.emit_event(SchedulerEvent::AdmissionBlocked {
                     job_id: job.job_id.to_string(),
-                    reason,
+                    reason: diagnostic,
                 })
                 .await;
                 // Re-insert the entry so we try again next tick.

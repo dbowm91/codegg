@@ -138,7 +138,7 @@ Methods:
 
 ### STORAGE_LAYOUT_VERSION
 
-The current layout version is **88**, defined by
+The current layout version is **91**, defined by
 `storage::STORAGE_LAYOUT_VERSION` (`storage/mod.rs:56`), and must track the
 highest migration wired into the
 canonical schema path in `session/schema.rs` (see
@@ -146,6 +146,11 @@ canonical schema path in `session/schema.rs` (see
 `tests/core_daemon/storage_migrations.inc` equality assertion). It is exported and
 referenced from `MigrationMarker.storage_layout_version` for the migration
 tooling that imports legacy project databases.
+
+Migration 91 adds `session_working_directory`, a session-keyed relative path
+and compare-and-set revision for ADR-0055 Option A. The path is only a
+locator; each turn resolves it beneath the session's unchanged canonical
+workspace root and refuses a missing or escaping directory.
 
 Version 84 adds one additive nullable column, `runtime_preferences.reasoning_selection`,
 holding the daemon-owned extended-thinking selection (provider reasoning

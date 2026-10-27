@@ -6,6 +6,20 @@ from MCP servers and plugins, and pulls deterministic validators from the
 `eggsact` crate. This page is the map. For what any one tool may actually do,
 see `architecture/` and the per-module docs.
 
+## Session working directory
+
+`session_working_directory` gets, sets, or resets the persistent default
+directory for the current session. `set` accepts an existing workspace-relative
+directory and requires the revision returned by `get`; a stale revision is
+refused. The tool reports the relative directory separately from its absolute
+path. Changes are captured by later turns, so in-flight commands retain the
+directory they started with. File and Git tools resolve relative paths from
+that captured directory. Bash, test, and Python execution use it when their
+call omits `workdir`; explicit per-call paths and `workdir` values take
+precedence. The session's original workspace root stays
+the authorization and sandbox ceiling. To work in another repository or
+managed checkout, use an authorized launch, fork, or session switch.
+
 ## How a tool call is gated
 
 Every production tool call — whether it came from the agent loop or from a Tool

@@ -430,6 +430,42 @@ impl TurnRuntime for DefaultTurnRuntime {
         let canonical_session_id = codegg_core::context::SessionId::parse(&session_id)
             .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
         let session_id = canonical_session_id.as_str().to_owned();
+        // Each turn captures the durable session default once. If the stored
+        // directory has disappeared or now resolves outside its immutable
+        // workspace, refuse the turn rather than silently reverting to root.
+        let working_directory = match (pool.as_ref(), execution.workspace_root.canonicalize()) {
+            (Some(pool), Ok(root)) => {
+                let state = codegg_core::session::SessionWorkingDirectoryStore::new(pool.clone())
+                    .get(&session_id)
+                    .await
+                    .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                let candidate = root.join(&state.relative_path);
+                let canonical = candidate.canonicalize().map_err(|_| {
+                    AppError::Other(anyhow::anyhow!(
+                        "stored session working directory is unavailable; reset it before continuing"
+                    ))
+                })?;
+                if !canonical.starts_with(&root) || !canonical.is_dir() {
+                    return Err(AppError::Other(anyhow::anyhow!(
+                        "stored session working directory is outside the session workspace"
+                    )));
+                }
+                Some(canonical)
+            }
+            (None, Ok(root)) => Some(root),
+            (_, Err(error)) => {
+                return Err(AppError::Other(anyhow::anyhow!(
+                    "session workspace root is unavailable: {error}"
+                )))
+            }
+        };
+        let execution = execution
+            .with_working_directory(working_directory.clone().ok_or_else(|| {
+                AppError::Other(anyhow::anyhow!(
+                    "session working directory was not resolved"
+                ))
+            })?)
+            .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
         let session_scratch = crate::scratch::session_scratch_dir(&session_id)
             .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
         let mut provider_context = ProviderRequestContext {
@@ -615,6 +651,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             Some(model.clone()),
             Arc::clone(&execution),
             crate::tool::factory::SessionToolContext {
+                working_directory: working_directory.clone(),
                 submission: submission.clone(),
                 agent_run_store: Some(agent_run_store.clone()),
                 run_control: Some(run_control.clone()),

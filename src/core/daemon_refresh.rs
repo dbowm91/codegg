@@ -1167,6 +1167,10 @@ impl CoreDaemon {
             });
             dto.project_id = context.project_id.as_str().to_string();
             dto.workspace_id = Some(context.workspace_id.as_str().to_string());
+            // The legacy directory field remains in the wire DTO, but when
+            // the daemon has resolved the canonical binding it must carry
+            // that root rather than the session row's compatibility locator.
+            dto.directory = context.workspace_root.to_string_lossy().into_owned();
         }
         dto
     }

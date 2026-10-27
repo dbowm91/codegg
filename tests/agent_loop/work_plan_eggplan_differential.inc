@@ -154,6 +154,7 @@ fn subagent_payload() -> JobPayload {
         delegation_key: "dk-1".into(),
         base_commit: None,
         placement: codegg_core::run_placement::RunPlacement::Auto,
+        default_working_directory: None,
     }
 }
 

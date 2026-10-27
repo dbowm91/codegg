@@ -104,6 +104,7 @@ pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::Age
         writer_fence,
         input.process_admission.clone(),
     );
+    agent_loop.set_working_directory(input.execution.working_directory.clone());
     agent_loop.set_turn_id(input.turn_id);
     agent_loop.set_provider_registry(input.provider_registry);
     agent_loop.set_workspace_id(input.execution.workspace_id.clone());

@@ -790,11 +790,12 @@ impl ToolBroker {
         &self,
         registry: &ToolRegistry,
         tool_name: &str,
-        input: serde_json::Value,
+        mut input: serde_json::Value,
         mut ctx: BrokerInvocationContext,
         retry: Option<crate::provider::RetryContext>,
     ) -> Result<BrokerResult, BrokerError> {
         let invocation_id = uuid::Uuid::new_v4().to_string();
+        registry.apply_working_directory_defaults(tool_name, &mut input);
 
         // Step 1: lookup contract (catalog, no lock needed)
         let contract = self.lookup_contract(tool_name)?.clone();

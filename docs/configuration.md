@@ -30,6 +30,15 @@ passed to `--config`, and exits 1 with a message otherwise. With no `--config`
 it validates the auto-detected config and prints `Configuration is valid.`
 without naming a path.
 
+Scheduler build admission always has a per-workspace limit of one by default.
+To additionally limit concurrent Build and Format jobs across linked
+workspaces in the same repository, set
+`scheduler.quota.max_concurrent_builds_per_repository` to a positive integer.
+This repository-wide limit is opt-in; a workspace without a resolved
+repository binding is refused when the option is enabled. The quota does not
+classify arbitrary Bash, tests, or other external processes as builds. See
+[`build_admission.md`](../architecture/build_admission.md).
+
 ## Where configuration is read from
 
 All of these layers are loaded and **merged** — this is not first-match-wins.

@@ -185,6 +185,7 @@ impl Fixture {
             delegation_key: format!("delegation-{}", run_id.as_str()),
             base_commit: None,
             placement: Default::default(),
+            default_working_directory: None,
         };
         self.attempts
             .append_attempt(NewAgentRunAttempt {
@@ -728,6 +729,7 @@ async fn the_delegated_job_is_still_no_retry_and_non_idempotent() {
             delegation_key: "delegation-c004".into(),
             base_commit: None,
             placement: Default::default(),
+            default_working_directory: None,
         },
         resource_request: codegg_core::jobs::ResourceRequest::for_kind(
             codegg_core::jobs::JobKind::Subagent,
@@ -890,6 +892,7 @@ async fn the_continuation_does_not_touch_the_delegated_jobs_retry_policy() {
                 delegation_key: "delegation-c004#continue#2".into(),
                 base_commit: None,
                 placement: Default::default(),
+                default_working_directory: None,
             },
             resource_request: codegg_core::jobs::ResourceRequest::for_kind(
                 codegg_core::jobs::JobKind::Subagent,

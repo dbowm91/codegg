@@ -35,6 +35,8 @@ pub enum SchedulerConfigError {
     InvalidClaimBatch,
     #[error("max_concurrent_builds_per_workspace must be > 0 when scheduler enabled")]
     ZeroBuildQuota,
+    #[error("max_concurrent_builds_per_repository must be > 0 when configured")]
+    ZeroRepositoryBuildQuota,
 }
 
 /// Resolved configuration. All `Option`s are filled and validated; the
@@ -132,6 +134,9 @@ pub struct FairnessWeights {
 pub struct QuotaPolicy {
     /// Maximum concurrent build-class slots per canonical workspace.
     pub max_concurrent_builds_per_workspace: u32,
+    /// Optional aggregate build-class slots per canonical repository.
+    /// `None` preserves the historical workspace-only policy.
+    pub max_concurrent_builds_per_repository: Option<u32>,
 }
 
 impl Default for ResolvedSchedulerConfig {
@@ -164,6 +169,7 @@ impl Default for ResolvedSchedulerConfig {
             },
             quota: QuotaPolicy {
                 max_concurrent_builds_per_workspace: 1,
+                max_concurrent_builds_per_repository: None,
             },
             remote_node_capacity: HashMap::new(),
         }
@@ -243,6 +249,7 @@ impl ResolvedSchedulerConfig {
             if let Some(v) = q.max_concurrent_builds_per_workspace {
                 out.quota.max_concurrent_builds_per_workspace = v;
             }
+            out.quota.max_concurrent_builds_per_repository = q.max_concurrent_builds_per_repository;
         }
         if out.enabled {
             Self::validate(&out)?;
@@ -293,6 +300,9 @@ impl ResolvedSchedulerConfig {
         }
         if self.quota.max_concurrent_builds_per_workspace == 0 {
             return Err(SchedulerConfigError::ZeroBuildQuota);
+        }
+        if self.quota.max_concurrent_builds_per_repository == Some(0) {
+            return Err(SchedulerConfigError::ZeroRepositoryBuildQuota);
         }
         for (name, w) in [
             ("interactive_weight", self.fairness.interactive_weight),
@@ -353,5 +363,38 @@ mod tests {
     fn from_input_none_returns_default() {
         let cfg = ResolvedSchedulerConfig::from_input(None).unwrap();
         assert_eq!(cfg, ResolvedSchedulerConfig::default());
+    }
+
+    #[test]
+    fn repository_build_quota_is_opt_in_and_rejects_zero() {
+        let default = ResolvedSchedulerConfig::from_input(None).unwrap();
+        assert_eq!(default.quota.max_concurrent_builds_per_repository, None);
+
+        let configured = SchedulerConfig {
+            quota: Some(codegg_config::SchedulerQuotaConfig {
+                max_concurrent_builds_per_repository: Some(2),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            ResolvedSchedulerConfig::from_input(Some(&configured))
+                .unwrap()
+                .quota
+                .max_concurrent_builds_per_repository,
+            Some(2)
+        );
+
+        let zero = SchedulerConfig {
+            quota: Some(codegg_config::SchedulerQuotaConfig {
+                max_concurrent_builds_per_repository: Some(0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(matches!(
+            ResolvedSchedulerConfig::from_input(Some(&zero)),
+            Err(SchedulerConfigError::ZeroRepositoryBuildQuota)
+        ));
     }
 }

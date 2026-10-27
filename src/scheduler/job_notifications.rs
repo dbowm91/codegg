@@ -2198,6 +2198,7 @@ mod tests {
             delegation_key: "agent-delegation-c001".into(),
             base_commit: None,
             placement: Default::default(),
+            default_working_directory: None,
         };
         job
     }

@@ -839,7 +839,7 @@ mod tests {
         let now = chrono::Utc::now();
         let workspace = codegg_core::workspace::WorkspaceRecord {
             id: codegg_core::workspace::WorkspaceId::new(),
-            canonical_root: std::path::PathBuf::from("/tmp"),
+            canonical_root: tokio::fs::canonicalize("/tmp").await.unwrap(),
             display_name: "Core test workspace".to_string(),
             created_at: now,
             last_opened_at: now,

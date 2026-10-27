@@ -42,6 +42,7 @@ fn delegated_job_record(job_id: &str, run_id: &str, session: &str) -> JobRecord 
             delegation_key: "agent-delegation-c001".into(),
             base_commit: None,
             placement: Default::default(),
+            default_working_directory: None,
         },
         resource_request: codegg_core::jobs::ResourceRequest::for_kind(JobKind::Subagent),
         state: JobState::Completed,

@@ -2546,6 +2546,9 @@ pub struct SchedulerQuotaConfig {
     /// pre-M007 behaviour of one build-class job at a time within a
     /// workspace while letting unrelated workspaces build concurrently.
     pub max_concurrent_builds_per_workspace: Option<u32>,
+    /// Optional aggregate build-class ceiling per canonical repository.
+    /// Absent disables repository-wide admission and preserves the M007 policy.
+    pub max_concurrent_builds_per_repository: Option<u32>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]

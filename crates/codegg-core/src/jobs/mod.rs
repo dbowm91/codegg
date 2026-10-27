@@ -732,8 +732,8 @@ pub struct ResourceRequest {
     /// M007: typed keyed quota slots.
     ///
     /// A quota is a *counted* bound scoped to a host-computed key
-    /// (currently a canonical `WorkspaceId`), where an exclusivity key
-    /// is a binary mutex over a name. The field is serde-defaulted so a
+    /// (a canonical `WorkspaceId` or an opt-in `RepositoryId`), where an
+    /// exclusivity key is a binary mutex over a name. The field is serde-defaulted so a
     /// request persisted before M007 decodes unchanged and keeps its
     /// historical admission.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1219,6 +1219,10 @@ pub enum JobPayload {
         /// anyway. The shared profile is opt-in and is never inferred.
         #[serde(default)]
         placement: crate::run_placement::RunPlacement,
+        /// Session-relative default directory captured by the dispatching
+        /// turn; a child applies it beneath its own authorized workspace.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        default_working_directory: Option<String>,
     },
     Test {
         command: String,

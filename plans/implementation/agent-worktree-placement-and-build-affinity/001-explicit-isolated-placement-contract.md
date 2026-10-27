@@ -1,6 +1,6 @@
 # Agent Worktree Placement and Build Affinity A001 — Explicit Isolated Placement Contract
 
-Status: **ready for handoff**
+Status: **conditionally closed** — closure `plans/closure/agent-worktree-placement-and-build-affinity/001-status.md`; contained-creator live success remains open
 Repository baseline: `80171f45295bebb9ab0b521262c0b295acb93074`
 Source roadmap: `plans/subsystems/agent-worktree-placement-and-build-affinity-corrective-addendum.md` A001
 Long-term: `plans/000-long-term-specification.md` §§16–18, 26–29; `plans/001-terminology-and-domain-model.md`.

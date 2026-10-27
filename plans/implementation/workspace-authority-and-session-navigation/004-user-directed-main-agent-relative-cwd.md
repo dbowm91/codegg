@@ -1,16 +1,16 @@
 # Workspace Authority and Session Navigation W004 — User-Directed Main-Agent Relative CWD
 
-Status: **blocked** — W002 strict closure and proposed ADR-0055 acceptance required
+Status: **closed** — closure `plans/closure/workspace-authority-and-session-navigation/004-status.md`; ADR-0055 Option A accepted 2026-10-27
 Repository baseline: `80171f45295bebb9ab0b521262c0b295acb93074`
 Source roadmap: `plans/subsystems/workspace-authority-and-session-navigation-corrective-addendum.md` W004 (addendum)
 Long-term: `plans/000-long-term-specification.md` §§6, 9, 17, 26–29; `plans/001-terminology-and-domain-model.md`
-Applicable: accepted ADR-0033; **proposed** `plans/adrs/ADR-0055-session-relative-working-directory-authority.md`. Primary class: **capability**.
+Applicable: accepted ADR-0033 and ADR-0055 Option A. Primary class: **capability**.
 
 ## 1. Objective
 Give the main agent a host-authorized, user-observable way to request **persistent default working-directory changes inside its session's existing workspace** without changing daemon cwd, identity or security ceiling. Crossing to a different repository or managed checkout uses the existing authorized session launch/fork/switch path and must not silently rewrite an active session.
 
-## 2. Why blocked
-W001 solved implicit daemon-cwd fallback, but W002 has not yet qualified session-switch root adoption. ADR-0055's design and authorization decision has not been accepted. Do **not** implement an ad-hoc `cd` tool or opportunistically rebind `SessionRuntime.workspace_root`.
+## 2. Why ready
+W001 and W002 are strictly closed, and the user accepted ADR-0055 Option A. The implementation keeps the session workspace root as the security ceiling and adds only a session-relative default.
 
 ## 3. Current evidence
 `src/tool/bash.rs` accepts per-call `workdir` with session-root default, and command `cd` lives only in its subprocess. `src/tui/app/state/execution_context.rs` snapshots a tab's workspace root at dispatch. `SessionLaunchService` supports a new/fork session in a new/existing **managed** checkout. No model-facing durable `get|set|reset` session-relative cwd or canonical cross-project workspace-transfer request is present.

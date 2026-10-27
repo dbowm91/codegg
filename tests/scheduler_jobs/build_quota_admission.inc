@@ -23,6 +23,7 @@ fn config_with_build_limit(limit: u32) -> ResolvedSchedulerConfig {
     ResolvedSchedulerConfig {
         quota: QuotaPolicy {
             max_concurrent_builds_per_workspace: limit,
+            max_concurrent_builds_per_repository: None,
         },
         ..ResolvedSchedulerConfig::default()
     }
@@ -36,12 +37,140 @@ fn build_quota(workspace: &str) -> KeyedQuotaRequest {
     KeyedQuotaRequest::for_workspace(ResourceClass::Build, &WorkspaceId::new_unchecked(workspace))
 }
 
+fn repository_quota(repository: &str) -> KeyedQuotaRequest {
+    KeyedQuotaRequest::for_repository(
+        ResourceClass::RepositoryBuild,
+        &codegg_core::identity::RepositoryId::parse(repository).unwrap(),
+    )
+}
+
+fn controller_with_repository_limit(limit: Option<u32>) -> std::sync::Arc<AdmissionController> {
+    let mut config = config_with_build_limit(2);
+    config.quota.max_concurrent_builds_per_repository = limit;
+    std::sync::Arc::new(AdmissionController::new(config))
+}
+
 #[test]
 fn a_build_quota_is_scoped_to_its_workspace() {
     let request = build_quota("ws-a");
     assert_eq!(request.namespace(), Some("build"));
     assert_eq!(request.scope(), "ws-a");
     assert!(request.is_valid());
+}
+
+#[test]
+fn sibling_workspaces_share_repository_build_quota_but_other_repositories_do_not() {
+    let controller = controller_with_repository_limit(Some(1));
+    let sibling_a = permit_from_request_with_quotas(
+        1,
+        512,
+        1,
+        1,
+        0,
+        vec![],
+        vec![build_quota("ws-a"), repository_quota("repo-shared")],
+    );
+    let sibling_b = permit_from_request_with_quotas(
+        1,
+        512,
+        1,
+        1,
+        0,
+        vec![],
+        vec![build_quota("ws-b"), repository_quota("repo-shared")],
+    );
+    let unrelated = permit_from_request_with_quotas(
+        1,
+        512,
+        1,
+        1,
+        0,
+        vec![],
+        vec![build_quota("ws-c"), repository_quota("repo-other")],
+    );
+    let _first = match controller.try_admit_arc(&sibling_a) {
+        AdmissionDecision::Admitted(guard) => guard,
+        other => panic!("expected first build admission, got {other:?}"),
+    };
+    assert!(matches!(
+        controller.try_admit_arc(&sibling_b),
+        AdmissionDecision::TemporarilyBlocked(BlockReason::QuotaContended { key, .. })
+            if key == "repository-build:repo-shared"
+    ));
+    let _unrelated = match controller.try_admit_arc(&unrelated) {
+        AdmissionDecision::Admitted(guard) => guard,
+        other => panic!("unrelated repository must remain concurrent: {other:?}"),
+    };
+}
+
+#[test]
+fn duplicate_quota_keys_are_aggregated_before_admission() {
+    let controller = controller_with_repository_limit(Some(1));
+    let dimensions = permit_from_request_with_quotas(
+        1,
+        512,
+        1,
+        1,
+        0,
+        vec![],
+        vec![
+            repository_quota("repo-shared"),
+            repository_quota("repo-shared"),
+        ],
+    );
+    assert!(matches!(
+        controller.try_admit_arc(&dimensions),
+        AdmissionDecision::Impossible(UnschedulableReason::QuotaExceedsLimit {
+            key, requested: 2, limit: 1
+        }) if key == "repository-build:repo-shared"
+    ));
+    assert!(controller.snapshot().held_quotas.is_empty());
+}
+
+#[test]
+fn repository_quota_is_opt_in_and_unknown_request_is_refused() {
+    let controller = controller_with_repository_limit(None);
+    let dimensions = permit_from_request_with_quotas(
+        1,
+        512,
+        1,
+        1,
+        0,
+        vec![],
+        vec![repository_quota("repo-shared")],
+    );
+    assert!(matches!(
+        controller.try_admit_arc(&dimensions),
+        AdmissionDecision::Impossible(UnschedulableReason::UnknownQuotaNamespace { namespace })
+            if namespace == "repository-build"
+    ));
+}
+
+#[test]
+fn arbitrary_bash_and_unsupported_process_kinds_do_not_get_repository_build_quota() {
+    for kind in [
+        JobKind::Shell,
+        JobKind::Test,
+        JobKind::Lint,
+        JobKind::ManagedProcess,
+        JobKind::Python,
+        JobKind::ToolProgram,
+    ] {
+        assert_eq!(
+            ResourceClass::for_job_kind(kind),
+            None,
+            "{kind:?} is not inspected as a build route"
+        );
+    }
+    let policy = controller_with_repository_limit(Some(1));
+    let dimensions = permit_from_request(1, 512, 1, 1, 0, vec![]);
+    assert!(
+        matches!(
+            policy.try_admit_arc(&dimensions),
+            AdmissionDecision::Admitted(_)
+        ),
+        "unsupported routes retain their existing resource profile"
+    );
 }
 
 #[test]
@@ -219,15 +348,29 @@ fn cancelling_a_waiting_job_releases_only_its_own_queue_request() {
 
 #[test]
 fn a_cancelled_running_job_releases_its_quota_when_the_permit_drops() {
-    let controller = controller(1);
-    let dimensions =
-        permit_from_request_with_quotas(1, 512, 1, 1, 0, vec![], vec![build_quota("ws-a")]);
+    let controller = controller_with_repository_limit(Some(1));
+    let dimensions = permit_from_request_with_quotas(
+        1,
+        512,
+        1,
+        1,
+        0,
+        vec![],
+        vec![build_quota("ws-a"), repository_quota("repo-shared")],
+    );
     let held = match controller.try_admit_arc(&dimensions) {
         AdmissionDecision::Admitted(guard) => guard,
         other => panic!("expected Admitted, got {other:?}"),
     };
     assert_eq!(
         controller.snapshot().held_quotas.get("build:ws-a"),
+        Some(&1)
+    );
+    assert_eq!(
+        controller
+            .snapshot()
+            .held_quotas
+            .get("repository-build:repo-shared"),
         Some(&1)
     );
     // The permit guard is dropped when the executor's process lifetime

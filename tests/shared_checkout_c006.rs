@@ -1196,6 +1196,7 @@ async fn two_members_placed_through_the_real_scheduler_share_one_checkout() {
                         placement: RunPlacement::SerializedShared {
                             group_id: shared.group_id.clone(),
                         },
+                        default_working_directory: None,
                     },
                     resource_request: ResourceRequest::default(),
                     timeout: None,

@@ -294,6 +294,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 90 {
         migrate_and_record(pool, 90).await?;
     }
+    if current_version < 91 {
+        migrate_and_record(pool, 91).await?;
+    }
 
     Ok(())
 }
@@ -396,6 +399,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             88 => migrate_v88(&mut tx).await?,
             89 => migrate_v89(&mut tx).await?,
             90 => migrate_v90(&mut tx).await?,
+            91 => migrate_v91(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -427,6 +431,23 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             Err(e)
         }
     }
+}
+
+/// Session-relative working-directory overrides (ADR-0055 Option A).
+async fn migrate_v91(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS session_working_directory (
+            session_id TEXT PRIMARY KEY,
+            relative_path TEXT NOT NULL,
+            revision INTEGER NOT NULL CHECK (revision >= 1),
+            updated_at_ms INTEGER NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+        )"#,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    Ok(())
 }
 
 /// Attempt-scoped execution subject provenance. NULL is intentionally retained

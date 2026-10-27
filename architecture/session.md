@@ -29,6 +29,7 @@ session/
 ├── continuation.rs      # Durable continuation checkpoints (M001+M004):
 │                        # typed payload/envelope, lineage, digest,
 │                        # ContinuationCheckpointStore + prepare_with_id
+├── working_directory.rs # Per-session relative default and CAS revision
 ├── human_shell_promotion.rs # Bounded, redacted human-shell staging
 │                        # records (human execution C004)
 ├── user_prompt_queue.rs # Durable user prompt queue (M002a/M002b/M003/M007)
@@ -57,8 +58,8 @@ transaction. The `migration_version` table tracks the current version.
 On startup, `migrate()` checks the version and runs all unapplied
 migrations in order.
 
-Migrations create and evolve **95 CREATE TABLE statements** covering
-**91 tables** (92 distinct `CREATE TABLE` names, less the transient
+Migrations create and evolve **96 CREATE TABLE statements** covering
+**92 tables** (93 distinct `CREATE TABLE` names, less the transient
 `origin_attribution_new` rebuild name; `migration_version`,
 `origin_attribution`, and that rebuild name each appear twice) across
 these table groups:
@@ -412,6 +413,13 @@ same row-preserving rebuild pattern as v61).
 `workstream_claim`, `workstream_claim_dependency`, `workstream_claim_event`
 — Agent Workstream Blackboard M003. Intent only: these records never grant
 filesystem, Git, sandbox, or scheduler authority.
+
+**Session working directory (v91, ADR-0055 Option A):**
+`session_working_directory` stores the persistent relative default for one
+session. Its revision is compared and advanced atomically on set/reset; the
+workspace root remains the authority ceiling and is not stored in this table.
+Sessions without a row resolve to `.` at revision zero. Deleting a session
+cascades to its row.
 
 **Managed scratch, writer permits, and the launch saga (v83–v87):**
 `agent_scratch_resource` + `agent_scratch_attempt_lease` with

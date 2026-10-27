@@ -403,6 +403,15 @@ pub enum TuiCommand {
         title: Option<String>,
         error: Option<String>,
     },
+    /// Completion of the daemon-authorized session binding read used before
+    /// changing the active tab's execution root.
+    SessionActivated {
+        request_id: u64,
+        tab_id: String,
+        session: Option<crate::session::Session>,
+        workspace_root: Option<std::path::PathBuf>,
+        error: Option<String>,
+    },
     /// Completion for daemon-owned Eggpool provisioning. The result is
     /// secret-free; the API key is never carried in a TUI command.
     EggpoolConnectionFinished {

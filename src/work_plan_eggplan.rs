@@ -1654,6 +1654,7 @@ mod tests {
             delegation_key: "dk".to_string(),
             base_commit: None,
             placement: codegg_core::run_placement::RunPlacement::Auto,
+            default_working_directory: None,
         };
         let mut first = test_job_record();
         first.payload = payload(

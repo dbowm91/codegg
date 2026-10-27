@@ -267,6 +267,7 @@ fn request(run_id: AgentRunId, prompt: &str) -> SubAgentRequest {
         max_tool_calls: None,
         parent_model: None,
         workspace_root: Some(std::env::current_dir().expect("workspace root")),
+        default_working_directory: None,
         workspace_id: None,
         workspace_locks: None,
         parent_sandbox_profile: None,

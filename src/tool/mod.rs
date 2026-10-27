@@ -58,6 +58,7 @@ pub mod review;
 pub mod risk;
 pub mod security;
 pub mod security_search;
+pub mod session_working_directory;
 pub mod skill;
 pub mod skill_proposal;
 pub mod task;
@@ -353,6 +354,7 @@ pub struct ToolRegistry {
     /// profile — an ordinary session, a CLI run, a test harness. Such an
     /// execution starts processes exactly as it did before C005.
     process_admission: Option<crate::tool::process_admission::SharedProcessAdmission>,
+    default_working_directory: Option<std::path::PathBuf>,
 }
 
 impl Default for ToolRegistry {
@@ -453,6 +455,9 @@ pub struct ToolRegistryOptions {
     /// should always set this; older call sites that omit it are
     /// tracked by the `check_daemon_cwd_usage` static guard.
     pub workspace_root: Option<std::path::PathBuf>,
+    /// Canonical per-turn session default directory. This is a default only;
+    /// `workspace_root` remains the path authorization and sandbox ceiling.
+    pub working_directory: Option<std::path::PathBuf>,
     /// Restrict a child Git tool to local staging and commit operations.
     pub child_git_policy: Option<crate::tool::git::ChildGitPolicy>,
     /// Restrict the Git tool to read-only invocations for the named agent.
@@ -572,6 +577,7 @@ impl ToolRegistry {
             },
             advisor_mode: crate::tool_advisor::AdvisorMode::Off,
             process_admission: None,
+            default_working_directory: None,
         }
     }
 
@@ -582,6 +588,7 @@ impl ToolRegistry {
     pub fn with_options(options: ToolRegistryOptions) -> Self {
         let mut registry = Self::new();
         let workspace_root = options.workspace_root.clone();
+        registry.default_working_directory = options.working_directory.clone();
         let (decision_engine, decision_backend) = crate::tool_advisor::decision_engine_from_config(
             options.tool_advisor.as_ref(),
             options.decision_engine.as_ref(),
@@ -646,6 +653,10 @@ impl ToolRegistry {
         // been populated from this same root.
         let bash_tool = match workspace_root.clone() {
             Some(root) => bash_tool.with_workspace_root(root),
+            None => bash_tool,
+        };
+        let bash_tool = match options.working_directory.clone() {
+            Some(directory) => bash_tool.with_default_workdir(directory),
             None => bash_tool,
         };
         // The isolated child-Git worktree ceiling is a *separate* concept and
@@ -932,13 +943,22 @@ impl ToolRegistry {
         registry.register_boxed(match workspace_root.as_ref() {
             Some(root) if options.child_git_policy.is_some() => Box::new(
                 crate::tool::terminal::TerminalTool::default()
-                    .with_workdir(root.clone())
+                    .with_workdir(
+                        options
+                            .working_directory
+                            .clone()
+                            .unwrap_or_else(|| root.clone()),
+                    )
                     .with_allowed_root(root.clone()),
             ) as Box<dyn Tool>,
-            Some(root) => {
-                Box::new(crate::tool::terminal::TerminalTool::default().with_workdir(root.clone()))
-                    as Box<dyn Tool>
-            }
+            Some(root) => Box::new(
+                crate::tool::terminal::TerminalTool::default().with_workdir(
+                    options
+                        .working_directory
+                        .clone()
+                        .unwrap_or_else(|| root.clone()),
+                ),
+            ) as Box<dyn Tool>,
             None => unrooted(Box::new(crate::tool::terminal::TerminalTool::default())),
         });
         let test_tool = if let Some(ref store) = options.run_store {
@@ -967,6 +987,10 @@ impl ToolRegistry {
         // daemon was launched from.
         let test_tool = match workspace_root.as_ref() {
             Some(root) => test_tool.with_workspace_root(root.clone()),
+            None => test_tool,
+        };
+        let test_tool = match options.working_directory.clone() {
+            Some(directory) => test_tool.with_default_workdir(directory),
             None => test_tool,
         };
         registry.register(test_tool);
@@ -1005,6 +1029,10 @@ impl ToolRegistry {
         // contained to, the session's workspace rather than the daemon's cwd.
         let python_tool = match workspace_root.as_ref() {
             Some(root) => python_tool.with_workspace_root(root.clone()),
+            None => python_tool,
+        };
+        let python_tool = match options.working_directory.clone() {
+            Some(directory) => python_tool.with_default_workdir(directory),
             None => python_tool,
         };
         registry.register(python_tool);
@@ -1061,20 +1089,28 @@ impl ToolRegistry {
         // canonical git execution service. Hidden from model
         // definitions and `tool_search`; broker-callable by programs.
         registry.register_boxed(match workspace_root.as_ref() {
-            Some(root) => {
-                Box::new(crate::tool::git_read::GitReadTool::default().with_workdir(root.clone()))
-                    as Box<dyn Tool>
-            }
+            Some(root) => Box::new(
+                crate::tool::git_read::GitReadTool::default().with_workdir(
+                    options
+                        .working_directory
+                        .clone()
+                        .unwrap_or_else(|| root.clone()),
+                ),
+            ) as Box<dyn Tool>,
             None => unrooted(Box::new(crate::tool::git_read::GitReadTool::default())),
         });
         // M003: additive model-facing read facade. It delegates to the
         // hidden program adapter's bounded implementation, while retaining
         // a direct-only read contract and a deferred disclosure state.
         registry.register_boxed(match workspace_root.as_ref() {
-            Some(root) => {
-                Box::new(crate::tool::git_read::GitQueryTool::default().with_workdir(root.clone()))
-                    as Box<dyn Tool>
-            }
+            Some(root) => Box::new(
+                crate::tool::git_read::GitQueryTool::default().with_workdir(
+                    options
+                        .working_directory
+                        .clone()
+                        .unwrap_or_else(|| root.clone()),
+                ),
+            ) as Box<dyn Tool>,
             None => unrooted(Box::new(crate::tool::git_read::GitQueryTool::default())),
         });
 
@@ -1446,6 +1482,67 @@ impl ToolRegistry {
         self.tools.insert(name, tool);
     }
 
+    /// Resolve relative path inputs against this turn's captured session
+    /// directory. The individual tool still validates the resulting absolute
+    /// path against its independent workspace authorization ceiling.
+    pub(crate) fn apply_working_directory_defaults(
+        &self,
+        tool_name: &str,
+        input: &mut serde_json::Value,
+    ) {
+        let Some(default_directory) = self.default_working_directory.as_ref() else {
+            return;
+        };
+        let (path_fields, workdir_field) = match tool_name {
+            "read" | "write" | "edit" | "replace" | "apply_patch" | "diff" | "list" | "grep"
+            | "glob" => (&["path"][..], false),
+            "lsp" | "lsp_read" => (&["path", "file_path"][..], false),
+            "git" | "bash" | "test" | "python_script" => (&[][..], true),
+            _ => return,
+        };
+        let Some(object) = input.as_object_mut() else {
+            return;
+        };
+        for key in path_fields {
+            if let Some(raw) = object.get(*key).and_then(serde_json::Value::as_str) {
+                let path = std::path::Path::new(raw);
+                if !path.is_absolute() {
+                    object.insert(
+                        (*key).to_owned(),
+                        serde_json::Value::String(
+                            default_directory.join(path).to_string_lossy().into_owned(),
+                        ),
+                    );
+                }
+            }
+        }
+        if matches!(tool_name, "list" | "grep" | "glob") && object.get("path").is_none() {
+            object.insert(
+                "path".to_owned(),
+                serde_json::Value::String(default_directory.to_string_lossy().into_owned()),
+            );
+        }
+        if workdir_field {
+            match object.get("workdir").and_then(serde_json::Value::as_str) {
+                Some(raw) if !std::path::Path::new(raw).is_absolute() => {
+                    object.insert(
+                        "workdir".to_owned(),
+                        serde_json::Value::String(
+                            default_directory.join(raw).to_string_lossy().into_owned(),
+                        ),
+                    );
+                }
+                None if tool_name == "git" => {
+                    object.insert(
+                        "workdir".to_owned(),
+                        serde_json::Value::String(default_directory.to_string_lossy().into_owned()),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
         self.tools.get(name).map(|t| t.as_ref())
     }
@@ -1554,6 +1651,7 @@ impl ToolRegistry {
             command_intent: config.command_intent.clone(),
             windows_shell: config.shell.as_ref().and_then(|shell| shell.windows_shell),
             workspace_root: None,
+            working_directory: None,
             child_git_policy: None,
             asset_snapshot: None,
             asset_pin: None,
@@ -1613,6 +1711,7 @@ impl ToolRegistry {
             command_intent: None,
             windows_shell: None,
             workspace_root: None,
+            working_directory: None,
             child_git_policy: None,
             asset_snapshot: None,
             asset_pin: None,
@@ -1922,6 +2021,70 @@ pub fn convert_lsp_cache_config(
 #[cfg(test)]
 mod lsp_profile_isolation_tests {
     use super::*;
+
+    #[test]
+    fn broker_path_defaults_use_captured_directory_without_replacing_root() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("crates");
+        std::fs::create_dir(&nested).unwrap();
+        let registry = ToolRegistry::with_options(ToolRegistryOptions {
+            workspace_root: Some(root.path().to_path_buf()),
+            working_directory: Some(nested.clone()),
+            ..Default::default()
+        });
+        let mut read = serde_json::json!({"path":"codegg-core/src/lib.rs"});
+        registry.apply_working_directory_defaults("read", &mut read);
+        assert_eq!(
+            read["path"],
+            nested
+                .join("codegg-core/src/lib.rs")
+                .to_string_lossy()
+                .as_ref()
+        );
+        let mut git = serde_json::json!({"operation":"status"});
+        registry.apply_working_directory_defaults("git", &mut git);
+        assert_eq!(git["workdir"], nested.to_string_lossy().as_ref());
+        let mut bash = serde_json::json!({"command":"pwd", "workdir":"src"});
+        registry.apply_working_directory_defaults("bash", &mut bash);
+        assert_eq!(
+            bash["workdir"],
+            nested.join("src").to_string_lossy().as_ref()
+        );
+        let mut test = serde_json::json!({"scope":"workspace", "workdir":"tests"});
+        registry.apply_working_directory_defaults("test", &mut test);
+        assert_eq!(
+            test["workdir"],
+            nested.join("tests").to_string_lossy().as_ref()
+        );
+        let mut python = serde_json::json!({"script":"print(1)", "workdir":"scripts"});
+        registry.apply_working_directory_defaults("python_script", &mut python);
+        assert_eq!(
+            python["workdir"],
+            nested.join("scripts").to_string_lossy().as_ref()
+        );
+        let mut absolute =
+            serde_json::json!({"path":root.path().join("Cargo.toml").to_string_lossy()});
+        registry.apply_working_directory_defaults("read", &mut absolute);
+        assert_eq!(
+            absolute["path"],
+            root.path().join("Cargo.toml").to_string_lossy().as_ref()
+        );
+        let mut patch = serde_json::json!({"path":"src/main.rs", "patch":""});
+        registry.apply_working_directory_defaults("apply_patch", &mut patch);
+        assert_eq!(
+            patch["path"],
+            nested.join("src/main.rs").to_string_lossy().as_ref()
+        );
+        let mut list = serde_json::json!({"max_depth":1});
+        registry.apply_working_directory_defaults("list", &mut list);
+        assert_eq!(list["path"], nested.to_string_lossy().as_ref());
+        let mut lsp = serde_json::json!({"operation":"definition", "file_path":"src/main.rs"});
+        registry.apply_working_directory_defaults("lsp", &mut lsp);
+        assert_eq!(
+            lsp["file_path"],
+            nested.join("src/main.rs").to_string_lossy().as_ref()
+        );
+    }
 
     #[test]
     fn constrained_profile_does_not_bind_shared_lsp_service() {

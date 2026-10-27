@@ -1,6 +1,7 @@
 //! Focused tests for the core project/workspace context authority.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -147,6 +148,69 @@ async fn explicit_context_resolves_and_optional_session_must_match() {
     assert_eq!(context.workspace_id, workspace.id);
     assert_eq!(context.workspace_root, root.path());
     assert!(context.is_resolved());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn repository_scope_comes_only_from_a_resolved_workspace_binding() {
+    let pool = pool().await;
+    let store = Arc::new(InMemoryWorkspaceStore::new());
+    let root = tempdir().expect("temporary repository");
+    let init = Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(root.path())
+        .status()
+        .expect("git is installed");
+    assert!(init.success());
+    let remote = Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "https://example.test/team/repo.git",
+        ])
+        .current_dir(root.path())
+        .status()
+        .expect("git remote add");
+    assert!(remote.success());
+
+    let (workspace, _) = project_for(&pool, &store, root.path(), "Repository").await;
+    let resolver = resolver(&pool, store.clone());
+    let canonical = ProjectStorage::new(pool.clone())
+        .workspace_binding(&workspace.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let repository_id = canonical.repository_id.expect("repository lineage");
+    assert_eq!(
+        resolver
+            .repository_for_workspace(&workspace.id)
+            .await
+            .unwrap(),
+        Some(repository_id)
+    );
+
+    let unbound_root = tempdir().expect("temporary directory");
+    let (unbound, _) = project_for(&pool, &store, unbound_root.path(), "Unbound").await;
+    assert_eq!(
+        resolver
+            .repository_for_workspace(&unbound.id)
+            .await
+            .unwrap(),
+        None,
+        "a resolved workspace without repository lineage must not invent an identity"
+    );
+
+    sqlx::query("UPDATE workspace_project_binding SET status = 'ambiguous' WHERE workspace_id = ?")
+        .bind(workspace.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        resolver.repository_for_workspace(&workspace.id).await,
+        Err(ContextResolutionError::BindingNotResolved {
+            status: BindingStatus::Ambiguous
+        })
+    ));
 }
 
 #[tokio::test(flavor = "current_thread")]

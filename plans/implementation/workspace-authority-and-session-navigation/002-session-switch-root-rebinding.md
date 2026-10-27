@@ -1,6 +1,6 @@
 # Workspace Authority and Session Navigation W002 — Session-Switch Root Rebinding
 
-Status: **ready for handoff**
+Status: **closed** — closure `plans/closure/workspace-authority-and-session-navigation/002-status.md`
 Repository baseline: `80171f45295bebb9ab0b521262c0b295acb93074`
 Source roadmap: `plans/subsystems/workspace-authority-and-session-navigation-corrective-addendum.md` W002
 Long-term: `plans/000-long-term-specification.md` §§6, 17, 26–29; `plans/001-terminology-and-domain-model.md`

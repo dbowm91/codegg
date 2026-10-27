@@ -1047,6 +1047,7 @@ impl JobExecutor for SubagentJobExecutor {
             run_id,
             base_commit,
             placement,
+            default_working_directory,
         ) = match &ctx.job.payload {
             JobPayload::Subagent {
                 prompt,
@@ -1067,6 +1068,7 @@ impl JobExecutor for SubagentJobExecutor {
                 None,
                 None,
                 codegg_core::run_placement::RunPlacement::Auto,
+                None,
             ),
             JobPayload::SubagentRun {
                 prompt,
@@ -1079,6 +1081,7 @@ impl JobExecutor for SubagentJobExecutor {
                 run_id,
                 base_commit,
                 placement,
+                default_working_directory,
                 ..
             } => (
                 prompt.clone(),
@@ -1091,6 +1094,9 @@ impl JobExecutor for SubagentJobExecutor {
                 Some(run_id.clone()),
                 base_commit.clone(),
                 placement.clone(),
+                default_working_directory
+                    .clone()
+                    .map(std::path::PathBuf::from),
             ),
             _ => {
                 return failure_completion(
@@ -1151,6 +1157,7 @@ impl JobExecutor for SubagentJobExecutor {
         // **group**.
         let mut shared_checkout: Option<codegg_core::shared_checkout::SharedCheckout> = None;
         let needs_isolation = self.pool.requires_isolation(&agent, &denied_tools);
+        let wants_isolated_new = placement.requires_new_isolated_checkout();
         // M005 corrective C007 §6.4: the shared branch is entered on the
         // **placement**, not on `needs_isolation`. The placement used to be
         // honoured only when the run's own tool profile happened to need
@@ -1159,12 +1166,14 @@ impl JobExecutor for SubagentJobExecutor {
         // durable record carried no `worktree_id`.
         let shared_placement = placement.shared_group_id().cloned();
         let wants_shared_checkout = shared_placement.is_some();
-        if (needs_isolation || wants_shared_checkout) && run_id.is_none() {
+        if (needs_isolation || wants_shared_checkout || wants_isolated_new) && run_id.is_none() {
             return failure_completion(
                 started,
                 ExecutorStatus::Failed,
                 if wants_shared_checkout {
                     "a shared placement must use the durable scheduler path".into()
+                } else if wants_isolated_new {
+                    "an explicit isolated placement must use the durable scheduler path".into()
                 } else {
                     "mutating delegated run must use the durable scheduler path for isolation"
                         .into()
@@ -1308,10 +1317,12 @@ impl JobExecutor for SubagentJobExecutor {
             // tool profile would not have needed isolation — and a placement
             // that cannot be honoured is refused with a typed error rather
             // than silently dropped in favour of the parent's workspace root.
-            if needs_isolation || wants_shared_checkout {
+            if needs_isolation || wants_shared_checkout || wants_isolated_new {
                 let Some(worktree_service) = self.worktree_service.as_ref() else {
                     let reason = if wants_shared_checkout {
                         "a shared placement requires managed worktree isolation"
+                    } else if wants_isolated_new {
+                        "an explicit isolated placement requires managed worktree isolation"
                     } else {
                         "mutating delegated run requires managed worktree isolation"
                     };
@@ -1320,7 +1331,11 @@ impl JobExecutor for SubagentJobExecutor {
                             run_id,
                             codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
                             None,
-                            Some("isolation_unavailable".into()),
+                            Some(if wants_isolated_new {
+                                "explicit_isolation_unavailable".into()
+                            } else {
+                                "isolation_unavailable".into()
+                            }),
                             Some(reason.into()),
                         )
                         .await
@@ -1534,11 +1549,27 @@ impl JobExecutor for SubagentJobExecutor {
                         worktree_id = %checkout.worktree_id,
                         "delegated run placed on the group's shared checkout",
                     );
-                } else if needs_isolation {
+                } else if needs_isolation || wants_isolated_new {
                     // No repository identity means there is no worktree to
                     // isolate in, so the run executes in place. The
                     // sandbox profile and the permission layer are
                     // unchanged: they are orthogonal to isolation.
+                    if task.repository_id.is_none() && wants_isolated_new {
+                        let reason = "explicit isolated placement requires a registered repository";
+                        if let Err(error) = store
+                            .finish(
+                                run_id,
+                                codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                None,
+                                Some("explicit_isolation_unavailable".into()),
+                                Some(reason.into()),
+                            )
+                            .await
+                        {
+                            tracing::error!(?error, run_id = ?run_id, "agent run finish failed (explicit isolation has no repository)");
+                        }
+                        return failure_completion(started, ExecutorStatus::Failed, reason.into());
+                    }
                     if task.repository_id.is_none() {
                         tracing::info!(
                             run_id = ?run_id,
@@ -1567,7 +1598,11 @@ impl JobExecutor for SubagentJobExecutor {
                                         run_id,
                                         codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
                                         None,
-                                        Some("worktree_create_failed".into()),
+                                        Some(if wants_isolated_new {
+                                            "explicit_isolation_unavailable".into()
+                                        } else {
+                                            "worktree_create_failed".into()
+                                        }),
                                         Some(error.to_string()),
                                     )
                                     .await
@@ -1577,7 +1612,11 @@ impl JobExecutor for SubagentJobExecutor {
                                 return failure_completion(
                                     started,
                                     ExecutorStatus::Failed,
-                                    format!("worktree allocation failed: {error}"),
+                                    if wants_isolated_new {
+                                        format!("explicit isolated placement unavailable: {error}")
+                                    } else {
+                                        format!("worktree allocation failed: {error}")
+                                    },
                                 );
                             }
                         };
@@ -1588,10 +1627,30 @@ impl JobExecutor for SubagentJobExecutor {
                             let _ = worktree_service
                                 .release_lease(&record.worktree_id, run_id, lease.generation)
                                 .await;
+                            if let Err(finish_error) = store
+                                .finish(
+                                    run_id,
+                                    codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                    None,
+                                    Some(if wants_isolated_new {
+                                        "explicit_isolation_unavailable".into()
+                                    } else {
+                                        "worktree_create_failed".into()
+                                    }),
+                                    Some(format!("worktree linkage failed: {error}")),
+                                )
+                                .await
+                            {
+                                tracing::error!(?finish_error, run_id = ?run_id, "agent run finish failed (worktree linkage failed)");
+                            }
                             return failure_completion(
                                 started,
                                 ExecutorStatus::Failed,
-                                format!("worktree linkage failed: {error}"),
+                                if wants_isolated_new {
+                                    format!("explicit isolated placement unavailable: worktree linkage failed: {error}")
+                                } else {
+                                    format!("worktree linkage failed: {error}")
+                                },
                             );
                         }
                         allowed_paths = vec![record.path.to_string_lossy().into_owned()];
@@ -1797,6 +1856,7 @@ impl JobExecutor for SubagentJobExecutor {
             max_tool_calls: max_tool_calls.map(|m| m as usize),
             parent_model: model,
             workspace_root: Some(workspace_root),
+            default_working_directory,
             // The scheduler bound this job to a workspace; the child runs
             // under that identity rather than inventing one.
             workspace_id: Some(ctx.workspace_id.clone()),

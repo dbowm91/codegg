@@ -233,12 +233,12 @@ The resolution order for each `KeyedQuotaRequest` is fixed:
    slots is `TemporarilyBlocked(QuotaContended)` — the fair queue
    retries it later rather than clamping it.
 
-The limit comes from `AdmissionController::quota_limit`, which resolves
-`ResourceClass::Build`'s namespace (`build`) to
-`scheduler.quota.max_concurrent_builds_per_workspace`. The scope part
-of the key is the canonical `WorkspaceId`, so two unrelated workspaces
-never share a bucket. The scope is bound at the submission boundary
-before the job is durable — see `architecture/jobs.md` and
+The required limit comes from `AdmissionController::quota_limit`, which
+resolves `build` to `scheduler.quota.max_concurrent_builds_per_workspace`.
+The scope is the canonical `WorkspaceId`, bound at submission before the job
+is durable. An optional `repository-build` quota can additionally cap jobs
+across sibling workspaces, using a daemon-resolved `RepositoryId`; both
+dimensions are reserved atomically. See `architecture/jobs.md` and
 `architecture/build_admission.md`.
 
 The queue caps (`max_total`, `max_per_workspace`) are **not** execution
@@ -439,13 +439,16 @@ aging_secs = 300
 # M007: counted, workspace-scoped build-class bound. Must be > 0.
 # Configuration-owned: a job may ask for slots, never widen the bound.
 max_concurrent_builds_per_workspace = 1
+# A003: optional aggregate cap across linked workspaces in one repository.
+# Omit to retain workspace-only admission; when set it must be > 0.
+# max_concurrent_builds_per_repository = 2
 ```
 
 `ResolvedSchedulerConfig::from_input` validates and freezes these
 defaults. In daemon mode, `enabled = false` creates an explicit
 rejecting placeholder; it does not restore unscheduled execution. The
-quota limit is validated separately: `max_concurrent_builds_per_workspace
-== 0` is a configuration error, not a silently unbounded build class.
+workspace quota must be positive, and the optional repository quota must be
+positive when configured.
 
 The scheduler default is enabled and mandatory. Explicit
 `enabled = false` creates an introspection placeholder whose submission
