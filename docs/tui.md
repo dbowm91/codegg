@@ -929,9 +929,15 @@ no timer behind it. Three things make it read, and none of them is a poll:
 
 Only the **focused** tab reads eagerly. A background tab remembers that it is
 behind and reads when it is focused, so a hidden tab generates no traffic. One
-read is outstanding per tab, a catch-up cycle is bounded to a few pages, and
-the total number of outstanding reads across the open tabs is bounded too, so
-one busy child cannot spend the whole budget while the others wait.
+read is outstanding per tab, the total number of outstanding reads across the
+open tabs is bounded too, so one busy child cannot spend the whole budget
+while the others wait.
+
+A catch-up **pass** reads a bounded number of pages. That bound is one pass,
+not the tab's lifetime: when the store still holds rows beyond the page that
+was last read, the tab yields and schedules the next bounded pass, so a long
+transcript is walked to its end without a new hint, a retry or a refocus —
+and the tab says **catching up** until the final page.
 
 The tab keeps a **bounded window** of the recorded rows. When the window has
 evicted earlier rows the tab says `earlier entries not loaded`, so a view

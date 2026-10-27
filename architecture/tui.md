@@ -950,11 +950,21 @@ The bounds are the point. Only the **focused** tab reads eagerly; a
 background tab remembers that it is behind (bounded dirty state) and reads
 when it is focused, so a hidden tab generates no recurrent traffic. One read
 is outstanding per tab, and a second hint **coalesces** with the read
-already in flight rather than issuing another. A catch-up cycle is bounded to
-`MAX_TRANSCRIPT_PAGES_PER_PASS` pages, and the total number of outstanding
-reads across the open tabs is bounded to `MAX_TRANSCRIPT_FETCHES_PER_PASS`,
-so one busy child cannot spend the whole budget while the others wait. The
-read is a spawned task: the event loop never blocks a redraw on it.
+already in flight rather than issuing another. A catch-up **pass** is bounded
+to `MAX_TRANSCRIPT_PAGES_PER_PASS` pages, and the total number of
+outstanding reads across the open tabs is bounded to
+`MAX_TRANSCRIPT_FETCHES_PER_PASS`, so one busy child cannot spend the whole
+budget while the others wait. The read is a spawned task: the event loop
+never blocks a redraw on it.
+
+The pass bound bounds one **pass**, not the tab's lifetime. A transcript
+longer than one pass's pages is walked over several passes: when the store
+still holds rows beyond the page that was last read, the tab **yields** — it
+schedules the next bounded pass through the command channel, so the event
+loop serves whatever else is waiting before the next pass reads another
+page. A tab therefore catches up to the end of a long transcript on its own,
+with no new hint, no retry and no refocus, and it says **catching up** until
+the final page rather than claiming to follow the live edge.
 
 The **cursor is authoritative and comes from the store**, never from a hint
 and never from a count of painted rows. The hint is advisory. The page's

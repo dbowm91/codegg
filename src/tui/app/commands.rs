@@ -1316,6 +1316,17 @@ pub enum TuiCommand {
         error: Option<String>,
         error_code: Option<String>,
     },
+    /// C001: the next bounded catch-up pass for one delegated tab.
+    ///
+    /// A pass reads at most four pages. When the store still holds rows
+    /// beyond the page that was last read, the tab yields and schedules
+    /// another pass through the event loop, so a long transcript is walked
+    /// over several passes instead of dead-ending at the fourth page. The
+    /// command carries the tab it belongs to; the tab's own cache holds
+    /// the cursor the pass reads from.
+    SubagentTranscriptPass {
+        tab_id: String,
+    },
     /// Project Collaboration M002: explicit refresh of one project's
     /// chat window (channel ensure + history through `CoreClient`).
     RefreshChat {

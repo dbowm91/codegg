@@ -213,6 +213,12 @@ pub struct TranscriptCache {
     pub run_terminal: bool,
     /// How many pages the current catch-up cycle has read.
     pub pages_in_pass: u32,
+    /// Whether the next catch-up pass is already queued.
+    ///
+    /// The pass is scheduled through the command channel rather than
+    /// issued inline, so the queue needs to know that one is already on
+    /// its way: two queued passes would read the same page twice.
+    pub pass_scheduled: bool,
     /// How many rows the next page read asks for.
     ///
     /// The daemon refuses an over-bound page rather than shortening it, so a
@@ -254,6 +260,7 @@ impl TranscriptCache {
             gap_recoveries: 0,
             run_terminal: false,
             pages_in_pass: 0,
+            pass_scheduled: false,
             page_rows: MAX_TRANSCRIPT_PAGE_ROWS,
             status: TranscriptFollowStatus::Idle,
             last_error: None,
@@ -358,6 +365,41 @@ impl TranscriptCache {
         !self.blocked && (self.dirty || self.has_more || !self.has_read)
     }
 
+    /// Begin the next catch-up pass.
+    ///
+    /// A pass reads at most [`MAX_TRANSCRIPT_PAGES_PER_PASS`] pages and
+    /// then yields. The page budget belongs to the **pass**, not to the
+    /// tab: a tab that is still behind after its pass ends starts another
+    /// one, so a transcript longer than one pass's budget is walked over
+    /// several passes instead of being locked out at the fourth page.
+    pub fn begin_pass(&mut self) {
+        self.pages_in_pass = 0;
+        self.pass_scheduled = false;
+    }
+
+    /// Claim the right to schedule the next catch-up pass.
+    ///
+    /// Returns whether the caller may schedule it. A pass that is already
+    /// queued is not queued twice: two passes would read the same page
+    /// twice, and the second one would be fenced as a duplicate rather
+    /// than as progress.
+    pub fn schedule_pass(&mut self) -> bool {
+        if self.pass_scheduled {
+            return false;
+        }
+        self.pass_scheduled = true;
+        true
+    }
+
+    /// Give up a scheduled pass.
+    ///
+    /// The pass was claimed but never reached the event loop — the
+    /// command channel was closed, or the tab lost focus — so the claim
+    /// is released and a later pass may schedule one.
+    pub fn cancel_pass(&mut self) {
+        self.pass_scheduled = false;
+    }
+
     /// Merge one authorized page into the cache.
     pub fn apply_page(&mut self, page: &AgentRunTranscriptPageDto) -> PageOutcome {
         if page.run_id != self.run_id {
@@ -420,7 +462,14 @@ impl TranscriptCache {
         if self.recording_stopped {
             return TranscriptFollowStatus::RecordingStopped;
         }
-        if self.run_terminal && !self.has_more {
+        if self.has_more {
+            // The store still holds rows beyond this page, so the tab is
+            // behind the run. It says so rather than claiming to follow
+            // the live edge, and it never says "complete" while the
+            // source holds more.
+            return TranscriptFollowStatus::CatchingUp;
+        }
+        if self.run_terminal {
             return TranscriptFollowStatus::Complete;
         }
         TranscriptFollowStatus::Following

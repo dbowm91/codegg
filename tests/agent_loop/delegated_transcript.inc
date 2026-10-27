@@ -942,6 +942,162 @@ async fn a_live_child_has_committed_its_tool_call_before_the_tool_returns() {
     );
 }
 
+/// A provider that says something and then asks for one `read` of `path`.
+///
+/// The text delta is what gives the child's committed transcript a
+/// **second** row before its tool runs: the advisory for the first row
+/// publishes immediately, so the row behind it is the one that only a
+/// coalesced flush can release.
+fn chatting_reading_provider(call_id: &str, path: &str) -> ScriptedProvider {
+    ScriptedProvider::new(
+        "test",
+        vec![
+            vec![
+                ChatEvent::TextDelta("the child is about to read the pipe".to_string().into()),
+                ChatEvent::ToolCall(codegg::provider::ToolCall {
+                    id: call_id.to_string().into(),
+                    name: "read".to_string().into(),
+                    arguments: serde_json::json!({ "path": path }),
+                }),
+                ChatEvent::Finish {
+                    stop_reason: "tool_calls".to_string().into(),
+                    usage: TokenUsage::default(),
+                },
+            ],
+            vec![
+                ChatEvent::TextDelta("the child's final answer".to_string().into()),
+                ChatEvent::Finish {
+                    stop_reason: "stop".to_string().into(),
+                    usage: TokenUsage::default(),
+                },
+            ],
+        ],
+    )
+}
+
+/// C001: the daemon publishes the advance while the child is still blocked.
+///
+/// The child is inside a tool that cannot return until the test releases
+/// it. Its rows are committed before the tool runs, and the advisory that
+/// says "this run advanced" must reach the daemon's canonical event log
+/// **while the child is still inside that call** — not only when the run
+/// finishes.
+///
+/// Before the producer's bounded flush, a quiet run's coalesced rows were
+/// held until the next append, the recording-stopped state or the run's
+/// completion. A follower watching a blocked child therefore saw the run's
+/// first row and nothing after it, for as long as the child was quiet.
+///
+/// The blocking mechanism is the same FIFO the live-child test uses, so
+/// the tool provably cannot have returned: the writer's `open` returns only
+/// once a reader has opened the pipe, and the pipe holds neither data nor
+/// EOF until the test releases it.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_daemon_publishes_the_advance_while_the_child_is_still_blocked() {
+    let pool = crate::common::pool::isolated_pool().await;
+    let pipe_name = format!("pipe-{}", uuid::Uuid::new_v4().simple());
+    let (workspace, fifo) = child_workspace_with_fifo(&pipe_name);
+    let mut writer = FifoWriter::spawn(&fifo);
+    let mut registry = ProviderRegistry::new();
+    registry.register(chatting_reading_provider("call-quiet", &pipe_name));
+    let subagent_pool = durable_pool(
+        pool.clone(),
+        create_test_agent("transcript-agent", "test/model"),
+        registry,
+    )
+    .await;
+
+    // The daemon's canonical event log, and the publisher that reaches it.
+    let event_log = Arc::new(codegg::core::event_log::EventLog::new(64));
+    let mut events = event_log.subscribe();
+    let runs: Arc<dyn AgentRunStore> = Arc::new(SqliteAgentRunStore::new(pool.clone()));
+    let sink = Arc::new(
+        codegg::agent::transcript_publisher::EventLogTranscriptAdvanceSink::new(
+            event_log.clone(),
+            runs,
+        ),
+    );
+    subagent_pool.set_transcript_publisher(Arc::new(
+        codegg::agent::transcript_publisher::CoalescingTranscriptPublisher::new(sink),
+    ));
+
+    let run_id = create_durable_run(&pool).await;
+    let task_id = start_delegated(
+        &subagent_pool,
+        request_in(run_id.clone(), "read the pipe", &workspace),
+    )
+    .await;
+
+    // The child's `read` has opened the pipe: the tool is inside the call.
+    writer.wait_for_reader().await;
+
+    // The rows are committed while the tool is still running.
+    let entries = transcript_until(
+        &pool,
+        &run_id,
+        "the child's tool call row must be committed while its tool runs",
+        |entries| {
+            entries.iter().any(|entry| {
+                entry.kind == TranscriptKind::ToolCall
+                    && entry.redacted_body.contains("tool_call_id=call-quiet")
+            })
+        },
+    )
+    .await;
+    let call_ordinal = entries
+        .iter()
+        .find(|entry| {
+            entry.kind == TranscriptKind::ToolCall
+                && entry.redacted_body.contains("tool_call_id=call-quiet")
+        })
+        .expect("the tool call row")
+        .ordinal;
+    assert!(
+        call_ordinal >= 1,
+        "the tool call must sit behind the child's own first row, so its advisory is a coalesced one, got ordinal {call_ordinal}"
+    );
+
+    // The advisory must reach the event log while the child is still
+    // inside the tool.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut advised: Option<i64> = None;
+    while advised.is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the advance for the committed rows must reach the event log within 10s"
+        );
+        let Ok(Ok(envelope)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), events.recv()).await
+        else {
+            continue;
+        };
+        if let codegg::protocol::core::CoreEvent::AgentRunTranscriptAdvanced {
+            run_id: advised_run,
+            ordinal,
+            ..
+        } = envelope.payload
+        {
+            if advised_run == run_id.as_ref() && ordinal >= call_ordinal {
+                advised = Some(ordinal);
+            }
+        }
+    }
+    let status = task_status(&subagent_pool, task_id).await;
+    assert!(
+        matches!(status, TaskStatus::Pending | TaskStatus::Running),
+        "the delegated run must still be in flight while its tool runs, got: {status:?}"
+    );
+
+    // Release the tool and let the run finish.
+    writer.release();
+    let status = wait_for_terminal(&subagent_pool, task_id).await;
+    assert!(
+        matches!(status, TaskStatus::Completed),
+        "the delegated run must complete once its tool returns, got: {status:?}"
+    );
+}
+
 /// A failed child keeps the observations it made before the failure.
 ///
 /// The child's first turn observes something and its second turn fails, so

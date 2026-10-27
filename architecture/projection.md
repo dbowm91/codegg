@@ -494,6 +494,37 @@ A watermark does not require the run to be known to the snapshot: a hint can
 legitimately arrive before the run's summary does, and dropping it would lose
 the signal for no reason.
 
+#### The producer's coalescing, and the quiet-run bound
+
+The advisory is published **after** the row is committed, and a run that
+appends in a tight loop does not produce one advisory per row: the
+coalescer in `src/agent/transcript_publisher.rs` collapses a run's appends
+under a bounded row cap (`ADVANCE_ROW_CAP`) and a bounded interval
+(`ADVANCE_INTERVAL`), and a run's recording-stopped state publishes
+immediately because it is that run's last word.
+
+Coalescing has a cost, and the producer pays it deliberately. A run that
+commits one to seven rows and then goes **quiet** — a child blocked inside a
+tool — would otherwise hold those rows until the next append, the
+recording-stopped state, or the run's completion. A follower that already
+read the run's first high-water has no reason to read again, so the
+watermark would never arrive.
+
+The producer therefore owns **one** bounded timer. It waits for the earliest
+deadline at which a coalesced advance becomes due, publishes what is due,
+and waits again, so a quiet run's committed watermark reaches its
+subscribers within one interval of the run's last published advisory — with
+no further append and no run completion. This is a *producer* timer, not a
+frontend poll: the TUI still reads only on a hint, a tab boundary, or a
+terminal run, and there is still no timer on the TUI side.
+
+The timer is bounded in the ways that matter: it is **one** task per
+publisher and never one per append; it holds no state of its own — the
+coalescing map is the state — and it ends when the publisher is dropped; it
+never holds the coalescing lock across an `await`; and it publishes only the
+highest committed ordinal, never one below the watermark already published
+for that run.
+
 #### Forward compatibility of the additive variant
 
 The audit this change required, in full:
