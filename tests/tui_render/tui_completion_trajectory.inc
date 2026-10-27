@@ -999,6 +999,54 @@ async fn rapid_equivalent_retrigger_collapses_without_state_growth() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_hundred_rapid_edits_discard_a_pending_completion_without_state_growth() {
+    let same = || vec![applicable("same", (1, 4), (1, 8), "same")];
+    let Harness {
+        mut app,
+        fake,
+        controller,
+        ..
+    } = harness(
+        LIB_RS,
+        true,
+        vec![ready(same(), false, false)],
+        20,
+        EditorMode::Insert,
+    )
+    .await;
+
+    app.on_key(key(KeyCode::F(8)));
+    for _ in 0..100 {
+        app.on_key(plain('x'));
+    }
+    tokio::time::sleep(codegg_client::LSP_INTERACTIVE_DEBOUNCE * 2).await;
+
+    assert_eq!(
+        controller_text(&controller),
+        format!("{}{}{}", &LIB_RS[..20], "x".repeat(100), &LIB_RS[20..]),
+        "every edit remains local and reaches the document replica"
+    );
+    assert!(
+        !app.editor_state.completion.is_open(),
+        "the pre-edit completion cannot flash after the burst"
+    );
+    assert!(
+        app.editor_state.completion.candidates.is_empty(),
+        "the stale completion contributes no candidates"
+    );
+    assert_eq!(
+        fake.seen().len(),
+        1,
+        "the pending read finishes once and is rejected as stale"
+    );
+    assert_eq!(
+        app.lsp_request_coordinator.outstanding(),
+        0,
+        "the edit burst leaves no outstanding completion ticket"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn switch_tab_and_reconnect_clear_the_popup() {
     let candidates = vec![applicable("println!", (1, 4), (1, 8), "println!")];
     let Harness {
