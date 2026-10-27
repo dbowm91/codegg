@@ -2927,7 +2927,7 @@ mod tests {
         assert!(!marker.exists());
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[tokio::test(flavor = "current_thread")]
     async fn offline_required_scheduler_carried_intent_refuses_disabled_sandbox_before_spawn() {
         let root = tempfile::tempdir().expect("process marker directory");

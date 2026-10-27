@@ -28,13 +28,12 @@ use std::path::PathBuf;
 ///
 /// The broker re-arms a `tokio::time::timeout` from `BrokerContext::timeout_ms`
 /// around the tool invocation, so it must expire strictly after the tool's
-/// internal deadline or it preempts the tool before it can return the output it
-/// collected while being killed. Expressed in milliseconds because that is the
-/// unit `BrokerContext::timeout_ms` uses.
+/// internal deadline or it preempts the tool before it can return the output
+/// it collected while being killed. Expressed in milliseconds because that is
+/// the unit `BrokerContext::timeout_ms` uses.
 ///
 /// The window also lets the tool's own watchdog return typed timeout details
-/// and partial output before the broker's independent invocation watchdog
-/// fires.
+/// and partial output before the broker's watchdog fires.
 pub(crate) const BROKER_WATCHDOG_GRACE_MS: u64 = 5_000;
 
 use crate::error::ToolError;
@@ -328,13 +327,9 @@ impl BrokerAuthority {
         // `allowed_effect_class` names the *most* side-effecting class
         // the grant admits — it is a ceiling, not an exact-match label.
         // An earlier exact-equality check here denied every read-side
-        // tool (`read`, `grep`, `glob`, `list` are all `read_only`)
-        // whenever the execution context carried its default
-        // `non_idempotent` ceiling, because `read_only != non_idempotent`.
-        // That made the read-only tool palette unusable from the agent
-        // loop. The comparison is `tool <= ceiling`: it authorizes only
-        // calls that are *at or below* what was granted, and still
-        // denies anything strictly more dangerous than the ceiling.
+        // tool whenever the execution context carried its default
+        // `non_idempotent` ceiling. The comparison is `tool <= ceiling`:
+        // it authorizes only calls that are *at or below* what was granted.
         const ANY_EFFECT_CLASS: &str = "any";
         let contract_effect = contract.effect_class;
         let ceiling = match grant.allowed_effect_class.as_str() {
@@ -836,12 +831,12 @@ impl ToolBroker {
         // M005 C005: the restricted shared-checkout profile refuses every
         // unqualified process surface at the **final dispatch**.
         //
-        // The order is deliberate. The permission and authority decisions
-        // have already been made (`validate_pre_execution`), so a refusal
-        // here is not a re-judgement of the caller's authority — the
-        // caller's own authorization decision stands and is still
-        // recorded. What the refusal adds is a *profile* fact: this
-        // checkout is shared by a live agent-run group, and a shared
+        // The order is deliberate. The permission and authority decisions have
+        // already been made (`validate_pre_execution`), so a refusal here is not a
+        // re-judgement of the caller's authority — the caller's own authorization
+        // decision stands and is still recorded. What the refusal adds is a
+        // *profile* fact: this checkout is shared by a live agent-run group, and a
+        // shared
         // checkout admits no unqualified process.
         //
         // The policy is resolved from the invocation context first and
@@ -1389,43 +1384,62 @@ impl ToolBroker {
     }
 }
 
+/// Whether a value matches one JSON type name.
+fn json_type_matches(expected: &str, value: &serde_json::Value) -> bool {
+    match expected {
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "string" => value.is_string(),
+        // F1: whole-valued floats (5.0) carry exactly the integer the
+        // caller meant, so a model serializing every number with a
+        // decimal point is not rejected. Accept finite, integral,
+        // in-range floats; fractional, negative-overflow, and
+        // non-finite values still fail.
+        "integer" => {
+            if value.as_i64().is_some() || value.as_u64().is_some() {
+                true
+            } else if let Some(float) = value.as_f64() {
+                float.is_finite()
+                    && float.fract() == 0.0
+                    && float >= i64::MIN as f64
+                    && float <= u64::MAX as f64
+            } else {
+                false
+            }
+        }
+        "number" => value.is_number(),
+        "boolean" => value.is_boolean(),
+        "null" => value.is_null(),
+        _ => true,
+    }
+}
+
 /// Validate the bounded JSON-Schema subset used by tool contracts. The
 /// registry schemas are intentionally simple (objects, arrays, scalar
 /// types, properties, required, and enum), so keeping this validator local
-/// avoids accepting an unbounded schema engine in the broker boundary.
+/// avoids accepting an unbounded schema engine in the broker boundary. A
+/// `type` may be one name or a list, so a contract can declare a value that
+/// legitimately has two shapes.
 fn validate_json_schema(
     schema: &serde_json::Value,
     value: &serde_json::Value,
 ) -> Result<(), String> {
-    if let Some(expected) = schema.get("type").and_then(serde_json::Value::as_str) {
-        let valid = match expected {
-            "object" => value.is_object(),
-            "array" => value.is_array(),
-            "string" => value.is_string(),
-            // F1: whole-valued floats (5.0) carry exactly the integer the
-            // caller meant, so a model serializing every number with a
-            // decimal point is not rejected. Accept finite, integral,
-            // in-range floats; fractional, negative-overflow, and
-            // non-finite values still fail.
-            "integer" => {
-                if value.as_i64().is_some() || value.as_u64().is_some() {
-                    true
-                } else if let Some(float) = value.as_f64() {
-                    float.is_finite()
-                        && float.fract() == 0.0
-                        && float >= i64::MIN as f64
-                        && float <= u64::MAX as f64
-                } else {
-                    false
-                }
-            }
-            "number" => value.is_number(),
-            "boolean" => value.is_boolean(),
-            "null" => value.is_null(),
-            _ => true,
-        };
+    let expected_types: Vec<&str> = match schema.get("type") {
+        Some(serde_json::Value::String(name)) => vec![name.as_str()],
+        Some(serde_json::Value::Array(names)) => {
+            names.iter().filter_map(|name| name.as_str()).collect()
+        }
+        _ => Vec::new(),
+    };
+    if !expected_types.is_empty() {
+        let valid = expected_types
+            .iter()
+            .any(|expected| json_type_matches(expected, value));
         if !valid {
-            return Err(format!("expected JSON type {expected}"));
+            return Err(format!(
+                "expected JSON type {}",
+                expected_types.join(" or ")
+            ));
         }
     }
     if let Some(enum_values) = schema.get("enum").and_then(serde_json::Value::as_array) {

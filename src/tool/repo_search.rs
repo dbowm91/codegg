@@ -18,9 +18,7 @@ impl RepoSearchTool {
     /// Typed reason when no daemon-authorized local root is available.
     ///
     /// Returns `(root, reason)`: `root` is `Some` when a directory can be
-    /// passed as the host scope, `reason` explains an authorized-root miss
-    /// and any workspace-root fallback so callers never surface a bare
-    /// `no_native_tree` without context.
+    /// passed as the host scope, `reason` explains the miss and the fallback.
     pub(crate) fn resolve_local_root_with_reason(
         ctx: Option<&ToolExecutionContext>,
     ) -> (Option<std::path::PathBuf>, Option<String>) {
@@ -144,17 +142,18 @@ impl RepoSearchTool {
 
     /// M002 output schema for the programmatic read seam.
     ///
-    /// The structured value is the upstream eggsearch `repo_search` JSON
-    /// (backend-versioned result list and metadata). The shape is
-    /// intentionally permissive (`object` with no required fields) so a
-    /// backend version skew cannot turn into a broker output-validation
-    /// failure; display/provenance bounds and truncation still apply.
-    /// Programs must treat the value as external-untrusted evidence, not
-    /// as deterministic local state.
+    /// The value is the upstream eggsearch `repo_search` JSON in
+    /// its `detail='full'` envelope, or the compact canonical_name/path/
+    /// description card list in its `detail='summary'` projection — which is
+    /// the default. The shape is intentionally permissive (either type, no
+    /// required fields) so a backend version skew or a projection cannot turn
+    /// into a broker output-validation failure; display/provenance bounds and
+    /// truncation still apply. Programs must treat it as external-untrusted
+    /// evidence, not as deterministic local state.
     fn contract_output_schema() -> serde_json::Value {
         json!({
-            "type": "object",
-            "description": "Upstream eggsearch repo_search JSON (backend-versioned results and metadata). External-untrusted evidence; a fresh rerun may return different results."
+            "type": ["object", "array"],
+            "description": "Upstream eggsearch repo_search JSON (backend-versioned results and metadata), or the compact summary card list. External-untrusted evidence; a fresh rerun may return different results."
         })
     }
 }
@@ -360,7 +359,8 @@ mod tests {
         assert_eq!(contract.retry_policy.max_retries, 0);
         assert!(contract.validate().is_ok());
         let schema = contract.output_schema.expect("repo_search output schema");
-        assert_eq!(schema["type"], json!("object"));
+        // The summary projection is the default and emits the compact card list.
+        assert_eq!(schema["type"], json!(["object", "array"]));
     }
 
     #[test]

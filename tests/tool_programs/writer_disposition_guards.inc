@@ -74,6 +74,7 @@ const REVIEWED_READ_ONLY_PALETTE: &[&str] = &[
     "identifier_inspect",
     "list",
     "lsp_read",
+    "math_eval",
     "path_normalize",
     "read",
     "repo_search",
@@ -85,6 +86,7 @@ const REVIEWED_READ_ONLY_PALETTE: &[&str] = &[
     "text_replace_check",
     "text_security_inspect",
     "tool_program",
+    "unit_convert",
     "validate_json",
     "validate_toml",
 ];

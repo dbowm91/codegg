@@ -1071,6 +1071,10 @@ impl TurnRuntime for DefaultTurnRuntime {
         }
 
         // ── Chat request ─────────────────────────────────────────────
+        let incoming_prefix_identities =
+            crate::context::rollover::provider_visible_prefix_identities(&messages_dto)
+                .unwrap_or_default();
+        agent_loop.set_incoming_prefix_identities(incoming_prefix_identities);
         let request = ChatRequest {
             messages: crate::protocol_conversions::dtos_to_provider_messages(messages_dto)
                 .unwrap_or_else(|e| {

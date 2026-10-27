@@ -328,6 +328,7 @@ impl AgentLoop {
         };
         let (message, was_truncated) =
             peer_observation_message(&mut observations, continuity, truncated);
+        self.peer_observations_present_this_turn = true;
         messages.push(Message::User {
             content: vec![crate::provider::ContentPart::Text {
                 text: message.into(),
@@ -472,6 +473,7 @@ impl AgentLoop {
                 }
             };
 
+            self.current_user_prompt = Some(prompt.clone());
             request.messages.push(Message::User {
                 content: vec![ContentPart::Text {
                     text: prompt.into(),

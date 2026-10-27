@@ -1,11 +1,8 @@
 //! M002 — External repository-search programmatic read seam.
 //!
-//! Eligibility (M001 matrix extended to an explicitly nondeterministic
-//! external read), `repo_search` promotion evidence, daemon-owned runtime
-//! threading, brokered program execution, backend/policy negatives,
-//! bounds, provenance, cancellation, disabled-cache/replay truthfulness,
-//! ledger replay-vs-rerun distinction, and the network-tool census (no
-//! other network tool becomes callable).
+//! Eligibility, promotion evidence, daemon-owned runtime threading, brokered
+//! program execution, backend/policy negatives, bounds, provenance,
+//! cancellation, replay truthfulness, and the network-tool census.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -532,16 +529,39 @@ async fn program_repo_search_success_with_structured_schema_and_provenance() {
     assert_eq!(result.value.terminal_status, ToolTerminalStatus::Success);
     assert!(!result.value.truncated);
 
-    // Structured value is the upstream JSON object; display is the
-    // framed external-untrusted projection.
+    // The default `detail='summary'` projection makes the value the compact
+    // card list; display is the framed external-untrusted one.
     let value = result.value.value.clone().expect("structured value");
-    assert!(value.is_object(), "value must validate as object");
+    assert!(
+        value.is_array(),
+        "the default summary projection is a compact card list"
+    );
     assert!(result.value.display.contains("trust=external_untrusted"));
     assert!(result.value.display.contains("tool=repo_search"));
 
-    // Output validates against the registered contract schema.
+    // The contract schema admits both the summary card list and the full
+    // upstream envelope.
     let schema = result.contract.output_schema.clone().unwrap();
-    assert_eq!(schema["type"], json!("object"));
+    assert_eq!(schema["type"], json!(["object", "array"]));
+
+    // The requested `detail='full'` envelope keeps the upstream object shape.
+    let full = broker
+        .execute(
+            &registry,
+            "repo_search",
+            json!({"query": "hello", "detail": "full"}),
+            program_ctx(
+                &registry,
+                workspace.path(),
+                &["repo_search"],
+                "m002-prog-1-full",
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(full.value.terminal_status, ToolTerminalStatus::Success);
+    let full_value = full.value.value.clone().expect("structured value");
+    assert!(full_value.is_object(), "the full envelope is an object");
 
     // External-untrusted provenance, never LocalTrusted.
     let provenance = result.value.provenance.expect("provenance");

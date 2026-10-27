@@ -5,26 +5,20 @@ use crate::agent::processor::EventProcessor;
 use crate::provider::{ChatRequest, Message, ToolCall};
 use futures_util::FutureExt;
 
-impl AgentLoop {
-    /// Latest user-authored text from provider-visible messages (M002
-    /// intent spine). Assistant responses are never treated as intent.
-    fn latest_user_prompt_from_messages(messages: &[Message]) -> Option<String> {
-        messages.iter().rev().find_map(|message| match message {
-            Message::User { content } => {
-                let prompt = content
-                    .iter()
-                    .filter_map(|part| match part {
-                        crate::provider::ContentPart::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                (!prompt.trim().is_empty()).then_some(prompt)
-            }
-            _ => None,
-        })
+fn prepend_continuation_projection(messages: &mut Vec<Message>, block: &str) {
+    if let Some(Message::System { content }) = messages.first_mut() {
+        *content = format!("{}\n\n{}", content, block).into();
+    } else {
+        messages.insert(
+            0,
+            Message::System {
+                content: block.to_string().into(),
+            },
+        );
     }
+}
 
+impl AgentLoop {
     pub(super) fn build_packer_candidates(
         &self,
         request: &ChatRequest,
@@ -806,6 +800,49 @@ impl AgentLoop {
             },
             None => None,
         };
+        let recorded_identity = checkpoint
+            .payload
+            .body
+            .get("provider_visible_prefix_identity")
+            .and_then(|value| {
+                serde_json::from_value::<rollover::ProviderVisiblePrefixIdentity>(value.clone())
+                    .ok()
+            });
+        if let Some(expected) = recorded_identity {
+            let offset = usize::from(matches!(messages.first(), Some(Message::System { .. })));
+            match rollover::replace_provider_prefix(
+                &expected,
+                &self.incoming_prefix_identities,
+                messages,
+                offset,
+            ) {
+                rollover::ProviderPrefixReplacement::Replaced { message_count } => {
+                    self.compaction_chain_base = Some(expected.clone());
+                    tracing::info!(
+                        session_id = %self.session_id,
+                        checkpoint_id = %checkpoint.id,
+                        covered_messages = message_count,
+                        "dropped exact frontend prefix superseded by continuation checkpoint"
+                    );
+                }
+                rollover::ProviderPrefixReplacement::RetainedMismatch {
+                    expected_version,
+                    expected_message_count,
+                    incoming_identity_count,
+                } => {
+                    tracing::debug!(
+                        session_id = %self.session_id,
+                        checkpoint_id = %checkpoint.id,
+                        expected_version,
+                        expected_message_count,
+                        incoming_identity_count,
+                        "continuation prefix identity mismatch; retaining incoming history"
+                    );
+                }
+            }
+        } else {
+            tracing::debug!("continuation checkpoint has no usable exact prefix identity; retaining incoming history");
+        }
         let block = rollover::render_installed_projection(&checkpoint, goal_override);
         if block.trim().is_empty() {
             return;
@@ -815,7 +852,8 @@ impl AgentLoop {
         // instructions are preserved.
         let (stripped, _) = rollover::strip_prior_frames(messages);
         *messages = stripped;
-        push_control_instruction(messages, model_profile, &block);
+        prepend_continuation_projection(messages, &block);
+        let _ = model_profile;
         tracing::info!(
             session_id = %self.session_id,
             checkpoint_id = %checkpoint.id,
@@ -961,7 +999,7 @@ impl AgentLoop {
             let plan_digest = plan_content_owned
                 .as_deref()
                 .map(|content| crate::context::stable_hash_hex(content.as_bytes()));
-            let current_user = Self::latest_user_prompt_from_messages(messages);
+            let current_user = self.current_user_prompt.clone();
             // M004: bounded WorkPlan provenance for the checkpoint handoff.
             // Loaded from the same pool as continuation checkpoints; legacy
             // sessions without a plan degrade to `None`.
@@ -1015,7 +1053,7 @@ impl AgentLoop {
         // `Prepared`/`Aborted` and is never resume authority.
         let candidate_checkpoint_id = uuid::Uuid::new_v4().to_string();
         let original_len = messages.len();
-        let original_user = Self::latest_user_prompt_from_messages(messages);
+        let original_user = self.current_user_prompt.clone();
 
         // M004 step B: deterministic compaction + optional semantic
         // enrichment through the canonical owner. No history is mutated
@@ -1112,6 +1150,13 @@ impl AgentLoop {
             Self::publish_compaction_tail(self, tokens_before, tokens_after);
             return;
         };
+        let compacted_prefix_identity = rollover::compacted_provider_visible_prefix_identity(
+            messages,
+            &compacted_candidate,
+            self.peer_observations_present_this_turn,
+            self.frontend_user_controls_possible,
+            self.compaction_chain_base.as_ref(),
+        );
         // Cancellation point: after candidate built, before durable row is
         // already checked above; re-check before persistence below.
         let pool_opt = self.continuation_pool();
@@ -1159,6 +1204,7 @@ impl AgentLoop {
             turn_index,
             &existing_handles,
             original_user.clone(),
+            compacted_prefix_identity.clone(),
         )
         .await
         {
@@ -1395,7 +1441,7 @@ impl AgentLoop {
                         }
                         None => (None, None),
                     };
-                let cur_user = Self::latest_user_prompt_from_messages(messages);
+                let cur_user = self.current_user_prompt.clone();
                 // M004: fresh baseline carries the current WorkPlan provenance
                 // so the retry handoff cannot install a stale plan revision.
                 let fresh_work_plan = self.load_active_work_plan_for_snapshot().await;
@@ -1466,6 +1512,7 @@ impl AgentLoop {
                 turn_index,
                 &existing_handles,
                 original_user.clone(),
+                compacted_prefix_identity.clone(),
             )
             .await
             {
@@ -1807,7 +1854,7 @@ impl AgentLoop {
             .as_ref()
             .map(|g| g.objective.clone())
             .or_else(|| self.original_user_prompt.clone())
-            .or_else(|| Self::latest_user_prompt_from_messages(messages))
+            .or_else(|| self.current_user_prompt.clone())
             .unwrap_or_default();
         let goal_projection = active_goal.as_ref().map(|g| epoch::FreshEpochGoal {
             goal_id: g.id.as_str(),
@@ -1943,8 +1990,7 @@ impl AgentLoop {
                 crate::context::continuation::ContinuationAssemblyInput {
                     session_id: self.session_id.as_str(),
                     origin_prompt: self.original_user_prompt.as_deref(),
-                    current_user_message: Self::latest_user_prompt_from_messages(messages)
-                        .as_deref(),
+                    current_user_message: self.current_user_prompt.clone().as_deref(),
                     messages,
                     active_goal: active_goal.as_ref(),
                     todos: &todo_items,
@@ -1968,8 +2014,16 @@ impl AgentLoop {
         let mut candidate = candidate;
         candidate.frame = candidate.snapshot.to_context_frame();
         let epoch_checkpoint_id = uuid::Uuid::new_v4().to_string();
+        let fresh_prefix_identity =
+            crate::context::rollover::compacted_provider_visible_prefix_identity(
+                messages,
+                &fresh_messages,
+                self.peer_observations_present_this_turn,
+                self.frontend_user_controls_possible,
+                self.compaction_chain_base.as_ref(),
+            );
         let original_len = messages.len();
-        let original_user = Self::latest_user_prompt_from_messages(messages);
+        let original_user = self.current_user_prompt.clone();
         let prepared = crate::context::rollover::prepare_candidate(
             &store,
             self.services.artifact_store.as_ref(),
@@ -1984,6 +2038,7 @@ impl AgentLoop {
             self.state.turn_count,
             &self.context_ledger.artifact_handles.clone(),
             original_user,
+            fresh_prefix_identity,
         )
         .await
         .map_err(|e| format!("fresh epoch prepare: {e}"))?;
@@ -2084,6 +2139,35 @@ impl AgentLoop {
 mod tests {
     use super::*;
     use crate::provider::ContentPart;
+
+    #[test]
+    fn continuation_projection_precedes_current_user_with_or_without_system() {
+        let user = Message::User {
+            content: vec![ContentPart::Text {
+                text: "human turn".to_string().into(),
+            }],
+        };
+        let mut without_system = vec![user.clone()];
+        prepend_continuation_projection(&mut without_system, "continuation frame");
+        assert!(matches!(
+            without_system.first(),
+            Some(Message::System { .. })
+        ));
+        assert!(matches!(without_system.get(1), Some(Message::User { .. })));
+
+        let mut with_system = vec![
+            Message::System {
+                content: "base prompt".to_string().into(),
+            },
+            user,
+        ];
+        prepend_continuation_projection(&mut with_system, "continuation frame");
+        assert!(
+            matches!(with_system.first(), Some(Message::System { content })
+            if content.contains("base prompt") && content.contains("continuation frame"))
+        );
+        assert!(matches!(with_system.get(1), Some(Message::User { .. })));
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn context_packer_enabled_observe_only_false_does_not_mutate_request() {
@@ -2613,5 +2697,204 @@ Current session context: [old frame here that would have been clobbered]";
         assert!((analysis.cache_hit_rate - 0.6).abs() < 1e-9);
         assert_eq!(analysis.input_tokens, 10000);
         assert_eq!(analysis.cached_input_tokens, 6000);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn installed_continuation_injection_drops_exact_prefix_before_current_user() {
+        use codegg_core::session::continuation::{
+            ContinuationCheckpointPayload, ContinuationCheckpointStore,
+        };
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        use std::str::FromStr;
+
+        let name = format!("context_runtime_c001_{}", uuid::Uuid::new_v4().simple());
+        let options =
+            SqliteConnectOptions::from_str(&format!("file:{name}?mode=memory&cache=shared"))
+                .expect("valid SQLite test database")
+                .create_if_missing(true)
+                .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("connect isolated database");
+        codegg_core::session::schema::migrate(&pool)
+            .await
+            .expect("migrate isolated database");
+        let now = chrono::Utc::now().timestamp_millis();
+        sqlx::query(
+            "INSERT INTO project (id, worktree, sandboxes, time_created, time_updated) \
+             VALUES ('c001-injection-project', '/tmp/c001-injection', '[]', ?, ?)",
+        )
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("seed project");
+        sqlx::query(
+            "INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) \
+             VALUES ('c001-injection-session', 'c001-injection-project', 'c001', \
+                     '/tmp/c001-injection', 'C001', '1', ?, ?)",
+        )
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("seed session");
+
+        let source = vec![
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: "superseded prompt".to_string().into(),
+                }],
+            },
+            Message::Assistant {
+                content: vec![ContentPart::Text {
+                    text: "superseded answer".to_string().into(),
+                }],
+                tool_calls: vec![],
+            },
+        ];
+        let dto_source = vec![
+            codegg_protocol::dto::ProviderMessage::User {
+                content: vec![codegg_protocol::dto::ContentPart::Text {
+                    text: "superseded prompt".to_string(),
+                }],
+            },
+            codegg_protocol::dto::ProviderMessage::Assistant {
+                content: vec![codegg_protocol::dto::ContentPart::Text {
+                    text: "superseded answer".to_string(),
+                }],
+                tool_calls: vec![],
+            },
+        ];
+        let prefix_identities = rollover::provider_visible_prefix_identities(&dto_source)
+            .expect("frontend-compatible prefix identities");
+        let checkpoint_payload = ContinuationCheckpointPayload::new(serde_json::json!({
+            "objective": "continue the current task",
+            "current_task": "use the installed continuation",
+            "semantic": {
+                "constraints": [],
+                "decisions": [],
+                "unresolved_blockers": [],
+                "next_steps": []
+            },
+            "touched_files": [],
+            "commands": [],
+            "tests": [],
+            "errors": [],
+            "security": [],
+            "artifact_handles": [],
+            "provider_visible_prefix_identity": prefix_identities[1],
+        }))
+        .expect("bounded checkpoint payload");
+        let store = ContinuationCheckpointStore::new(pool.clone());
+        let prepared = store
+            .prepare("c001-injection-session", None, checkpoint_payload)
+            .await
+            .expect("prepare installed checkpoint");
+        let event = prepared
+            .build_compacted_event(1, 1, Some(100), Some(50), vec![], vec![], vec![])
+            .expect("build atomic compaction event");
+        store
+            .install_with_compaction_event("c001-injection-session", &prepared.id, event)
+            .await
+            .expect("install checkpoint");
+
+        let workspace = tempfile::tempdir().expect("temporary workspace");
+        let agent = crate::agent::definition::Agent {
+            name: "build".to_string(),
+            ..Default::default()
+        };
+        let mut agent_loop = AgentLoop::new(
+            vec![agent],
+            Box::new(crate::research::tests::StubProvider),
+            crate::permission::PermissionChecker::new(None, None),
+            crate::tool::ToolRegistry::new(),
+            crate::config::schema::Config::default(),
+            None,
+            Some(pool),
+            std::sync::Arc::new(crate::context::InMemoryArtifactStore::new()),
+            workspace.path().to_path_buf(),
+            "c001-injection-session".to_string(),
+            None,
+            None,
+        );
+
+        let profiles = [
+            codegg_core::model_profile::resolve::infer_builtin_profile("openai/gpt-5"),
+            codegg_core::model_profile::resolve::infer_builtin_profile("minimax/minimax-2.7"),
+        ];
+        for profile in &profiles {
+            for with_system in [false, true] {
+                let mut messages = Vec::new();
+                if with_system {
+                    messages.push(Message::System {
+                        content: "daemon system prompt".to_string().into(),
+                    });
+                }
+                messages.extend(source.clone());
+                messages.push(Message::User {
+                    content: vec![ContentPart::Text {
+                        text: "current human turn".to_string().into(),
+                    }],
+                });
+                agent_loop.set_incoming_prefix_identities(prefix_identities.clone());
+                agent_loop
+                    .inject_installed_continuation_for_turn(&mut messages, profile)
+                    .await;
+
+                assert!(matches!(messages.last(), Some(Message::User { content })
+                    if content.iter().any(|part| matches!(part,
+                        ContentPart::Text { text } if text.as_str() == "current human turn"))));
+                assert!(!messages.iter().any(|message| match message {
+                    Message::User { content } => content.iter().any(|part| matches!(part,
+                        ContentPart::Text { text } if text.as_str() == "superseded prompt")),
+                    Message::Assistant { content, .. } => content.iter().any(|part| matches!(part,
+                        ContentPart::Text { text } if text.as_str() == "superseded answer")),
+                    Message::Tool { content, .. } => content.contains("superseded answer"),
+                    Message::System { .. } => false,
+                }));
+                let frame_index = messages
+                    .iter()
+                    .position(|message| matches!(message, Message::System { content }
+                        if content.contains(crate::agent::context_frame::CONTINUATION_STATE_MARKER_V1)))
+                    .expect("installed continuation is present");
+                let current_user_index = messages
+                    .iter()
+                    .position(|message| {
+                        matches!(message, Message::User { content }
+                        if content.iter().any(|part| matches!(part,
+                            ContentPart::Text { text } if text.as_str() == "current human turn")))
+                    })
+                    .expect("current human turn is present");
+                assert!(frame_index < current_user_index);
+            }
+        }
+
+        let mut mismatch_messages = source;
+        mismatch_messages.push(Message::User {
+            content: vec![ContentPart::Text {
+                text: "current human turn".to_string().into(),
+            }],
+        });
+        agent_loop.set_incoming_prefix_identities(Vec::new());
+        agent_loop
+            .inject_installed_continuation_for_turn(&mut mismatch_messages, &profiles[0])
+            .await;
+        assert!(
+            mismatch_messages.iter().any(|message| matches!(message,
+                Message::User { content } if content.iter().any(|part| matches!(part,
+                    ContentPart::Text { text } if text.as_str() == "superseded prompt"))
+            )),
+            "prefix mismatch keeps incoming history"
+        );
+        assert!(
+            mismatch_messages.iter().any(|message| matches!(message,
+                Message::System { content }
+                    if content.contains(crate::agent::context_frame::CONTINUATION_STATE_MARKER_V1)
+            )),
+            "the installed projection is still injected on mismatch"
+        );
     }
 }

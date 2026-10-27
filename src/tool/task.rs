@@ -492,9 +492,7 @@ fn normalize_id_ref(raw: &str) -> String {
 /// parser; rejects fractions, negatives, NaN, and non-numbers. Default
 /// 1000, clamped to 1..=30000 as before.
 fn coerce_timeout_ms(value: Option<&serde_json::Value>) -> Option<u64> {
-    let Some(v) = value else {
-        return None;
-    };
+    let v = value?;
     crate::tool::util::json_usize(v).map(|n| n as u64)
 }
 

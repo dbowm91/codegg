@@ -224,7 +224,7 @@ fn apply_batch_compact_projection(
 fn compact_limit(input: &Value, fields: &[&str], default: u64) -> usize {
     for field in fields {
         if let Some(n) = input.get(*field).and_then(tolerant_u64) {
-            return (n.min(30).max(1)) as usize;
+            return n.clamp(1, 30) as usize;
         }
     }
     default as usize
@@ -1981,14 +1981,11 @@ mod tests {
                 json!(["summary", "full", "schema"])
             );
         }
-        let descriptions = [
+        let full_default_descriptions = [
             crate::tool::batch_fetch::BatchFetchTool::default()
                 .description()
                 .to_string(),
             crate::tool::security_search::SecuritySearchTool::default()
-                .description()
-                .to_string(),
-            crate::tool::research_search::ResearchSearchTool::default()
                 .description()
                 .to_string(),
             crate::tool::webfetch::WebFetchTool::default()
@@ -2001,10 +1998,15 @@ mod tests {
                 .description()
                 .to_string(),
         ];
-        for description in descriptions {
+        for description in full_default_descriptions {
             assert!(description.contains("detail='summary'"));
             assert!(description.contains("default detail='full'"));
         }
+        let research_description = crate::tool::research_search::ResearchSearchTool::default()
+            .description()
+            .to_string();
+        assert!(research_description.contains("detail='summary'"));
+        assert!(research_description.contains("default detail='summary'"));
     }
 
     /// F11: `detail='summary'` on a batch result keeps the focused chunks

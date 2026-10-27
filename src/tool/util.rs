@@ -23,9 +23,8 @@ const MACOS_SYSTEM_ALIASES: &[&str] = &[
 ///
 /// It replaces what used to be `std::env::current_dir()` in the tool
 /// `Default` constructors. Reading the process directory there was wrong twice
-/// over: the daemon's cwd is wherever the user launched it, unrelated to the
-/// session being run, and a failing `current_dir()` used to degrade to `"."` —
-/// which is the same directory by a different route.
+/// over: the daemon's cwd is wherever the user launched it, and a failing
+/// `current_dir()` used to degrade to `"."`.
 ///
 /// This value is deliberately not a usable path. [`validate_path`] and
 /// [`validate_target_path`] recognise it and fail with
@@ -325,7 +324,7 @@ pub fn check_path_for_symlinks(path: &Path) -> Result<(), ToolError> {
     Ok(())
 }
 
-fn is_macos_system_alias(path: &Path) -> bool {
+pub(crate) fn is_macos_system_alias(path: &Path) -> bool {
     let s = path.to_string_lossy();
     MACOS_SYSTEM_ALIASES.iter().any(|alias| s == *alias)
 }
