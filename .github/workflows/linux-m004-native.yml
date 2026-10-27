@@ -63,6 +63,7 @@ on:
       - 'crates/codegg-core/src/worktree_service.rs'
       - 'src/git_contained_worktree.rs'
       - 'tests/contained_worktree_c008.rs'
+      - 'tests/agent_loop/workspace_root_execution_authority.inc'
   push:
     paths:
       - '.github/workflows/linux-m004-native.yml'
@@ -124,6 +125,7 @@ on:
       - 'crates/codegg-core/src/worktree_service.rs'
       - 'src/git_contained_worktree.rs'
       - 'tests/contained_worktree_c008.rs'
+      - 'tests/agent_loop/workspace_root_execution_authority.inc'
 
 permissions:
   contents: read
@@ -213,6 +215,13 @@ jobs:
         # rather than cancelling the whole job.
         timeout-minutes: 10
         run: cargo test --locked --test contained_worktree_c008 -- --nocapture --test-threads=1
+
+      - name: A001 explicit read-only isolated placement obtains distinct contained checkouts
+        # This is the positive production-executor qualification for A001.
+        # It runs only on the Linux M004 host because the required protected
+        # mount view is supplied by the qualified Bubblewrap backend.
+        timeout-minutes: 10
+        run: python3 scripts/check_test_filter_execution.py --run -- cargo test --locked --test agent_loop explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts -- --nocapture --test-threads=1
 
       - name: M004 managed-process host PID and IPC denial probes
         run: cargo test --locked --test linux_git_test_support --features linux-git-test-support -- --nocapture
