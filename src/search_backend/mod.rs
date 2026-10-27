@@ -147,15 +147,30 @@ impl SearchRuntimeContext {
             "repo_search",
             "repo_search",
         )?;
-        let result = eggsearch::call_repo_search_structured_with_host_scope(
-            svc.as_ref(),
-            &server,
-            input,
-            self.config.max_repo_search_output_chars(),
-            eggsearch_timeout_ms(&self.config, ToolTimeoutKind::Default),
-            Some(root),
-        )
-        .await?;
+        let timeout = eggsearch_timeout_ms(&self.config, ToolTimeoutKind::Default);
+        let result = match root {
+            Some(root) => {
+                eggsearch::call_repo_search_structured_with_host_scope(
+                    svc.as_ref(),
+                    &server,
+                    input,
+                    self.config.max_repo_search_output_chars(),
+                    timeout,
+                    Some(Some(root)),
+                )
+                .await?
+            }
+            None => {
+                eggsearch::call_repo_search_structured(
+                    svc.as_ref(),
+                    &server,
+                    input,
+                    self.config.max_repo_search_output_chars(),
+                    timeout,
+                )
+                .await?
+            }
+        };
         Ok(StructuredSearchResult {
             output: result.output,
             value: result.value,

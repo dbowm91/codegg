@@ -2362,7 +2362,36 @@ impl AgentLoop {
                                         "broker: native tool completed with provenance"
                                     );
                                 }
-                                Ok::<String, ToolError>(broker_result.value.display)
+                                let value = broker_result.value;
+                                match value.terminal_status {
+                                    crate::tool::contract::ToolTerminalStatus::Success => {
+                                        Ok::<String, ToolError>(value.display)
+                                    }
+                                    crate::tool::contract::ToolTerminalStatus::Error => {
+                                        Err(ToolError::Execution(value.display))
+                                    }
+                                    crate::tool::contract::ToolTerminalStatus::Denied => {
+                                        Err(ToolError::Permission(value.display))
+                                    }
+                                    crate::tool::contract::ToolTerminalStatus::Cancelled => {
+                                        Err(ToolError::Execution(format!(
+                                            "tool execution cancelled: {}",
+                                            value.display
+                                        )))
+                                    }
+                                    crate::tool::contract::ToolTerminalStatus::TimedOut => {
+                                        Err(ToolError::Timeout(value.display))
+                                    }
+                                    crate::tool::contract::ToolTerminalStatus::InfrastructureError => {
+                                        Err(ToolError::BackendUnavailable(value.display))
+                                    }
+                                    crate::tool::contract::ToolTerminalStatus::UncertainSideEffect => {
+                                        Err(ToolError::Execution(format!(
+                                            "tool outcome is uncertain; do not retry automatically: {}",
+                                            value.display
+                                        )))
+                                    }
+                                }
                             };
                             // The tool enforces its own deadline and returns a result carrying the
                             // output it collected before being killed, so this wrapper must

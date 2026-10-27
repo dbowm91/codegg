@@ -927,9 +927,12 @@ async fn test_tool_registry_default_impl() {
 #[tokio::test]
 async fn test_read_tool_outside_allowed_root() {
     let dir = setup_dir();
+    let outside = tempfile::tempdir().unwrap();
+    let outside_file = outside.path().join("outside.txt");
+    fs::write(&outside_file, "must not be read").unwrap();
     let tool = ReadTool::new().with_allowed_root(dir.path().to_path_buf());
     let input = serde_json::json!({
-        "path": "/etc/passwd"
+        "path": outside_file.canonicalize().unwrap()
     });
     let result = tool.execute(input).await;
     assert!(result.is_err());
@@ -1155,7 +1158,7 @@ async fn test_read_tool_missing_path_suggests_module_agent_docs() {
 
     let tool = ReadTool::new().with_allowed_root(dir.path().to_path_buf());
     let input = serde_json::json!({
-        "path": dir.path().join(".codegg/docs/AGENTS.md").to_string_lossy().to_string()
+        "path": ".codegg/docs/AGENTS.md"
     });
 
     let result = tool.execute(input).await;

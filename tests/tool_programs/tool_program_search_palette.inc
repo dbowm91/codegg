@@ -42,8 +42,9 @@ fn mock_repo_search_service(
 ) -> McpService {
     let mut svc = McpService::new();
     let handler = Arc::new(handler);
-    svc.register_mock_server(
+    svc.register_versioned_mock_server(
         "eggsearch",
+        "0.4.4",
         vec![McpTool {
             name: "repo_search".to_string(),
             description: "Search code repositories".to_string(),
@@ -146,7 +147,7 @@ fn program_ctx(
         },
         cwd: workspace.to_path_buf(),
         session_id: None,
-        workspace_id: None,
+        workspace_id: Some("m002-test-ws".into()),
         agent_id: None,
         turn_id: None,
         job_id: None,
@@ -158,8 +159,8 @@ fn program_ctx(
         cancellation: None,
         deadline: None,
         principal_ref: None,
-        workspace_path_policy_id: None,
-        workspace_path_policy_revision: None,
+        workspace_path_policy_id: Some("workspace:m002-test-ws".into()),
+        workspace_path_policy_revision: Some("m002-test-policy-v1".into()),
         allowed_tools: None,
         current_policy_revision: None,
         execution_audit: None,
@@ -432,19 +433,24 @@ async fn program_registry_uses_configured_search_runtime() {
         .execute(
             &enabled,
             "repo_search",
-            json!({"query": "hello"}),
+            json!({"query": "hello", "include_local": false}),
             program_ctx(&enabled, workspace.path(), &["repo_search"], "m002-prog-rt"),
         )
         .await
         .unwrap();
-    assert_eq!(result.value.terminal_status, ToolTerminalStatus::Success);
+    assert_eq!(
+        result.value.terminal_status,
+        ToolTerminalStatus::Success,
+        "repo_search call failed: {}",
+        result.value.display
+    );
 
     let broker = ToolBroker::new(&disabled);
     let result = broker
         .execute(
             &disabled,
             "repo_search",
-            json!({"query": "hello"}),
+            json!({"query": "hello", "include_local": false}),
             program_ctx(
                 &disabled,
                 workspace.path(),
@@ -487,7 +493,7 @@ async fn isolated_default_reports_unavailable_never_global() {
         .execute(
             &registry,
             "repo_search",
-            json!({"query": "hello"}),
+            json!({"query": "hello", "include_local": false}),
             program_ctx(
                 &registry,
                 workspace.path(),
@@ -521,12 +527,17 @@ async fn program_repo_search_success_with_structured_schema_and_provenance() {
         .execute(
             &registry,
             "repo_search",
-            json!({"query": "hello"}),
+            json!({"query": "hello", "include_local": false}),
             program_ctx(&registry, workspace.path(), &["repo_search"], "m002-prog-1"),
         )
         .await
         .unwrap();
-    assert_eq!(result.value.terminal_status, ToolTerminalStatus::Success);
+    assert_eq!(
+        result.value.terminal_status,
+        ToolTerminalStatus::Success,
+        "repo_search call failed: {}",
+        result.value.display
+    );
     assert!(!result.value.truncated);
 
     // The default `detail='summary'` projection makes the value the compact
@@ -794,7 +805,7 @@ async fn max_results_bounded_at_30() {
         .execute(
             &registry,
             "repo_search",
-            json!({"query": "hello", "max_results": 100}),
+            json!({"query": "hello", "include_local": false, "max_results": 100}),
             program_ctx(
                 &registry,
                 workspace.path(),
@@ -804,7 +815,12 @@ async fn max_results_bounded_at_30() {
         )
         .await
         .unwrap();
-    assert_eq!(result.value.terminal_status, ToolTerminalStatus::Success);
+    assert_eq!(
+        result.value.terminal_status,
+        ToolTerminalStatus::Success,
+        "repo_search call failed: {}",
+        result.value.display
+    );
     let recorded = calls.lock().await;
     assert_eq!(recorded.len(), 1);
     assert_eq!(recorded[0].0, "repo_search");
@@ -834,7 +850,7 @@ async fn oversized_search_output_is_truncated_with_metadata() {
         .execute(
             &registry,
             "repo_search",
-            json!({"query": "big"}),
+            json!({"query": "big", "include_local": false}),
             program_ctx(
                 &registry,
                 workspace.path(),
@@ -844,7 +860,12 @@ async fn oversized_search_output_is_truncated_with_metadata() {
         )
         .await
         .unwrap();
-    assert_eq!(result.value.terminal_status, ToolTerminalStatus::Success);
+    assert_eq!(
+        result.value.terminal_status,
+        ToolTerminalStatus::Success,
+        "repo_search call failed: {}",
+        result.value.display
+    );
     assert!(result.value.truncated);
     assert!(result.value.display.contains("truncated by Codegg"));
     assert!(result.value.provenance.unwrap().truncated);
@@ -866,7 +887,7 @@ async fn program_cannot_smuggle_credentials_into_backend_args() {
         .execute(
             &registry,
             "repo_search",
-            json!({"query": "hello", "api_key": "secret", "env": {"K": "V"}}),
+            json!({"query": "hello", "include_local": false, "api_key": "secret", "env": {"K": "V"}}),
             program_ctx(
                 &registry,
                 workspace.path(),
@@ -876,7 +897,12 @@ async fn program_cannot_smuggle_credentials_into_backend_args() {
         )
         .await
         .unwrap();
-    assert_eq!(result.value.terminal_status, ToolTerminalStatus::Success);
+    assert_eq!(
+        result.value.terminal_status,
+        ToolTerminalStatus::Success,
+        "repo_search call failed: {}",
+        result.value.display
+    );
     let recorded = calls.lock().await;
     assert_eq!(recorded.len(), 1);
     assert!(recorded[0].1.get("api_key").is_none());
@@ -1028,7 +1054,7 @@ async fn rerun_may_observe_different_results_replay_serves_recorded() {
         .execute(
             &registry,
             "repo_search",
-            json!({"query": "hello"}),
+            json!({"query": "hello", "include_local": false}),
             program_ctx(
                 &registry,
                 workspace.path(),
@@ -1042,7 +1068,7 @@ async fn rerun_may_observe_different_results_replay_serves_recorded() {
         .execute(
             &registry,
             "repo_search",
-            json!({"query": "hello"}),
+            json!({"query": "hello", "include_local": false}),
             program_ctx(
                 &registry,
                 workspace.path(),
@@ -1052,8 +1078,18 @@ async fn rerun_may_observe_different_results_replay_serves_recorded() {
         )
         .await
         .unwrap();
-    assert_eq!(first.value.terminal_status, ToolTerminalStatus::Success);
-    assert_eq!(second.value.terminal_status, ToolTerminalStatus::Success);
+    assert_eq!(
+        first.value.terminal_status,
+        ToolTerminalStatus::Success,
+        "first repo_search call failed: {}",
+        first.value.display
+    );
+    assert_eq!(
+        second.value.terminal_status,
+        ToolTerminalStatus::Success,
+        "second repo_search call failed: {}",
+        second.value.display
+    );
     let v1 = first.value.value.expect("first value");
     let v2 = second.value.value.expect("second value");
     assert_ne!(

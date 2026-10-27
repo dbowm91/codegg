@@ -63,8 +63,6 @@ pub fn frame_repo_results(content: &str, source: &str) -> String {
     out
 }
 
-/// Compact projection for search/fetch results (R6).
-///
 /// Keeps only selection-relevant fields (`canonical_name`/`path`/
 /// `description`, plus `title`/`url`/`snippet` and `name`/`repo`/`owner`
 /// aliases) and drops telemetry/evidence-role envelopes. Returns `None`

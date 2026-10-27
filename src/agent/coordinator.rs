@@ -21,7 +21,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 
-/// Cache key and partitions for the resolved model-facing tool surface.
 pub(super) type ToolDefCache = (
     Option<String>,
     bool,
@@ -54,7 +53,6 @@ pub(super) struct AgentLoopServices {
     pub(super) hook_registry: Option<Arc<crate::hooks::HookRegistry>>,
     pub(super) context_tracker: ContextTracker,
     pub(super) progress_recovery: RecoveryController,
-    pub(super) recovery_parallel_limit: Option<usize>,
     pub(super) mcp_service: Option<Arc<RwLock<crate::mcp::McpService>>>,
     /// Explicit runtime-owned search/MCP context (M005), derived at
     /// loop construction from the loop's `Config` plus its daemon-owned

@@ -248,6 +248,7 @@ class AcpClient:
         self._stdin_lock = __import__("threading").Lock()
         self.notifications: list[dict[str, Any]] = []
         self.frame_summaries: list[dict[str, Any]] = []
+        self.notification_observer = None
         self.stderr_path = Path(env["CODEGG_DAEMON_HOME"]).parent / "acp.stderr"
         self._stderr_file = self.stderr_path.open("wb")
         self._stderr_file.write(b"")
@@ -315,6 +316,8 @@ class AcpClient:
         """Absorb one non-response JSON-RPC frame as a notification."""
         value["_received_elapsed_ms"] = int((time.monotonic() - self._started_monotonic) * 1000)
         self.notifications.append(value)
+        if self.notification_observer is not None:
+            self.notification_observer(value)
         params = value.get("params", {})
         update = params.get("update", {}) if isinstance(params, dict) else {}
         self.frame_summaries.append({"method": value.get("method"),
@@ -707,6 +710,62 @@ def run_smoke(binary: Path, subjects: int = 2, timeout: float = 20.0, output_dir
             owned_temp.cleanup()
 
 
+def _workspace_snapshot_digest(workspace: Path) -> tuple[str, dict[str, str]]:
+    """Hash a bounded private fixture tree without following symlinks."""
+    entries: dict[str, str] = {}
+    files = 0
+    total_bytes = 0
+    for path in sorted(workspace.rglob("*")):
+        if path.is_symlink():
+            raise HarnessError("fixture workspace contains an unexpected symlink")
+        if not path.is_file():
+            continue
+        relative_path = path.relative_to(workspace)
+        # Product-owned context artifacts and the debug log are observer
+        # bookkeeping, not candidate-visible workspace state.
+        if relative_path.parts[0] == ".codegg" or relative_path.as_posix() == "codegg_debug.log":
+            continue
+        files += 1
+        if files > 10000:
+            raise HarnessError("fixture workspace exceeds the revision file bound")
+        relative = relative_path.as_posix()
+        payload = path.read_bytes()
+        total_bytes += len(payload)
+        if total_bytes > 64 * 1024 * 1024:
+            raise HarnessError("fixture workspace exceeds the revision byte bound")
+        entries[relative] = hashlib.sha256(payload).hexdigest()
+    digest = hashlib.sha256(json.dumps(entries, sort_keys=True, separators=(",", ":")).encode())
+    return digest.hexdigest(), entries
+
+
+def _drain_tool_notifications(client: "AcpClient", provider: Any, timeout: float = 10.0) -> None:
+    """Wait for ACP terminals that correspond to tool outputs the model received.
+
+    The final provider request includes the full tool-result history. Use that
+    count as the expected observation count, so a prompt response arriving
+    before the asynchronous projection tail cannot turn missing terminals
+    into a pass.
+    """
+    expected = max((len(item.get("called_tools", []))
+                    for item in provider.request_summaries), default=0)
+    if expected <= 0:
+        client.drain(timeout=min(timeout, 0.5))
+        return
+    deadline = time.monotonic() + timeout
+    while True:
+        updates = [item.get("params", {}).get("update", {})
+                   for item in client.notifications
+                   if item.get("method") == "session/update"]
+        starts = sum(item.get("sessionUpdate") == "tool_call" for item in updates)
+        finishes = sum(item.get("sessionUpdate") == "tool_call_update" for item in updates)
+        if starts >= expected and finishes >= expected:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        client.drain(timeout=min(0.25, remaining))
+
+
 def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash: bool = False,
                    ledger_root: Path | None = None, candidate: str = "current",
                    task_id: str = "safe-bash-write", group_id: str = "native-tool-smoke",
@@ -720,7 +779,9 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                    expected_terminal: str = "passed", timeout_task: bool = False,
                    context_text: str | None = None, expected_tool_failures: int = 0,
                    fail_after_tools: bool = False, fault_kind: str = "transport",
-                   agent_steps: int | None = None) -> dict[str, Any]:
+                   agent_steps: int | None = None,
+                   workspace_snapshot: Path | None = None,
+                   external_verifier: Path | None = None) -> dict[str, Any]:
     """Run one native ACP turn against a local deterministic OpenAI wire fixture."""
     from .provider_fixture import FixtureProvider
     import shlex
@@ -741,12 +802,27 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                 raise HarnessError("fixture initial file path or content is invalid")
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(value, encoding="utf-8")
+        if workspace_snapshot is not None:
+            snapshot = workspace_snapshot.resolve(strict=True)
+            for source in snapshot.rglob("*"):
+                relative = source.relative_to(snapshot)
+                if relative.parts and relative.parts[0] == "verifier":
+                    continue
+                if source.is_symlink():
+                    raise HarnessError("immutable fixture snapshot contains a symlink")
+                destination = workspace / relative
+                if source.is_dir():
+                    destination.mkdir(parents=True, exist_ok=True)
+                elif source.is_file():
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(source, destination)
         if tool_sequence is None:
             tool_name = "bash" if deny_bash else "write"
             arguments = {"command": f"printf {shlex.quote(content)} > {shlex.quote(str(target))}"} if deny_bash else {"path": expected_file, "content": content}
             tool_sequence = [{"name": tool_name, "arguments": arguments}]
-        if not isinstance(tool_sequence, list) or not 1 <= len(tool_sequence) <= 8:
-            raise HarnessError("fixture tool sequence must contain 1-8 calls")
+        if not isinstance(tool_sequence, list) or not 1 <= len(tool_sequence) <= 24:
+            raise HarnessError("fixture tool sequence must contain 1-24 calls")
+        workspace_revision_before, workspace_files_before = _workspace_snapshot_digest(workspace)
         def bind_workspace(value: Any) -> Any:
             if isinstance(value, str):
                 return value.replace("{workspace}", str(workspace))
@@ -762,6 +838,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                                    fault_kind=fault_kind).start()
         spec = SubjectSpec.create("tool-trial", binary, workspace, root, Path.cwd())
         env = spec.environment()
+        env["CARGO_TARGET_DIR"] = str(private_dir(root / "cargo-target"))
         config = {
             "provider": {"openai": {
                 "api_key": "local-fixture-only",
@@ -783,6 +860,18 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps(config), encoding="utf-8")
         client = AcpClient(binary, env, workspace, timeout, profile)
+        completed_call_revisions: dict[str, str | None] = {}
+
+        def observe_tool_completion(notification: dict[str, Any]) -> None:
+            params = notification.get("params", {})
+            update = params.get("update", {}) if isinstance(params, dict) else {}
+            if isinstance(update, dict) and update.get("sessionUpdate") == "tool_call_update":
+                call_id = update.get("toolCallId")
+                if isinstance(call_id, str):
+                    revision, _ = _workspace_snapshot_digest(workspace)
+                    completed_call_revisions[call_id] = revision
+
+        client.notification_observer = observe_tool_completion
         session_id = None
         try:
             client.request("initialize", {"protocolVersion": 1, "clientInfo": {"name": "codegg-harness-lab", "version": "1"}})
@@ -826,16 +915,42 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             else:
                 result = client.request("session/prompt", prompt_params, timeout=timeout)
             # The tool notifications that close the turn can arrive after the
-            # prompt response. Counting them before the stream is quiet made
-            # the same trial report a different number of tool calls from run
-            # to run, and the terminal it recorded followed from that count.
-            client.drain(timeout=min(2.0, max(0.2, timeout / 10)))
+            # prompt response. Wait for terminals corresponding to the tool
+            # outputs already present in the fixture provider's final history.
+            _drain_tool_notifications(client, provider, timeout=min(10.0, timeout / 6))
             updates = [item for item in client.notifications if item.get("method") == "session/update"]
             tool_updates = [item.get("params", {}).get("update", {}) for item in updates]
+            event_gap_count = sum(item.get("sessionUpdate") == "codegg_event_gap"
+                                  for item in tool_updates)
+            if event_gap_count:
+                raise HarnessError("ACP event gap makes the deterministic tool trial unmeasured")
             starts = [item for item in tool_updates if item.get("sessionUpdate") == "tool_call"]
             finishes = [item for item in tool_updates if item.get("sessionUpdate") == "tool_call_update"]
+            expected_observed_tools = max((len(item.get("called_tools", []))
+                                           for item in provider.request_summaries), default=0)
+            if len(starts) < expected_observed_tools or len(finishes) < expected_observed_tools:
+                raise HarnessError(
+                    "ACP tool observation is incomplete; classify this span as unknown/unmeasured"
+                )
             outcomes = [{"status": item.get("status"), "raw_output_bytes": len(str(item.get("rawOutput", "")).encode())}
                         for item in finishes]
+            workspace_revision_after, workspace_files_after = _workspace_snapshot_digest(workspace)
+            changed_workspace_paths = sorted(
+                path for path in set(workspace_files_before) | set(workspace_files_after)
+                if workspace_files_before.get(path) != workspace_files_after.get(path))
+            starts_by_id = {}
+            for item in tool_updates:
+                if item.get("sessionUpdate") == "tool_call":
+                    starts_by_id[item.get("toolCallId")] = item
+            observed_tool_calls = []
+            for item in finishes:
+                start = starts_by_id.get(item.get("toolCallId"), {})
+                observed_tool_calls.append({
+                    "tool": start.get("title", "unknown"),
+                    "arguments_sha256": start.get("codeggArgumentsSha256"),
+                    "status": item.get("status") if item.get("status") in {"completed", "failed"} else "unknown",
+                    "state_revision": completed_call_revisions.get(item.get("toolCallId")),
+                })
             raw_usage = result.get("codeggUsage")
             usage = ({"turn_id": raw_usage.get("turnId"),
                       "input_tokens": raw_usage.get("inputTokens"),
@@ -843,10 +958,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                       "cached_tokens": raw_usage.get("cachedTokens"),
                       "reasoning_tokens": raw_usage.get("reasoningTokens")}
                      if isinstance(raw_usage, dict) else None)
-            failures = sum(item.get("status") == "failed" or
-                           "Tool error:" in str(item.get("rawOutput", "")) or
-                           re.search(r"\[exit code: ([1-9][0-9]*)\]", str(item.get("rawOutput", ""))) is not None
-                           for item in finishes)
+            failures = sum(item.get("status") == "failed" for item in finishes)
             if any(item.get("method") == "session/request_permission" for item in client.notifications):
                 raise HarnessError("ACP emitted an interactive permission request during unattended trial")
             observed_exists = target.is_file()
@@ -860,13 +972,32 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                                      else failures == expected_tool_failures)
             bounded_stall = (expected_terminal == "execution_failed" and failure_count_matched
                              and len(finishes) < len(tool_sequence))
-            if not deny_bash and (not starts or (len(finishes) < len(tool_sequence) and not bounded_stall)
+            budget_stop = (agent_steps is not None and provider.calls >= agent_steps
+                           and bool(provider.request_summaries)
+                           and provider.request_summaries[-1].get("toolless_final")
+                           and len(finishes) < len(tool_sequence))
+            if not deny_bash and (not starts or (len(finishes) < len(tool_sequence)
+                                                 and not bounded_stall and not budget_stop)
                                   or not failure_count_matched):
                 raise HarnessError(f"native broker did not complete the deterministic tool call; stop_reason={result.get('stopReason')!r}; started={len(starts)} finished={len(finishes)} failures={failures}; tool_updates={tool_updates[-6:]!r}; receipt_exists={exists}")
             observed_terminal = result.get("stopReason")
             accepted_stops = {"cancelled", "canceled"} if expected_terminal == "cancelled" else {"end_turn"}
             if observed_terminal not in accepted_stops:
                 raise HarnessError(f"fixture turn ended with unexpected stop reason {observed_terminal!r}")
+            verification = None
+            if external_verifier is not None:
+                verifier_path = external_verifier.resolve(strict=True)
+                if verifier_path.is_relative_to(workspace.resolve()):
+                    raise HarnessError("external verifier must remain outside the agent workspace")
+                verified = subprocess.run(
+                    ["python3", str(verifier_path), str(workspace)],
+                    cwd=workspace, env=env, timeout=min(timeout, 180),
+                    capture_output=True, text=True, check=False)
+                verification = {"returncode": verified.returncode,
+                                "stdout": verified.stdout[-4096:],
+                                "stderr": verified.stderr[-4096:]}
+                if verified.returncode:
+                    raise HarnessError(f"hidden verifier failed: {verified.stdout[-1000:]} {verified.stderr[-1000:]}")
             context_recovered = any(item.get("context_read_used") and item.get("context_recovered")
                                     for item in provider.request_summaries)
             if context_text is not None and not context_recovered:
@@ -886,17 +1017,27 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                 "context_read_used": context_recovered,
                 "session_id": session_id,
                 "daemon": _assert_daemon_identity(spec, timeout, client.process.pid),
+                "source_sha256": spec.binary_sha256,
                 "policy": receipt,
                 "tool_started": len(starts),
                 "tool_finished": len(finishes),
                 "tool_failures": failures,
                 "tool_outcomes": outcomes,
+                "tool_calls": observed_tool_calls,
+                "workspace_revision_changed_paths": changed_workspace_paths,
+                "fixture_calls": list(provider.emitted_calls),
+                "verification": verification,
                 "tool_selection": [item.get("title") for item in starts],
                 "codegg_usage": usage,
                 "tool_receipt_created": observed_exists,
                 "provider_calls": provider.calls,
                 "wall_time_ms": int((time.monotonic() - trial_started) * 1000),
                 "stop_reason": observed_terminal,
+                "stop_owner": "agent_turn_budget" if budget_stop else "agent_completed",
+                "hard_budget_stop": budget_stop,
+                "event_gap_count": event_gap_count,
+                "event_observation_state": "measured_no_gap",
+                "workspace_revision_sha256": workspace_revision_after,
                 "permission_request_notifications": 0,
                 "workspace": str(workspace),
                 "expected_file": expected_file,
@@ -945,10 +1086,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                     "tool_finished": sum(item.get("params", {}).get("update", {}).get("sessionUpdate") == "tool_call_update"
                                           for item in client.notifications),
                     "tool_failures": sum(
-                        item.get("params", {}).get("update", {}).get("status") == "failed" or
-                        "Tool error:" in str(item.get("params", {}).get("update", {}).get("rawOutput", "")) or
-                        re.search(r"\[exit code: ([1-9][0-9]*)\]",
-                                  str(item.get("params", {}).get("update", {}).get("rawOutput", ""))) is not None
+                        item.get("params", {}).get("update", {}).get("status") == "failed"
                         for item in client.notifications),
                     "failure_type": type(error).__name__,
                 }

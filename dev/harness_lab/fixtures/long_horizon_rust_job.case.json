@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "case_id": "coherent-rust-parser-repair-background-job",
+  "fixture_source_sha256": "a33e1139c58646db8e06b3b837c2863c6c8c645f2da2b60ebd69f97f3632662c",
+  "hidden_verifier_sha256": "8ec486e216bb0826b7e2af0e0309901b093d422fd37c76e1c30d411e774e1d05",
+  "public_contract_sha256": "7f65eaf0b371069e816acc4e0d3ec8af2ad8c50749d8ebbe0feffb6a2f58df74",
+  "network": "none",
+  "provider": "local-deterministic-fixture",
+  "native_path": ["ACP", "read", "write", "test(background)", "job(wait)"],
+  "max_provider_requests": 18,
+  "max_tool_calls": 16,
+  "max_wallclock_seconds": 240,
+  "target_directory": "lane-private",
+  "hidden_verifier_writable_by_agent": false
+}

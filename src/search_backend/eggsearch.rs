@@ -1981,26 +1981,47 @@ mod tests {
                 json!(["summary", "full", "schema"])
             );
         }
-        let full_default_descriptions = [
-            crate::tool::batch_fetch::BatchFetchTool::default()
-                .description()
-                .to_string(),
-            crate::tool::security_search::SecuritySearchTool::default()
-                .description()
-                .to_string(),
-            crate::tool::webfetch::WebFetchTool::default()
-                .description()
-                .to_string(),
-            crate::tool::repo_fetch::RepoFetchTool::default()
-                .description()
-                .to_string(),
-            crate::tool::evidence_bundle::EvidenceBundleTool::default()
-                .description()
-                .to_string(),
+        let descriptions = [
+            (
+                crate::tool::batch_fetch::BatchFetchTool::default()
+                    .description()
+                    .to_string(),
+                "full",
+            ),
+            (
+                crate::tool::security_search::SecuritySearchTool::default()
+                    .description()
+                    .to_string(),
+                "full",
+            ),
+            (
+                crate::tool::research_search::ResearchSearchTool::default()
+                    .description()
+                    .to_string(),
+                "summary",
+            ),
+            (
+                crate::tool::webfetch::WebFetchTool::default()
+                    .description()
+                    .to_string(),
+                "full",
+            ),
+            (
+                crate::tool::repo_fetch::RepoFetchTool::default()
+                    .description()
+                    .to_string(),
+                "full",
+            ),
+            (
+                crate::tool::evidence_bundle::EvidenceBundleTool::default()
+                    .description()
+                    .to_string(),
+                "full",
+            ),
         ];
-        for description in full_default_descriptions {
+        for (description, default_detail) in descriptions {
             assert!(description.contains("detail='summary'"));
-            assert!(description.contains("default detail='full'"));
+            assert!(description.contains(&format!("default detail='{default_detail}'")));
         }
         let research_description = crate::tool::research_search::ResearchSearchTool::default()
             .description()

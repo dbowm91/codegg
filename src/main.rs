@@ -3437,10 +3437,12 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         .ok_or_else(|| AppError::Other(anyhow::anyhow!("Provider not found: {}", provider_id)))?
         .clone_box();
 
-    let project_dir = env::current_dir()
-        .ok()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
+    let cli_workspace_root = env::current_dir().map_err(|error| {
+        AppError::Other(anyhow::anyhow!(
+            "run mode requires a workspace root: {error}"
+        ))
+    })?;
+    let project_dir = cli_workspace_root.to_string_lossy().to_string();
     let agents = agent::resolve_agents_with_context(&config, Some(Path::new(&project_dir)))?;
     let target_agent = cli
         .agent
@@ -3484,15 +3486,17 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
     let (search_runtime, _report) =
         codegg::search_backend::bootstrap::bootstrap_search_runtime(&config).await;
     let mcp_service = search_runtime.mcp();
-    let tool_registry =
-        codegg::tool::ToolRegistry::with_config_and_search_runtime(&config, search_runtime);
+    let tool_registry = codegg::tool::ToolRegistry::with_config_and_search_runtime_for_workspace(
+        &config,
+        search_runtime,
+        Some(cli_workspace_root.clone()),
+    );
     let mut available_tools: Vec<String> = tool_registry
         .list()
         .iter()
         .map(|tool| tool.name().to_string())
         .collect();
     available_tools.sort();
-    let cli_workspace_root = std::path::PathBuf::from(&project_dir);
     // M005 C003: the CLI holds no managed checkout, so the fence contains
     // native writers inside the project directory and mints no permit.
     let writer_fence: Option<codegg::tool::writer_fence::SharedWriterFence> =
@@ -3508,12 +3512,16 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         mcp_service,
         None,
         std::sync::Arc::new(codegg::context::InMemoryArtifactStore::new()),
-        cli_workspace_root,
+        cli_workspace_root.clone(),
         uuid::Uuid::new_v4().to_string(),
         writer_fence,
         // The CLI holds no daemon scope, so there is no reservation to
         // violate and processes stay unrestricted.
         None,
+    );
+    agent_loop.set_workspace_id(codegg_core::workspace::WorkspaceId::new());
+    agent_loop.set_workspace_path_policy(
+        codegg_core::workspace_services::WorkspacePathPolicy::for_root(cli_workspace_root.clone()),
     );
     agent_loop.set_agent(&safe_agent.name)?;
 

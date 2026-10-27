@@ -156,11 +156,17 @@ impl ExecMode {
         // loop starts. Idempotent if already bootstrapped. The explicit
         // runtime context (M005) flows into the registry so wrappers never
         // consult the deprecated process-global slots at execution time.
+        let exec_workspace_root = project_root.clone().ok_or_else(|| {
+            AppError::Other(anyhow::anyhow!("exec mode requires a workspace root"))
+        })?;
         let (search_runtime, _report) =
             crate::search_backend::bootstrap::bootstrap_search_runtime(&config).await;
         let mcp_service = search_runtime.mcp();
-        let tool_registry =
-            crate::tool::ToolRegistry::with_config_and_search_runtime(&config, search_runtime);
+        let tool_registry = crate::tool::ToolRegistry::with_config_and_search_runtime_for_workspace(
+            &config,
+            search_runtime,
+            Some(exec_workspace_root.clone()),
+        );
 
         let invocation_session_id = self
             .session_id
@@ -170,9 +176,6 @@ impl ExecMode {
             .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
             .as_str()
             .to_owned();
-        let exec_workspace_root = project_root.clone().ok_or_else(|| {
-            AppError::Other(anyhow::anyhow!("exec mode requires a workspace root"))
-        })?;
         // M005 C003: exec mode has no managed checkout, so the fence
         // contains native writers inside the project root and mints no
         // permit.
@@ -189,12 +192,18 @@ impl ExecMode {
             mcp_service,
             None,
             std::sync::Arc::new(crate::context::InMemoryArtifactStore::new()),
-            exec_workspace_root,
+            exec_workspace_root.clone(),
             invocation_session_id.clone(),
             writer_fence,
             // The standalone exec path owns no daemon scope, so there is no
             // reservation to violate and processes stay unrestricted.
             None,
+        );
+        loop_instance.set_workspace_id(codegg_core::workspace::WorkspaceId::new());
+        loop_instance.set_workspace_path_policy(
+            codegg_core::workspace_services::WorkspacePathPolicy::for_root(
+                exec_workspace_root.clone(),
+            ),
         );
         loop_instance.setup_question_channel_for_exec();
         if let Some(policy) = &self.policy {

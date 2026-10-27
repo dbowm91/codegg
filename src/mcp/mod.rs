@@ -786,6 +786,19 @@ impl McpService {
         self.register_mock_server_with_origin(name, McpServerOrigin::Configured, tools, handler);
     }
 
+    pub fn register_versioned_mock_server(
+        &mut self,
+        name: &str,
+        server_version: &str,
+        tools: Vec<McpTool>,
+        handler: Box<dyn Fn(&str, serde_json::Value) -> Result<String, McpError> + Send + Sync>,
+    ) {
+        self.register_mock_server(name, tools, handler);
+        if let Some(server) = self.servers.get_mut(name) {
+            server.server_version = Some(server_version.to_string());
+        }
+    }
+
     /// Test-only helper for exercising origin-aware reconciliation without
     /// spawning a subprocess. Production plugin MCP connections use the
     /// normal stdio/http methods above.
