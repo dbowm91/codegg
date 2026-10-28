@@ -15,8 +15,8 @@
 //! That is why the driving future below is polled by `block_on` and not by
 //! `enter()`.
 //!
-//! The user-visible result of each command is asserted to be the string it
-//! always produced, on the same surface (the toast strip).
+//! Commands that perform async work are asserted to enqueue their typed
+//! effect on the same bounded channel consumed by the production event loop.
 
 use std::sync::Arc;
 
@@ -51,23 +51,44 @@ fn toast_messages(app: &App) -> Vec<String> {
         .collect()
 }
 
-/// `/lsp-servers` waits on the LSP service from inside the event loop's
-/// runtime. It must report the same string it always reported.
+/// Test apps deliberately start without an effect channel. Production's
+/// event loop installs one before input is handled, so mirror that setup and
+/// assert that the command is queued instead of surfacing a false channel
+/// error from the deliberately minimal test constructor.
+fn assert_lsp_servers_request_queued(app: &mut App) {
+    let request = app
+        .tui_cmd_rx
+        .as_mut()
+        .expect("test should install the production TUI command channel")
+        .try_recv()
+        .expect("LSP servers request should be queued");
+    assert!(matches!(
+        request,
+        codegg::tui::app::TuiCommand::LspServersRequested
+    ));
+    assert!(
+        toast_messages(app)
+            .iter()
+            .all(|message| message != "Internal error: command channel unavailable"),
+        "the command should not report that its production channel is missing"
+    );
+}
+
+/// `/lsp-servers` schedules its LSP request from inside the event loop's
+/// runtime without falling into the test constructor's absent-channel path.
 #[test]
-fn lsp_servers_command_completes_inside_the_event_loop_runtime() {
+fn lsp_servers_command_queues_inside_the_event_loop_runtime() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
         let mut app = App::new_for_testing("/tmp".to_string());
         app.lsp_tool = Some(sample_lsp_tool());
+        app.ensure_tui_cmd_channel();
 
         type_text(&mut app, "/lsp-servers");
         press_enter(&mut app);
+        assert_lsp_servers_request_queued(&mut app);
 
-        let messages = toast_messages(&app);
-        assert!(
-            messages.iter().any(|m| m == "No active LSP servers"),
-            "/lsp-servers must report the string it always reported, got: {messages:?}"
-        );
+        assert!(!app.ui_state.command_mode);
     });
 }
 
@@ -124,17 +145,19 @@ fn worktree_command_completes_inside_the_event_loop_runtime() {
     });
 }
 
-/// A command that waited on the runtime must leave the session the user can
-/// carry on with: the composer still accepts text and the buffer is intact.
+/// An async command must leave the session usable: the composer still accepts
+/// text and the buffer is intact after the request is queued.
 #[test]
-fn a_command_that_waits_on_the_runtime_leaves_the_session_usable() {
+fn lsp_command_queueing_leaves_the_session_usable() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
         let mut app = App::new_for_testing("/tmp".to_string());
         app.lsp_tool = Some(sample_lsp_tool());
+        app.ensure_tui_cmd_channel();
 
         type_text(&mut app, "/lsp-servers");
         press_enter(&mut app);
+        assert_lsp_servers_request_queued(&mut app);
 
         type_text(&mut app, "still typing");
         assert_eq!(
