@@ -401,7 +401,44 @@ class LongHorizonNativeJobTest(unittest.TestCase):
                 "job-check/store/Cargo.toml": "[package]\nname = \"job-store\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[dependencies]\njob-core = { path = \"../core\" }\njob-index = { path = \"../index\" }\n",
                 "job-check/store/src/lib.rs": "pub fn store(row: job_core::Row) -> (i64, usize) { job_index::index(row) } #[cfg(test)] mod tests { #[test] fn store_contract() { assert_eq!(super::store(job_core::Row(4)), (4, 1)); } }\n",
                 "job-check/cli/Cargo.toml": "[package]\nname = \"job-cli\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[dependencies]\njob-core = { path = \"../core\" }\njob-index = { path = \"../index\" }\njob-store = { path = \"../store\" }\n",
-                "job-check/cli/src/lib.rs": "pub fn run(value: i64) -> (i64, usize) { job_store::store(job_core::Row(value)) } #[cfg(test)] mod tests { #[test] fn cli_contract() { assert_eq!(super::run(5), (5, 1)); } }\n",
+                "job-check/cli/src/lib.rs": """pub fn run(value: i64) -> (i64, usize) { job_store::store(job_core::Row(value)) }
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cli_contract() { assert_eq!(super::run(5), (5, 1)); }
+
+    #[test]
+    fn ingests_replays_and_merges_five_shards_at_scale() {
+        let root = std::env::temp_dir().join(format!("job-ledger-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let input: String = (0..250_000)
+            .map(|n| format!("{n}|event-{n}|transfer|{}|source\\n", n % 17))
+            .collect();
+        let (records, errors) = ledger_core::parse(&input);
+        assert!(errors.is_empty());
+        assert_eq!(records.len(), 250_000);
+        let mut shards: [Vec<ledger_core::Record>; 5] = std::array::from_fn(|_| Vec::new());
+        for (index, record) in records.into_iter().enumerate() {
+            shards[index % shards.len()].push(record);
+        }
+        let mut recovered = Vec::new();
+        for (index, shard) in shards.iter().enumerate() {
+            let path = root.join(format!("shard-{index}.journal"));
+            ledger_store::append(&path, shard).unwrap();
+            recovered.extend(ledger_store::replay(&path).unwrap());
+            assert_eq!(ledger_store::replay(&path).unwrap(), *shard);
+        }
+        let ordered = ledger_index::canonicalize(recovered).unwrap();
+        assert_eq!(ordered.len(), 250_000);
+        assert_eq!(
+            ledger_index::summaries(&ordered).iter().map(|(_, _, count)| count).sum::<usize>(),
+            250_000
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+""",
                 "job-check/cli/src/main.rs": "fn main() { assert_eq!(job_cli::run(5), (5, 1)); }\n",
             })
         self.addCleanup(shutil.rmtree, Path(trial["workspace"]).parent, ignore_errors=True)
