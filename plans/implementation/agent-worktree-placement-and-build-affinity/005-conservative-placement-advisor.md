@@ -1,6 +1,6 @@
 # Agent Worktree Placement and Build Affinity A005 — Conservative Placement Advisor
 
-Status: active
+Status: **conditionally closed** — closure `plans/closure/agent-worktree-placement-and-build-affinity/005-status.md`; live-model qualification remains open
 Repository baseline: `493e5ee11` (`plan/worktree-affinity-cwd-build-admission-20261027`)
 
 Source roadmap:
@@ -76,7 +76,7 @@ The workload set must include:
 
 Use paired randomized baseline/advisor arms across at least three repetitions per case, with a hidden verifier. Record task success, verifier result, placement requested and resolved, refusal/fallback/collision outcome, end-to-end and scheduler wait time, provider request count/cost where available, CPU/RSS/disk/target growth, and any build-quota delay. The advisor arm must not win by receiving extra permissions or a different tool set. Report medians, ranges, and every failure; count a refusal as correct only when the fixture's expected policy requires refusal.
 
-**Authorization gate:** provider-backed work requires a fresh operator-approved route and explicit request/time/spend limit. Earlier harness approvals are consumed and do not transfer to A005. Until that approval exists, implement and locally verify the deterministic guidance, but leave the live-model acceptance gate open; do not fabricate real-model evidence.
+**Authorization gate:** provider-backed work requires a fresh operator-approved route and explicit request/time/spend limit. The operator authorized OpenCode Go, up to 240 requests, 60 minutes, and $10 on 2026-10-28. The configured route's Harness Lab receipts omit provider cost and no provider-enforced $10 limit is verified. Keep the spend gate closed until a supported CodeGG route exposes enforceable cost or is verified free; do not substitute an estimated price for a hard cap or fabricate real-model evidence.
 
 ## 8. Failure and contention
 
@@ -89,7 +89,7 @@ A refused placement remains refused, never falls back to the parent or an arbitr
 - Existing A002 production scheduler, lease contention, generation release, read-only allowlist, and refusal tests stay green.
 - Scheduler tests prove repository quota remains configuration-owned and a Rust job cannot widen it.
 - Harness dry-run/fixture validation proves paired-arm identity, hidden verifier, randomized order, denominator, cost ceiling, and receipt redaction before any provider call.
-- After fresh live authorization: run the frozen paired multi-language and Rust workload set; evaluate all failures and collisions against the pre-registered rubric.
+- After the authorized budgets have an enforceable spend source and A002 is strictly closed: run the frozen paired multi-language and Rust workload set; evaluate all failures and collisions against the pre-registered rubric.
 
 ## 10. Required verification
 
