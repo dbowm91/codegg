@@ -506,7 +506,9 @@ error, never a fallback to an uncontained exec.
 
 `policy.rs` grants read access to system runtimes and selected read-only Rust
 toolchain inputs. It does not allow broad `~/.config`, cache, Cargo, or
-Rustup ancestors. Landlock grants are split around denied descendants, so a
+Rustup ancestors. Rustup inputs come from `RUSTUP_HOME` when set, otherwise
+`$HOME/.rustup`, and are limited to `settings.toml`, `toolchains/`, and
+`update-hashes/`. Landlock grants are split around denied descendants, so a
 workspace or tool-root allowance cannot re-grant a nested credential. A
 missing denied child is preserved relative to its nearest existing parent.
 On Seatbelt, credential read/write denials are emitted after workspace write

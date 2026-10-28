@@ -1180,7 +1180,10 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             client.close()
             log = spec.root / "acp.stderr"
             tail = log.read_text(encoding="utf-8", errors="replace")[-8192:] if log.exists() else ""
-            managed_test_tail = _bounded_managed_test_log_tail(tool_updates, workspace)
+            managed_test_tail = (
+                _bounded_managed_test_log_tail(tool_updates, workspace)
+                if task_id == "h006-real-job-observation" else ""
+            )
             if ledger_root is not None:
                 from .ledger import record
                 failed_receipt = {

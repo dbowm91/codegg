@@ -396,18 +396,34 @@ pub fn tool_read_allowances() -> Vec<PathBuf> {
         // Shared configuration and cache ancestors may hold credentials.
         // Expose installed Rust programs and read-only downloaded inputs,
         // while keeping Cargo/Rustup credentials and mutable state excluded.
-        for relative in [
-            ".cargo/bin",
-            ".cargo/registry",
-            ".cargo/git",
-            ".rustup/settings.toml",
-            ".rustup/toolchains",
-            ".rustup/update-hashes",
-        ] {
+        for relative in [".cargo/bin", ".cargo/registry", ".cargo/git"] {
             paths.push(home.join(relative));
         }
     }
+    if let Some(rustup_home) = configured_rustup_home() {
+        paths.extend(rustup_read_allowances(&rustup_home));
+    }
     paths
+}
+
+fn configured_rustup_home() -> Option<PathBuf> {
+    std::env::var_os("RUSTUP_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+        .or_else(|| {
+            home_dir()
+                .map(|home| home.join(".rustup"))
+                .filter(|path| path.is_dir())
+        })
+}
+
+fn rustup_read_allowances(root: &Path) -> [PathBuf; 3] {
+    [
+        root.join("settings.toml"),
+        root.join("toolchains"),
+        root.join("update-hashes"),
+    ]
 }
 
 /// Windows runtime and installed-tool locations required to execute native
@@ -432,7 +448,6 @@ pub fn tool_read_allowances() -> Vec<PathBuf> {
     if let Some(home) = home_dir() {
         for relative in [
             ".cargo",
-            ".rustup",
             ".gitconfig",
             ".npm",
             ".cache",
@@ -441,6 +456,9 @@ pub fn tool_read_allowances() -> Vec<PathBuf> {
         ] {
             paths.push(home.join(relative));
         }
+    }
+    if let Some(rustup_home) = configured_rustup_home() {
+        paths.extend(rustup_read_allowances(&rustup_home));
     }
     paths
 }
@@ -654,6 +672,18 @@ mod tests {
                 "{required} must be readable or no command can start: {roots:?}"
             );
         }
+    }
+
+    #[test]
+    fn rustup_read_allowances_expose_only_selected_toolchain_inputs() {
+        let root = tempfile::tempdir().expect("Rustup home");
+        let allowances = rustup_read_allowances(root.path());
+        assert_eq!(allowances.len(), 3);
+        assert!(allowances.contains(&root.path().join("settings.toml")));
+        assert!(allowances.contains(&root.path().join("toolchains")));
+        assert!(allowances.contains(&root.path().join("update-hashes")));
+        assert!(!allowances.contains(&root.path().to_path_buf()));
+        assert!(!allowances.contains(&root.path().join("credentials")));
     }
 
     #[test]
