@@ -184,6 +184,22 @@ impl ProjectionReplayStore {
         }
     }
 
+    pub async fn lookup_project_stream(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<ProjectionStreamDescriptor>, StorageError> {
+        let row = sqlx::query(
+            r#"SELECT id, kind, project_id, workspace_id, session_id, projection_version, retention_floor_seq, high_water_seq, latest_checkpoint_seq
+            FROM projection_stream WHERE kind = 'project' AND project_id = ? AND session_id IS NULL AND lifecycle = 'active'"#,
+        )
+        .bind(project_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        row.map(|r| Self::row_to_descriptor(&r)).transpose()
+    }
+
     pub async fn lookup_stream_by_id(
         &self,
         stream_id: &str,
@@ -670,6 +686,12 @@ mod tests {
         let (d2, created2) = store.get_or_create_project_stream("p1").await.unwrap();
         assert_eq!(d1.stream_id, d2.stream_id);
         assert!(!created2);
+        assert_eq!(store.lookup_project_stream("p1").await.unwrap(), Some(d1));
+        assert!(store
+            .lookup_project_stream("missing")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

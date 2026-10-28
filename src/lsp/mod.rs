@@ -187,9 +187,10 @@ mod tests {
         let default = crate::config::schema::Config::default();
         assert!(configured_service(&default).is_ok());
 
-        let mut bounded = crate::config::schema::Config::default();
-        bounded.lsp_process_admission =
-            Some(crate::config::schema::LspProcessAdmissionConfig::default());
+        let mut bounded = crate::config::schema::Config {
+            lsp_process_admission: Some(crate::config::schema::LspProcessAdmissionConfig::default()),
+            ..crate::config::schema::Config::default()
+        };
         assert!(configured_service(&bounded).is_ok());
 
         bounded.lsp_process_admission = Some(crate::config::schema::LspProcessAdmissionConfig {
