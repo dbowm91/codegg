@@ -12,6 +12,7 @@ import unittest
 
 from dev.harness_lab.supervisor import (
     SubjectSpec,
+    _bounded_managed_test_log_tail,
     _project_job_observation,
     run_exec_trial,
 )
@@ -338,6 +339,34 @@ class JobObservationProjectionTests(unittest.TestCase):
         projected = _project_job_observation(
             "test", None, "background test submitted as job job_abc-123; terminal notification follows")
         self.assertEqual(projected, {"action": "submit", "job_id": "job_abc-123", "status": None})
+
+
+class ManagedTestDiagnosticsTests(unittest.TestCase):
+    def test_reads_only_a_bounded_log_tail_from_the_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            log = workspace / "job-check" / ".codegg" / "stderr.log"
+            log.parent.mkdir(parents=True)
+            log.write_text("x" * 5000 + "tail", encoding="utf-8")
+            updates = [{"rawOutput": "stderr: [CWD]/job-check/.codegg/stderr.log\n"}]
+
+            tail = _bounded_managed_test_log_tail(updates, workspace)
+
+        self.assertEqual(len(tail), 4096)
+        self.assertTrue(tail.endswith("tail"))
+
+    def test_refuses_a_managed_log_path_outside_the_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            outside = root / "stderr.log"
+            outside.write_text("private", encoding="utf-8")
+            updates = [{"rawOutput": "stderr: [CWD]/../stderr.log\n"}]
+
+            tail = _bounded_managed_test_log_tail(updates, workspace)
+
+        self.assertEqual(tail, "")
 
 
 if __name__ == "__main__":

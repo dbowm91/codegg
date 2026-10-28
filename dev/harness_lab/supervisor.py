@@ -834,6 +834,27 @@ def _project_job_observation(tool: str, action: Any, raw_output: Any) -> dict[st
     }
 
 
+def _bounded_managed_test_log_tail(tool_updates: list[dict[str, Any]], workspace: Path) -> str:
+    root = workspace.resolve()
+    for update in reversed(tool_updates):
+        output = update.get("rawOutput")
+        if not isinstance(output, str):
+            continue
+        for stream in ("stderr", "stdout"):
+            marker = f"{stream}: [CWD]/"
+            start = output.rfind(marker)
+            if start < 0:
+                continue
+            relative = output[start + len(marker):].splitlines()[0].strip()
+            path = (root / relative).resolve(strict=False)
+            if path.is_relative_to(root) and path.is_file():
+                try:
+                    return path.read_text(encoding="utf-8", errors="replace")[-4096:]
+                except OSError:
+                    continue
+    return ""
+
+
 def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash: bool = False,
                    ledger_root: Path | None = None, candidate: str = "current",
                    task_id: str = "safe-bash-write", group_id: str = "native-tool-smoke",
@@ -1159,6 +1180,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             client.close()
             log = spec.root / "acp.stderr"
             tail = log.read_text(encoding="utf-8", errors="replace")[-8192:] if log.exists() else ""
+            managed_test_tail = _bounded_managed_test_log_tail(tool_updates, workspace)
             if ledger_root is not None:
                 from .ledger import record
                 failed_receipt = {
@@ -1201,7 +1223,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                             "provider_calls": provider.calls, "stop_reason": terminal,
                             "tool_failures": failed_receipt["tool_failures"],
                             "expected_file": expected_file, "ledger_manifest": failed_manifest}
-            raise HarnessError(f"{error}; fixture requests={provider.request_summaries!r}; ACP frames={client.frame_summaries[-30:]!r}; lane diagnostic tail: {tail}") from error
+            raise HarnessError(f"{error}; fixture requests={provider.request_summaries!r}; ACP frames={client.frame_summaries[-30:]!r}; managed test log tail: {managed_test_tail}; lane diagnostic tail: {tail}") from error
         finally:
             if session_id and client.process.poll() is None:
                 try:
