@@ -1335,7 +1335,7 @@ mod tests {
         ("terminal_list", "", ""),
         ("terminal_send", "", "probe ZGF0YQ=="),
         ("lsp_status", "", ""),
-        ("lsp_errors", "", ""),
+        ("lsp_errors", "", "rust-analyzer"),
     ];
 
     fn daemon_effect_forms() -> Vec<(&'static str, &'static str)> {
