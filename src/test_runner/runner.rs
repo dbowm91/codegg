@@ -507,6 +507,7 @@ async fn run_managed_test_process(
     // result, and store the absolute path in argv[0] for spawn. The display
     // argv (`resolved.argv`, `cargo ...`) is unchanged.
     let mut spawn_argv_strings: Vec<String> = resolved.argv.clone();
+    let mut rustc_executable = None;
     if let Some(first) = spawn_argv_strings.first() {
         let is_cargo = first == "cargo"
             || std::path::Path::new(first)
@@ -517,6 +518,11 @@ async fn run_managed_test_process(
             if let Some(pinned) = resolve_cargo_absolute() {
                 spawn_argv_strings[0] = pinned;
             }
+            rustc_executable = spawn_argv_strings
+                .first()
+                .and_then(|cargo| std::path::Path::new(cargo).parent())
+                .map(|toolchain_bin| toolchain_bin.join("rustc"))
+                .filter(|rustc| rustc.is_file());
         }
     }
     let argv: Vec<OsString> = spawn_argv_strings.iter().map(OsString::from).collect();
@@ -533,6 +539,9 @@ async fn run_managed_test_process(
             let mut policy = crate::managed_process::EnvironmentPolicy::sanitized();
             if let Some(rustup_home) = std::env::var_os("RUSTUP_HOME") {
                 policy = policy.with_var("RUSTUP_HOME", rustup_home);
+            }
+            if let Some(rustc) = rustc_executable.as_ref() {
+                policy = policy.with_var("RUSTC", rustc.as_os_str());
             }
             policy
         } else {
