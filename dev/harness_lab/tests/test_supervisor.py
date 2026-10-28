@@ -4,11 +4,17 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
 
-from dev.harness_lab.supervisor import SubjectSpec, run_exec_trial
+from dev.harness_lab.supervisor import (
+    SubjectSpec,
+    _project_job_observation,
+    run_exec_trial,
+)
 
 
 #: A fake headless `codegg exec`.
@@ -124,6 +130,11 @@ class SubjectEnvironmentTests(unittest.TestCase):
         self.assertTrue(env["CODEGG_HARNESS_PROVIDER_REQUEST_RECEIPT"].endswith(
             "artifacts/provider-request-admissions.jsonl"))
         self.assertEqual(env["RUST_LOG"], "error,codegg_providers::request_budget=info")
+        child = subprocess.run(
+            [sys.executable, "-c", "import os; print(os.environ['CODEGG_HARNESS_MAX_PROVIDER_REQUESTS']); print(os.environ['CODEGG_HARNESS_PROVIDER_REQUEST_RECEIPT'])"],
+            env=env, capture_output=True, text=True, check=True)
+        self.assertEqual(child.stdout.splitlines()[0], "297")
+        self.assertEqual(child.stdout.splitlines()[1], env["CODEGG_HARNESS_PROVIDER_REQUEST_RECEIPT"])
 
     def test_the_lane_roots_are_private_whatever_the_umask(self) -> None:
         """The lane's ``XDG_CACHE_HOME`` must not inherit the operator's umask.
@@ -302,6 +313,28 @@ class ExecTrialTests(unittest.TestCase):
             if terminal == "passed":
                 self.assertTrue(receipt["tool_receipt_created"])
             self.assertFalse(self._lane_root(receipt).exists())
+
+
+class JobObservationProjectionTests(unittest.TestCase):
+    def test_native_json_job_status_projects_exact_identity_and_lifecycle(self) -> None:
+        projected = _project_job_observation(
+            "job", "status", '{"job_id":"job_abc-123","status":"running","summary":"secret"}')
+        self.assertEqual(projected, {
+            "action": "status", "job_id": "job_abc-123", "status": "running"})
+
+    def test_missing_or_unrecognized_job_fields_stay_unknown(self) -> None:
+        projected = _project_job_observation("job", "status", '{"status":"surprising"}')
+        self.assertEqual(projected, {"action": "status", "job_id": None, "status": None})
+
+    def test_native_error_output_preserves_terminal_failure_state(self) -> None:
+        projected = _project_job_observation(
+            "job", "status", "Error: tool execution failed: job failed\njob_id: job_abc-123")
+        self.assertEqual(projected, {"action": "status", "job_id": "job_abc-123", "status": "failed"})
+
+    def test_native_test_submission_extracts_only_bounded_job_identity(self) -> None:
+        projected = _project_job_observation(
+            "test", None, "background test submitted as job job_abc-123; terminal notification follows")
+        self.assertEqual(projected, {"action": "submit", "job_id": "job_abc-123", "status": None})
 
 
 if __name__ == "__main__":

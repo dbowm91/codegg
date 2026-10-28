@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "provider": "local-openai-fixture",
+  "source_sha256": "d7f86c7ab3ea59639aa4c56dadd012c6bbda7ed08cdb96634c23d2cfbb7d0c96",
+  "event_observation_state": "measured_no_gap",
+  "event_gap_count": 0,
+  "provider_calls": 9,
+  "wall_time_ms": 7713,
+  "tool_calls": [
+    {
+      "tool": "test",
+      "status": "completed",
+      "started_elapsed_ms": 762,
+      "finished_elapsed_ms": 784,
+      "job": {
+        "action": "submit",
+        "job_id": "892334e7-7406-49ec-8145-d743457e535f",
+        "status": null
+      }
+    },
+    {
+      "tool": "write",
+      "status": "completed",
+      "started_elapsed_ms": 803,
+      "finished_elapsed_ms": 848,
+      "job": null
+    },
+    {
+      "tool": "job",
+      "status": "completed",
+      "started_elapsed_ms": 850,
+      "finished_elapsed_ms": 853,
+      "job": {
+        "action": "status",
+        "job_id": "892334e7-7406-49ec-8145-d743457e535f",
+        "status": "running"
+      }
+    },
+    {
+      "tool": "write",
+      "status": "completed",
+      "started_elapsed_ms": 876,
+      "finished_elapsed_ms": 881,
+      "job": null
+    },
+    {
+      "tool": "write",
+      "status": "completed",
+      "started_elapsed_ms": 900,
+      "finished_elapsed_ms": 905,
+      "job": null
+    },
+    {
+      "tool": "job",
+      "status": "completed",
+      "started_elapsed_ms": 923,
+      "finished_elapsed_ms": 931,
+      "job": {
+        "action": "status",
+        "job_id": "892334e7-7406-49ec-8145-d743457e535f",
+        "status": "running"
+      }
+    },
+    {
+      "tool": "job",
+      "status": "completed",
+      "started_elapsed_ms": 951,
+      "finished_elapsed_ms": 5932,
+      "job": {
+        "action": "wait",
+        "job_id": "892334e7-7406-49ec-8145-d743457e535f",
+        "status": "completed"
+      }
+    }
+  ]
+}

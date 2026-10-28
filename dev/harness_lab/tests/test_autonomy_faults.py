@@ -343,6 +343,18 @@ class ToolErrorEnvelopeTests(unittest.TestCase):
             "action": "wait", "status": "running"})
         self.assertNotIn("private output", repr(projected))
 
+    def test_missing_job_identity_and_status_remain_explicit_unknowns(self) -> None:
+        projector = autonomy_run._ToolCallProjector()
+        projector.absorb({"method": "session/update", "params": {"update": {
+            "sessionUpdate": "tool_call", "toolCallId": "j-missing", "title": "job",
+            "codeggArgumentsSha256": "b" * 64, "codeggAction": "status"}}})
+        projector.absorb({"method": "session/update", "params": {"update": {
+            "sessionUpdate": "tool_call_update", "toolCallId": "j-missing",
+            "status": "completed", "rawOutput": "Inline { output: request unavailable }"}}})
+        projected = projector.calls()[0]
+        self.assertEqual(projected["job"], {"job_id": None, "action": "status", "status": None})
+        self.assertNotIn("request unavailable", repr(projected))
+
 
 class ObserveFaultFailureFlagTests(unittest.TestCase):
     def test_a_call_the_envelope_marked_is_counted_as_a_failure(self) -> None:

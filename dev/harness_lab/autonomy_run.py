@@ -215,7 +215,7 @@ def _project_job_result(raw_output: str, tool: str,
     """Extract bounded job metadata without retaining tool output."""
     job_id = _JOB_ID_PATTERN.search(raw_output)
     status = re.search(r"\bjob\s+(queued|running|completed|failed|cancelled|canceled|timed_out|still-running)\b", raw_output, re.I)
-    if job_id is None and status is None:
+    if tool not in {"job", "test"}:
         return None
     return {
         "job_id": job_id.group(1).lower() if job_id else None,
@@ -464,6 +464,8 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     if "/" not in model:
         raise HarnessError("model must be a provider/model composite")
     if case.case_id == "sustained-event-ledger":
+        if budget_policy.max_provider_requests is None:
+            raise HarnessError("H006 sustained qualification requires an explicit provider request cap")
         if model != "opencode_go/muse-spark-1.3-contributor":
             raise HarnessError("H005 is authorized only for opencode_go/muse-spark-1.3-contributor")
         if timeout <= 0 or timeout > 3600:

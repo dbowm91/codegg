@@ -436,7 +436,16 @@ jobs:
       - name: Shell policy test-safety fixtures
         run: python3 scripts/test_shell_policy_test_safety.py
 
+      - name: Build CodeGG for native Harness Lab job lifecycle test
+        run: |
+          cargo build --locked --bin codegg --bin codegg-sandbox-helper
+          mkdir -p target/h006-job-observation
+          mv target/debug/codegg target/h006-job-observation/codegg
+          cp target/debug/codegg-sandbox-helper target/h006-job-observation/codegg-sandbox-helper
+
       - name: Harness Lab Python suite
+        env:
+          CODEGG_H006_CODEGG_BINARY: ${{ github.workspace }}/target/h006-job-observation/codegg
         run: python3 -m unittest discover -s dev/harness_lab/tests
 
       - name: Security test-filter execution control (self-test)

@@ -10,6 +10,7 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import unittest
@@ -356,6 +357,85 @@ class LongHorizonNativeJobTest(unittest.TestCase):
                 expected_exists=False, workspace_snapshot=self.fixture,
                 external_verifier=self.verifier)
         self.assertIn("public contract tests were modified", str(raised.exception))
+
+    def test_h006_real_background_job_is_observed_by_exact_id_while_work_continues(self):
+        configured_binary = os.environ.get("CODEGG_H006_CODEGG_BINARY")
+        binary = (Path(configured_binary) if configured_binary else
+                  REPO_ROOT / "target" / "debug" / "codegg")
+        self.assertTrue(binary.is_file(), "build CodeGG and set CODEGG_H006_CODEGG_BINARY")
+        sequence = [
+            {"name": "test", "arguments": {
+                "scope": "custom", "command": "cargo test --offline --workspace",
+                "workdir": "job-check", "execution_mode": "background"}},
+            {"name": "write", "arguments": {
+                "path": "src/parser.rs", "content": "pub fn split_version(input: &str) -> Option<Vec<&str>> {\n    let trimmed = input.trim();\n    let normalized = trimmed.strip_prefix('v').unwrap_or(trimmed);\n    if normalized.is_empty() { return None; }\n    let parts: Vec<&str> = normalized.split('.').collect();\n    (parts.len() == 3 && parts.iter().all(|part| !part.is_empty()))\n        .then_some(parts)\n}\n"}},
+            {"name": "job", "arguments": {"action": "status", "job_id": "{job_id}"}},
+            {"name": "write", "arguments": {
+                "path": "src/normalize.rs", "content": "pub fn normalize(parts: Vec<&str>) -> Option<(u32, u32, u32)> {\n    let major = parts[0].parse::<u32>().ok()?;\n    let minor = parts[1].parse::<u32>().ok()?;\n    let patch = parts[2].parse::<u32>().ok()?;\n    Some((major, minor, patch))\n}\n"}},
+            {"name": "write", "arguments": {
+                "path": "src/lib.rs", "content": "mod normalize;\nmod parser;\n\npub fn parse_version(input: &str) -> Option<(u32, u32, u32)> {\n    let parts = parser::split_version(input)?;\n    normalize::normalize(parts)\n}\n"}},
+            {"name": "job", "arguments": {"action": "status", "job_id": "{job_id}"}},
+            {"name": "job", "arguments": {
+                "action": "wait", "job_id": "{job_id}", "timeout_ms": 300000}},
+        ]
+        trial = run_tool_trial(
+            binary, "workspace-write", timeout=300.0,
+            task_id="h006-real-job-observation", tool_sequence=sequence,
+            expected_file="never-created", expected_text=None, expected_exists=False,
+            workspace_snapshot=self.fixture,
+            initial_files={
+                "job-check/Cargo.toml": "[workspace]\nmembers = [\"core\", \"index\", \"store\", \"cli\"]\nresolver = \"2\"\n",
+                "job-check/core/Cargo.toml": "[package]\nname = \"job-core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+                "job-check/core/src/lib.rs": "#[derive(Clone, Debug, Eq, PartialEq)] pub struct Row(pub i64); #[cfg(test)] mod tests { #[test] fn core_contract() { assert_eq!(super::Row(7), super::Row(7)); } }\n",
+                "job-check/index/Cargo.toml": "[package]\nname = \"job-index\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[dependencies]\njob-core = { path = \"../core\" }\n",
+                "job-check/index/src/lib.rs": "pub fn index(row: job_core::Row) -> (i64, usize) { (row.0, 1) } #[cfg(test)] mod tests { #[test] fn index_contract() { assert_eq!(super::index(job_core::Row(3)), (3, 1)); } }\n",
+                "job-check/store/Cargo.toml": "[package]\nname = \"job-store\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[dependencies]\njob-core = { path = \"../core\" }\njob-index = { path = \"../index\" }\n",
+                "job-check/store/src/lib.rs": "pub fn store(row: job_core::Row) -> (i64, usize) { job_index::index(row) } #[cfg(test)] mod tests { #[test] fn store_contract() { assert_eq!(super::store(job_core::Row(4)), (4, 1)); } }\n",
+                "job-check/cli/Cargo.toml": "[package]\nname = \"job-cli\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[dependencies]\njob-core = { path = \"../core\" }\njob-index = { path = \"../index\" }\njob-store = { path = \"../store\" }\n",
+                "job-check/cli/src/lib.rs": "pub fn run(value: i64) -> (i64, usize) { job_store::store(job_core::Row(value)) } #[cfg(test)] mod tests { #[test] fn cli_contract() { assert_eq!(super::run(5), (5, 1)); } }\n",
+                "job-check/cli/src/main.rs": "fn main() { assert_eq!(job_cli::run(5), (5, 1)); }\n",
+            })
+        self.addCleanup(shutil.rmtree, Path(trial["workspace"]).parent, ignore_errors=True)
+        calls = trial["tool_calls"]
+        submissions = [call for call in calls if call.get("job", {}).get("action") == "submit"]
+        observations = [call for call in calls if call.get("tool") == "job"]
+        self.assertEqual(len(submissions), 1)
+        job_id = submissions[0]["job"]["job_id"]
+        self.assertTrue(job_id)
+        exact = [call for call in observations if call.get("job", {}).get("job_id") == job_id]
+        running = [call for call in exact if call.get("job", {}).get("status") == "running"]
+        terminal = [call for call in exact if call.get("job", {}).get("status") in {
+            "completed", "failed", "cancelled", "canceled", "timed_out"}]
+        self.assertGreaterEqual(len(running), 2, calls)
+        self.assertTrue(terminal, calls)
+        first_running_at = running[0]["finished_elapsed_ms"]
+        second_running_at = running[1]["finished_elapsed_ms"]
+        intervening = [call for call in calls
+                       if first_running_at < call.get("started_elapsed_ms", 0) < second_running_at
+                       and call.get("tool") in {"write", "edit", "apply_patch"}]
+        self.assertGreaterEqual(len(intervening), 1, calls)
+        self.assertEqual(trial["event_observation_state"], "measured_no_gap")
+        receipt_path = os.environ.get("CODEGG_H006_JOB_RECEIPT")
+        if receipt_path:
+            receipt = {
+                "schema_version": 1,
+                "provider": "local-openai-fixture",
+                "source_sha256": trial["source_sha256"],
+                "event_observation_state": trial["event_observation_state"],
+                "event_gap_count": trial["event_gap_count"],
+                "provider_calls": trial["provider_calls"],
+                "wall_time_ms": trial["wall_time_ms"],
+                "tool_calls": [{
+                    "tool": call["tool"],
+                    "status": call["status"],
+                    "started_elapsed_ms": call["started_elapsed_ms"],
+                    "finished_elapsed_ms": call["finished_elapsed_ms"],
+                    "job": call.get("job"),
+                } for call in calls],
+            }
+            path = Path(receipt_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
 
     def test_a_transport_fault_lane_does_not_stop_the_next_lane(self):
         binary = REPO_ROOT / "target" / "debug" / "codegg"

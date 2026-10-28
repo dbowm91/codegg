@@ -779,6 +779,56 @@ def _drain_tool_notifications(client: "AcpClient", provider: Any, timeout: float
         client.drain(timeout=min(0.25, remaining))
 
 
+def _project_job_observation(tool: str, action: Any, raw_output: Any) -> dict[str, Any] | None:
+    """Project only bounded identity and lifecycle fields from native job output."""
+    if tool not in {"test", "job"} or not isinstance(raw_output, str):
+        return None
+    if tool == "test":
+        action = "submit"
+        job_id_match = re.search(r"background test submitted as job ([A-Za-z0-9_-]+)", raw_output)
+        job_id = job_id_match.group(1) if job_id_match else None
+        status = None
+    else:
+        job_id = None
+        status = None
+        try:
+            payload = json.loads(raw_output)
+        except (TypeError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict):
+            candidate_id = payload.get("job_id")
+            if isinstance(candidate_id, str) and re.fullmatch(r"[A-Za-z0-9_-]+", candidate_id):
+                job_id = candidate_id
+            candidate_status = payload.get("status")
+            if isinstance(candidate_status, str):
+                status = candidate_status.lower()
+        # The provider adapter can render structured tool results as text.
+        # Accept its bounded JSON-like fields, but never preserve the raw text.
+        if job_id is None:
+            job_id_match = re.search(
+                r"[\"']?job_id[\"']?\s*:\s*[\"']?([A-Za-z0-9_-]+)", raw_output)
+            job_id = job_id_match.group(1) if job_id_match else None
+        if status is None:
+            status_match = re.search(
+                r"[\"']?status[\"']?\s*:\s*[\"']?"
+                r"(queued|running|completed|failed|cancelled|canceled|timed_out|expired|blocked)\b",
+                raw_output, re.IGNORECASE)
+            if status_match is None:
+                status_match = re.search(
+                    r"\bjob\s+(queued|running|completed|failed|cancelled|canceled|timed_out|expired|blocked)\b",
+                    raw_output, re.IGNORECASE)
+            status = status_match.group(1).lower() if status_match else None
+    allowed_statuses = {
+        "queued", "running", "completed", "failed", "cancelled", "canceled",
+        "timed_out", "expired", "blocked",
+    }
+    return {
+        "action": action if action in {"submit", "status", "wait", "output", "cancel"} else "unknown",
+        "job_id": job_id,
+        "status": status if status in allowed_statuses else None,
+    }
+
+
 def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash: bool = False,
                    ledger_root: Path | None = None, candidate: str = "current",
                    task_id: str = "safe-bash-write", group_id: str = "native-tool-smoke",
@@ -932,7 +982,11 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             # outputs already present in the fixture provider's final history.
             _drain_tool_notifications(client, provider, timeout=min(10.0, timeout / 6))
             updates = [item for item in client.notifications if item.get("method") == "session/update"]
-            tool_updates = [item.get("params", {}).get("update", {}) for item in updates]
+            tool_updates = [
+                {**item.get("params", {}).get("update", {}),
+                 "_received_elapsed_ms": item.get("_received_elapsed_ms")}
+                for item in updates
+            ]
             event_gap_count = sum(item.get("sessionUpdate") == "codegg_event_gap"
                                   for item in tool_updates)
             if event_gap_count:
@@ -958,12 +1012,19 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             observed_tool_calls = []
             for item in finishes:
                 start = starts_by_id.get(item.get("toolCallId"), {})
-                observed_tool_calls.append({
+                call = {
                     "tool": start.get("title", "unknown"),
                     "arguments_sha256": start.get("codeggArgumentsSha256"),
                     "status": item.get("status") if item.get("status") in {"completed", "failed"} else "unknown",
                     "state_revision": completed_call_revisions.get(item.get("toolCallId")),
-                })
+                    "started_elapsed_ms": start.get("_received_elapsed_ms"),
+                    "finished_elapsed_ms": item.get("_received_elapsed_ms"),
+                }
+                job = _project_job_observation(
+                    str(call["tool"]), start.get("codeggAction"), item.get("rawOutput"))
+                if job is not None:
+                    call["job"] = job
+                observed_tool_calls.append(call)
             raw_usage = result.get("codeggUsage")
             usage = ({"turn_id": raw_usage.get("turnId"),
                       "input_tokens": raw_usage.get("inputTokens"),
