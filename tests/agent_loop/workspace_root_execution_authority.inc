@@ -822,6 +822,133 @@ async fn explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts()
     );
 }
 
+async fn submit_existing_managed_read_only_case(
+    run_store: &Arc<codegg_core::agent_run::SqliteAgentRunStore>,
+    submission: &codegg::scheduler::JobSubmissionService,
+    workspace_id: &WorkspaceId,
+    project_id: &ProjectId,
+    repository_id: &RepositoryId,
+    worktree_id: codegg_core::identity::WorktreeId,
+    case_id: &str,
+) -> (AgentRunId, JobId) {
+    use codegg_core::agent_run::AgentRunStatus;
+    use codegg_core::jobs::{
+        ExecutionTarget, IdempotencyClass, JobPriority, JobSource, NewJob, ResourceRequest,
+        RetryPolicy,
+    };
+
+    let task_id = AgentTaskId::new();
+    let run_id = AgentRunId::new();
+    let delegation_key = format!("a002-{case_id}");
+    run_store
+        .create_or_get(
+            NewAgentTask {
+                task_id: task_id.clone(),
+                parent_task_id: None,
+                originating_session_id: "a002-parent-session".into(),
+                originating_turn_id: Some("a002-parent-turn".into()),
+                project_id: project_id.clone(),
+                repository_id: Some(repository_id.clone()),
+                workspace_id: workspace_id.clone(),
+                requested_agent: CHILD_AGENT.into(),
+                delegation_key: delegation_key.clone(),
+                request_fingerprint: format!("a002-{case_id}-fingerprint"),
+                description: "read one existing managed checkout".into(),
+            },
+            NewAgentRun {
+                run_id: run_id.clone(),
+                parent_run_id: None,
+                depth: 1,
+                workspace_id: workspace_id.clone(),
+                agent_name: CHILD_AGENT.into(),
+                agent_digest: None,
+                provider: PROVIDER_ID.into(),
+                model: format!("{PROVIDER_ID}/model"),
+                authority_digest: "a002-read-only-authority".into(),
+                budget: AgentRunBudget::default(),
+                shared_scratch: Vec::new(),
+            },
+        )
+        .await
+        .expect("create durable delegated run");
+    run_store
+        .transition(&run_id, AgentRunStatus::Queued)
+        .await
+        .expect("mark run queued");
+
+    let payload = JobPayload::SubagentRun {
+        prompt: "Read the tracked README.".into(),
+        agent: CHILD_AGENT.into(),
+        model: Some(format!("{PROVIDER_ID}/model")),
+        parent_id: None,
+        denied_tools: MUTATING_TOOLS.iter().map(|name| (*name).into()).collect(),
+        allowed_paths: Vec::new(),
+        max_tool_calls: None,
+        task_id,
+        run_id: run_id.clone(),
+        delegation_key,
+        base_commit: None,
+        placement: codegg_core::run_placement::RunPlacement::ExistingManagedReadOnly {
+            worktree_id,
+        },
+        default_working_directory: None,
+    };
+    let submitted = submission
+        .submit(
+            None,
+            NewJob {
+                workspace_id: workspace_id.clone(),
+                session_id: None,
+                turn_id: None,
+                kind: JobKind::Subagent,
+                source: JobSource::AgentDelegated,
+                priority: JobPriority::Interactive,
+                payload,
+                resource_request: ResourceRequest::default(),
+                timeout: None,
+                retry_policy: RetryPolicy::no_retry(),
+                idempotency: IdempotencyClass::NonIdempotent,
+                not_before: None,
+                deadline: None,
+                schedule_id: None,
+                depends_on: Vec::new(),
+                parent_job_id: None,
+                parent_attempt_id: None,
+                parent_call_id: None,
+                parent_program_id: None,
+                parent_instruction_sequence: None,
+                relation_kind: None,
+                target: ExecutionTarget::default(),
+            },
+        )
+        .await
+        .expect("submit selected checkout through production scheduler");
+    (run_id, submitted.job_id)
+}
+
+async fn wait_for_scheduled_job(
+    job_store: &Arc<codegg_core::jobs::InMemoryJobStore>,
+    job_id: &JobId,
+) -> JobRecord {
+    use codegg_core::jobs::JobStore;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let record = job_store
+            .get_job(job_id)
+            .await
+            .expect("read scheduled job")
+            .expect("submitted job exists");
+        if record.state.is_terminal() {
+            return record;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "job timed out: {record:#?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn existing_managed_read_only_runs_through_the_production_scheduler() {
     use codegg::agent::run_control::RunControlService;
@@ -1136,6 +1263,354 @@ async fn existing_managed_read_only_runs_through_the_production_scheduler() {
             run_store.get_run(&run_id).await.unwrap()
         );
     }
+
+    // Exercise the executor's fail-closed matrix through the same production
+    // submission and scheduler path as the successful placement above.
+    let (missing_run, missing_job) = submit_existing_managed_read_only_case(
+        &run_store,
+        &submission,
+        &parent_workspace.id,
+        &project.project_id,
+        &repository_id,
+        codegg_core::identity::WorktreeId::parse("missing-a002-managed-worktree").unwrap(),
+        "missing-target",
+    )
+    .await;
+    assert_eq!(
+        wait_for_scheduled_job(&job_store, &missing_job).await.state,
+        JobState::Failed
+    );
+    let missing_record = run_store.get_run(&missing_run).await.unwrap().unwrap();
+    assert_eq!(
+        missing_record.failure_class.as_deref(),
+        Some("existing_worktree_unavailable"),
+        "missing managed checkout refusal: {missing_record:#?}"
+    );
+
+    let selected = worktrees.get(&created.worktree_id).await.unwrap();
+    let dirty_marker = selected.path.join("a002-untracked-dirty-marker");
+    std::fs::write(&dirty_marker, "untracked").unwrap();
+    worktrees.refresh(&created.worktree_id).await.unwrap();
+    let (dirty_run, dirty_job) = submit_existing_managed_read_only_case(
+        &run_store,
+        &submission,
+        &parent_workspace.id,
+        &project.project_id,
+        &repository_id,
+        created.worktree_id.clone(),
+        "dirty-target",
+    )
+    .await;
+    assert_eq!(
+        wait_for_scheduled_job(&job_store, &dirty_job).await.state,
+        JobState::Failed
+    );
+    assert_eq!(
+        run_store
+            .get_run(&dirty_run)
+            .await
+            .unwrap()
+            .unwrap()
+            .failure_class
+            .as_deref(),
+        Some("existing_worktree_unavailable")
+    );
+    std::fs::remove_file(&dirty_marker).unwrap();
+    worktrees.refresh(&created.worktree_id).await.unwrap();
+    sqlx::query(
+        "UPDATE managed_worktree SET state = 'ready', health = 'clean' WHERE worktree_id = ?",
+    )
+    .bind(created.worktree_id.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let lease_owner = AgentRunId::new();
+    let held_lease = worktrees
+        .acquire_lease(&created.worktree_id, &lease_owner)
+        .await
+        .expect("hold checkout for the busy refusal case");
+    let (busy_run, busy_job) = submit_existing_managed_read_only_case(
+        &run_store,
+        &submission,
+        &parent_workspace.id,
+        &project.project_id,
+        &repository_id,
+        created.worktree_id.clone(),
+        "busy-target",
+    )
+    .await;
+    assert_eq!(
+        wait_for_scheduled_job(&job_store, &busy_job).await.state,
+        JobState::Failed
+    );
+    assert_eq!(
+        run_store
+            .get_run(&busy_run)
+            .await
+            .unwrap()
+            .unwrap()
+            .failure_class
+            .as_deref(),
+        Some("existing_worktree_in_use")
+    );
+    worktrees
+        .release_lease(&created.worktree_id, &lease_owner, held_lease.generation)
+        .await
+        .expect("release fixture busy-case lease");
+
+    let session_store = codegg_core::session::store::SessionStore::new(pool.clone());
+    let active_session = session_store
+        .create(codegg_core::session::models::CreateSession {
+            project_id: project.project_id.as_str().to_owned(),
+            directory: selected.path.to_string_lossy().into_owned(),
+            workspace_id: Some(selected_workspace.id.as_str().to_owned()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let (session_run, session_job) = submit_existing_managed_read_only_case(
+        &run_store,
+        &submission,
+        &parent_workspace.id,
+        &project.project_id,
+        &repository_id,
+        created.worktree_id.clone(),
+        "active-session-target",
+    )
+    .await;
+    assert_eq!(
+        wait_for_scheduled_job(&job_store, &session_job).await.state,
+        JobState::Failed
+    );
+    let session_run = run_store.get_run(&session_run).await.unwrap().unwrap();
+    assert_eq!(
+        session_run.failure_class.as_deref(),
+        Some("existing_worktree_in_use"),
+        "active session refusal: {session_run:#?}"
+    );
+    session_store.archive(&active_session.id).await.unwrap();
+
+    // Catalog metadata is modified only inside this isolated fixture. The
+    // scheduler must refuse a managed record that claims another project.
+    sqlx::query("UPDATE managed_worktree SET project_id = ? WHERE worktree_id = ?")
+        .bind("foreign-a002-project")
+        .bind(created.worktree_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (foreign_run, foreign_job) = submit_existing_managed_read_only_case(
+        &run_store,
+        &submission,
+        &parent_workspace.id,
+        &project.project_id,
+        &repository_id,
+        created.worktree_id.clone(),
+        "foreign-project-target",
+    )
+    .await;
+    assert_eq!(
+        wait_for_scheduled_job(&job_store, &foreign_job).await.state,
+        JobState::Failed
+    );
+    assert_eq!(
+        run_store
+            .get_run(&foreign_run)
+            .await
+            .unwrap()
+            .unwrap()
+            .failure_class
+            .as_deref(),
+        Some("existing_worktree_unavailable")
+    );
+    sqlx::query("UPDATE managed_worktree SET project_id = ? WHERE worktree_id = ?")
+        .bind(project.project_id.as_str())
+        .bind(created.worktree_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    sqlx::query("UPDATE managed_worktree SET repository_id = ? WHERE worktree_id = ?")
+        .bind("foreign-a002-repository")
+        .bind(created.worktree_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (foreign_repository_run, foreign_repository_job) = submit_existing_managed_read_only_case(
+        &run_store,
+        &submission,
+        &parent_workspace.id,
+        &project.project_id,
+        &repository_id,
+        created.worktree_id.clone(),
+        "foreign-repository-target",
+    )
+    .await;
+    assert_eq!(
+        wait_for_scheduled_job(&job_store, &foreign_repository_job)
+            .await
+            .state,
+        JobState::Failed
+    );
+    let foreign_repository_run = run_store
+        .get_run(&foreign_repository_run)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        foreign_repository_run.failure_class.as_deref(),
+        Some("existing_worktree_unavailable"),
+        "foreign repository refusal: {foreign_repository_run:#?}"
+    );
+    sqlx::query("UPDATE managed_worktree SET repository_id = ? WHERE worktree_id = ?")
+        .bind(repository_id.as_str())
+        .bind(created.worktree_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    sqlx::query("UPDATE managed_worktree SET workspace_id = ? WHERE worktree_id = ?")
+        .bind("foreign-a002-workspace")
+        .bind(created.worktree_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (foreign_workspace_run, foreign_workspace_job) = submit_existing_managed_read_only_case(
+        &run_store,
+        &submission,
+        &parent_workspace.id,
+        &project.project_id,
+        &repository_id,
+        created.worktree_id.clone(),
+        "foreign-workspace-target",
+    )
+    .await;
+    assert_eq!(
+        wait_for_scheduled_job(&job_store, &foreign_workspace_job)
+            .await
+            .state,
+        JobState::Failed
+    );
+    let foreign_workspace_run = run_store
+        .get_run(&foreign_workspace_run)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        foreign_workspace_run.failure_class.as_deref(),
+        Some("existing_worktree_unavailable"),
+        "foreign workspace refusal: {foreign_workspace_run:#?}"
+    );
+    sqlx::query("UPDATE managed_worktree SET workspace_id = ? WHERE worktree_id = ?")
+        .bind(parent_workspace.id.as_str())
+        .bind(created.worktree_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    sqlx::query("UPDATE managed_worktree SET managed = 0 WHERE worktree_id = ?")
+        .bind(created.worktree_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (unmanaged_run, unmanaged_job) = submit_existing_managed_read_only_case(
+        &run_store,
+        &submission,
+        &parent_workspace.id,
+        &project.project_id,
+        &repository_id,
+        created.worktree_id.clone(),
+        "unmanaged-target",
+    )
+    .await;
+    assert_eq!(
+        wait_for_scheduled_job(&job_store, &unmanaged_job)
+            .await
+            .state,
+        JobState::Failed
+    );
+    assert_eq!(
+        run_store
+            .get_run(&unmanaged_run)
+            .await
+            .unwrap()
+            .unwrap()
+            .failure_class
+            .as_deref(),
+        Some("existing_worktree_unavailable")
+    );
+    sqlx::query("UPDATE managed_worktree SET managed = 1 WHERE worktree_id = ?")
+        .bind(created.worktree_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let active_job = job_store
+        .create_job(NewJob {
+            workspace_id: selected_workspace.id.clone(),
+            session_id: None,
+            turn_id: None,
+            kind: JobKind::Build,
+            source: JobSource::Interactive,
+            priority: JobPriority::Interactive,
+            payload: JobPayload::ManagedArgv {
+                argv: vec!["true".into()],
+                cwd: Some(selected.path.to_string_lossy().into_owned()),
+                sandbox_profile: None,
+                network_intent: Default::default(),
+            },
+            resource_request: ResourceRequest::default(),
+            timeout: None,
+            retry_policy: RetryPolicy::no_retry(),
+            idempotency: IdempotencyClass::NonIdempotent,
+            not_before: None,
+            deadline: None,
+            schedule_id: None,
+            depends_on: Vec::new(),
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
+            parent_program_id: None,
+            parent_instruction_sequence: None,
+            relation_kind: None,
+            target: ExecutionTarget::default(),
+        })
+        .await
+        .unwrap();
+    let active_attempt = job_store
+        .begin_attempt(
+            &active_job.job_id,
+            &DaemonGeneration::new_unchecked("a002-active-job"),
+        )
+        .await
+        .unwrap();
+    job_store
+        .mark_attempt_running(&active_attempt.attempt_id)
+        .await
+        .unwrap();
+    let (active_job_run, active_job_submission) = submit_existing_managed_read_only_case(
+        &run_store,
+        &submission,
+        &parent_workspace.id,
+        &project.project_id,
+        &repository_id,
+        created.worktree_id.clone(),
+        "active-job-target",
+    )
+    .await;
+    assert_eq!(
+        wait_for_scheduled_job(&job_store, &active_job_submission)
+            .await
+            .state,
+        JobState::Failed
+    );
+    let active_job_run = run_store.get_run(&active_job_run).await.unwrap().unwrap();
+    assert_eq!(
+        active_job_run.failure_class.as_deref(),
+        Some("existing_worktree_in_use"),
+        "active scheduler job refusal: {active_job_run:#?}"
+    );
+
     scheduler
         .shutdown(codegg::scheduler::SchedulerShutdownMode::ImmediateInterrupt)
         .await;

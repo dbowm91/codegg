@@ -1438,12 +1438,20 @@ impl JobExecutor for SubagentJobExecutor {
                         Err(error) => {
                             let reason =
                                 format!("selected worktree lock could not be acquired: {error}");
+                            let failure_class = if matches!(
+                                error,
+                                codegg_core::worktree_service::WorktreeServiceError::NotFound(_)
+                            ) {
+                                "existing_worktree_unavailable"
+                            } else {
+                                "existing_worktree_authority_unavailable"
+                            };
                             let _ = store
                                 .finish(
                                     run_id,
                                     codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
                                     None,
-                                    Some("existing_worktree_authority_unavailable".into()),
+                                    Some(failure_class.into()),
                                     Some(reason.clone()),
                                 )
                                 .await;
@@ -1501,13 +1509,27 @@ impl JobExecutor for SubagentJobExecutor {
                             );
                         }
                     };
+                    if selected.state == codegg_core::worktree_service::ManagedWorktreeState::InUse
+                        || selected.owner_run_id.is_some()
+                    {
+                        let reason = "selected managed worktree is already in use";
+                        let _ = store
+                            .finish(
+                                run_id,
+                                codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                None,
+                                Some("existing_worktree_in_use".into()),
+                                Some(reason.into()),
+                            )
+                            .await;
+                        return failure_completion(started, ExecutorStatus::Failed, reason.into());
+                    }
                     if !selected.managed
                         || selected.project_id != task.project_id
                         || &selected.repository_id != repository_id
                         || selected.workspace_id != task.workspace_id
                         || selected.state
                             != codegg_core::worktree_service::ManagedWorktreeState::Ready
-                        || selected.owner_run_id.is_some()
                         || selected.health != codegg_core::worktree_service::WorktreeHealth::Clean
                         || !selected_path.starts_with(&managed_root)
                     {
