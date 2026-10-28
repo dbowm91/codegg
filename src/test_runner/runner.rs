@@ -508,6 +508,7 @@ async fn run_managed_test_process(
     // argv (`resolved.argv`, `cargo ...`) is unchanged.
     let mut spawn_argv_strings: Vec<String> = resolved.argv.clone();
     let mut rustc_executable = None;
+    let mut rustdoc_executable = None;
     if let Some(first) = spawn_argv_strings.first() {
         let is_cargo = first == "cargo"
             || std::path::Path::new(first)
@@ -523,6 +524,11 @@ async fn run_managed_test_process(
                 .and_then(|cargo| std::path::Path::new(cargo).parent())
                 .map(|toolchain_bin| toolchain_bin.join("rustc"))
                 .filter(|rustc| rustc.is_file());
+            rustdoc_executable = spawn_argv_strings
+                .first()
+                .and_then(|cargo| std::path::Path::new(cargo).parent())
+                .map(|toolchain_bin| toolchain_bin.join("rustdoc"))
+                .filter(|rustdoc| rustdoc.is_file());
         }
     }
     let argv: Vec<OsString> = spawn_argv_strings.iter().map(OsString::from).collect();
@@ -542,6 +548,9 @@ async fn run_managed_test_process(
             }
             if let Some(rustc) = rustc_executable.as_ref() {
                 policy = policy.with_var("RUSTC", rustc.as_os_str());
+            }
+            if let Some(rustdoc) = rustdoc_executable.as_ref() {
+                policy = policy.with_var("RUSTDOC", rustdoc.as_os_str());
             }
             policy
         } else {
