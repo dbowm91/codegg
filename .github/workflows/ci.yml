@@ -563,6 +563,15 @@ jobs:
           echo "CODEGG_EGGWORK_TEST_NODE=$PWD/crates/eggwork-test-node/target/debug/codegg-eggwork-test-node" >> "$GITHUB_ENV"
           echo "CODEGG_EGGWORK_FIXTURES_PREBUILT=1" >> "$GITHUB_ENV"
 
+      - name: Install Bubblewrap for contained scheduler tests
+        run: sudo apt-get update && sudo apt-get install --yes bubblewrap
+
+      - name: Enable Bubblewrap user namespaces for contained scheduler tests
+        run: |
+          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)" = "1" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
       # Constrained Linux integration tests resolve this managed sidecar from
       # the target profile directory shared with their Cargo `deps` binaries.
       # Product builds still resolve only their installation-owned sibling.
