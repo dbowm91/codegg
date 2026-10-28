@@ -99,6 +99,10 @@ async fn upgrading_from_the_single_key_shape_preserves_rows_and_lifts_the_constr
         .execute(&pool)
         .await
         .expect("seed version 69");
+    sqlx::query("CREATE TABLE agent_run (run_id TEXT PRIMARY KEY)")
+        .execute(&pool)
+        .await
+        .expect("create pre-v70 agent_run");
     // A real v69 database already has runtime_preferences from v58 and the
     // task-model columns from v62. Keep this legacy fixture representative:
     // v83 adds network_intent to this table after main's migrations v80-v82.
