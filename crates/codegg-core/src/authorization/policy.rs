@@ -1000,6 +1000,16 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::FileRead),
         ),
+        R::LspServerStatusGet { .. } => OperationDescriptor::new(
+            "lsp_server_status_get",
+            ScopeKind::ViaSession,
+            Some(Capability::FileRead),
+        ),
+        R::LspControl { .. } => OperationDescriptor::new(
+            "lsp_control",
+            ScopeKind::ViaSession,
+            Some(Capability::LspControl),
+        ),
         // M006-B: the diagnostics *stream* needs `file.read`, not the
         // `project.observe` the generic `ProjectionSubscribe` uses. See ADR-0012
         // §4 — diagnostics carry source content, and `project.observe` would
@@ -2103,6 +2113,19 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         },
         R::LspDiagnosticsGet {
             request: dummy_lsp_diagnostics_get(),
+        },
+        R::LspServerStatusGet {
+            request: codegg_protocol::lsp::LspServerStatusGetRequestDto {
+                session_id: String::new(),
+                server_id: None,
+            },
+        },
+        R::LspControl {
+            request: codegg_protocol::lsp::LspControlRequestDto {
+                session_id: String::new(),
+                server_id: String::new(),
+                action: codegg_protocol::lsp::LspControlActionDto::Restart,
+            },
         },
         R::LspDiagnosticsSubscribe {
             request: dummy_lsp_diagnostics_subscribe(),

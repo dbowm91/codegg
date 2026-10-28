@@ -40,7 +40,8 @@ use codegg_protocol::lsp::{
     LspCodeActionDto, LspCodeActionUnavailable, LspDiagnosticsGetRequestDto,
     LspDiagnosticsResultDto, LspFormatPreviewDto, LspHighlightDto, LspPreviewCandidateDto,
     LspPreviewPatchDto, LspRangeDto, LspReadOperation, LspReadPayloadDto, LspReadRequestDto,
-    LspReadResultDto, LspRenameFileDto, LspRenamePreviewDto, LspSignatureDto,
+    LspReadResultDto, LspRenameFileDto, LspRenamePreviewDto, LspServerStatusDto,
+    LspServerStatusGetRequestDto, LspServerStatusResultDto, LspSignatureDto,
     LspSignatureParameterDto, LspSymbolDto, MAX_LSP_CODE_ACTIONS, MAX_LSP_PREVIEW_CANDIDATE_BYTES,
     MAX_LSP_PREVIEW_CANDIDATE_PATCHES, MAX_LSP_PREVIEW_CANDIDATE_PATCH_BYTES,
     MAX_LSP_READ_CANDIDATE_BYTES,
@@ -234,6 +235,19 @@ impl CoreDaemon {
                 let result = self.lsp_diagnostics_get(request).await;
                 Ok(CoreResponse::LspDiagnosticsGetResult { result })
             }
+            CoreRequest::LspServerStatusGet { request } => {
+                match self.lsp_server_status_get(request).await {
+                    Ok(result) => Ok(CoreResponse::LspServerStatusGetResult { result }),
+                    Err(denial) => Ok(CoreResponse::Error {
+                        code: denial.code().into(),
+                        message: denial.message().into(),
+                    }),
+                }
+            }
+            CoreRequest::LspControl { request } => match self.lsp_control(request).await {
+                Ok(result) => Ok(CoreResponse::LspControlResult { result }),
+                Err((code, message)) => Ok(CoreResponse::Error { code, message }),
+            },
             CoreRequest::LspDiagnosticsSubscribe { request } => {
                 self.lsp_diagnostics_subscribe(request, trusted_client_id)
                     .await
@@ -246,6 +260,186 @@ impl CoreDaemon {
                 message: format!("{other:?} is not an LSP read request"),
             }),
         }
+    }
+
+    async fn lsp_server_status_get(
+        &self,
+        request: LspServerStatusGetRequestDto,
+    ) -> Result<LspServerStatusResultDto, LspReadDenial> {
+        let root = self.lsp_workspace_root(&request.session_id).await?;
+        let service = self.lsp_service()?;
+        let mut keys = service.existing_client_keys_for_root(&root).await;
+        if let Some(wanted) = request
+            .server_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            keys.retain(|key| {
+                key == wanted || key.rsplit_once(':').is_some_and(|(_, id)| id == wanted)
+            });
+            if keys.is_empty() {
+                return Ok(LspServerStatusResultDto {
+                    servers: Vec::new(),
+                    server_not_found: true,
+                    truncated: false,
+                });
+            }
+        }
+        let truncated = keys.len() > codegg_protocol::lsp::MAX_LSP_STATUS_SERVERS;
+        let mut servers =
+            Vec::with_capacity(keys.len().min(codegg_protocol::lsp::MAX_LSP_STATUS_SERVERS));
+        for key in keys
+            .into_iter()
+            .take(codegg_protocol::lsp::MAX_LSP_STATUS_SERVERS)
+        {
+            let Some(snapshot) = service.operational_health_snapshot(&key).await else {
+                continue;
+            };
+            let bounded_error = snapshot.last_error.map(|error| {
+                let redacted = error.replace(&root.to_string_lossy().to_string(), "[workspace]");
+                redacted.chars().take(512).collect()
+            });
+            let capabilities = service
+                .effective_capabilities_for_key(&key)
+                .await
+                .map(|capabilities| {
+                    let advertised = [
+                        (
+                            "documentSymbolProvider",
+                            capabilities.supports_document_symbols,
+                        ),
+                        (
+                            "workspaceSymbolProvider",
+                            capabilities.supports_workspace_symbols,
+                        ),
+                        ("definitionProvider", capabilities.supports_definition),
+                        ("declarationProvider", capabilities.supports_declaration),
+                        (
+                            "implementationProvider",
+                            capabilities.supports_implementation,
+                        ),
+                        ("referencesProvider", capabilities.supports_references),
+                        ("hoverProvider", capabilities.supports_hover),
+                        (
+                            "documentHighlightProvider",
+                            capabilities.supports_document_highlight,
+                        ),
+                        ("completionProvider", capabilities.supports_completion),
+                        (
+                            "signatureHelpProvider",
+                            capabilities.supports_signature_help,
+                        ),
+                        ("renameProvider", capabilities.supports_rename),
+                        ("codeActionProvider", capabilities.supports_code_actions),
+                        (
+                            "documentFormattingProvider",
+                            capabilities.supports_document_formatting,
+                        ),
+                        (
+                            "rangeFormattingProvider",
+                            capabilities.supports_range_formatting,
+                        ),
+                        (
+                            "selectionRangeProvider",
+                            capabilities.supports_selection_ranges,
+                        ),
+                        (
+                            "callHierarchyProvider",
+                            capabilities.supports_call_hierarchy,
+                        ),
+                        (
+                            "typeHierarchyProvider",
+                            capabilities.supports_type_hierarchy,
+                        ),
+                        (
+                            "semanticTokensProvider",
+                            capabilities.supports_semantic_tokens,
+                        ),
+                    ];
+                    advertised
+                        .into_iter()
+                        .filter_map(|(name, supported)| supported.then_some(name.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            servers.push(LspServerStatusDto {
+                server_id: snapshot.server_id,
+                generation: snapshot.generation,
+                state: snapshot.state.label().to_string(),
+                pending_requests: snapshot.pending_requests,
+                open_documents: snapshot.open_documents,
+                last_error: bounded_error,
+                stderr_tail: Vec::new(),
+                capabilities,
+            });
+        }
+        let server_not_found = request.server_id.is_some() && servers.is_empty();
+        Ok(LspServerStatusResultDto {
+            servers,
+            server_not_found,
+            truncated,
+        })
+    }
+
+    async fn lsp_control(
+        &self,
+        request: codegg_protocol::lsp::LspControlRequestDto,
+    ) -> Result<codegg_protocol::lsp::LspControlResultDto, (String, String)> {
+        use codegg_protocol::lsp::LspControlActionDto;
+        let server_id = request.server_id.trim();
+        if server_id.is_empty() || server_id.len() > 256 {
+            return Err((
+                "invalid_lsp_server_id".into(),
+                "a valid server id is required".into(),
+            ));
+        }
+        let root = self
+            .lsp_workspace_root(&request.session_id)
+            .await
+            .map_err(|denial| (denial.code().into(), denial.message().into()))?;
+        let service = self
+            .lsp_service()
+            .map_err(|denial| (denial.code().into(), denial.message().into()))?;
+        let keys = service.existing_client_keys_for_root(&root).await;
+        let key = keys
+            .into_iter()
+            .find(|key| {
+                key == server_id || key.rsplit_once(':').is_some_and(|(_, id)| id == server_id)
+            })
+            .ok_or_else(|| {
+                (
+                    "lsp_server_not_found".into(),
+                    "server not found in this session workspace".into(),
+                )
+            })?;
+        let previous_generation = service.generation_for_key(&key).await;
+        match request.action {
+            LspControlActionDto::Restart => {
+                service.manual_restart_client(&key).await.map_err(|_| {
+                    (
+                        "lsp_control_failed".into(),
+                        "the language server could not be restarted".into(),
+                    )
+                })?
+            }
+        }
+        let generation = service.generation_for_key(&key).await;
+        let state = service
+            .operational_health_snapshot(&key)
+            .await
+            .map(|snapshot| snapshot.state.label().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        Ok(codegg_protocol::lsp::LspControlResultDto {
+            server_id: service
+                .operational_health_snapshot(&key)
+                .await
+                .map(|snapshot| snapshot.server_id)
+                .unwrap_or_else(|| server_id.to_string()),
+            previous_generation,
+            generation,
+            state,
+        })
     }
 
     /// Resolve the daemon-owned workspace root for a session locator.
@@ -529,6 +723,82 @@ impl CoreDaemon {
                         }
                     }
                     Err(err) => return Self::read_operation_error(operation, &err),
+                }
+            }
+            LspReadOperation::SelectionRange => {
+                let Some(capabilities) = service.effective_capabilities_for_key(key).await else {
+                    return Ok(LspReadResultDto::not_ready(operation));
+                };
+                if !capabilities.supports_selection_ranges {
+                    return Ok(LspReadResultDto::unsupported(operation));
+                }
+                let uri = match url::Url::from_file_path(target) {
+                    Ok(uri) => uri,
+                    Err(_) => return Err(LspReadDenial::InvalidPath),
+                };
+                let params = serde_json::json!({
+                    "textDocument": { "uri": uri.as_str() },
+                    "positions": [{ "line": line, "character": column }],
+                });
+                let raw = match service
+                    .send_request(key, "textDocument/selectionRange", params)
+                    .await
+                {
+                    Ok(raw) => raw,
+                    Err(error) => return Self::read_operation_error(operation, &error),
+                };
+                if serde_json::to_vec(&raw).map_or(true, |encoded| {
+                    encoded.len() > codegg_protocol::lsp::MAX_LSP_SELECTION_RANGE_RESPONSE_BYTES
+                }) {
+                    return Err(LspReadDenial::ServerFailed);
+                }
+                let mut results: Vec<Option<crate::lsp::lsp_types::SelectionRange>> =
+                    serde_json::from_value(raw).map_err(|_| LspReadDenial::ServerFailed)?;
+                if results.len() != 1 {
+                    return Err(LspReadDenial::ServerFailed);
+                }
+                let mut current = results.pop().flatten();
+                let mut ranges = Vec::new();
+                let cap = codegg_protocol::lsp::MAX_LSP_SELECTION_RANGE_DEPTH;
+                let mut child_bounds = None;
+                while let Some(selection) = current {
+                    let range = selection.range;
+                    if (range.start.line, range.start.character)
+                        > (range.end.line, range.end.character)
+                    {
+                        return Err(LspReadDenial::ServerFailed);
+                    }
+                    if child_bounds.is_some_and(|(start, end)| {
+                        (range.start.line, range.start.character) > start
+                            || (range.end.line, range.end.character) < end
+                    }) {
+                        return Err(LspReadDenial::ServerFailed);
+                    }
+                    if ranges.is_empty()
+                        && ((range.start.line, range.start.character) > (line, column)
+                            || (range.end.line, range.end.character) < (line, column))
+                    {
+                        return Err(LspReadDenial::ServerFailed);
+                    }
+                    child_bounds = Some((
+                        (range.start.line, range.start.character),
+                        (range.end.line, range.end.character),
+                    ));
+                    let mut dto = range_to_dto(range);
+                    dto.workspace_relative_path = workspace_relative_target(root, target);
+                    ranges.push(dto);
+                    if ranges.len() == cap {
+                        let truncated = selection.parent.is_some();
+                        return Ok(LspReadResultDto::ready(
+                            operation,
+                            LspReadPayloadDto::SelectionRanges { ranges, truncated },
+                        ));
+                    }
+                    current = selection.parent.map(|parent| *parent);
+                }
+                LspReadPayloadDto::SelectionRanges {
+                    ranges,
+                    truncated: false,
                 }
             }
             LspReadOperation::SignatureHelp => {

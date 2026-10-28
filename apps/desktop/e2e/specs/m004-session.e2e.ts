@@ -21,6 +21,7 @@
  */
 import { $, $$, expect } from '@wdio/globals';
 import * as fs from 'node:fs';
+import { Worker } from 'node:worker_threads';
 import { testBrowser as browser } from '../test-browser.js';
 import { FixtureClient } from '../fixture-client.js';
 
@@ -85,6 +86,87 @@ async function clickFirstWorkspace(): Promise<void> {
   }
   if (!first) throw new Error('no workspace buttons rendered');
   await first.click();
+}
+
+async function measureKeyToPaint(samples = 31): Promise<number[]> {
+  const caret = $('[data-testid="editor-caret"]');
+  const durations: number[] = [];
+  let direction =
+    Number.parseInt((await caret.getAttribute('data-column')) ?? '0', 10) > 0
+      ? 'ArrowLeft'
+      : 'ArrowRight';
+  for (let sample = 0; sample < samples; sample += 1) {
+    const before = Number.parseInt((await caret.getAttribute('data-column')) ?? '0', 10);
+    const delta = direction === 'ArrowRight' ? 1 : -1;
+    const started = performance.now();
+    await browser.keys(direction);
+    await browser.waitUntil(
+      async () =>
+        Number.parseInt((await caret.getAttribute('data-column')) ?? '0', 10) === before + delta,
+      { timeout: 15_000, timeoutMsg: 'local cursor movement did not reach the rendered viewport' },
+    );
+    await browser.execute(
+      () =>
+        new Promise<void>((resolve) => {
+          let frames = 0;
+          const fallback = window.setTimeout(resolve, 250);
+          const afterFrame = () => {
+            frames += 1;
+            if (frames === 2) {
+              window.clearTimeout(fallback);
+              resolve();
+            } else {
+              requestAnimationFrame(afterFrame);
+            }
+          };
+          requestAnimationFrame(afterFrame);
+        }),
+    );
+    durations.push(performance.now() - started);
+    direction = direction === 'ArrowRight' ? 'ArrowLeft' : 'ArrowRight';
+  }
+  return durations.sort((left, right) => left - right);
+}
+
+async function startCpuLoad(workerCount = 4): Promise<() => Promise<void>> {
+  const workers = Array.from(
+    { length: workerCount },
+    () => new Worker('while (true) {}', { eval: true }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  return async () => {
+    await Promise.all(workers.map((worker) => worker.terminate()));
+  };
+}
+
+function summarizeLatency(durations: number[]) {
+  return {
+    samples: durations.length,
+    p50Ms: durations[Math.floor((durations.length - 1) * 0.50)],
+    p95Ms: durations[Math.floor((durations.length - 1) * 0.95)],
+  };
+}
+
+async function measureNavigationRequests(samples = 31) {
+  return await browser.execute(async (rawSampleCount: unknown) => {
+    const sampleCount = Number(rawSampleCount);
+    const internals = (window as unknown as {
+      __TAURI_INTERNALS__?: { invoke: (command: string, args?: unknown) => Promise<unknown> };
+    }).__TAURI_INTERNALS__;
+    if (!internals) throw new Error('Tauri invoke bridge is unavailable');
+    const durations: number[] = [];
+    let status = '';
+    for (let sample = 0; sample < sampleCount; sample += 1) {
+      const started = performance.now();
+      const view = await internals.invoke('desktop_document_navigate', {
+        operation: 'definition',
+      }) as { status: string };
+      durations.push(performance.now() - started);
+      status = view.status;
+    }
+    durations.sort((left, right) => left - right);
+    return { status, durations };
+  }, samples);
 }
 
 describe('M004 built-app session vertical slice (route, projection, control, prompt)', () => {
@@ -218,28 +300,10 @@ describe('M004 built-app session vertical slice (route, projection, control, pro
 
     const viewport = $('[data-testid="editor-viewport"]');
     await viewport.click();
-    const caret = $('[data-testid="editor-caret"]');
-    const durations: number[] = [];
-    for (let sample = 0; sample < 31; sample += 1) {
-      const before = Number.parseInt((await caret.getAttribute('data-column')) ?? '0', 10);
-      const started = performance.now();
-      await browser.keys('ArrowRight');
-      await browser.waitUntil(
-        async () =>
-          Number.parseInt((await caret.getAttribute('data-column')) ?? '0', 10) === before + 1,
-        { timeout: 5_000, timeoutMsg: 'local cursor movement did not reach the rendered viewport' },
-      );
-      await browser.execute(
-        () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
-      );
-      durations.push(performance.now() - started);
-    }
-    durations.sort((left, right) => left - right);
+    const durations = await measureKeyToPaint();
     const measurements = {
       status: await $('[data-testid="editor-diagnostics-status"]').getAttribute('data-status'),
-      samples: durations.length,
-      p50Ms: durations[Math.floor((durations.length - 1) * 0.50)],
-      p95Ms: durations[Math.floor((durations.length - 1) * 0.95)],
+      ...summarizeLatency(durations),
     };
     console.log(`M002_KEY_TO_PAINT cold ${JSON.stringify(measurements)}`);
     expect(measurements.status).toBe('no_warm_server');
@@ -252,9 +316,6 @@ describe('M004 built-app session vertical slice (route, projection, control, pro
       async () => (await $('[data-testid="controller-state"]').getText()).length > 0,
       { timeout: 60_000, timeoutMsg: 'controller state never rendered' },
     );
-    // The fixture daemon has no model selection: the daemon-resolved
-    // submit must fail closed with the typed code, and the draft stays
-    // editable (no durable user message fabricated).
     await $('[data-testid="prompt-input"]').setValue('hello e2e');
     await $('[data-testid="prompt-submit-button"]').click();
     await browser.waitUntil(
@@ -265,6 +326,41 @@ describe('M004 built-app session vertical slice (route, projection, control, pro
       },
     );
     expect(await $('[data-testid="prompt-input"]').getValue()).toBe('hello e2e');
+  });
+
+  it('measures visible cold request and key-to-paint under CPU load', async () => {
+    await $('[data-testid="editor-viewport"]').click();
+    await browser.keys('Home');
+    const coldRequest = await measureNavigationRequests();
+    expect(coldRequest.status).toBe('no_warm_server');
+    const stopColdCpuLoad = await startCpuLoad();
+    let coldLoaded: number[];
+    let coldRequestLoaded: Awaited<ReturnType<typeof measureNavigationRequests>>;
+    try {
+      coldLoaded = await measureKeyToPaint();
+      coldRequestLoaded = await measureNavigationRequests();
+    } finally {
+      await stopColdCpuLoad();
+    }
+    expect(coldRequestLoaded.status).toBe('no_warm_server');
+    expect(await $('[data-testid="editor-diagnostics-status"]').getAttribute('data-status')).toBe(
+      'no_warm_server',
+    );
+
+    const measurements = {
+      cpuWorkers: 4,
+      coldRequest: { status: coldRequest.status, ...summarizeLatency(coldRequest.durations) },
+      coldRequestLoaded: {
+        status: coldRequestLoaded.status,
+        ...summarizeLatency(coldRequestLoaded.durations),
+      },
+      coldLoaded: summarizeLatency(coldLoaded),
+      diagnosticsStatus: await $('[data-testid="editor-diagnostics-status"]').getAttribute('data-status'),
+    };
+    console.log(`M002_VISIBLE_LATENCY cold ${JSON.stringify(measurements)}`);
+    expect(measurements.coldRequest.samples).toBe(31);
+    expect(measurements.coldRequestLoaded.samples).toBe(31);
+    expect(measurements.coldLoaded.samples).toBe(31);
   });
 
   it('runs a deterministic live turn: assistant text, denied write, completion', async () => {

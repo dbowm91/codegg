@@ -1331,7 +1331,7 @@ contracts** and would need different plans. Writing this plan now would be
 writing a plan against a decision nobody has made. The plan is written
 immediately after the ADR is accepted, against the option it selects.
 
-> **M014 planning addendum (2026-10-27; not an ADR acceptance).** The earlier statement that no plan existed records why M014 was originally left unplanned. A **conditional** implementation design is now registered at `plans/implementation/daemon-lsp-frontend-convergence/005-local-editor-syntax-qualification.md` under `plans/subsystems/daemon-lsp-frontend-convergence-roadmap.md` M005. It is NOT dependency-ready: ADR-0034 remains proposed and currently recommends Option B. The conditional local-parser implementation may proceed only if that decision accepts or supersedes ADR-0034 with a frontend syntax-source selection; if Option B is accepted, the conditional plan must be replaced. M014 remains blocked, and M009's closed byte-derived scope is unchanged.
+> **M014 planning addendum (2026-10-28; not an ADR acceptance).** The earlier statement that no plan existed records why M014 was originally left unplanned. A candidate implementation plan is registered at `plans/implementation/daemon-lsp-frontend-convergence/005-local-editor-syntax-qualification.md` under M005 of the LSP convergence roadmap. It is NOT dependency-ready: ADR-0034 remains proposed with no selected option. The M005 candidate currently covers daemon-backed structural ranges; reconcile it with ADR-0034's final decision before implementation. M014 remains blocked, and M009's closed byte-derived scope is unchanged.
 
 ### M015 — LSP preview leaves
 

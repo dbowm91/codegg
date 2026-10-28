@@ -1,6 +1,6 @@
-# ADR-0055: Daemon-Owned LSP Operational and Command Surface
+# ADR-0056: Daemon-Owned LSP Operational and Command Surface
 
-Status: proposed — **not accepted; implementation of M003/M004 is blocked**
+Status: proposed — decision pending
 
 Date: 2026-10-27
 
@@ -27,9 +27,25 @@ B. **Typed domain operations and daemon-owned low-frequency command dispatch (re
 C. **Let each frontend instantiate `LspTool` for its missing forms.** Easy short-term parity but duplicates servers, bypasses daemon execution profile and prevents remote parity. Rejected.
 D. **Omit the unserved 24 forms indefinitely.** Correctly advertises unavailable but fails intended IDE command parity. Rejected as end state; explicit refusal is required as a safe interim state.
 
-## Proposed decision (requires acceptance)
+## Decision
 
-Select B, divided into independently closing M003 (readiness/lifecycle/inspection) and M004 (composite repair/review recipes and checked preview handoff). Maintain existing `LspReadGet` and `LspCompletionGet`; never collapse ordinary editor requests into `CommandExecute`.
+Option B is the current proposal, divided into independently closing M003 (readiness/lifecycle/inspection) and M004 (composite repair/review recipes and checked preview handoff). Maintain existing `LspReadGet` and `LspCompletionGet`; never collapse ordinary editor requests into `CommandExecute`. The bounded defaults below were accepted for planning, but final command-control ADR acceptance remains pending.
+
+The project maintainer accepted the following operational defaults for planning
+on 2026-10-27; final ADR acceptance remains pending:
+
+- Add the narrow `lsp.control` capability for daemon-shared restart, stop and
+  cache-clear effects. Grant it to Maintainer and Owner roles; do not infer it
+  from `file.read`, `command.execute`, or `project.configure`.
+- Human preview artifacts are session-bound and ephemeral. They are not
+  visible across sessions, and are inaccessible after their owning session or
+  turn registry is torn down. Do not add durable or daemon-global preview
+  storage.
+- Preserve the standalone TUI `LspTool` behavior during migration. Socket TUI
+  and desktop use the daemon command path.
+- Keep `/lsp-status` and `/lsp-errors` names, but give them the accurate
+  bounded health/status and per-server error semantics. The server argument
+  must be resolved and validated daemon-side.
 
 For each of the 26 catalogued command *forms*, first produce a current-head disposition table: (1) already typed and reachable, (2) low-frequency daemon command needing wiring, (3) bounded new typed read, (4) restart/stop/cache-control effect needing explicit authorization, (5) unsupported for a recorded reason. Do not blindly replicate a legacy local `LspTool` API. Reuse `CoreRequest::LspPreviewApply` for any accepted mutation; do not create an alternate apply. Read-only preview creation is distinct from application.
 
@@ -49,6 +65,13 @@ All native-protocol extensions additive and negotiated/typed; older daemon/clien
 
 ## Required acceptance and verification
 
-Acceptance requires the owner to approve Option B **and** the concrete capability choice for lifecycle operations; a proposed record does not authorize new process control. Verify classification generation, authorization matrix, two-client parity, socket vs standalone behavior, permission denial without root enumeration, malicious paths/server responses, competing restart, server crash, replay freshness and preview-write fencing. Record exact current-head command count and routes rather than treating the 2026-10-25 26/2/24 inventory as immutable. Require closure records for M003 and M004. No existing accepted ADR is edited.
+The maintainer decisions above authorize the bounded contract, not an
+unimplemented route. Verify classification generation, authorization matrix,
+two-client parity, socket vs standalone behavior, permission denial without
+root enumeration, malicious paths/server responses, competing restart, server
+crash, replay freshness and preview-write fencing. Record exact current-head
+command count and routes rather than treating the 2026-10-25 26/2/24 inventory
+as immutable. Require closure records for M003 and M004. No existing accepted
+ADR is edited.
 
 Supersession: none.

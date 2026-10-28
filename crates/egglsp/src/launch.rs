@@ -90,6 +90,47 @@ pub trait LspProcessLauncher: Send + Sync {
     async fn launch(&self, spec: &LspLaunchSpec, root: &Path) -> Result<LspProcess, LspError>;
 }
 
+pub struct BoundedStartLspProcessLauncher {
+    inner: std::sync::Arc<dyn LspProcessLauncher>,
+    active: std::sync::Arc<tokio::sync::Semaphore>,
+    admitted: std::sync::Arc<tokio::sync::Semaphore>,
+}
+
+impl BoundedStartLspProcessLauncher {
+    pub fn new(
+        inner: std::sync::Arc<dyn LspProcessLauncher>,
+        max_concurrent_starts: usize,
+        max_admitted_starts: usize,
+    ) -> Result<Self, LspError> {
+        if max_concurrent_starts == 0 || max_admitted_starts < max_concurrent_starts {
+            return Err(LspError::InvalidConfig(
+                "LSP start admission requires max_admitted_starts >= max_concurrent_starts > 0"
+                    .to_string(),
+            ));
+        }
+        Ok(Self {
+            inner,
+            active: std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrent_starts)),
+            admitted: std::sync::Arc::new(tokio::sync::Semaphore::new(max_admitted_starts)),
+        })
+    }
+}
+
+#[async_trait]
+impl LspProcessLauncher for BoundedStartLspProcessLauncher {
+    async fn launch(&self, spec: &LspLaunchSpec, root: &Path) -> Result<LspProcess, LspError> {
+        let _admitted =
+            self.admitted.clone().try_acquire_owned().map_err(|_| {
+                LspError::RequestFailed("LSP start queue is at capacity".to_string())
+            })?;
+        let _active =
+            self.active.clone().acquire_owned().await.map_err(|_| {
+                LspError::InitializationCancelled("LSP start admission closed".into())
+            })?;
+        self.inner.launch(spec, root).await
+    }
+}
+
 /// Historical direct launcher used by existing FullHost services.
 #[derive(Debug, Default)]
 pub struct DirectLspProcessLauncher;
@@ -98,6 +139,76 @@ pub struct DirectLspProcessLauncher;
 impl LspProcessLauncher for DirectLspProcessLauncher {
     async fn launch(&self, spec: &LspLaunchSpec, root: &Path) -> Result<LspProcess, LspError> {
         spawn_server_owned(&spec.command, &spec.args, &spec.env, Some(root)).await
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct WaitingLauncher {
+        starts: AtomicUsize,
+        release: tokio::sync::Notify,
+    }
+
+    #[async_trait]
+    impl LspProcessLauncher for WaitingLauncher {
+        async fn launch(
+            &self,
+            _spec: &LspLaunchSpec,
+            _root: &Path,
+        ) -> Result<LspProcess, LspError> {
+            self.starts.fetch_add(1, Ordering::SeqCst);
+            self.release.notified().await;
+            Err(LspError::RequestFailed("test launcher released".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_start_admission_rejects_when_the_admitted_queue_is_full() {
+        let inner = std::sync::Arc::new(WaitingLauncher {
+            starts: AtomicUsize::new(0),
+            release: tokio::sync::Notify::new(),
+        });
+        let launcher = std::sync::Arc::new(
+            BoundedStartLspProcessLauncher::new(inner.clone(), 1, 1)
+                .expect("valid bounded admission"),
+        );
+        let spec = LspLaunchSpec::default_for_test();
+        let root = std::path::PathBuf::from("/workspace");
+        let first = {
+            let launcher = launcher.clone();
+            let spec = spec.clone();
+            let root = root.clone();
+            tokio::spawn(async move { launcher.launch(&spec, &root).await })
+        };
+        while inner.starts.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+
+        let rejected = launcher.launch(&spec, &root).await;
+        assert!(
+            matches!(rejected, Err(LspError::RequestFailed(message)) if message.contains("queue is at capacity"))
+        );
+        assert_eq!(inner.starts.load(Ordering::SeqCst), 1);
+
+        first.abort();
+        let _ = first.await;
+        inner.release.notify_one();
+        let retry = launcher.launch(&spec, &root).await;
+        assert!(
+            matches!(retry, Err(LspError::RequestFailed(message)) if message == "test launcher released")
+        );
+        assert_eq!(inner.starts.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn bounded_start_admission_rejects_invalid_limits() {
+        let inner: std::sync::Arc<dyn LspProcessLauncher> =
+            std::sync::Arc::new(DirectLspProcessLauncher);
+        assert!(BoundedStartLspProcessLauncher::new(inner.clone(), 0, 1).is_err());
+        assert!(BoundedStartLspProcessLauncher::new(inner, 2, 1).is_err());
     }
 }
 

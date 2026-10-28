@@ -2607,20 +2607,14 @@ impl LspTool {
         }
     }
 
-    /// Stop LSP servers. If `key` is provided, stops that specific server.
-    /// Otherwise stops all servers.
-    /// Note: the current service API only supports shutdown_all.
-    /// A per-key stop would require additional service methods.
+    /// Stop all LSP servers. The service does not yet have a generation-safe
+    /// per-key stop operation, so a keyed request must not widen to shutdown.
     pub async fn lsp_stop_server(&self, key: Option<&str>) -> String {
-        if let Some(_key) = key {
-            self.service.shutdown_all().await;
-            format!(
-                "All LSP servers stopped (per-key stop not yet supported; requested key: {_key})"
-            )
-        } else {
-            self.service.shutdown_all().await;
-            "All LSP servers stopped".to_string()
+        if let Some(key) = key {
+            return format!("Could not stop {key}: per-server stop is not supported yet");
         }
+        self.service.shutdown_all().await;
+        "All LSP servers stopped".to_string()
     }
 }
 
@@ -9025,6 +9019,25 @@ diff --git a/src/lib.rs b/src/lib.rs
             result.starts_with("Restart failed for nonexistent_key:"),
             "expected failure message, got: {result}"
         );
+    }
+
+    #[tokio::test]
+    async fn lsp_stop_server_key_refuses_without_shutting_down_service() {
+        let service = sample_service();
+        let tool = LspTool::new(service.clone());
+
+        let result = tool.lsp_stop_server(Some("rust-analyzer")).await;
+
+        assert_eq!(
+            result,
+            "Could not stop rust-analyzer: per-server stop is not supported yet"
+        );
+        assert_eq!(
+            egglsp::RestartShared::service_phase(service.as_ref()).await,
+            egglsp::ServicePhase::Running,
+            "a per-key refusal must not stop every server in the service"
+        );
+        service.shutdown_all().await;
     }
 
     // -----------------------------------------------------------------------

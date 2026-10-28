@@ -105,6 +105,8 @@ impl DaemonRequestFamily {
             // keeps ADR-0008's mutation path independently readable.
             CoreRequest::LspReadGet { .. }
             | CoreRequest::LspDiagnosticsGet { .. }
+            | CoreRequest::LspServerStatusGet { .. }
+            | CoreRequest::LspControl { .. }
             | CoreRequest::LspDiagnosticsSubscribe { .. }
             | CoreRequest::LspCompletionGet { .. } => Self::Lsp,
             // M006: the scratch census is measurement only. It never mutates

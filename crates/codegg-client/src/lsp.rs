@@ -274,6 +274,25 @@ impl LspRequestCoordinator {
         }
     }
 
+    /// Cancel one operation in a frontend scope without disturbing other work.
+    pub fn invalidate_operation(&self, scope: &LspRequestScope, operation: LspRequestOperation) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        let stale: Vec<_> = state
+            .latest
+            .iter()
+            .filter(|(key, _)| key.scope == *scope && key.operation == operation)
+            .map(|(key, sequence)| (key.clone(), *sequence))
+            .collect();
+        for (key, sequence) in stale {
+            state.latest.remove(&key);
+            if let Some((_, cancellation)) = state.outstanding.remove(&sequence) {
+                cancellation.cancel();
+            }
+        }
+    }
+
     pub fn invalidate_frontend(&self, frontend_id: &str) {
         if let Ok(mut state) = self.state.lock() {
             let stale: Vec<_> = state
@@ -711,6 +730,7 @@ pub fn operation_label(operation: LspReadOperation) -> &'static str {
         LspReadOperation::Implementation => "implementation",
         LspReadOperation::References => "references",
         LspReadOperation::DocumentHighlight => "document highlights",
+        LspReadOperation::SelectionRange => "selection range",
         LspReadOperation::DocumentSymbols => "document symbols",
         LspReadOperation::WorkspaceSymbols => "workspace symbols",
         LspReadOperation::SemanticTokens => "semantic tokens",
@@ -819,6 +839,31 @@ mod coordinator_tests {
         assert_eq!(coordinator.outstanding(), 2);
         assert!(coordinator.finish(&first, &first_scope, 8));
         assert!(coordinator.finish(&second, &second_scope, 8));
+        assert_eq!(coordinator.outstanding(), 0);
+    }
+
+    #[test]
+    fn diagnostics_invalidation_cancels_delayed_response_without_touching_reads() {
+        let coordinator = LspRequestCoordinator::new(4);
+        let scope = scope();
+        let mut diagnostics_key = key(scope.clone(), 8);
+        diagnostics_key.operation = LspRequestOperation::Diagnostics;
+        let mut read_key = key(scope.clone(), 8);
+        read_key.operation = LspRequestOperation::Read(LspReadOperation::Hover);
+        let diagnostics = match coordinator.begin(diagnostics_key) {
+            LspRequestStart::Started(ticket) => ticket,
+            other => panic!("unexpected diagnostics admission: {other:?}"),
+        };
+        let read = match coordinator.begin(read_key) {
+            LspRequestStart::Started(ticket) => ticket,
+            other => panic!("unexpected read admission: {other:?}"),
+        };
+
+        coordinator.invalidate_operation(&scope, LspRequestOperation::Diagnostics);
+
+        assert!(diagnostics.cancellation_token().is_cancelled());
+        assert!(!coordinator.finish(&diagnostics, &scope, 8));
+        assert!(coordinator.finish(&read, &scope, 8));
         assert_eq!(coordinator.outstanding(), 0);
     }
 
@@ -1007,6 +1052,10 @@ mod tests {
     }
 
     fn diagnostics_stream() -> LspDiagnosticsStream {
+        diagnostics_stream_for("subscription-1")
+    }
+
+    fn diagnostics_stream_for(subscription_id: &str) -> LspDiagnosticsStream {
         use codegg_protocol::projection::replay::{
             ProjectionCursor, ProjectionSnapshotBundle, ProjectionStreamDescriptor,
             ProjectionStreamId, ProjectionStreamKind, ProjectionSubscriptionId,
@@ -1034,7 +1083,7 @@ mod tests {
         };
         LspDiagnosticsStream::from_subscription(
             "project-1",
-            ProjectionSubscriptionId::new("subscription-1"),
+            ProjectionSubscriptionId::new(subscription_id),
             &descriptor,
             &snapshot,
             &cursor,
@@ -1138,8 +1187,8 @@ mod tests {
     fn two_frontend_streams_receive_the_same_project_update_independently() {
         use codegg_protocol::projection::replay::{ProjectionStreamId, ProjectionSubscriptionId};
 
-        let mut tui = diagnostics_stream();
-        let mut desktop = diagnostics_stream();
+        let mut tui = diagnostics_stream_for("subscription-tui");
+        let mut desktop = diagnostics_stream_for("subscription-desktop");
         let baseline = authoritative(vec![file("src/lib.rs", 1)]);
         assert_eq!(
             tui.apply_authoritative(baseline.clone()),
@@ -1149,17 +1198,15 @@ mod tests {
             desktop.apply_authoritative(baseline.clone()),
             DiagnosticsStreamUpdate::Updated(baseline)
         );
-        // Each client keeps independent stream state while both observe the
-        // same project stream and diagnostics sequence.
         let stream_id = ProjectionStreamId::new("project-stream").expect("stream id");
         let update = projection_event(2, file("src/lib.rs", 2));
         let tui_update = tui.accept_projection_event(
-            &ProjectionSubscriptionId::new("subscription-1"),
+            &ProjectionSubscriptionId::new("subscription-tui"),
             &stream_id,
             &update,
         );
         let desktop_update = desktop.accept_projection_event(
-            &ProjectionSubscriptionId::new("subscription-1"),
+            &ProjectionSubscriptionId::new("subscription-desktop"),
             &stream_id,
             &update,
         );
@@ -1168,6 +1215,46 @@ mod tests {
         assert_eq!(
             tui.current().map(|result| result.files[0].sequence),
             Some(2)
+        );
+    }
+
+    #[test]
+    fn diagnostics_stream_gap_recovers_from_authoritative_pull() {
+        use codegg_protocol::projection::replay::{ProjectionStreamId, ProjectionSubscriptionId};
+
+        let mut stream = diagnostics_stream();
+        let first = authoritative(vec![file("src/lib.rs", 1)]);
+        stream.apply_authoritative(first);
+        let subscription = ProjectionSubscriptionId::new("subscription-1");
+        let stream_id = ProjectionStreamId::new("project-stream").expect("stream id");
+        assert_eq!(
+            stream.accept_projection_event(
+                &subscription,
+                &stream_id,
+                &projection_event(4, file("src/lib.rs", 4)),
+            ),
+            DiagnosticsStreamUpdate::ReconcileRequired
+        );
+        assert!(stream.needs_reconcile());
+        assert_eq!(
+            stream.current().map(|result| result.files[0].sequence),
+            Some(1),
+            "the last complete view remains visible while stale"
+        );
+
+        let recovered = authoritative(vec![file("src/lib.rs", 4)]);
+        assert_eq!(
+            stream.apply_authoritative(recovered.clone()),
+            DiagnosticsStreamUpdate::Updated(recovered)
+        );
+        assert!(!stream.needs_reconcile());
+        assert_eq!(
+            stream.accept_projection_event(
+                &subscription,
+                &stream_id,
+                &projection_event(5, file("src/lib.rs", 5)),
+            ),
+            DiagnosticsStreamUpdate::Updated(authoritative(vec![file("src/lib.rs", 5)]))
         );
     }
 

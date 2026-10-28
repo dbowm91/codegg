@@ -34,3 +34,7 @@ desktop-e2e = ["tauri-plugin-wdio-webdriver"]
 
 [dev-dependencies]
 async-trait = "0.1"
+codegg = { path = "../../..", features = ["lsp-test-support"] }
+crossterm = "0.29"
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio-rustls"] }
+tempfile = "3"

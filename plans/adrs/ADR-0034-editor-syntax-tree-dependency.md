@@ -182,8 +182,12 @@ diagnose, this is rejected as disproportionate for the value delivered.
 
 ## Decision
 
-**No option is selected by this record. Option B is recommended, and its
-acceptance is the hard gate for M009 and the tree-sitter-marked slice of M006.**
+The project maintainer selected **Option B** on 2026-10-27: add bounded,
+revision-bound structural reads to the daemon-owned LSP surface. The decision
+is not yet marked accepted; acceptance awaits the contract, bounds and
+no-server evidence listed under Verification below. M009's byte-derived scope
+remains closed and is not gated by this ADR. The syntax-node slice M014 is
+unblocked for implementation against Option B.
 
 If Option B is accepted:
 
@@ -290,9 +294,10 @@ Evidence required before this ADR can be marked accepted:
 5. For either: a negative test proving a structural binding reports an
    unavailable state rather than silently no-opping when no server is attached.
 
-Acceptance is a maintainer decision. The presence of this proposed record is
-not acceptance and confers no implementation authorization, matching the
-precedent set by ADR-0030.
+The maintainer's recorded Option B selection authorizes M005 to implement the
+bounded structural-read contract. Mark this ADR accepted only after the
+verification evidence above is attached to M005's closure. The proposed
+record alone did not authorize parser work; no parser dependency is selected.
 
 ## Supersession
 

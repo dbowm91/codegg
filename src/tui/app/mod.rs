@@ -509,9 +509,6 @@ pub struct App {
     /// table via `AppEvent::GoalUpdated` and friends. Used by the
     /// sidebar, the status bar, and the `/goal show` command.
     pub active_goal: Option<crate::bus::events::GoalSnapshot>,
-    /// LSP tool instance for security-review enrichment and other
-    /// LSP-backed operations.  Created once at startup in local
-    /// (non-socket) mode; `None` in remote/socket mode.
     pub lsp_tool: Option<Arc<crate::tool::lsp::LspTool>>,
     /// Runtime-owned search/MCP context for the `/research` command.
     ///
@@ -522,13 +519,7 @@ pub struct App {
     /// `None` keeps `/research` local-only, which is the correct behavior
     /// for socket/daemon-client mode where the daemon owns the transport.
     pub search_runtime: Option<crate::search_backend::SearchRuntimeContext>,
-    /// Cached one-line LSP status for the footer, refreshed by
-    /// [`TuiCommand::LspStatusRefreshRequested`]. The render pass only
-    /// reads this field: computing the status requires awaiting the live
-    /// LSP service, which must never happen inside `render`.
     pub lsp_status_cache: Option<String>,
-    /// Monotonic clock of the last LSP status refresh request, so the
-    /// event loop can throttle refreshes instead of asking every frame.
     pub lsp_status_requested_at: Option<std::time::Instant>,
     /// Reentrancy guard for the `/security-review` slash command.
     /// `Some(task_state)` while a background review is in flight;
@@ -2741,6 +2732,9 @@ impl App {
         let events = client.subscribe();
         self.set_core_event_rx(events);
         self.set_core_client(client);
+        if self.editor_state.is_open() {
+            crate::tui::commands::editor::refresh_editor_diagnostics(self);
+        }
     }
 
     pub fn cancel_lsp_diagnostics_stream(&mut self) {
@@ -7531,11 +7525,7 @@ impl App {
             }
             B::LspStatus => {
                 self.ui_state.command_mode = false;
-                if self.lsp_tool.is_some() {
-                    self.enqueue_tui_command(TuiCommand::LspStatusDetailRequested);
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
+                self.enqueue_tui_command(TuiCommand::LspStatusDetailRequested);
             }
             B::Nodes => {
                 // Eggwork M002: a read-only operator read of the remote
@@ -7713,18 +7703,7 @@ impl App {
             }
             B::LspServers => {
                 self.ui_state.command_mode = false;
-                if let Some(ref lsp_tool) = self.lsp_tool {
-                    let detail = tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(lsp_tool.lsp_servers_detail())
-                    });
-                    if let Some(text) = detail {
-                        self.messages_state.toasts.info(&text);
-                    } else {
-                        self.messages_state.toasts.info("No active LSP servers");
-                    }
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
+                self.enqueue_tui_command(TuiCommand::LspServersRequested);
             }
             B::LspCapabilities => {
                 self.ui_state.command_mode = false;
@@ -7733,19 +7712,10 @@ impl App {
                     self.messages_state
                         .toasts
                         .info("Usage: /lsp-capabilities <server-key>\nUse /lsp-servers to see available keys.");
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    match tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(lsp_tool.lsp_capabilities_for_key(key))
-                    }) {
-                        Some(text) => self.messages_state.toasts.info(&text),
-                        None => self
-                            .messages_state
-                            .toasts
-                            .info(&format!("Server not found: {key}")),
-                    }
                 } else {
-                    self.messages_state.toasts.info("LSP not available");
+                    self.enqueue_tui_command(TuiCommand::LspCapabilitiesRequested {
+                        server_id: key.to_string(),
+                    });
                 }
             }
             B::LspErrors => {
@@ -7755,18 +7725,10 @@ impl App {
                     self.messages_state.toasts.info(
                         "Usage: /lsp-errors <server-key>\nUse /lsp-servers to see available keys.",
                     );
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    match tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(lsp_tool.lsp_errors_for_key(key))
-                    }) {
-                        Some(text) => self.messages_state.toasts.info(&text),
-                        None => self
-                            .messages_state
-                            .toasts
-                            .info(&format!("Server not found: {key}")),
-                    }
                 } else {
-                    self.messages_state.toasts.info("LSP not available");
+                    self.enqueue_tui_command(TuiCommand::LspErrorsRequested {
+                        server_id: key.to_string(),
+                    });
                 }
             }
             B::LspRoot => {
@@ -8120,13 +8082,10 @@ impl App {
                     self.messages_state.toasts.info(
                         "Usage: /lsp-restart <server-key>\nUse /lsp-servers to see available keys.",
                     );
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let result = tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(lsp_tool.lsp_restart_server(key))
-                    });
-                    self.messages_state.toasts.info(&result);
                 } else {
-                    self.messages_state.toasts.info("LSP not available");
+                    self.enqueue_tui_command(TuiCommand::LspRestartRequested {
+                        server_id: key.to_string(),
+                    });
                 }
             }
             B::LspStop => {

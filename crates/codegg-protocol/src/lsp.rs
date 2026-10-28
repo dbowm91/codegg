@@ -39,6 +39,9 @@ pub const MAX_LSP_SEMANTIC_TOKENS: usize = 1000;
 pub const MAX_LSP_DIAGNOSTICS_PER_FILE: usize = 100;
 /// Maximum document highlights returned for one position.
 pub const MAX_LSP_HIGHLIGHTS: usize = 200;
+pub const MAX_LSP_SELECTION_RANGE_DEPTH: usize = 32;
+pub const MAX_LSP_SELECTION_RANGE_RESPONSE_BYTES: usize = 64 * 1024;
+pub const MAX_LSP_STATUS_SERVERS: usize = 32;
 /// Maximum signatures returned by a signature-help read.
 pub const MAX_LSP_SIGNATURES: usize = 50;
 /// Maximum characters of a signature label or its documentation.
@@ -326,6 +329,7 @@ pub enum LspReadOperation {
     Implementation,
     References,
     DocumentHighlight,
+    SelectionRange,
     DocumentSymbols,
     WorkspaceSymbols,
     SemanticTokens,
@@ -361,6 +365,7 @@ impl LspReadOperation {
                 | Self::Implementation
                 | Self::References
                 | Self::DocumentHighlight
+                | Self::SelectionRange
                 | Self::SignatureHelp
                 | Self::RenamePreview
                 | Self::CodeActionPreview
@@ -400,6 +405,7 @@ impl LspReadOperation {
             Self::Implementation => "implementationProvider",
             Self::References => "referencesProvider",
             Self::DocumentHighlight => "documentHighlightProvider",
+            Self::SelectionRange => "selectionRangeProvider",
             Self::DocumentSymbols => "documentSymbolProvider",
             Self::WorkspaceSymbols => "workspaceSymbolProvider",
             Self::SemanticTokens => "semanticTokensProvider",
@@ -817,6 +823,10 @@ pub enum LspReadPayloadDto {
         highlights: Vec<LspHighlightDto>,
         truncated: bool,
     },
+    SelectionRanges {
+        ranges: Vec<LspRangeDto>,
+        truncated: bool,
+    },
     /// One or more call signatures at the requested position.
     ///
     /// Absent `active_*` fields mean the server named no active item, which is
@@ -937,6 +947,56 @@ impl LspReadResultDto {
 pub struct LspDiagnosticsGetRequestDto {
     pub project_id: String,
     pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspServerStatusGetRequestDto {
+    pub session_id: String,
+    #[serde(default)]
+    pub server_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspServerStatusDto {
+    pub server_id: String,
+    pub generation: u64,
+    pub state: String,
+    pub pending_requests: usize,
+    pub open_documents: usize,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub stderr_tail: Vec<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspServerStatusResultDto {
+    pub servers: Vec<LspServerStatusDto>,
+    pub server_not_found: bool,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LspControlActionDto {
+    Restart,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspControlRequestDto {
+    pub session_id: String,
+    pub server_id: String,
+    pub action: LspControlActionDto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspControlResultDto {
+    pub server_id: String,
+    pub previous_generation: u64,
+    pub generation: u64,
+    pub state: String,
 }
 
 /// The authoritative diagnostic set for one file.
@@ -1728,8 +1788,10 @@ mod tests {
             LspReadOperation::Implementation,
             LspReadOperation::Declaration,
             LspReadOperation::DocumentHighlight,
+            LspReadOperation::SelectionRange,
             LspReadOperation::SignatureHelp,
             LspReadOperation::RenamePreview,
+            LspReadOperation::CodeActionPreview,
         ] {
             assert!(operation.is_point(), "{operation:?} must be point-anchored");
             assert!(
@@ -2104,6 +2166,17 @@ mod tests {
             without_a_position.validate(),
             Err(LspReadInvalid::IncoherentFields)
         );
+    }
+
+    #[test]
+    fn selection_range_is_a_point_read_with_its_own_capability() {
+        assert!(LspReadOperation::SelectionRange.is_point());
+        assert!(!LspReadOperation::SelectionRange.is_file_scoped());
+        assert_eq!(
+            LspReadOperation::SelectionRange.capability(),
+            "selectionRangeProvider"
+        );
+        assert_eq!(point(LspReadOperation::SelectionRange).validate(), Ok(()));
     }
 
     #[test]

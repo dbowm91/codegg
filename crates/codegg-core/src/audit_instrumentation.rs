@@ -903,10 +903,12 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "lsp_read_get",
     "lsp_diagnostics_get",
     "lsp_diagnostics_subscribe",
+    "lsp_server_status_get",
     // M003 (ADR-0021): the completion read is the same shape — `via_session`
     // + `file.read`, inert candidates, no mutation — so it shares the reads'
     // classification rather than inventing per-keystroke audit events.
     "lsp_completion_get",
+    "lsp_control",
     "managed_worktree_get",
     "managed_worktree_list",
     // Eggwork M002: a read-only operator view of a remote node's host. It

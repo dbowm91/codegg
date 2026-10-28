@@ -126,6 +126,21 @@ describe('the editor surface', () => {
     expect(onSave).toHaveBeenCalled();
   });
 
+  it('exposes every navigation operation served by the desktop host', () => {
+    const onNavigate = vi.fn();
+    render(<EditorSurface {...props({ onNavigate })} />);
+    for (const [testId, operation] of [
+      ['editor-navigate-button', 'definition'],
+      ['editor-declaration-button', 'declaration'],
+      ['editor-implementation-button', 'implementation'],
+      ['editor-references-button', 'references'],
+    ] as const) {
+      fireEvent.click(screen.getByTestId(testId));
+      expect(onNavigate).toHaveBeenLastCalledWith(operation);
+    }
+    expect(onNavigate).toHaveBeenCalledTimes(4);
+  });
+
   it('raises the selection intent for a shifted movement chord', () => {
     const onMoveCursor = vi.fn();
     render(<EditorSurface {...props({ onMoveCursor })} />);

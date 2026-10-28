@@ -58,7 +58,7 @@ use std::time::Duration;
 use tauri::{ipc::Channel, State};
 use tokio::sync::Mutex;
 
-use crate::HostState;
+use crate::{lifecycle::cancel_and_join, HostState};
 
 /// Maximum number of visible lines one viewport slice may carry.
 ///
@@ -988,6 +988,14 @@ pub(crate) async fn desktop_document_open(
     path: String,
     route_generation: u64,
 ) -> Result<EditorOpenView, String> {
+    desktop_document_open_with_state(state.inner(), path, route_generation).await
+}
+
+pub(crate) async fn desktop_document_open_with_state(
+    state: &Arc<HostState>,
+    path: String,
+    route_generation: u64,
+) -> Result<EditorOpenView, String> {
     let (project_id, workspace_id, _) = state.route_selection(route_generation, true).await?;
     let relative_path = safe_relative_path(&path)?;
     // A second open closes the first. The daemon's writer lease belongs to
@@ -1206,6 +1214,13 @@ pub(crate) async fn desktop_document_diagnostics(
     state: State<'_, Arc<HostState>>,
     route_generation: u64,
 ) -> Result<EditorDiagnosticsView, String> {
+    desktop_document_diagnostics_with_state(state.inner(), route_generation).await
+}
+
+pub(crate) async fn desktop_document_diagnostics_with_state(
+    state: &Arc<HostState>,
+    route_generation: u64,
+) -> Result<EditorDiagnosticsView, String> {
     let (project_id, workspace_id, _) = state.route_selection(route_generation, false).await?;
     let session_id = route_session(&state).await?;
     let (client, _) = state.route_request().await?;
@@ -1303,10 +1318,31 @@ pub(crate) async fn desktop_document_diagnostics_subscribe(
     route_generation: u64,
     channel: Channel<EditorDiagnosticsView>,
 ) -> Result<String, String> {
+    let _subscription_lifecycle = state.lsp_diagnostics_lifecycle.lock().await;
     let (project_id, workspace_id, _) = state.route_selection(route_generation, false).await?;
     let session_id = route_session(&state).await?;
     let (client, _) = state.route_request().await?;
     let connection_generation = state.current_generation();
+    let previous_task = state.lsp_diagnostics_subscriptions.take_active().await;
+    if let Some((_, task)) = previous_task {
+        cancel_and_join(task).await;
+    }
+    let request_scope = codegg_client::LspRequestScope {
+        frontend_id: "desktop".to_owned(),
+        attachment_id: format!("route:{route_generation}"),
+        route_generation,
+        connection_generation,
+        project_id: project_id.clone(),
+        workspace_id: workspace_id.clone(),
+        session_id: session_id.clone(),
+        document_id: None,
+        path: None,
+        server_id: None,
+    };
+    state.lsp_request_coordinator.invalidate_operation(
+        &request_scope,
+        codegg_client::LspRequestOperation::Diagnostics,
+    );
     if let Some((_, previous_daemon_id)) = state
         .lsp_diagnostics_daemon_subscription
         .lock()
@@ -1328,7 +1364,11 @@ pub(crate) async fn desktop_document_diagnostics_subscribe(
         .allocate_subscription_id();
     let owned_id = subscription_id.clone();
     let task_state = Arc::clone(&state);
+    let (task_start, task_wait) = tokio::sync::oneshot::channel();
     let task = tokio::spawn(async move {
+        if task_wait.await.is_err() {
+            return;
+        }
         let mut events = client.subscribe_events();
         'subscribe: loop {
             if task_state.current_generation() != connection_generation
@@ -1339,18 +1379,6 @@ pub(crate) async fn desktop_document_diagnostics_subscribe(
             {
                 break;
             }
-            let request_scope = codegg_client::LspRequestScope {
-                frontend_id: "desktop".to_owned(),
-                attachment_id: format!("route:{route_generation}"),
-                route_generation,
-                connection_generation,
-                project_id: project_id.clone(),
-                workspace_id: workspace_id.clone(),
-                session_id: session_id.clone(),
-                document_id: None,
-                path: None,
-                server_id: None,
-            };
             let ticket =
                 match task_state
                     .lsp_request_coordinator
@@ -1611,10 +1639,18 @@ pub(crate) async fn desktop_document_diagnostics_subscribe(
             .clear_if_matching(&owned_id)
             .await;
     });
-    state
-        .lsp_diagnostics_subscriptions
-        .install_with_id(subscription_id.clone(), connection_generation, task)
-        .await;
+    {
+        let _lifecycle = state.lifecycle.lock().await;
+        if state.current_generation() != connection_generation {
+            task.abort();
+            return Err("the daemon connection changed while diagnostics were attaching".into());
+        }
+        state
+            .lsp_diagnostics_subscriptions
+            .install_with_id(subscription_id.clone(), connection_generation, task)
+            .await;
+    }
+    let _ = task_start.send(());
     Ok(subscription_id)
 }
 
@@ -1623,6 +1659,7 @@ pub(crate) async fn desktop_document_diagnostics_unsubscribe(
     state: State<'_, Arc<HostState>>,
     subscription_id: String,
 ) -> Result<(), String> {
+    let _subscription_lifecycle = state.lsp_diagnostics_lifecycle.lock().await;
     let daemon_subscription = {
         let mut active = state.lsp_diagnostics_daemon_subscription.lock().await;
         match active.as_ref() {
@@ -1663,6 +1700,13 @@ async fn clear_diagnostics_daemon_subscription(state: &HostState, owner_id: &str
 #[tauri::command]
 pub(crate) async fn desktop_document_completion(
     state: State<'_, Arc<HostState>>,
+    trigger: Option<String>,
+) -> Result<EditorCompletionView, String> {
+    desktop_document_completion_with_state(state.inner(), trigger).await
+}
+
+pub(crate) async fn desktop_document_completion_with_state(
+    state: &Arc<HostState>,
     trigger: Option<String>,
 ) -> Result<EditorCompletionView, String> {
     let session = live_session(&state).await?;
@@ -1804,6 +1848,13 @@ pub(crate) async fn desktop_document_completion(
 #[tauri::command]
 pub(crate) async fn desktop_document_navigate(
     state: State<'_, Arc<HostState>>,
+    operation: String,
+) -> Result<EditorNavigationView, String> {
+    desktop_document_navigate_with_state(state.inner(), operation).await
+}
+
+pub(crate) async fn desktop_document_navigate_with_state(
+    state: &Arc<HostState>,
     operation: String,
 ) -> Result<EditorNavigationView, String> {
     let session = live_session(&state).await?;
@@ -2273,6 +2324,27 @@ mod lsp_view_tests {
             .status,
             "unsupported"
         );
+    }
+
+    #[test]
+    fn desktop_navigation_route_accepts_all_visible_operations_only() {
+        assert_eq!(
+            navigation_operation("definition"),
+            Some(LspReadOperation::Definition)
+        );
+        assert_eq!(
+            navigation_operation("declaration"),
+            Some(LspReadOperation::Declaration)
+        );
+        assert_eq!(
+            navigation_operation("implementation"),
+            Some(LspReadOperation::Implementation)
+        );
+        assert_eq!(
+            navigation_operation("references"),
+            Some(LspReadOperation::References)
+        );
+        assert_eq!(navigation_operation("workspace_symbols"), None);
     }
 }
 

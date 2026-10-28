@@ -267,6 +267,20 @@ export function EditorSurface(props: EditorPanelProps) {
         </button>
         <button
           type="button"
+          data-testid="editor-declaration-button"
+          onClick={() => props.onNavigate('declaration')}
+        >
+          declaration
+        </button>
+        <button
+          type="button"
+          data-testid="editor-implementation-button"
+          onClick={() => props.onNavigate('implementation')}
+        >
+          implementation
+        </button>
+        <button
+          type="button"
           data-testid="editor-references-button"
           onClick={() => props.onNavigate('references')}
         >

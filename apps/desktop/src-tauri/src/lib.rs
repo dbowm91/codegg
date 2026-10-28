@@ -84,6 +84,9 @@ struct HostState {
     /// Project-scoped LSP diagnostics stream. Kept separate from the session
     /// projection forwarder because it has a stronger `file.read` gate.
     lsp_diagnostics_subscriptions: SubscriptionRegistry,
+    /// Serializes subscribe/replace/unsubscribe decisions for the one
+    /// renderer-owned project diagnostics stream.
+    lsp_diagnostics_lifecycle: Mutex<()>,
     lsp_diagnostics_daemon_subscription: Mutex<
         Option<(
             String,
@@ -120,6 +123,7 @@ impl Default for HostState {
             connect_serial: AtomicU64::new(0),
             subscriptions: SubscriptionRegistry::new(),
             lsp_diagnostics_subscriptions: SubscriptionRegistry::new(),
+            lsp_diagnostics_lifecycle: Mutex::new(()),
             lsp_diagnostics_daemon_subscription: Mutex::new(None),
             route: Mutex::new(route::RouteState::default()),
             document: Mutex::new(None),
@@ -1292,6 +1296,336 @@ mod tests {
         let state = Arc::new(HostState::default());
         assert_eq!(state.subscriptions.active_count().await, 0);
         assert_eq!(state.current_generation(), 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn production_tui_and_desktop_adapters_share_one_live_lsp_service() {
+        use codegg::core::daemon::CoreDaemon;
+        use codegg::core::runtime_deps::CoreRuntimeDeps;
+        use codegg_protocol::dto::ProjectRegisterRequestDto;
+        use codegg_protocol::frames::ClientKind;
+        use std::collections::HashMap;
+        use std::time::Instant;
+
+        let temp = tempfile::tempdir().expect("fixture tempdir");
+        let root = temp.path().join("workspace");
+        std::fs::create_dir_all(root.join("src")).expect("workspace source directory");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='m002-parity'\nversion='0.1.0'\nedition='2021'\n",
+        )
+        .expect("workspace manifest");
+        std::fs::write(root.join("src/lib.rs"), "pub fn alpha() -> u32 { 1 }\n")
+            .expect("workspace source");
+
+        let server_script = temp.path().join("m002_fake_lsp.py");
+        std::fs::write(
+            &server_script,
+            r#"import json, os, sys
+with open(os.environ["M002_START_COUNT"], "a", encoding="utf-8") as count:
+    count.write("start\n")
+def send(message):
+    body = json.dumps(message, separators=(",", ":")).encode()
+    sys.stdout.buffer.write(("Content-Length: %d\r\n\r\n" % len(body)).encode() + body)
+    sys.stdout.buffer.flush()
+while True:
+    headers = {}
+    line = sys.stdin.buffer.readline()
+    if not line:
+        break
+    while line.strip():
+        name, value = line.decode().split(":", 1)
+        headers[name.lower()] = value.strip()
+        line = sys.stdin.buffer.readline()
+    body = sys.stdin.buffer.read(int(headers["content-length"]))
+    message = json.loads(body)
+    method = message.get("method")
+    with open(os.environ["M002_START_COUNT"], "a", encoding="utf-8") as count:
+        count.write("method:" + str(method) + "\n")
+    request_id = message.get("id")
+    if method == "initialize":
+        send({"jsonrpc":"2.0","id":request_id,"result":{"capabilities":{
+            "textDocumentSync":{"openClose":True,"change":1},
+            "hoverProvider":True,"completionProvider":{},"definitionProvider":True
+        }}})
+    elif method == "textDocument/didOpen":
+        params = message["params"]
+        send({"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{
+            "uri":params["textDocument"]["uri"],"version":params["textDocument"]["version"],
+            "diagnostics":[{"range":{"start":{"line":0,"character":0},
+            "end":{"line":0,"character":3}},"severity":1,"message":"fixture diagnostic"}]
+        }})
+    elif request_id is not None:
+        if method == "textDocument/hover":
+            result = {"contents":{"kind":"markdown","value":"shared fixture hover"}}
+        elif method == "textDocument/completion":
+            result = {"isIncomplete":False,"items":[]}
+        elif method == "textDocument/definition":
+            result = []
+        else:
+            result = None
+        send({"jsonrpc":"2.0","id":request_id,"result":result})
+"#,
+        )
+        .expect("fake LSP script");
+        let start_count = temp.path().join("lsp-starts.txt");
+        let env = HashMap::from([(
+            "M002_START_COUNT".to_owned(),
+            start_count.to_string_lossy().into_owned(),
+        )]);
+        let service =
+            codegg::lsp::LspService::new_arc(codegg::lsp::LspConfig::Rules(HashMap::from([(
+                "rust-analyzer".to_owned(),
+                codegg::lsp::LspRule::Active {
+                    command: vec![
+                        "python3".to_owned(),
+                        "-u".to_owned(),
+                        server_script.to_string_lossy().into_owned(),
+                    ],
+                    extensions: Some(vec!["rs".to_owned()]),
+                    disabled: None,
+                    env: Some(env),
+                    initialization: None,
+                    workspace_configuration: None,
+                    restart: None,
+                },
+            )])));
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("isolated fixture database");
+        codegg::session::schema::migrate(&pool)
+            .await
+            .expect("fixture migrations");
+        let daemon = Arc::new(CoreDaemon::with_deps(
+            CoreRuntimeDeps::with_jobs(pool.clone(), None, None).with_lsp_service(service.clone()),
+        ));
+        daemon.start_event_bridge();
+        daemon.start_lsp_diagnostics_driver();
+
+        let socket_path = temp.path().join("daemon.sock");
+        let endpoint = format!("unix://{}", socket_path.display());
+        let server_path = socket_path.to_string_lossy().into_owned();
+        let server_daemon = Arc::clone(&daemon);
+        let server = tokio::spawn(async move {
+            let _ = codegg::core::transport::daemon_socket::run_core_socket(
+                server_daemon,
+                &server_path,
+            )
+            .await;
+        });
+
+        let observer_descriptor = FrontendDescriptor::new(
+            "m002-fixture-setup",
+            ClientKind::Tui,
+            codegg::core::transport::SocketCoreClient::tui_client_capabilities(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let observer = loop {
+            match LocalSocketClient::connect(&endpoint, observer_descriptor.clone()).await {
+                Ok(client) => break client,
+                Err(error) if Instant::now() < deadline => {
+                    let _ = error;
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(error) => panic!("fixture daemon socket did not start: {error}"),
+            }
+        };
+        let request = |payload| RequestEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            payload,
+        };
+        let workspace_id = match observer
+            .request(request(CoreRequest::WorkspaceRegister {
+                root: root.to_string_lossy().into_owned(),
+            }))
+            .await
+            .expect("register fixture workspace")
+        {
+            CoreResponse::WorkspaceSnapshot { workspace } => workspace.workspace_id,
+            other => panic!("unexpected workspace response: {other:?}"),
+        };
+        let project_id = match observer
+            .request(request(CoreRequest::ProjectRegister {
+                request: ProjectRegisterRequestDto {
+                    workspace_id: workspace_id.clone(),
+                    display_name: "M002 shared frontend fixture".into(),
+                    description: None,
+                    tags: Vec::new(),
+                    repository_id: None,
+                    source: "m002-test".into(),
+                },
+            }))
+            .await
+            .expect("register fixture project")
+        {
+            CoreResponse::ProjectRegistered { project } => project.project_id,
+            other => panic!("unexpected project response: {other:?}"),
+        };
+        let session_id = match observer
+            .request(request(CoreRequest::SessionCreate {
+                directory: root.to_string_lossy().into_owned(),
+                title: Some("M002 shared frontends".into()),
+                project_id: Some(project_id.clone()),
+                workspace_id: Some(workspace_id.clone()),
+            }))
+            .await
+            .expect("create fixture session")
+        {
+            CoreResponse::Session { session } => session.id,
+            other => panic!("unexpected session response: {other:?}"),
+        };
+        daemon
+            .bind_runtime_for_session(&session_id)
+            .await
+            .expect("bind fixture session runtime");
+        let _ = observer.close().await;
+
+        let desktop_state = Arc::new(HostState::default());
+        let desktop_client = LocalSocketClient::connect(&endpoint, descriptor())
+            .await
+            .expect("production desktop socket attachment");
+        let daemon_id = desktop_client.daemon_id().await.expect("desktop daemon id");
+        assert_eq!(
+            desktop_state
+                .install_connection(desktop_client, daemon_id)
+                .await,
+            1
+        );
+        {
+            let mut route = desktop_state.route.lock().await;
+            route.route_generation = 1;
+            route.connection_generation = 1;
+            route.project_id = Some(project_id.clone());
+            route.workspace_id = Some(workspace_id.clone());
+            route.session_id = Some(session_id.clone());
+            route
+                .roots
+                .insert(workspace_id.clone(), root.to_string_lossy().into_owned());
+        }
+
+        let cold = document::desktop_document_diagnostics_with_state(&desktop_state, 1)
+            .await
+            .expect("production desktop cold diagnostics pull");
+        assert_eq!(cold.status, "no_warm_server");
+        assert!(
+            !start_count.exists(),
+            "cold reads must not start the LSP process"
+        );
+
+        let tui = Arc::new(
+            codegg::core::transport::SocketCoreClient::connect_with_descriptor(
+                &endpoint,
+                FrontendDescriptor::new(
+                    "codegg-tui-m002",
+                    ClientKind::Tui,
+                    codegg::core::transport::SocketCoreClient::tui_client_capabilities(),
+                ),
+            )
+            .await
+            .expect("production TUI socket attachment"),
+        );
+        let tui_session = codegg::tui::document_session::TuiDocumentSession::new(tui.clone());
+        tui_session
+            .controller()
+            .open(
+                project_id.clone(),
+                workspace_id.clone(),
+                "src/lib.rs".into(),
+                false,
+                codegg_protocol::document::DocumentScope::Workspace,
+            )
+            .await
+            .expect("production TUI document attachment");
+        document::desktop_document_open_with_state(&desktop_state, "src/lib.rs".into(), 1)
+            .await
+            .expect("production desktop document attachment");
+        daemon.publish_diagnostics_once().await;
+        assert!(
+            start_count.exists(),
+            "opening a Rust document must warm the configured fixture server"
+        );
+
+        let mut app = codegg::tui::app::App::new_for_testing(root.to_string_lossy().into_owned());
+        let tab = app.active_tab_mut().expect("default project tab");
+        tab.project_id = Some(project_id.clone());
+        tab.workspace_id = Some(workspace_id.clone());
+        tab.workspace_root = Some(root.clone());
+        tab.session_id = Some(session_id);
+        app.ui_state
+            .routes
+            .navigate_to(codegg::tui::route::Route::Editor);
+        app.ui_state.input_mode = codegg::tui::input::InputMode::Normal;
+        let mut session = tui_session;
+        session.presentation_mut().mode = codegg::tui::editor::EditorMode::Normal;
+        app.editor_state.session = Some(session);
+        app.editor_state.path = Some("src/lib.rs".into());
+        app.editor_state.status = codegg::tui::app::state::editor::EditorStatus::Synced;
+        app.set_core_client(tui.clone());
+        let (tx, mut tui_results) = tokio::sync::mpsc::channel(8);
+        app.tui_cmd_tx = Some(tx);
+
+        app.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(' '),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('k'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        let desktop_state_for_join = Arc::clone(&desktop_state);
+        let (tui_result, desktop_result, desktop_completion) = tokio::join!(
+            tokio::time::timeout(Duration::from_secs(5), tui_results.recv()),
+            async move {
+                document::desktop_document_navigate_with_state(
+                    &desktop_state_for_join,
+                    "definition".into(),
+                )
+                .await
+            },
+            document::desktop_document_completion_with_state(&desktop_state, None),
+        );
+        match tui_result
+            .expect("production TUI hover completes")
+            .expect("TUI command channel remains open")
+        {
+            codegg::tui::app::TuiCommand::EditorLspReadFinished {
+                operation,
+                result: Some(result),
+                error: None,
+                ..
+            } => {
+                assert_eq!(operation, codegg_protocol::lsp::LspReadOperation::Hover);
+                assert_eq!(result.status, codegg_protocol::lsp::LspReadStatus::Ready);
+            }
+            other => panic!("expected production TUI hover result, got {other:?}"),
+        }
+        let desktop_navigation = desktop_result.expect("production desktop navigation");
+        assert_eq!(desktop_navigation.status, "ready");
+        let desktop_completion = desktop_completion.expect("production desktop completion");
+        assert_eq!(desktop_completion.status, "ready");
+        let warm = document::desktop_document_diagnostics_with_state(&desktop_state, 1)
+            .await
+            .expect("production desktop warm diagnostics pull");
+        assert_eq!(warm.status, "ready");
+        assert!(!warm.diagnostics.is_empty());
+        assert_eq!(service.client_keys().await.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(&start_count)
+                .expect("fake LSP start count")
+                .lines()
+                .filter(|line| *line == "start")
+                .count(),
+            1,
+            "both production frontend adapters must share one LSP process generation"
+        );
+
+        server.abort();
+        let _ = server.await;
+        drop(tui);
     }
 
     #[tokio::test]

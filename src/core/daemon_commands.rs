@@ -601,13 +601,39 @@ pub fn build_inner_request(
         }),
 
         // ── the language server ──
-        ("lsp_status", "") | ("lsp_errors", "") => {
+        ("lsp_status", "")
+        | ("lsp_servers", "")
+        | ("lsp_capabilities", "")
+        | ("lsp_errors", "") => {
             let Some(session_id) = session else {
                 return Some(CommandEffect::NeedsSession);
             };
+            let selected_server = matches!(command_id, "lsp_capabilities" | "lsp_errors");
+            if selected_server && ctx.argument.trim().is_empty() {
+                return Some(CommandEffect::UnreadableArgument);
+            }
             json!({
-                "type": "lsp_diagnostics_get",
-                "request": { "project_id": project_id, "session_id": session_id },
+                "type": "lsp_server_status_get",
+                "request": {
+                    "session_id": session_id,
+                    "server_id": if selected_server { Some(ctx.argument.trim()) } else { None },
+                },
+            })
+        }
+        ("lsp_restart", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            if argument.trim().is_empty() {
+                return Some(CommandEffect::UnreadableArgument);
+            }
+            json!({
+                "type": "lsp_control",
+                "request": {
+                    "session_id": session_id,
+                    "server_id": argument.trim(),
+                    "action": "restart",
+                },
             })
         }
 

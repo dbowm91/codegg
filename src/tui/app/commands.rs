@@ -1510,6 +1510,16 @@ pub enum TuiCommand {
     LspStatusDetailLoaded {
         detail: Option<String>,
     },
+    LspErrorsRequested {
+        server_id: String,
+    },
+    LspServersRequested,
+    LspCapabilitiesRequested {
+        server_id: String,
+    },
+    LspRestartRequested {
+        server_id: String,
+    },
     /// Eggwork M002: request the host telemetry of the configured remote
     /// nodes. Awaiting the daemon is off the render path.
     NodeTelemetryRequested,

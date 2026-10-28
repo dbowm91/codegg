@@ -16,7 +16,7 @@ pub const LSP_STATUS_REFRESH_INTERVAL: std::time::Duration = std::time::Duration
 /// which panics inside the event loop's runtime context, so the fetch runs
 /// as a registered background task and the render pass reads the cache.
 pub(crate) fn maybe_refresh_lsp_status(app: &mut App) {
-    if app.lsp_tool.is_none() {
+    if app.lsp_tool.is_none() && app.core_client.is_none() {
         return;
     }
     let due = app
@@ -32,6 +32,41 @@ pub(crate) fn maybe_refresh_lsp_status(app: &mut App) {
 
 /// Start the off-render-path LSP status fetch.
 pub(crate) fn refresh_lsp_status(app: &mut App) {
+    if let Some(client) = app.core_client.clone() {
+        let scope = crate::tui::command_route::scope_for(app);
+        let tx = app.tui_cmd_tx.clone();
+        spawn_registered_tui_task(
+            tx,
+            &mut app.task_registry,
+            TuiTaskKind::Command,
+            "lsp_status_footer",
+            async move {
+                let request = crate::core::new_request(
+                    uuid::Uuid::new_v4().to_string(),
+                    crate::protocol::core::CoreRequest::LspServerStatusGet {
+                        request: crate::protocol::lsp::LspServerStatusGetRequestDto {
+                            session_id: scope.session_id.unwrap_or_default(),
+                            server_id: None,
+                        },
+                    },
+                );
+                let status = match client.request(request).await {
+                    Ok(crate::protocol::core::CoreResponse::LspServerStatusGetResult {
+                        result,
+                    }) => result.servers.first().map(|server| {
+                        format!(
+                            "LSP: {} {} gen={}",
+                            server.server_id, server.state, server.generation
+                        )
+                    }),
+                    Err(_) => None,
+                    _ => None,
+                };
+                Some(TuiCommand::LspStatusRefreshed { status })
+            },
+        );
+        return;
+    }
     let Some(lsp_tool) = app.lsp_tool.clone() else {
         app.lsp_status_cache = None;
         return;
@@ -51,6 +86,57 @@ pub(crate) fn refresh_lsp_status(app: &mut App) {
 
 /// Start the off-render-path fetch of the multi-line `/lsp-status` toast.
 pub(crate) fn request_lsp_status_detail(app: &mut App) {
+    request_lsp_server_status(app, "lsp_status", None);
+}
+
+pub(crate) fn request_lsp_server_status(
+    app: &mut App,
+    command_id: &'static str,
+    server_id: Option<String>,
+) {
+    if let Some(client) = app.core_client.clone() {
+        let scope = crate::tui::command_route::scope_for(app);
+        let tx = app.tui_cmd_tx.clone();
+        spawn_registered_tui_task(
+            tx,
+            &mut app.task_registry,
+            TuiTaskKind::Command,
+            "lsp_server_status",
+            async move {
+                let request = crate::core::new_request(
+                    uuid::Uuid::new_v4().to_string(),
+                    crate::tui::command_route::command_execute(
+                        scope,
+                        command_id,
+                        server_id.as_deref().unwrap_or_default(),
+                        "",
+                    ),
+                );
+                let response = match client.request(request).await {
+                    Ok(response) => crate::tui::command_route::unwrap_inner_result(Ok(response)),
+                    Err(error) => Err(error),
+                };
+                let detail = match response {
+                    Ok(crate::protocol::core::CoreResponse::LspServerStatusGetResult {
+                        result,
+                    }) => Some(format_lsp_server_status(
+                        &result,
+                        command_id,
+                        server_id.as_deref(),
+                    )),
+                    Ok(crate::protocol::core::CoreResponse::Error { message, .. }) => Some(message),
+                    Ok(crate::protocol::core::CoreResponse::CommandExecute { result }) => {
+                        let (_, message) = crate::tui::command_route::refusal_parts(&result);
+                        Some(message)
+                    }
+                    Ok(other) => Some(format!("Unexpected LSP status response: {other:?}")),
+                    Err(error) => Some(error.to_string()),
+                };
+                Some(TuiCommand::LspStatusDetailLoaded { detail })
+            },
+        );
+        return;
+    }
     let Some(lsp_tool) = app.lsp_tool.clone() else {
         app.messages_state.toasts.info("LSP not available");
         return;
@@ -62,7 +148,129 @@ pub(crate) fn request_lsp_status_detail(app: &mut App) {
         TuiTaskKind::Command,
         "lsp_status_detail",
         async move {
-            let detail = lsp_tool.lsp_summary_detail().await;
+            let detail = match (command_id, server_id) {
+                ("lsp_servers", _) => lsp_tool.lsp_servers_detail().await,
+                ("lsp_capabilities", Some(server_id)) => {
+                    lsp_tool.lsp_capabilities_for_key(&server_id).await
+                }
+                ("lsp_errors", Some(server_id)) => lsp_tool.lsp_errors_for_key(&server_id).await,
+                _ => lsp_tool.lsp_summary_detail().await,
+            };
+            Some(TuiCommand::LspStatusDetailLoaded { detail })
+        },
+    );
+}
+
+fn format_lsp_server_status(
+    result: &crate::protocol::lsp::LspServerStatusResultDto,
+    command_id: &str,
+    server_id: Option<&str>,
+) -> String {
+    if result.server_not_found {
+        return format!("Server not found: {}", server_id.unwrap_or_default());
+    }
+    if result.servers.is_empty() {
+        return if server_id.is_some() {
+            format!("No errors reported for {}", server_id.unwrap_or_default())
+        } else {
+            "No active LSP servers".to_string()
+        };
+    }
+    result
+        .servers
+        .iter()
+        .map(|server| {
+            let mut line = format!(
+                "{}: {} gen={} pending={} documents={}",
+                server.server_id,
+                server.state,
+                server.generation,
+                server.pending_requests,
+                server.open_documents
+            );
+            if let Some(error) = server.last_error.as_deref() {
+                line.push_str("\n  ");
+                line.push_str(error);
+            } else if server_id.is_some() {
+                line.push_str("\n  No recent server error");
+            }
+            if command_id == "lsp_capabilities" {
+                line.push_str("\n  capabilities: ");
+                let capabilities = server.capabilities.join(", ");
+                line.push_str(if capabilities.is_empty() {
+                    "none reported"
+                } else {
+                    &capabilities
+                });
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub(crate) fn request_lsp_restart(app: &mut App, server_id: String) {
+    if let Some(client) = app.core_client.clone() {
+        let scope = crate::tui::command_route::scope_for(app);
+        let tx = app.tui_cmd_tx.clone();
+        spawn_registered_tui_task(
+            tx,
+            &mut app.task_registry,
+            TuiTaskKind::Command,
+            "lsp_restart",
+            async move {
+                let request = crate::core::new_request(
+                    uuid::Uuid::new_v4().to_string(),
+                    crate::tui::command_route::command_execute(
+                        scope,
+                        "lsp_restart",
+                        &server_id,
+                        "",
+                    ),
+                );
+                let detail = match client.request(request).await {
+                    Ok(response) => {
+                        match crate::tui::command_route::unwrap_inner_result(Ok(response)) {
+                            Ok(crate::protocol::core::CoreResponse::LspControlResult {
+                                result,
+                            }) => Some(format!(
+                                "Restarted {} (generation {} → {}, {})",
+                                result.server_id,
+                                result.previous_generation,
+                                result.generation,
+                                result.state
+                            )),
+                            Ok(crate::protocol::core::CoreResponse::Error { message, .. }) => {
+                                Some(message)
+                            }
+                            Ok(crate::protocol::core::CoreResponse::CommandExecute { result }) => {
+                                Some(crate::tui::command_route::refusal_parts(&result).1)
+                            }
+                            Ok(other) => {
+                                Some(format!("Unexpected LSP restart response: {other:?}"))
+                            }
+                            Err(error) => Some(error.to_string()),
+                        }
+                    }
+                    Err(error) => Some(error.to_string()),
+                };
+                Some(TuiCommand::LspStatusDetailLoaded { detail })
+            },
+        );
+        return;
+    }
+    let Some(lsp_tool) = app.lsp_tool.clone() else {
+        app.messages_state.toasts.info("LSP not available");
+        return;
+    };
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "lsp_restart_standalone",
+        async move {
+            let detail = Some(lsp_tool.lsp_restart_server(&server_id).await);
             Some(TuiCommand::LspStatusDetailLoaded { detail })
         },
     );

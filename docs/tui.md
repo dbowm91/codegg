@@ -372,6 +372,11 @@ motions are the way to move it:
 `h` and `l` work in **both** layouts — the default one and the vim one — so
 they are there whichever you use.
 
+In the editor, `Alt+o` expands the selection to the next enclosing syntax
+range, and `Alt+i` contracts it to the previous range. These gestures ask the
+daemon's warm language server asynchronously; unsupported or unavailable
+servers leave the current selection in place and report the reason.
+
 The word motions move it by word instead of by character:
 
 | Key | What it does |
