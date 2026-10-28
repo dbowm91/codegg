@@ -531,10 +531,6 @@ async fn run_managed_test_process(
     process.environment_policy =
         if sandbox_profile.is_some_and(|profile| profile.requires_filesystem_containment()) {
             let mut policy = crate::managed_process::EnvironmentPolicy::sanitized();
-            // The CodeGG session may run with a private HOME. Preserve only
-            // rustup's toolchain installation root for Cargo test jobs so
-            // rustc shims invoked by the pinned Cargo binary can resolve the
-            // configured toolchain without inheriting the user's Cargo home.
             if let Some(rustup_home) = std::env::var_os("RUSTUP_HOME") {
                 policy = policy.with_var("RUSTUP_HOME", rustup_home);
             }
