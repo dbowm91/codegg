@@ -1013,8 +1013,8 @@ mod capture_tests {
         assert_eq!(
             lines,
             [
-                r#"{"request_number":1,"limit":2}"#.to_string(),
-                r#"{"request_number":2,"limit":2}"#.to_string(),
+                r#"{"kind":"request","request_number":1,"limit":2}"#.to_string(),
+                r#"{"kind":"request","request_number":2,"limit":2}"#.to_string(),
             ]
         );
         let _ = std::fs::remove_file(receipt);
