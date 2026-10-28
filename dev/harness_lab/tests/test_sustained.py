@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import shutil
+import shlex
 import subprocess
 import unittest
 from pathlib import Path
@@ -363,9 +364,14 @@ class LongHorizonNativeJobTest(unittest.TestCase):
         binary = (Path(configured_binary) if configured_binary else
                   REPO_ROOT / "target" / "debug" / "codegg")
         self.assertTrue(binary.is_file(), "build CodeGG and set CODEGG_H006_CODEGG_BINARY")
+        rustup = shutil.which("rustup")
+        self.assertTrue(rustup, "the native test fixture requires the configured Rust toolchain")
+        cargo = subprocess.run([rustup, "which", "cargo"], capture_output=True,
+                               text=True, check=True).stdout.strip()
+        self.assertTrue(Path(cargo).is_file(), "rustup must resolve a real cargo executable")
         sequence = [
             {"name": "test", "arguments": {
-                "scope": "custom", "command": "cargo test --offline --workspace",
+                "scope": "custom", "command": f"{shlex.quote(cargo)} test --offline --workspace",
                 "workdir": "job-check", "execution_mode": "background"}},
             {"name": "write", "arguments": {
                 "path": "src/parser.rs", "content": "pub fn split_version(input: &str) -> Option<Vec<&str>> {\n    let trimmed = input.trim();\n    let normalized = trimmed.strip_prefix('v').unwrap_or(trimmed);\n    if normalized.is_empty() { return None; }\n    let parts: Vec<&str> = normalized.split('.').collect();\n    (parts.len() == 3 && parts.iter().all(|part| !part.is_empty()))\n        .then_some(parts)\n}\n"}},
