@@ -80,6 +80,15 @@ security = "Explicit read-only isolation must obtain two distinct contained mana
 [[filter]]
 workflow = ".github/workflows/linux-m004-native.yml"
 job = "process-ipc"
+step = "A002 existing managed read-only placement uses the production scheduler"
+command = "cargo test --locked --test agent_loop existing_managed_read_only_runs_through_the_production_scheduler -- --nocapture --test-threads=1"
+filter = "existing_managed_read_only_runs_through_the_production_scheduler"
+tests = ["existing_managed_read_only_runs_through_the_production_scheduler"]
+security = "A delegated read-only child must use the exact selected managed checkout through production scheduling, retain its contents, and release only its run-owned lease."
+
+[[filter]]
+workflow = ".github/workflows/linux-m004-native.yml"
+job = "process-ipc"
 step = "M004 constrained PTY live-owner qualification"
 command = "cargo test --locked -p codegg --lib interactive_process::tests::m004_live_owner_preserves_tty_and_private_process_view -- --test-threads=1 --nocapture"
 filter = "interactive_process::tests::m004_live_owner_preserves_tty_and_private_process_view"

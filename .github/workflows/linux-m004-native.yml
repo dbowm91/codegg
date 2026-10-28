@@ -223,6 +223,12 @@ jobs:
         timeout-minutes: 10
         run: python3 scripts/check_test_filter_execution.py --run -- cargo test --locked --test agent_loop explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts -- --nocapture --test-threads=1
 
+      - name: A002 existing managed read-only placement uses the production scheduler
+        # The selected-checkout path must execute through daemon scheduling and
+        # release its exact run-owned lease while retaining the checkout.
+        timeout-minutes: 10
+        run: python3 scripts/check_test_filter_execution.py --run -- cargo test --locked --test agent_loop existing_managed_read_only_runs_through_the_production_scheduler -- --nocapture --test-threads=1
+
       - name: A003 repository quota production Cargo comparison
         # This test submits real Cargo builds through JobSubmissionService,
         # JobScheduler and ManagedArgvExecutor, and prints the measured
