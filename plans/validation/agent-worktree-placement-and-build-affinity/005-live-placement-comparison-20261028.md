@@ -20,10 +20,16 @@ All 36 scheduled task rows received a terminal receipt. The six supplemental con
 
 ## Results
 
-The baseline and candidate each had **0/18 independently verified task successes**. The protected unavailable-checkout control held **0/3** times in both arms. The shared scoring contract returned `rejected` with objective `none`: correctness pass rate was 0.0 in both arms; reliability was 0.889 baseline and 0.944 advisor; median end-to-end duration was 39,724.5 ms baseline and 37,715 ms advisor. Reliability and duration improved, but both are advisory under this contract and cannot accept a candidate without a substantive correctness improvement.
+The baseline and candidate each had **0/18 independently verified task successes**. The protected unavailable-checkout control held **3/3** times in both arms after the saved transcripts were rechecked with the corrected verifier. The shared scoring contract returned `rejected` with objective `none`: correctness pass rate was 0.0 in both arms; reliability was 0.889 baseline and 0.944 advisor; median end-to-end duration was 39,724.5 ms baseline and 37,715 ms advisor. Reliability and duration improved, but both are advisory under this contract and cannot accept a candidate without a substantive correctness improvement.
 
-The outcome is **no-go**. These observations do not support a stable placement strategy that improves successful work, and the exact unavailable-checkout control failed in both arms. No correctness, scheduler-wait, collision-reduction, or performance benefit is claimed. ACP does not expose scheduler queue wait or exclusive-lease collision outcomes.
+The outcome is **no-go**. These observations do not support a stable placement strategy that improves successful work. No task-correctness, scheduler-wait, collision-reduction, or performance benefit is claimed. ACP does not expose scheduler queue wait or exclusive-lease collision outcomes.
 
 ## Disposition
 
 A005 is closed no-go. Keep the deterministic guidance within its existing authority boundary; do not promote it as model-qualified or add automatic placement, cache, shared-target, or shared-checkout behavior. Future qualification requires a new plan after the delegated task failures and negative-control behavior are addressed.
+
+## Unavailable-checkout assertion review
+
+The six original control verifications were false negatives. The verifier required one tool call and a synchronous failed status, although four trials queued the run and a later task-status call recorded failure; two other trajectories retried after an immediate tool error. It also treated CodeGG's `.codegg/` state and `codegg_debug.log` as fixture changes. The task executor rejects a missing exact worktree after scheduler queue admission, then exits before constructing or dispatching the child. It does not fall back to the parent workspace or create a replacement checkout. This is late rejection and model retry behavior; the observations show no authorization defect.
+
+The corrected verifier accepts immediate refusal or queue-then-failure, requires the exact requested target, a later failed run status and no completed child, and continues to enforce one worktree while allowing only those known runtime artifacts. Re-running it against the six unchanged, saved transcripts produced **6/6 passes** without provider calls. The comparison remains no-go because every non-control task case had 0/3 successful verifier outcomes in each arm.
