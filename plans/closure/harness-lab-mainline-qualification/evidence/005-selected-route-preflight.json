@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "purpose": "H005 selected provider route preflight; no sustained workload request sent",
+  "date": "2026-10-28",
+  "route": "opencode_go/muse-spark-1.3-contributor",
+  "selection_basis": "operator explicitly selected the newer stored credential after historical usage telemetry was found unavailable",
+  "preflight_method": "read-only authenticated local daemon ProviderConnectionList; no connection mutation",
+  "connection_state": "active",
+  "model_count": 26,
+  "selected_credential_masked_hint_match": true,
+  "connection_created_or_replaced_by_preflight": false,
+  "catalog_request_accounting": "reserve 1 provider request conservatively: the active connection has a populated catalog, but its original request admission record is unavailable",
+  "credential_probe_requests_used": 2,
+  "total_approved_request_ceiling": 300,
+  "remaining_case_request_cap": 297,
+  "sustained_attempt_started": false,
+  "secret_or_masked_hint_persisted": false,
+  "selected_credential_slot": "newer",
+  "connection_matches_selected_account": true
+}

@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "purpose": "H005 sole live attempt result; not sustained-qualified",
+  "date": "2026-10-28",
+  "route": "opencode_go/muse-spark-1.3-contributor",
+  "attempt_id": "sustained-event-ledger:0",
+  "session_id": "698a77f1-d109-4037-b2cd-3ce667fe2106",
+  "candidate_binary_sha256": "a30a7efe989040c5d739a0c749ae554ddcdd01c527b95205bd9dbd2b6ee3e647",
+  "source_revision": "ef951f6ff75e2a85d71703cc1dfa28fe00dea96c",
+  "receipt_sha256": "5177f3b0b791c1796c4af63ade714c48c6d41582c8e77736b3231fe7cb20e6e2",
+  "transcript_sha256_not_retained": "98aba8a961716df0cb14d4e44fc5b3726ba93baad521b57dd3af6606179af5d1",
+  "raw_transcript_retained": false,
+  "preflight_refusals_before_session": 2,
+  "preflight_refusal_reason": "lane parent directories were absent; both refusals preceded session creation and reported zero provider admissions",
+  "live_attempt": {
+    "authorization_attempt_limit": 1,
+    "attempt_consumed": true,
+    "terminal": "completed",
+    "agent_terminal": "completed",
+    "stop_reason": "end_turn",
+    "duration_ms": 614218,
+    "minimum_required_duration_ms": 1800000,
+    "maximum_authorized_duration_ms": 3600000,
+    "solved": false,
+    "tool_call_count": 42,
+    "tool_status_counts": {
+      "read:completed": 19,
+      "list:completed": 4,
+      "glob:completed": 1,
+      "test:failed": 6,
+      "bash:failed": 1,
+      "tool_search:completed": 6,
+      "edit:completed": 2,
+      "grep:completed": 1,
+      "apply_patch:completed": 1,
+      "test:completed": 1
+    },
+    "verifier_confirmed": false
+  },
+  "verification": {
+    "command": [
+      "python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "verifier",
+      "-v"
+    ],
+    "exit_code": 1,
+    "tests_run": 5,
+    "timed_out": false,
+    "finding": "one of the two required failure-diagnosis-repair cycles was observed; the hidden verifier rejected the attempt",
+    "failure_summary": "test_transcript_proves_two_failure_diagnosis_repair_cycles observed 1; verifier reported one failure and one error"
+  },
+  "background_jobs": [
+    {
+      "action": "submit",
+      "job_id": "135193d2-60bb-4b56-98a6-4c2094c53234",
+      "status": null
+    },
+    {
+      "action": "submit",
+      "job_id": "220ca538-18b0-4088-8a54-b52d26f05ad1",
+      "status": null
+    },
+    {
+      "action": "submit",
+      "job_id": "c4b8b6f9-c6e3-46a1-adf0-2653332b6899",
+      "status": null
+    },
+    {
+      "action": "submit",
+      "job_id": "786258be-b350-4b38-8273-f9277f140915",
+      "status": null
+    },
+    {
+      "action": "submit",
+      "job_id": "5eb6d4d1-645a-4ff2-92bf-c2fd68765fc3",
+      "status": null
+    },
+    {
+      "action": "submit",
+      "job_id": "7992d15b-f5a1-4dff-bac1-5202825f6b8a",
+      "status": null
+    },
+    {
+      "action": "submit",
+      "job_id": "c4091dd1-0e83-4a89-bf7b-33cc437670ff",
+      "status": null
+    }
+  ],
+  "background_job_observation_result": "seven submissions were recorded; each returned status was null; no running/terminal observation or exact-id wait was recorded",
+  "provider_request_budget": {
+    "configured_case_cap": 297,
+    "receipt_admission_count": 0,
+    "receipt_source": "codegg_provider_boundary_log",
+    "cap_enforcement_proven": false,
+    "usage_tokens": {
+      "cached_tokens": null,
+      "input_tokens": 62119,
+      "output_tokens": 3489,
+      "reasoning_tokens": null,
+      "turn_id": "turn-be1ff13e-76d1-465f-9935-8ecb1c453f1f"
+    },
+    "cost_usd": null,
+    "finding": "the run recorded 65,608 tokens but zero provider-boundary admissions; the lane environment did not receive CODEGG_HARNESS_MAX_PROVIDER_REQUESTS, so the actual outbound request count is unknown and the approved request ceiling cannot be certified",
+    "lane_received_request_cap": false,
+    "corrective_code": "SubjectSpec carries the trial budget cap explicitly; autonomy_run passes budget_policy.max_provider_requests into the lane environment",
+    "corrective_focused_tests": {
+      "supervisor": {
+        "passed": 15,
+        "skipped": 1
+      },
+      "autonomy_run": {
+        "passed": 31
+      },
+      "sustained": {
+        "passed": 18,
+        "skipped": 8
+      }
+    }
+  },
+  "disk_floor": {
+    "last_free_bytes": 94571540480,
+    "lowest_observed_free_bytes": 94571540480,
+    "measurement_error": null,
+    "minimum_free_bytes": 10737418240,
+    "triggered": false
+  },
+  "daemon_stop_error": null,
+  "cleanup_process_check": "harness process, lane daemon and lane descendants absent after terminal; private lane removed after hashes and summary were recorded",
+  "qualification": "failed: below 30-minute minimum, verifier failed, recovery sequence incomplete, async job progress not proved, provider request count unmeasured",
+  "reported_provider_cost_usd": null,
+  "raw_credentials_or_model_response_bodies_saved": false,
+  "further_live_attempt_authorized": false,
+  "local_scoped_verification": {
+    "command": "bash scripts/verify.sh scoped origin/main",
+    "result": "failed at workspace nextest test linking",
+    "cause": "the selected x86_64-apple-darwin toolchain could not link native libiconv/liblzma symbols",
+    "free_disk_after_failure_gib": 63
+  },
+  "selected_credential_slot": "newer"
+}

@@ -532,7 +532,10 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
             raise HarnessError("the H005 frozen case metadata is missing")
         shutil.copy2(metadata, private_root / "case-metadata.json")
 
-    spec = SubjectSpec.create(f"autonomy-{case.case_id}", binary, agent_root, lane_root, repository)
+    spec = SubjectSpec.create(
+        f"autonomy-{case.case_id}", binary, agent_root, lane_root, repository,
+        provider_request_limit=budget_policy.max_provider_requests,
+    )
     env = spec.environment()
     _prepare_lane_home(env)
 

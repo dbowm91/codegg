@@ -103,6 +103,28 @@ class SubjectEnvironmentTests(unittest.TestCase):
             "artifacts/provider-request-admissions.jsonl"))
         self.assertEqual(env["RUST_LOG"], "error,codegg_providers::request_budget=info")
 
+    def test_provider_request_limit_can_be_bound_to_a_trial_without_parent_env(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            binary = root / "codegg"
+            binary.write_bytes(b"candidate")
+            binary.chmod(0o755)
+            spec = SubjectSpec.create(
+                "a", binary, root, root / "lane", root, provider_request_limit=297
+            )
+            original = dict(os.environ)
+            os.environ.pop("CODEGG_HARNESS_MAX_PROVIDER_REQUESTS", None)
+            try:
+                env = spec.environment()
+            finally:
+                os.environ.clear()
+                os.environ.update(original)
+
+        self.assertEqual(env["CODEGG_HARNESS_MAX_PROVIDER_REQUESTS"], "297")
+        self.assertTrue(env["CODEGG_HARNESS_PROVIDER_REQUEST_RECEIPT"].endswith(
+            "artifacts/provider-request-admissions.jsonl"))
+        self.assertEqual(env["RUST_LOG"], "error,codegg_providers::request_budget=info")
+
     def test_the_lane_roots_are_private_whatever_the_umask(self) -> None:
         """The lane's ``XDG_CACHE_HOME`` must not inherit the operator's umask.
 
