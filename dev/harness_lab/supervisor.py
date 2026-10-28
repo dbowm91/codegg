@@ -844,7 +844,8 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                    fail_after_tools: bool = False, fault_kind: str = "transport",
                    agent_steps: int | None = None,
                    workspace_snapshot: Path | None = None,
-                   external_verifier: Path | None = None) -> dict[str, Any]:
+                   external_verifier: Path | None = None,
+                   rustc_executable: Path | None = None) -> dict[str, Any]:
     """Run one native ACP turn against a local deterministic OpenAI wire fixture."""
     from .provider_fixture import FixtureProvider
     import shlex
@@ -901,6 +902,11 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                                    fault_kind=fault_kind).start()
         spec = SubjectSpec.create("tool-trial", binary, workspace, root, Path.cwd())
         env = spec.environment()
+        if rustc_executable is not None:
+            rustc_path = rustc_executable.resolve(strict=True)
+            if not rustc_path.is_file():
+                raise HarnessError("configured rustc executable is not a regular file")
+            env["RUSTC"] = str(rustc_path)
         env["CARGO_TARGET_DIR"] = str(private_dir(root / "cargo-target"))
         config = {
             "provider": {"openai": {

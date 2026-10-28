@@ -368,7 +368,10 @@ class LongHorizonNativeJobTest(unittest.TestCase):
         self.assertTrue(rustup, "the native test fixture requires the configured Rust toolchain")
         cargo = subprocess.run([rustup, "which", "cargo"], capture_output=True,
                                text=True, check=True).stdout.strip()
+        rustc = subprocess.run([rustup, "which", "rustc"], capture_output=True,
+                               text=True, check=True).stdout.strip()
         self.assertTrue(Path(cargo).is_file(), "rustup must resolve a real cargo executable")
+        self.assertTrue(Path(rustc).is_file(), "rustup must resolve a real rustc executable")
         sequence = [
             {"name": "test", "arguments": {
                 "scope": "custom", "command": f"{shlex.quote(cargo)} test --offline --workspace",
@@ -388,7 +391,7 @@ class LongHorizonNativeJobTest(unittest.TestCase):
             binary, "workspace-write", timeout=300.0,
             task_id="h006-real-job-observation", tool_sequence=sequence,
             expected_file="never-created", expected_text=None, expected_exists=False,
-            workspace_snapshot=self.fixture,
+            workspace_snapshot=self.fixture, rustc_executable=Path(rustc),
             initial_files={
                 "job-check/Cargo.toml": "[workspace]\nmembers = [\"core\", \"index\", \"store\", \"cli\"]\nresolver = \"2\"\n",
                 "job-check/core/Cargo.toml": "[package]\nname = \"job-core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
