@@ -6,7 +6,7 @@ Source implementation plan: `plans/implementation/harness-lab-mainline-qualifica
 
 Source subsystem roadmap: `plans/subsystems/harness-lab-mainline-and-long-horizon-qualification-addendum.md`
 
-Branch: `plans/harness-lab-h005-sustained-workload-20261027`; PR #211 remains draft. The current pushed head `a4d1879fcb9f47d758ff94154e40c8cc6cfba0ad` passed hosted CI run [40634607407](https://github.com/dbowm91/codegg/actions/runs/40634607407); a further offline suite-cap correction found during review is now local and awaits hosted qualification.
+Branch: `plans/harness-lab-h005-sustained-workload-20261027`; PR #211 remains draft. Head `a4d1879fcb9f47d758ff94154e40c8cc6cfba0ad` passed hosted CI run [40634607407](https://github.com/dbowm91/codegg/actions/runs/40634607407). The suite-cap correction found during review is committed at `d429ea0c51470508070f6dd49c8c697b90deec45`; its hosted run [40636832828](https://github.com/dbowm91/codegg/actions/runs/40636832828) is in progress.
 
 ## 1. Finding
 
