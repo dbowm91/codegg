@@ -1,10 +1,10 @@
 # H006 — Job-Observable Sustained Corrective Qualification
 
-Status: **offline prerequisites proven; exact-head hosted CI passed; live qualification awaits fresh explicit authorization**
+Status: **offline prerequisites and prior exact-head CI passed; first authorized live attempt failed during managed-test startup; paired-runfile preflight implemented and locally verified; corrective hosted CI pending; sustained qualification remains incomplete**
 
 Implementation: branch `plans/harness-lab-h006-job-observable-20261028`.
 Prior live evidence: H005 remains unqualified and its authorization remains consumed (`005-status.md`).
-No external model or provider request was made for H006.
+The initial H006 closure covered offline evidence only. A separately authorized live attempt and its failed result are recorded in §7 below.
 
 ## 1. Offline job lifecycle evidence
 
@@ -56,10 +56,18 @@ Calibration used isolated copies under `/tmp/codegg-h006-ledger-calibration-run`
 
 ## 5. Qualification boundary
 
-H006's offline prerequisites now include hosted evidence for the composed native job lifecycle, sanitized receipt, request-cap propagation/enforcement, and passing exact-head CI. Job state is projected from bounded native ACP tool output; a separate automatic terminal notification and a structured job-lifecycle event protocol remain unproven and out of H006's demonstrated result. H006 is not a sustained autonomous qualification: there was no external model call, no live provider request, and no budget authority inferred from H005. Any live attempt still requires separate explicit approval naming the `opencode_go` route, request and time caps, disk stop floor, cost handling, and cancellation conditions.
+H006's offline prerequisites include hosted evidence for the composed native job lifecycle, sanitized receipt, request-cap propagation/enforcement, and passing exact-head CI. Job state is projected from bounded native ACP tool output; a separate automatic terminal notification and a structured job-lifecycle event protocol remain unproven and out of H006's demonstrated result. The first live attempt failed and did not establish sustained autonomous qualification; see §7. A further attempt requires separate explicit approval naming the `opencode_go` route, request and time caps, disk stop floor, cost handling, and cancellation conditions.
 
 ## 6. Exact-head corrective follow-up
 
 At `36916de8710fc5f3d409ef8b9b12c84be9dc5fb1`, the H006 test requires the exact job to reach `completed`, with a negative case proving `failed` cannot qualify. The native sandbox probe denies Rustup and Cargo credential locations, unrelated Rustup data, an unapproved path, and a symlink escape. Rustup `credentials` and `credentials.toml` are included in sensitive denies for default and overridden Rustup homes. The Windows allowance path helper now returns validated ordinary paths so the sandbox resolver can reject device-prefix input without rejecting its own canonicalized allowance output.
 
-All PR-event checks passed on this exact head: [Verify](https://github.com/dbowm91/codegg/actions/runs/40730023534), [macOS qualification](https://github.com/dbowm91/codegg/actions/runs/40730023357), [Windows process launcher](https://github.com/dbowm91/codegg/actions/runs/40730023470), [Linux process/IPC and restricted-userns](https://github.com/dbowm91/codegg/actions/runs/40730023356), and [protected-mount](https://github.com/dbowm91/codegg/actions/runs/40730023403). The PR remains offline-only; the live qualification still needs fresh explicit authorization.
+All PR-event checks passed on this exact head: [Verify](https://github.com/dbowm91/codegg/actions/runs/40730023534), [macOS qualification](https://github.com/dbowm91/codegg/actions/runs/40730023357), [Windows process launcher](https://github.com/dbowm91/codegg/actions/runs/40730023470), [Linux process/IPC and restricted-userns](https://github.com/dbowm91/codegg/actions/runs/40730023356), and [protected-mount](https://github.com/dbowm91/codegg/actions/runs/40730023403). The implementation PR qualified offline. The later live attempt and its failure are recorded in §7.
+
+## 7. First live attempt — failed, not sustained-qualified
+
+On 2026-10-28, one separately authorized H006 attempt ran from source commit `85fd548c32af15195d8fb267d528721b8295b139` with route `opencode_go/muse-spark-1.3-contributor`, a 120-request ceiling, a 60-minute hard stop, and a 10 GiB free-disk floor. The session ended naturally after 620,751 ms (10m 21s) and 27 provider requests. USD cost was unreported (`null`); the lowest observed free space was 64,463,257,600 bytes and the floor did not trigger.
+
+The supplied `codegg` executable lacked its trusted sibling `codegg-sandbox-helper`. Managed Rust test jobs therefore failed before Cargo started. The job receipt reported the exact queried job as `failed`; no successful `running` state with productive overlap was recorded. ACP observation was complete (38 tool starts, 38 terminals, zero event gaps), and daemon cleanup succeeded. The agent repeated the same failing test action and recorded only one repair cycle. The independent hidden verifier exited 1. H006's 30-minute active-work, overlapping-job, two-cycle, and verifier-pass criteria were not met.
+
+The corrective owner is H006 lane preparation and autonomy-runner preflight. The canonical binary must be built together with `codegg-sandbox-helper`, this corrective branch requires the native `doctor installation` report to show the trusted helper present before reserving provider capacity. A narrowly scoped runtime watcher also cancels if that specific unrecoverable helper-resolution error appears during a live session. The missing helper was built after the attempt with the pinned Rust 1.89 ARM64 toolchain, and the native report confirmed it present. The focused autonomy/fault/supervisor suites passed (100 tests, 1 skipped); the complete Harness Lab Python suite passed (380 tests, 9 skipped) with `CODEGG_H006_CODEGG_BINARY` set to the paired binary. Test assertion-quality and duplication guards passed. Hosted CI for this corrective branch remains pending. The original authorization is consumed; another live attempt requires fresh explicit authorization after the corrective hosted checks.

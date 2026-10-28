@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -246,6 +247,92 @@ class RunCaseRefusalTests(unittest.TestCase):
                 budget_policy=budget.BudgetPolicy(),
                 lane_root=pathlib.Path("/nonexistent"),
                 min_free_disk_bytes=10 * 1024**3)
+
+    def test_h006_preflight_accepts_only_native_reported_helper_sibling(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            binary = pathlib.Path(temp) / "codegg"
+            binary.write_bytes(b"fixture executable")
+            binary.chmod(0o755)
+            report = subprocess.CompletedProcess(
+                args=[], returncode=0,
+                stdout="Sandbox helper (codegg-sandbox-helper): present at "
+                       f"{pathlib.Path(temp) / 'codegg-sandbox-helper'}\n",
+                stderr="",
+            )
+            with mock.patch("dev.harness_lab.autonomy_run.subprocess.run",
+                            return_value=report) as run:
+                self.assertEqual(autonomy_run._preflight_h006_binary(binary), binary.resolve())
+            self.assertEqual(run.call_args.args[0], [str(binary.resolve()),
+                                                     "doctor", "installation"])
+            self.assertNotIn("OPENCODE_GO_API_KEY", run.call_args.kwargs["env"])
+
+    def test_missing_h006_helper_refuses_before_reserving_a_provider_request(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            binary = pathlib.Path(temp) / "codegg"
+            binary.write_bytes(b"fixture executable")
+            binary.chmod(0o755)
+            lane = pathlib.Path(temp) / "lane"
+            policy = budget.BudgetPolicy(token_limit=400000, max_provider_requests=120,
+                                         max_wallclock_seconds=3600.0,
+                                         cost_observable=False)
+            guard = budget.SpendGuard(policy)
+            report = subprocess.CompletedProcess(
+                args=[], returncode=0,
+                stdout="Sandbox helper (codegg-sandbox-helper): MISSING (expected "
+                       f"{pathlib.Path(temp) / 'codegg-sandbox-helper'})\n",
+                stderr="",
+            )
+            suite = autonomy.load_autonomy_suite(
+                REPO_ROOT / "dev/harness_lab/fixtures/agent_autonomy_h005")
+            with mock.patch("dev.harness_lab.autonomy_run.subprocess.run",
+                            return_value=report):
+                with self.assertRaisesRegex(HarnessError, "Sandbox helper.*MISSING"):
+                    autonomy_run.run_case(
+                        binary, suite.case("sustained-event-ledger"),
+                        "opencode_go/muse-spark-1.3-contributor",
+                        budget_policy=policy, guard=guard, lane_root=lane,
+                        repository=REPO_ROOT, timeout=3540,
+                        min_free_disk_bytes=10 * 1024**3)
+            self.assertEqual(guard.provider_requests, 0)
+
+    def test_helper_failure_watcher_cancels_the_known_unrecoverable_tool_error(self) -> None:
+        notification = {
+            "params": {"update": {
+                "sessionUpdate": "tool_call_update",
+                "status": "failed",
+                "title": "job",
+                "rawOutput": "trusted sandbox helper codegg-sandbox-helper "
+                             "could not be resolved: No such file or directory",
+            }},
+        }
+
+        class FakeClient:
+            notifications = [notification]
+
+            def __init__(self) -> None:
+                self.sent: list[tuple[str, dict]] = []
+
+            def notify(self, method: str, params: dict) -> None:
+                self.sent.append((method, params))
+
+        client = FakeClient()
+        watcher = autonomy_run._H006InfrastructureFailureWatcher(client, "session-1")
+        watcher._run()
+        self.assertTrue(watcher.failure_observed)
+        self.assertEqual(client.sent, [("session/cancel", {"sessionId": "session-1"})])
+
+    def test_helper_failure_watcher_ignores_nonterminal_and_unrelated_errors(self) -> None:
+        cases = [
+            {"sessionUpdate": "tool_call_update", "status": "running", "title": "job",
+             "rawOutput": "trusted sandbox helper codegg-sandbox-helper could not be resolved"},
+            {"sessionUpdate": "tool_call_update", "status": "failed", "title": "test",
+             "rawOutput": "Cargo test failed: assertion did not hold"},
+            {"sessionUpdate": "tool_call_update", "status": "failed", "title": "read",
+             "rawOutput": "trusted sandbox helper codegg-sandbox-helper could not be resolved"},
+        ]
+        for update in cases:
+            self.assertFalse(autonomy_run._is_missing_trusted_helper_failure(
+                {"params": {"update": update}}))
 
     def test_a_model_without_a_provider_is_refused(self) -> None:
         with self.assertRaises(HarnessError):
