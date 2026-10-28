@@ -1,6 +1,6 @@
 # Agent Worktree Placement and Build Affinity A002 — Existing Managed Checkout for Read-Only Delegated Runs
 
-Status: active
+Status: **conditionally closed** — closure `plans/closure/agent-worktree-placement-and-build-affinity/002-status.md`
 Repository baseline: `493e5ee11` (`plan/worktree-affinity-cwd-build-admission-20261027`, planning docs retrieved from the named remote branch)
 
 Source roadmap:
@@ -20,13 +20,17 @@ Allow `task.spawn` and bounded `task.spawn_many` children to request `placement=
 ## 2. Why this milestone is ready
 A001 is strictly closed on the branch: a read-only `isolated_new` child obtains its own production-contained checkout and explicit isolation fails closed. The existing `WorktreeService` supports `get`, `refresh`, run-owned generation-fenced `acquire_lease` and `release_lease`. `SessionLaunchService` already validates managed existing checkout identity, state and ownership for **sessions**, but its session launch contract must not be reused as a delegated-run lease shortcut. No new concurrent-writer grant is sought.
 
-## 3. Current implementation evidence
+## 3. Baseline findings before A002 implementation
 - `crates/codegg-core/src/run_placement.rs`: `Auto`, `IsolatedNew`, `SerializedShared { group_id }`; no existing-worktree delegated variant. The enum is serde-tagged `kind`, and old payloads default to `Auto`.
 - `src/tool/task.rs`: a string placement field, group-level fallback and child overrides; `parse_run_placement` currently accepts no worktree ID. It constructs durable run/job payloads and a request fingerprint. Placement and target checkout must be included in duplicate/idempotency equivalence checks.
 - `src/scheduler/executors.rs`: run placement occurs during `Preparing`; fresh isolated and group-shared leases have intentionally different owners/lifetimes. New reuse must be a **third explicit arm**, not an alias of `SerializedShared` or `Auto`.
 - `crates/codegg-core/src/worktree_service.rs`: `Ready` versus `InUse` state, worktree health and lease generation; `acquire_lease` also admits `Reserved`, so an A002 caller must explicitly require verified `Ready` and usable health **before and after** the atomic claim.
 - `src/agent/worker.rs::requires_isolation` is a placement heuristic, **not** a complete read-only proof: `is_read_only_agent` and `read_only_blocked_tools` enumerate different tool lists, and indirect process/plugin/child-spawn surfaces must be examined before granting access.
 - `src/core/session_launch.rs` validates existing worktree `managed`, `project_id`, `repository_id`, `owner_run_id` and `Ready`, but a session can be associated without holding a synthetic worktree lease. A002 must investigate active-session/process ownership **in addition** to the worktree row before promising no concurrent writers.
+
+## 3.1 Implemented state and closure disposition
+
+The typed `ExistingManagedReadOnly { worktree_id }` placement, per-child request fingerprinting, daemon owner/catalog checks, exclusive run-owned lease, checkout-root rebinding, read/list/glob allowlist, nested-delegation refusal, durable projection, release handling, documentation, and structural guard are implemented. The successful and refusal paths pass through `JobSubmissionService → JobScheduler → SubagentJobExecutor → WorktreeService`; the local matrix covers missing, dirty, busy, foreign project/repository/workspace, unmanaged, active-session, and active-job targets. See `plans/closure/agent-worktree-placement-and-build-affinity/002-status.md` for exact evidence and the remaining strict-closure condition: hosted Linux qualification on the pushed exact head.
 
 ## 4. Invariants that must not regress
 1. A model-supplied `worktree_id` is an identifier, **never** an authorization token or path. The daemon resolves and verifies it against the child's immutable project/repository/workspace/principal/parent scope. If a linked checkout has a distinct workspace record, authorize that mapping through daemon catalog state rather than assuming string equality.

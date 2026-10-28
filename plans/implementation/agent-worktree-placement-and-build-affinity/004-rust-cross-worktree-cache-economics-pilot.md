@@ -1,6 +1,6 @@
 # Agent Worktree Placement and Build Affinity A004 — Cross-Worktree Cargo Cache Economics Pilot
 
-Status: active
+Status: **closed** — closure `plans/closure/agent-worktree-placement-and-build-affinity/004-status.md` (no-go for production sccache integration)
 Repository baseline: `493e5ee11` (`plan/worktree-affinity-cwd-build-admission-20261027`, planning docs retrieved from the named remote branch)
 
 Source roadmap:
