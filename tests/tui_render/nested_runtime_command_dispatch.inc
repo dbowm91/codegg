@@ -51,10 +51,6 @@ fn toast_messages(app: &App) -> Vec<String> {
         .collect()
 }
 
-/// Test apps deliberately start without an effect channel. Production's
-/// event loop installs one before input is handled, so mirror that setup and
-/// assert that the command is queued instead of surfacing a false channel
-/// error from the deliberately minimal test constructor.
 fn assert_lsp_servers_request_queued(app: &mut App) {
     let request = app
         .tui_cmd_rx
