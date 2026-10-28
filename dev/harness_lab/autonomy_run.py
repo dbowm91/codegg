@@ -428,6 +428,15 @@ def _provider_request_admissions(stderr_path: Path) -> Optional[int]:
                and re.search(r"\brequest_number=\d+\b", line))
 
 
+def _remaining_provider_request_cap(policy: budget.BudgetPolicy,
+                                   guard: budget.SpendGuard) -> Optional[int]:
+    """Return the request budget this lane may consume from a shared suite cap."""
+    limit = policy.max_provider_requests
+    if limit is None:
+        return None
+    return max(0, limit - guard.provider_requests)
+
+
 def run_case(binary: Path, case: AutonomyCase, model: str, *,
              budget_policy: budget.BudgetPolicy, lane_root: Path,
              repository: Optional[Path] = None, profile: str = "workspace-write",
@@ -499,6 +508,9 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
             and initial_free_bytes < min_free_disk_bytes:
         raise HarnessError("free disk is below the required floor; refusing the live case")
     supervisor.private_dir(lane_root)
+    # Each case starts a fresh provider process, so its process-local cap must
+    # be the unspent suite allowance, not the original full-suite limit.
+    provider_request_limit = _remaining_provider_request_cap(budget_policy, guard)
     # The request cap is reserved only after the disk floor's initial sample.
     guard.admit()
     # The daemon binds its control socket inside the lane. A lane whose socket
@@ -534,7 +546,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
 
     spec = SubjectSpec.create(
         f"autonomy-{case.case_id}", binary, agent_root, lane_root, repository,
-        provider_request_limit=budget_policy.max_provider_requests,
+        provider_request_limit=provider_request_limit,
     )
     env = spec.environment()
     _prepare_lane_home(env)

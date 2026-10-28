@@ -84,6 +84,23 @@ class ProviderRequestAccountingTests(unittest.TestCase):
             self.assertIsNone(autonomy_run._provider_request_admissions(
                 pathlib.Path(temp) / "missing.log"))
 
+    def test_each_lane_receives_only_the_remaining_shared_suite_cap(self) -> None:
+        policy = budget.BudgetPolicy(max_provider_requests=5)
+        guard = budget.SpendGuard(policy)
+        guard.observe(provider_requests=2)
+        self.assertEqual(autonomy_run._remaining_provider_request_cap(policy, guard), 3)
+
+    def test_an_exhausted_shared_cap_binds_zero_remaining_requests(self) -> None:
+        policy = budget.BudgetPolicy(max_provider_requests=2)
+        guard = budget.SpendGuard(policy)
+        guard.observe(provider_requests=2)
+        self.assertEqual(autonomy_run._remaining_provider_request_cap(policy, guard), 0)
+
+    def test_an_unbounded_policy_does_not_create_a_lane_request_cap(self) -> None:
+        policy = budget.BudgetPolicy(token_limit=100)
+        guard = budget.SpendGuard(policy)
+        self.assertIsNone(autonomy_run._remaining_provider_request_cap(policy, guard))
+
     def test_the_transcript_carries_the_protected_flag(self) -> None:
         case = _case("repeated-identical-failure-stall")
         transcript = autonomy_run.build_transcript(case, [], terminal="stalled",
