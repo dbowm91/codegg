@@ -963,9 +963,8 @@ mod capture_tests {
                             "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                             body.len()).expect("write fixture error");
                         if captures.len() == 2 {
-                            extra_request_deadline = Some(
-                                std::time::Instant::now() + Duration::from_millis(250),
-                            );
+                            extra_request_deadline =
+                                Some(std::time::Instant::now() + Duration::from_millis(250));
                         }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
