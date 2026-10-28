@@ -6,11 +6,11 @@ Source implementation plan: `plans/implementation/harness-lab-mainline-qualifica
 
 Source subsystem roadmap: `plans/subsystems/harness-lab-mainline-and-long-horizon-qualification-addendum.md`
 
-Branch: `plans/harness-lab-h005-sustained-workload-20261027`; PR #211 is draft at `b85e0db4891c71f4ac1b7bb175ce5e6d6a0643cb`.
+Branch: `plans/harness-lab-h005-sustained-workload-20261027`; PR #211 is draft at `26f2d8030d6d84bfb26a25fa006bc486202d08d8`.
 
 ## 1. Finding
 
-H005's multi-crate event-ledger workload, fixture/verifier, autonomy manifest, constrained job projection, request-boundary cap and disk-floor watcher are implemented and pushed. The exact PR head passed hosted CI run [40601163463](https://github.com/dbowm91/codegg/actions/runs/40601163463). At the operator's direction, each of the two stored OpenCode Go credentials was tested through a separate CodeGG standalone completion using `opencode_go/muse-spark-1.3-contributor`; both were accepted, with one provider request admitted each. The non-secret result receipt is `evidence/005-credential-preflight.json`. No secret or response body was printed or saved. The operator selected the newer account. A read-only local-daemon listing verified an active connection whose ID matches that account and whose masked credential matches the selected stored value; no connection was created or replaced by this check. The sole H005 live attempt subsequently ran and is recorded in `evidence/005-live-attempt.json`.
+H005's multi-crate event-ledger workload, fixture/verifier, autonomy manifest, constrained job projection, request-boundary cap and disk-floor watcher are implemented and pushed. The sanitized exact PR head `26f2d8030d6d84bfb26a25fa006bc486202d08d8` passed hosted CI run [40632587553](https://github.com/dbowm91/codegg/actions/runs/40632587553), including GitGuardian, strict Clippy and the workspace test sweep. An earlier code head also passed CI run [40629696300](https://github.com/dbowm91/codegg/actions/runs/40629696300). At the operator's direction, each of the two stored OpenCode Go credentials was tested through a separate CodeGG standalone completion using `opencode_go/muse-spark-1.3-contributor`; both were accepted, with one provider request admitted each. The non-secret result receipt is `evidence/005-credential-preflight.json`. No secret or response body was printed or saved. The operator selected the newer account. A read-only local-daemon listing verified an active connection matching that selected account; no connection was created or replaced by this check. The sole H005 live attempt subsequently ran and is recorded in `evidence/005-live-attempt.json`.
 
 The sole live case ran for 614,218 ms (10m14.218s), ended normally, and failed the hidden verifier. It did not meet the 30-minute threshold. The verifier observed only one of two required failure-diagnosis-repair cycles. Seven test jobs were submitted, but every projected status was null; no running/terminal observation or exact-ID wait was captured. The request receipt reports zero provider-boundary admissions despite 65,608 tokens. The lane did not receive `CODEGG_HARNESS_MAX_PROVIDER_REQUESTS`, so the actual outbound request count and request-cap enforcement are unknown. This attempt is not a sustained qualification, and the one-run authorization is consumed.
 
@@ -21,7 +21,7 @@ The sole live case ran for 614,218 ms (10m14.218s), ended normally, and failed t
 | Distinct H005 multi-crate workload and hidden verifier | `dev/harness_lab/fixtures/agent_autonomy_h005/`; event-ledger source spans five shards and 50,000 records with an independent verifier | Implemented; deterministic fixture tests passed in hosted CI |
 | Versioned H005 manifest and privacy-bounded job identity | H005 case manifest is isolated from prior autonomy manifests; schema-v3 projection exposes constrained job identity/action/status | Implemented; hosted CI passed |
 | Request cap and disk floor | Provider-boundary admission capped at 300 total; runner fails closed on unreadable/below-10-GiB disk and cancels on breach | Offline cap code implemented; the live lane missed the environment binding, so its boundary count is unusable (0 admissions reported despite nonzero token usage); cap enforcement unqualified |
-| Exact-head hosted qualification | PR #211 head `68020e74fc6cddfc7821224f1f495f5e6c8ec177`; run #40601163463 concluded success | Passed for the earlier implementation; the cap-wiring corrective is pending hosted CI |
+| Exact-head hosted CI for the implementation | PR #211 head `26f2d8030d6d84bfb26a25fa006bc486202d08d8`; run #40632587553 concluded success | Passed; includes the cap-wiring corrective, strict Clippy and workspace tests |
 | Local quick, Clippy and default workspace tests | Earlier baseline: ARM64 quick/strict Clippy and default nextest (16,650) passed; harness cap fix: 15 supervisor tests, 31 autonomy-run tests, 18 sustained tests passed | Focused harness tests passed; scoped workspace suite failed while linking `codegg` for x86_64 because native `libiconv`/`liblzma` symbols were unavailable |
 | Local feature-gated library suite | 7,828 passed, 4 ignored, 1 unrelated interactive-terminal clear test failed; isolated rerun of the same test passed | Not a clean full-suite pass; failure was not reproduced in isolation |
 | One successful local `verify.sh full` invocation | Earlier wrapper deliberately stopped during feature-gated rebuild when free disk approached the 10 GiB stop threshold | Not passed; no claim made |
@@ -38,7 +38,8 @@ Provider qualification observed two stored credential record IDs, `older stored 
 
 ## 4. Verification details
 
-- Hosted exact-head CI run #40595507603: `success` at `b85e0db4891c71f4ac1b7bb175ce5e6d6a0643cb`.
+- Hosted exact-head CI run [#40632587553](https://github.com/dbowm91/codegg/actions/runs/40632587553): `success` at `26f2d8030d6d84bfb26a25fa006bc486202d08d8`; GitGuardian and the workspace verification job passed.
+- Earlier hosted CI run [#40629696300](https://github.com/dbowm91/codegg/actions/runs/40629696300): `success` on the implementation head before evidence-only identifier scrubbing.
 - Local strict workspace Clippy: passed.
 - Local default workspace nextest: passed, 16,650 tests.
 - Local Harness Lab focused suite and `python3 -m unittest dev.harness_lab.tests.test_sustained`: passed; the latter ran 18 tests.
@@ -47,6 +48,6 @@ Provider qualification observed two stored credential record IDs, `older stored 
 
 ## 5. Registry and handoff
 
-Keep H005 **blocked and unqualified**. The one authorized live attempt has been consumed. Do not start a replacement run under this authorization. The offline request-cap wiring correction is committed separately and must pass exact-head CI; any follow-on live task also requires new explicit budget authorization. The present evidence does not establish sustained reliability.
+Keep H005 **blocked and unqualified**. The one authorized live attempt has been consumed. Do not start a replacement run under this authorization. The offline request-cap wiring correction passed exact-head hosted CI, but the already completed live attempt preceded that correction and its actual outbound request count remains unknown. Any follow-on live task requires new explicit budget authorization. The present evidence does not establish sustained reliability.
 
 No downstream plan is newly unblocked. PR #211 remains draft and unmerged; merging was not part of this authorization.
