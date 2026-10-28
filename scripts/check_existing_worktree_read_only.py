@@ -13,6 +13,16 @@ REQUIRED = {
         "placement.existing_worktree_id()",
         "EXISTING_WORKTREE_READ_ONLY_SENTINEL.into()",
         "child_workspace_id = target_workspace_id",
+        "selected.project_id != task.project_id",
+        "&selected.repository_id != repository_id",
+        "selected.workspace_id != task.workspace_id",
+        "ManagedWorktreeState::Ready",
+        "selected.owner_run_id.is_some()",
+        "WorktreeHealth::Clean",
+        "selected_path.starts_with(&managed_root)",
+        "if session_count != 0",
+        "JobState::non_terminal_states()",
+        ".acquire_read_only_lease_locked(worktree_id, run_id)",
     ],
     "src/agent/worker.rs": [
         "tool == EXISTING_WORKTREE_READ_ONLY_SENTINEL",
@@ -52,7 +62,27 @@ def self_test() -> int:
     if not failures:
         print("read-only placement guard failed to detect task delegation re-enabled")
         return 1
-    print("read-only placement guard self-test ok (unsafe delegation is rejected)")
+    sources = {
+        path: "\n".join(fragments)
+        for path, fragments in REQUIRED.items()
+    }
+    sources["src/agent/worker.rs"] = sources["src/agent/worker.rs"].replace(
+        'tool_registry.retain_only(&["read", "list", "glob"]);', "tool_registry.filter_out(&[]);"
+    )
+    if not inspect(sources):
+        print("read-only placement guard failed to detect a widened tool profile")
+        return 1
+    sources = {
+        path: "\n".join(fragments)
+        for path, fragments in REQUIRED.items()
+    }
+    sources["src/scheduler/executors.rs"] = sources["src/scheduler/executors.rs"].replace(
+        "JobState::non_terminal_states()", "Vec::new()"
+    )
+    if not inspect(sources):
+        print("read-only placement guard failed to detect an omitted active-job check")
+        return 1
+    print("read-only placement guard self-test ok (authority, allowlist, and owner checks are enforced)")
     return 0
 
 
