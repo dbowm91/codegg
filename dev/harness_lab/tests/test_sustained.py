@@ -376,11 +376,16 @@ class LongHorizonNativeJobTest(unittest.TestCase):
             {"name": "test", "arguments": {
                 "scope": "custom", "command": f"{shlex.quote(cargo)} test --offline --workspace",
                 "workdir": "job-check", "execution_mode": "background"}},
+            # This is a bounded wait on the actual submitted job, not a fixture
+            # delay. It gives the scheduler time to admit the real Cargo work
+            # while the session is free to make useful source changes.
+            {"name": "job", "arguments": {
+                "action": "wait", "job_id": "{job_id}", "timeout_ms": 5000}},
             {"name": "write", "arguments": {
                 "path": "src/parser.rs", "content": "pub fn split_version(input: &str) -> Option<Vec<&str>> {\n    let trimmed = input.trim();\n    let normalized = trimmed.strip_prefix('v').unwrap_or(trimmed);\n    if normalized.is_empty() { return None; }\n    let parts: Vec<&str> = normalized.split('.').collect();\n    (parts.len() == 3 && parts.iter().all(|part| !part.is_empty()))\n        .then_some(parts)\n}\n"}},
-            {"name": "job", "arguments": {"action": "status", "job_id": "{job_id}"}},
             {"name": "write", "arguments": {
                 "path": "src/normalize.rs", "content": "pub fn normalize(parts: Vec<&str>) -> Option<(u32, u32, u32)> {\n    let major = parts[0].parse::<u32>().ok()?;\n    let minor = parts[1].parse::<u32>().ok()?;\n    let patch = parts[2].parse::<u32>().ok()?;\n    Some((major, minor, patch))\n}\n"}},
+            {"name": "job", "arguments": {"action": "status", "job_id": "{job_id}"}},
             {"name": "write", "arguments": {
                 "path": "src/lib.rs", "content": "mod normalize;\nmod parser;\n\npub fn parse_version(input: &str) -> Option<(u32, u32, u32)> {\n    let parts = parser::split_version(input)?;\n    normalize::normalize(parts)\n}\n"}},
             {"name": "job", "arguments": {"action": "status", "job_id": "{job_id}"}},
