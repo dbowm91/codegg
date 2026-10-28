@@ -395,13 +395,117 @@ class LongHorizonNativeJobTest(unittest.TestCase):
             initial_files={
                 "job-check/Cargo.toml": "[workspace]\nmembers = [\"core\", \"index\", \"store\", \"cli\"]\nresolver = \"2\"\n",
                 "job-check/core/Cargo.toml": "[package]\nname = \"job-core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
-                "job-check/core/src/lib.rs": "#[derive(Clone, Debug, Eq, PartialEq)] pub struct Row(pub i64); #[cfg(test)] mod tests { #[test] fn core_contract() { assert_eq!(super::Row(7), super::Row(7)); } }\n",
+                "job-check/core/src/lib.rs": """#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct Row { pub timestamp: i64, pub id: String, pub amount: i64 }
+
+pub fn parse(input: &str) -> (Vec<Row>, Vec<String>) {
+    let mut rows = Vec::new();
+    let mut errors = Vec::new();
+    for (line, text) in input.lines().enumerate() {
+        let fields: Vec<_> = text.split('|').collect();
+        if fields.len() != 5 || fields[1].is_empty() || fields[4].is_empty()
+            || !matches!(fields[2], "open" | "close" | "transfer") {
+            errors.push(format!("invalid row {}", line + 1));
+            continue;
+        }
+        match (fields[0].parse::<i64>(), fields[3].parse::<i64>()) {
+            (Ok(timestamp), Ok(amount)) => rows.push(Row {
+                timestamp, id: fields[1].to_string(), amount,
+            }),
+            _ => errors.push(format!("invalid number on line {}", line + 1)),
+        }
+    }
+    (rows, errors)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn invalid_rows_report_their_line() {
+        let (rows, errors) = super::parse("1|a|open|2|source\\nbad");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(errors, vec!["invalid row 2"]);
+    }
+}
+""",
                 "job-check/index/Cargo.toml": "[package]\nname = \"job-index\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[dependencies]\njob-core = { path = \"../core\" }\n",
-                "job-check/index/src/lib.rs": "pub fn index(row: job_core::Row) -> (i64, usize) { (row.0, 1) } #[cfg(test)] mod tests { #[test] fn index_contract() { assert_eq!(super::index(job_core::Row(3)), (3, 1)); } }\n",
+                "job-check/index/src/lib.rs": """use std::collections::BTreeMap;
+
+pub fn index(row: job_core::Row) -> (i64, usize) { (row.amount, 1) }
+
+pub fn canonicalize(records: impl IntoIterator<Item = job_core::Row>) -> Result<Vec<job_core::Row>, String> {
+    let mut by_id = BTreeMap::new();
+    for record in records {
+        if let Some(existing) = by_id.get(&record.id) {
+            if existing != &record { return Err(format!("conflicting duplicate id {}", record.id)); }
+        } else { by_id.insert(record.id.clone(), record); }
+    }
+    let mut rows: Vec<_> = by_id.into_values().collect();
+    rows.sort_by(|a, b| (a.timestamp.div_euclid(60), &a.id).cmp(&(b.timestamp.div_euclid(60), &b.id)));
+    Ok(rows)
+}
+
+pub fn summaries(records: &[job_core::Row]) -> Vec<(i64, i64, usize)> {
+    let mut windows: BTreeMap<i64, (i64, usize)> = BTreeMap::new();
+    for row in records {
+        let entry = windows.entry(row.timestamp.div_euclid(60)).or_default();
+        entry.0 += row.amount;
+        entry.1 += 1;
+    }
+    windows.into_iter().map(|(window, (amount, count))| (window, amount, count)).collect()
+}
+""",
                 "job-check/store/Cargo.toml": "[package]\nname = \"job-store\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[dependencies]\njob-core = { path = \"../core\" }\njob-index = { path = \"../index\" }\n",
-                "job-check/store/src/lib.rs": "pub fn store(row: job_core::Row) -> (i64, usize) { job_index::index(row) } #[cfg(test)] mod tests { #[test] fn store_contract() { assert_eq!(super::store(job_core::Row(4)), (4, 1)); } }\n",
+                "job-check/store/src/lib.rs": """use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::Path;
+
+fn encode(row: &job_core::Row) -> String {
+    let body = format!("{}|{}|{}", row.timestamp, row.id, row.amount);
+    let checksum = body.bytes().fold(0u64, |sum, byte| sum.wrapping_add(u64::from(byte)));
+    format!("v1|{body}|{checksum:016x}")
+}
+
+fn decode(line: &str) -> Result<job_core::Row, String> {
+    let fields: Vec<_> = line.split('|').collect();
+    if fields.len() != 5 || fields[0] != "v1" { return Err("invalid journal record".into()); }
+    let body = fields[1..4].join("|");
+    let expected = body.bytes().fold(0u64, |sum, byte| sum.wrapping_add(u64::from(byte)));
+    if u64::from_str_radix(fields[4], 16).ok() != Some(expected) { return Err("checksum mismatch".into()); }
+    Ok(job_core::Row {
+        timestamp: fields[1].parse().map_err(|_| "invalid timestamp")?,
+        id: fields[2].to_string(),
+        amount: fields[3].parse().map_err(|_| "invalid amount")?,
+    })
+}
+
+pub fn store(row: job_core::Row) -> (i64, usize) { job_index::index(row) }
+
+pub fn append(path: &Path, rows: &[job_core::Row]) -> Result<(), String> {
+    if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+    let mut file = OpenOptions::new().create(true).append(true).open(path).map_err(|e| e.to_string())?;
+    for row in rows { writeln!(file, "{}", encode(row)).map_err(|e| e.to_string())?; }
+    file.sync_all().map_err(|e| e.to_string())
+}
+
+pub fn replay(path: &Path) -> Result<Vec<job_core::Row>, String> {
+    let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let lines: Vec<_> = text.lines().collect();
+    let mut rows = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        match decode(line) {
+            Ok(row) => rows.push(row),
+            Err(_error) if index + 1 == lines.len() => break,
+            Err(error) => return Err(format!("journal line {}: {error}", index + 1)),
+        }
+    }
+    job_index::canonicalize(rows)
+}
+""",
                 "job-check/cli/Cargo.toml": "[package]\nname = \"job-cli\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[dependencies]\njob-core = { path = \"../core\" }\njob-index = { path = \"../index\" }\njob-store = { path = \"../store\" }\n",
-                "job-check/cli/src/lib.rs": """pub fn run(value: i64) -> (i64, usize) { job_store::store(job_core::Row(value)) }
+                "job-check/cli/src/lib.rs": """pub fn run(value: i64) -> (i64, usize) {
+    job_store::store(job_core::Row { timestamp: value, id: value.to_string(), amount: value })
+}
 #[cfg(test)]
 mod tests {
     #[test]
@@ -412,28 +516,31 @@ mod tests {
         let root = std::env::temp_dir().join(format!("job-ledger-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let input: String = (0..250_000)
+        let input: String = (0..1_000_000)
             .map(|n| format!("{n}|event-{n}|transfer|{}|source\\n", n % 17))
             .collect();
-        let (records, errors) = ledger_core::parse(&input);
+        let (records, errors) = job_core::parse(&input);
         assert!(errors.is_empty());
-        assert_eq!(records.len(), 250_000);
-        let mut shards: [Vec<ledger_core::Record>; 5] = std::array::from_fn(|_| Vec::new());
+        assert_eq!(records.len(), 1_000_000);
+        let mut shards: [Vec<job_core::Row>; 5] = std::array::from_fn(|_| Vec::new());
         for (index, record) in records.into_iter().enumerate() {
             shards[index % shards.len()].push(record);
         }
         let mut recovered = Vec::new();
         for (index, shard) in shards.iter().enumerate() {
             let path = root.join(format!("shard-{index}.journal"));
-            ledger_store::append(&path, shard).unwrap();
-            recovered.extend(ledger_store::replay(&path).unwrap());
-            assert_eq!(ledger_store::replay(&path).unwrap(), *shard);
+            job_store::append(&path, shard).unwrap();
+            recovered.extend(job_store::replay(&path).unwrap());
+            assert_eq!(
+                job_store::replay(&path).unwrap(),
+                job_index::canonicalize(shard.clone()).unwrap()
+            );
         }
-        let ordered = ledger_index::canonicalize(recovered).unwrap();
-        assert_eq!(ordered.len(), 250_000);
+        let ordered = job_index::canonicalize(recovered).unwrap();
+        assert_eq!(ordered.len(), 1_000_000);
         assert_eq!(
-            ledger_index::summaries(&ordered).iter().map(|(_, _, count)| count).sum::<usize>(),
-            250_000
+            job_index::summaries(&ordered).iter().map(|(_, _, count)| count).sum::<usize>(),
+            1_000_000
         );
         std::fs::remove_dir_all(root).unwrap();
     }
