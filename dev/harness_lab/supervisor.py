@@ -227,6 +227,11 @@ class SubjectSpec:
             "CODEGG_DATA_HOME": str(self.root / "data"),
             "CODEGG_TUI_CONFIG": str(self.root / "config" / "codegg" / "codegg.jsonc"),
             "CARGO_HOME": str(self.root / "cargo-home"),
+            # The daemon uses a private HOME, but its managed Rust test jobs
+            # still need rustup's installed toolchain metadata. Keep the
+            # toolchain home explicit so cargo/rustc shims resolve without
+            # exposing the user's Cargo registry or config.
+            "RUSTUP_HOME": os.environ.get("RUSTUP_HOME", str(Path.home() / ".rustup")),
             "TMPDIR": str(self.root / "scratch"),
             "TMP": str(self.root / "scratch"),
             "TEMP": str(self.root / "scratch"),
@@ -573,7 +578,7 @@ def _assert_daemon_identity(spec: SubjectSpec, timeout: float, acp_pid: int | No
         "data_root": str(spec.root / "data" / "codegg"),
         "config_root": str(spec.root / "config" / "codegg"),
         "environment_fingerprint": hashlib.sha256(json.dumps({key: value for key, value in spec.environment().items() if key in {
-            "CODEGG_DAEMON_HOME", "CODEGG_DATA_HOME", "CODEGG_TUI_CONFIG", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR", "TMPDIR", "CARGO_HOME"
+            "CODEGG_DAEMON_HOME", "CODEGG_DATA_HOME", "CODEGG_TUI_CONFIG", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR", "TMPDIR", "CARGO_HOME", "RUSTUP_HOME"
         }}, sort_keys=True).encode()).hexdigest(),
     }
 

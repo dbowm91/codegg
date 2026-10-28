@@ -75,6 +75,7 @@ class SubjectEnvironmentTests(unittest.TestCase):
                 "CODEGG_CORE_ENDPOINT": "unix:///shared.sock",
                 "OPENAI_API_KEY": "must-not-inherit",
                 "XDG_RUNTIME_DIR": "/shared/runtime",
+                "RUSTUP_HOME": "/shared/rustup",
             })
             try:
                 env = spec.environment()
@@ -85,6 +86,8 @@ class SubjectEnvironmentTests(unittest.TestCase):
             self.assertEqual(env["CODEGG_DATA_HOME"], str(root / "lane" / "data"))
             self.assertEqual(env["HOME"], str(root / "lane" / "home"))
             self.assertEqual(env["XDG_RUNTIME_DIR"], str(root / "lane" / "runtime"))
+            self.assertEqual(env["RUSTUP_HOME"], "/shared/rustup")
+            self.assertNotEqual(env["RUSTUP_HOME"], env["HOME"] + "/.rustup")
             self.assertNotIn("CODEGG_CORE_ENDPOINT", env)
             self.assertNotIn("OPENAI_API_KEY", env)
             self.assertTrue((root / "lane" / "config").is_dir())
