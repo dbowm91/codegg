@@ -1,6 +1,6 @@
 # Agent Worktree Placement and Build Affinity A002 — Existing Managed Checkout for Read-Only Delegated Runs
 
-Status: **conditionally closed** — closure `plans/closure/agent-worktree-placement-and-build-affinity/002-status.md`
+Status: **closed** — closure `plans/closure/agent-worktree-placement-and-build-affinity/002-status.md`
 Repository baseline: `493e5ee11` (`plan/worktree-affinity-cwd-build-admission-20261027`, planning docs retrieved from the named remote branch)
 
 Source roadmap:
@@ -30,7 +30,7 @@ A001 is strictly closed on the branch: a read-only `isolated_new` child obtains 
 
 ## 3.1 Implemented state and closure disposition
 
-The typed `ExistingManagedReadOnly { worktree_id }` placement, per-child request fingerprinting, daemon owner/catalog checks, exclusive run-owned lease, checkout-root rebinding, read/list/glob allowlist, nested-delegation refusal, durable projection, release handling, documentation, and structural guard are implemented. The successful and refusal paths pass through `JobSubmissionService → JobScheduler → SubagentJobExecutor → WorktreeService`; the local matrix covers missing, dirty, busy, foreign project/repository/workspace, unmanaged, active-session, and active-job targets. See `plans/closure/agent-worktree-placement-and-build-affinity/002-status.md` for exact evidence and the remaining strict-closure condition: hosted Linux qualification on the pushed exact head.
+The typed `ExistingManagedReadOnly { worktree_id }` placement, per-child request fingerprinting, daemon owner/catalog checks, exclusive run-owned lease, checkout-root rebinding, read/list/glob allowlist, nested-delegation refusal, durable projection, release handling, documentation, and structural guard are implemented. The successful and refusal paths pass through `JobSubmissionService → JobScheduler → SubagentJobExecutor → WorktreeService`; the local and hosted Linux matrices cover missing, dirty, busy, foreign project/repository/workspace, unmanaged, active-session, and active-job targets. See `plans/closure/agent-worktree-placement-and-build-affinity/002-status.md` for exact evidence. The hosted test fixture makes no native containment claim.
 
 ## 4. Invariants that must not regress
 1. A model-supplied `worktree_id` is an identifier, **never** an authorization token or path. The daemon resolves and verifies it against the child's immutable project/repository/workspace/principal/parent scope. If a linked checkout has a distinct workspace record, authorize that mapping through daemon catalog state rather than assuming string equality.
