@@ -90,6 +90,7 @@ describe('the editor session', () => {
     const { result, rerender } = renderHook(({ sessionId }: { sessionId: string | null }) =>
       useEditorSession({
         routeGeneration: 7,
+        connectionGeneration: 1,
         sessionId,
         enabled: true,
         effectiveMap: buildEffectiveMap(ALL_ACTION_DECLARATIONS),
@@ -103,10 +104,54 @@ describe('the editor session', () => {
     expect(bridge.documentDiagnosticsSubscribe).toHaveBeenCalledWith(7, expect.any(Function));
   });
 
+  it('re-subscribes diagnostics when the daemon connection generation changes', async () => {
+    const { rerender } = renderHook(
+      ({ connectionGeneration }: { connectionGeneration: number }) =>
+        useEditorSession({
+          routeGeneration: 7,
+          connectionGeneration,
+          sessionId: 's-1',
+          enabled: true,
+          effectiveMap: buildEffectiveMap(ALL_ACTION_DECLARATIONS),
+        }),
+      { initialProps: { connectionGeneration: 1 } },
+    );
+    await waitFor(() => expect(bridge.documentDiagnosticsSubscribe).toHaveBeenCalledTimes(1));
+    rerender({ connectionGeneration: 2 });
+    await waitFor(() => expect(bridge.documentDiagnosticsSubscribe).toHaveBeenCalledTimes(2));
+    expect(bridge.documentDiagnosticsUnsubscribe).toHaveBeenCalledWith('diagnostics-1');
+  });
+
+  it('silently coalesces duplicate completion gestures at the same revision and caret', async () => {
+    let resolveCompletion!: (value: { status: string; message: string; candidates: []; truncated: boolean }) => void;
+    vi.mocked(bridge.documentCompletion).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveCompletion = resolve; }),
+    );
+    const { result } = renderHook(() =>
+      useEditorSession({
+        routeGeneration: 7,
+        connectionGeneration: 1,
+        sessionId: 's-1',
+        enabled: true,
+        effectiveMap: buildEffectiveMap(ALL_ACTION_DECLARATIONS),
+      }),
+    );
+    await waitFor(() => expect(result.current.tree).not.toBeNull());
+    await result.current.onOpen('src/lib.rs');
+    await waitFor(() => expect(result.current.viewport).not.toBeNull());
+    void result.current.onComplete();
+    void result.current.onComplete();
+    expect(bridge.documentCompletion).toHaveBeenCalledTimes(1);
+    resolveCompletion({ status: 'ready', message: 'ready', candidates: [], truncated: false });
+    await waitFor(() => expect(result.current.completion?.status).toBe('ready'));
+    expect(result.current.error).toBeNull();
+  });
+
   it('reads nothing while no workspace is selected', async () => {
     const { result } = renderHook(() =>
       useEditorSession({
         routeGeneration: null,
+        connectionGeneration: null,
         sessionId: null,
         enabled: false,
         effectiveMap: buildEffectiveMap(ALL_ACTION_DECLARATIONS),
@@ -121,6 +166,7 @@ describe('the editor session', () => {
     const { result } = renderHook(() =>
       useEditorSession({
         routeGeneration: 7,
+        connectionGeneration: 1,
         sessionId: 's-1',
         enabled: true,
         effectiveMap: buildEffectiveMap(ALL_ACTION_DECLARATIONS),
@@ -138,6 +184,7 @@ describe('the editor session', () => {
     const { result } = renderHook(() =>
       useEditorSession({
         routeGeneration: 7,
+        connectionGeneration: 1,
         sessionId: 's-1',
         enabled: true,
         effectiveMap: buildEffectiveMap(ALL_ACTION_DECLARATIONS),
@@ -155,6 +202,7 @@ describe('the editor session', () => {
     const { result } = renderHook(() =>
       useEditorSession({
         routeGeneration: 7,
+        connectionGeneration: 1,
         sessionId: 's-1',
         enabled: true,
         effectiveMap: buildEffectiveMap(ALL_ACTION_DECLARATIONS),

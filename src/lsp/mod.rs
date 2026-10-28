@@ -94,6 +94,20 @@ pub fn config_lsp_to_egglsp(c: crate::config::schema::LspConfig) -> egglsp::LspC
     }
 }
 
+pub fn configured_service(
+    config: &crate::config::schema::Config,
+) -> Result<Arc<LspService>, egglsp::error::LspError> {
+    let lsp = config_lsp_to_egglsp(config.lsp.clone().unwrap_or_default());
+    match config.lsp_process_admission.as_ref() {
+        Some(admission) => LspService::new_arc_with_start_admission(
+            lsp,
+            admission.max_concurrent_starts,
+            admission.max_admitted_starts,
+        ),
+        None => Ok(LspService::new_arc(lsp)),
+    }
+}
+
 pub struct Lsp {
     pub service: Arc<LspService>,
     pub operations: Arc<LspOperations>,
@@ -157,7 +171,7 @@ impl Lsp {
 
 #[cfg(test)]
 mod tests {
-    use super::config_lsp_to_egglsp;
+    use super::{config_lsp_to_egglsp, configured_service};
 
     #[test]
     fn lsp_config_conversion_round_trips_default() {
@@ -166,5 +180,22 @@ mod tests {
         let converted = config_lsp_to_egglsp(input);
         let actual = serde_json::to_value(&converted).expect("converted LspConfig serializes");
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn configured_service_preserves_unlimited_default_and_validates_opt_in_limits() {
+        let default = crate::config::schema::Config::default();
+        assert!(configured_service(&default).is_ok());
+
+        let mut bounded = crate::config::schema::Config::default();
+        bounded.lsp_process_admission =
+            Some(crate::config::schema::LspProcessAdmissionConfig::default());
+        assert!(configured_service(&bounded).is_ok());
+
+        bounded.lsp_process_admission = Some(crate::config::schema::LspProcessAdmissionConfig {
+            max_concurrent_starts: 3,
+            max_admitted_starts: 2,
+        });
+        assert!(configured_service(&bounded).is_err());
     }
 }

@@ -3860,9 +3860,11 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     // Create the shared LSP service early so it can be passed to both the
     // TUI (for security review) and the daemon (for agent prompt context).
     let lsp_service: Option<Arc<codegg::lsp::service::LspService>> = if !is_socket_mode {
-        Some(codegg::lsp::LspService::new_arc(
-            codegg::lsp::config_lsp_to_egglsp(config.lsp.clone().unwrap_or_default()),
-        ))
+        Some(codegg::lsp::configured_service(&config).map_err(|error| {
+            AppError::Other(anyhow::anyhow!(
+                "invalid LSP process admission configuration: {error}"
+            ))
+        })?)
     } else {
         None
     };
@@ -4572,7 +4574,13 @@ async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
             pool,
             Some(subagent_pool),
             Some(memory_store),
-        ),
+        )
+        .with_lsp_service(codegg::lsp::configured_service(&config).unwrap_or_else(
+            |error| {
+                eprintln!("Invalid LSP process admission configuration: {error}");
+                std::process::exit(1);
+            },
+        )),
         daemon_id.clone(),
         guard.generation.clone(),
     ));
@@ -4741,7 +4749,12 @@ async fn run_core_stdio() -> Result<(), AppError> {
         pool.clone(),
         Some(subagent_pool),
         Some(memory_store),
-    );
+    )
+    .with_lsp_service(codegg::lsp::configured_service(&config).map_err(|error| {
+        AppError::Other(anyhow::anyhow!(
+            "invalid LSP process admission configuration: {error}"
+        ))
+    })?);
     let core = codegg::core::InprocCoreClient::with_deps(deps, config);
     core.initialize_recovery().await?;
 
@@ -4851,10 +4864,17 @@ async fn cmd_server(host: &str, port: u16, standalone_core: bool) -> Result<(), 
     )
     .await;
     let subagent_pool = Arc::new(subagent_pool);
-    let daemon = Arc::new(codegg::core::daemon::CoreDaemon::new(
-        Some(pool),
-        Some(subagent_pool),
-        Some(memory_store),
+    let daemon = Arc::new(codegg::core::daemon::CoreDaemon::with_deps(
+        codegg::core::runtime_deps::CoreRuntimeDeps::with_jobs(
+            pool,
+            Some(subagent_pool),
+            Some(memory_store),
+        )
+        .with_lsp_service(codegg::lsp::configured_service(&config).map_err(|error| {
+            AppError::Other(anyhow::anyhow!(
+                "invalid LSP process admission configuration: {error}"
+            ))
+        })?),
     ));
     // C005 (ADR-0031): the serving daemon owns its delegated idle wake.
     daemon.attach_idle_wake();

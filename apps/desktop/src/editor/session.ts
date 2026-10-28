@@ -24,6 +24,8 @@ import type {
 export interface EditorSessionOptions {
   /** The route generation the editor's scope is fenced on, or null. */
   routeGeneration: number | null;
+  /** The installed daemon connection generation, or null while disconnected. */
+  connectionGeneration: number | null;
   /** The active route session needed for authorized LSP reads, or null. */
   sessionId: string | null;
   /** Whether a workspace is selected for the current route. */
@@ -52,7 +54,7 @@ function failureMessage(error: unknown): string {
  * blank document.
  */
 export function useEditorSession(options: EditorSessionOptions): EditorPanelProps {
-  const { routeGeneration, sessionId, enabled, effectiveMap } = options;
+  const { routeGeneration, connectionGeneration, sessionId, enabled, effectiveMap } = options;
   const [viewport, setViewport] = useState<EditorViewportView | null>(null);
   const [status, setStatus] = useState<EditorStateView | null>(null);
   const [tree, setTree] = useState<EditorTreeView | null>(null);
@@ -62,6 +64,7 @@ export function useEditorSession(options: EditorSessionOptions): EditorPanelProp
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mounted = useRef(true);
+  const inFlight = useRef(new Set<string>());
 
   useEffect(() => {
     mounted.current = true;
@@ -74,7 +77,13 @@ export function useEditorSession(options: EditorSessionOptions): EditorPanelProp
    * Run one host call: mark the editor busy, clear the last failure, and
    * publish the result. A failure is reported, and the previous view stays.
    */
-  const run = useCallback(async <T,>(call: () => Promise<T>, apply: (value: T) => void) => {
+  const run = useCallback(async <T,>(
+    call: () => Promise<T>,
+    apply: (value: T) => void,
+    requestKey?: string,
+  ) => {
+    if (requestKey && inFlight.current.has(requestKey)) return;
+    if (requestKey) inFlight.current.add(requestKey);
     setBusy(true);
     setError(null);
     try {
@@ -85,6 +94,7 @@ export function useEditorSession(options: EditorSessionOptions): EditorPanelProp
       if (!mounted.current) return;
       setError(failureMessage(caught));
     } finally {
+      if (requestKey) inFlight.current.delete(requestKey);
       if (mounted.current) setBusy(false);
     }
   }, []);
@@ -190,8 +200,13 @@ export function useEditorSession(options: EditorSessionOptions): EditorPanelProp
 
   /** Ask for completion candidates at the caret. */
   const complete = useCallback(async () => {
-    await run(() => bridge.documentCompletion(null), (view) => setCompletion(view));
-  }, [run]);
+    const caret = viewport ? `${viewport.revision}:${viewport.caretLine}:${viewport.caretColumn}` : 'closed';
+    await run(
+      () => bridge.documentCompletion(null),
+      (view) => setCompletion(view),
+      `completion:${routeGeneration}:${sessionId}:${caret}`,
+    );
+  }, [routeGeneration, run, sessionId, viewport]);
 
   /** Ask for navigation targets at the caret. */
   const navigate = useCallback(
@@ -199,9 +214,10 @@ export function useEditorSession(options: EditorSessionOptions): EditorPanelProp
       await run(
         () => bridge.documentNavigate(operation),
         (view) => setNavigation(view),
+        `navigation:${routeGeneration}:${sessionId}:${viewport?.revision ?? -1}:${viewport?.caretLine ?? -1}:${viewport?.caretColumn ?? -1}:${operation}`,
       );
     },
-    [run],
+    [routeGeneration, run, sessionId, viewport],
   );
 
   /** Scroll the viewport to a first visible line. */
@@ -251,7 +267,7 @@ export function useEditorSession(options: EditorSessionOptions): EditorPanelProp
       disposed = true;
       if (subscriptionId) void bridge.documentDiagnosticsUnsubscribe(subscriptionId);
     };
-  }, [enabled, refreshTree, routeGeneration, sessionId]);
+  }, [enabled, refreshTree, routeGeneration, sessionId, connectionGeneration]);
 
   return {
     effectiveMap,

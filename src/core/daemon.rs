@@ -1723,6 +1723,7 @@ impl CoreDaemon {
             // project directly, exactly as the generic project-scoped
             // operations above do.
             CoreRequest::LspDiagnosticsSubscribe { request } => Some(request.project_id.as_str()),
+            CoreRequest::LspDiagnosticsGet { request } => Some(request.project_id.as_str()),
             CoreRequest::AssetRefresh { request } => Some(request.scope.project_id.as_str()),
             CoreRequest::AssetRefreshStatus { scope } => Some(scope.project_id.as_str()),
             CoreRequest::GoalSet { project_id, .. }

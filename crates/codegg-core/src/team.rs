@@ -228,6 +228,7 @@ impl ProjectRole {
                 Capability::WorktreeRemove,
                 Capability::ProjectConfigure,
                 Capability::AuditRead,
+                Capability::LspControl,
             ]),
             Self::Owner => CapabilitySet::from_caps(Capability::ALL),
         }
@@ -288,11 +289,13 @@ pub enum Capability {
     AuditRead,
     #[serde(rename = "node.target")]
     NodeTarget,
+    #[serde(rename = "lsp.control")]
+    LspControl,
 }
 
 impl Capability {
     /// Every capability in canonical order.
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::ProjectRead,
         Self::ProjectObserve,
         Self::ProjectChat,
@@ -314,6 +317,7 @@ impl Capability {
         Self::MemberManage,
         Self::AuditRead,
         Self::NodeTarget,
+        Self::LspControl,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -339,6 +343,7 @@ impl Capability {
             Self::MemberManage => "member.manage",
             Self::AuditRead => "audit.read",
             Self::NodeTarget => "node.target",
+            Self::LspControl => "lsp.control",
         }
     }
 
@@ -366,6 +371,7 @@ impl Capability {
             "member.manage" => Self::MemberManage,
             "audit.read" => Self::AuditRead,
             "node.target" => Self::NodeTarget,
+            "lsp.control" => Self::LspControl,
             _ => return Err(TeamError::UnknownCapability(value.to_owned())),
         })
     }
@@ -1120,7 +1126,7 @@ mod tests {
         let matrix = role_capability_matrix();
         assert_eq!(matrix.len(), 4);
         let sizes: Vec<usize> = matrix.iter().map(|(_, set)| set.len()).collect();
-        assert_eq!(sizes, vec![6, 14, 19, 21]);
+        assert_eq!(sizes, vec![6, 14, 20, 22]);
         for window in matrix.windows(2) {
             let (_, lower) = &window[0];
             let (_, upper) = &window[1];
@@ -1138,9 +1144,11 @@ mod tests {
         assert!(contributor.has(Capability::GitWrite));
         assert!(!contributor.has(Capability::ProjectConfigure));
         assert!(!contributor.has(Capability::MemberManage));
+        assert!(!contributor.has(Capability::LspControl));
         let maintainer = ProjectRole::Maintainer.capabilities();
         assert!(maintainer.has(Capability::ProjectConfigure));
         assert!(maintainer.has(Capability::AuditRead));
+        assert!(maintainer.has(Capability::LspControl));
         assert!(!maintainer.has(Capability::MemberManage));
         assert!(!maintainer.has(Capability::NodeTarget));
         let owner = ProjectRole::Owner.capabilities();

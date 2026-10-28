@@ -248,10 +248,13 @@ Coverage has four distinct categories (M004):
   (`FUTURE_DISTRIBUTED_AUDIT_ACTIONS`): `node_enrollment`,
   `remote_execute` — builders landed, no live single-host emission;
 - intentionally content-free/high-volume domains
-  (`UNINSTRUMENTED_OPERATIONS`, **146** entries): bounded
+  (`UNINSTRUMENTED_OPERATIONS`, **148** entries): bounded
   reads/listings plus the ten `interactive_process_*` daemon
   operations, whose live evidence is the
   interactive `command_execute` hook below rather than a daemon mapping.
+  `lsp_control` is an inner `CommandExecute` effect: the command is audited
+  as its canonical `Run`, while the inner authorization denial uses the
+  standard authorization-decision event. No second success event is emitted.
   Human-shell promotion stage emits the structural `prompt_submit` action
   with only the promotion ID and bounded byte count; recovery listing is a
   content read and remains intentionally uninstrumented.
@@ -624,7 +627,7 @@ Re-measured the operation classification: `INSTRUMENTED_OPERATIONS`
 holds **113** entries (111 real `CoreRequest` operations plus the two
 synthetic names `provider_connection_use` and
 `user_prompt_queue_deliver`) and `UNINSTRUMENTED_OPERATIONS` holds
-**146**. The union covers all **257** operations with zero overlap, and
+**148**. The union covers all **259** operations with zero overlap, and
 `REQUIRED_AUDIT_COVERAGE` holds exactly **30** rows — one per
 `AuditAction::ALL`.
 

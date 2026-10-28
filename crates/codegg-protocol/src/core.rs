@@ -1966,6 +1966,12 @@ pub enum CoreResponse {
     LspDiagnosticsGetResult {
         result: crate::lsp::LspDiagnosticsResultDto,
     },
+    LspServerStatusGetResult {
+        result: crate::lsp::LspServerStatusResultDto,
+    },
+    LspControlResult {
+        result: crate::lsp::LspControlResultDto,
+    },
     // ── Identity/Audit M004: Append-Only Audit Foundation ───────────────
     /// Bounded structural audit page ordered by coordinator sequence.
     AuditPage {
@@ -3553,6 +3559,12 @@ pub enum CoreRequest {
     /// (`direct_project` + `file.read`).
     LspDiagnosticsGet {
         request: crate::lsp::LspDiagnosticsGetRequestDto,
+    },
+    LspServerStatusGet {
+        request: crate::lsp::LspServerStatusGetRequestDto,
+    },
+    LspControl {
+        request: crate::lsp::LspControlRequestDto,
     },
     /// M006-B: subscribe to a project's LSP diagnostics stream
     /// (`direct_project` + `file.read`).

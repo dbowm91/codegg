@@ -38,6 +38,24 @@ the frontend attachment and document generation, collapses equivalent pending
 requests, bounds concurrency, and refuses superseded responses. Frontends keep
 their own presentation DTO mapping and rendering state.
 
+Socket, stdio and HTTP daemon constructors install one configured
+`LspService`; the standalone TUI shares its in-process service with its core.
+`lsp_process_admission` is an optional configuration section. When omitted,
+process starts keep their historical behavior. When present, concurrent LSP
+process starts and the total admitted start queue are bounded; equivalent keys
+still coalesce, cancelled waits release their slots, and attached editor
+servers are never evicted. Service instances remain separated by canonical
+worktree root and execution profile; configuration fingerprints are not
+merged across service instances.
+
+`LspReadOperation::SelectionRange` is the daemon-backed structural selection
+primitive. It is warm-only, takes one authorized workspace-relative document
+and cursor, caps its encoded response at 64 KiB and its parent chain at 32
+ranges, and rejects inverted or non-containing ranges. The TUI's Alt-o/Alt-i
+gestures apply the range chain only while attachment, document revision and
+cursor still match. Unsupported and cold servers are reported directly; there
+is no parser fallback.
+
 Linux constrained turns use `src/lsp/m004.rs` to create an immutable service
 scope for the daemon-resolved profile and canonical workspace. That adapter
 uses the canonical managed-process helper for every LSP generation and leaves
@@ -67,55 +85,40 @@ The daemon's command catalog classifies **26** `/lsp-*` forms as
 authoritative language server is daemon-owned, and a frontend cannot own
 one. It is also, today, **mostly unserved**.
 
-- **2** forms are served: `/lsp-status` and `/lsp-errors`
-  (`src/core/daemon_commands.rs:609` — one row serves both).
-- **24** forms have **no daemon request at all**. The daemon owns the
-  language server but exposes no request for the preview surface, the
-  repair and review surfaces, the cache controls, the restart and stop
-  controls, or the diagnostics-context surface.
+- **5** forms are served: `/lsp-status`, `/lsp-servers`,
+  `/lsp-capabilities`, `/lsp-errors`, and `/lsp-restart`. The first four use
+  the session-scoped `LspServerStatusGet` request; restart uses typed
+  `LspControl` and the independent `lsp.control` capability.
+- **21** forms have **no daemon request at all**. The daemon owns the
+  language server but exposes no request for the preview, repair and review
+  surfaces, cache and stop controls, or diagnostics-context surface.
 
-The TUI's own `/lsp-*` arms therefore **keep their local execution**, and
-every one of the 26 carries an `LSP not available` refusal
-(`src/tui/app/mod.rs:7521`, `:7537`, `:7554`, `:7579`, `:7606`, `:7695`,
-`:7710`, `:7732`, `:7753`, `:7767`, `:7783`, `:7800`, `:7830`, `:7859`,
-`:7886`, `:7907`, `:7935`, `:7965`, `:7996`, `:8027`, `:8059`, `:8097`,
-`:8113`, `:8131`, `:8140`, `:8161`).
+The TUI routes the five served forms through daemon requests in socket mode;
+the remaining forms stay unavailable there. Standalone mode continues to use
+its local LSP service for the operations it supports.
 
 **Whether the refusal is reached depends on the mode**, and the difference
 is load-bearing:
 
 - In the **socket** (daemon-connected) configuration `app.lsp_tool` is
-  `None`, so every arm answers with the refusal. `src/main.rs:4021` guards
-  the attachment with `if !is_socket_mode`, and `:4023` is the assignment
-  itself, so the TUI's own `LspTool` exists **only** when the TUI is *not*
-  in socket mode. The TUI's default construction leaves the field `None`
-  (`src/tui/app/mod.rs:1254`, in `App::with_config`), and the test
-  constructor does the same (`:1844`, in `App::new_for_testing`).
+  `None`; the five served forms use `core_client`, while unserved forms report
+  their unavailable status. The local `LspTool` is attached only outside
+  socket mode.
 - In **local** mode `app.lsp_tool` is `Some`, and the same arm works —
   against the TUI's **own** language server, which is the second,
   non-authoritative one.
 
-**The daemon does not yet hold a language server in the socket
-configuration.** `CoreRuntimeDeps::with_jobs` sets `lsp_service: None`
-(`src/core/runtime_deps.rs:540`), and `run_daemon` builds the daemon with
-exactly that constructor (`src/main.rs:4571`), so the daemon-ownership
-statement above is the **decided contract**, not the current state of the
-tree. The classification of the `/lsp-*` forms as daemon effects is
-therefore correct *against the contract* and wrong *against the code*.
-**M007-F** carries the work: **ADR-0056** is reserved for it, and the record
-is not yet written.
+Production socket, stdio, and HTTP constructors now install the configured
+daemon-owned `LspService`. Linux constrained turns retain their isolated
+per-turn service scope.
 
 `/lsp-preview-apply` is the sharpest case: it reaches the daemon only
 inside the `else if let Some(ref lsp_tool)` branch
 (`src/tui/app/mod.rs:7601`), so in socket mode it never gets there at all.
 
-**M007-D's decision: the two served forms are not migrated in the TUI.**
-Migrating them would change behaviour in *both* modes — in socket mode a
-refusal becomes real diagnostics, and in local mode the arm would need a
-daemon the local configuration does not have. The consequence is named
-rather than left implicit: **the daemon serves two forms the TUI does not
-use.** The desktop palette dispatches both through the daemon, because they
-are published as served.
+The daemon-backed inspection and restart commands execute in socket mode;
+standalone mode preserves local service behavior. M007-F remains the owner of
+the other command forms and the desktop parity work.
 
 Both refusals state the same fact — the authoritative language server is the
 daemon's — so the desktop palette showing those 24 forms as unavailable is
@@ -4984,13 +4987,15 @@ Confirmed accurate, no change needed:
 - The `operations/` module tree and the listed `LspOperations` methods match
   `crates/egglsp/src/operations/`.
 
-Re-verified 2026-10-25 against
+Re-verified 2026-10-27 against
 `crates/codegg-core/src/command_catalog.rs` and the M007-D classification
 artifact (`plans/implementation/desktop-frontend-ide-foundation/artifacts/m007-d-command-classification.md`
 §3 and §10): the catalog classifies **26** `/lsp-*` forms as daemon
-effects, **2** are served (`/lsp-status`, `/lsp-errors`) and **24** have no
-daemon request. This document makes no claim of a daemon route for those
-24.
+effects, **5** are served (`/lsp-status`, `/lsp-servers`, `/lsp-capabilities`,
+`/lsp-errors`, and `/lsp-restart`) and **21** remain unserved. The four
+inspection forms use the session-scoped status request; restart uses the
+separately authorized `lsp.control` operation. The remaining forms are not
+claimed as daemon routes.
 
 **Two corrections in this pass.** The counts above and in the body were
 **27** and **25**; re-reading the catalog gives **26** command ids and 2

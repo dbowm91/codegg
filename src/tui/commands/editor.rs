@@ -970,9 +970,6 @@ fn start_editor_lsp_read(
     // A read result panel takes the centered surface; see above.
     app.editor_state.completion.dismiss();
     let Some(request_id) = app.editor_state.lsp.begin_read(&scope) else {
-        app.messages_state
-            .toasts
-            .info("An LSP request is already running");
         return;
     };
     if operation == LspReadOperation::SemanticTokens {
@@ -1080,9 +1077,9 @@ fn start_editor_lsp_read(
     let coordinator = app.lsp_request_coordinator.clone();
     let ticket = match coordinator.begin(coordinator_key) {
         codegg_client::LspRequestStart::Started(ticket) => ticket,
-        codegg_client::LspRequestStart::AlreadyInFlight
-        | codegg_client::LspRequestStart::AtCapacity => {
-            fail_lsp_read(app, "an equivalent LSP request is already in flight");
+        codegg_client::LspRequestStart::AlreadyInFlight => return,
+        codegg_client::LspRequestStart::AtCapacity => {
+            fail_lsp_read(app, "LSP request queue is full");
             return;
         }
     };
@@ -1267,6 +1264,164 @@ pub(crate) fn apply_editor_lsp_read_fresh(
         return;
     }
     apply_editor_lsp_read(app, request_id, scope, operation, result, error);
+    if operation == LspReadOperation::SelectionRange {
+        app.editor_state.lsp.selection_range_revision = Some(document_revision);
+        app.editor_state.lsp.selection_range_position = request_position;
+        app.editor_state.lsp.selection_range_index = 0;
+        if let Some(result) = app.editor_state.lsp.read_result.as_ref() {
+            match result.status {
+                LspReadStatus::NotReady => app
+                    .messages_state
+                    .toasts
+                    .info("Language server is not ready for structural selection"),
+                LspReadStatus::Unsupported => app
+                    .messages_state
+                    .toasts
+                    .info("This language server does not support structural selection"),
+                LspReadStatus::Ambiguous => app.messages_state.toasts.info(
+                    "Several language servers are attached; structural selection is ambiguous",
+                ),
+                LspReadStatus::Ready => {}
+            }
+        }
+        apply_structural_selection_at(app, 0);
+    }
+}
+
+fn structural_selection_step(app: &mut App, expand: bool) {
+    let Some(session) = app.editor_state.session.as_ref() else {
+        return;
+    };
+    let Some(snapshot) = session.try_snapshot() else {
+        return;
+    };
+    let revision = snapshot.revision().get();
+    let position = editor_lsp_position(session);
+    let current_matches = app.editor_state.lsp.selection_range_revision == Some(revision)
+        && app.editor_state.lsp.selection_range_position == position
+        && app
+            .editor_state
+            .lsp
+            .read_result
+            .as_ref()
+            .is_some_and(|result| result.operation == LspReadOperation::SelectionRange);
+    if !current_matches {
+        if expand {
+            start_editor_lsp_read(
+                app,
+                LspReadOperation::SelectionRange,
+                EditorLspReadArgument::None,
+            );
+        } else {
+            app.messages_state
+                .toasts
+                .info("No current syntax selection to shrink");
+        }
+        return;
+    }
+    let count = app
+        .editor_state
+        .lsp
+        .read_result
+        .as_ref()
+        .and_then(|result| result.payload.as_ref())
+        .and_then(|payload| match payload {
+            crate::protocol::lsp::LspReadPayloadDto::SelectionRanges { ranges, .. } => {
+                Some(ranges.len())
+            }
+            _ => None,
+        })
+        .unwrap_or(0);
+    let index = app.editor_state.lsp.selection_range_index;
+    let next = if expand {
+        index.checked_add(1).filter(|next| *next < count)
+    } else {
+        index.checked_sub(1)
+    };
+    let Some(next) = next else {
+        app.messages_state.toasts.info(if expand {
+            "No larger syntax range is available"
+        } else {
+            "No smaller syntax range is available"
+        });
+        return;
+    };
+    app.editor_state.lsp.selection_range_index = next;
+    apply_structural_selection_at(app, next);
+}
+
+fn apply_structural_selection_at(app: &mut App, index: usize) {
+    let Some(range) = app
+        .editor_state
+        .lsp
+        .read_result
+        .as_ref()
+        .filter(|result| result.status == LspReadStatus::Ready)
+        .and_then(|result| result.payload.as_ref())
+        .and_then(|payload| match payload {
+            crate::protocol::lsp::LspReadPayloadDto::SelectionRanges { ranges, .. } => {
+                ranges.get(index).cloned()
+            }
+            _ => None,
+        })
+    else {
+        return;
+    };
+    let Some(session) = app.editor_state.session.as_mut() else {
+        return;
+    };
+    let Some(snapshot) = session.try_snapshot() else {
+        return;
+    };
+    let Some(start) = editor_lsp_offset(&snapshot, range.start_line, range.start_column, false)
+    else {
+        app.messages_state
+            .toasts
+            .info("The language server returned an invalid structural range");
+        return;
+    };
+    let Some(end) = editor_lsp_offset(&snapshot, range.end_line, range.end_column, true) else {
+        app.messages_state
+            .toasts
+            .info("The language server returned an invalid structural range");
+        return;
+    };
+    if start > end {
+        app.messages_state
+            .toasts
+            .info("The language server returned an inverted structural range");
+        return;
+    }
+    let start = crate::tui::editor::editor_point(&snapshot, start);
+    let end = crate::tui::editor::editor_point(&snapshot, end);
+    let mut selection = crate::tui::helix_selection::Selection::new(
+        start,
+        crate::tui::helix_selection::SelectionMode::Char,
+    );
+    selection.head = end;
+    let presentation = session.presentation_mut();
+    presentation.selections = vec![selection];
+    presentation.primary_index = 0;
+    app.editor_state.lsp.panel = None;
+}
+
+fn editor_lsp_offset(
+    snapshot: &codegg_document::DocumentSnapshot,
+    line: u32,
+    utf16_column: u32,
+    previous_character: bool,
+) -> Option<usize> {
+    let line = usize::try_from(line).ok()?;
+    let start = crate::tui::editor::line_start(snapshot, line)?;
+    let end = crate::tui::editor::line_content_end(snapshot, line)?;
+    let text = snapshot.read_bytes(start, end).ok()?;
+    let column = crate::tui::editor_lsp::utf16_column_to_byte(&text, utf16_column)?;
+    let column = if previous_character && column > 0 {
+        text[..column].char_indices().next_back()?.0
+    } else {
+        column
+    };
+    Some(start + column)
 }
 
 fn editor_lsp_position(session: &TuiDocumentSession) -> Option<(u32, u32)> {
@@ -2928,6 +3083,14 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
             start_editor_lsp_read(app, operation, EditorLspReadArgument::None);
             true
         }
+        BufferKey::ExpandSyntaxSelection => {
+            structural_selection_step(app, true);
+            true
+        }
+        BufferKey::ShrinkSyntaxSelection => {
+            structural_selection_step(app, false);
+            true
+        }
     };
     if let Some(effect) = app.editor_state.pending_effect.take() {
         run_editor_pending_effect(app, effect);
@@ -3602,6 +3765,8 @@ enum BufferKey {
     /// prefix leaf, and the buffer holds no core client, so it reports the
     /// request the way the other Normal-mode verbs report their work.
     LspRead(LspReadOperation),
+    ExpandSyntaxSelection,
+    ShrinkSyntaxSelection,
 }
 
 /// Handle one key while the `:` command line is open.
@@ -4322,6 +4487,8 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
     // are one rule. Terminals disagree about how `D` is encoded, and both
     // spellings have to work.
     match (key.modifiers, key.code) {
+        (m, KeyCode::Char('o')) if m == alt => BufferKey::ExpandSyntaxSelection,
+        (m, KeyCode::Char('i')) if m == alt => BufferKey::ShrinkSyntaxSelection,
         // Paging resolves before the bare-char arms: `Ctrl+d`/`Ctrl+u` move a
         // viewport at a time, while bare `d` deletes a selection. They are
         // distinct events, not a shadowing pair.

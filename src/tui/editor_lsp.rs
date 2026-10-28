@@ -92,6 +92,9 @@ pub struct EditorLspState {
     /// signal. A `Ready` with zero tokens and both flags false is a valid
     /// empty highlight, never `NotReady`.
     pub semantic_incomplete: bool,
+    pub selection_range_revision: Option<u64>,
+    pub selection_range_position: Option<(u32, u32)>,
+    pub selection_range_index: usize,
 }
 
 impl EditorLspState {

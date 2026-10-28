@@ -1013,6 +1013,28 @@ impl EditorWidget<'_> {
                                 },
                             ))
                         }
+                        Some(LspReadPayloadDto::SelectionRanges { ranges, truncated }) => {
+                            lines.extend(ranges.iter().take(8).enumerate().map(
+                                |(index, range)| {
+                                    Line::from(format!(
+                                        "{}{}:{}–{}:{}{}",
+                                        if index == self.lsp.selected_index {
+                                            "> "
+                                        } else {
+                                            "  "
+                                        },
+                                        range.start_line + 1,
+                                        range.start_column + 1,
+                                        range.end_line + 1,
+                                        range.end_column + 1,
+                                        if index == 0 { " · innermost" } else { "" },
+                                    ))
+                                },
+                            ));
+                            if *truncated {
+                                lines.push(Line::from("  … larger structural ranges omitted"));
+                            }
+                        }
                         Some(LspReadPayloadDto::SignatureHelp {
                             signatures,
                             active_signature,

@@ -446,6 +446,7 @@ pub struct Config {
     pub tools: Option<HashMap<String, bool>>,
     pub formatter: Option<FormatterConfig>,
     pub lsp: Option<LspConfig>,
+    pub lsp_process_admission: Option<LspProcessAdmissionConfig>,
     pub lsp_semantic_cache: Option<LspSemanticCacheConfig>,
     pub watcher: Option<WatcherConfig>,
     pub snapshot: Option<bool>,
@@ -517,6 +518,22 @@ pub struct Config {
     /// Named Eggwork nodes for fixed-target remote execution. Absent by
     /// default; Eggwork-targeted jobs require an entry here.
     pub eggwork: Option<EggworkConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(default)]
+pub struct LspProcessAdmissionConfig {
+    pub max_concurrent_starts: usize,
+    pub max_admitted_starts: usize,
+}
+
+impl Default for LspProcessAdmissionConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent_starts: 2,
+            max_admitted_starts: 8,
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]

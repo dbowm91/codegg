@@ -275,11 +275,6 @@ mod server {
             } else if method == "POST" && path.ends_with("/chat/completions") {
                 let index = count.fetch_add(1, Ordering::SeqCst);
                 eprintln!("mock-model: chat completions request #{index}");
-                // Request #1 writes once (answered by the daemon with the
-                // temp-root redirect, no human), request #2 insists on the
-                // same path (this is the attempt that reaches the human and
-                // publishes `PermissionPending`), and every later request
-                // converges on final text so the turn always terminates.
                 let body = match index {
                     0 => first_response(&denied_write_path),
                     1 => insist_response(&denied_write_path),

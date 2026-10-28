@@ -1016,6 +1016,19 @@ impl LspService {
         Self::new_arc_with_launcher(config, Arc::new(DirectLspProcessLauncher))
     }
 
+    pub fn new_arc_with_start_admission(
+        config: LspConfig,
+        max_concurrent_starts: usize,
+        max_admitted_starts: usize,
+    ) -> Result<Arc<Self>, LspError> {
+        let launcher = super::launch::BoundedStartLspProcessLauncher::new(
+            Arc::new(DirectLspProcessLauncher),
+            max_concurrent_starts,
+            max_admitted_starts,
+        )?;
+        Ok(Self::new_arc_with_launcher(config, Arc::new(launcher)))
+    }
+
     /// Build a service with one immutable process owner for all server
     /// generations. This is the injection point for daemon-owned constrained
     /// launchers; callers must create a distinct service per execution scope.

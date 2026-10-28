@@ -1,37 +1,44 @@
-# M005 — Latency-Sensitive Editor Syntax/Structural Operations
+# M005 — Daemon-Backed Structural Selection (Helix M014)
 
-Status: blocked — ADR-0034 selection (hard); this is a **conditional implementation design**, NOT authorization to add a parser.
+Status: blocked — ADR-0034 decision pending
 
 Primary class: capability/infrastructure.
 
 Repository planning baseline: `80171f45295bebb9ab0b521262c0b295acb93074` (`main`, 2026-10-27). Reinspect live branch before implementation. Roadmap: `plans/subsystems/daemon-lsp-frontend-convergence-roadmap.md`; governance: `plans/003-planning-process.md`; long-term specification §§4,13,24–25.
 
-Decision gate: `plans/adrs/ADR-0034-editor-syntax-tree-dependency.md` is **proposed** and currently recommends daemon LSP structural reads. User direction favors frontend-local latency-sensitive *syntactic* editor behavior, which is not equivalent to permitting a Tree-sitter dependency. This plan is executable as written **only if ADR-0034 is accepted or superseded with a local-parser selection**. If daemon-only structural reads are selected, stop and replace this implementation plan with one for that outcome rather than claiming M005 closed. Coordinate specifically with `plans/subsystems/tui-editor-helix-parity-roadmap.md` M014; do not duplicate a separate M014 implementation.
+ADR-0034 currently evaluates Option B: extend the daemon-owned read surface with bounded structural ranges. Do not add a frontend parser while the ADR decision is pending. Once unblocked, coordinate with the Helix M014 entry; do not claim per-kind Tree-sitter parity beyond the structural range operations actually delivered.
 
 ## Objective
 
-Provide fast syntax-sensitive selection and structural motion in TUI, with a portable strategy for desktop, without confusing lexical/syntactic presentation with semantic/cross-file LSP intelligence or creating a second authoritative editor document.
+Provide asynchronous syntax-structure expansion and contraction in the TUI through the authorized daemon LSP path, without adding a parser, blocking redraw, confusing structural ranges with cross-file semantics, or creating a second authoritative editor document.
 
 ## Current evidence
 
-`src/tui/commands/editor.rs`, `src/tui/editor_lsp.rs` and existing TUI editor motions consume optimistic `DocumentController` snapshots. Desktop `apps/desktop/src-tauri/src/document.rs` supplies bounded viewport state. `codegg-document` is a pure byte-indexed rope/edit library. `egglsp` owns semantic language-server processes, not Helix AST nodes. ADR-0034 documents twenty missing syntax-aware bindings and the tradeoffs of local Tree-sitter vs server structural requests.
+`src/tui/commands/editor.rs` and `src/tui/editor_lsp.rs` consume optimistic `DocumentController` snapshots. `DocumentSymbol` reads already have bounded daemon routing and revision witnesses. `egglsp` owns semantic language-server processes and can answer protocol structural-range requests; a new operation must remain warm-only and return its selected ranges without source text or arbitrary server data. Fake-daemon integration trajectories check a bounded nested range chain, explicit unsupported behavior, cold-root no-spawn behavior, reversed-range rejection, depth truncation and oversized-response rejection; `cargo check -p codegg --features server,lsp-test-support --test lsp_test_support` compiles the trajectories.
 
 ## Decision and design package
 
-1. Resolve ADR-0034 explicitly before code: separate *local syntax gestures* (brackets, node range/parents/siblings, syntax-aware text objects, lexical highlight/indent) from *semantic LSP* (hover, definitions, symbol/type information, diagnostics, cross-file rename). Adopt one source for each behavior: never secretly fall back between two inconsistent AST definitions for the same binding.
-2. If local selected, qualify a small optional parser/grammar set with exact MSRV, per-platform build cost, binary size and CPU/memory measurements; a frontend-neutral pure syntax snapshot library is preferable to a TUI-only parser where reusable, but it MUST NOT retain independent canonical source text or gain file/process authority. Do not force a heavyweight C grammar dependency onto every build without an accepted cost decision.
-3. Derive parse state only from the existing immutable document snapshot/optimistic edit transaction; version it by document attachment and revision/generation. Incremental parse off the render path; bounded per-frame slice/viewport, cancellable background parse, stale-generation discard, resource ceilings and fallback to byte/grapheme motions. Keep UTF-8 bytes vs graphemes vs LSP UTF-16 coordinate conversions explicit.
-4. Deliver one vertical Helix M014 structural selection family in the TUI (e.g., expand/shrink node), including clear unsupported state for unbundled language, while maintaining all non-syntax bindings. Port the pure frontend behavior to the desktop only where it can consume exactly the same document replica safely; no second full text buffer in renderer/host, and no GUI browser dependency on spawning LSP.
-5. Add capability/availability presentation: local syntax can continue under a cold language server; semantic cross-file actions still show `NotReady`, `Unsupported`, etc. Avoid claiming syntax AST is semantically equivalent to LSP symbols.
+1. Add a typed `SelectionRange` read operation through `codegg-protocol`, `egglsp` and the existing daemon/client route. Resolve the server only through the warm-client path, validate the authorized workspace-relative document, and cap both requested positions and returned nesting depth/range count.
+2. Bind every returned chain to the active attachment, document generation/revision, cursor position and server generation. Return typed `NotReady`, `Unsupported`, `Ambiguous`, `Stale` and truncation outcomes; never return source text or an unbounded raw JSON-RPC value.
+3. Add one Helix-style expand/shrink structural selection pair in the TUI using the async editor request path. Keep the current selection unchanged while pending and discard a result after cursor, document, route or server generation changes. No redraw or input handler may await process startup or LSP I/O.
+4. A server without `textDocument/selectionRange` reports a visible unsupported state. Do not approximate syntax selection using a byte delimiter fallback on the same chord. Preserve existing byte/grapheme motions and all non-syntax bindings.
+5. Keep desktop behavior unchanged unless it can consume the same typed result and revision contract through its existing document replica. No second text buffer or browser-side server process is in scope.
 
 ## Verification
 
-1000 local incremental edits including invalid UTF-8 boundary requests (must reject), Unicode combining/surrogate edge cases, huge lines, malformed syntax, rapid typing with stale parse completion, cancelled tab change, no grammar, no language server, and daemon outage. Measure key-to-paint p50/p95 with/without grammar and prove no parse or IPC blocks redraw. Run focused codegg-document/TUI tests, static editor text-authority and keymap guards, root `scripts/verify.sh` supported gate and desktop gate if changed. Qualify actual grammar MSRV/build sizes prior to acceptance.
+Fake-stdio tests must cover range-chain decoding, maximum depth/truncation, invalid or reversed ranges, UTF-16 positions, oversized responses, path escape, no warm server, unsupported capability, delayed response after edit/cursor/tab/route change, and restart generation change. A rapid-input trajectory proves the editor remains responsive while a request is pending and never paints a stale range. A large-file/read-response test proves work and payload stay bounded. Run the focused `egglsp`, root TUI, authorization-matrix and keymap/text-authority guards, then root and desktop gates as affected.
+
+Current host qualification: `cargo check -p codegg --locked --features
+server,lsp-test-support --test lsp_test_support` compiles the new daemon
+integration trajectories, and `scripts/verify.sh quick` passes. Runtime test
+execution remains open because this host's x86_64/arm64 native-library setup
+cannot link the LSP test binaries; the compile check is not latency or stale
+discard evidence.
 
 ## Storage/security/compatibility
 
-No wire or durable schema changes and no new filesystem/process authority in a frontend. No LSP commands or checked mutations exposed. The local parser is *only* derived presentation state and must not be used to authorize agent file operations. Fallback for unsupported grammar is explicit and cheap.
+This is an additive read-only protocol operation under the existing `file.read` session/workspace scope. It introduces no storage migration, parser dependency, mutation authority or frontend process authority. Returned ranges are derived display state only and never authorize agent file operations.
 
 ## Acceptance and stop
 
-If ADR-0034 remains proposed or selects daemon structural reads, do not implement this candidate. With a local-parser decision, close only after one exercised TUI syntax-node gesture, bounded latency evidence, no second editor text, correct stale discard and documented desktop portability (actual desktop delivery may require a scoped follow-up). Record under `plans/closure/daemon-lsp-frontend-convergence/005-status.md` and reconcile Helix M014's status **without modifying past closures**.
+Close only after the typed operation, a live TUI structural-selection gesture, bounded response and latency evidence, explicit no-server/unsupported behavior, correct stale discard, and root verification pass. Accept ADR-0034 Option B only after its required contract and negative evidence are linked. Reconcile Helix M014's status without editing historical closure records; per-kind objects not served by `SelectionRange` remain explicitly unclaimed and require their own bounded design if still desired.

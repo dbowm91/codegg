@@ -1,6 +1,6 @@
 # M001 — Shared Frontend LSP Request Coordinator
 
-Status: closed
+Status: closed — correctness qualification completed 2026-10-28
 
 Primary class: infrastructure (vertically qualified in both rich frontends).
 
@@ -14,7 +14,7 @@ Replace divergent *transport/request lifecycle decisions*, not frontend renderin
 
 ## Current evidence
 
-`crates/codegg-client/src/lsp.rs` owns scoped request tickets, cancellation, latest-wins/coalescing, bounded outstanding work and diagnostics stream reconciliation. TUI diagnostics/read/completion and desktop diagnostics/completion/navigation use the coordinator. Both frontends establish a project diagnostics subscription from an authoritative snapshot/cursor and recover by pull after loss or a gap. Their transport adapters and view mapping remain frontend-owned. The live-daemon TUI hover trajectory and visible desktop diagnostics E2E are recorded in `plans/closure/daemon-lsp-frontend-convergence/001-status.md`.
+`crates/codegg-client/src/lsp.rs` owns scoped request tickets, cancellation, latest-wins/coalescing, bounded outstanding work and diagnostics stream reconciliation. TUI diagnostics/read/completion and desktop diagnostics/completion/navigation use the coordinator. Both frontends establish a project diagnostics subscription from an authoritative snapshot/cursor and recover by pull after loss or a gap. Their transport adapters and view mapping remain frontend-owned. The live-daemon TUI diagnostics gesture, two-authorized-client subscription, delayed-response suppression, reconnect, and visible desktop diagnostics evidence are recorded in `plans/closure/daemon-lsp-frontend-convergence/001-status.md`.
 
 Historical closure-readiness audit: `plans/implementation/daemon-lsp-frontend-convergence/artifacts/M001-closure-readiness-20261027.md`. Final qualification: `plans/closure/daemon-lsp-frontend-convergence/001-status.md`.
 
@@ -42,4 +42,4 @@ No persistent schema, migrations or protocol shape changes; only client implemen
 
 ## Acceptance and stop conditions
 
-Close only when production TUI **and** GUI consumers demonstrably share the coordinator and the no-stale/no-false-clean tests pass, without a GUI/TUI process-launch dependency. Stop on a required wire/authority change and write an ADR or successor milestone; do not enlarge M001. Closure record: `plans/closure/daemon-lsp-frontend-convergence/001-status.md` with exact commits, requirement/evidence matrix, focused/root/desktop results, security/lag cases and residual divergence.
+Closure record: `plans/closure/daemon-lsp-frontend-convergence/001-status.md` contains the requirement/evidence matrix, focused qualification, security/lag cases and residual divergence. M002 may now start against this verified coordination contract; its parity and latency work remains open. Stop on a required wire/authority change and write an ADR or successor milestone; do not enlarge M001.

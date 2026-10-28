@@ -197,6 +197,7 @@ pub fn merge_configs(configs: &[Config]) -> Config {
             tools,
             formatter,
             lsp,
+            lsp_process_admission,
             lsp_semantic_cache,
             snapshot,
             snapshot_config,
@@ -953,6 +954,10 @@ mod tests {
                 max_file_bytes: 456,
                 max_total_bytes: 789,
             }),
+            lsp_process_admission: Some(crate::schema::LspProcessAdmissionConfig {
+                max_concurrent_starts: 2,
+                max_admitted_starts: 8,
+            }),
             keybinds: Some(keybinds),
             vim_mode: Some(true),
             hooks: Some(vec![crate::schema::HookConfigEntry::default()]),
@@ -985,6 +990,13 @@ mod tests {
         assert_eq!(
             merged.snapshot_config.as_ref().map(|s| s.max_total_bytes),
             Some(789)
+        );
+        assert_eq!(
+            merged.lsp_process_admission.as_ref().map(|admission| (
+                admission.max_concurrent_starts,
+                admission.max_admitted_starts
+            )),
+            Some((2, 8))
         );
         assert_eq!(
             merged
