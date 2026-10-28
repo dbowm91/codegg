@@ -1264,8 +1264,6 @@ async fn existing_managed_read_only_runs_through_the_production_scheduler() {
         );
     }
 
-    // Exercise the executor's fail-closed matrix through the same production
-    // submission and scheduler path as the successful placement above.
     let (missing_run, missing_job) = submit_existing_managed_read_only_case(
         &run_store,
         &submission,
@@ -1391,8 +1389,6 @@ async fn existing_managed_read_only_runs_through_the_production_scheduler() {
     );
     session_store.archive(&active_session.id).await.unwrap();
 
-    // Catalog metadata is modified only inside this isolated fixture. The
-    // scheduler must refuse a managed record that claims another project.
     sqlx::query("UPDATE managed_worktree SET project_id = ? WHERE worktree_id = ?")
         .bind("foreign-a002-project")
         .bind(created.worktree_id.as_str())
