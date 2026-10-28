@@ -1,0 +1,42 @@
+{
+  "authorization": {
+    "approved_on": "2026-10-27",
+    "attempts": 1,
+    "cost_usd": "unreported_possible",
+    "max_provider_requests": 300,
+    "max_wallclock_seconds": 3600,
+    "minimum_free_disk_bytes": 10737418240,
+    "model": "opencode_go/muse-spark-1.3-contributor"
+  },
+  "case_id": "sustained-event-ledger",
+  "fixture_sha256": {
+    "Cargo.lock": "c8a33902f19e82d6b58217b8214c6d3fa2ece4378aebecaea0018c1a1ff809e9",
+    "Cargo.toml": "dfd6862a20898d13f697d7c454dfd67732ba42d6edc0fd9140d62c5bfb7edea3",
+    "README.md": "b3caff92f4cf8a6285231be17fc9e8f3afc5bd5089b252af6dbc944a77a48a2c",
+    "contract.json": "74896fbbdd7840843134fe7f0581870236893f6a002d7444d9502976f148eed1",
+    "ledger-cli/Cargo.toml": "3387c67ddceefe79bae7e3b9c7873d8a9f274edd384561ca7e78b4894818f04d",
+    "ledger-core/Cargo.toml": "1ec89856e413f7602e6a4751eb1f54bd82d826745ea49f8aca108c66757ba301",
+    "ledger-index/Cargo.toml": "f473a1247cd3c7b410fc9de7c28f67cc0dda066b6a2137de27b93278b46ecb0f",
+    "ledger-store/Cargo.toml": "bc22ca9cdb36babb5e09db58afa83749c0fccb0a0a3853d1be7210a2c01ace13"
+  },
+  "hidden_verifier_sha256": "b885dacfc60add5eb755004ec57810444fcd61a4a23fa4c8f5eb76eff96c53f9",
+  "manifest_case_sha256": "6d437ebae667055380dbf94c7cb0d240147ab10c33648db867d2bf53542218e8",
+  "minimum_free_disk_bytes": 10737418240,
+  "required_public_tests": {
+    "ledger-core/src/lib.rs": [
+      "invalid_rows_keep_line_and_valid_rows"
+    ],
+    "ledger-index/src/lib.rs": [
+      "deduplicates_and_orders_independent_of_input",
+      "rejects_conflicting_ids_instead_of_keeping_the_first"
+    ],
+    "ledger-store/src/lib.rs": [
+      "replay_ignores_only_a_torn_tail_and_is_idempotent",
+      "rejects_corrupt_interior_records"
+    ]
+  },
+  "scale_records": 50000,
+  "scale_shards": 5,
+  "schema_version": 3,
+  "source_revision": "fed10ce13be7fd99a6d5aa5f8b6639ba98d007bc"
+}

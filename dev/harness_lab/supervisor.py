@@ -190,14 +190,19 @@ class SubjectSpec:
     revision: str
     workspace: Path
     root: Path
+    provider_request_limit: int | None = None
 
     @classmethod
-    def create(cls, lane_id: str, binary: Path, workspace: Path, root: Path, revision_from: Path) -> "SubjectSpec":
-        return cls(lane_id, binary, sha256_file(binary), _git_revision(revision_from), workspace, root)
+    def create(cls, lane_id: str, binary: Path, workspace: Path, root: Path,
+               revision_from: Path, *, provider_request_limit: int | None = None) -> "SubjectSpec":
+        return cls(lane_id, binary, sha256_file(binary), _git_revision(revision_from),
+                   workspace, root, provider_request_limit)
 
     def environment(self) -> dict[str, str]:
         home = self.root / "home"
         env = os.environ.copy()
+        if self.provider_request_limit is not None:
+            env["CODEGG_HARNESS_MAX_PROVIDER_REQUESTS"] = str(self.provider_request_limit)
         has_request_limit = bool(env.get("CODEGG_HARNESS_MAX_PROVIDER_REQUESTS"))
         if has_request_limit:
             env["CODEGG_HARNESS_PROVIDER_REQUEST_RECEIPT"] = str(

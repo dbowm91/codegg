@@ -84,6 +84,23 @@ class ProviderRequestAccountingTests(unittest.TestCase):
             self.assertIsNone(autonomy_run._provider_request_admissions(
                 pathlib.Path(temp) / "missing.log"))
 
+    def test_each_lane_receives_only_the_remaining_shared_suite_cap(self) -> None:
+        policy = budget.BudgetPolicy(max_provider_requests=5)
+        guard = budget.SpendGuard(policy)
+        guard.observe(provider_requests=2)
+        self.assertEqual(autonomy_run._remaining_provider_request_cap(policy, guard), 3)
+
+    def test_an_exhausted_shared_cap_binds_zero_remaining_requests(self) -> None:
+        policy = budget.BudgetPolicy(max_provider_requests=2)
+        guard = budget.SpendGuard(policy)
+        guard.observe(provider_requests=2)
+        self.assertEqual(autonomy_run._remaining_provider_request_cap(policy, guard), 0)
+
+    def test_an_unbounded_policy_does_not_create_a_lane_request_cap(self) -> None:
+        policy = budget.BudgetPolicy(token_limit=100)
+        guard = budget.SpendGuard(policy)
+        self.assertIsNone(autonomy_run._remaining_provider_request_cap(policy, guard))
+
     def test_the_transcript_carries_the_protected_flag(self) -> None:
         case = _case("repeated-identical-failure-stall")
         transcript = autonomy_run.build_transcript(case, [], terminal="stalled",
@@ -324,6 +341,68 @@ class ManifestTests(unittest.TestCase):
         for case in protected:
             self.assertEqual(case.support, "supported",
                              "a protected control that cannot run guards nothing")
+
+    def test_h005_uses_a_separate_manifest_and_body(self) -> None:
+        manifest = REPO_ROOT / "dev/harness_lab/fixtures/agent_autonomy_h005"
+        suite = autonomy.load_autonomy_suite(manifest)
+        self.assertEqual([case.case_id for case in suite.cases], ["sustained-event-ledger"])
+        self.assertEqual(suite.cases[0].family, "background_job")
+        root = autonomy_run.case_root(REPO_ROOT, suite.cases[0].case_id)
+        self.assertTrue((root / "fixture/Cargo.lock").is_file())
+        self.assertTrue((root / "verifier/test_event_ledger_contract.py").is_file())
+
+
+class DiskFloorWatcherTests(unittest.TestCase):
+    def test_a_breached_floor_cancels_before_the_prompt(self) -> None:
+        class Client:
+            def __init__(self):
+                self.notifications = []
+
+            def notify(self, method, params):
+                self.notifications.append((method, params))
+
+        with tempfile.TemporaryDirectory() as directory:
+            client = Client()
+            watcher = autonomy_run._DiskFloorWatcher(
+                pathlib.Path(directory), 10**30, client, "session-1")
+            watcher.start()
+            watcher.stop()
+            self.assertTrue(watcher.triggered)
+            self.assertEqual(client.notifications[0][0], "session/cancel")
+
+    def test_a_safe_floor_records_free_space_without_cancel(self) -> None:
+        class Client:
+            def __init__(self):
+                self.notifications = []
+
+            def notify(self, method, params):
+                self.notifications.append((method, params))
+
+        with tempfile.TemporaryDirectory() as directory:
+            client = Client()
+            watcher = autonomy_run._DiskFloorWatcher(pathlib.Path(directory), 1,
+                                                      client, "session-2")
+            watcher.start()
+            watcher.stop()
+            self.assertIsInstance(watcher.free_bytes, int)
+            self.assertFalse(watcher.triggered)
+            self.assertEqual(client.notifications, [])
+
+    def test_unreadable_disk_state_cancels_fail_closed(self) -> None:
+        class Client:
+            def __init__(self):
+                self.notifications = []
+
+            def notify(self, method, params):
+                self.notifications.append((method, params))
+
+        client = Client()
+        watcher = autonomy_run._DiskFloorWatcher(
+            pathlib.Path("/path/that/does/not/exist"), 1, client, "session-3")
+        watcher.start()
+        watcher.stop()
+        self.assertEqual(watcher.error, "FileNotFoundError")
+        self.assertEqual(client.notifications[0][0], "session/cancel")
 
 
 if __name__ == "__main__":

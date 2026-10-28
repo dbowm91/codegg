@@ -2140,6 +2140,20 @@ async fn security_context_filters_by_category() {
 #[tokio::test]
 async fn security_context_limits_risk_markers_precise() {
     let tool = make_live_tool();
+    let unbounded_result = tool
+        .execute(serde_json::json!({
+            "operation": "securityContext",
+            "file_path": "src/tool/mod.rs",
+            "line": 1,
+            "column": 1
+        }))
+        .await
+        .unwrap();
+    let unbounded: serde_json::Value = serde_json::from_str(&unbounded_result).unwrap();
+    let unbounded_markers = unbounded["results"]["risk_markers"].as_array().unwrap();
+    let unbounded_truncated = unbounded["results"]["limits"]["risk_markers_truncated"]
+        .as_bool()
+        .unwrap();
     let result = tool
         .execute(serde_json::json!({
             "operation": "securityContext",
@@ -2155,17 +2169,11 @@ async fn security_context_limits_risk_markers_precise() {
     let truncated = parsed["results"]["limits"]["risk_markers_truncated"]
         .as_bool()
         .unwrap();
-    if markers.len() <= 2 {
-        assert!(
-            !truncated,
-            "should not be truncated when markers <= max_risk_markers"
-        );
-    } else {
-        assert!(
-            truncated,
-            "should be truncated when markers > max_risk_markers"
-        );
-    }
+    assert_eq!(markers.len(), unbounded_markers.len().min(2));
+    assert_eq!(
+        truncated,
+        unbounded_truncated || unbounded_markers.len() > 2
+    );
 }
 
 #[tokio::test]

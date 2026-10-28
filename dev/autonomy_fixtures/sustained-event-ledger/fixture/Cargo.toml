@@ -1,0 +1,14 @@
+[workspace]
+members = ["ledger-core", "ledger-index", "ledger-store", "ledger-cli"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+ledger-core = { path = "ledger-core" }
+ledger-index = { path = "ledger-index" }
+ledger-store = { path = "ledger-store" }
+

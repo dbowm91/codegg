@@ -204,11 +204,15 @@ def _parser() -> argparse.ArgumentParser:
                            help="provider/model composite, for example opencode_go/muse-spark-1.3-contributor")
     autonomy.add_argument("--case", action="append", default=None,
                            help="case id to run; repeatable. Defaults to every supported case")
+    autonomy.add_argument("--case-manifest", type=Path, default=None,
+                          help="load a separately versioned autonomy manifest")
     autonomy.add_argument("--binary", type=Path, default=None,
                            help="CodeGG binary under test; defaults to the debug build")
     autonomy.add_argument("--profile", default="workspace-write",
                            choices=["workspace-write", "full-host"])
     autonomy.add_argument("--timeout", type=float, default=900.0)
+    autonomy.add_argument("--min-free-disk-bytes", type=int, default=None,
+                          help="cancel the active case if free disk falls below this value")
     autonomy.add_argument("--output", type=Path, default=None,
                            help="where to write the receipt JSON; stdout when absent")
     autonomy.add_argument("--lane-root", type=Path, default=None,
@@ -336,12 +340,14 @@ def main(argv: list[str] | None = None) -> int:
                     "the autonomy command always reaches a live provider; pass --live-provider "
                     "together with an admitted --budget policy")
             policy = _budget_policy(getattr(args, "budget", None))
-            suite = autonomy_module.load_autonomy_suite()
+            suite = autonomy_module.load_autonomy_suite(
+                args.case_manifest.parent if args.case_manifest else None)
             lane = args.lane_root or supervisor_lane_root("autonomy")
             receipt = autonomy_run_module.run_suite(
                 _binary(args.binary), suite, args.model, budget_policy=policy,
                 lane_root=lane, profile=args.profile, timeout=args.timeout,
-                case_ids=list(args.case) if args.case else None)
+                case_ids=list(args.case) if args.case else None,
+                min_free_disk_bytes=args.min_free_disk_bytes)
             rendered = json.dumps(receipt, indent=2, sort_keys=True)
             if args.output is not None:
                 args.output.parent.mkdir(parents=True, exist_ok=True)
