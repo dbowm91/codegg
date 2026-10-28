@@ -43,6 +43,8 @@ No live attempt is authorized by this plan. Before starting one, obtain a new ex
 
 The runner must bind and verify the request cap before its first provider request. Do not infer remaining budget from H005's receipt: its actual request usage is unknown. If no fresh approval arrives, stop after offline work and record H006 as blocked before live qualification.
 
+The offline job-observation gate uses bounded job metadata parsed from native ACP tool output. It does not claim a separate automatic terminal notification or define a structured job-lifecycle event protocol; those require separate production-path evidence and scope.
+
 ## 5. Live workload and evidence
 
 On approval, run one coherent native CodeGG session against the immutable H006 fixture and private workspace. The task must:

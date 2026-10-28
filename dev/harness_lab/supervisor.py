@@ -849,7 +849,12 @@ def _bounded_managed_test_log_tail(tool_updates: list[dict[str, Any]], workspace
             path = (root / relative).resolve(strict=False)
             if path.is_relative_to(root) and path.is_file():
                 try:
-                    return path.read_text(encoding="utf-8", errors="replace")[-4096:]
+                    with path.open("rb") as log:
+                        log.seek(0, os.SEEK_END)
+                        size = log.tell()
+                        log.seek(max(0, size - 16 * 1024), os.SEEK_SET)
+                        tail = log.read(16 * 1024)
+                    return tail.decode("utf-8", errors="replace")[-4096:]
                 except OSError:
                     continue
     return ""
