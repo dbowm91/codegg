@@ -422,6 +422,7 @@ fn rustup_credential_deny_paths(root: &Path) -> [PathBuf; 2] {
     [root.join("credentials"), root.join("credentials.toml")]
 }
 
+#[cfg(unix)]
 fn rustup_read_allowances(root: &Path) -> Vec<PathBuf> {
     let Ok(root_metadata) = std::fs::symlink_metadata(root) else {
         return Vec::new();
@@ -443,6 +444,20 @@ fn rustup_read_allowances(root: &Path) -> Vec<PathBuf> {
             }
             let canonical = path.canonicalize().ok()?;
             canonical.starts_with(&canonical_root).then_some(canonical)
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn rustup_read_allowances(root: &Path) -> Vec<PathBuf> {
+    if resolve_policy_path(root).is_err() {
+        return Vec::new();
+    }
+    ["settings.toml", "toolchains", "update-hashes"]
+        .into_iter()
+        .filter_map(|relative| {
+            let path = root.join(relative);
+            resolve_policy_path(&path).ok().map(|_| path)
         })
         .collect()
 }
@@ -1171,5 +1186,23 @@ mod windows_policy_tests {
     fn windows_policy_roots_cannot_be_resolved_through_search_path() {
         assert!(resolve_policy_path(Path::new("powershell.exe")).is_err());
         assert!(resolve_policy_path(Path::new("cmd.exe")).is_err());
+    }
+
+    #[test]
+    fn windows_rustup_allowances_remain_resolvable_policy_paths() {
+        let rustup = tempfile::tempdir().expect("Rustup home");
+        for relative in ["settings.toml", "toolchains", "update-hashes"] {
+            let path = rustup.path().join(relative);
+            if path.extension().is_some() {
+                std::fs::write(path, "fixture").expect("Rustup settings");
+            } else {
+                std::fs::create_dir(path).expect("Rustup data directory");
+            }
+        }
+        let allowances = rustup_read_allowances(rustup.path());
+        assert_eq!(allowances.len(), 3);
+        assert!(allowances
+            .iter()
+            .all(|path| resolve_policy_path(path).is_ok()));
     }
 }
