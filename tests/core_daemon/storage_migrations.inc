@@ -330,8 +330,6 @@ async fn v81_to_latest_preserves_queue_and_adds_network_intent() {
         .await
         .expect("failed to seed session row");
 
-    // A real v81 database has the delegated-run table from its earlier
-    // migrations; v93 adds the read-only placement projection to it.
     sqlx::query("CREATE TABLE agent_run (run_id TEXT PRIMARY KEY)")
         .execute(&pool)
         .await
