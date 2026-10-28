@@ -5877,6 +5877,12 @@ mod tests {
             task_properties.remove("placement").is_some(),
             "expected post-M003 task input field placement"
         );
+        // A002 later added an exact managed-worktree selector alongside
+        // placement. It is also absent from the frozen M003 task schema.
+        assert!(
+            task_properties.remove("worktree_id").is_some(),
+            "expected post-M003 task input field worktree_id"
+        );
         let task_action = task_properties
             .get_mut("action")
             .expect("task action schema");
