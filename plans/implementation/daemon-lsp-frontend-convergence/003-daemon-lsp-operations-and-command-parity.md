@@ -1,14 +1,14 @@
 # M003 — Daemon LSP Inspection and Lifecycle Command Parity (M007-F Part 1)
 
-Status: blocked — proposed ADR-0056 command-control decision pending
+Status: active — ADR-0056 Option B accepted 2026-10-28; implementation and qualification in progress
 
 Primary class: capability.
 
-Repository planning baseline: `80171f45295bebb9ab0b521262c0b295acb93074` (`main`, 2026-10-27); before implementation inspect current branch HEAD, update file paths and record drift. Source roadmap: `plans/subsystems/daemon-lsp-frontend-convergence-roadmap.md`. Planning governance: `plans/003-planning-process.md`. Do not edit accepted ADRs or historical closure records.
+Repository planning baseline: `7de6f237c0c4ab2abff120f39b7ae98e7107bec3` (`main`, 2026-10-28). Source roadmap: `plans/subsystems/daemon-lsp-frontend-convergence-roadmap.md`. Planning governance: `plans/003-planning-process.md`. Do not edit accepted ADRs or historical closure records.
 
-Controlling proposed ADR: `plans/adrs/ADR-0056-daemon-lsp-command-and-runtime-control-surface.md`. Accepted ADRs: ADR-0008, ADR-0010–0012, ADR-0018, ADR-0052. Existing M007-F registration: desktop frontend roadmap; do not open a duplicate command catalog. Do not implement M003 until ADR-0056 receives its final decision.
+Controlling accepted ADR: `plans/adrs/ADR-0056-daemon-lsp-command-and-runtime-control-surface.md` (Option B, accepted 2026-10-28). Also governed by ADR-0008, ADR-0010–0012, ADR-0018 and ADR-0052. Existing M007-F registration: desktop frontend roadmap; do not open a duplicate command catalog.
 
-Current-head research: `plans/implementation/daemon-lsp-frontend-convergence/artifacts/ADR-0056-current-head-disposition-20261027.md`. Update its baseline and route table from the generated M007-D inventory as implementation proceeds. A critical current-head gap is recorded there: the production socket/HTTP daemon constructors do not install `CoreRuntimeDeps::lsp_service`, so authorized native LSP reads cannot reach a daemon-owned service yet.
+Current-head research: `plans/implementation/daemon-lsp-frontend-convergence/artifacts/ADR-0056-current-head-disposition-20261028.md`. The production socket, stdio and HTTP daemon constructors already install the configured FullHost `LspService`; Linux constrained turns retain separate per-turn service scopes. Keep the inventory synchronized with the generator, and record implementation drift as routes land.
 
 ## Objective
 

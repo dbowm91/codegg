@@ -1,12 +1,12 @@
 # M004 — Daemon LSP Composite Workflow and Checked-Preview Parity (M007-F Part 2)
 
-Status: blocked — M003 closure and proposed ADR-0056 decision (hard)
+Status: blocked — M003 closure (hard); ADR-0056 Option B accepted 2026-10-28
 
 Primary class: capability.
 
-Repository planning baseline: `80171f45295bebb9ab0b521262c0b295acb93074` (`main`, 2026-10-27). Reinspect live branch before implementation. Roadmap: `plans/subsystems/daemon-lsp-frontend-convergence-roadmap.md`; governance: `plans/003-planning-process.md`; long-term specification §§4,13,24–25.
+Repository planning baseline: `7de6f237c0c4ab2abff120f39b7ae98e7107bec3` (`main`, 2026-10-28). Roadmap: `plans/subsystems/daemon-lsp-frontend-convergence-roadmap.md`; governance: `plans/003-planning-process.md`; long-term specification §§4,13,24–25.
 
-Binding: ADR-0008, ADR-0010, ADR-0011, ADR-0012, ADR-0018, ADR-0021, ADR-0052, and proposed ADR-0056. M003 closure and the ADR-0056 decision remain hard dependencies. This implements the *remaining composite* M007-F forms after M003, not a second LSP execution authority.
+Binding: ADR-0008, ADR-0010, ADR-0011, ADR-0012, ADR-0018, ADR-0021, ADR-0052, and accepted ADR-0056 Option B. M003 closure remains the hard dependency. This implements the *remaining composite* M007-F forms after M003, not a second LSP execution authority.
 
 ## Objective and existing evidence
 

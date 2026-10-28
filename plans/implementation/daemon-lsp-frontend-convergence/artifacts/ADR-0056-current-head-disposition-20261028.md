@@ -1,14 +1,14 @@
 # ADR-0056 Current-Head Command Disposition
 
-Review baseline: requested branch `plan/daemon-lsp-frontend-convergence-20261027`, based on `origin/main` at `80171f45295bebb9ab0b521262c0b295acb93074`.
+Review baseline: `main` at `7de6f237c0c4ab2abff120f39b7ae98e7107bec3` (2026-10-28), after PR #208.
 
-Purpose: record the source-backed disposition while ADR-0056 remains proposed. Option B and the bounded `lsp.control`, session/turn-bound preview, standalone TUI, and status/error defaults were selected for evaluation on 2026-10-27; the final command-control ADR decision remains pending.
+Purpose: record the source-backed disposition under accepted ADR-0056 Option B. The bounded `lsp.control`, session/turn-bound preview, standalone TUI, and status/error defaults were selected on 2026-10-27 and formally accepted on 2026-10-28. This is a living implementation inventory; refresh it as routes land.
 
 ## Findings
 
 - `crates/codegg-core/src/command_catalog.rs` defines 26 `/lsp-*` command identities. All are catalogued as daemon effects and name `command.execute`.
 - `src/core/daemon_commands.rs::build_inner_request` has rows for `lsp_status`, `lsp_servers`, `lsp_capabilities`, `lsp_errors`, and `lsp_restart`. The four inspection forms build the session-scoped `LspServerStatusGet` request; `/lsp-errors` and `/lsp-capabilities` require a server key, which the daemon verifies against its already-attached clients for that session's canonical workspace. Restart builds `LspControl::Restart` and passes the independent `lsp.control` authorization gate.
-- Production socket, stdio and HTTP constructors now install the configured FullHost `LspService`; Linux per-turn `M004LspServiceScope` remains isolated.
+- Production socket, stdio and HTTP constructors install the configured FullHost `LspService`; Linux per-turn `M004LspServiceScope` remains isolated.
 - Native typed operations already exist for `LspReadGet`, `LspCompletionGet`, `LspDiagnosticsGet`, `LspDiagnosticsSubscribe`, and `LspPreviewApply`. `LspPreviewApply` is authorized as `via_session + file.modify` and is routed through the checked apply service. It is already used by the TUI change-review flow, but the `/lsp-preview-apply` slash arm still requires a frontend-local `LspTool` and refuses in socket mode.
 - `LspService` owns the server processes in the daemon. Constrained Linux turns use a separate per-turn `M004LspServiceScope`; it is not a handle a project command may enumerate or control.
 - `PreviewArtifactRegistry` is bounded and turn-local in `SessionToolContext`; preview artifacts are not durable and are dropped with their turn registry/service lifecycle. An operational `/lsp-preview*` surface therefore needs an explicit owner/lifetime binding or must remain unavailable when that registry is absent.
@@ -50,4 +50,4 @@ The four preview-registry forms above are listed separately from the recipes: th
 
 ## Accepted owner decisions and remaining evidence
 
-ADR-0056 remains proposed pending its final command-control decision. M003 and M004 must remain blocked until that decision is recorded. Once unblocked, M003 still needs lifecycle routes, the remaining inspection forms, negative authorization proofs and complete socket/standalone comparisons before closure. M004 still needs workflow parity and checked-preview race evidence. Neither milestone may add raw JSON-RPC forwarding, trust frontend roots/PIDs/argv, or operate on `M004LspServiceScope` processes from a project-wide command.
+ADR-0056 Option B is accepted. M003 is active and still needs its remaining inspection/lifecycle routes, negative authorization proofs and complete socket/standalone comparisons before closure. M004 remains blocked on M003 closure and still needs workflow parity and checked-preview race evidence. Neither milestone may add raw JSON-RPC forwarding, trust frontend roots/PIDs/argv, or operate on `M004LspServiceScope` processes from a project-wide command.
