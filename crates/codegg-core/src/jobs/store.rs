@@ -2322,7 +2322,7 @@ impl JobStore for SqliteJobStore {
     ) -> Result<RecoveryReport, JobStoreError> {
         let mut tx = self
             .pool
-            .begin()
+            .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
         let now = Utc::now();
@@ -3066,5 +3066,72 @@ mod source_subject_tests {
             .execute(&mut *lock_connection)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn sqlite_recovery_waits_for_an_existing_writer_before_reading_rows() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("jobs.sqlite");
+        let connect = || {
+            SqliteConnectOptions::new()
+                .filename(&database)
+                .create_if_missing(true)
+                .journal_mode(SqliteJournalMode::Wal)
+                .busy_timeout(Duration::from_secs(2))
+        };
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(connect())
+            .await
+            .unwrap();
+        crate::session::schema::migrate(&pool).await.unwrap();
+        let store = Arc::new(SqliteJobStore::new(pool));
+        let job = store.create_job(test_job()).await.unwrap();
+        store
+            .begin_attempt(
+                &job.job_id,
+                &crate::jobs::DaemonGeneration::new_unchecked("prior-generation"),
+            )
+            .await
+            .unwrap();
+
+        let lock_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(connect())
+            .await
+            .unwrap();
+        let mut lock_connection = lock_pool.acquire().await.unwrap();
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *lock_connection)
+            .await
+            .unwrap();
+
+        let recovery_store = store.clone();
+        let recovery = tokio::spawn(async move {
+            recovery_store
+                .recover_generation(
+                    &crate::jobs::DaemonGeneration::new_unchecked("recovery-generation"),
+                    &RecoveryPolicy::default(),
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !recovery.is_finished(),
+            "recovery should wait for the active writer before reading its snapshot"
+        );
+        sqlx::query("ROLLBACK")
+            .execute(&mut *lock_connection)
+            .await
+            .unwrap();
+
+        let report = recovery
+            .await
+            .unwrap()
+            .expect("recovery after writer release");
+        assert_eq!(report.interrupted_attempts, 1);
     }
 }
