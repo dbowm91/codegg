@@ -23,6 +23,16 @@ from dev.harness_lab.supervisor import HarnessError, run_tool_trial
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
+def _observed_completed_job(calls, job_id):
+    """Return true only when the exact submitted job was observed completed."""
+    return any(
+        call.get("tool") == "job"
+        and call.get("job", {}).get("job_id") == job_id
+        and call.get("job", {}).get("status") == "completed"
+        for call in calls
+    )
+
+
 def _policy(**overrides):
     mapping = {"token_limit": 100000, "max_provider_requests": 4,
                "max_wallclock_seconds": 600}
@@ -562,10 +572,8 @@ mod tests {
         self.assertTrue(job_id)
         exact = [call for call in observations if call.get("job", {}).get("job_id") == job_id]
         running = [call for call in exact if call.get("job", {}).get("status") == "running"]
-        terminal = [call for call in exact if call.get("job", {}).get("status") in {
-            "completed", "failed", "cancelled", "canceled", "timed_out"}]
         self.assertGreaterEqual(len(running), 2, calls)
-        self.assertTrue(terminal, calls)
+        self.assertTrue(_observed_completed_job(exact, job_id), calls)
         first_running_at = running[0]["finished_elapsed_ms"]
         second_running_at = running[1]["finished_elapsed_ms"]
         intervening = [call for call in calls
@@ -594,6 +602,10 @@ mod tests {
             path = Path(receipt_path)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+
+    def test_failed_background_job_cannot_satisfy_h006_completion(self):
+        calls = [{"tool": "job", "job": {"job_id": "job-123", "status": "failed"}}]
+        self.assertFalse(_observed_completed_job(calls, "job-123"))
 
     def test_a_transport_fault_lane_does_not_stop_the_next_lane(self):
         binary = REPO_ROOT / "target" / "debug" / "codegg"

@@ -418,12 +418,29 @@ fn configured_rustup_home() -> Option<PathBuf> {
         })
 }
 
-fn rustup_read_allowances(root: &Path) -> [PathBuf; 3] {
-    [
-        root.join("settings.toml"),
-        root.join("toolchains"),
-        root.join("update-hashes"),
-    ]
+fn rustup_read_allowances(root: &Path) -> Vec<PathBuf> {
+    let Ok(root_metadata) = std::fs::symlink_metadata(root) else {
+        return Vec::new();
+    };
+    if root_metadata.file_type().is_symlink() {
+        return Vec::new();
+    }
+    let Ok(canonical_root) = root.canonicalize() else {
+        return Vec::new();
+    };
+
+    ["settings.toml", "toolchains", "update-hashes"]
+        .into_iter()
+        .filter_map(|relative| {
+            let path = canonical_root.join(relative);
+            let metadata = std::fs::symlink_metadata(&path).ok()?;
+            if metadata.file_type().is_symlink() {
+                return None;
+            }
+            let canonical = path.canonicalize().ok()?;
+            canonical.starts_with(&canonical_root).then_some(canonical)
+        })
+        .collect()
 }
 
 /// Windows runtime and installed-tool locations required to execute native
@@ -677,13 +694,59 @@ mod tests {
     #[test]
     fn rustup_read_allowances_expose_only_selected_toolchain_inputs() {
         let root = tempfile::tempdir().expect("Rustup home");
+        std::fs::write(root.path().join("settings.toml"), "profile = 'minimal'\n")
+            .expect("Rustup settings");
+        std::fs::create_dir(root.path().join("toolchains")).expect("toolchains");
+        std::fs::create_dir(root.path().join("update-hashes")).expect("update hashes");
+        std::fs::create_dir(root.path().join("downloads")).expect("unrelated Rustup data");
+        std::fs::create_dir(root.path().join("credentials")).expect("credential directory");
         let allowances = rustup_read_allowances(root.path());
+        let canonical_root = root.path().canonicalize().expect("canonical Rustup home");
         assert_eq!(allowances.len(), 3);
-        assert!(allowances.contains(&root.path().join("settings.toml")));
-        assert!(allowances.contains(&root.path().join("toolchains")));
-        assert!(allowances.contains(&root.path().join("update-hashes")));
-        assert!(!allowances.contains(&root.path().to_path_buf()));
-        assert!(!allowances.contains(&root.path().join("credentials")));
+        assert!(allowances.contains(&canonical_root.join("settings.toml")));
+        assert!(allowances.contains(&canonical_root.join("toolchains")));
+        assert!(allowances.contains(&canonical_root.join("update-hashes")));
+        assert!(!allowances.contains(&canonical_root.join("downloads")));
+        assert!(!allowances.contains(&canonical_root));
+        assert!(!allowances.contains(&canonical_root.join("credentials")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rustup_read_allowances_reject_symlinked_root_and_allowance_roots() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let external = tempfile::tempdir().expect("external Rustup data");
+        std::fs::write(
+            external.path().join("settings.toml"),
+            "credential = 'secret'\n",
+        )
+        .expect("external settings");
+        std::fs::create_dir(external.path().join("toolchains")).expect("external toolchains");
+        std::fs::create_dir(external.path().join("update-hashes")).expect("external update hashes");
+
+        let linked_root = fixture.path().join("linked-rustup");
+        std::os::unix::fs::symlink(external.path(), &linked_root).expect("Rustup root symlink");
+        assert!(
+            rustup_read_allowances(&linked_root).is_empty(),
+            "a symlinked RUSTUP_HOME must not turn its target into a grant"
+        );
+
+        let root = fixture.path().join("rustup");
+        std::fs::create_dir(&root).expect("Rustup root");
+        std::fs::write(root.join("settings.toml"), "profile = 'minimal'\n")
+            .expect("Rustup settings");
+        std::os::unix::fs::symlink(external.path().join("toolchains"), root.join("toolchains"))
+            .expect("toolchains symlink");
+        std::fs::create_dir(root.join("update-hashes")).expect("update hashes");
+        let allowances = rustup_read_allowances(&root);
+        let canonical_root = root.canonicalize().expect("canonical Rustup root");
+        let canonical_external = external.path().canonicalize().expect("canonical target");
+        assert!(!allowances
+            .iter()
+            .any(|path| path.starts_with(&canonical_external)));
+        assert!(!allowances.contains(&canonical_root.join("toolchains")));
+        assert!(allowances.contains(&canonical_root.join("settings.toml")));
+        assert!(allowances.contains(&canonical_root.join("update-hashes")));
     }
 
     #[test]
@@ -717,6 +780,15 @@ mod tests {
         assert!(
             raw.iter().any(|root| root.ends_with("codegg")),
             "CodeGG's own credential store must be on the deny list"
+        );
+        assert!(
+            raw.iter().any(|root| root.ends_with(".cargo/credentials")),
+            "Cargo credentials must stay explicitly denied"
+        );
+        assert!(
+            raw.iter()
+                .any(|root| root.ends_with(".cargo/credentials.toml")),
+            "Cargo credential TOML must stay explicitly denied"
         );
     }
 
