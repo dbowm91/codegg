@@ -912,7 +912,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             if not rustc_path.is_file():
                 raise HarnessError("configured rustc executable is not a regular file")
             env["RUSTC"] = str(rustc_path)
-        env["CARGO_TARGET_DIR"] = str(private_dir(root / "cargo-target"))
+        env["CARGO_TARGET_DIR"] = str(private_dir(workspace / ".cargo-target"))
         config = {
             "provider": {"openai": {
                 "api_key": "local-fixture-only",
