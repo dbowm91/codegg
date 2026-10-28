@@ -646,6 +646,8 @@ pub struct SharedStreamDecoder {
     terminal: bool,
     finish_reason: Option<String>,
     usage: Option<eggpool_wire::ir::CanonicalUsage>,
+    raw_sse_frame: Vec<u8>,
+    reported_allowance_micros: Option<u64>,
     /// Content-block indices that opened a tool call in this stream.
     ///
     /// An Anthropic stream closes *every* content block with one `ContentStop`
@@ -682,6 +684,8 @@ impl SharedStreamDecoder {
             terminal: false,
             finish_reason: None,
             usage: None,
+            raw_sse_frame: Vec::new(),
+            reported_allowance_micros: None,
             tool_call_indices: BTreeSet::new(),
             chat_inflight: Vec::new(),
             chat_synthetic: 0,
@@ -689,6 +693,7 @@ impl SharedStreamDecoder {
     }
 
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<ChatEvent>, ProviderError> {
+        self.observe_billing_frames(bytes);
         // Preserve the decoder's own reason. Collapsing every failure mode into
         // one opaque string made provider stream bugs undiagnosable in the
         // field — an oversized SSE frame, an early EOF, and a malformed event
@@ -703,6 +708,13 @@ impl SharedStreamDecoder {
     }
 
     pub fn finish(&mut self) -> Result<Vec<ChatEvent>, ProviderError> {
+        if !self.raw_sse_frame.is_empty() {
+            self.observe_billing_frame();
+            self.raw_sse_frame.clear();
+        }
+        if let Some(allowance_micros) = self.reported_allowance_micros {
+            crate::request_budget::observe_opencode_go_allowance(allowance_micros)?;
+        }
         let (events, summary) = self.decoder.finalize_events().map_err(|_| {
             ProviderError::api(
                 "provider_stream",
@@ -729,16 +741,72 @@ impl SharedStreamDecoder {
             )
         })?;
         if self.terminal {
+            let mut reported_usage = self
+                .usage
+                .as_ref()
+                .map(|usage| token_usage(usage, self.reported_allowance_micros))
+                .unwrap_or_default();
+            reported_usage.provider_allowance_micros = self.reported_allowance_micros;
             output.push(ChatEvent::Finish {
                 stop_reason: self
                     .finish_reason
                     .take()
                     .unwrap_or_else(|| "stop".into())
                     .into(),
-                usage: self.usage.as_ref().map(token_usage).unwrap_or_default(),
+                usage: reported_usage,
             });
         }
         Ok(output)
+    }
+
+    fn observe_billing_frames(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.raw_sse_frame.push(*byte);
+            if self.raw_sse_frame.ends_with(b"\n\n") || self.raw_sse_frame.ends_with(b"\r\n\r\n") {
+                self.observe_billing_frame();
+                self.raw_sse_frame.clear();
+                continue;
+            }
+            if self.raw_sse_frame.len() > MAX_SSE_FRAME_BYTES {
+                self.raw_sse_frame.clear();
+            }
+        }
+    }
+
+    fn observe_billing_frame(&mut self) {
+        let mut data = Vec::new();
+        for line in self.raw_sse_frame.split(|byte| *byte == b'\n') {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            let Some(value) = line.strip_prefix(b"data:") else {
+                continue;
+            };
+            let value = value.strip_prefix(b" ").unwrap_or(value);
+            if !data.is_empty() {
+                data.push(b'\n');
+            }
+            data.extend_from_slice(value);
+        }
+        let Ok(frame) = serde_json::from_slice::<serde_json::Value>(&data) else {
+            return;
+        };
+        let Some(allowance) = frame
+            .get("usage")
+            .or_else(|| {
+                frame
+                    .get("response")
+                    .and_then(|response| response.get("usage"))
+            })
+            .and_then(|usage| usage.get("opencode"))
+            .and_then(|opencode| opencode.get("allowance"))
+            .and_then(serde_json::Value::as_f64)
+            .filter(|allowance| allowance.is_finite() && *allowance >= 0.0)
+        else {
+            return;
+        };
+        let micros = (allowance * 1_000_000.0).round();
+        if micros.is_finite() && micros >= 0.0 && micros <= u64::MAX as f64 {
+            self.reported_allowance_micros = Some(micros as u64);
+        }
     }
 
     fn consume_events(
@@ -1097,7 +1165,10 @@ fn presence<T>(value: Option<T>) -> eggpool_wire::ir::Presence<T> {
     )
 }
 
-fn token_usage(usage: &eggpool_wire::ir::CanonicalUsage) -> TokenUsage {
+fn token_usage(
+    usage: &eggpool_wire::ir::CanonicalUsage,
+    provider_allowance_micros: Option<u64>,
+) -> TokenUsage {
     let bounded = |value: Option<u64>| value.unwrap_or_default().min(usize::MAX as u64) as usize;
     TokenUsage {
         input_tokens: bounded(usage.input_tokens),
@@ -1107,12 +1178,30 @@ fn token_usage(usage: &eggpool_wire::ir::CanonicalUsage) -> TokenUsage {
         cached_tokens: usage
             .cached_input_tokens
             .map(|value| value.min(usize::MAX as u64) as usize),
+        provider_allowance_micros,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opencode_go_allowance_extension_is_preserved_as_integer_micros() {
+        let mut decoder =
+            SharedStreamDecoder::new(eggpool_wire::codec::StreamAdapterKind::OpenaiChatSse);
+        decoder
+            .raw_sse_frame
+            .extend_from_slice(b"data: {\"usage\":{\"opencode\":{\"allowance\":1.234567}}}\n\n");
+        decoder.observe_billing_frame();
+        assert_eq!(decoder.reported_allowance_micros, Some(1_234_567));
+
+        decoder
+            .raw_sse_frame
+            .extend_from_slice(b"data: {\"usage\":{\"opencode\":{\"allowance\":-1}}}\n\n");
+        decoder.observe_billing_frame();
+        assert_eq!(decoder.reported_allowance_micros, Some(1_234_567));
+    }
     use std::sync::Arc;
 
     #[test]
@@ -1686,12 +1775,13 @@ mod tests {
             reasoning_tokens: Some(2),
             cache_counter_status: eggpool_wire::ir::CacheCounterStatus::Reported,
         };
-        let mapped = token_usage(&usage);
+        let mapped = token_usage(&usage, Some(1_250_000));
         assert_eq!(mapped.input_tokens, usize::MAX);
         assert_eq!(mapped.output_tokens, 7);
         assert_eq!(mapped.total_tokens, 10);
         assert_eq!(mapped.cached_tokens, Some(3));
         assert_eq!(mapped.reasoning_tokens, 2);
+        assert_eq!(mapped.provider_allowance_micros, Some(1_250_000));
     }
 
     /// Byte-exact shape OpenCode Go returns on its Anthropic-compatible

@@ -390,6 +390,7 @@ pub fn completed_event_script() -> Vec<ReducerEventInput> {
             output_tokens: None,
             cached_tokens: None,
             reasoning_tokens: None,
+            provider_allowance_micros: None,
             context_limit: None,
             turn_id: "turn-1".into(),
             stop_reason: "ok".into(),

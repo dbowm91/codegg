@@ -936,6 +936,7 @@ async fn late_socket_tui_attaches_to_held_real_scheduled_subagent() {
                 output_tokens: None,
                 cached_tokens: None,
                 reasoning_tokens: None,
+                provider_allowance_micros: None,
                 context_limit: None,
                 session_id: session.id.clone(),
                 turn_id: "m006-parent-turn".into(),

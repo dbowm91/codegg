@@ -152,6 +152,7 @@ pub fn projection_events_from_core(
             output_tokens,
             cached_tokens,
             reasoning_tokens,
+            provider_allowance_micros,
             context_limit,
             ..
         } => {
@@ -163,6 +164,7 @@ pub fn projection_events_from_core(
                 output_tokens: *output_tokens,
                 cached_tokens: *cached_tokens,
                 reasoning_tokens: *reasoning_tokens,
+                provider_allowance_micros: *provider_allowance_micros,
                 context_limit: *context_limit,
             };
             Some((session_id.clone(), None, event))

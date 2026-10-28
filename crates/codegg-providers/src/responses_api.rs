@@ -421,6 +421,22 @@ pub struct ResponsesUsage {
     pub total_tokens: u32,
     #[serde(default)]
     pub reasoning_tokens: Option<u32>,
+    #[serde(default)]
+    pub opencode: Option<OpenCodeUsage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenCodeUsage {
+    #[serde(default)]
+    pub allowance: Option<f64>,
+}
+
+impl OpenCodeUsage {
+    fn allowance_micros(&self) -> Option<u64> {
+        let micros = self.allowance? * 1_000_000.0;
+        (micros.is_finite() && (0.0..=u64::MAX as f64).contains(&micros))
+            .then(|| micros.round() as u64)
+    }
 }
 
 /// Details about why a response is incomplete.
@@ -1422,8 +1438,24 @@ impl ResponsesTransport {
                                                 reasoning_tokens: u.reasoning_tokens.unwrap_or(0)
                                                     as usize,
                                                 cached_tokens: None,
+                                                provider_allowance_micros: u
+                                                    .opencode
+                                                    .as_ref()
+                                                    .and_then(OpenCodeUsage::allowance_micros),
                                             }
                                         });
+                                        if let Some(allowance_micros) = usage
+                                            .as_ref()
+                                            .and_then(|usage| usage.provider_allowance_micros)
+                                        {
+                                            if let Err(error) =
+                                                crate::request_budget::observe_opencode_go_allowance(
+                                                    allowance_micros,
+                                                )
+                                            {
+                                                return Some((Err(error), (byte_stream, buffer)));
+                                            }
+                                        }
                                         Some(crate::provider_core::ChatEvent::Finish {
                                             stop_reason: Arc::new(response.status.clone()),
                                             usage: usage.unwrap_or_default(),
@@ -1520,6 +1552,7 @@ pub fn fixture_response_completed(
                 output_tokens: 200,
                 total_tokens: 300,
                 reasoning_tokens: None,
+                opencode: None,
             }),
             incomplete_details: None,
         },
@@ -1543,6 +1576,24 @@ mod tests {
         assert!(!caps.supports_hosted_programs);
         assert!(!caps.can_host_programs());
         assert!(!caps.full_hosted_support());
+    }
+
+    #[test]
+    fn opencode_usage_deserializes_the_reported_allowance() {
+        let usage: ResponsesUsage = serde_json::from_value(serde_json::json!({
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "total_tokens": 15,
+            "opencode": {"allowance": 1.25}
+        }))
+        .expect("OpenCode usage extension decodes");
+        assert_eq!(
+            usage
+                .opencode
+                .as_ref()
+                .and_then(OpenCodeUsage::allowance_micros),
+            Some(1_250_000)
+        );
     }
 
     #[test]

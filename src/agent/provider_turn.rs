@@ -661,6 +661,15 @@ async fn stream_once(
                         // difference is deliberate.
                         loop_.state.run_provider_responses =
                             loop_.state.run_provider_responses.saturating_add(1);
+                        if let Some(allowance_micros) = usage.provider_allowance_micros {
+                            loop_.state.run_provider_allowance_micros = Some(
+                                loop_
+                                    .state
+                                    .run_provider_allowance_micros
+                                    .unwrap_or(0)
+                                    .saturating_add(allowance_micros),
+                            );
+                        }
                         loop_.state.run_input_tokens = loop_
                             .state
                             .run_input_tokens

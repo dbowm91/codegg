@@ -1,6 +1,6 @@
 # Agent Worktree Placement and Build Affinity A005 — Conservative Placement Advisor
 
-Status: **conditionally closed** — closure `plans/closure/agent-worktree-placement-and-build-affinity/005-status.md`; live-model qualification remains open
+Status: **closed (no-go)** — closure `plans/closure/agent-worktree-placement-and-build-affinity/005-status.md`
 Repository baseline: `493e5ee11` (`plan/worktree-affinity-cwd-build-admission-20261027`)
 
 Source roadmap:
@@ -67,6 +67,8 @@ Keep writable target directories separate. The task tool does not promise compil
 
 Use the repository's Harness Lab native evaluation path, not a mocked provider, for the required before/after comparison. Freeze the harness commit, task fixtures, evaluator, model/provider route, request limits, and cost/time ceiling before the first request. Do not place credentials in receipts.
 
+For A005, the preregistered baseline is an **A002-compatible schema ablation**: both arms run the same current source/binary with identical scheduler, tools, placement authority, and provider budget gate. The baseline arm receives the generic typed placement contract; the candidate arm receives the full strategic placement guidance. `CODEGG_HARNESS_DISABLE_PLACEMENT_ADVISOR` is set only in baseline trial environments that also carry the provider allowance gate. The receipt records this arm setting. This avoids using a pre-A002 binary that would have changed the authority under test. Equal binary hashes are expected and do not imply equal advisor input.
+
 The workload set must include:
 - a Rust dependency-heavy inspect-only task;
 - a Rust edit/build task that runs through the supported scheduler Build path;
@@ -76,7 +78,7 @@ The workload set must include:
 
 Use paired randomized baseline/advisor arms across at least three repetitions per case, with a hidden verifier. Record task success, verifier result, placement requested and resolved, refusal/fallback/collision outcome, end-to-end and scheduler wait time, provider request count/cost where available, CPU/RSS/disk/target growth, and any build-quota delay. The advisor arm must not win by receiving extra permissions or a different tool set. Report medians, ranges, and every failure; count a refusal as correct only when the fixture's expected policy requires refusal.
 
-**Authorization gate:** provider-backed work requires a fresh operator-approved route and explicit request/time/spend limit. The operator authorized OpenCode Go, up to 240 requests, 60 minutes, and $10 on 2026-10-28. The configured route's Harness Lab receipts omit provider cost and no provider-enforced $10 limit is verified. Keep the spend gate closed until a supported CodeGG route exposes enforceable cost or is verified free; do not substitute an estimated price for a hard cap or fabricate real-model evidence.
+**Authorization gate:** provider-backed work requires an operator-approved route and explicit request/time/spend limit. On 2026-10-28 the operator authorized OpenCode Go and a cumulative ceiling of 480 requests, 120 minutes, and $10 of provider-reported Go allowance, and accepted a low-cost model such as `muse-spark-1.3-contributor`. OpenCode reports that allowance in `usage.opencode.allowance`, distinct from cash charged. CodeGG and Harness Lab carry and enforce that field; missing allowance data refuses further provider work. Do not substitute an estimated price for the allowance cap or fabricate real-model evidence. The provider can only report a response's allowance after that response completes, so at most one in-flight response may cross the remaining allowance ceiling.
 
 ## 8. Failure and contention
 
@@ -89,7 +91,9 @@ A refused placement remains refused, never falls back to the parent or an arbitr
 - Existing A002 production scheduler, lease contention, generation release, read-only allowlist, and refusal tests stay green.
 - Scheduler tests prove repository quota remains configuration-owned and a Rust job cannot widen it.
 - Harness dry-run/fixture validation proves paired-arm identity, hidden verifier, randomized order, denominator, cost ceiling, and receipt redaction before any provider call.
-- After the authorized budgets have an enforceable spend source and A002 is strictly closed: run the frozen paired multi-language and Rust workload set; evaluate all failures and collisions against the pre-registered rubric.
+- Provider and Harness Lab fixtures prove streamed and Responses usage decode `opencode.allowance`, the ACP receipt carries it on success/failure, and the per-request boundary refuses another OpenCode Go request at the configured request or remaining allowance cap.
+- The paired comparison schedule randomizes baseline/advisor arm order and shares one request, allowance, and wall-clock budget across both arms and all repetitions.
+- With A002 strictly closed and the authorized allowance gate implemented, run the frozen paired multi-language and Rust workload set; evaluate all failures and collisions against the pre-registered rubric. This qualification is complete and recorded as a no-go in `plans/validation/agent-worktree-placement-and-build-affinity/005-live-placement-comparison-20261028.md`.
 
 ## 10. Required verification
 
@@ -109,8 +113,8 @@ Validate each family/member selection before treating a zero-test exit as eviden
 
 ## 11. Acceptance and decision
 
-The deterministic advice is useful only if the model follows user intent without increasing authority, keeps placement failures fail-closed, and yields no correctness regression in the paired real-model evaluation. A positive performance claim requires the full cost and resource denominator. A no-go is acceptable if the advisor worsens success/collisions/cost or no stable rule improves outcomes. Do not mark the live evaluation accepted from local stubbed tests.
+The deterministic advice is useful only if the model follows user intent without increasing authority, keeps placement failures fail-closed, and yields no correctness regression in the paired real-model evaluation. A positive performance claim requires the full cost and resource denominator. A no-go is acceptable if the advisor worsens success/collisions/cost or no stable rule improves outcomes. The completed evaluation produced no independently verified task success, and the placement advisor showed no substantive correctness improvement. Its favorable reliability and duration movement is advisory under the frozen scoring contract; the result is a no-go, not acceptance.
 
 ## 12. Closure evidence
 
-Record the implementation source revision, exact focused and repository verification, placement output examples, paired raw receipts with secrets removed, per-language success/collision/cost table, evidence limits, and a go/no-go rationale. If the operator authorization gate remains open, status is `conditionally closed` at most, and the record must name the outstanding live qualification rather than claim full completion.
+Record the implementation source revision, exact focused and repository verification, placement output examples, paired receipts with secrets removed, per-language success/collision/cost table, evidence limits, and a go/no-go rationale. The live qualification and deterministic implementation are closed as no-go: the data do not support a positive placement-strategy or performance claim. The machine-readable receipts disclose the scoring-only correction that classified the unchanged unavailable-checkout scenario as a protected negative control and reran its six paired rows.

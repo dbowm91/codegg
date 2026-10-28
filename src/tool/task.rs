@@ -1839,6 +1839,10 @@ impl Tool for TaskTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
+        let advisor_enabled = !(std::env::var_os("CODEGG_HARNESS_DISABLE_PLACEMENT_ADVISOR")
+            .is_some()
+            && std::env::var_os("CODEGG_HARNESS_MAX_PROVIDER_ALLOWANCE_USD").is_some());
+        let placement_description = placement_schema_description(advisor_enabled);
         json!({
             "type": "object",
             "properties": {
@@ -1937,7 +1941,7 @@ impl Tool for TaskTool {
                 "placement": {
                     "type": "string",
                     "enum": ["auto", "isolated_new", "serialized_shared", "existing_managed_read_only"],
-                    "description": "Conservative placement guide: use auto unless the user directs another checkout strategy; use isolated_new for independent edits when isolation is requested; use existing_managed_read_only only for user-directed inspection when the exact per-child worktree_id is known; use serialized_shared only for a deliberately created supported group. Existing read-only placement takes an exclusive run-owned lease and exposes only read/list/glob, refusing occupied, dirty, foreign, unmanaged or unavailable targets. Serialized shared denies process-class tools. Placement never enables Cargo cache reuse or shared target directories."
+                    "description": placement_description
                 },
                 "worktree_id": {
                     "type": "string",
@@ -3537,6 +3541,14 @@ fn placement_rationale(placement: &codegg_core::run_placement::RunPlacement) -> 
     }
 }
 
+fn placement_schema_description(advisor_enabled: bool) -> &'static str {
+    if advisor_enabled {
+        "Conservative placement guide: use auto unless the user directs another checkout strategy; use isolated_new for independent edits when isolation is requested; use existing_managed_read_only only for user-directed inspection when the exact per-child worktree_id is known; use serialized_shared only for a deliberately created supported group. Existing read-only placement takes an exclusive run-owned lease and exposes only read/list/glob, refusing occupied, dirty, foreign, unmanaged or unavailable targets. Serialized shared denies process-class tools. Placement never enables Cargo cache reuse or shared target directories."
+    } else {
+        "Placement strategy: auto (the compatible default), isolated_new, serialized_shared, or existing_managed_read_only. Existing managed placement requires an exact WorktreeId and remains read-only; invalid or unavailable targets refuse without fallback. Serialized sharing remains limited to its supported profile."
+    }
+}
+
 fn explicit_placement_requires_durable_scheduler(
     placement: &codegg_core::run_placement::RunPlacement,
 ) -> bool {
@@ -3844,6 +3856,9 @@ mod tests {
             worktree_id: codegg_core::identity::WorktreeId::new(),
         });
         assert!(existing.contains("read-only inspection"));
+        assert!(placement_schema_description(true).contains("Conservative placement guide"));
+        assert!(!placement_schema_description(false).contains("Conservative placement guide"));
+        assert!(placement_schema_description(false).contains("refuse without fallback"));
         assert!(![auto, isolated, shared, existing,]
             .iter()
             .any(|reason| reason.contains("cache")));

@@ -37,8 +37,9 @@ not survive provider retries.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
+import time
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 
@@ -197,8 +198,16 @@ class SpendGuard:
     total_tokens: int = 0
     cost_usd: float = 0.0
     cost_observed: bool = False
+    cost_source: Optional[str] = None
     exhausted_cap: Optional[str] = None
     _outstanding: int = 0
+    started_monotonic: float = field(default_factory=time.monotonic)
+
+    def remaining_wallclock_seconds(self) -> Optional[float]:
+        limit = self.policy.max_wallclock_seconds
+        if limit is None:
+            return None
+        return max(0.0, float(limit) - (time.monotonic() - self.started_monotonic))
 
     def admit(self, projected_provider_requests: int = 1) -> None:
         """Refuse to start provider work that would cross a cap.
@@ -211,6 +220,9 @@ class SpendGuard:
         if self.exhausted_cap is not None:
             raise BudgetExhausted(
                 f"the {self.exhausted_cap} cap is exhausted; refusing further provider work")
+        if self.remaining_wallclock_seconds() == 0.0:
+            self.exhausted_cap = MISSING_MAX_WALLCLOCK_SECONDS
+            raise BudgetExhausted("the max_wallclock_seconds cap is exhausted")
         limit = self.policy.max_provider_requests
         if limit is not None and self.provider_requests + projected_provider_requests > limit:
             self.exhausted_cap = MISSING_MAX_PROVIDER_REQUESTS
@@ -222,7 +234,8 @@ class SpendGuard:
 
     def observe(self, *, provider_requests: int = 0, input_tokens: int = 0,
                 output_tokens: int = 0, total_tokens: Optional[int] = None,
-                cost_usd: Optional[float] = None) -> None:
+                cost_usd: Optional[float] = None,
+                cost_source: Optional[str] = None) -> None:
         """Record the provider usage observed for a finished trial.
 
         The reservation made by the matching ``admit`` is replaced by the
@@ -241,6 +254,12 @@ class SpendGuard:
         if cost_usd is not None:
             self.cost_observed = True
             self.cost_usd += cost_usd
+            if cost_source is not None:
+                self.cost_source = cost_source
+        elif self.policy.cost_limit_usd is not None and self.exhausted_cap is None:
+            # A requested spend ceiling with no per-run provider allowance
+            # observation cannot authorize the next provider trial.
+            self.exhausted_cap = MISSING_COST_LIMIT
         if self.exhausted_cap is None:
             self.exhausted_cap = self._crossed_cap()
 
@@ -260,6 +279,8 @@ class SpendGuard:
                 "output_tokens": self.output_tokens,
                 "total_tokens": self.total_tokens,
                 "cost_usd": None if not self.cost_observed else self.cost_usd,
+                "cost_source": self.cost_source,
+                "elapsed_seconds": round(time.monotonic() - self.started_monotonic, 3),
                 "exhausted_cap": self.exhausted_cap}
 
 

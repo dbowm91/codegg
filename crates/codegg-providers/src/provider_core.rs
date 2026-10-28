@@ -523,6 +523,7 @@ pub struct TokenUsage {
     pub total_tokens: usize,
     pub reasoning_tokens: usize,
     pub cached_tokens: Option<usize>,
+    pub provider_allowance_micros: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

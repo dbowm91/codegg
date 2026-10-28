@@ -288,6 +288,7 @@ mod tests {
                 output_tokens: None,
                 cached_tokens: None,
                 reasoning_tokens: None,
+                provider_allowance_micros: None,
                 context_limit: None,
                 session_id: "s".into(),
                 turn_id: "t".into(),

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import os
 import re
 import shutil
@@ -46,7 +47,8 @@ from . import autonomy, budget, event_observation, faults, scoring, supervisor
 
 from .autonomy import AutonomyCase, AutonomySuite, verify_isolation
 from .pilot import _prepare_lane_home, opencode_go_credential
-from .supervisor import AcpClient, HarnessError, HarnessTimeout, HarnessTurnFailure, SubjectSpec
+from .supervisor import (AcpClient, HarnessError, HarnessTimeout, HarnessTurnFailure,
+                         SubjectSpec, sha256_file)
 
 #: Where the taxonomy's case bodies live, relative to the repository root.
 AUTONOMY_ROOT_RELPATH = "dev/autonomy_fixtures"
@@ -150,6 +152,8 @@ class _ToolCallProjector:
         self._finished: dict[str, str] = {}
         self._elapsed: dict[str, int] = {}
         self._job: dict[str, dict[str, Any]] = {}
+        self._placement_accepted: set[str] = set()
+        self._task_run_statuses: dict[str, str] = {}
 
     def absorb(self, notification: dict[str, Any]) -> None:
         """Absorb one ACP notification."""
@@ -174,6 +178,7 @@ class _ToolCallProjector:
                 "started_elapsed_ms": notification.get("_received_elapsed_ms"),
                 "action": update.get("codeggAction") if update.get("codeggAction") in
                           {"submit", "status", "wait", "output", "cancel"} else None,
+                "task_placement": update.get("codeggTaskPlacement"),
             }
         elif kind == "tool_call_update":
             call_id = update.get("toolCallId")
@@ -190,21 +195,136 @@ class _ToolCallProjector:
                                               self._started.get(call_id, {}).get("action"))
                     if job is not None:
                         self._job[call_id] = job
+            if isinstance(call_id, str) and update.get("codeggPlacementAccepted") is True:
+                self._placement_accepted.add(call_id)
+            if (isinstance(call_id, str)
+                    and self._started.get(call_id, {}).get("tool") == "task"):
+                status = _safe_task_run_status(update.get("rawOutput"))
+                if status is not None:
+                    self._task_run_statuses[call_id] = status
 
     def calls(self) -> list[dict[str, Any]]:
         """Return the projected tool calls, in the order they started."""
-        return [{
-            "index": index,
-            "tool": self._started[call_id]["tool"],
-            "arguments_sha256": self._started[call_id]["arguments_sha256"],
-            "status": self._finished.get(call_id, "unknown"),
-            "started_elapsed_ms": self._started[call_id].get("started_elapsed_ms"),
-            "finished_elapsed_ms": self._elapsed.get(call_id),
-            "job": self._job.get(call_id),
-            # ACP terminal status is typed evidence. Error-like output text
-            # may be ordinary file content and never changes the outcome.
-            "failed": self._finished.get(call_id) == faults.STATUS_FAILED,
-        } for index, call_id in enumerate(self._order)]
+        calls = []
+        for index, call_id in enumerate(self._order):
+            started = self._started[call_id]
+            call = {
+                "index": index,
+                "tool": started["tool"],
+                "arguments_sha256": started["arguments_sha256"],
+                "status": self._finished.get(call_id, "unknown"),
+                "started_elapsed_ms": started.get("started_elapsed_ms"),
+                "finished_elapsed_ms": self._elapsed.get(call_id),
+                "job": self._job.get(call_id),
+                # ACP terminal status is typed evidence. Error-like output text
+                # may be ordinary file content and never changes the outcome.
+                "failed": self._finished.get(call_id) == faults.STATUS_FAILED,
+            }
+            if started["task_placement"] is not None:
+                call["task_placement"] = started["task_placement"]
+            if call_id in self._placement_accepted:
+                call["placement_accepted"] = True
+            if call_id in self._task_run_statuses:
+                call["task_run_status"] = self._task_run_statuses[call_id]
+            calls.append(call)
+        return calls
+
+
+def _safe_task_run_status(output: Any) -> Optional[str]:
+    """Extract only an allowlisted durable run status from task output."""
+    if not isinstance(output, str):
+        return None
+    allowed = {"created", "queued", "preparing", "running", "waiting",
+               "cancelling", "completed", "failed", "interrupted", "cancelled"}
+    for line in output.splitlines():
+        candidate = None
+        if line.startswith("Status: "):
+            candidate = line.removeprefix("Status: ").strip()
+        elif line.startswith("Run is terminal: "):
+            candidate = line.removeprefix("Run is terminal: ").strip()
+        if candidate in allowed:
+            return candidate
+    return None
+
+
+class _ProcessTreeSampler:
+    """Sample bounded host CPU and resident memory for one ACP process tree."""
+
+    def __init__(self, root_pid: int, interval: float = 0.5) -> None:
+        self.root_pid = root_pid
+        self.interval = interval
+        self.stop_event = threading.Event()
+        self.peak_rss_bytes = 0
+        self.cpu_seconds = 0.0
+        self.samples = 0
+        self._thread = threading.Thread(target=self._sample_loop, daemon=True)
+        self._thread.start()
+
+    def _sample_loop(self) -> None:
+        previous = time.monotonic()
+        while not self.stop_event.wait(self.interval):
+            try:
+                result = subprocess.run(
+                    ["ps", "-axo", "pid=,ppid=,%cpu=,rss="],
+                    capture_output=True, text=True, timeout=2.0, check=False)
+                if result.returncode != 0:
+                    continue
+                rows: dict[int, tuple[int, float, int]] = {}
+                for line in result.stdout.splitlines():
+                    fields = line.split()
+                    if len(fields) != 4:
+                        continue
+                    try:
+                        pid, ppid = int(fields[0]), int(fields[1])
+                        cpu, rss_kib = float(fields[2]), int(fields[3])
+                    except ValueError:
+                        continue
+                    rows[pid] = (ppid, cpu, rss_kib)
+                tree = {self.root_pid}
+                changed = True
+                while changed:
+                    changed = False
+                    for pid, (ppid, _cpu, _rss) in rows.items():
+                        if ppid in tree and pid not in tree:
+                            tree.add(pid)
+                            changed = True
+                members = [rows[pid] for pid in tree if pid in rows]
+                if not members:
+                    continue
+                now = time.monotonic()
+                elapsed = max(0.0, now - previous)
+                previous = now
+                cpu_percent = sum(max(0.0, row[1]) for row in members)
+                rss_bytes = sum(max(0, row[2]) for row in members) * 1024
+                self.cpu_seconds += cpu_percent / 100.0 * elapsed
+                self.peak_rss_bytes = max(self.peak_rss_bytes, rss_bytes)
+                self.samples += 1
+            except (OSError, subprocess.SubprocessError):
+                continue
+
+    def finish(self) -> dict[str, Any]:
+        self.stop_event.set()
+        self._thread.join(timeout=2.5)
+        return {
+            "cpu_seconds": round(self.cpu_seconds, 3) if self.samples else None,
+            "peak_rss_bytes": self.peak_rss_bytes if self.samples else None,
+            "sample_count": self.samples,
+        }
+
+
+def _directory_size_bytes(root: Path) -> int:
+    total = 0
+    if not root.exists():
+        return total
+    for current, _directories, filenames in os.walk(root, followlinks=False):
+        for filename in filenames:
+            try:
+                path = Path(current) / filename
+                if not path.is_symlink():
+                    total += path.stat().st_size
+            except OSError:
+                continue
+    return total
 
 
 _JOB_ID_PATTERN = re.compile(r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b", re.I)
@@ -418,10 +538,11 @@ def _provider_request_admissions(stderr_path: Path) -> Optional[int]:
             rows = [json.loads(line) for line in contents.splitlines() if line.strip()]
         except (json.JSONDecodeError, UnicodeError):
             return None
-        if all(isinstance(row, dict)
-               and isinstance(row.get("request_number"), int)
-               and isinstance(row.get("limit"), int) for row in rows):
-            return len(rows)
+        requests = [row for row in rows if isinstance(row, dict)
+                    and row.get("kind", "request") == "request"]
+        if all(isinstance(row.get("request_number"), int)
+               and isinstance(row.get("limit"), int) for row in requests):
+            return len(requests)
         return None
     return sum(1 for line in contents.splitlines()
                if "harness provider request admitted" in line
@@ -437,13 +558,31 @@ def _remaining_provider_request_cap(policy: budget.BudgetPolicy,
     return max(0, limit - guard.provider_requests)
 
 
+def _provider_allowance_from_receipt(receipt_path: Path) -> Optional[float]:
+    """Sum durable OpenCode Go allowance observations without reading model text."""
+    try:
+        rows = [json.loads(line) for line in receipt_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()]
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return None
+    observations = [row for row in rows if isinstance(row, dict)
+                    and row.get("kind") == "allowance_observed"]
+    if not observations:
+        return None
+    if any(not isinstance(row.get("allowance_micros"), int)
+           or row["allowance_micros"] < 0 for row in observations):
+        return None
+    return sum(row["allowance_micros"] for row in observations) / 1_000_000
+
+
 def run_case(binary: Path, case: AutonomyCase, model: str, *,
              budget_policy: budget.BudgetPolicy, lane_root: Path,
              repository: Optional[Path] = None, profile: str = "workspace-write",
              timeout: float = 900.0, agent: str = "build",
              credential: Optional[str] = None,
              guard: Optional[budget.SpendGuard] = None,
-             min_free_disk_bytes: Optional[int] = None) -> dict[str, Any]:
+             min_free_disk_bytes: Optional[int] = None,
+             disable_placement_advisor: bool = False) -> dict[str, Any]:
     """Run one taxonomy case against a live provider route and return a receipt.
 
     The receipt separates three things that are easy to conflate: what the
@@ -509,6 +648,15 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     if min_free_disk_bytes is not None and initial_free_bytes is not None \
             and initial_free_bytes < min_free_disk_bytes:
         raise HarnessError("free disk is below the required floor; refusing the live case")
+    remaining_seconds = guard.remaining_wallclock_seconds()
+    case_seconds = float(case.budget["max_wallclock_seconds"])
+    if remaining_seconds is not None:
+        # Leave time for the turn, verifier, lane setup, and cleanup.
+        timeout = min(timeout, case_seconds, max(1.0, remaining_seconds / 3.0))
+    else:
+        timeout = min(timeout, case_seconds)
+
+    disk_before_bytes = _directory_size_bytes(lane_root)
     supervisor.private_dir(lane_root)
     # Each case starts a fresh provider process, so its process-local cap must
     # be the unspent suite allowance, not the original full-suite limit.
@@ -545,12 +693,43 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         if not metadata.is_file():
             raise HarnessError("the H005 frozen case metadata is missing")
         shutil.copy2(metadata, private_root / "case-metadata.json")
+    if case.family == "delegation":
+        # Managed placement requires a real repository identity. Initialize a
+        # private, lane-local Git repository around only the editable fixture;
+        # the hidden verifier stays in the sibling private root.
+        subprocess.run(["git", "init", "--quiet", str(agent_root)], check=True,
+                       capture_output=True, text=True)
+        subprocess.run(["git", "-C", str(agent_root), "add", "fixture"], check=True,
+                       capture_output=True, text=True)
+        subprocess.run(["git", "-C", str(agent_root), "-c", "user.name=Harness Lab",
+                        "-c", "user.email=harness@example.invalid", "commit", "--quiet",
+                        "-m", "frozen placement fixture"], check=True,
+                       capture_output=True, text=True)
 
     spec = SubjectSpec.create(
         f"autonomy-{case.case_id}", binary, agent_root, lane_root, repository,
         provider_request_limit=provider_request_limit,
     )
     env = spec.environment()
+    env.pop("CODEGG_HARNESS_DISABLE_PLACEMENT_ADVISOR", None)
+    if disable_placement_advisor:
+        env["CODEGG_HARNESS_DISABLE_PLACEMENT_ADVISOR"] = "1"
+    if guard.policy.max_provider_requests is not None:
+        remaining_requests = min(
+            guard.policy.max_provider_requests - max(0, guard.provider_requests - 1),
+            int(case.budget["max_provider_requests"]),
+        )
+        if remaining_requests <= 0:
+            raise HarnessError("provider request budget is exhausted before the case starts")
+        env["CODEGG_HARNESS_MAX_PROVIDER_REQUESTS"] = str(remaining_requests)
+        env["CODEGG_HARNESS_PROVIDER_REQUEST_RECEIPT"] = str(
+            spec.root / "artifacts" / "provider-request-admissions.jsonl")
+    if guard.policy.cost_limit_usd is not None:
+        remaining_allowance = guard.policy.cost_limit_usd - guard.cost_usd
+        if remaining_allowance <= 0:
+            raise HarnessError("provider allowance budget is exhausted before the case starts")
+        env["CODEGG_HARNESS_MAX_PROVIDER_ALLOWANCE_USD"] = str(
+            remaining_allowance)
     _prepare_lane_home(env)
 
     key = credential if credential is not None else opencode_go_credential()
@@ -589,15 +768,19 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     policy_receipt: Any = None
     watcher: Optional[_FaultWatcher] = None
     disk_watcher: Optional[_DiskFloorWatcher] = None
+    resource_sampler: Optional[_ProcessTreeSampler] = None
+    process_resources: Optional[dict[str, Any]] = None
     event_observer_drained = False
     try:
         client.request("initialize", {"protocolVersion": ACP_PROTOCOL_VERSION,
                                       "clientInfo": {"name": "codegg-harness-lab", "version": "1"}})
+        resource_sampler = _ProcessTreeSampler(client.process.pid)
         opened = client.request("session/new", {"cwd": str(agent_root),
                                                 "title": f"harness-lab-autonomy-{case.case_id}"})
         session_id = opened.get("sessionId")
         if not isinstance(session_id, str) or not session_id:
             raise HarnessError("ACP did not return a session id for the autonomy case")
+        resource_sampler = _ProcessTreeSampler(client.process.pid)
         policy_receipt = opened.get("codeggPolicy")
         if fault_spec is not None:
             # The watcher stops the trial once the same call has failed the
@@ -650,6 +833,8 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
             daemon_stop_error = f"{type(error).__name__}: {error}"
         else:
             daemon_stop_error = None
+        if resource_sampler is not None:
+            process_resources = resource_sampler.finish()
 
     duration_ms = int((time.monotonic() - started) * 1000)
     tool_calls = _observed_tool_calls(client)
@@ -709,8 +894,14 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
             "output_tokens": raw_usage.get("outputTokens"),
             "cached_tokens": raw_usage.get("cachedTokens"),
             "reasoning_tokens": raw_usage.get("reasoningTokens"),
+            "provider_allowance_usd": raw_usage.get("providerAllowanceUsd"),
         }
     provider_receipt_path = spec.root / "artifacts" / "provider-request-admissions.jsonl"
+    receipt_allowance = _provider_allowance_from_receipt(provider_receipt_path)
+    if receipt_allowance is not None and (
+            not isinstance(usage, dict) or usage.get("provider_allowance_usd") is None):
+        usage = dict(usage or {})
+        usage["provider_allowance_usd"] = receipt_allowance
     provider_request_count = _provider_request_admissions(provider_receipt_path)
     provider_request_count_source = "codegg_provider_boundary_receipt"
     if provider_request_count is None:
@@ -722,7 +913,13 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     guard.observe(provider_requests=(provider_request_count if provider_request_count is not None
                                     else 1),
                   input_tokens=int((usage or {}).get("input_tokens") or 0),
-                  output_tokens=int((usage or {}).get("output_tokens") or 0))
+                  output_tokens=int((usage or {}).get("output_tokens") or 0),
+                  cost_usd=(usage or {}).get("provider_allowance_usd"),
+                  cost_source=("opencode_go_allowance_receipt"
+                               if receipt_allowance is not None
+                               else "opencode_go_allowance"
+                               if (usage or {}).get("provider_allowance_usd") is not None
+                               else None))
 
     exit_code = verification.get("exit_code")
     verifier_confirmed = exit_code == 0
@@ -740,6 +937,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         "model": model,
         "agent": agent,
         "profile": profile,
+        "placement_advisor_enabled": not disable_placement_advisor,
         "binary_sha256": spec.binary_sha256,
         "source_revision": spec.revision,
         "session_id": session_id,
@@ -753,6 +951,13 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
             "lowest_observed_free_bytes": disk_watcher.minimum_free_bytes,
             "triggered": disk_watcher.triggered,
             "measurement_error": disk_watcher.error,
+        },
+        "resource_usage": {
+            **(process_resources or {
+                "cpu_seconds": None, "peak_rss_bytes": None, "sample_count": 0,
+            }),
+            "lane_disk_growth_bytes": max(
+                0, _directory_size_bytes(lane_root) - disk_before_bytes),
         },
         "tool_call_count": len(tool_calls),
         "tool_calls": tool_calls,
@@ -771,9 +976,11 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         "measurement_retry_state": (
             "unresolved" if observation_receipt["event_gap_count"] else "not_needed"
         ),
-        "control_exercised": _control_exercised({"fault": fault_receipt,
-                                                 "repeated_identical_failure":
-                                                 _repeated_identical_failure(tool_calls)}),
+        "control_exercised": (
+            _declared_control_trigger_exercised(case, tool_calls)
+            or _control_exercised({"fault": fault_receipt,
+                                   "repeated_identical_failure":
+                                   _repeated_identical_failure(tool_calls)})),
         "daemon_stop_error": daemon_stop_error,
         "policy_receipt": policy_receipt if isinstance(policy_receipt, dict) else None,
         "budget": guard.as_dict(),
@@ -836,7 +1043,7 @@ def run_suite(binary: Path, suite: AutonomySuite, model: str, *,
                                profile=profile, timeout=timeout, agent=agent,
                                credential=credential, guard=guard,
                                min_free_disk_bytes=min_free_disk_bytes)
-        except HarnessError as error:
+        except (HarnessError, budget.BudgetExhausted) as error:
             receipt = {"case_id": case_id, "terminal": "refused", "ok": False,
                        "error": str(error), "solved": False, "protected": case.protected}
         runs.append(receipt)
@@ -845,6 +1052,217 @@ def run_suite(binary: Path, suite: AutonomySuite, model: str, *,
             "case_ids": list(case_ids), "runs": runs,
             "budget": guard.as_dict(),
             "solved_cases": sum(1 for run in runs if run.get("solved"))}
+
+
+def run_paired_comparison(baseline_binary: Path, candidate_binary: Path,
+                          suite: AutonomySuite, model: str, *,
+                          budget_policy: budget.BudgetPolicy, lane_root: Path,
+                          repetitions: int = 3, seed: int = 20261028,
+                          repository: Optional[Path] = None,
+                          profile: str = "workspace-write", timeout: float = 900.0,
+                          case_ids: Optional[list[str]] = None) -> dict[str, Any]:
+    """Run each baseline/advisor case pair in randomized order under one budget.
+
+    One SpendGuard owns the whole comparison, including both binary arms.
+    Provider request and allowance limits are forwarded into each fresh daemon
+    and enforced at the OpenCode Go request boundary.
+    """
+    if not isinstance(repetitions, int) or isinstance(repetitions, bool) or repetitions < 1:
+        raise HarnessError("comparison repetitions must be a positive integer")
+    admission = budget.admit_budget(budget_policy)
+    if admission.status != budget.STATUS_ADMITTED:
+        raise HarnessError("budget admission refused before the comparison started: "
+                           + json.dumps(admission.as_dict(), sort_keys=True))
+    selected = case_ids or [case.case_id for case in suite.cases
+                            if case.support == "supported"]
+    if not selected:
+        raise HarnessError("comparison requires at least one supported case")
+    for case_id in selected:
+        if suite.case(case_id).support != "supported":
+            raise HarnessError(f"case {case_id} is deferred, not runnable")
+
+    guard = budget.SpendGuard(budget_policy)
+    sides: dict[str, list[dict[str, Any]]] = {"baseline": [], "candidate": []}
+    schedule: list[dict[str, Any]] = []
+    exhausted = False
+    schedule_rows = paired_schedule(selected, repetitions, seed)
+    lane_root.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = lane_root / "comparison-progress.jsonl"
+    if checkpoint_path.exists():
+        raise HarnessError(f"comparison checkpoint already exists: {checkpoint_path}")
+    for ordinal, row in enumerate(schedule_rows):
+        repetition = row["repetition"]
+        case_id = row["case_id"]
+        arm = row["arm"]
+        case = suite.case(case_id)
+        binary = baseline_binary if arm == "baseline" else candidate_binary
+        trial_lane = lane_root / f"trial{ordinal:02d}"
+        if exhausted:
+            result = {"case_id": case_id, "repetition": repetition,
+                      "arm": arm, "terminal": "refused", "solved": False,
+                      "error": guard.exhausted_cap or "comparison_budget_exhausted"}
+        else:
+            try:
+                result = run_case(
+                    binary, case, model, budget_policy=budget_policy,
+                    lane_root=trial_lane, repository=repository,
+                    profile=profile, timeout=timeout, guard=guard,
+                    disable_placement_advisor=(
+                        case.case_id.startswith("a005-") and arm == "baseline"))
+            except (HarnessError, budget.BudgetExhausted) as error:
+                result = {"case_id": case_id, "terminal": "refused",
+                          "solved": False, "error": str(error),
+                          "protected": case.protected}
+                exhausted = guard.exhausted_cap is not None
+            result["repetition"] = repetition
+            result["arm"] = arm
+        row["terminal"] = result.get("terminal")
+        row["provider_request_count"] = result.get("provider_request_count")
+        schedule.append(row)
+        sides[arm].append(result)
+        # Preserve a safe receipt after every trial. If an error occurs while
+        # building the final aggregate, the already completed and refused
+        # trials remain auditable without replaying provider work.
+        with checkpoint_path.open("a", encoding="utf-8") as checkpoint:
+            checkpoint.write(json.dumps({"schedule": row, "result": result},
+                                        sort_keys=True) + "\n")
+            checkpoint.flush()
+            os.fsync(checkpoint.fileno())
+    comparison = compare_runs(scoring.default_contract(), sides["baseline"],
+                              sides["candidate"])
+    return {"schema_version": 1, "model": model, "seed": seed,
+            "repetitions": repetitions, "case_ids": list(selected),
+            "baseline_binary_sha256": sha256_file(baseline_binary),
+            "candidate_binary_sha256": sha256_file(candidate_binary),
+            "schedule": schedule,
+            "baseline": {"runs": sides["baseline"]},
+            "candidate": {"runs": sides["candidate"]},
+            "comparison": comparison, "budget": guard.as_dict()}
+
+
+def resume_paired_comparison(checkpoint_path: Path, baseline_binary: Path,
+                             candidate_binary: Path, suite: AutonomySuite, model: str, *,
+                             budget_policy: budget.BudgetPolicy, lane_root: Path,
+                             repetitions: int, seed: int,
+                             case_ids: Optional[list[str]] = None,
+                             prior_provider_requests: int = 0,
+                             prior_allowance_usd: float = 0.0,
+                             prior_elapsed_seconds: float = 0.0,
+                             profile: str = "workspace-write",
+                             timeout: float = 900.0) -> dict[str, Any]:
+    """Complete refused rows from a paired checkpoint under a new residual cap."""
+    admission = budget.admit_budget(budget_policy)
+    if admission.status != budget.STATUS_ADMITTED:
+        raise HarnessError("budget admission refused before the resumed comparison started: "
+                           + json.dumps(admission.as_dict(), sort_keys=True))
+    if min(prior_provider_requests, prior_elapsed_seconds) < 0 or prior_allowance_usd < 0:
+        raise HarnessError("prior comparison budget counters must be non-negative")
+    try:
+        checkpoint_rows = [json.loads(line) for line in
+                           checkpoint_path.read_text(encoding="utf-8").splitlines()
+                           if line.strip()]
+    except (OSError, json.JSONDecodeError, UnicodeError) as error:
+        raise HarnessError("comparison checkpoint is unreadable") from error
+    selected = case_ids or [case.case_id for case in suite.cases
+                            if case.support == "supported"]
+    expected = paired_schedule(selected, repetitions, seed)
+    if len(checkpoint_rows) != len(expected):
+        raise HarnessError("comparison checkpoint row count does not match its frozen schedule")
+    for expected_row, checkpoint in zip(expected, checkpoint_rows, strict=True):
+        schedule = checkpoint.get("schedule") if isinstance(checkpoint, dict) else None
+        if not isinstance(schedule, dict) or any(
+                schedule.get(key) != expected_row.get(key)
+                for key in ("ordinal", "case_id", "repetition", "arm")):
+            raise HarnessError("comparison checkpoint does not match the frozen paired schedule")
+    baseline_hash = sha256_file(baseline_binary)
+    candidate_hash = sha256_file(candidate_binary)
+    if baseline_hash != candidate_hash:
+        raise HarnessError("resumed A005 comparison requires identical binary hashes")
+    for checkpoint in checkpoint_rows:
+        result = checkpoint.get("result", {})
+        recorded_hash = result.get("binary_sha256")
+        if recorded_hash is not None and recorded_hash != baseline_hash:
+            raise HarnessError("resumed comparison binary differs from its checkpoint")
+
+    guard = budget.SpendGuard(budget_policy)
+    lane_root.mkdir(parents=True, exist_ok=True)
+    progress_path = lane_root / "resume-progress.jsonl"
+    if progress_path.exists():
+        raise HarnessError(f"resumption checkpoint already exists: {progress_path}")
+    resumed = 0
+    for checkpoint in checkpoint_rows:
+        row = checkpoint["schedule"]
+        previous = checkpoint["result"]
+        if previous.get("terminal") != "refused" or previous.get("provider_request_count") is not None:
+            continue
+        case = suite.case(row["case_id"])
+        try:
+            result = run_case(
+                baseline_binary if row["arm"] == "baseline" else candidate_binary,
+                case, model, budget_policy=budget_policy, lane_root=lane_root /
+                f"trial{row['ordinal']:02d}", profile=profile, timeout=timeout, guard=guard,
+                disable_placement_advisor=(case.case_id.startswith("a005-")
+                                           and row["arm"] == "baseline"))
+        except (HarnessError, budget.BudgetExhausted) as error:
+            result = {"case_id": case.case_id, "terminal": "refused", "solved": False,
+                      "error": str(error), "protected": case.protected}
+        result["repetition"] = row["repetition"]
+        result["arm"] = row["arm"]
+        row["terminal"] = result.get("terminal")
+        row["provider_request_count"] = result.get("provider_request_count")
+        checkpoint["result"] = result
+        with progress_path.open("a", encoding="utf-8") as progress:
+            progress.write(json.dumps(checkpoint, sort_keys=True) + "\n")
+            progress.flush()
+            os.fsync(progress.fileno())
+        resumed += 1
+
+    sides = {arm: [checkpoint["result"] for checkpoint in checkpoint_rows
+                   if checkpoint["schedule"]["arm"] == arm]
+             for arm in ("baseline", "candidate")}
+    final_schedule = []
+    for checkpoint in checkpoint_rows:
+        row = dict(checkpoint["schedule"])
+        row["terminal"] = checkpoint["result"].get("terminal")
+        row["provider_request_count"] = checkpoint["result"].get("provider_request_count")
+        final_schedule.append(row)
+    comparison = compare_runs(scoring.default_contract(), sides["baseline"],
+                              sides["candidate"])
+    cumulative_allowance = prior_allowance_usd + guard.cost_usd
+    return {"schema_version": 1, "model": model, "seed": seed,
+            "repetitions": repetitions, "case_ids": selected,
+            "baseline_binary_sha256": baseline_hash,
+            "candidate_binary_sha256": candidate_hash,
+            "schedule": final_schedule,
+            "baseline": {"runs": sides["baseline"]},
+            "candidate": {"runs": sides["candidate"]},
+            "comparison": comparison, "budget": guard.as_dict(),
+            "resumption": {"resumed_trials": resumed,
+                           "source_checkpoint": str(checkpoint_path),
+                           "prior_provider_requests": prior_provider_requests,
+                           "prior_allowance_usd": prior_allowance_usd,
+                           "prior_elapsed_seconds": prior_elapsed_seconds,
+                           "cumulative_provider_requests":
+                               prior_provider_requests + guard.provider_requests,
+                           "cumulative_allowance_usd": cumulative_allowance,
+                           "cumulative_elapsed_seconds":
+                               prior_elapsed_seconds + guard.as_dict()["elapsed_seconds"]}}
+
+
+def paired_schedule(case_ids: list[str], repetitions: int, seed: int) -> list[dict[str, Any]]:
+    """Derive a deterministic randomized schedule with one pair per case/repeat."""
+    rng = random.Random(seed)
+    schedule: list[dict[str, Any]] = []
+    for repetition in range(1, repetitions + 1):
+        cases = list(case_ids)
+        rng.shuffle(cases)
+        for case_id in cases:
+            arms = ["baseline", "candidate"]
+            rng.shuffle(arms)
+            for arm in arms:
+                schedule.append({"ordinal": len(schedule), "case_id": case_id,
+                                 "repetition": repetition, "arm": arm})
+    return schedule
 
 
 def _observation(contract: scoring.ScoreContract, criterion_id: str,
@@ -890,10 +1308,26 @@ def _control_exercised(run: dict[str, Any]) -> bool:
     call really failed more than once. A control that was never exercised is
     reported as such and is **not** counted as a control that failed to hold.
     """
+    if run.get("control_exercised") is True:
+        return True
     fault = run.get("fault")
     if isinstance(fault, Mapping):
         return bool(fault.get("exercised"))
     return bool(run.get("repeated_identical_failure"))
+
+
+def _declared_control_trigger_exercised(case: AutonomyCase,
+                                        tool_calls: list[dict[str, Any]]) -> bool:
+    """Check an explicitly declared, case-specific negative-control trigger."""
+    if case.control_trigger != "unavailable_managed_checkout":
+        return False
+    return any(
+        call.get("tool") == "task"
+        and isinstance(call.get("task_placement"), Mapping)
+        and call["task_placement"].get("requested") == "existing_managed_read_only"
+        and call["task_placement"].get("worktree_id_present") is True
+        for call in tool_calls
+    )
 
 
 def _control_rate(runs: list[dict[str, Any]]) -> Optional[float]:

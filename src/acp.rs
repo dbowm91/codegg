@@ -902,6 +902,8 @@ async fn handle_event(
                     return Ok(false);
                 }
                 if !prompt.close_requested {
+                    let placement_observation =
+                        safe_task_placement_observation(tool_name, arguments);
                     let safe_action = if tool_name == "job" {
                         serde_json::from_str::<serde_json::Value>(arguments)
                             .ok()
@@ -919,18 +921,20 @@ async fn handle_event(
                     } else {
                         None
                     };
-                    update(
-                        stdout,
-                        &prompt.session_id,
-                        json!({
+                    update(stdout, &prompt.session_id, {
+                        let mut update = json!({
                             "sessionUpdate":"tool_call",
                             "toolCallId":tool_id,
                             "title":tool_name,
                             "status":"in_progress",
                             "codeggArgumentsSha256":sha256_text(arguments),
                             "codeggAction":safe_action,
-                        }),
-                    )
+                        });
+                        if let Some(observation) = placement_observation {
+                            update["codeggTaskPlacement"] = observation;
+                        }
+                        update
+                    })
                     .await?;
                 }
             }
@@ -948,16 +952,20 @@ async fn handle_event(
                     return Ok(false);
                 }
                 if !prompt.close_requested {
-                    update(
-                        stdout,
-                        &prompt.session_id,
-                        json!({
-                            "sessionUpdate":"tool_call_update",
-                            "toolCallId":tool_id,
-                            "status":acp_tool_terminal_status(*success),
-                            "rawOutput":output,
-                        }),
-                    )
+                    let placement_accepted =
+                        output.contains("Placement rationale:") && output.contains("Run: ");
+                    update(stdout, &prompt.session_id, {
+                        let mut update = json!({
+                        "sessionUpdate":"tool_call_update",
+                        "toolCallId":tool_id,
+                        "status":acp_tool_terminal_status(*success),
+                        "rawOutput":output,
+                        });
+                        if placement_accepted {
+                            update["codeggPlacementAccepted"] = json!(true);
+                        }
+                        update
+                    })
                     .await?;
                 }
             }
@@ -965,6 +973,68 @@ async fn handle_event(
         }
     }
     Ok(true)
+}
+
+fn safe_task_placement_observation(tool_name: &str, arguments: &str) -> Option<Value> {
+    if tool_name != "task" {
+        return None;
+    }
+    let input: Value = serde_json::from_str(arguments).ok()?;
+    let object = input.as_object()?;
+    let action = object.get("action")?.as_str()?;
+    if action == "spawn" {
+        let placement = object
+            .get("placement")
+            .and_then(Value::as_str)
+            .unwrap_or("auto");
+        let allowed = [
+            "auto",
+            "isolated_new",
+            "serialized_shared",
+            "existing_managed_read_only",
+        ];
+        return Some(json!({
+            "action": action,
+            "requested": if allowed.contains(&placement) { placement } else { "invalid" },
+            "worktree_id_present": object.get("worktree_id").is_some_and(Value::is_string),
+        }));
+    }
+    if action == "spawn_many" {
+        let group_placement = object
+            .get("placement")
+            .and_then(Value::as_str)
+            .unwrap_or("auto");
+        let allowed = [
+            "auto",
+            "isolated_new",
+            "serialized_shared",
+            "existing_managed_read_only",
+        ];
+        let requests = object
+            .get("requests")
+            .and_then(Value::as_array)
+            .map(|requests| {
+                requests
+                    .iter()
+                    .map(|request| {
+                        let child = request.as_object();
+                        let placement = child
+                            .and_then(|child| child.get("placement"))
+                            .and_then(Value::as_str)
+                            .unwrap_or(group_placement);
+                        json!({
+                            "requested": if allowed.contains(&placement) { placement } else { "invalid" },
+                            "worktree_id_present": child
+                                .and_then(|child| child.get("worktree_id"))
+                                .is_some_and(Value::is_string),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        return Some(json!({ "action": action, "requests": requests }));
+    }
+    None
 }
 
 fn sha256_text(value: &str) -> String {
@@ -1061,6 +1131,7 @@ fn terminal_usage(event: &EventEnvelope<CoreEvent>) -> Value {
             output_tokens,
             cached_tokens,
             reasoning_tokens,
+            provider_allowance_micros,
             context_limit,
             ..
         } => Some((
@@ -1070,6 +1141,7 @@ fn terminal_usage(event: &EventEnvelope<CoreEvent>) -> Value {
             cached_tokens,
             reasoning_tokens,
             context_limit,
+            provider_allowance_micros,
         )),
         CoreEvent::ProjectionStreamEvent { envelope, .. } => match &envelope.payload {
             ProjectionEvent::TurnCompleted {
@@ -1078,6 +1150,7 @@ fn terminal_usage(event: &EventEnvelope<CoreEvent>) -> Value {
                 output_tokens,
                 cached_tokens,
                 reasoning_tokens,
+                provider_allowance_micros,
                 context_limit,
                 ..
             } => Some((
@@ -1087,19 +1160,21 @@ fn terminal_usage(event: &EventEnvelope<CoreEvent>) -> Value {
                 cached_tokens,
                 reasoning_tokens,
                 context_limit,
+                provider_allowance_micros,
             )),
             _ => None,
         },
         _ => None,
     };
     match usage {
-        Some((turn_id, input, output, cached, reasoning, context)) => json!({
+        Some((turn_id, input, output, cached, reasoning, context, allowance)) => json!({
             "turnId": turn_id,
             "inputTokens": input,
             "outputTokens": output,
             "cachedTokens": cached,
             "reasoningTokens": reasoning,
             "contextLimit": context,
+            "providerAllowanceUsd": allowance.map(|micros| micros as f64 / 1_000_000.0),
         }),
         None => Value::Null,
     }
@@ -1143,21 +1218,24 @@ fn terminal_failure_data(prompt: &ActivePrompt, event: &EventEnvelope<CoreEvent>
         None => (None, absent_reason),
     };
 
-    // `codeggUsage` is null whenever no token count is available. A
-    // partially reported usage still produces the object, with null for
-    // the counts the route did not report.
+    // `codeggUsage` is null whenever the provider reported neither token
+    // counts nor an OpenCode Go allowance. Missing fields stay null.
     let usage_value = match counts {
         Some(usage)
             if usage.input_tokens.is_some()
                 || usage.output_tokens.is_some()
                 || usage.cached_tokens.is_some()
-                || usage.reasoning_tokens.is_some() =>
+                || usage.reasoning_tokens.is_some()
+                || usage.provider_allowance_micros.is_some() =>
         {
             json!({
                 "inputTokens": usage.input_tokens,
                 "outputTokens": usage.output_tokens,
                 "cachedTokens": usage.cached_tokens,
                 "reasoningTokens": usage.reasoning_tokens,
+                "providerAllowanceUsd": usage
+                    .provider_allowance_micros
+                    .map(|micros| micros as f64 / 1_000_000.0),
             })
         }
         _ => Value::Null,
@@ -1269,6 +1347,35 @@ async fn write_frame(
 mod tests {
     use super::*;
 
+    #[test]
+    fn task_placement_telemetry_keeps_only_the_typed_mode_and_id_presence() {
+        let projected = safe_task_placement_observation(
+            "task",
+            r#"{"action":"spawn","placement":"existing_managed_read_only","worktree_id":"private-id"}"#,
+        )
+        .expect("task placement should be projected");
+        assert_eq!(projected["requested"], "existing_managed_read_only");
+        assert_eq!(projected["worktree_id_present"], true);
+        assert!(!projected.to_string().contains("private-id"));
+        assert!(safe_task_placement_observation("read", r#"{"path":"private/path"}"#).is_none());
+    }
+
+    #[test]
+    fn spawn_many_placement_telemetry_resolves_per_child_enum_without_ids() {
+        let projected = safe_task_placement_observation(
+            "task",
+            r#"{"action":"spawn_many","placement":"auto","requests":[{"placement":"isolated_new"},{"placement":"existing_managed_read_only","worktree_id":"private-id"}]}"#,
+        )
+        .expect("group placement should be projected");
+        assert_eq!(projected["requests"][0]["requested"], "isolated_new");
+        assert_eq!(
+            projected["requests"][1]["requested"],
+            "existing_managed_read_only"
+        );
+        assert_eq!(projected["requests"][1]["worktree_id_present"], true);
+        assert!(!projected.to_string().contains("private-id"));
+    }
+
     fn prompt() -> ActivePrompt {
         ActivePrompt {
             request_id: json!(1),
@@ -1347,6 +1454,7 @@ mod tests {
                 output_tokens: None,
                 cached_tokens: None,
                 reasoning_tokens: None,
+                provider_allowance_micros: None,
                 context_limit: None,
             },
         );
@@ -1366,6 +1474,7 @@ mod tests {
                     output_tokens: None,
                     cached_tokens: None,
                     reasoning_tokens: None,
+                    provider_allowance_micros: None,
                     context_limit: None,
                 }
             ),
@@ -1385,6 +1494,7 @@ mod tests {
                     output_tokens: None,
                     cached_tokens: None,
                     reasoning_tokens: None,
+                    provider_allowance_micros: None,
                     context_limit: None,
                 }
             ),
@@ -1405,11 +1515,13 @@ mod tests {
                 output_tokens: Some(35),
                 cached_tokens: Some(20),
                 reasoning_tokens: Some(8),
+                provider_allowance_micros: Some(1_250_000),
                 context_limit: Some(8192),
             },
         );
         assert_eq!(terminal_usage(&completed)["inputTokens"], 120);
         assert_eq!(terminal_usage(&completed)["outputTokens"], 35);
+        assert_eq!(terminal_usage(&completed)["providerAllowanceUsd"], 1.25);
         assert!(tool_arguments_sha256(&ToolArgumentProjection::Inline {
             arguments: "{\"path\":\"src/lib.rs\"}".into(),
         })
@@ -1444,6 +1556,7 @@ mod tests {
             "outputTokens",
             "cachedTokens",
             "reasoningTokens",
+            "providerAllowanceUsd",
             "contextLimit",
         ] {
             assert!(keys.contains(&expected), "missing {expected} in {keys:?}");
@@ -1477,6 +1590,7 @@ mod tests {
                     output_tokens: Some(35),
                     cached_tokens: Some(20),
                     reasoning_tokens: None,
+                    provider_allowance_micros: None,
                     availability: UsageAvailability::Reported,
                 }),
             },
@@ -1583,6 +1697,7 @@ mod tests {
                     output_tokens: None,
                     cached_tokens: None,
                     reasoning_tokens: None,
+                    provider_allowance_micros: None,
                     availability: UsageAvailability::Reported,
                 }),
             },
@@ -1642,6 +1757,7 @@ mod tests {
                 output_tokens: None,
                 cached_tokens: None,
                 reasoning_tokens: None,
+                provider_allowance_micros: None,
                 context_limit: None,
                 session_id: "session-1".into(),
                 turn_id: "turn-2".into(),
@@ -1657,6 +1773,7 @@ mod tests {
                 output_tokens: None,
                 cached_tokens: None,
                 reasoning_tokens: None,
+                provider_allowance_micros: None,
                 context_limit: None,
                 session_id: "session-1".into(),
                 turn_id: "turn-1".into(),
@@ -1733,6 +1850,7 @@ mod tests {
                 output_tokens: None,
                 cached_tokens: None,
                 reasoning_tokens: None,
+                provider_allowance_micros: None,
                 context_limit: None,
                 session_id: "session-1".into(),
                 turn_id: "turn-1".into(),

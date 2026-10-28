@@ -267,6 +267,7 @@ pub fn turn_usage_from_run(
             output_tokens: None,
             cached_tokens: None,
             reasoning_tokens: None,
+            provider_allowance_micros: snapshot.provider_allowance_micros,
             availability: UsageAvailability::NotObserved,
         };
     }
@@ -274,12 +275,14 @@ pub fn turn_usage_from_run(
         && snapshot.output_tokens == 0
         && snapshot.cached_tokens.unwrap_or(0) == 0
         && snapshot.reasoning_tokens.unwrap_or(0) == 0
+        && snapshot.provider_allowance_micros.is_none()
     {
         return TurnUsage {
             input_tokens: None,
             output_tokens: None,
             cached_tokens: None,
             reasoning_tokens: None,
+            provider_allowance_micros: None,
             availability: UsageAvailability::NotProvided,
         };
     }
@@ -288,6 +291,7 @@ pub fn turn_usage_from_run(
         output_tokens: Some(snapshot.output_tokens),
         cached_tokens: snapshot.cached_tokens,
         reasoning_tokens: snapshot.reasoning_tokens,
+        provider_allowance_micros: snapshot.provider_allowance_micros,
         availability: UsageAvailability::Reported,
     }
 }
@@ -1231,6 +1235,8 @@ impl TurnRuntime for DefaultTurnRuntime {
                     // is the only consumer that crosses the process boundary.
                     let (stop_reason, input_tokens, output_tokens, cached_tokens, reasoning_tokens) =
                         crate::agent::turn_completion::turn_usage(&events);
+                    let provider_allowance_micros =
+                        agent_loop.run_usage().provider_allowance_micros;
                     // The resolved context window travels with the usage.
                     let context_limit = agent_loop.context_limit();
                     event_log_for_spawn
@@ -1245,6 +1251,7 @@ impl TurnRuntime for DefaultTurnRuntime {
                                 output_tokens,
                                 cached_tokens,
                                 reasoning_tokens,
+                                provider_allowance_micros,
                                 context_limit,
                             },
                         )
@@ -1583,6 +1590,7 @@ mod failure_classification_tests {
             output_tokens,
             cached_tokens,
             reasoning_tokens,
+            provider_allowance_micros: None,
         }
     }
 
@@ -1667,6 +1675,7 @@ mod failure_classification_tests {
         assert_eq!(reported.output_tokens, Some(35));
         assert_eq!(reported.cached_tokens, Some(20));
         assert_eq!(reported.reasoning_tokens, Some(5));
+        assert_eq!(reported.provider_allowance_micros, None);
     }
 }
 
