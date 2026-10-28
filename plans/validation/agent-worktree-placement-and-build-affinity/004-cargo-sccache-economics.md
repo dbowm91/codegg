@@ -1,7 +1,7 @@
 # A004 Cargo/sccache economics pilot — measured result
 
-Date: 2026-10-28  
-Source revision: `493e5ee111d133eb1cb99debddcc466122c7f7f9`  
+Date: 2026-10-28
+Source revision: `493e5ee111d133eb1cb99debddcc466122c7f7f9`
 Disposition: **No-go for production compiler-cache integration. A004 is closed as a negative pilot.**
 
 ## Protocol and execution
