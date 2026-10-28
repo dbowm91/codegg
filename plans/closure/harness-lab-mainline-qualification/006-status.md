@@ -1,6 +1,6 @@
 # H006 — Job-Observable Sustained Corrective Qualification
 
-Status: **blocked before live qualification — offline prerequisites pass locally; exact-head hosted CI and fresh explicit live authorization remain**
+Status: **offline prerequisites proven; exact-head hosted CI passed; live qualification awaits fresh explicit authorization**
 
 Implementation: branch `plans/harness-lab-h006-job-observable-20261028`.
 Prior live evidence: H005 remains unqualified and its authorization remains consumed (`005-status.md`).
@@ -8,20 +8,20 @@ No external model or provider request was made for H006.
 
 ## 1. Offline job lifecycle evidence
 
-The native ACP test uses a built CodeGG binary and trusted sandbox helper, submits a real four-crate offline Cargo workspace as a CodeGG background test job, records the exact returned ID, and queries that same ID twice as `running`. Between those observations the deterministic session makes two productive Rust source edits. It then waits on the same ID and observes `completed`. The sanitized receipt records seven native tool calls, nine local fixture-provider turns, 7,713 ms wall time, zero observed ACP event gaps, and no raw tool output or workspace contents.
+The native ACP test uses a built CodeGG binary and trusted sandbox helper, submits a real four-crate offline Cargo workspace as a CodeGG background test job, records the returned ID, and uses a bounded wait while the job runs. It then makes two productive Rust source edits, observes that same ID twice as `running` with another productive edit between observations, and waits on the same ID to `completed`. The sanitized hosted receipt records exact ID `74386df4-54d6-41eb-b2fc-0f52ade38983`, eight native tool calls, ten local fixture-provider turns, 24,459 ms elapsed, zero observed ACP event gaps, and no raw tool output or workspace contents. The receipt was uploaded by exact-head CI run [40666897399](https://github.com/dbowm91/codegg/actions/runs/40666897399) at source commit `c838def96` and is committed below.
 
 Receipt: [`006-offline-job-observation.json`](006-offline-job-observation.json)
 
 The composed check exposed and corrected two issues before passing: job-control results are native JSON (with typed error text for failed jobs), and the managed test runner requires the trusted sandbox helper beside the CodeGG binary. The projection now accepts bounded JSON fields plus the native error-text status form, keeps absent or unrecognized fields explicit as `null`, and never retains raw output. CI builds both binaries and stages them as siblings for the native test.
 
-Exact commands:
+Hosted commands:
 
 ```text
-CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=/tmp/codegg-h006-native-target RUSTC=/Users/davidbowman/.rustup/toolchains/1.89-aarch64-apple-darwin/bin/rustc RUSTDOC=/Users/davidbowman/.rustup/toolchains/1.89-aarch64-apple-darwin/bin/rustdoc /Users/davidbowman/.rustup/toolchains/1.89-aarch64-apple-darwin/bin/cargo build --locked --bin codegg --bin codegg-sandbox-helper
-CODEGG_H006_CODEGG_BINARY=/tmp/codegg-h006-native-target/debug/codegg CODEGG_H006_JOB_RECEIPT=plans/closure/harness-lab-mainline-qualification/006-offline-job-observation.json python3 -m unittest dev.harness_lab.tests.test_sustained.LongHorizonNativeJobTest.test_h006_real_background_job_is_observed_by_exact_id_while_work_continues
+cargo build --locked --bin codegg --bin codegg-sandbox-helper
+python3 -m unittest discover -s dev/harness_lab/tests
 ```
 
-Result: build succeeded; native ACP lifecycle test passed in 8.237 seconds.
+Result: native build succeeded; the full Harness Lab Python suite passed, including the exact-ID running/terminal assertion. CI uploaded the sanitized receipt artifact. Full exact-head CI run [40666897399](https://github.com/dbowm91/codegg/actions/runs/40666897399) passed at `c838def96` (Clippy and workspace tests included).
 
 ## 2. Request-cap proof
 
@@ -56,4 +56,4 @@ Calibration used isolated copies under `/tmp/codegg-h006-ledger-calibration-run`
 
 ## 5. Qualification boundary
 
-H006's offline prerequisites are complete locally. Exact-head hosted CI is pending. H006 is not a sustained autonomous qualification: there was no external model call, no live provider request, and no budget authority inferred from H005. Any live attempt still requires separate explicit approval naming the `opencode_go` route, request and time caps, disk stop floor, cost handling, and cancellation conditions.
+H006's offline prerequisites now include hosted evidence for the composed native job lifecycle, sanitized receipt, and passing exact-head CI. H006 is not a sustained autonomous qualification: there was no external model call, no live provider request, and no budget authority inferred from H005. Any live attempt still requires separate explicit approval naming the `opencode_go` route, request and time caps, disk stop floor, cost handling, and cancellation conditions.

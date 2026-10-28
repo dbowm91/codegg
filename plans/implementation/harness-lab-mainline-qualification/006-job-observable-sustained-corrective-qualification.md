@@ -1,6 +1,6 @@
 # H006 — Job-Observable Sustained Corrective Qualification
 
-Status: **blocked before live qualification — offline prerequisites pass locally; exact-head hosted CI and fresh explicit live authorization remain**
+Status: **offline prerequisites proven; exact-head hosted CI passed; fresh explicit live authorization required before live qualification**
 
 Subsystem roadmap: `plans/subsystems/harness-lab-mainline-and-long-horizon-qualification-addendum.md`
 

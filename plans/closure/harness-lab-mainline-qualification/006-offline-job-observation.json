@@ -1,74 +1,85 @@
 {
   "schema_version": 1,
   "provider": "local-openai-fixture",
-  "source_sha256": "d7f86c7ab3ea59639aa4c56dadd012c6bbda7ed08cdb96634c23d2cfbb7d0c96",
+  "source_sha256": "4471d637ba93eaadc7a2a91c4061a4b2a6ecbbe32277ccba55510a7a8bd515b4",
   "event_observation_state": "measured_no_gap",
   "event_gap_count": 0,
-  "provider_calls": 9,
-  "wall_time_ms": 7713,
+  "provider_calls": 10,
+  "wall_time_ms": 24459,
   "tool_calls": [
     {
       "tool": "test",
       "status": "completed",
-      "started_elapsed_ms": 762,
-      "finished_elapsed_ms": 784,
+      "started_elapsed_ms": 1060,
+      "finished_elapsed_ms": 1089,
       "job": {
         "action": "submit",
-        "job_id": "892334e7-7406-49ec-8145-d743457e535f",
+        "job_id": "74386df4-54d6-41eb-b2fc-0f52ade38983",
+        "status": null
+      }
+    },
+    {
+      "tool": "job",
+      "status": "completed",
+      "started_elapsed_ms": 1113,
+      "finished_elapsed_ms": 6129,
+      "job": {
+        "action": "wait",
+        "job_id": "74386df4-54d6-41eb-b2fc-0f52ade38983",
         "status": null
       }
     },
     {
       "tool": "write",
       "status": "completed",
-      "started_elapsed_ms": 803,
-      "finished_elapsed_ms": 848,
+      "started_elapsed_ms": 6174,
+      "finished_elapsed_ms": 6182,
+      "job": null
+    },
+    {
+      "tool": "write",
+      "status": "completed",
+      "started_elapsed_ms": 6229,
+      "finished_elapsed_ms": 6238,
       "job": null
     },
     {
       "tool": "job",
       "status": "completed",
-      "started_elapsed_ms": 850,
-      "finished_elapsed_ms": 853,
+      "started_elapsed_ms": 6287,
+      "finished_elapsed_ms": 6300,
       "job": {
         "action": "status",
-        "job_id": "892334e7-7406-49ec-8145-d743457e535f",
+        "job_id": "74386df4-54d6-41eb-b2fc-0f52ade38983",
         "status": "running"
       }
     },
     {
       "tool": "write",
       "status": "completed",
-      "started_elapsed_ms": 876,
-      "finished_elapsed_ms": 881,
-      "job": null
-    },
-    {
-      "tool": "write",
-      "status": "completed",
-      "started_elapsed_ms": 900,
-      "finished_elapsed_ms": 905,
+      "started_elapsed_ms": 6347,
+      "finished_elapsed_ms": 6358,
       "job": null
     },
     {
       "tool": "job",
       "status": "completed",
-      "started_elapsed_ms": 923,
-      "finished_elapsed_ms": 931,
+      "started_elapsed_ms": 6402,
+      "finished_elapsed_ms": 6417,
       "job": {
         "action": "status",
-        "job_id": "892334e7-7406-49ec-8145-d743457e535f",
+        "job_id": "74386df4-54d6-41eb-b2fc-0f52ade38983",
         "status": "running"
       }
     },
     {
       "tool": "job",
       "status": "completed",
-      "started_elapsed_ms": 951,
-      "finished_elapsed_ms": 5932,
+      "started_elapsed_ms": 6460,
+      "finished_elapsed_ms": 23552,
       "job": {
         "action": "wait",
-        "job_id": "892334e7-7406-49ec-8145-d743457e535f",
+        "job_id": "74386df4-54d6-41eb-b2fc-0f52ade38983",
         "status": "completed"
       }
     }
