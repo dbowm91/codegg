@@ -821,3 +821,359 @@ async fn explicit_read_only_isolated_new_uses_two_distinct_contained_checkouts()
         "the parent checkout remains unchanged"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn existing_managed_read_only_runs_through_the_production_scheduler() {
+    use codegg::agent::run_control::RunControlService;
+    use codegg::core::writer_fence::DaemonWriterFenceFactory;
+    use codegg::core::writer_permit::{WorktreePermitAuthority, WriterPermitService};
+    use codegg::scheduler::{JobScheduler, JobSubmissionService, ResolvedSchedulerConfig};
+    use codegg_core::agent_run_group::AgentRunGroupService;
+    use codegg_core::jobs::{
+        ExecutionTarget, IdempotencyClass, InMemoryJobStore, JobPriority, JobSource, JobStore,
+        NewJob, ResourceRequest, RetryPolicy,
+    };
+    use codegg_core::project_catalog::{ProjectCatalog, RegisterLocalProject};
+    use codegg_core::project_storage::ProjectStorage;
+    use codegg_core::workspace::{SqliteWorkspaceStore, WorkspaceRegistry};
+    use codegg_core::workspace_services::{
+        ProductionWorkspaceServicesFactory, WorkspaceServicePolicy, WorkspaceServiceRegistry,
+    };
+    use codegg_core::worktree_service::{
+        ContainedWorktreeCreator, ContainedWorktreeOutcome, ContainedWorktreeRequest,
+        CreateWorktreeRequest, ManagedWorktreeState, WorktreeHealth, WorktreeService,
+    };
+    use codegg_core::writer_permit::WriterPermitStore;
+
+    let workspace = tempfile::tempdir().expect("parent workspace");
+    common::blackboard::init_repository(workspace.path());
+    assert!(std::process::Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "https://example.test/a002/fixture.git"
+        ])
+        .current_dir(workspace.path())
+        .status()
+        .expect("configure stable repository identity")
+        .success());
+    std::fs::write(workspace.path().join("README"), "parent-only\n").unwrap();
+    let managed_root = tempfile::tempdir().expect("managed root");
+    // The selected checkout is pre-provisioned by the fixture. This creator
+    // exercises WorktreeService's record/lease path on every host; it is not
+    // containment evidence and is never used by production code.
+    struct FixtureWorktreeCreator;
+    #[async_trait]
+    impl ContainedWorktreeCreator for FixtureWorktreeCreator {
+        async fn create(
+            &self,
+            request: &ContainedWorktreeRequest,
+        ) -> Result<ContainedWorktreeOutcome, codegg_core::worktree_service::WorktreeServiceError>
+        {
+            let branch = std::process::Command::new("git")
+                .args(["branch", &request.branch, &request.base_commit])
+                .current_dir(&request.repository_root)
+                .output()
+                .map_err(|error| {
+                    codegg_core::worktree_service::WorktreeServiceError::Git(error.to_string())
+                })?;
+            if !branch.status.success() {
+                return Err(codegg_core::worktree_service::WorktreeServiceError::Git(
+                    String::from_utf8_lossy(&branch.stderr).into_owned(),
+                ));
+            }
+            let added = std::process::Command::new("git")
+                .args(["worktree", "add", "--quiet"])
+                .arg(&request.worktree_path)
+                .arg(&request.branch)
+                .current_dir(&request.repository_root)
+                .output()
+                .map_err(|error| {
+                    codegg_core::worktree_service::WorktreeServiceError::Git(error.to_string())
+                })?;
+            if !added.status.success() {
+                return Err(codegg_core::worktree_service::WorktreeServiceError::Git(
+                    String::from_utf8_lossy(&added.stderr).into_owned(),
+                ));
+            }
+            Ok(ContainedWorktreeOutcome {
+                administration_dir: request.repository_gitdir.join("worktrees"),
+                backend: "test-fixture-only".into(),
+                abi: None,
+                network_enforced: false,
+            })
+        }
+    }
+    let pool = common::pool::isolated_pool().await;
+    let run_store = Arc::new(codegg_core::agent_run::SqliteAgentRunStore::new(
+        pool.clone(),
+    ));
+    let workspace_store = Arc::new(SqliteWorkspaceStore::new(pool.clone()));
+    let workspace_registry = WorkspaceRegistry::load(workspace_store.clone())
+        .await
+        .expect("workspace registry");
+    let parent_workspace = workspace_registry
+        .get_or_register(workspace.path())
+        .await
+        .expect("register parent workspace");
+    let catalog = ProjectCatalog::new(pool.clone());
+    let project = catalog
+        .register_local_project(
+            RegisterLocalProject {
+                display_name: "A002 existing checkout fixture".into(),
+                description: None,
+                tags: Vec::new(),
+                primary_repository_id: None,
+            },
+            &parent_workspace.id,
+            "a002-read-only-fixture",
+        )
+        .await
+        .expect("register fixture project");
+    let project_storage = ProjectStorage::new(pool.clone());
+    let binding = project_storage
+        .workspace_binding(&parent_workspace.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let repository_id = binding.repository_id.unwrap();
+    let worktrees = WorktreeService::sqlite(
+        pool.clone(),
+        managed_root.path().to_path_buf(),
+        Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
+    )
+    .with_contained_creator(Arc::new(FixtureWorktreeCreator));
+    let owner = AgentRunId::new();
+    let (created, creation_lease) = worktrees
+        .create(&CreateWorktreeRequest {
+            project_id: project.project_id.clone(),
+            repository_id: repository_id.clone(),
+            workspace_id: parent_workspace.id.clone(),
+            node_id: None,
+            repository_root: workspace.path().to_path_buf(),
+            base_commit: None,
+            base_ref: None,
+            target_branch: None,
+            base_path: Some(workspace.path().to_path_buf()),
+            owner_run_id: owner.clone(),
+        })
+        .await
+        .expect("create the selected managed checkout");
+    worktrees
+        .release_lease(&created.worktree_id, &owner, creation_lease.generation)
+        .await
+        .expect("release fixture creation lease");
+    let selected_workspace = workspace_registry
+        .get_or_register(&created.path)
+        .await
+        .expect("register selected checkout workspace");
+    project_storage
+        .bind_checkout_workspace(
+            &selected_workspace,
+            &project.project_id,
+            &repository_id,
+            &created.worktree_id,
+            "a002-read-only-fixture",
+        )
+        .await
+        .expect("bind checkout to source project");
+
+    let writer_permits = WriterPermitService::new(
+        WriterPermitStore::new(pool.clone()),
+        WorktreePermitAuthority::new(worktrees.clone()),
+    );
+    let writer_fences = DaemonWriterFenceFactory::with_team_state(
+        writer_permits,
+        worktrees.clone(),
+        run_store.clone(),
+        None,
+        None,
+    ) as Arc<dyn codegg::tool::writer_fence::WriterFenceFactory>;
+    let (_, observed_tool_result, executor_pool) =
+        build_executor_with_pool("README", pool.clone()).await;
+    let executor = SubagentJobExecutor::new_with_agent_runs_and_control_and_worktree(
+        executor_pool.clone(),
+        run_store.clone(),
+        None,
+        worktrees.clone(),
+    )
+    .with_authority(codegg::scheduler::executors::SubagentAuthority {
+        writer_fences: Some(writer_fences),
+        origin_attribution_pool: Some(pool.clone()),
+        ..Default::default()
+    });
+    let task_id = AgentTaskId::new();
+    let run_id = AgentRunId::new();
+    run_store
+        .create_or_get(
+            NewAgentTask {
+                task_id: task_id.clone(),
+                parent_task_id: None,
+                originating_session_id: "a002-parent-session".into(),
+                originating_turn_id: Some("a002-parent-turn".into()),
+                project_id: project.project_id.clone(),
+                repository_id: Some(repository_id.clone()),
+                workspace_id: parent_workspace.id.clone(),
+                requested_agent: CHILD_AGENT.into(),
+                delegation_key: "a002-existing-read-only".into(),
+                request_fingerprint: "a002-existing-read-only-v1".into(),
+                description: "read one existing managed checkout".into(),
+            },
+            NewAgentRun {
+                run_id: run_id.clone(),
+                parent_run_id: None,
+                depth: 1,
+                workspace_id: parent_workspace.id.clone(),
+                agent_name: CHILD_AGENT.into(),
+                agent_digest: None,
+                provider: PROVIDER_ID.into(),
+                model: format!("{PROVIDER_ID}/model"),
+                authority_digest: "a002-read-only-authority".into(),
+                budget: AgentRunBudget::default(),
+                shared_scratch: Vec::new(),
+            },
+        )
+        .await
+        .expect("create durable delegated run");
+    let payload = JobPayload::SubagentRun {
+        prompt: "Read the tracked README.".into(),
+        agent: CHILD_AGENT.into(),
+        model: Some(format!("{PROVIDER_ID}/model")),
+        parent_id: None,
+        denied_tools: MUTATING_TOOLS.iter().map(|name| (*name).into()).collect(),
+        allowed_paths: Vec::new(),
+        max_tool_calls: None,
+        task_id,
+        run_id: run_id.clone(),
+        delegation_key: "a002-existing-read-only".into(),
+        base_commit: None,
+        placement: codegg_core::run_placement::RunPlacement::ExistingManagedReadOnly {
+            worktree_id: created.worktree_id.clone(),
+        },
+        default_working_directory: None,
+    };
+    let job_store = Arc::new(InMemoryJobStore::new());
+    let generation = DaemonGeneration::new_unchecked("a002-existing-read-only");
+    let services = WorkspaceServiceRegistry::new(
+        workspace_registry,
+        Arc::new(ProductionWorkspaceServicesFactory),
+        WorkspaceServicePolicy::default(),
+    );
+    let scheduler = JobScheduler::new(
+        job_store.clone(),
+        services.clone(),
+        ResolvedSchedulerConfig::default(),
+        generation.clone(),
+    );
+    scheduler
+        .register_executor(Arc::new(executor))
+        .await
+        .expect("register subagent executor");
+    let submission =
+        JobSubmissionService::new(job_store.clone(), scheduler.clone(), services, generation);
+    let durable_runs: Arc<dyn AgentRunStore> = run_store.clone();
+    executor_pool.configure_durable_delegation(
+        submission.clone(),
+        durable_runs.clone(),
+        RunControlService::in_memory(durable_runs.clone()),
+        AgentRunGroupService::in_memory(durable_runs),
+    );
+    run_store
+        .transition(&run_id, codegg_core::agent_run::AgentRunStatus::Queued)
+        .await
+        .expect("mark run queued");
+    let scheduler_task = scheduler.clone().spawn_run();
+    let submitted = submission
+        .submit(
+            None,
+            NewJob {
+                workspace_id: parent_workspace.id.clone(),
+                session_id: None,
+                turn_id: None,
+                kind: JobKind::Subagent,
+                source: JobSource::AgentDelegated,
+                priority: JobPriority::Interactive,
+                payload,
+                resource_request: ResourceRequest::default(),
+                timeout: None,
+                retry_policy: RetryPolicy::no_retry(),
+                idempotency: IdempotencyClass::NonIdempotent,
+                not_before: None,
+                deadline: None,
+                schedule_id: None,
+                depends_on: Vec::new(),
+                parent_job_id: None,
+                parent_attempt_id: None,
+                parent_call_id: None,
+                parent_program_id: None,
+                parent_instruction_sequence: None,
+                relation_kind: None,
+                target: ExecutionTarget::default(),
+            },
+        )
+        .await
+        .expect("submit selected checkout through production scheduler");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let completion = loop {
+        let record = job_store
+            .get_job(&submitted.job_id)
+            .await
+            .expect("read scheduled job")
+            .expect("submitted job exists");
+        if record.state.is_terminal() {
+            break record;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "job timed out: {record:#?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    if completion.state != JobState::Completed {
+        panic!(
+            "existing checkout run failed: job={completion:#?}; run={:#?}",
+            run_store.get_run(&run_id).await.unwrap()
+        );
+    }
+    scheduler
+        .shutdown(codegg::scheduler::SchedulerShutdownMode::ImmediateInterrupt)
+        .await;
+    scheduler_task.await.expect("join scheduler");
+    let observed = observed_tool_result
+        .lock()
+        .await
+        .clone()
+        .unwrap_or_default();
+    assert!(
+        observed.contains("base") && !observed.contains("parent-only"),
+        "child read should resolve in the selected checkout: {observed}"
+    );
+    let run = run_store.get_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(run.worktree_id.as_ref(), Some(&created.worktree_id));
+    assert!(
+        run.read_only_worktree,
+        "the effective placement survives reload"
+    );
+    let selected = worktrees.get(&created.worktree_id).await.unwrap();
+    assert_eq!(selected.state, ManagedWorktreeState::Ready);
+    assert_eq!(selected.health, WorktreeHealth::Clean);
+    assert_eq!(selected.owner_run_id, None);
+    assert!(!worktrees
+        .has_read_only_lease(&created.worktree_id)
+        .await
+        .unwrap());
+    assert_eq!(
+        std::fs::read_to_string(selected.path.join("README")).unwrap(),
+        "base\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("README")).unwrap(),
+        "parent-only\n"
+    );
+    assert_eq!(
+        worktrees.list(Default::default()).await.unwrap().len(),
+        1,
+        "existing placement must not allocate a second checkout"
+    );
+}

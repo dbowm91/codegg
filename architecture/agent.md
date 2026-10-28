@@ -995,6 +995,27 @@ Uses `BTreeMap` for deterministic iteration order.
 | `EMERGENCY_DEFAULT_MODEL` | Hardcoded fallback when no model configured |
 | `CODEGG_ROUTING_DISABLE=1` | Kill switch for command routing |
 
+## Existing managed read-only delegated placement (A002)
+
+`task.spawn` and each `task.spawn_many` child may request
+`placement=existing_managed_read_only` with that child's exact `worktree_id`.
+The scheduler resolves the ID against the durable project/repository and
+workspace binding, rejects active sessions/jobs and any non-clean or
+non-`Ready` worktree, then takes an exclusive run-owned lease. The child root,
+allowed path and workspace identity are rebound to the selected checkout. Its
+effective tool registry retains only `read`, `list` and `glob`, and task
+delegation is disabled so the child cannot widen that surface. The lease's
+generation is released on completion, cancellation, or a pre-dispatch failure;
+the checkout itself is retained. This contract excludes arbitrary external
+processes running as the same OS user and does not permit concurrent readers.
+
+The task tool keeps `auto` as the default. Its placement guidance recommends a
+new isolated checkout for independent edits, and the existing-checkout mode
+only when the caller has an exact managed worktree ID for inspection. The
+serialized shared mode remains restricted and denies process-class tools. The
+spawn response states the selected mode's rationale; this explanation grants
+no additional authority and never implies Cargo cache or shared-target reuse.
+
 ## Background job continuation (M003)
 
 `src/agent/job_notification_recovery.rs` drives M001 generic job notices at

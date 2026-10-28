@@ -214,6 +214,24 @@ impl SessionLaunchService {
         current: &mut SessionLaunchRecord,
         context: &SessionLaunchContext,
     ) -> Result<SessionLaunchOutcome, SessionLaunchError> {
+        // Serialize existing-checkout binding with delegated read-only
+        // inspection claims. The guard stays alive through workspace binding
+        // and session creation so neither side can pass a stale readiness
+        // check and win after the other has committed its ownership.
+        let _existing_worktree_guard = match &current.placement {
+            SessionLaunchPlacement::ExistingManagedWorktree { worktree_id } => {
+                let id = WorktreeId::parse(worktree_id).map_err(|error| {
+                    SessionLaunchError::InvalidRequest(format!("invalid worktree id: {error}"))
+                })?;
+                Some(
+                    self.worktrees
+                        .lock_repository_for_worktree(&id)
+                        .await
+                        .map_err(|error| SessionLaunchError::Checkout(error.to_string()))?,
+                )
+            }
+            _ => None,
+        };
         // ── The checkout ────────────────────────────────────────────────
         let worktree = match &current.placement {
             SessionLaunchPlacement::NewManagedCheckout { .. } => {

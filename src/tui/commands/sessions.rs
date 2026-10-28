@@ -208,9 +208,9 @@ pub(crate) fn apply_session_activated(
     {
         return;
     }
-    if !app
+    if app
         .active_tab_id()
-        .is_some_and(|active_tab| active_tab.as_str() == tab_id)
+        .is_none_or(|active_tab| active_tab.as_str() != tab_id)
     {
         return;
     }

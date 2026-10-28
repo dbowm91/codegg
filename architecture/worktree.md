@@ -140,6 +140,17 @@ and can be replayed after reconnect or restart; it does not grant ownership or
 perform cleanup. Full paths and Git details remain behind the existing
 authorized worktree inspection APIs.
 
+`RunPlacement::ExistingManagedReadOnly { worktree_id }` is a separate delegated
+placement for inspecting an already-created managed checkout. The ID is only a
+lookup key: the daemon checks project, repository, source workspace, canonical
+checkout binding, session/job ownership, `Ready` state and clean health before
+acquiring a run-owned exclusive lease. The child can use only `read`, `list`,
+and `glob`; process, plugin, delegation and mutation tools are removed from its
+effective registry. When the attempt ends, the exact lease generation is
+released and the checkout remains in place. A busy checkout is refused. This
+mode does not permit concurrent inspectors, shared writes, checkout cleanup,
+or guarantees against external processes running as the same OS user.
+
 ### WorkOrder workspace placement corrective (M001)
 
 WorkOrders currently materialize the mutation-capable `build` agent. Its

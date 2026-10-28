@@ -866,6 +866,10 @@ pub struct AgentRunSummary {
     pub status: String,
     pub depth: u32,
     pub worktree_id: Option<String>,
+    /// True when this run is restricted to read-only inspection of the
+    /// selected existing managed worktree.
+    #[serde(default)]
+    pub read_only_worktree: bool,
     pub branch: Option<String>,
     pub base_commit: Option<String>,
     pub result_commit: Option<String>,
@@ -1989,6 +1993,7 @@ mod tests {
             status: "running".into(),
             depth: 1,
             worktree_id: None,
+            read_only_worktree: false,
             branch: None,
             base_commit: None,
             result_commit: None,

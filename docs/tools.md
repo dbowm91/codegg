@@ -132,9 +132,19 @@ Durable spawn ~11-19s (worktree+scheduling); retrieve via wait/get, notice is
 next-turn backstop; don't poll.
 
 Task placement is explicit: the `task` tool's `RunPlacement` (`auto`,
-`isolated_new`, `serialized_shared`) selects an isolated managed checkout or
-the serialized shared checkout behind the writer permit
-(`architecture/writer_permit.md`). `codegg launch` always places in an
+`isolated_new`, `serialized_shared`, `existing_managed_read_only`) selects an
+isolated managed checkout, the serialized shared checkout behind the writer
+permit, or one existing managed checkout for exclusive read-only inspection
+(`architecture/writer_permit.md`). The existing mode requires a per-child
+`worktree_id` and exposes only `read`, `list`, and `glob`; it refuses occupied,
+dirty, foreign or unavailable targets and does not create or clean up a
+checkout. Use `auto` unless the user directs another checkout strategy;
+request `isolated_new` for independent edits when isolation is part of the
+request; use the existing mode only when the user directs inspection of a
+known managed worktree; use `serialized_shared` only for an explicitly created
+supported group. Spawn responses include the selected placement rationale.
+Placement does not enable compiler-cache reuse or shared Cargo target
+directories. `codegg launch` always places in an
 isolated managed checkout (`--worktree new` or a worktree id); there is no
 shared-checkout launch. Process-class work never runs on the shared checkout. Build admission is quota-counted per workspace
 (default 1) with an opt-in per-repository scope

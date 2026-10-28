@@ -1,6 +1,6 @@
 # Agent Worktree Placement and Build Affinity Corrective Addendum
 
-Status: **active** — A001/A003 strictly closed; A002/A004 ready for handoff; A005 blocked on their closure/evidence
+Status: **active** — A001/A003 strictly closed; A002/A004 active; A005 blocked on their closure/evidence
 Repository planning baseline: `d4241f08dcfede0534df3ea08c83d762fa1c55f7` (current plan branch at A002/A004 handoff). Earlier A001/A003 baseline `80171f45295bebb9ab0b521262c0b295acb93074` is historical.
 Source of truth: `plans/registry.md`
 
@@ -43,9 +43,9 @@ W002 and W004 in the workspace-authority roadmap are closed and independent of A
 | ID | Class | Objective | Dependency | Exit gate |
 |---|---|---|---|---|
 | A001 | invariant | Honor explicit `isolated_new` even for read-only profiles; fail closed without qualified repository/worktree; preserve `auto` and `serialized_shared`. | Closed M004/C008 | **Closed:** hosted Linux live-scheduler evidence creates two distinct contained checkouts; no fallthrough |
-| A002 | capability | Typed existing-managed-worktree selection for authorized **exclusive read-only** delegated inspection; reject occupied/active-session-owned/dirty/foreign/unmanaged/mutating intents. | A001 strictly closed | End-to-end spawn_many → validated worktree ID → run-owned exclusive lease → read-only tool root, generation-fenced release; no extra worktree, process tooling or new write authority |
+| A002 | capability | Typed existing-managed-worktree selection for authorized **exclusive read-only** delegated inspection; reject occupied/active-session-owned/dirty/foreign/unmanaged/mutating intents. | Active implementation; A001 strictly closed | End-to-end spawn_many → validated worktree ID → run-owned exclusive lease → read-only tool root, generation-fenced release; no extra worktree, process tooling or new write authority |
 | A003 | infrastructure | Add canonical repository-scoped quotas/metrics for supported build jobs across sibling worktrees, with opt-in policy/default unchanged. | Closed M007 | **Closed:** production scheduler Cargo runs cover quota off/on for sibling worktrees and quota-on unrelated repositories; reports include CPU, RSS, wall time, disk growth, and lock waits |
-| A004 | polish/performance | Opt-in **measured** cross-worktree Cargo/sccache economics pilot with controlled cache/quota arms, realistic dependency graph and explicit go/no-go; no shipped cache change. | A003 strictly closed | Publish multi-run real executor + contained-host qualification with wall/CPU/RSS/disk/cache hit and negative-case evidence; keep isolated writable target directories |
+| A004 | polish/performance | Opt-in **measured** cross-worktree Cargo/sccache economics pilot with controlled cache/quota arms, realistic dependency graph and explicit go/no-go; no shipped cache change. | Active implementation; A003 strictly closed | Publish multi-run real executor + contained-host qualification with wall/CPU/RSS/disk/cache hit and negative-case evidence; keep isolated writable target directories |
 | A005 | capability/polish | Explicit conservative orchestrator strategy selection and reasoned recommendation; no inference of shared authorization. | A002 + A003, A004 evidence/decision | Real-model before/after multi-language and Rust workloads with failure/collision and cost accounting |
 
 ## 8. Cross-cutting contract
@@ -69,7 +69,7 @@ Every ready milestone receives separate `plans/closure/agent-worktree-placement-
 | Milestone | Status | Plan | Blocker |
 |---|---|---|---|
 | A001 | closed | `plans/implementation/agent-worktree-placement-and-build-affinity/001-explicit-isolated-placement-contract.md` | Closure `plans/closure/agent-worktree-placement-and-build-affinity/001-status.md`; hosted Linux production contained-creator and live-scheduler success passed |
-| A002 | ready | `plans/implementation/agent-worktree-placement-and-build-affinity/002-existing-managed-read-only-placement.md` | A001 strict closure complete; enforce an exclusive run lease and deny-by-default inspection tool profile; occupied/active-session/dirty/unmanaged/foreign refusals |
+| A002 | active | `plans/implementation/agent-worktree-placement-and-build-affinity/002-existing-managed-read-only-placement.md` | A001 strict closure complete; enforce an exclusive run lease and deny-by-default inspection tool profile; occupied/active-session/dirty/unmanaged/foreign refusals |
 | A003 | closed | `plans/implementation/agent-worktree-placement-and-build-affinity/003-repository-scoped-build-admission.md` | Closure `plans/closure/agent-worktree-placement-and-build-affinity/003-status.md`; hosted production Cargo comparison passed with resource, target-size, and lock-wait evidence |
-| A004 | ready | `plans/implementation/agent-worktree-placement-and-build-affinity/004-rust-cross-worktree-cache-economics-pilot.md` | A003 production comparison complete; opt-in multi-run real Cargo/sccache measurement only; a justified no-go strictly closes, production cache integration needs a **separate** approved plan |
+| A004 | active | `plans/implementation/agent-worktree-placement-and-build-affinity/004-rust-cross-worktree-cache-economics-pilot.md` | A003 production comparison complete; opt-in multi-run real Cargo/sccache measurement only; a justified no-go strictly closes, production cache integration needs a **separate** approved plan |
 | A005 | blocked | to author after A002/A004 | A002 read-only existing-checkout capability and A004 decision/economics evidence remain open |

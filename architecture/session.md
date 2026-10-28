@@ -421,6 +421,16 @@ workspace root remains the authority ceiling and is not stored in this table.
 Sessions without a row resolve to `.` at revision zero. Deleting a session
 cascades to its row.
 
+**Exclusive read-only worktree lease and run projection (v92–v93, A002):**
+`worktree_read_only_lease` marks which active worktree lease belongs to a
+delegated inspection run. It references the exact `(worktree_id, generation)`
+in `worktree_lease`; release deletes the marker with that generation. The
+marker distinguishes a read-only inspection from an ordinary exclusive lease
+for checkout reservation and process-admission refusals. It stores no path or
+additional authority. `agent_run.read_only_worktree` (v93, default false)
+retains the selected placement for replayed run projections after the lease is
+released.
+
 **Managed scratch, writer permits, and the launch saga (v83–v87):**
 `agent_scratch_resource` + `agent_scratch_attempt_lease` with
 `agent_run.shared_scratch_json` (v83, managed agent scratch M002),

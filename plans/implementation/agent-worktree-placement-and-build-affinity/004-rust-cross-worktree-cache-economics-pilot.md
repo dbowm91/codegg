@@ -1,7 +1,7 @@
 # Agent Worktree Placement and Build Affinity A004 — Cross-Worktree Cargo Cache Economics Pilot
 
-Status: ready for handoff
-Repository baseline: `d4241f08dcfede0534df3ea08c83d762fa1c55f7` (`plan/worktree-affinity-cwd-build-admission-20261027`; confirm exact head before edits)
+Status: active
+Repository baseline: `493e5ee11` (`plan/worktree-affinity-cwd-build-admission-20261027`, planning docs retrieved from the named remote branch)
 
 Source roadmap:
 - `plans/subsystems/agent-worktree-placement-and-build-affinity-corrective-addendum.md` §7 A004
@@ -89,7 +89,13 @@ cargo test --test scheduler_jobs -- --list
 cargo test --test scheduler_jobs -- build_quota_admission
 cargo test --test scheduler_jobs -- repository_quota
 # opt-in only, with exact test/runner name verified during implementation:
-CODEGG_RUN_A004_CARGO_ECONOMICS=1 cargo test --locked --test scheduler_jobs -- a004_cargo_economics --ignored --nocapture --test-threads=1
+CODEGG_RUN_A004_CARGO_ECONOMICS=1 \
+CODEGG_REGENERATE_ASSETS=1 \
+CODEGG_A004_SCCACHE=/absolute/path/to/pinned/sccache \
+CODEGG_A004_CARGO=/absolute/path/to/pinned/cargo \
+CODEGG_A004_RUSTC=/absolute/path/to/pinned/rustc \
+cargo test --locked -p codegg --lib a004_cargo_economics_through_production_scheduler \
+  -- --ignored --nocapture --test-threads=1
 python3 scripts/check_scheduler_bypass.py
 python3 scripts/check_execution_ownership.py
 scripts/verify.sh quick

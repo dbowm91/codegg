@@ -21,6 +21,9 @@ use codegg_core::agent_run_transcript::{
     AgentRunTranscriptStore, SqliteAgentRunTranscriptStore, TranscriptKind, TranscriptRole,
 };
 
+pub(crate) const EXISTING_WORKTREE_READ_ONLY_SENTINEL: &str =
+    "__codegg_existing_worktree_read_only";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubAgentFinding {
     pub severity: Option<String>,
@@ -1610,7 +1613,11 @@ async fn execute_agent_task(
             .map_err(|e| format!("child sandbox exceeds parent ceiling: {e}"))?;
     // Read-only child agents are narrowed to ReadOnly (always ≤ parent
     // except when parent is already ReadOnly, where it is equal).
-    if is_read_only_agent(agent) {
+    let existing_worktree_read_only = request
+        .denied_tools
+        .iter()
+        .any(|tool| tool == EXISTING_WORKTREE_READ_ONLY_SENTINEL);
+    if is_read_only_agent(agent) || existing_worktree_read_only {
         effective_child = codegg_core::approval::resolve_child_sandbox(
             parent_profile,
             codegg_core::approval::SandboxProfile::ReadOnly,
@@ -1660,12 +1667,22 @@ async fn execute_agent_task(
         "plan_exit".to_string(),
     ];
     tool_registry.filter_out(&subagent_blocked_tools);
+    if existing_worktree_read_only {
+        tool_registry.retain_only(&["read", "list", "glob"]);
+    }
     let parent_is_read_only = is_read_only_agent(agent);
     if parent_is_read_only {
         tool_registry.filter_out(&read_only_blocked_tools());
     }
     if !request.denied_tools.is_empty() {
-        tool_registry.filter_out(&request.denied_tools);
+        tool_registry.filter_out(
+            &request
+                .denied_tools
+                .iter()
+                .filter(|tool| *tool != EXISTING_WORKTREE_READ_ONLY_SENTINEL)
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
     }
 
     // Nested delegation is opt-in at the resolved agent definition. The
@@ -1675,6 +1692,7 @@ async fn execute_agent_task(
         .permissions
         .get("task")
         .is_some_and(|level| level.eq_ignore_ascii_case("allow"))
+        && !existing_worktree_read_only
         && !request.denied_tools.iter().any(|tool| tool == "task")
         && config.subagent.as_ref().and_then(|s| s.enabled) != Some(false);
     if can_delegate {

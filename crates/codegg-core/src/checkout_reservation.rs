@@ -44,7 +44,7 @@ pub struct CheckoutReservationClaim {
     /// The managed checkout the claim is over.
     pub worktree_id: WorktreeId,
     /// The live group that holds the checkout.
-    pub group_id: AgentRunGroupId,
+    pub group_id: Option<AgentRunGroupId>,
     /// The run that owns the checkout lease.
     pub owner_run_id: AgentRunId,
     /// Every run the live group admits. The owner is included when the
@@ -246,6 +246,19 @@ impl CheckoutReservationService {
             // An unleased checkout is not reserved.
             return Ok(CheckoutReservation::Unreserved);
         };
+        if self
+            .worktrees
+            .has_read_only_lease(&record.worktree_id)
+            .await
+            .map_err(|error| CheckoutReservationError::Lookup(error.to_string()))?
+        {
+            return Ok(CheckoutReservation::Reserved(CheckoutReservationClaim {
+                worktree_id: record.worktree_id.clone(),
+                group_id: None,
+                owner_run_id: owner_run_id.clone(),
+                member_run_ids: vec![owner_run_id],
+            }));
+        }
         let Some(groups) = self.groups.as_ref() else {
             return Ok(CheckoutReservation::Unreserved);
         };
@@ -264,7 +277,7 @@ impl CheckoutReservationService {
         }
         Ok(CheckoutReservation::Reserved(CheckoutReservationClaim {
             worktree_id: record.worktree_id.clone(),
-            group_id: group.group_id.clone(),
+            group_id: Some(group.group_id.clone()),
             owner_run_id,
             member_run_ids,
         }))
@@ -526,7 +539,7 @@ mod tests {
     fn a_reserved_checkout_refuses_a_writer_without_a_run() {
         let claim = CheckoutReservationClaim {
             worktree_id: WorktreeId::parse("wt-1").expect("valid worktree id"),
-            group_id: AgentRunGroupId::parse("grp-1").expect("valid group id"),
+            group_id: Some(AgentRunGroupId::parse("grp-1").expect("valid group id")),
             owner_run_id: AgentRunId::parse("run-1").expect("valid run id"),
             member_run_ids: vec![AgentRunId::parse("run-1").expect("valid run id")],
         };

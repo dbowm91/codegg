@@ -361,8 +361,12 @@ async fn an_alias_path_resolves_to_the_same_reservation() {
         .await
         .expect("resolve the checkout root");
     assert_eq!(
-        direct.claim().map(|claim| claim.group_id.to_string()),
-        reservation.claim().map(|claim| claim.group_id.to_string()),
+        direct
+            .claim()
+            .and_then(|claim| claim.group_id.as_ref().map(ToString::to_string)),
+        reservation
+            .claim()
+            .and_then(|claim| claim.group_id.as_ref().map(ToString::to_string)),
         "both spellings must name the same reservation"
     );
 }

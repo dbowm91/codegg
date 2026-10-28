@@ -591,22 +591,23 @@ fifth reconciliations recorded. The full reconciliation is in
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
 | TUI state modules | 34 (35 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
-| Database tables (`CREATE TABLE`) | 100 statements / 96 tables | `crates/codegg-core/src/session/schema.rs` (97 distinct `CREATE TABLE` names, less the transient `origin_attribution_new` rebuild name; `migration_version`, `origin_attribution` and that rebuild each appear twice) |
-| Storage layout version | 91 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
+| Database tables (`CREATE TABLE`) | 101 statements / 97 tables | `crates/codegg-core/src/session/schema.rs` (98 distinct `CREATE TABLE` names, less the transient `origin_attribution_new` rebuild name; `migration_version`, `origin_attribution` and that rebuild each appear twice) |
+| Storage layout version | 93 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
 | Integration test files | 355 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 104 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 70 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Guard scripts (all) | 105 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 71 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs guards CI does not |
 
-### Count reconciliation — session cwd + repository build admission (2026-10-27)
+### Count reconciliation — session cwd, repository build admission, and read-only placement (2026-10-28)
 
 Four code-count rows moved since the delegated live-transcript reconciliation, each re-measured in this tree with `python3 scripts/measure_overview_counts.py` rather than incremented:
 
 - *Distinct production tool names* is **79** (63 literal + 16 eggsact as measured; true production 78 — the 16th eggsact name `probe` is `#[cfg(test)]`-only). The +1 is the new `session_working_directory` tool (`src/tool/session_working_directory.rs`, registered in `src/tool/factory.rs`, `ToolCategory::Mutating`, get/set/reset over `SessionWorkingDirectoryStore`).
 - *Tool source files* is **84** — the same new file, `src/tool/session_working_directory.rs` (`bash/tests/` fixture still excluded).
-- *Guard scripts (all)* is **104** (`ls scripts/check_*`) and *CI guard scripts* is **70** (distinct `scripts/check_*` names in `.github/workflows/ci.yml`). Both run in `verify.sh quick` and CI, so the quick-only difference is unchanged at **14** (quick runs 84 including `check-client-boundary.sh`, `check-core-boundary.sh`, `check-desktop-boundary.sh`; CI runs 70 including `check-core-boundary.sh`).
+- *Guard scripts (all)* is **105** (`ls scripts/check_*`) and *CI guard scripts* is **71** (distinct `scripts/check_*` names in `.github/workflows/ci.yml`). The new `check_existing_worktree_read_only.py` is wired to quick and CI with its self-test.
+- The schema now has **101** `CREATE TABLE` statements / **97** tables after counting the new `worktree_read_only_lease` table; the storage layout version is **93** after adding durable read-only placement to `agent_run`.
 - The *Tools and capabilities at a glance* table now lists `session_working_directory` and the two production eggsact validators the table had missed (`math_eval`, `unit_convert`); the *Build Admission* module-map row now names both quotas (`Build` required per-workspace + `RepositoryBuild` opt-in per-repository); the *Workspace*/*Session* rows now name the session-relative default cwd (`SessionWorkingDirectory`, ADR-0055, migration 91); and *Session Launch* names its placement type (`RunPlacement`).
 
 Every other row was confirmed unchanged by measurement: architecture docs 92, tool registrations 67 (53 `register` + 14 `register_boxed`), LSP server definitions 39, `codegg-core` modules 58, `AppEvent` variants 61, `CoreRequest` variants 271 (245 struct + 26 unit), `CoreResponse` variants 179 (178 struct + 1 unit), `CoreEvent` variants 97, `ProjectionEvent` variants 50, authorized operations 265, identity newtypes 19, built-in slash commands 169, built-in agents 10, bundled themes 50, TUI state modules 34 (35 `.rs` files incl. `mod.rs`), database tables 100 statements / 96 tables, storage layout version 91, Git operation variants 54, Git risk classes 11, workspace member crates 11 (+ root), integration test files 355.

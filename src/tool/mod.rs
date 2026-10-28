@@ -1596,6 +1596,14 @@ impl ToolRegistry {
         }
     }
 
+    /// Keep only a closed set of tool names. This is used for delegated
+    /// profiles whose safety contract is an allowlist: a newly registered
+    /// tool remains unavailable until it is deliberately reviewed and added.
+    pub fn retain_only(&mut self, allowed_tools: &[&str]) {
+        self.tools
+            .retain(|_, tool| allowed_tools.iter().any(|allowed| *allowed == tool.name()));
+    }
+
     pub fn definitions(&self) -> Vec<crate::provider::ToolDefinition> {
         let interner = crate::util::interner::tool_interner();
         self.tools

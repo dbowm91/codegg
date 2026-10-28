@@ -187,6 +187,10 @@ pub struct AgentRunRecord {
     pub depth: u32,
     pub workspace_id: WorkspaceId,
     pub worktree_id: Option<WorktreeId>,
+    /// Durable effective placement projection: this run used one existing
+    /// managed worktree with an inspection-only tool surface.
+    #[serde(default)]
+    pub read_only_worktree: bool,
     pub node_id: Option<NodeId>,
     pub job_id: Option<JobId>,
     pub attempt_id: Option<AttemptId>,
@@ -524,6 +528,10 @@ pub trait AgentRunStore: Send + Sync {
         id: &AgentRunId,
         worktree_id: WorktreeId,
     ) -> Result<AgentRunRecord, AgentRunStoreError>;
+    async fn mark_read_only_worktree(
+        &self,
+        id: &AgentRunId,
+    ) -> Result<AgentRunRecord, AgentRunStoreError>;
     async fn transition_task(
         &self,
         id: &AgentTaskId,
@@ -665,6 +673,7 @@ fn build_records(
         depth: run.depth,
         workspace_id: run.workspace_id,
         worktree_id: None,
+        read_only_worktree: false,
         node_id: None,
         job_id: None,
         attempt_id: None,
@@ -1007,6 +1016,24 @@ impl AgentRunStore for InMemoryAgentRunStore {
             ));
         }
         run.worktree_id = Some(worktree_id);
+        run.updated_at = Utc::now().timestamp_millis();
+        Ok(run.clone())
+    }
+    async fn mark_read_only_worktree(
+        &self,
+        id: &AgentRunId,
+    ) -> Result<AgentRunRecord, AgentRunStoreError> {
+        let mut state = self.state.lock().await;
+        let run = state
+            .runs
+            .get_mut(id)
+            .ok_or_else(|| AgentRunStoreError::RunNotFound(id.to_string()))?;
+        if run.worktree_id.is_none() {
+            return Err(AgentRunStoreError::InvalidRelation(
+                "read-only placement requires an attached worktree".into(),
+            ));
+        }
+        run.read_only_worktree = true;
         run.updated_at = Utc::now().timestamp_millis();
         Ok(run.clone())
     }
@@ -1433,7 +1460,7 @@ async fn load_run(
     pool: &SqlitePool,
     id: &AgentRunId,
 ) -> Result<Option<AgentRunRecord>, AgentRunStoreError> {
-    let row = sqlx::query("SELECT run_id, task_id, root_run_id, parent_run_id, depth, workspace_id, worktree_id, node_id, job_id, attempt_id, agent_name, agent_digest, provider, model, authority_digest, budget_json, shared_scratch_json, status, terminal, result_ref, failure_class, failure_message, cancellation_requested, created_at, started_at, finished_at, updated_at FROM agent_run WHERE run_id = ?").bind(id.as_str()).fetch_optional(pool).await.map_err(storage_error)?;
+    let row = sqlx::query("SELECT run_id, task_id, root_run_id, parent_run_id, depth, workspace_id, worktree_id, read_only_worktree, node_id, job_id, attempt_id, agent_name, agent_digest, provider, model, authority_digest, budget_json, shared_scratch_json, status, terminal, result_ref, failure_class, failure_message, cancellation_requested, created_at, started_at, finished_at, updated_at FROM agent_run WHERE run_id = ?").bind(id.as_str()).fetch_optional(pool).await.map_err(storage_error)?;
     row.map(|r| {
         Ok(AgentRunRecord {
             run_id: parse_run(r.get("run_id"))?,
@@ -1450,6 +1477,7 @@ async fn load_run(
                 .map(|v| WorktreeId::parse(&v))
                 .transpose()
                 .map_err(storage_error)?,
+            read_only_worktree: r.get::<i64, _>("read_only_worktree") != 0,
             node_id: r
                 .get::<Option<String>, _>("node_id")
                 .map(|v| NodeId::parse(&v))
@@ -1491,8 +1519,8 @@ async fn load_run(
 }
 
 async fn update_run(pool: &SqlitePool, run: &AgentRunRecord) -> Result<(), AgentRunStoreError> {
-    sqlx::query("UPDATE agent_run SET worktree_id = ?, job_id = ?, attempt_id = ?, status = ?, terminal = ?, result_ref = ?, failure_class = ?, failure_message = ?, cancellation_requested = ?, started_at = ?, finished_at = ?, updated_at = ? WHERE run_id = ?")
-        .bind(run.worktree_id.as_ref().map(WorktreeId::as_str)).bind(run.job_id.as_ref().map(JobId::as_str)).bind(run.attempt_id.as_ref().map(AttemptId::as_str)).bind(run.status.as_str()).bind(run.terminal.as_ref().map(AgentRunTerminal::as_str)).bind(run.result_ref.as_deref()).bind(run.failure_class.as_deref()).bind(run.failure_message.as_deref()).bind(i64::from(run.cancellation_requested)).bind(run.started_at).bind(run.finished_at).bind(run.updated_at).bind(run.run_id.as_str()).execute(pool).await.map_err(storage_error)?;
+    sqlx::query("UPDATE agent_run SET worktree_id = ?, read_only_worktree = ?, job_id = ?, attempt_id = ?, status = ?, terminal = ?, result_ref = ?, failure_class = ?, failure_message = ?, cancellation_requested = ?, started_at = ?, finished_at = ?, updated_at = ? WHERE run_id = ?")
+        .bind(run.worktree_id.as_ref().map(WorktreeId::as_str)).bind(i64::from(run.read_only_worktree)).bind(run.job_id.as_ref().map(JobId::as_str)).bind(run.attempt_id.as_ref().map(AttemptId::as_str)).bind(run.status.as_str()).bind(run.terminal.as_ref().map(AgentRunTerminal::as_str)).bind(run.result_ref.as_deref()).bind(run.failure_class.as_deref()).bind(run.failure_message.as_deref()).bind(i64::from(run.cancellation_requested)).bind(run.started_at).bind(run.finished_at).bind(run.updated_at).bind(run.run_id.as_str()).execute(pool).await.map_err(storage_error)?;
     Ok(())
 }
 
@@ -1778,6 +1806,24 @@ impl AgentRunStore for SqliteAgentRunStore {
             ));
         }
         run.worktree_id = Some(worktree_id);
+        run.updated_at = Utc::now().timestamp_millis();
+        update_run(&self.pool, &run).await?;
+        Ok(run)
+    }
+    async fn mark_read_only_worktree(
+        &self,
+        id: &AgentRunId,
+    ) -> Result<AgentRunRecord, AgentRunStoreError> {
+        let mut run = self
+            .get_run(id)
+            .await?
+            .ok_or_else(|| AgentRunStoreError::RunNotFound(id.to_string()))?;
+        if run.worktree_id.is_none() {
+            return Err(AgentRunStoreError::InvalidRelation(
+                "read-only placement requires an attached worktree".into(),
+            ));
+        }
+        run.read_only_worktree = true;
         run.updated_at = Utc::now().timestamp_millis();
         update_run(&self.pool, &run).await?;
         Ok(run)

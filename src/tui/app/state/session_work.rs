@@ -321,6 +321,7 @@ mod tests {
             status: "running".into(),
             depth: 1,
             worktree_id: None,
+            read_only_worktree: false,
             branch: None,
             base_commit: None,
             result_commit: None,

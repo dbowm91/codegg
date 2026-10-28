@@ -146,6 +146,7 @@ impl CheckoutConflict {
     pub fn recovery(&self) -> &'static str {
         match self.lookup_failure {
             Some(_) => "the checkout reservation could not be established, so the write was refused rather than admitted unmediated; retry, and report the failure if it persists",
+            None if self.group_id.is_empty() => "an exclusive read-only inspection holds this checkout; retry after it finishes, or write to a separate checkout",
             None => "the checkout is reserved by a live agent-run group; retry after that group finishes, or write to a separate checkout",
         }
     }
@@ -158,6 +159,13 @@ impl std::fmt::Display for CheckoutConflict {
                 f,
                 "checkout reservation could not be established ({}): {}",
                 reason,
+                self.recovery()
+            ),
+            None if self.group_id.is_empty() => write!(
+                f,
+                "checkout {} is held by a read-only inspection (sink {}): {}",
+                self.worktree_id,
+                self.sink,
                 self.recovery()
             ),
             None => write!(

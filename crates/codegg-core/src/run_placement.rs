@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::identity::AgentRunGroupId;
+use crate::identity::{AgentRunGroupId, WorktreeId};
 
 /// Where a delegated agent run is placed.
 ///
@@ -45,12 +45,24 @@ pub enum RunPlacement {
     /// check is made against the durable group record, not against the
     /// request.
     SerializedShared { group_id: AgentRunGroupId },
+    /// Inspect one existing managed worktree while holding an exclusive
+    /// run-owned lease. This placement is read-only and never allocates or
+    /// cleans up the selected checkout.
+    ExistingManagedReadOnly { worktree_id: WorktreeId },
 }
 
 impl RunPlacement {
     /// Whether this placement asks for the shared profile.
     pub fn is_shared(&self) -> bool {
         matches!(self, RunPlacement::SerializedShared { .. })
+    }
+
+    /// The explicitly selected managed checkout, when this placement names one.
+    pub fn existing_worktree_id(&self) -> Option<&WorktreeId> {
+        match self {
+            RunPlacement::ExistingManagedReadOnly { worktree_id } => Some(worktree_id),
+            _ => None,
+        }
     }
 
     /// Whether this request explicitly requires a fresh isolated checkout,
@@ -73,6 +85,7 @@ impl RunPlacement {
             RunPlacement::Auto => "auto",
             RunPlacement::IsolatedNew => "isolated_new",
             RunPlacement::SerializedShared { .. } => "serialized_shared",
+            RunPlacement::ExistingManagedReadOnly { .. } => "existing_managed_read_only",
         }
     }
 }
@@ -184,6 +197,21 @@ mod tests {
         assert!(placement.is_shared());
         assert_eq!(placement.shared_group_id(), Some(&group_id));
         assert_eq!(placement.as_str(), "serialized_shared");
+    }
+
+    #[test]
+    fn existing_read_only_placement_round_trips_its_identity() {
+        let worktree_id = WorktreeId::new();
+        let placement = RunPlacement::ExistingManagedReadOnly {
+            worktree_id: worktree_id.clone(),
+        };
+        let encoded = serde_json::to_string(&placement).expect("serialize placement");
+        let decoded: RunPlacement = serde_json::from_str(&encoded).expect("deserialize placement");
+        assert_eq!(decoded, placement);
+        assert_eq!(decoded.as_str(), "existing_managed_read_only");
+        assert_eq!(decoded.existing_worktree_id(), Some(&worktree_id));
+        assert!(!decoded.is_shared());
+        assert!(!decoded.requires_new_isolated_checkout());
     }
 
     #[test]

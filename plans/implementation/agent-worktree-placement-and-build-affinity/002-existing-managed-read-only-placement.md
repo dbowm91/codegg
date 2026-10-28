@@ -1,7 +1,7 @@
 # Agent Worktree Placement and Build Affinity A002 — Existing Managed Checkout for Read-Only Delegated Runs
 
-Status: ready for handoff
-Repository baseline: `d4241f08dcfede0534df3ea08c83d762fa1c55f7` (`plan/worktree-affinity-cwd-build-admission-20261027`; verify/rebase exact head before edits)
+Status: active
+Repository baseline: `493e5ee11` (`plan/worktree-affinity-cwd-build-admission-20261027`, planning docs retrieved from the named remote branch)
 
 Source roadmap:
 - `plans/subsystems/agent-worktree-placement-and-build-affinity-corrective-addendum.md` §7 A002
