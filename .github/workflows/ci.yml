@@ -446,7 +446,16 @@ jobs:
       - name: Harness Lab Python suite
         env:
           CODEGG_H006_CODEGG_BINARY: ${{ github.workspace }}/target/h006-job-observation/codegg
+          CODEGG_H006_JOB_RECEIPT: ${{ runner.temp }}/h006-job-observation.json
         run: python3 -m unittest discover -s dev/harness_lab/tests
+
+      - name: Upload sanitized H006 offline job receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h006-offline-job-observation
+          path: ${{ runner.temp }}/h006-job-observation.json
+          if-no-files-found: warn
 
       - name: Security test-filter execution control (self-test)
         run: python3 scripts/check_test_filter_execution.py --self-test
