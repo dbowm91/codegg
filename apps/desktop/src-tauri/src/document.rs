@@ -1222,7 +1222,7 @@ pub(crate) async fn desktop_document_diagnostics_with_state(
     route_generation: u64,
 ) -> Result<EditorDiagnosticsView, String> {
     let (project_id, workspace_id, _) = state.route_selection(route_generation, false).await?;
-    let session_id = route_session(&state).await?;
+    let session_id = route_session(state).await?;
     let (client, _) = state.route_request().await?;
     let coordinator_scope = codegg_client::LspRequestScope {
         frontend_id: "desktop".to_owned(),
@@ -1275,7 +1275,7 @@ pub(crate) async fn desktop_document_diagnostics_with_state(
                 return Err("the editor route changed during the diagnostics request".to_owned());
             }
         };
-    let active_session = match route_session(&state).await {
+    let active_session = match route_session(state).await {
         Ok(session) => session,
         Err(error) => {
             let _ = state.lsp_request_coordinator.finish(
@@ -1709,7 +1709,7 @@ pub(crate) async fn desktop_document_completion_with_state(
     state: &Arc<HostState>,
     trigger: Option<String>,
 ) -> Result<EditorCompletionView, String> {
-    let session = live_session(&state).await?;
+    let session = live_session(state).await?;
     let attachment = session
         .controller()
         .try_attachment_info()
@@ -1718,7 +1718,7 @@ pub(crate) async fn desktop_document_completion_with_state(
     let caret = session.frontend.lock().await.cursor.caret;
     let (line, character) = utf16_position(&snapshot, caret)?;
     let request = LspCompletionRequestDto {
-        session_id: route_session(&state).await?,
+        session_id: route_session(state).await?,
         path: session.relative_path().await,
         document_id: attachment.document_id.clone(),
         revision,
@@ -1775,7 +1775,7 @@ pub(crate) async fn desktop_document_completion_with_state(
         }
     }
     .map_err(|error| format!("the completion could not be read: {error}"));
-    let active = match live_session(&state).await {
+    let active = match live_session(state).await {
         Ok(active) => active,
         Err(_) => {
             let _ = state.lsp_request_coordinator.finish(
@@ -1797,7 +1797,7 @@ pub(crate) async fn desktop_document_completion_with_state(
             return Err("the editor attachment changed during completion".to_owned());
         }
     };
-    let active_session_id = match route_session(&state).await {
+    let active_session_id = match route_session(state).await {
         Ok(session_id) => session_id,
         Err(error) => {
             let _ = state.lsp_request_coordinator.finish(
@@ -1857,7 +1857,7 @@ pub(crate) async fn desktop_document_navigate_with_state(
     state: &Arc<HostState>,
     operation: String,
 ) -> Result<EditorNavigationView, String> {
-    let session = live_session(&state).await?;
+    let session = live_session(state).await?;
     let read = navigation_operation(&operation)
         .ok_or_else(|| format!("`{operation}` is not a navigation this host serves"))?;
     let attachment = session
@@ -1869,7 +1869,7 @@ pub(crate) async fn desktop_document_navigate_with_state(
     let (line, character) = utf16_position(&snapshot, caret)?;
     let request = LspReadRequestDto {
         operation: read,
-        session_id: route_session(&state).await?,
+        session_id: route_session(state).await?,
         path: session.relative_path().await,
         line: Some(line),
         column: Some(character),
@@ -1917,7 +1917,7 @@ pub(crate) async fn desktop_document_navigate_with_state(
         response = client.lsp_read(request) => response,
     }
     .map_err(|error| format!("the navigation could not be read: {error}"));
-    let active_session = match live_session(&state).await {
+    let active_session = match live_session(state).await {
         Ok(active) => active,
         Err(_) => {
             let _ = state.lsp_request_coordinator.finish(
@@ -1931,7 +1931,7 @@ pub(crate) async fn desktop_document_navigate_with_state(
     let active_attachment = active_session.controller().try_attachment_info();
     let active_scope = match active_attachment {
         Some(info) => {
-            let active_session_id = match route_session(&state).await {
+            let active_session_id = match route_session(state).await {
                 Ok(session_id) => session_id,
                 Err(error) => {
                     let _ = state.lsp_request_coordinator.finish(

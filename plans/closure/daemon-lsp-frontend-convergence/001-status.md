@@ -1,6 +1,6 @@
 # M001 — Shared Frontend LSP Request Coordinator: Closure
 
-Status: **closed**  
+Status: **closed**
 Closed on: 2026-10-28
 Branch: `plan/daemon-lsp-frontend-convergence-20261027`
 
