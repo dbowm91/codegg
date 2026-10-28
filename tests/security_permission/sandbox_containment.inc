@@ -870,6 +870,7 @@ fn rustup_allowances_do_not_expose_credentials_or_symlink_targets() {
     let update_hashes = rustup.path().join("update-hashes");
     let downloads = rustup.path().join("downloads");
     let rustup_credentials = rustup.path().join("credentials");
+    let rustup_credentials_toml = rustup.path().join("credentials.toml");
     std::fs::write(&settings, "profile = 'minimal'\n").expect("Rustup settings");
     std::fs::create_dir(&toolchains).expect("toolchains");
     std::fs::write(toolchains.join("toolchain-marker"), "toolchain-readable")
@@ -881,6 +882,8 @@ fn rustup_allowances_do_not_expose_credentials_or_symlink_targets() {
         .expect("unapproved Rustup marker");
     std::fs::create_dir(&rustup_credentials).expect("Rustup credentials");
     std::fs::write(rustup_credentials.join("token"), "rustup-secret").expect("Rustup credential");
+    std::fs::write(&rustup_credentials_toml, "token = 'rustup-secret'\n")
+        .expect("Rustup credential TOML");
     let cargo_credentials = fixture_home.path().join(".cargo/credentials");
     std::fs::create_dir_all(cargo_credentials.parent().expect("Cargo home")).expect("Cargo home");
     std::fs::write(&cargo_credentials, "cargo-secret").expect("Cargo credential");
@@ -892,10 +895,20 @@ fn rustup_allowances_do_not_expose_credentials_or_symlink_targets() {
     std::os::unix::fs::symlink(outside.path(), toolchains.join("external-link"))
         .expect("external toolchain symlink");
 
+    // Seatbelt intentionally allows reads broadly, unlike Landlock's
+    // read-root view. Explicitly deny these sensitive/unapproved roots so the
+    // same path-deny contract is exercised by both native backends.
     let mut spec = spec_for(
         workspace.path(),
         SandboxMode::WorkspaceWrite,
-        &[cargo_credentials.clone(), rustup_credentials.clone()],
+        &[
+            cargo_credentials.clone(),
+            rustup_credentials.clone(),
+            rustup_credentials_toml.clone(),
+            downloads.clone(),
+            unapproved_path.clone(),
+            outside.path().to_path_buf(),
+        ],
     );
     spec.read_paths
         .extend([settings.clone(), toolchains.clone(), update_hashes.clone()]);
@@ -905,6 +918,7 @@ fn rustup_allowances_do_not_expose_credentials_or_symlink_targets() {
          probe {} TOOLCHAIN\n\
          probe {} UPDATE-HASHES\n\
          probe {} RUSTUP-CREDENTIALS\n\
+         probe {} RUSTUP-CREDENTIALS-TOML\n\
          probe {} CARGO-CREDENTIALS\n\
          probe {} UNRELATED-RUSTUP\n\
          probe {} UNAPPROVED-PATH\n\
@@ -913,6 +927,7 @@ fn rustup_allowances_do_not_expose_credentials_or_symlink_targets() {
         sh_quote(&toolchains.join("toolchain-marker")),
         sh_quote(&update_hashes.join("hash-marker")),
         sh_quote(&rustup_credentials.join("token")),
+        sh_quote(&rustup_credentials_toml),
         sh_quote(&cargo_credentials),
         sh_quote(&downloads.join("download-marker")),
         sh_quote(&unapproved_path),
@@ -926,6 +941,7 @@ fn rustup_allowances_do_not_expose_credentials_or_symlink_targets() {
         "TOOLCHAIN-READ",
         "UPDATE-HASHES-READ",
         "RUSTUP-CREDENTIALS-DENIED",
+        "RUSTUP-CREDENTIALS-TOML-DENIED",
         "CARGO-CREDENTIALS-DENIED",
         "UNRELATED-RUSTUP-DENIED",
         "UNAPPROVED-PATH-DENIED",

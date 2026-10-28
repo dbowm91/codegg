@@ -418,6 +418,10 @@ fn configured_rustup_home() -> Option<PathBuf> {
         })
 }
 
+fn rustup_credential_deny_paths(root: &Path) -> [PathBuf; 2] {
+    [root.join("credentials"), root.join("credentials.toml")]
+}
+
 fn rustup_read_allowances(root: &Path) -> Vec<PathBuf> {
     let Ok(root_metadata) = std::fs::symlink_metadata(root) else {
         return Vec::new();
@@ -599,6 +603,12 @@ pub fn sensitive_deny_paths() -> Vec<PathBuf> {
             paths.push(home.join(relative));
         }
     }
+    // Rustup's home can be overridden independently of HOME. Keep its
+    // credential material denied even when the managed runner uses a private
+    // toolchain root rather than ~/.rustup.
+    if let Some(rustup_home) = configured_rustup_home() {
+        paths.extend(rustup_credential_deny_paths(&rustup_home));
+    }
     paths
 }
 
@@ -632,6 +642,18 @@ pub fn sensitive_deny_paths() -> Vec<PathBuf> {
         ] {
             paths.push(home.join(relative));
         }
+    }
+    let rustup_home = std::env::var_os("RUSTUP_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+        .or_else(|| {
+            home_dir()
+                .map(|home| home.join(".rustup"))
+                .filter(|path| path.is_dir())
+        });
+    if let Some(rustup_home) = rustup_home {
+        paths.extend(rustup_credential_deny_paths(&rustup_home));
     }
     paths
 }
@@ -789,6 +811,30 @@ mod tests {
             raw.iter()
                 .any(|root| root.ends_with(".cargo/credentials.toml")),
             "Cargo credential TOML must stay explicitly denied"
+        );
+        if let Some(rustup_home) = configured_rustup_home() {
+            assert!(
+                raw.iter()
+                    .any(|root| root == &rustup_home.join("credentials")),
+                "Rustup credentials must stay explicitly denied"
+            );
+            assert!(
+                raw.iter()
+                    .any(|root| root == &rustup_home.join("credentials.toml")),
+                "Rustup credential TOML must stay explicitly denied"
+            );
+        }
+    }
+
+    #[test]
+    fn overridden_rustup_home_credentials_are_denied() {
+        let rustup_home = tempfile::tempdir().expect("private Rustup home");
+        assert_eq!(
+            rustup_credential_deny_paths(rustup_home.path()),
+            [
+                rustup_home.path().join("credentials"),
+                rustup_home.path().join("credentials.toml")
+            ]
         );
     }
 
