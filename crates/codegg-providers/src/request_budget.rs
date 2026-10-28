@@ -175,12 +175,7 @@ pub(crate) fn observe_opencode_go_allowance(
     allowance_micros: u64,
 ) -> Result<(), crate::ProviderError> {
     if let Some(Ok(Some(budget))) = BUDGET.get() {
-        let used = budget
-            .allowance_used_micros
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                Some(used.saturating_add(allowance_micros))
-            })
-            .unwrap_or_else(|used| used);
+        let used = saturating_atomic_add(&budget.allowance_used_micros, allowance_micros);
         let cumulative_micros = used.saturating_add(allowance_micros);
         if let Some(path) = std::env::var_os(RECEIPT_ENV) {
             let _guard = RECEIPT_LOCK.lock().map_err(|_| {
@@ -215,6 +210,17 @@ pub(crate) fn observe_opencode_go_allowance(
         budget.allowance_observations.fetch_add(1, Ordering::AcqRel);
     }
     Ok(())
+}
+
+fn saturating_atomic_add(target: &AtomicU64, increment: u64) -> u64 {
+    let mut previous = target.load(Ordering::Acquire);
+    loop {
+        let next = previous.saturating_add(increment);
+        match target.compare_exchange_weak(previous, next, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return previous,
+            Err(observed) => previous = observed,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -272,5 +278,12 @@ mod tests {
         assert!(budget.allowance_available());
         assert_eq!(budget.admit(true), Ok(2));
         assert!(!budget.allowance_available());
+    }
+
+    #[test]
+    fn allowance_accumulation_saturates_at_the_atomic_limit() {
+        let used = AtomicU64::new(u64::MAX - 2);
+        assert_eq!(saturating_atomic_add(&used, 10), u64::MAX - 2);
+        assert_eq!(used.load(Ordering::Acquire), u64::MAX);
     }
 }
