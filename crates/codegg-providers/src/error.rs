@@ -208,7 +208,9 @@ impl ProviderError {
     }
 
     fn api_class(code: &str, message: &str) -> &'static str {
-        if code.starts_with("harness_request_budget") {
+        if code.starts_with("harness_request_budget")
+            || code.starts_with("harness_allowance_budget")
+        {
             return "request_budget";
         }
         if let Ok(status) = code.parse::<u16>() {

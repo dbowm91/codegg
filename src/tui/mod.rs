@@ -2747,6 +2747,7 @@ mod async_cmd_tests {
             output_tokens: None,
             cached_tokens: None,
             reasoning_tokens: None,
+            provider_allowance_micros: None,
             context_limit: None,
         });
 
@@ -2766,6 +2767,7 @@ mod async_cmd_tests {
             output_tokens: None,
             cached_tokens: None,
             reasoning_tokens: None,
+            provider_allowance_micros: None,
             context_limit: None,
         });
 
@@ -2784,6 +2786,7 @@ mod async_cmd_tests {
             output_tokens: Some(200),
             cached_tokens: Some(50),
             reasoning_tokens: Some(30),
+            provider_allowance_micros: None,
             context_limit: Some(200_000),
         });
 
@@ -2814,6 +2817,7 @@ mod async_cmd_tests {
             output_tokens: Some(200),
             cached_tokens: None,
             reasoning_tokens: None,
+            provider_allowance_micros: None,
             // Provider omitted it / turn cancelled before resolution.
             context_limit: None,
         });

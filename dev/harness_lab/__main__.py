@@ -15,7 +15,6 @@ from . import budget
 from . import ledger
 from . import improve
 from . import pilot as pilot_module
-from . import scoring
 from . import sustained as sustained_module
 
 
@@ -228,12 +227,23 @@ def _parser() -> argparse.ArgumentParser:
                                   help="the candidate CodeGG binary")
     autonomy_compare.add_argument("--case", action="append", default=None,
                                   help="case id to compare; repeatable. Defaults to every supported case")
+    autonomy_compare.add_argument("--manifest", type=Path, default=None,
+                                  help="optional directory containing a frozen cases.jsonl manifest")
+    autonomy_compare.add_argument("--repetitions", type=int, default=3,
+                                  help="paired repetitions per case (default: 3)")
+    autonomy_compare.add_argument("--seed", type=int, default=20261028,
+                                  help="recorded seed used to randomize case and arm order")
     autonomy_compare.add_argument("--profile", default="workspace-write",
                                   choices=["workspace-write", "full-host"])
     autonomy_compare.add_argument("--timeout", type=float, default=900.0)
     autonomy_compare.add_argument("--output", type=Path, default=None,
                                   help="where to write the comparison JSON; stdout when absent")
     autonomy_compare.add_argument("--lane-root", type=Path, default=None)
+    autonomy_compare.add_argument("--resume-from", type=Path, default=None,
+                                  help="resume only refused rows from a frozen JSONL checkpoint")
+    autonomy_compare.add_argument("--prior-provider-requests", type=int, default=0)
+    autonomy_compare.add_argument("--prior-allowance-usd", type=float, default=0.0)
+    autonomy_compare.add_argument("--prior-elapsed-seconds", type=float, default=0.0)
     _add_budget_arguments(autonomy_compare)
     autonomy_rescore = commands.add_parser(
         "autonomy-rescore",
@@ -366,36 +376,32 @@ def main(argv: list[str] | None = None) -> int:
                     "the autonomy-compare command always reaches a live provider; pass "
                     "--live-provider together with an admitted --budget policy")
             policy = _budget_policy(getattr(args, "budget", None))
-            suite = autonomy_module.load_autonomy_suite()
+            suite = autonomy_module.load_autonomy_suite(args.manifest)
             case_ids = list(args.case) if args.case else None
-            # The lane root decides the daemon control socket's path, and the
-            # platform's sun_path limit is short. Two short lane roots, one
-            # per side, keep both sockets bindable; a nested layout would
-            # push them past the limit.
-            baseline_lane = args.lane_root or supervisor_lane_root("ab")
-            candidate_lane = args.lane_root or supervisor_lane_root("ac")
-            baseline = autonomy_run_module.run_suite(
-                _binary(args.baseline_binary), suite, args.model, budget_policy=policy,
-                lane_root=baseline_lane, profile=args.profile, timeout=args.timeout,
-                case_ids=case_ids)
-            candidate = autonomy_run_module.run_suite(
-                _binary(args.candidate_binary), suite, args.model, budget_policy=policy,
-                lane_root=candidate_lane, profile=args.profile, timeout=args.timeout,
-                case_ids=case_ids)
-            comparison = autonomy_run_module.compare_runs(
-                scoring.default_contract(), baseline["runs"], candidate["runs"])
-            payload = {"schema_version": 1, "model": args.model,
-                       "baseline_binary_sha256": baseline.get("binary_sha256"),
-                       "candidate_binary_sha256": candidate.get("binary_sha256"),
-                       "baseline": baseline, "candidate": candidate,
-                       "comparison": comparison}
+            lane = args.lane_root or supervisor_lane_root("ab")
+            if args.resume_from is None:
+                payload = autonomy_run_module.run_paired_comparison(
+                    _binary(args.baseline_binary), _binary(args.candidate_binary),
+                    suite, args.model, budget_policy=policy, lane_root=lane,
+                    repetitions=args.repetitions, seed=args.seed,
+                    profile=args.profile, timeout=args.timeout, case_ids=case_ids)
+            else:
+                payload = autonomy_run_module.resume_paired_comparison(
+                    args.resume_from, _binary(args.baseline_binary),
+                    _binary(args.candidate_binary), suite, args.model,
+                    budget_policy=policy, lane_root=lane,
+                    repetitions=args.repetitions, seed=args.seed,
+                    profile=args.profile, timeout=args.timeout, case_ids=case_ids,
+                    prior_provider_requests=args.prior_provider_requests,
+                    prior_allowance_usd=args.prior_allowance_usd,
+                    prior_elapsed_seconds=args.prior_elapsed_seconds)
             rendered = json.dumps(payload, indent=2, sort_keys=True)
             if args.output is not None:
                 args.output.parent.mkdir(parents=True, exist_ok=True)
                 args.output.write_text(rendered, encoding="utf-8")
                 print(json.dumps({"ok": True, "output": str(args.output),
-                                  "decision": comparison["outcome"]["decision"],
-                                  "objective": comparison["outcome"]["objective"]},
+                                  "decision": payload["comparison"]["outcome"]["decision"],
+                                  "objective": payload["comparison"]["outcome"]["objective"]},
                                  sort_keys=True))
             else:
                 print(rendered)

@@ -76,6 +76,7 @@ impl Provider for MockProvider {
                     total_tokens: 30,
                     reasoning_tokens: 0,
                     cached_tokens: None,
+                    provider_allowance_micros: None,
                 },
             })
         }));
@@ -446,6 +447,7 @@ async fn test_mock_provider_reasoning_delta() {
                         total_tokens: 150,
                         reasoning_tokens: 0,
                         cached_tokens: None,
+                        provider_allowance_micros: None,
                     },
                 }),
             ]);

@@ -7432,6 +7432,7 @@ async fn failed_turn_after_a_metered_attempt_reports_the_aggregate_usage() {
         total_tokens: 155,
         reasoning_tokens: 5,
         cached_tokens: Some(20),
+        provider_allowance_micros: None,
     }));
     let provider = Box::new(provider_inner.clone());
     let mut registry = ToolRegistry::new();

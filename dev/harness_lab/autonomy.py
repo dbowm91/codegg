@@ -67,8 +67,11 @@ _CASE_KEYS = frozenset({
     "schema_version", "case_id", "family", "group_id", "title", "prompt",
     "verifier", "verifier_scope", "budget", "abort", "allowed_tools",
     "network", "protected", "support", "deferral_reason", "fault",
+    "control_trigger",
 })
-_REQUIRED_CASE_KEYS = tuple(sorted(_CASE_KEYS - {"deferral_reason", "fault"}))
+_REQUIRED_CASE_KEYS = tuple(sorted(_CASE_KEYS - {"deferral_reason", "fault",
+                                                "control_trigger"}))
+_CONTROL_TRIGGERS = ("unavailable_managed_checkout",)
 _VERIFIER_KEYS = frozenset({"kind", "command", "cwd"})
 _BUDGET_KEYS = frozenset({"max_provider_requests", "max_tool_calls",
                           "max_wallclock_seconds", "max_cost_usd"})
@@ -183,6 +186,7 @@ class AutonomyCase:
     support: str
     deferral_reason: Optional[str]
     fault: Optional[Mapping[str, Any]] = None
+    control_trigger: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.family not in SUPPORTED_FAMILIES:
@@ -197,6 +201,8 @@ class AutonomyCase:
             raise ValueError(f"deferred autonomy case {self.case_id!r} requires a non-empty deferral_reason")
         if self.support == SUPPORT_SUPPORTED and self.deferral_reason is not None:
             raise ValueError(f"supported autonomy case {self.case_id!r} must not carry a deferral_reason")
+        if self.control_trigger is not None and self.control_trigger not in _CONTROL_TRIGGERS:
+            raise ValueError(f"autonomy case {self.case_id!r} has an unsupported control_trigger")
 
     def as_dict(self) -> Dict[str, Any]:
         """Return a JSON-serializable view of the case."""
@@ -216,7 +222,8 @@ class AutonomyCase:
                 "protected": self.protected,
                 "support": self.support,
                 "deferral_reason": self.deferral_reason,
-                "fault": dict(self.fault) if isinstance(self.fault, Mapping) else None}
+                "fault": dict(self.fault) if isinstance(self.fault, Mapping) else None,
+                "control_trigger": self.control_trigger}
 
 
 @dataclass(frozen=True)
@@ -409,6 +416,10 @@ def _case_from_mapping(mapping: Mapping[str, Any], line_number: int) -> Autonomy
     network = _validate_network(mapping["network"], label)
     protected = _require_bool(mapping["protected"], f"{label} protected")
     fault = _validate_fault(mapping.get("fault"), label)
+    control_trigger = mapping.get("control_trigger")
+    if control_trigger is not None and control_trigger not in _CONTROL_TRIGGERS:
+        raise ValueError(f"{label} control_trigger must be one of "
+                         + ", ".join(_CONTROL_TRIGGERS))
 
     support = mapping["support"]
     if support not in SUPPORT_MODES:
@@ -424,7 +435,8 @@ def _case_from_mapping(mapping: Mapping[str, Any], line_number: int) -> Autonomy
                          prompt=prompt, verifier=verifier, verifier_scope=verifier_scope,
                          budget=budget, abort=abort, allowed_tools=allowed_tools,
                          network=network, protected=protected, support=support,
-                         deferral_reason=deferral_reason, fault=fault)
+                         deferral_reason=deferral_reason, fault=fault,
+                         control_trigger=control_trigger)
 
 
 def load_autonomy_suite(root: Optional[Path] = None) -> AutonomySuite:

@@ -15,6 +15,7 @@ import json
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 from dev.harness_lab import autonomy, autonomy_run, budget, scoring
 from dev.harness_lab.supervisor import HarnessError
@@ -69,6 +70,107 @@ class BuildTranscriptTests(unittest.TestCase):
 
 
 class ProviderRequestAccountingTests(unittest.TestCase):
+    def test_a005_unavailable_checkout_refusal_is_a_declared_negative_control(self) -> None:
+        suite = autonomy.load_autonomy_suite(
+            REPO_ROOT / "dev" / "harness_lab" / "fixtures" / "a005_placement")
+        case = suite.case("a005-existing-unavailable-refusal")
+        self.assertTrue(case.protected)
+        self.assertEqual(case.control_trigger, "unavailable_managed_checkout")
+        task_call = {"tool": "task", "task_placement": {
+            "requested": "existing_managed_read_only", "worktree_id_present": True}}
+        self.assertTrue(autonomy_run._declared_control_trigger_exercised(case, [task_call]))
+        self.assertTrue(autonomy_run._control_exercised({"control_exercised": True}))
+        self.assertFalse(autonomy_run._declared_control_trigger_exercised(
+            case, [{"tool": "task", "task_placement": {
+                "requested": "existing_managed_read_only", "worktree_id_present": False}}]))
+
+    def test_paired_schedule_randomizes_arms_and_covers_each_pair_per_repeat(self):
+        schedule = autonomy_run.paired_schedule(["rust", "python"], 3, 41)
+        self.assertEqual(len(schedule), 12)
+        for repetition in range(1, 4):
+            for case_id in ("rust", "python"):
+                arms = [row["arm"] for row in schedule
+                        if row["repetition"] == repetition and row["case_id"] == case_id]
+                self.assertEqual(sorted(arms), ["baseline", "candidate"])
+        self.assertEqual(schedule, autonomy_run.paired_schedule(["rust", "python"], 3, 41))
+        self.assertNotEqual(schedule, autonomy_run.paired_schedule(["rust", "python"], 3, 42))
+
+    def test_paired_comparison_checkpoints_each_trial_and_returns_binary_hashes(self) -> None:
+        suite = autonomy.load_autonomy_suite()
+        case_id = suite.supported_cases()[0].case_id
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            binary = root / "codegg"
+            binary.write_bytes(b"frozen test binary")
+            lane = root / "comparison"
+            policy = budget.BudgetPolicy(max_provider_requests=10,
+                                         max_wallclock_seconds=60)
+            receipt = {"case_id": case_id, "terminal": "completed", "solved": True,
+                       "protected": False, "verifier_confirmed": True,
+                       "duration_ms": 1, "provider_request_count": 1}
+            with mock.patch.object(autonomy_run, "run_case", return_value=receipt):
+                comparison = autonomy_run.run_paired_comparison(
+                    binary, binary, suite, "opencode_go/muse-spark-1.3-contributor",
+                    budget_policy=policy, lane_root=lane, repetitions=1,
+                    seed=7, case_ids=[case_id])
+
+            self.assertEqual(comparison["baseline_binary_sha256"],
+                             autonomy_run.sha256_file(binary))
+            self.assertEqual(comparison["candidate_binary_sha256"],
+                             autonomy_run.sha256_file(binary))
+            checkpoint = lane / "comparison-progress.jsonl"
+            rows = [json.loads(line) for line in checkpoint.read_text().splitlines()]
+            self.assertEqual(len(rows), 2)
+            self.assertEqual({row["schedule"]["arm"] for row in rows},
+                             {"baseline", "candidate"})
+            self.assertTrue(all(row["result"]["solved"] for row in rows))
+
+    def test_resume_completes_only_refused_rows_and_preserves_cumulative_budget(self) -> None:
+        suite = autonomy.load_autonomy_suite()
+        case_id = suite.supported_cases()[0].case_id
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            binary = root / "codegg"
+            binary.write_bytes(b"frozen test binary")
+            schedule = autonomy_run.paired_schedule([case_id], 1, 7)
+            checkpoint = root / "checkpoint.jsonl"
+            rows = []
+            for index, row in enumerate(schedule):
+                result = {"case_id": case_id, "terminal": "completed" if index == 0 else "refused",
+                          "solved": False, "protected": False, "binary_sha256":
+                          autonomy_run.sha256_file(binary)}
+                if index == 0:
+                    result["provider_request_count"] = 1
+                rows.append({"schedule": row, "result": result})
+            checkpoint.write_text("".join(json.dumps(row) + "\n" for row in rows),
+                                   encoding="utf-8")
+            lane = root / "resume"
+            policy = budget.BudgetPolicy(max_provider_requests=3,
+                                         max_wallclock_seconds=60)
+            resumed_receipt = {"case_id": case_id, "terminal": "completed", "solved": False,
+                               "protected": False, "provider_request_count": 1,
+                               "binary_sha256": autonomy_run.sha256_file(binary)}
+            def completed_trial(*args, **kwargs):
+                kwargs["guard"].admit()
+                kwargs["guard"].observe(provider_requests=1)
+                return resumed_receipt
+
+            with mock.patch.object(autonomy_run, "run_case", side_effect=completed_trial) as run:
+                result = autonomy_run.resume_paired_comparison(
+                    checkpoint, binary, binary, suite,
+                    "opencode_go/muse-spark-1.3-contributor", budget_policy=policy,
+                    lane_root=lane, repetitions=1, seed=7, case_ids=[case_id],
+                    prior_provider_requests=12, prior_allowance_usd=0.25,
+                    prior_elapsed_seconds=90)
+
+            run.assert_called_once()
+            self.assertEqual(result["resumption"]["resumed_trials"], 1)
+            self.assertEqual(result["resumption"]["cumulative_provider_requests"], 13)
+            self.assertEqual(result["resumption"]["cumulative_allowance_usd"], 0.25)
+            self.assertGreaterEqual(result["resumption"]["cumulative_elapsed_seconds"], 90)
+            self.assertEqual([row["terminal"] for row in result["schedule"]],
+                             ["completed", "completed"])
+
     def test_counts_only_provider_boundary_admissions(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             log = pathlib.Path(temp) / "acp.stderr"
@@ -78,6 +180,19 @@ class ProviderRequestAccountingTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual(autonomy_run._provider_request_admissions(log), 2)
+
+    def test_request_and_allowance_receipts_are_separately_recoverable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            receipt = pathlib.Path(temp) / "provider-receipts.jsonl"
+            receipt.write_text(
+                '{"kind":"request","request_number":1,"limit":20}\n'
+                '{"kind":"allowance_observed","observation_number":1,'
+                '"allowance_micros":1250000,"cumulative_allowance_micros":1250000}\n'
+                '{"kind":"request","request_number":2,"limit":20}\n',
+                encoding="utf-8",
+            )
+            self.assertEqual(autonomy_run._provider_request_admissions(receipt), 2)
+            self.assertEqual(autonomy_run._provider_allowance_from_receipt(receipt), 1.25)
 
     def test_missing_provider_log_is_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

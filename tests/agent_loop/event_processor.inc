@@ -34,6 +34,7 @@ mod tests {
                 total_tokens: input_tokens + output_tokens,
                 reasoning_tokens: 0,
                 cached_tokens: None,
+                provider_allowance_micros: None,
             },
         }
     }

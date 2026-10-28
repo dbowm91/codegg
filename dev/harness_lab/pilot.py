@@ -317,6 +317,20 @@ def run_live_task(binary: Path, task: str, model: str, *, budget_policy: budget.
     workspace = lane_root / "workspace"
     spec = SubjectSpec.create(f"pilot-{task}", binary, workspace, lane_root, repository)
     env = spec.environment()
+    if guard.policy.max_provider_requests is not None:
+        remaining_requests = guard.policy.max_provider_requests - max(
+            0, guard.provider_requests - 1)
+        if remaining_requests <= 0:
+            raise HarnessError("provider request budget is exhausted before the pilot starts")
+        env["CODEGG_HARNESS_MAX_PROVIDER_REQUESTS"] = str(remaining_requests)
+        env["CODEGG_HARNESS_PROVIDER_REQUEST_RECEIPT"] = str(
+            spec.root / "artifacts" / "provider-request-admissions.jsonl")
+    if guard.policy.cost_limit_usd is not None:
+        remaining_allowance = guard.policy.cost_limit_usd - guard.cost_usd
+        if remaining_allowance <= 0:
+            raise HarnessError("provider allowance budget is exhausted before the pilot starts")
+        env["CODEGG_HARNESS_MAX_PROVIDER_ALLOWANCE_USD"] = str(
+            remaining_allowance)
     workspace.mkdir(parents=True, exist_ok=True)
     _prepare_lane_home(env)
     fixture_sha256 = _copy_fixture(source, workspace)
@@ -444,10 +458,15 @@ def run_live_task(binary: Path, task: str, model: str, *, budget_policy: budget.
             "output_tokens": raw_usage.get("outputTokens"),
             "cached_tokens": raw_usage.get("cachedTokens"),
             "reasoning_tokens": raw_usage.get("reasoningTokens"),
+            "provider_allowance_usd": raw_usage.get("providerAllowanceUsd"),
         }
     guard.observe(provider_requests=1,
                   input_tokens=int((usage or {}).get("input_tokens") or 0),
-                  output_tokens=int((usage or {}).get("output_tokens") or 0))
+                  output_tokens=int((usage or {}).get("output_tokens") or 0),
+                  cost_usd=(usage or {}).get("provider_allowance_usd"),
+                  cost_source=("opencode_go_allowance"
+                               if (usage or {}).get("provider_allowance_usd") is not None
+                               else None))
 
     command = verifier or ["python3", "-m", "unittest", "-v"]
     verification = _run_verifier(workspace, command, timeout)

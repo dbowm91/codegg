@@ -319,8 +319,17 @@ class SpendGuardTests(unittest.TestCase):
 
     def test_the_observed_spend_is_json_serializable(self) -> None:
         guard = SpendGuard(BudgetPolicy(token_limit=1000, max_provider_requests=4))
-        guard.observe(provider_requests=1, input_tokens=10, output_tokens=5, cost_usd=0.25)
+        guard.observe(provider_requests=1, input_tokens=10, output_tokens=5, cost_usd=0.25,
+                      cost_source="opencode_go_allowance")
         payload = guard.as_dict()
         self.assertEqual(json.dumps(payload, sort_keys=True), json.dumps(payload, sort_keys=True))
         self.assertEqual(payload["total_tokens"], 15)
         self.assertEqual(payload["cost_usd"], 0.25)
+        self.assertEqual(payload["cost_source"], "opencode_go_allowance")
+
+    def test_missing_provider_allowance_exhausts_a_requested_cost_gate(self) -> None:
+        guard = SpendGuard(BudgetPolicy(cost_limit_usd=10.0,
+                                        cost_observable=True,
+                                        cost_enforcement="controller_enforced"))
+        guard.observe(provider_requests=1)
+        self.assertEqual(guard.exhausted_cap, "cost_limit_usd")

@@ -1,0 +1,4192 @@
+{
+  "baseline": {
+    "runs": [
+      {
+        "agent_terminal": "failed",
+        "arm": "baseline",
+        "case_id": "a005-rust-isolated-build",
+        "control_exercised": false,
+        "duration_ms": 263038,
+        "placement_advisor_enabled": false,
+        "protected": false,
+        "provider_allowance_usd": 0.008749,
+        "provider_request_count": 20,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": null,
+        "resource_usage": {
+          "cpu_seconds": 10.697,
+          "lane_disk_growth_bytes": 6836096,
+          "peak_rss_bytes": 228589568,
+          "sample_count": 476
+        },
+        "solved": false,
+        "terminal": "failed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "isolated_new",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 4,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 5,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 6,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 7,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 8,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 9,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 10,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 11,
+            "status": "completed",
+            "task_run_status": "running",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 12,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 13,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 14,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 276,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "baseline",
+        "case_id": "a005-python-isolated-debug",
+        "control_exercised": false,
+        "duration_ms": 43329,
+        "placement_advisor_enabled": false,
+        "protected": false,
+        "provider_allowance_usd": 0.003601,
+        "provider_request_count": 8,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": null,
+        "resource_usage": {
+          "cpu_seconds": 3.366,
+          "lane_disk_growth_bytes": 6893211,
+          "peak_rss_bytes": 218222592,
+          "sample_count": 78
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "isolated_new",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 4,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 5,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 272,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "baseline",
+        "case_id": "a005-python-read-only",
+        "control_exercised": false,
+        "duration_ms": 12670,
+        "placement_advisor_enabled": false,
+        "protected": false,
+        "provider_allowance_usd": 0.00331,
+        "provider_request_count": 5,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": null,
+        "resource_usage": {
+          "cpu_seconds": 2.058,
+          "lane_disk_growth_bytes": 6671252,
+          "peak_rss_bytes": 211103744,
+          "sample_count": 22
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 262,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "baseline",
+        "case_id": "a005-rust-dependency-inspection",
+        "control_exercised": false,
+        "duration_ms": 40402,
+        "placement_advisor_enabled": false,
+        "protected": false,
+        "provider_allowance_usd": 0.003448,
+        "provider_request_count": 6,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": null,
+        "resource_usage": {
+          "cpu_seconds": 2.676,
+          "lane_disk_growth_bytes": 6679441,
+          "peak_rss_bytes": 218206208,
+          "sample_count": 73
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 299,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "baseline",
+        "case_id": "a005-spanish-isolated-edit",
+        "control_exercised": false,
+        "duration_ms": 86374,
+        "placement_advisor_enabled": false,
+        "protected": false,
+        "provider_allowance_usd": 0.004986,
+        "provider_request_count": 16,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": null,
+        "resource_usage": {
+          "cpu_seconds": 5.498,
+          "lane_disk_growth_bytes": 7169387,
+          "peak_rss_bytes": 177586176,
+          "sample_count": 154
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "isolated_new",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 4,
+            "status": "completed",
+            "tool": "git_query"
+          },
+          {
+            "failed": false,
+            "index": 5,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "failed": false,
+            "index": 6,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "failed": false,
+            "index": 7,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "failed": false,
+            "index": 8,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 9,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 10,
+            "status": "completed",
+            "tool": "edit"
+          },
+          {
+            "failed": true,
+            "index": 11,
+            "status": "failed",
+            "tool": "test"
+          },
+          {
+            "failed": false,
+            "index": 12,
+            "status": "completed",
+            "tool": "bash"
+          },
+          {
+            "failed": false,
+            "index": 13,
+            "status": "completed",
+            "tool": "glob"
+          },
+          {
+            "failed": false,
+            "index": 14,
+            "status": "completed",
+            "tool": "bash"
+          },
+          {
+            "failed": false,
+            "index": 15,
+            "status": "completed",
+            "tool": "git_query"
+          }
+        ],
+        "verification": {
+          "duration_ms": 328,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "baseline",
+        "case_id": "a005-python-isolated-debug",
+        "control_exercised": false,
+        "duration_ms": 53583,
+        "placement_advisor_enabled": false,
+        "protected": false,
+        "provider_allowance_usd": 0.004339,
+        "provider_request_count": 11,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": null,
+        "resource_usage": {
+          "cpu_seconds": 2.949,
+          "lane_disk_growth_bytes": 6955238,
+          "peak_rss_bytes": 175063040,
+          "sample_count": 99
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "isolated_new",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 4,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 5,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 6,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 7,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 8,
+            "status": "completed",
+            "tool": "git_query"
+          }
+        ],
+        "verification": {
+          "duration_ms": 297,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "baseline",
+        "case_id": "a005-rust-dependency-inspection",
+        "control_exercised": false,
+        "duration_ms": 39047,
+        "placement_advisor_enabled": false,
+        "protected": false,
+        "provider_allowance_usd": 0.003271,
+        "provider_request_count": 5,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": null,
+        "resource_usage": {
+          "cpu_seconds": 2.597,
+          "lane_disk_growth_bytes": 6661959,
+          "peak_rss_bytes": 161366016,
+          "sample_count": 71
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 356,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "baseline",
+        "case_id": "a005-python-read-only",
+        "control_exercised": false,
+        "duration_ms": 24817,
+        "placement_advisor_enabled": false,
+        "protected": false,
+        "provider_allowance_usd": 0.002963,
+        "provider_request_count": 5,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": null,
+        "resource_usage": {
+          "cpu_seconds": 2.21,
+          "lane_disk_growth_bytes": 6687764,
+          "peak_rss_bytes": 172085248,
+          "sample_count": 45
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 368,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "baseline",
+        "case_id": "a005-spanish-isolated-edit",
+        "control_exercised": false,
+        "duration_ms": 36701,
+        "placement_advisor_enabled": false,
+        "protected": false,
+        "provider_allowance_usd": 0.003326,
+        "provider_request_count": 7,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": null,
+        "resource_usage": {
+          "cpu_seconds": 3.673,
+          "lane_disk_growth_bytes": 6882325,
+          "peak_rss_bytes": 151609344,
+          "sample_count": 63
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "isolated_new",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 4,
+            "status": "completed",
+            "tool": "git_query"
+          },
+          {
+            "failed": false,
+            "index": 5,
+            "status": "completed",
+            "tool": "list"
+          }
+        ],
+        "verification": {
+          "duration_ms": 499,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "baseline",
+        "case_id": "a005-rust-isolated-build",
+        "control_exercised": false,
+        "duration_ms": 60348,
+        "placement_advisor_enabled": false,
+        "protected": false,
+        "provider_allowance_usd": 0.005477,
+        "provider_request_count": 12,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": null,
+        "resource_usage": {
+          "cpu_seconds": 4.079,
+          "lane_disk_growth_bytes": 7231777,
+          "peak_rss_bytes": 176779264,
+          "sample_count": 110
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 4,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 5,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "isolated_new",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 6,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 7,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 8,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 9,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 271,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "baseline",
+        "case_id": "a005-spanish-isolated-edit",
+        "control_exercised": false,
+        "duration_ms": 270917,
+        "placement_advisor_enabled": false,
+        "protected": false,
+        "provider_allowance_usd": 0.006879,
+        "provider_request_count": 20,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": 3,
+        "resource_usage": {
+          "cpu_seconds": 8.186,
+          "lane_disk_growth_bytes": 7472991,
+          "peak_rss_bytes": 189939712,
+          "sample_count": 501
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "isolated_new",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 4,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 5,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 6,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 7,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 8,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 9,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 10,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 11,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 12,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 13,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 14,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 15,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 611,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "baseline",
+        "case_id": "a005-python-read-only",
+        "control_exercised": false,
+        "duration_ms": 28089,
+        "placement_advisor_enabled": false,
+        "protected": false,
+        "provider_allowance_usd": 0.002999,
+        "provider_request_count": 5,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": 3,
+        "resource_usage": {
+          "cpu_seconds": 2.457,
+          "lane_disk_growth_bytes": 6742763,
+          "peak_rss_bytes": 183177216,
+          "sample_count": 51
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 307,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "baseline",
+        "case_id": "a005-rust-dependency-inspection",
+        "control_exercised": false,
+        "duration_ms": 28901,
+        "placement_advisor_enabled": false,
+        "protected": false,
+        "provider_allowance_usd": 0.00325,
+        "provider_request_count": 6,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": 3,
+        "resource_usage": {
+          "cpu_seconds": 2.475,
+          "lane_disk_growth_bytes": 6675140,
+          "peak_rss_bytes": 191557632,
+          "sample_count": 53
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 309,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "failed",
+        "arm": "baseline",
+        "case_id": "a005-python-isolated-debug",
+        "control_exercised": false,
+        "duration_ms": 240059,
+        "placement_advisor_enabled": false,
+        "protected": false,
+        "provider_allowance_usd": 0.008559,
+        "provider_request_count": 20,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": 3,
+        "resource_usage": {
+          "cpu_seconds": 6.135,
+          "lane_disk_growth_bytes": 6777159,
+          "peak_rss_bytes": 170270720,
+          "sample_count": 443
+        },
+        "solved": false,
+        "terminal": "failed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "isolated_new",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 4,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 5,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 6,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 7,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 8,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 9,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 10,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 11,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 12,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 13,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 14,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 15,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 16,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 292,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "baseline",
+        "case_id": "a005-rust-isolated-build",
+        "control_exercised": false,
+        "duration_ms": 295728,
+        "placement_advisor_enabled": false,
+        "protected": false,
+        "provider_allowance_usd": 0.006299,
+        "provider_request_count": 20,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": 3,
+        "resource_usage": {
+          "cpu_seconds": 10.851,
+          "lane_disk_growth_bytes": 7262662,
+          "peak_rss_bytes": 222527488,
+          "sample_count": 539
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "isolated_new",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 4,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 5,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 6,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 7,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 8,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 9,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 10,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 11,
+            "status": "completed",
+            "task_run_status": "running",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 12,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 13,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 265,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "baseline",
+        "case_id": "a005-existing-unavailable-refusal",
+        "control_exercised": true,
+        "duration_ms": 13124,
+        "placement_advisor_enabled": false,
+        "protected": true,
+        "provider_allowance_usd": 0.002603,
+        "provider_request_count": 3,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": 1,
+        "resource_usage": {
+          "cpu_seconds": 1.323,
+          "lane_disk_growth_bytes": 6375406,
+          "peak_rss_bytes": 176144384,
+          "sample_count": 23
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "existing_managed_read_only",
+              "worktree_id_present": true
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 261,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "baseline",
+        "case_id": "a005-existing-unavailable-refusal",
+        "control_exercised": true,
+        "duration_ms": 6213,
+        "placement_advisor_enabled": false,
+        "protected": true,
+        "provider_allowance_usd": 0.002763,
+        "provider_request_count": 4,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": 2,
+        "resource_usage": {
+          "cpu_seconds": 1.211,
+          "lane_disk_growth_bytes": 5770811,
+          "peak_rss_bytes": 177217536,
+          "sample_count": 11
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": true,
+            "index": 0,
+            "status": "failed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "existing_managed_read_only",
+              "worktree_id_present": true
+            },
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "existing_managed_read_only",
+              "worktree_id_present": true
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 260,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "baseline",
+        "case_id": "a005-existing-unavailable-refusal",
+        "control_exercised": true,
+        "duration_ms": 19545,
+        "placement_advisor_enabled": false,
+        "protected": true,
+        "provider_allowance_usd": 0.002601,
+        "provider_request_count": 3,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": 3,
+        "resource_usage": {
+          "cpu_seconds": 1.265,
+          "lane_disk_growth_bytes": 5308326,
+          "peak_rss_bytes": 177946624,
+          "sample_count": 34
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "existing_managed_read_only",
+              "worktree_id_present": true
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 260,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      }
+    ]
+  },
+  "baseline_and_candidate_binary_sha256_equal": true,
+  "baseline_protocol": "A002-compatible same-binary schema ablation; generic typed placement contract.",
+  "binary_sha256": "d8d1f63b792828c970fb5b5eeedbf63251715d9a10e6a4cc7e0c97d42242cc94",
+  "budget": {
+    "authorized_total": {
+      "max_wallclock_seconds": 7200,
+      "provider_allowance_limit_usd": 10.0,
+      "provider_request_limit": 480
+    },
+    "initial_preflight_and_corrected_run": {
+      "elapsed_seconds": 1500,
+      "provider_allowance_usd": 0.113422,
+      "provider_requests": 240
+    },
+    "remaining": {
+      "allowance_usd": 9.817081,
+      "provider_requests": 96,
+      "seconds": 4475.072
+    },
+    "resumed_missing_schedule_rows": {
+      "elapsed_seconds": 1147.3,
+      "provider_allowance_usd": 0.05374399999999999,
+      "provider_requests": 124
+    },
+    "supplemental_protected_control": {
+      "elapsed_seconds": 77.628,
+      "provider_allowance_usd": 0.015753,
+      "provider_requests": 20
+    },
+    "used_total": {
+      "elapsed_seconds": 2724.928,
+      "provider_allowance_usd": 0.182919,
+      "provider_requests": 384
+    }
+  },
+  "candidate": {
+    "runs": [
+      {
+        "agent_terminal": "completed",
+        "arm": "candidate",
+        "case_id": "a005-rust-isolated-build",
+        "control_exercised": false,
+        "duration_ms": 37450,
+        "placement_advisor_enabled": true,
+        "protected": false,
+        "provider_allowance_usd": 0.00338,
+        "provider_request_count": 7,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": null,
+        "resource_usage": {
+          "cpu_seconds": 3.427,
+          "lane_disk_growth_bytes": 6887203,
+          "peak_rss_bytes": 213819392,
+          "sample_count": 68
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "isolated_new",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 4,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 256,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "candidate",
+        "case_id": "a005-python-isolated-debug",
+        "control_exercised": false,
+        "duration_ms": 37980,
+        "placement_advisor_enabled": true,
+        "protected": false,
+        "provider_allowance_usd": 0.007353,
+        "provider_request_count": 20,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": null,
+        "resource_usage": {
+          "cpu_seconds": 4.368,
+          "lane_disk_growth_bytes": 7332804,
+          "peak_rss_bytes": 191873024,
+          "sample_count": 68
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "status": "completed",
+            "tool": "git_query"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "isolated_new",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 4,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 5,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 6,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 7,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 8,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "failed": false,
+            "index": 9,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 10,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "failed": false,
+            "index": 11,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "failed": false,
+            "index": 12,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 13,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 14,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 15,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 16,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 17,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "failed": false,
+            "index": 18,
+            "status": "completed",
+            "tool": "apply_patch"
+          },
+          {
+            "failed": false,
+            "index": 19,
+            "status": "completed",
+            "tool": "command_preflight"
+          },
+          {
+            "failed": false,
+            "index": 20,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 21,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": true,
+            "index": 22,
+            "status": "failed",
+            "tool": "test"
+          }
+        ],
+        "verification": {
+          "duration_ms": 305,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "candidate",
+        "case_id": "a005-python-read-only",
+        "control_exercised": false,
+        "duration_ms": 25503,
+        "placement_advisor_enabled": true,
+        "protected": false,
+        "provider_allowance_usd": 0.003044,
+        "provider_request_count": 5,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": null,
+        "resource_usage": {
+          "cpu_seconds": 2.568,
+          "lane_disk_growth_bytes": 6654858,
+          "peak_rss_bytes": 212504576,
+          "sample_count": 46
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 287,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "candidate",
+        "case_id": "a005-rust-dependency-inspection",
+        "control_exercised": false,
+        "duration_ms": 38190,
+        "placement_advisor_enabled": true,
+        "protected": false,
+        "provider_allowance_usd": 0.003786,
+        "provider_request_count": 8,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": null,
+        "resource_usage": {
+          "cpu_seconds": 3.209,
+          "lane_disk_growth_bytes": 6789306,
+          "peak_rss_bytes": 183427072,
+          "sample_count": 68
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 4,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 5,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 554,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "candidate",
+        "case_id": "a005-spanish-isolated-edit",
+        "control_exercised": false,
+        "duration_ms": 41293,
+        "placement_advisor_enabled": true,
+        "protected": false,
+        "provider_allowance_usd": 0.003561,
+        "provider_request_count": 8,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": null,
+        "resource_usage": {
+          "cpu_seconds": 2.532,
+          "lane_disk_growth_bytes": 6888542,
+          "peak_rss_bytes": 164294656,
+          "sample_count": 76
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "isolated_new",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 4,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 5,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 320,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "candidate",
+        "case_id": "a005-python-isolated-debug",
+        "control_exercised": false,
+        "duration_ms": 48507,
+        "placement_advisor_enabled": true,
+        "protected": false,
+        "provider_allowance_usd": 0.004386,
+        "provider_request_count": 11,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": null,
+        "resource_usage": {
+          "cpu_seconds": 2.82,
+          "lane_disk_growth_bytes": 6988417,
+          "peak_rss_bytes": 176119808,
+          "sample_count": 89
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "isolated_new",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 4,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 5,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 6,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 7,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 8,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "failed": false,
+            "index": 9,
+            "status": "completed",
+            "tool": "git_query"
+          }
+        ],
+        "verification": {
+          "duration_ms": 297,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "candidate",
+        "case_id": "a005-rust-dependency-inspection",
+        "control_exercised": false,
+        "duration_ms": 24417,
+        "placement_advisor_enabled": true,
+        "protected": false,
+        "provider_allowance_usd": 0.003286,
+        "provider_request_count": 8,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": null,
+        "resource_usage": {
+          "cpu_seconds": 2.037,
+          "lane_disk_growth_bytes": 6956533,
+          "peak_rss_bytes": 157831168,
+          "sample_count": 45
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 330,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "candidate",
+        "case_id": "a005-python-read-only",
+        "control_exercised": false,
+        "duration_ms": 36300,
+        "placement_advisor_enabled": true,
+        "protected": false,
+        "provider_allowance_usd": 0.003006,
+        "provider_request_count": 5,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": null,
+        "resource_usage": {
+          "cpu_seconds": 2.449,
+          "lane_disk_growth_bytes": 6647889,
+          "peak_rss_bytes": 155299840,
+          "sample_count": 65
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 330,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "failed",
+        "arm": "candidate",
+        "case_id": "a005-spanish-isolated-edit",
+        "control_exercised": false,
+        "duration_ms": 179909,
+        "placement_advisor_enabled": true,
+        "protected": false,
+        "provider_allowance_usd": 0.008261,
+        "provider_request_count": 20,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": null,
+        "resource_usage": {
+          "cpu_seconds": 8.298,
+          "lane_disk_growth_bytes": 6799151,
+          "peak_rss_bytes": 227201024,
+          "sample_count": 324
+        },
+        "solved": false,
+        "terminal": "failed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "isolated_new",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 4,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 5,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 6,
+            "status": "completed",
+            "task_run_status": "running",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 7,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 8,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 9,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 10,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 11,
+            "status": "completed",
+            "tool": "context_read"
+          },
+          {
+            "failed": false,
+            "index": 12,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 13,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 14,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 464,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "candidate",
+        "case_id": "a005-rust-isolated-build",
+        "control_exercised": false,
+        "duration_ms": 49359,
+        "placement_advisor_enabled": true,
+        "protected": false,
+        "provider_allowance_usd": 0.004455,
+        "provider_request_count": 9,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": null,
+        "resource_usage": {
+          "cpu_seconds": 3.615,
+          "lane_disk_growth_bytes": 7115115,
+          "peak_rss_bytes": 155910144,
+          "sample_count": 89
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "isolated_new",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 4,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 5,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 6,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 334,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "candidate",
+        "case_id": "a005-spanish-isolated-edit",
+        "control_exercised": false,
+        "duration_ms": 91081,
+        "placement_advisor_enabled": true,
+        "protected": false,
+        "provider_allowance_usd": 0.006397,
+        "provider_request_count": 20,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": 3,
+        "resource_usage": {
+          "cpu_seconds": 4.354,
+          "lane_disk_growth_bytes": 7403808,
+          "peak_rss_bytes": 216432640,
+          "sample_count": 169
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "isolated_new",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 4,
+            "status": "completed",
+            "tool": "git_query"
+          },
+          {
+            "failed": false,
+            "index": 5,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "failed": false,
+            "index": 6,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "failed": false,
+            "index": 7,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "failed": false,
+            "index": 8,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 9,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 10,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 11,
+            "status": "completed",
+            "tool": "edit"
+          },
+          {
+            "failed": true,
+            "index": 12,
+            "status": "failed",
+            "tool": "test"
+          },
+          {
+            "failed": false,
+            "index": 13,
+            "status": "completed",
+            "tool": "bash"
+          },
+          {
+            "failed": false,
+            "index": 14,
+            "status": "completed",
+            "tool": "bash"
+          },
+          {
+            "failed": false,
+            "index": 15,
+            "status": "completed",
+            "tool": "bash"
+          },
+          {
+            "failed": false,
+            "index": 16,
+            "status": "completed",
+            "tool": "bash"
+          },
+          {
+            "failed": false,
+            "index": 17,
+            "status": "completed",
+            "tool": "bash"
+          },
+          {
+            "failed": false,
+            "index": 18,
+            "status": "completed",
+            "tool": "bash"
+          },
+          {
+            "failed": false,
+            "index": 19,
+            "status": "completed",
+            "tool": "bash"
+          }
+        ],
+        "verification": {
+          "duration_ms": 287,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "candidate",
+        "case_id": "a005-python-read-only",
+        "control_exercised": false,
+        "duration_ms": 31029,
+        "placement_advisor_enabled": true,
+        "protected": false,
+        "provider_allowance_usd": 0.002937,
+        "provider_request_count": 5,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": 3,
+        "resource_usage": {
+          "cpu_seconds": 2.952,
+          "lane_disk_growth_bytes": 6652051,
+          "peak_rss_bytes": 183275520,
+          "sample_count": 56
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 306,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "candidate",
+        "case_id": "a005-rust-dependency-inspection",
+        "control_exercised": false,
+        "duration_ms": 44512,
+        "placement_advisor_enabled": true,
+        "protected": false,
+        "provider_allowance_usd": 0.003383,
+        "provider_request_count": 6,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": 3,
+        "resource_usage": {
+          "cpu_seconds": 3.03,
+          "lane_disk_growth_bytes": 6884260,
+          "peak_rss_bytes": 189362176,
+          "sample_count": 82
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 300,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "candidate",
+        "case_id": "a005-python-isolated-debug",
+        "control_exercised": false,
+        "duration_ms": 18122,
+        "placement_advisor_enabled": true,
+        "protected": false,
+        "provider_allowance_usd": 0.003641,
+        "provider_request_count": 8,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": 3,
+        "resource_usage": {
+          "cpu_seconds": 2.812,
+          "lane_disk_growth_bytes": 6900718,
+          "peak_rss_bytes": 191733760,
+          "sample_count": 33
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "isolated_new",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 4,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 5,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 292,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "candidate",
+        "case_id": "a005-rust-isolated-build",
+        "control_exercised": false,
+        "duration_ms": 48094,
+        "placement_advisor_enabled": true,
+        "protected": false,
+        "provider_allowance_usd": 0.006807,
+        "provider_request_count": 11,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": 3,
+        "resource_usage": {
+          "cpu_seconds": 3.59,
+          "lane_disk_growth_bytes": 7054013,
+          "peak_rss_bytes": 220872704,
+          "sample_count": 86
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "isolated_new",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 3,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 4,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "failed": false,
+            "index": 5,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "auto",
+              "worktree_id_present": false
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 6,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 7,
+            "status": "completed",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 8,
+            "status": "completed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 268,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "candidate",
+        "case_id": "a005-existing-unavailable-refusal",
+        "control_exercised": true,
+        "duration_ms": 13251,
+        "placement_advisor_enabled": true,
+        "protected": true,
+        "provider_allowance_usd": 0.002579,
+        "provider_request_count": 3,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": 1,
+        "resource_usage": {
+          "cpu_seconds": 1.639,
+          "lane_disk_growth_bytes": 6375407,
+          "peak_rss_bytes": 178790400,
+          "sample_count": 23
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "existing_managed_read_only",
+              "worktree_id_present": true
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 260,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "candidate",
+        "case_id": "a005-existing-unavailable-refusal",
+        "control_exercised": true,
+        "duration_ms": 4675,
+        "placement_advisor_enabled": true,
+        "protected": true,
+        "provider_allowance_usd": 0.002577,
+        "provider_request_count": 3,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": 2,
+        "resource_usage": {
+          "cpu_seconds": 1.022,
+          "lane_disk_growth_bytes": 6375406,
+          "peak_rss_bytes": 175243264,
+          "sample_count": 8
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": false,
+            "index": 0,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "existing_managed_read_only",
+              "worktree_id_present": true
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 263,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      {
+        "agent_terminal": "completed",
+        "arm": "candidate",
+        "case_id": "a005-existing-unavailable-refusal",
+        "control_exercised": true,
+        "duration_ms": 10897,
+        "placement_advisor_enabled": true,
+        "protected": true,
+        "provider_allowance_usd": 0.00263,
+        "provider_request_count": 4,
+        "provider_request_count_source": "codegg_provider_boundary_receipt",
+        "repeated_identical_failure": false,
+        "repetition": 3,
+        "resource_usage": {
+          "cpu_seconds": 1.407,
+          "lane_disk_growth_bytes": 6376451,
+          "peak_rss_bytes": 178925568,
+          "sample_count": 19
+        },
+        "solved": false,
+        "terminal": "completed",
+        "tool_calls": [
+          {
+            "failed": true,
+            "index": 0,
+            "status": "failed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "existing_managed_read_only",
+              "worktree_id_present": true
+            },
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 1,
+            "placement_accepted": true,
+            "status": "completed",
+            "task_placement": {
+              "action": "spawn",
+              "requested": "existing_managed_read_only",
+              "worktree_id_present": true
+            },
+            "task_run_status": "queued",
+            "tool": "task"
+          },
+          {
+            "failed": false,
+            "index": 2,
+            "status": "completed",
+            "task_run_status": "failed",
+            "tool": "task"
+          }
+        ],
+        "verification": {
+          "duration_ms": 261,
+          "exit_code": 1,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      }
+    ]
+  },
+  "candidate_protocol": "same binary with conservative placement advisor enabled.",
+  "case_summary": [
+    {
+      "arm": "baseline",
+      "attempted": 3,
+      "case_id": "a005-rust-dependency-inspection",
+      "control_exercised": 0,
+      "control_held": 0,
+      "cpu_seconds": {
+        "median": 2.597,
+        "observed_n": 3,
+        "range": [
+          2.475,
+          2.676
+        ]
+      },
+      "duration_ms": {
+        "median": 39047,
+        "observed_n": 3,
+        "range": [
+          28901,
+          40402
+        ]
+      },
+      "lane_disk_growth_bytes": {
+        "median": 6675140.0,
+        "observed_n": 3,
+        "range": [
+          6661959.0,
+          6679441.0
+        ]
+      },
+      "peak_rss_bytes": {
+        "median": 191557632.0,
+        "observed_n": 3,
+        "range": [
+          161366016.0,
+          218206208.0
+        ]
+      },
+      "placement_requests": {
+        "auto": 3
+      },
+      "protected": false,
+      "provider_allowance_usd": 0.009969,
+      "provider_requests": 17,
+      "scheduled": 3,
+      "solved": 0,
+      "terminal_counts": {
+        "completed": 3
+      },
+      "verifier_passes": 0
+    },
+    {
+      "arm": "candidate",
+      "attempted": 3,
+      "case_id": "a005-rust-dependency-inspection",
+      "control_exercised": 0,
+      "control_held": 0,
+      "cpu_seconds": {
+        "median": 3.03,
+        "observed_n": 3,
+        "range": [
+          2.037,
+          3.209
+        ]
+      },
+      "duration_ms": {
+        "median": 38190,
+        "observed_n": 3,
+        "range": [
+          24417,
+          44512
+        ]
+      },
+      "lane_disk_growth_bytes": {
+        "median": 6884260.0,
+        "observed_n": 3,
+        "range": [
+          6789306.0,
+          6956533.0
+        ]
+      },
+      "peak_rss_bytes": {
+        "median": 183427072.0,
+        "observed_n": 3,
+        "range": [
+          157831168.0,
+          189362176.0
+        ]
+      },
+      "placement_requests": {
+        "auto": 3
+      },
+      "protected": false,
+      "provider_allowance_usd": 0.010454999999999999,
+      "provider_requests": 22,
+      "scheduled": 3,
+      "solved": 0,
+      "terminal_counts": {
+        "completed": 3
+      },
+      "verifier_passes": 0
+    },
+    {
+      "arm": "baseline",
+      "attempted": 3,
+      "case_id": "a005-rust-isolated-build",
+      "control_exercised": 0,
+      "control_held": 0,
+      "cpu_seconds": {
+        "median": 10.697,
+        "observed_n": 3,
+        "range": [
+          4.079,
+          10.851
+        ]
+      },
+      "duration_ms": {
+        "median": 263038,
+        "observed_n": 3,
+        "range": [
+          60348,
+          295728
+        ]
+      },
+      "lane_disk_growth_bytes": {
+        "median": 7231777.0,
+        "observed_n": 3,
+        "range": [
+          6836096.0,
+          7262662.0
+        ]
+      },
+      "peak_rss_bytes": {
+        "median": 222527488.0,
+        "observed_n": 3,
+        "range": [
+          176779264.0,
+          228589568.0
+        ]
+      },
+      "placement_requests": {
+        "auto": 3,
+        "isolated_new": 3
+      },
+      "protected": false,
+      "provider_allowance_usd": 0.020525,
+      "provider_requests": 52,
+      "scheduled": 3,
+      "solved": 0,
+      "terminal_counts": {
+        "completed": 2,
+        "failed": 1
+      },
+      "verifier_passes": 0
+    },
+    {
+      "arm": "candidate",
+      "attempted": 3,
+      "case_id": "a005-rust-isolated-build",
+      "control_exercised": 0,
+      "control_held": 0,
+      "cpu_seconds": {
+        "median": 3.59,
+        "observed_n": 3,
+        "range": [
+          3.427,
+          3.615
+        ]
+      },
+      "duration_ms": {
+        "median": 48094,
+        "observed_n": 3,
+        "range": [
+          37450,
+          49359
+        ]
+      },
+      "lane_disk_growth_bytes": {
+        "median": 7054013.0,
+        "observed_n": 3,
+        "range": [
+          6887203.0,
+          7115115.0
+        ]
+      },
+      "peak_rss_bytes": {
+        "median": 213819392.0,
+        "observed_n": 3,
+        "range": [
+          155910144.0,
+          220872704.0
+        ]
+      },
+      "placement_requests": {
+        "auto": 3,
+        "isolated_new": 3
+      },
+      "protected": false,
+      "provider_allowance_usd": 0.014641999999999999,
+      "provider_requests": 27,
+      "scheduled": 3,
+      "solved": 0,
+      "terminal_counts": {
+        "completed": 3
+      },
+      "verifier_passes": 0
+    },
+    {
+      "arm": "baseline",
+      "attempted": 3,
+      "case_id": "a005-python-read-only",
+      "control_exercised": 0,
+      "control_held": 0,
+      "cpu_seconds": {
+        "median": 2.21,
+        "observed_n": 3,
+        "range": [
+          2.058,
+          2.457
+        ]
+      },
+      "duration_ms": {
+        "median": 24817,
+        "observed_n": 3,
+        "range": [
+          12670,
+          28089
+        ]
+      },
+      "lane_disk_growth_bytes": {
+        "median": 6687764.0,
+        "observed_n": 3,
+        "range": [
+          6671252.0,
+          6742763.0
+        ]
+      },
+      "peak_rss_bytes": {
+        "median": 183177216.0,
+        "observed_n": 3,
+        "range": [
+          172085248.0,
+          211103744.0
+        ]
+      },
+      "placement_requests": {
+        "auto": 3
+      },
+      "protected": false,
+      "provider_allowance_usd": 0.009271999999999999,
+      "provider_requests": 15,
+      "scheduled": 3,
+      "solved": 0,
+      "terminal_counts": {
+        "completed": 3
+      },
+      "verifier_passes": 0
+    },
+    {
+      "arm": "candidate",
+      "attempted": 3,
+      "case_id": "a005-python-read-only",
+      "control_exercised": 0,
+      "control_held": 0,
+      "cpu_seconds": {
+        "median": 2.568,
+        "observed_n": 3,
+        "range": [
+          2.449,
+          2.952
+        ]
+      },
+      "duration_ms": {
+        "median": 31029,
+        "observed_n": 3,
+        "range": [
+          25503,
+          36300
+        ]
+      },
+      "lane_disk_growth_bytes": {
+        "median": 6652051.0,
+        "observed_n": 3,
+        "range": [
+          6647889.0,
+          6654858.0
+        ]
+      },
+      "peak_rss_bytes": {
+        "median": 183275520.0,
+        "observed_n": 3,
+        "range": [
+          155299840.0,
+          212504576.0
+        ]
+      },
+      "placement_requests": {
+        "auto": 3
+      },
+      "protected": false,
+      "provider_allowance_usd": 0.008987,
+      "provider_requests": 15,
+      "scheduled": 3,
+      "solved": 0,
+      "terminal_counts": {
+        "completed": 3
+      },
+      "verifier_passes": 0
+    },
+    {
+      "arm": "baseline",
+      "attempted": 3,
+      "case_id": "a005-python-isolated-debug",
+      "control_exercised": 0,
+      "control_held": 0,
+      "cpu_seconds": {
+        "median": 3.366,
+        "observed_n": 3,
+        "range": [
+          2.949,
+          6.135
+        ]
+      },
+      "duration_ms": {
+        "median": 53583,
+        "observed_n": 3,
+        "range": [
+          43329,
+          240059
+        ]
+      },
+      "lane_disk_growth_bytes": {
+        "median": 6893211.0,
+        "observed_n": 3,
+        "range": [
+          6777159.0,
+          6955238.0
+        ]
+      },
+      "peak_rss_bytes": {
+        "median": 175063040.0,
+        "observed_n": 3,
+        "range": [
+          170270720.0,
+          218222592.0
+        ]
+      },
+      "placement_requests": {
+        "auto": 3,
+        "isolated_new": 3
+      },
+      "protected": false,
+      "provider_allowance_usd": 0.016499,
+      "provider_requests": 39,
+      "scheduled": 3,
+      "solved": 0,
+      "terminal_counts": {
+        "completed": 2,
+        "failed": 1
+      },
+      "verifier_passes": 0
+    },
+    {
+      "arm": "candidate",
+      "attempted": 3,
+      "case_id": "a005-python-isolated-debug",
+      "control_exercised": 0,
+      "control_held": 0,
+      "cpu_seconds": {
+        "median": 2.82,
+        "observed_n": 3,
+        "range": [
+          2.812,
+          4.368
+        ]
+      },
+      "duration_ms": {
+        "median": 37980,
+        "observed_n": 3,
+        "range": [
+          18122,
+          48507
+        ]
+      },
+      "lane_disk_growth_bytes": {
+        "median": 6988417.0,
+        "observed_n": 3,
+        "range": [
+          6900718.0,
+          7332804.0
+        ]
+      },
+      "peak_rss_bytes": {
+        "median": 191733760.0,
+        "observed_n": 3,
+        "range": [
+          176119808.0,
+          191873024.0
+        ]
+      },
+      "placement_requests": {
+        "auto": 3,
+        "isolated_new": 3
+      },
+      "protected": false,
+      "provider_allowance_usd": 0.015380000000000001,
+      "provider_requests": 39,
+      "scheduled": 3,
+      "solved": 0,
+      "terminal_counts": {
+        "completed": 3
+      },
+      "verifier_passes": 0
+    },
+    {
+      "arm": "baseline",
+      "attempted": 3,
+      "case_id": "a005-spanish-isolated-edit",
+      "control_exercised": 0,
+      "control_held": 0,
+      "cpu_seconds": {
+        "median": 5.498,
+        "observed_n": 3,
+        "range": [
+          3.673,
+          8.186
+        ]
+      },
+      "duration_ms": {
+        "median": 86374,
+        "observed_n": 3,
+        "range": [
+          36701,
+          270917
+        ]
+      },
+      "lane_disk_growth_bytes": {
+        "median": 7169387.0,
+        "observed_n": 3,
+        "range": [
+          6882325.0,
+          7472991.0
+        ]
+      },
+      "peak_rss_bytes": {
+        "median": 177586176.0,
+        "observed_n": 3,
+        "range": [
+          151609344.0,
+          189939712.0
+        ]
+      },
+      "placement_requests": {
+        "auto": 4,
+        "isolated_new": 3
+      },
+      "protected": false,
+      "provider_allowance_usd": 0.015191,
+      "provider_requests": 43,
+      "scheduled": 3,
+      "solved": 0,
+      "terminal_counts": {
+        "completed": 3
+      },
+      "verifier_passes": 0
+    },
+    {
+      "arm": "candidate",
+      "attempted": 3,
+      "case_id": "a005-spanish-isolated-edit",
+      "control_exercised": 0,
+      "control_held": 0,
+      "cpu_seconds": {
+        "median": 4.354,
+        "observed_n": 3,
+        "range": [
+          2.532,
+          8.298
+        ]
+      },
+      "duration_ms": {
+        "median": 91081,
+        "observed_n": 3,
+        "range": [
+          41293,
+          179909
+        ]
+      },
+      "lane_disk_growth_bytes": {
+        "median": 6888542.0,
+        "observed_n": 3,
+        "range": [
+          6799151.0,
+          7403808.0
+        ]
+      },
+      "peak_rss_bytes": {
+        "median": 216432640.0,
+        "observed_n": 3,
+        "range": [
+          164294656.0,
+          227201024.0
+        ]
+      },
+      "placement_requests": {
+        "auto": 4,
+        "isolated_new": 3
+      },
+      "protected": false,
+      "provider_allowance_usd": 0.018219,
+      "provider_requests": 48,
+      "scheduled": 3,
+      "solved": 0,
+      "terminal_counts": {
+        "completed": 2,
+        "failed": 1
+      },
+      "verifier_passes": 0
+    },
+    {
+      "arm": "baseline",
+      "attempted": 3,
+      "case_id": "a005-existing-unavailable-refusal",
+      "control_exercised": 3,
+      "control_held": 0,
+      "cpu_seconds": {
+        "median": 1.265,
+        "observed_n": 3,
+        "range": [
+          1.211,
+          1.323
+        ]
+      },
+      "duration_ms": {
+        "median": 13124,
+        "observed_n": 3,
+        "range": [
+          6213,
+          19545
+        ]
+      },
+      "lane_disk_growth_bytes": {
+        "median": 5770811.0,
+        "observed_n": 3,
+        "range": [
+          5308326.0,
+          6375406.0
+        ]
+      },
+      "peak_rss_bytes": {
+        "median": 177217536.0,
+        "observed_n": 3,
+        "range": [
+          176144384.0,
+          177946624.0
+        ]
+      },
+      "placement_requests": {
+        "existing_managed_read_only": 4
+      },
+      "protected": true,
+      "provider_allowance_usd": 0.007967,
+      "provider_requests": 10,
+      "scheduled": 3,
+      "solved": 0,
+      "terminal_counts": {
+        "completed": 3
+      },
+      "verifier_passes": 0
+    },
+    {
+      "arm": "candidate",
+      "attempted": 3,
+      "case_id": "a005-existing-unavailable-refusal",
+      "control_exercised": 3,
+      "control_held": 0,
+      "cpu_seconds": {
+        "median": 1.407,
+        "observed_n": 3,
+        "range": [
+          1.022,
+          1.639
+        ]
+      },
+      "duration_ms": {
+        "median": 10897,
+        "observed_n": 3,
+        "range": [
+          4675,
+          13251
+        ]
+      },
+      "lane_disk_growth_bytes": {
+        "median": 6375407.0,
+        "observed_n": 3,
+        "range": [
+          6375406.0,
+          6376451.0
+        ]
+      },
+      "peak_rss_bytes": {
+        "median": 178790400.0,
+        "observed_n": 3,
+        "range": [
+          175243264.0,
+          178925568.0
+        ]
+      },
+      "placement_requests": {
+        "existing_managed_read_only": 4
+      },
+      "protected": true,
+      "provider_allowance_usd": 0.0077859999999999995,
+      "provider_requests": 10,
+      "scheduled": 3,
+      "solved": 0,
+      "terminal_counts": {
+        "completed": 3
+      },
+      "verifier_passes": 0
+    }
+  ],
+  "comparison": {
+    "baseline_cases": 18,
+    "candidate_cases": 18,
+    "controls": {
+      "baseline": {
+        "controls": 3,
+        "exercised": 3,
+        "held": 0,
+        "never_exercised": []
+      },
+      "candidate": {
+        "controls": 3,
+        "exercised": 3,
+        "held": 0,
+        "never_exercised": []
+      }
+    },
+    "observations": {
+      "baseline": [
+        {
+          "criterion_id": "correctness.pass_rate",
+          "measured": true,
+          "value": 0.0
+        },
+        {
+          "criterion_id": "reliability.success_rate",
+          "measured": true,
+          "value": 0.8888888888888888
+        },
+        {
+          "criterion_id": "efficiency.duration_ms",
+          "measured": true,
+          "value": 39724.5
+        },
+        {
+          "criterion_id": "control.no_regression",
+          "measured": true,
+          "value": 0.0
+        }
+      ],
+      "candidate": [
+        {
+          "criterion_id": "correctness.pass_rate",
+          "measured": true,
+          "value": 0.0
+        },
+        {
+          "criterion_id": "reliability.success_rate",
+          "measured": true,
+          "value": 0.9444444444444444
+        },
+        {
+          "criterion_id": "efficiency.duration_ms",
+          "measured": true,
+          "value": 37715.0
+        },
+        {
+          "criterion_id": "control.no_regression",
+          "measured": true,
+          "value": 0.0
+        }
+      ]
+    },
+    "outcome": {
+      "decision": "rejected",
+      "objective": "none",
+      "protected_violations": [],
+      "reasons": [
+        "reliability_criterion_improved",
+        "efficiency_criterion_improved",
+        "no_substantive_criterion_improved"
+      ],
+      "score": -18.376089732911325
+    },
+    "paired_case_ids": [
+      "a005-existing-unavailable-refusal",
+      "a005-python-isolated-debug",
+      "a005-python-read-only",
+      "a005-rust-dependency-inspection",
+      "a005-rust-isolated-build",
+      "a005-spanish-isolated-edit"
+    ]
+  },
+  "control_fixture_amendment": "The unavailable managed checkout was explicitly classified as a protected refusal control with a declared trigger; prompt and verifier remained unchanged. Six paired control rows were rerun under the residual approved budget and substituted before final scoring.",
+  "date": "2026-10-28",
+  "decision_rationale": "NO-GO: candidate and baseline both had zero independently verified task successes and the protected unavailable-checkout control failed in all six runs. The advisor showed no substantive correctness improvement; favorable reliability/duration movement cannot qualify it under the scoring contract.",
+  "evidence_kind": "redacted_live_paired_comparison",
+  "final_manifest_sha256": "c800ad0a1d01213a366ab9b733637182d460e4e433f41821d90ed5e00304e79a",
+  "go_no_go": "no_go",
+  "initial_manifest_sha256": "4e91e43c52a92d4aa6f35cfb735f5fa134ab31ef9e097a61814ca50fa7bee73d",
+  "limitations": [
+    "All 36 task schedule rows plus six supplemental protected-control rows were attempted; no hidden verifier passed.",
+    "No stable correctness rule improved outcomes; reliability and median duration moved favorably but are advisory under the frozen scoring contract.",
+    "The unavailable-checkout negative control was initially misclassified; its explicit protected classification was added as a scoring-only fixture amendment and its six arms were rerun. The task prompt and verifier were unchanged.",
+    "ACP does not expose scheduler queue wait or exclusive-lease collision outcomes, so no scheduler-wait or collision-reduction claim is made.",
+    "OpenCode Go allowance is provider-reported after each response; the 10 USD aggregate cap was enforced by controller receipts with one in-flight inference at a time."
+  ],
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "repetitions": 3,
+  "schedule": [
+    {
+      "arm": "candidate",
+      "case_id": "a005-rust-isolated-build",
+      "ordinal": 0,
+      "provider_request_count": 7,
+      "repetition": 1,
+      "terminal": "completed"
+    },
+    {
+      "arm": "baseline",
+      "case_id": "a005-rust-isolated-build",
+      "ordinal": 1,
+      "provider_request_count": 20,
+      "repetition": 1,
+      "terminal": "failed"
+    },
+    {
+      "arm": "baseline",
+      "case_id": "a005-python-isolated-debug",
+      "ordinal": 2,
+      "provider_request_count": 8,
+      "repetition": 1,
+      "terminal": "completed"
+    },
+    {
+      "arm": "candidate",
+      "case_id": "a005-python-isolated-debug",
+      "ordinal": 3,
+      "provider_request_count": 20,
+      "repetition": 1,
+      "terminal": "completed"
+    },
+    {
+      "arm": "candidate",
+      "case_id": "a005-python-read-only",
+      "ordinal": 4,
+      "provider_request_count": 5,
+      "repetition": 1,
+      "terminal": "completed"
+    },
+    {
+      "arm": "baseline",
+      "case_id": "a005-python-read-only",
+      "ordinal": 5,
+      "provider_request_count": 5,
+      "repetition": 1,
+      "terminal": "completed"
+    },
+    {
+      "arm": "baseline",
+      "case_id": "a005-rust-dependency-inspection",
+      "ordinal": 6,
+      "provider_request_count": 6,
+      "repetition": 1,
+      "terminal": "completed"
+    },
+    {
+      "arm": "candidate",
+      "case_id": "a005-rust-dependency-inspection",
+      "ordinal": 7,
+      "provider_request_count": 8,
+      "repetition": 1,
+      "terminal": "completed"
+    },
+    {
+      "arm": "candidate",
+      "case_id": "a005-existing-unavailable-refusal",
+      "ordinal": 8,
+      "provider_request_count": 3,
+      "repetition": 1,
+      "terminal": "completed"
+    },
+    {
+      "arm": "baseline",
+      "case_id": "a005-existing-unavailable-refusal",
+      "ordinal": 9,
+      "provider_request_count": 3,
+      "repetition": 1,
+      "terminal": "completed"
+    },
+    {
+      "arm": "baseline",
+      "case_id": "a005-spanish-isolated-edit",
+      "ordinal": 10,
+      "provider_request_count": 16,
+      "repetition": 1,
+      "terminal": "completed"
+    },
+    {
+      "arm": "candidate",
+      "case_id": "a005-spanish-isolated-edit",
+      "ordinal": 11,
+      "provider_request_count": 8,
+      "repetition": 1,
+      "terminal": "completed"
+    },
+    {
+      "arm": "candidate",
+      "case_id": "a005-python-isolated-debug",
+      "ordinal": 12,
+      "provider_request_count": 11,
+      "repetition": 2,
+      "terminal": "completed"
+    },
+    {
+      "arm": "baseline",
+      "case_id": "a005-python-isolated-debug",
+      "ordinal": 13,
+      "provider_request_count": 11,
+      "repetition": 2,
+      "terminal": "completed"
+    },
+    {
+      "arm": "candidate",
+      "case_id": "a005-rust-dependency-inspection",
+      "ordinal": 14,
+      "provider_request_count": 8,
+      "repetition": 2,
+      "terminal": "completed"
+    },
+    {
+      "arm": "baseline",
+      "case_id": "a005-rust-dependency-inspection",
+      "ordinal": 15,
+      "provider_request_count": 5,
+      "repetition": 2,
+      "terminal": "completed"
+    },
+    {
+      "arm": "baseline",
+      "case_id": "a005-python-read-only",
+      "ordinal": 16,
+      "provider_request_count": 5,
+      "repetition": 2,
+      "terminal": "completed"
+    },
+    {
+      "arm": "candidate",
+      "case_id": "a005-python-read-only",
+      "ordinal": 17,
+      "provider_request_count": 5,
+      "repetition": 2,
+      "terminal": "completed"
+    },
+    {
+      "arm": "baseline",
+      "case_id": "a005-existing-unavailable-refusal",
+      "ordinal": 18,
+      "provider_request_count": 4,
+      "repetition": 2,
+      "terminal": "completed"
+    },
+    {
+      "arm": "candidate",
+      "case_id": "a005-existing-unavailable-refusal",
+      "ordinal": 19,
+      "provider_request_count": 3,
+      "repetition": 2,
+      "terminal": "completed"
+    },
+    {
+      "arm": "baseline",
+      "case_id": "a005-spanish-isolated-edit",
+      "ordinal": 20,
+      "provider_request_count": 7,
+      "repetition": 2,
+      "terminal": "completed"
+    },
+    {
+      "arm": "candidate",
+      "case_id": "a005-spanish-isolated-edit",
+      "ordinal": 21,
+      "provider_request_count": 20,
+      "repetition": 2,
+      "terminal": "failed"
+    },
+    {
+      "arm": "candidate",
+      "case_id": "a005-rust-isolated-build",
+      "ordinal": 22,
+      "provider_request_count": 9,
+      "repetition": 2,
+      "terminal": "completed"
+    },
+    {
+      "arm": "baseline",
+      "case_id": "a005-rust-isolated-build",
+      "ordinal": 23,
+      "provider_request_count": 12,
+      "repetition": 2,
+      "terminal": "completed"
+    },
+    {
+      "arm": "candidate",
+      "case_id": "a005-existing-unavailable-refusal",
+      "ordinal": 24,
+      "provider_request_count": 4,
+      "repetition": 3,
+      "terminal": "completed"
+    },
+    {
+      "arm": "baseline",
+      "case_id": "a005-existing-unavailable-refusal",
+      "ordinal": 25,
+      "provider_request_count": 3,
+      "repetition": 3,
+      "terminal": "completed"
+    },
+    {
+      "arm": "candidate",
+      "case_id": "a005-spanish-isolated-edit",
+      "ordinal": 26,
+      "provider_request_count": 20,
+      "repetition": 3,
+      "terminal": "completed"
+    },
+    {
+      "arm": "baseline",
+      "case_id": "a005-spanish-isolated-edit",
+      "ordinal": 27,
+      "provider_request_count": 20,
+      "repetition": 3,
+      "terminal": "completed"
+    },
+    {
+      "arm": "candidate",
+      "case_id": "a005-python-read-only",
+      "ordinal": 28,
+      "provider_request_count": 5,
+      "repetition": 3,
+      "terminal": "completed"
+    },
+    {
+      "arm": "baseline",
+      "case_id": "a005-python-read-only",
+      "ordinal": 29,
+      "provider_request_count": 5,
+      "repetition": 3,
+      "terminal": "completed"
+    },
+    {
+      "arm": "baseline",
+      "case_id": "a005-rust-dependency-inspection",
+      "ordinal": 30,
+      "provider_request_count": 6,
+      "repetition": 3,
+      "terminal": "completed"
+    },
+    {
+      "arm": "candidate",
+      "case_id": "a005-rust-dependency-inspection",
+      "ordinal": 31,
+      "provider_request_count": 6,
+      "repetition": 3,
+      "terminal": "completed"
+    },
+    {
+      "arm": "candidate",
+      "case_id": "a005-python-isolated-debug",
+      "ordinal": 32,
+      "provider_request_count": 8,
+      "repetition": 3,
+      "terminal": "completed"
+    },
+    {
+      "arm": "baseline",
+      "case_id": "a005-python-isolated-debug",
+      "ordinal": 33,
+      "provider_request_count": 20,
+      "repetition": 3,
+      "terminal": "failed"
+    },
+    {
+      "arm": "baseline",
+      "case_id": "a005-rust-isolated-build",
+      "ordinal": 34,
+      "provider_request_count": 20,
+      "repetition": 3,
+      "terminal": "completed"
+    },
+    {
+      "arm": "candidate",
+      "case_id": "a005-rust-isolated-build",
+      "ordinal": 35,
+      "provider_request_count": 11,
+      "repetition": 3,
+      "terminal": "completed"
+    }
+  ],
+  "schema_version": 2,
+  "seed": 20261028
+}

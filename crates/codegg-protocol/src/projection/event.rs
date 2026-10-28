@@ -190,6 +190,8 @@ pub enum ProjectionEvent {
         cached_tokens: Option<usize>,
         /// Provider-reported reasoning tokens, when known.
         reasoning_tokens: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_allowance_micros: Option<u64>,
         /// The context window the agent resolved for this turn, when known.
         /// The footer percentage is measured against this; `None` means the
         /// limit was never resolved and must not be replaced by a default.
@@ -599,6 +601,7 @@ mod tests {
             output_tokens: None,
             cached_tokens: None,
             reasoning_tokens: None,
+            provider_allowance_micros: None,
             context_limit: None,
             turn_id: "t1".into(),
             stop_reason: "ok".into(),

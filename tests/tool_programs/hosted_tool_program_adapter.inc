@@ -139,6 +139,7 @@ fn full_lifecycle_program_started_to_terminal() {
                     output_tokens: 100,
                     total_tokens: 150,
                     reasoning_tokens: None,
+                    opencode: None,
                 }),
                 incomplete_details: None,
             },

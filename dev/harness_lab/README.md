@@ -332,6 +332,44 @@ expected outcome is that the task is **not** solved, so a control that starts
 being credited as solved is a safety regression and rejects the candidate
 whatever else moved.
 
+### A005 placement qualification
+
+The frozen A005 workload lives in
+`dev/harness_lab/fixtures/a005_placement/cases.jsonl`. It covers dependency-heavy
+Rust inspection, isolated Rust edit/build, Python inspection and edit/debug, a
+Spanish request with the same isolated-edit intent, and refusal for an exact
+managed-worktree ID that is unavailable in the lane. Its verifier reads only
+allowlisted ACP fields: requested placement enum, whether an exact ID was
+provided, accepted placement rationale, and terminal child-run status. It
+never receives the ID or raw task arguments.
+
+The A005 baseline and candidate use the same current binary and the same
+placement authority. The baseline arm hides the strategic placement guidance
+from the task schema and retains the compatible A002 contract; the candidate
+arm receives the full conservative advisor. This isolates the advisor effect
+without comparing against a binary that lacks A002 or allowance enforcement.
+Each receipt names whether the advisor was enabled. Run the preregistered
+three-repetition comparison with:
+
+```bash
+python3 -m dev.harness_lab autonomy-compare \
+  --manifest dev/harness_lab/fixtures/a005_placement \
+  --baseline-binary target/debug/codegg \
+  --candidate-binary target/debug/codegg \
+  --model opencode_go/muse-spark-1.3-contributor \
+  --repetitions 3 --seed 20261028 \
+  --budget /path/to/a005-budget.json \
+  --lane-root /path/to/private/a005-lanes \
+  --output /path/to/a005-comparison.json --live-provider
+```
+
+One shared guard covers all 36 randomized trials and counts requests at the
+provider boundary. The Go-reported allowance is accumulated across both arms;
+missing allowance observation refuses any next request. Receipts include
+sampled process-tree CPU and peak RSS plus lane disk growth. The scheduler does
+not currently publish a per-build queue-wait value through ACP, so that field
+remains explicitly unavailable rather than inferred from task submission time.
+
 A protected control only means something when the situation it is about really
 happened. A control that was **never exercised** — the agent never put the
 harness in that situation — is excluded from the control rate rather than
@@ -497,20 +535,25 @@ Three rules are strict on purpose:
   ignored.
 - **A controller-enforced cost cap needs an observable cost.** The controller
   can only hold a dollar ceiling it can measure, so `cost_observable` must be
-  `true`. A route that reports no cost cannot be enforced against one.
+  `true`. A route that reports no cost cannot be enforced against one. For
+  OpenCode Go, the live route uses provider-reported `opencode.allowance` and
+  labels the receipt source `opencode_go_allowance`; this is quota value, not
+  cash charged.
 - **A provider quota must be retry-safe.** A ceiling that resets on a provider
   retry does not bound the trial, so it is refused with
   `provider_quota_retry_safety`.
 
 ### What "enforceable" means at run time
 
-The gate and the run agree. `max_provider_requests` is enforced **before** a
-trial starts: a trial that would cross the ceiling is refused, and the
-projected requests are reserved so a trial that fails before its usage is
-observed still counts. `token_limit` and `cost_limit_usd` are observed after
-the fact, so they bound the run to within one trial's overshoot — the trial
-that crosses the ceiling finishes and no further trial starts. The observed
-spend is reported in the run receipt under `budget`.
+The gate and the run agree. `max_provider_requests` is admitted before a trial
+and enforced at the OpenCode Go provider boundary before every request. The
+controller reserves each trial and reconciles it with the provider-boundary
+receipt, so a failed or cancelled trial still counts. OpenCode Go allowance is
+observed after each response; once the configured remaining allowance is
+reached, the provider refuses another request. A single in-flight response
+can cross the allowance ceiling before its usage arrives; no later request is
+admitted. The aggregate is reported under `budget.cost_usd` with
+`cost_source: "opencode_go_allowance"`.
 
 ## Failed-turn evidence
 
@@ -523,6 +566,7 @@ provenance:
 | `codeggFailureCategory` | One allowlisted category, or `native_failure_unspecified`. |
 | `codeggUsage` | Token counts observed before the failure, or `null`. |
 | `codeggUsageReason` | `reported`, `not_observed`, `not_provided`, `lost_at_projection`, or `unspecified`. |
+| `codeggUsage.providerAllowanceUsd` | OpenCode Go's provider-reported quota allowance for the run, distinct from cash charged. |
 
 `codeggUsage` is `null` whenever no count was available, and the reason says
 which of the distinguishable facts it was. A missing measurement is never

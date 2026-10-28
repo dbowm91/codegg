@@ -355,6 +355,22 @@ class ToolErrorEnvelopeTests(unittest.TestCase):
         self.assertEqual(projected["job"], {"job_id": None, "action": "status", "status": None})
         self.assertNotIn("request unavailable", repr(projected))
 
+    def test_task_placement_receipt_keeps_enum_and_refusal_status_only(self) -> None:
+        projector = autonomy_run._ToolCallProjector()
+        projector.absorb({"method": "session/update", "params": {"update": {
+            "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "task",
+            "codeggArgumentsSha256": "abc",
+            "codeggTaskPlacement": {"action": "spawn", "requested": "isolated_new",
+                                    "worktree_id_present": False}}}})
+        projector.absorb({"method": "session/update", "params": {"update": {
+            "sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "failed",
+            "rawOutput": "private path and task text are not copied into receipts"}}})
+        call = projector.calls()[0]
+        self.assertEqual(call["task_placement"]["requested"], "isolated_new")
+        self.assertEqual(call["status"], "failed")
+        self.assertNotIn("rawOutput", call)
+        self.assertNotIn("private path", repr(call))
+
 
 class ObserveFaultFailureFlagTests(unittest.TestCase):
     def test_a_call_the_envelope_marked_is_counted_as_a_failure(self) -> None:

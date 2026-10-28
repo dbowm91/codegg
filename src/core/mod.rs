@@ -420,6 +420,7 @@ pub(crate) fn set_turn_id_on_event(
             output_tokens,
             cached_tokens,
             reasoning_tokens,
+            provider_allowance_micros,
             context_limit,
             ..
         } => CoreEvent::TurnCompleted {
@@ -430,6 +431,7 @@ pub(crate) fn set_turn_id_on_event(
             output_tokens,
             cached_tokens,
             reasoning_tokens,
+            provider_allowance_micros,
             context_limit,
         },
         CoreEvent::TurnFailed {
@@ -1106,6 +1108,7 @@ mod tests {
             output_tokens: None,
             cached_tokens: None,
             reasoning_tokens: None,
+            provider_allowance_micros: None,
             context_limit: None,
             session_id: "s1".into(),
             turn_id: String::new(),

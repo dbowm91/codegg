@@ -4527,6 +4527,8 @@ pub struct TurnUsage {
     pub cached_tokens: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_allowance_micros: Option<u64>,
     pub availability: UsageAvailability,
 }
 
@@ -4680,6 +4682,8 @@ pub enum CoreEvent {
         cached_tokens: Option<usize>,
         #[serde(skip_serializing_if = "Option::is_none")]
         reasoning_tokens: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_allowance_micros: Option<u64>,
         /// The context window the agent actually resolved for this turn.
         ///
         /// This is `ExecutionPolicy::context_window` — the same number that
@@ -5432,6 +5436,7 @@ mod tests {
                 output_tokens: Some(35),
                 cached_tokens: None,
                 reasoning_tokens: None,
+                provider_allowance_micros: None,
                 availability: UsageAvailability::Reported,
             }),
         };
@@ -5461,6 +5466,7 @@ mod tests {
                         output_tokens: Some(35),
                         cached_tokens: None,
                         reasoning_tokens: None,
+                        provider_allowance_micros: None,
                         availability: UsageAvailability::Reported,
                     })
                 );

@@ -633,6 +633,7 @@ mod tests {
             run_output_tokens: 0,
             run_cached_tokens: None,
             run_reasoning_tokens: None,
+            run_provider_allowance_micros: None,
             executed_tool_outcomes: Default::default(),
         };
 

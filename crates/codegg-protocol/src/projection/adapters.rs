@@ -437,6 +437,7 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
             output_tokens,
             cached_tokens,
             reasoning_tokens,
+            provider_allowance_micros,
             context_limit,
             ..
         } => {
@@ -448,6 +449,7 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
                 output_tokens: *output_tokens,
                 cached_tokens: *cached_tokens,
                 reasoning_tokens: *reasoning_tokens,
+                provider_allowance_micros: *provider_allowance_micros,
                 context_limit: *context_limit,
             });
         }

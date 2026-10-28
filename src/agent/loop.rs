@@ -173,6 +173,7 @@ pub struct AgentLoopState {
     ///
     /// `None` means no response in the run reported reasoning tokens at all.
     pub run_reasoning_tokens: Option<usize>,
+    pub run_provider_allowance_micros: Option<u64>,
     /// The tool outcomes this run executed, in execution order.
     ///
     /// The retention is bounded — see [`MAX_RETAINED_TOOL_OUTCOMES`] and
@@ -204,6 +205,7 @@ pub struct RunUsageSnapshot {
     pub cached_tokens: Option<usize>,
     /// `None` when no response in the run reported reasoning tokens.
     pub reasoning_tokens: Option<usize>,
+    pub provider_allowance_micros: Option<u64>,
 }
 
 impl Default for ExecutionLimits {
@@ -586,6 +588,7 @@ impl AgentLoop {
                 run_output_tokens: 0,
                 run_cached_tokens: None,
                 run_reasoning_tokens: None,
+                run_provider_allowance_micros: None,
                 executed_tool_outcomes: ExecutedToolOutcomes::default(),
             },
             limits: ExecutionLimits::default(),
@@ -835,6 +838,7 @@ impl AgentLoop {
             output_tokens: self.state.run_output_tokens,
             cached_tokens: self.state.run_cached_tokens,
             reasoning_tokens: self.state.run_reasoning_tokens,
+            provider_allowance_micros: self.state.run_provider_allowance_micros,
         }
     }
 
@@ -1237,6 +1241,7 @@ impl AgentLoop {
         self.state.run_output_tokens = 0;
         self.state.run_cached_tokens = None;
         self.state.run_reasoning_tokens = None;
+        self.state.run_provider_allowance_micros = None;
         // The retained tool outcomes describe exactly one run, so a previous
         // run's outcomes are never reported as this run's.
         self.state.executed_tool_outcomes = ExecutedToolOutcomes::default();

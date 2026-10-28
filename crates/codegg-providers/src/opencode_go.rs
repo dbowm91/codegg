@@ -367,7 +367,7 @@ impl Provider for OpenCodeGoProvider {
 
         // 6. One request. No retry to another surface is ever attempted.
         let builder = self.request_builder(&route, request, &body)?;
-        crate::request_budget::admit_opencode_go_request()?;
+        crate::request_budget::admit_opencode_go_request(true)?;
         let mut response = builder.send().await.map_err(ProviderError::from)?;
 
         if response.status() == http::StatusCode::TOO_MANY_REQUESTS {
