@@ -227,6 +227,11 @@ class SubjectSpec:
             "CODEGG_DATA_HOME": str(self.root / "data"),
             "CODEGG_TUI_CONFIG": str(self.root / "config" / "codegg" / "codegg.jsonc"),
             "CARGO_HOME": str(self.root / "cargo-home"),
+            # The daemon uses a private HOME, but its managed Rust test jobs
+            # still need rustup's installed toolchain metadata. Keep the
+            # toolchain home explicit so cargo/rustc shims resolve without
+            # exposing the user's Cargo registry or config.
+            "RUSTUP_HOME": os.environ.get("RUSTUP_HOME", str(Path.home() / ".rustup")),
             "TMPDIR": str(self.root / "scratch"),
             "TMP": str(self.root / "scratch"),
             "TEMP": str(self.root / "scratch"),
@@ -573,7 +578,7 @@ def _assert_daemon_identity(spec: SubjectSpec, timeout: float, acp_pid: int | No
         "data_root": str(spec.root / "data" / "codegg"),
         "config_root": str(spec.root / "config" / "codegg"),
         "environment_fingerprint": hashlib.sha256(json.dumps({key: value for key, value in spec.environment().items() if key in {
-            "CODEGG_DAEMON_HOME", "CODEGG_DATA_HOME", "CODEGG_TUI_CONFIG", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR", "TMPDIR", "CARGO_HOME"
+            "CODEGG_DAEMON_HOME", "CODEGG_DATA_HOME", "CODEGG_TUI_CONFIG", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR", "TMPDIR", "CARGO_HOME", "RUSTUP_HOME"
         }}, sort_keys=True).encode()).hexdigest(),
     }
 
@@ -779,6 +784,82 @@ def _drain_tool_notifications(client: "AcpClient", provider: Any, timeout: float
         client.drain(timeout=min(0.25, remaining))
 
 
+def _project_job_observation(tool: str, action: Any, raw_output: Any) -> dict[str, Any] | None:
+    """Project only bounded identity and lifecycle fields from native job output."""
+    if tool not in {"test", "job"} or not isinstance(raw_output, str):
+        return None
+    if tool == "test":
+        action = "submit"
+        job_id_match = re.search(r"background test submitted as job ([A-Za-z0-9_-]+)", raw_output)
+        job_id = job_id_match.group(1) if job_id_match else None
+        status = None
+    else:
+        job_id = None
+        status = None
+        try:
+            payload = json.loads(raw_output)
+        except (TypeError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict):
+            candidate_id = payload.get("job_id")
+            if isinstance(candidate_id, str) and re.fullmatch(r"[A-Za-z0-9_-]+", candidate_id):
+                job_id = candidate_id
+            candidate_status = payload.get("status")
+            if isinstance(candidate_status, str):
+                status = candidate_status.lower()
+        # The provider adapter can render structured tool results as text.
+        # Accept its bounded JSON-like fields, but never preserve the raw text.
+        if job_id is None:
+            job_id_match = re.search(
+                r"[\"']?job_id[\"']?\s*:\s*[\"']?([A-Za-z0-9_-]+)", raw_output)
+            job_id = job_id_match.group(1) if job_id_match else None
+        if status is None:
+            status_match = re.search(
+                r"[\"']?status[\"']?\s*:\s*[\"']?"
+                r"(queued|running|completed|failed|cancelled|canceled|timed_out|expired|blocked)\b",
+                raw_output, re.IGNORECASE)
+            if status_match is None:
+                status_match = re.search(
+                    r"\bjob\s+(queued|running|completed|failed|cancelled|canceled|timed_out|expired|blocked)\b",
+                    raw_output, re.IGNORECASE)
+            status = status_match.group(1).lower() if status_match else None
+    allowed_statuses = {
+        "queued", "running", "completed", "failed", "cancelled", "canceled",
+        "timed_out", "expired", "blocked",
+    }
+    return {
+        "action": action if action in {"submit", "status", "wait", "output", "cancel"} else "unknown",
+        "job_id": job_id,
+        "status": status if status in allowed_statuses else None,
+    }
+
+
+def _bounded_managed_test_log_tail(tool_updates: list[dict[str, Any]], workspace: Path) -> str:
+    root = workspace.resolve()
+    for update in reversed(tool_updates):
+        output = update.get("rawOutput")
+        if not isinstance(output, str):
+            continue
+        for stream in ("stderr", "stdout"):
+            marker = f"{stream}: [CWD]/"
+            start = output.rfind(marker)
+            if start < 0:
+                continue
+            relative = output[start + len(marker):].splitlines()[0].strip()
+            path = (root / relative).resolve(strict=False)
+            if path.is_relative_to(root) and path.is_file():
+                try:
+                    with path.open("rb") as log:
+                        log.seek(0, os.SEEK_END)
+                        size = log.tell()
+                        log.seek(max(0, size - 16 * 1024), os.SEEK_SET)
+                        tail = log.read(16 * 1024)
+                    return tail.decode("utf-8", errors="replace")[-4096:]
+                except OSError:
+                    continue
+    return ""
+
+
 def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash: bool = False,
                    ledger_root: Path | None = None, candidate: str = "current",
                    task_id: str = "safe-bash-write", group_id: str = "native-tool-smoke",
@@ -794,7 +875,8 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                    fail_after_tools: bool = False, fault_kind: str = "transport",
                    agent_steps: int | None = None,
                    workspace_snapshot: Path | None = None,
-                   external_verifier: Path | None = None) -> dict[str, Any]:
+                   external_verifier: Path | None = None,
+                   rustc_executable: Path | None = None) -> dict[str, Any]:
     """Run one native ACP turn against a local deterministic OpenAI wire fixture."""
     from .provider_fixture import FixtureProvider
     import shlex
@@ -851,7 +933,12 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                                    fault_kind=fault_kind).start()
         spec = SubjectSpec.create("tool-trial", binary, workspace, root, Path.cwd())
         env = spec.environment()
-        env["CARGO_TARGET_DIR"] = str(private_dir(root / "cargo-target"))
+        if rustc_executable is not None:
+            rustc_path = rustc_executable.resolve(strict=True)
+            if not rustc_path.is_file():
+                raise HarnessError("configured rustc executable is not a regular file")
+            env["RUSTC"] = str(rustc_path)
+        env["CARGO_TARGET_DIR"] = str(private_dir(workspace / ".cargo-target"))
         config = {
             "provider": {"openai": {
                 "api_key": "local-fixture-only",
@@ -932,7 +1019,11 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             # outputs already present in the fixture provider's final history.
             _drain_tool_notifications(client, provider, timeout=min(10.0, timeout / 6))
             updates = [item for item in client.notifications if item.get("method") == "session/update"]
-            tool_updates = [item.get("params", {}).get("update", {}) for item in updates]
+            tool_updates = [
+                {**item.get("params", {}).get("update", {}),
+                 "_received_elapsed_ms": item.get("_received_elapsed_ms")}
+                for item in updates
+            ]
             event_gap_count = sum(item.get("sessionUpdate") == "codegg_event_gap"
                                   for item in tool_updates)
             if event_gap_count:
@@ -958,12 +1049,19 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             observed_tool_calls = []
             for item in finishes:
                 start = starts_by_id.get(item.get("toolCallId"), {})
-                observed_tool_calls.append({
+                call = {
                     "tool": start.get("title", "unknown"),
                     "arguments_sha256": start.get("codeggArgumentsSha256"),
                     "status": item.get("status") if item.get("status") in {"completed", "failed"} else "unknown",
                     "state_revision": completed_call_revisions.get(item.get("toolCallId")),
-                })
+                    "started_elapsed_ms": start.get("_received_elapsed_ms"),
+                    "finished_elapsed_ms": item.get("_received_elapsed_ms"),
+                }
+                job = _project_job_observation(
+                    str(call["tool"]), start.get("codeggAction"), item.get("rawOutput"))
+                if job is not None:
+                    call["job"] = job
+                observed_tool_calls.append(call)
             raw_usage = result.get("codeggUsage")
             usage = ({"turn_id": raw_usage.get("turnId"),
                       "input_tokens": raw_usage.get("inputTokens"),
@@ -1087,6 +1185,10 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             client.close()
             log = spec.root / "acp.stderr"
             tail = log.read_text(encoding="utf-8", errors="replace")[-8192:] if log.exists() else ""
+            managed_test_tail = (
+                _bounded_managed_test_log_tail(tool_updates, workspace)
+                if task_id == "h006-real-job-observation" else ""
+            )
             if ledger_root is not None:
                 from .ledger import record
                 failed_receipt = {
@@ -1129,7 +1231,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                             "provider_calls": provider.calls, "stop_reason": terminal,
                             "tool_failures": failed_receipt["tool_failures"],
                             "expected_file": expected_file, "ledger_manifest": failed_manifest}
-            raise HarnessError(f"{error}; fixture requests={provider.request_summaries!r}; ACP frames={client.frame_summaries[-30:]!r}; lane diagnostic tail: {tail}") from error
+            raise HarnessError(f"{error}; fixture requests={provider.request_summaries!r}; ACP frames={client.frame_summaries[-30:]!r}; managed test log tail: {managed_test_tail}; lane diagnostic tail: {tail}") from error
         finally:
             if session_id and client.process.poll() is None:
                 try:

@@ -379,3 +379,8 @@ reason = "Experiment-only release qualification owns five bounded child-process 
 path = "src/tool_advisor/late_interaction.rs"
 owner = "standalone_compat"
 reason = "Experiment-only M001 measurement owns one bounded rustc --version identity probe for receipt toolchain metadata; no user-turn or daemon execution path"
+
+[[site]]
+path = "crates/codegg-providers/src/opencode_go.rs"
+owner = "test_only"
+reason = "OpenCode Go request-cap unit test re-executes its own test binary to isolate the provider budget environment; no production process-spawn path"

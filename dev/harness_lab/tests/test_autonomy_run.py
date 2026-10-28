@@ -122,6 +122,16 @@ class RunCaseRefusalTests(unittest.TestCase):
                                   budget_policy=budget.BudgetPolicy(),
                                   lane_root=pathlib.Path("/nonexistent"))
 
+    def test_sustained_qualification_without_request_cap_is_refused_before_setup(self) -> None:
+        with self.assertRaisesRegex(HarnessError, "explicit provider request cap"):
+            autonomy_run.run_case(
+                pathlib.Path("/nonexistent"), autonomy.load_autonomy_suite(
+                    REPO_ROOT / "dev/harness_lab/fixtures/agent_autonomy_h005").cases[0],
+                "opencode_go/muse-spark-1.3-contributor",
+                budget_policy=budget.BudgetPolicy(),
+                lane_root=pathlib.Path("/nonexistent"),
+                min_free_disk_bytes=10 * 1024**3)
+
     def test_a_model_without_a_provider_is_refused(self) -> None:
         with self.assertRaises(HarnessError):
             autonomy_run.run_case(pathlib.Path("/nonexistent"), _case("read-search-patch-rust"),

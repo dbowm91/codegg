@@ -1,6 +1,6 @@
 # H006 — Job-Observable Sustained Corrective Qualification
 
-Status: **proposed — offline prerequisites are being checked; any live attempt requires fresh explicit budget authorization**
+Status: **offline prerequisites proven; exact-head hosted CI passed; fresh explicit live authorization required before live qualification**
 
 Subsystem roadmap: `plans/subsystems/harness-lab-mainline-and-long-horizon-qualification-addendum.md`
 
@@ -23,7 +23,7 @@ Use only CodeGG's existing `opencode_go` adapter and the already selected Muse S
 ## 3. Prerequisites — offline only
 
 1. Trace the H005 live job path from tool submission through job ID extraction, status observation, exact-ID wait, terminal result, and receipt projection. Identify why all seven observations were null; a unit test that only parses a synthetic status string is insufficient evidence for the composed path.
-2. Add or correct focused offline coverage so the composed projection records the submitted ID and observes both `running` and a terminal state for that same ID while the session continues. Unknown, missing, mismatched, or unobserved status must remain explicit and must fail the verifier; it cannot be counted as a successful background job.
+2. Add or correct focused offline coverage so the composed projection records the submitted ID and observes both `running` and `completed` for that same ID while the session continues. `failed`, `cancelled`, `canceled`, `timed_out`, unknown, missing, mismatched, or unobserved status must fail this qualification; terminality alone is not successful completion.
 3. Verify request-cap binding from the run policy through `SubjectSpec.environment()` into the child and `crates/codegg-providers` request boundary. Tests must prove a trial-provided limit works without inherited parent environment, exactly `N` admissions succeed, admission `N+1` is refused before transport, and the receipt records each admitted request. Malformed or absent cap configuration must not silently report an enforced bounded run.
 4. Run focused job-observation and provider-cap tests. Record exact commands/results. Keep the private lane and receipt free of API secrets, raw provider response bodies, and unnecessary job output.
 5. Review the staged task against the independent hidden verifier before live admission. Keep a bounded dependency chain (for example, repair ingestion/parsing, add a derived index, recover a journal after a deterministic failure, then integrate a CLI query). The task must make useful progress possible after each stage and must include two diagnosable failure/repair cycles without requiring external network access.
@@ -42,6 +42,8 @@ No live attempt is authorized by this plan. Before starting one, obtain a new ex
 - one attempt and the stop conditions below.
 
 The runner must bind and verify the request cap before its first provider request. Do not infer remaining budget from H005's receipt: its actual request usage is unknown. If no fresh approval arrives, stop after offline work and record H006 as blocked before live qualification.
+
+The offline job-observation gate uses bounded job metadata parsed from native ACP tool output. It does not claim a separate automatic terminal notification or define a structured job-lifecycle event protocol; those require separate production-path evidence and scope.
 
 ## 5. Live workload and evidence
 

@@ -396,18 +396,70 @@ pub fn tool_read_allowances() -> Vec<PathBuf> {
         // Shared configuration and cache ancestors may hold credentials.
         // Expose installed Rust programs and read-only downloaded inputs,
         // while keeping Cargo/Rustup credentials and mutable state excluded.
-        for relative in [
-            ".cargo/bin",
-            ".cargo/registry",
-            ".cargo/git",
-            ".rustup/settings.toml",
-            ".rustup/toolchains",
-            ".rustup/update-hashes",
-        ] {
+        for relative in [".cargo/bin", ".cargo/registry", ".cargo/git"] {
             paths.push(home.join(relative));
         }
     }
+    if let Some(rustup_home) = configured_rustup_home() {
+        paths.extend(rustup_read_allowances(&rustup_home));
+    }
     paths
+}
+
+fn configured_rustup_home() -> Option<PathBuf> {
+    std::env::var_os("RUSTUP_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+        .or_else(|| {
+            home_dir()
+                .map(|home| home.join(".rustup"))
+                .filter(|path| path.is_dir())
+        })
+}
+
+fn rustup_credential_deny_paths(root: &Path) -> [PathBuf; 2] {
+    [root.join("credentials"), root.join("credentials.toml")]
+}
+
+#[cfg(unix)]
+fn rustup_read_allowances(root: &Path) -> Vec<PathBuf> {
+    let Ok(root_metadata) = std::fs::symlink_metadata(root) else {
+        return Vec::new();
+    };
+    if root_metadata.file_type().is_symlink() {
+        return Vec::new();
+    }
+    let Ok(canonical_root) = root.canonicalize() else {
+        return Vec::new();
+    };
+
+    ["settings.toml", "toolchains", "update-hashes"]
+        .into_iter()
+        .filter_map(|relative| {
+            let path = canonical_root.join(relative);
+            let metadata = std::fs::symlink_metadata(&path).ok()?;
+            if metadata.file_type().is_symlink() {
+                return None;
+            }
+            let canonical = path.canonicalize().ok()?;
+            canonical.starts_with(&canonical_root).then_some(canonical)
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn rustup_read_allowances(root: &Path) -> Vec<PathBuf> {
+    if resolve_policy_path(root).is_err() {
+        return Vec::new();
+    }
+    ["settings.toml", "toolchains", "update-hashes"]
+        .into_iter()
+        .filter_map(|relative| {
+            let path = root.join(relative);
+            resolve_policy_path(&path).ok().map(|_| path)
+        })
+        .collect()
 }
 
 /// Windows runtime and installed-tool locations required to execute native
@@ -432,7 +484,6 @@ pub fn tool_read_allowances() -> Vec<PathBuf> {
     if let Some(home) = home_dir() {
         for relative in [
             ".cargo",
-            ".rustup",
             ".gitconfig",
             ".npm",
             ".cache",
@@ -441,6 +492,9 @@ pub fn tool_read_allowances() -> Vec<PathBuf> {
         ] {
             paths.push(home.join(relative));
         }
+    }
+    if let Some(rustup_home) = configured_rustup_home() {
+        paths.extend(rustup_read_allowances(&rustup_home));
     }
     paths
 }
@@ -564,6 +618,9 @@ pub fn sensitive_deny_paths() -> Vec<PathBuf> {
             paths.push(home.join(relative));
         }
     }
+    if let Some(rustup_home) = configured_rustup_home() {
+        paths.extend(rustup_credential_deny_paths(&rustup_home));
+    }
     paths
 }
 
@@ -597,6 +654,18 @@ pub fn sensitive_deny_paths() -> Vec<PathBuf> {
         ] {
             paths.push(home.join(relative));
         }
+    }
+    let rustup_home = std::env::var_os("RUSTUP_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+        .or_else(|| {
+            home_dir()
+                .map(|home| home.join(".rustup"))
+                .filter(|path| path.is_dir())
+        });
+    if let Some(rustup_home) = rustup_home {
+        paths.extend(rustup_credential_deny_paths(&rustup_home));
     }
     paths
 }
@@ -657,6 +726,64 @@ mod tests {
     }
 
     #[test]
+    fn rustup_read_allowances_expose_only_selected_toolchain_inputs() {
+        let root = tempfile::tempdir().expect("Rustup home");
+        std::fs::write(root.path().join("settings.toml"), "profile = 'minimal'\n")
+            .expect("Rustup settings");
+        std::fs::create_dir(root.path().join("toolchains")).expect("toolchains");
+        std::fs::create_dir(root.path().join("update-hashes")).expect("update hashes");
+        std::fs::create_dir(root.path().join("downloads")).expect("unrelated Rustup data");
+        std::fs::create_dir(root.path().join("credentials")).expect("credential directory");
+        let allowances = rustup_read_allowances(root.path());
+        let canonical_root = root.path().canonicalize().expect("canonical Rustup home");
+        assert_eq!(allowances.len(), 3);
+        assert!(allowances.contains(&canonical_root.join("settings.toml")));
+        assert!(allowances.contains(&canonical_root.join("toolchains")));
+        assert!(allowances.contains(&canonical_root.join("update-hashes")));
+        assert!(!allowances.contains(&canonical_root.join("downloads")));
+        assert!(!allowances.contains(&canonical_root));
+        assert!(!allowances.contains(&canonical_root.join("credentials")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rustup_read_allowances_reject_symlinked_root_and_allowance_roots() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let external = tempfile::tempdir().expect("external Rustup data");
+        std::fs::write(
+            external.path().join("settings.toml"),
+            "credential = 'secret'\n",
+        )
+        .expect("external settings");
+        std::fs::create_dir(external.path().join("toolchains")).expect("external toolchains");
+        std::fs::create_dir(external.path().join("update-hashes")).expect("external update hashes");
+
+        let linked_root = fixture.path().join("linked-rustup");
+        std::os::unix::fs::symlink(external.path(), &linked_root).expect("Rustup root symlink");
+        assert!(
+            rustup_read_allowances(&linked_root).is_empty(),
+            "a symlinked RUSTUP_HOME must not turn its target into a grant"
+        );
+
+        let root = fixture.path().join("rustup");
+        std::fs::create_dir(&root).expect("Rustup root");
+        std::fs::write(root.join("settings.toml"), "profile = 'minimal'\n")
+            .expect("Rustup settings");
+        std::os::unix::fs::symlink(external.path().join("toolchains"), root.join("toolchains"))
+            .expect("toolchains symlink");
+        std::fs::create_dir(root.join("update-hashes")).expect("update hashes");
+        let allowances = rustup_read_allowances(&root);
+        let canonical_root = root.canonicalize().expect("canonical Rustup root");
+        let canonical_external = external.path().canonicalize().expect("canonical target");
+        assert!(!allowances
+            .iter()
+            .any(|path| path.starts_with(&canonical_external)));
+        assert!(!allowances.contains(&canonical_root.join("toolchains")));
+        assert!(allowances.contains(&canonical_root.join("settings.toml")));
+        assert!(allowances.contains(&canonical_root.join("update-hashes")));
+    }
+
+    #[test]
     fn device_nodes_are_writable_but_ordinary_paths_are_not() {
         let roots = BackendPolicy::normalized(device_write_allowances());
         assert!(
@@ -687,6 +814,39 @@ mod tests {
         assert!(
             raw.iter().any(|root| root.ends_with("codegg")),
             "CodeGG's own credential store must be on the deny list"
+        );
+        assert!(
+            raw.iter().any(|root| root.ends_with(".cargo/credentials")),
+            "Cargo credentials must stay explicitly denied"
+        );
+        assert!(
+            raw.iter()
+                .any(|root| root.ends_with(".cargo/credentials.toml")),
+            "Cargo credential TOML must stay explicitly denied"
+        );
+        if let Some(rustup_home) = configured_rustup_home() {
+            assert!(
+                raw.iter()
+                    .any(|root| root == &rustup_home.join("credentials")),
+                "Rustup credentials must stay explicitly denied"
+            );
+            assert!(
+                raw.iter()
+                    .any(|root| root == &rustup_home.join("credentials.toml")),
+                "Rustup credential TOML must stay explicitly denied"
+            );
+        }
+    }
+
+    #[test]
+    fn overridden_rustup_home_credentials_are_denied() {
+        let rustup_home = tempfile::tempdir().expect("private Rustup home");
+        assert_eq!(
+            rustup_credential_deny_paths(rustup_home.path()),
+            [
+                rustup_home.path().join("credentials"),
+                rustup_home.path().join("credentials.toml")
+            ]
         );
     }
 
@@ -1026,5 +1186,23 @@ mod windows_policy_tests {
     fn windows_policy_roots_cannot_be_resolved_through_search_path() {
         assert!(resolve_policy_path(Path::new("powershell.exe")).is_err());
         assert!(resolve_policy_path(Path::new("cmd.exe")).is_err());
+    }
+
+    #[test]
+    fn windows_rustup_allowances_remain_resolvable_policy_paths() {
+        let rustup = tempfile::tempdir().expect("Rustup home");
+        for relative in ["settings.toml", "toolchains", "update-hashes"] {
+            let path = rustup.path().join(relative);
+            if path.extension().is_some() {
+                std::fs::write(path, "fixture").expect("Rustup settings");
+            } else {
+                std::fs::create_dir(path).expect("Rustup data directory");
+            }
+        }
+        let allowances = rustup_read_allowances(rustup.path());
+        assert_eq!(allowances.len(), 3);
+        assert!(allowances
+            .iter()
+            .all(|path| resolve_policy_path(path).is_ok()));
     }
 }

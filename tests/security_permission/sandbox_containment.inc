@@ -857,6 +857,101 @@ fn explicitly_denied_paths_are_unreachable() {
     );
 }
 
+#[test]
+fn rustup_allowances_do_not_expose_credentials_or_symlink_targets() {
+    require_backend!();
+    let workspace = tempfile::tempdir().expect("workspace");
+    let rustup = tempfile::tempdir().expect("Rustup home");
+    let outside = tempfile::tempdir().expect("outside toolchain target");
+    let fixture_home = tempfile::tempdir().expect("credential home");
+
+    let settings = rustup.path().join("settings.toml");
+    let toolchains = rustup.path().join("toolchains");
+    let update_hashes = rustup.path().join("update-hashes");
+    let downloads = rustup.path().join("downloads");
+    let rustup_credentials = rustup.path().join("credentials");
+    let rustup_credentials_toml = rustup.path().join("credentials.toml");
+    std::fs::write(&settings, "profile = 'minimal'\n").expect("Rustup settings");
+    std::fs::create_dir(&toolchains).expect("toolchains");
+    std::fs::write(toolchains.join("toolchain-marker"), "toolchain-readable")
+        .expect("toolchain marker");
+    std::fs::create_dir(&update_hashes).expect("update hashes");
+    std::fs::write(update_hashes.join("hash-marker"), "hash-readable").expect("update hash marker");
+    std::fs::create_dir(&downloads).expect("unrelated Rustup data");
+    std::fs::write(downloads.join("download-marker"), "unapproved")
+        .expect("unapproved Rustup marker");
+    std::fs::create_dir(&rustup_credentials).expect("Rustup credentials");
+    std::fs::write(rustup_credentials.join("token"), "rustup-secret").expect("Rustup credential");
+    std::fs::write(&rustup_credentials_toml, "token = 'rustup-secret'\n")
+        .expect("Rustup credential TOML");
+    let cargo_credentials = fixture_home.path().join(".cargo/credentials");
+    std::fs::create_dir_all(cargo_credentials.parent().expect("Cargo home")).expect("Cargo home");
+    std::fs::write(&cargo_credentials, "cargo-secret").expect("Cargo credential");
+    std::fs::write(outside.path().join("escape-marker"), "outside-toolchain")
+        .expect("outside marker");
+    let unapproved_path = workspace.path().with_extension("unapproved");
+    std::fs::write(&unapproved_path, "unapproved").expect("unapproved path");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outside.path(), toolchains.join("external-link"))
+        .expect("external toolchain symlink");
+
+    let mut spec = spec_for(
+        workspace.path(),
+        SandboxMode::WorkspaceWrite,
+        &[
+            cargo_credentials.clone(),
+            rustup_credentials.clone(),
+            rustup_credentials_toml.clone(),
+            downloads.clone(),
+            unapproved_path.clone(),
+            outside.path().to_path_buf(),
+        ],
+    );
+    spec.read_paths
+        .extend([settings.clone(), toolchains.clone(), update_hashes.clone()]);
+    let script = format!(
+        "probe() {{ if cat \"$1\" >/dev/null 2>&1; then echo \"$2-READ\"; else echo \"$2-DENIED\"; fi; }}\n\
+         probe {} SETTINGS\n\
+         probe {} TOOLCHAIN\n\
+         probe {} UPDATE-HASHES\n\
+         probe {} RUSTUP-CREDENTIALS\n\
+         probe {} RUSTUP-CREDENTIALS-TOML\n\
+         probe {} CARGO-CREDENTIALS\n\
+         probe {} UNRELATED-RUSTUP\n\
+         probe {} UNAPPROVED-PATH\n\
+         probe {} SYMLINK-ESCAPE\n",
+        sh_quote(&settings),
+        sh_quote(&toolchains.join("toolchain-marker")),
+        sh_quote(&update_hashes.join("hash-marker")),
+        sh_quote(&rustup_credentials.join("token")),
+        sh_quote(&rustup_credentials_toml),
+        sh_quote(&cargo_credentials),
+        sh_quote(&downloads.join("download-marker")),
+        sh_quote(&unapproved_path),
+        sh_quote(&toolchains.join("external-link/escape-marker")),
+    );
+    spec.args = vec!["-c".to_string(), script];
+    let run = run_helper(&spec);
+    assert!(run.success, "contained probe failed: {}", run.stderr);
+    for expected in [
+        "SETTINGS-READ",
+        "TOOLCHAIN-READ",
+        "UPDATE-HASHES-READ",
+        "RUSTUP-CREDENTIALS-DENIED",
+        "RUSTUP-CREDENTIALS-TOML-DENIED",
+        "CARGO-CREDENTIALS-DENIED",
+        "UNRELATED-RUSTUP-DENIED",
+        "UNAPPROVED-PATH-DENIED",
+        "SYMLINK-ESCAPE-DENIED",
+    ] {
+        assert!(
+            run.stdout.contains(expected),
+            "missing {expected}: {}",
+            run.stdout
+        );
+    }
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn seatbelt_preserves_and_reports_preopened_denied_file_descriptors() {

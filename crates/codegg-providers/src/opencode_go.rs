@@ -912,6 +912,113 @@ mod capture_tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn provider_request_cap_refuses_before_transport_and_writes_complete_receipt() {
+        const CHILD: &str = "opencode_go::capture_tests::provider_request_cap_refuses_before_transport_and_writes_complete_receipt";
+        const CHILD_MARKER: &str = "CODEGG_TEST_REQUEST_CAP_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_some() {
+            let base = std::env::var("CODEGG_TEST_REQUEST_CAP_BASE").expect("capture base");
+            let provider = provider_at(&base);
+            for _ in 0..2 {
+                let error = expect_stream_error(
+                    provider
+                        .stream(&request("glm-5.3-flash", Some("cap-test")))
+                        .await,
+                    "fixture 503 response",
+                );
+                assert_ne!(error.error_class(), "request_budget");
+            }
+            let error = expect_stream_error(
+                provider
+                    .stream(&request("glm-5.3-flash", Some("cap-test")))
+                    .await,
+                "third request must be refused by the provider cap",
+            );
+            assert_eq!(error.error_class(), "request_budget");
+            return;
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind request cap server");
+        let address = listener.local_addr().expect("request cap address");
+        listener
+            .set_nonblocking(true)
+            .expect("bound request-cap fixture wait");
+        let server = std::thread::spawn(move || {
+            let mut captures = Vec::new();
+            let accept_deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut extra_request_deadline = None;
+            loop {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_nonblocking(false)
+                            .expect("accepted request uses blocking reads");
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .expect("bound request read");
+                        captures.push(read_request(&mut stream));
+                        let body = r#"{"error":"offline cap fixture"}"#;
+                        write!(stream,
+                            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()).expect("write fixture error");
+                        if captures.len() == 2 {
+                            extra_request_deadline =
+                                Some(std::time::Instant::now() + Duration::from_millis(250));
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        let now = std::time::Instant::now();
+                        let deadline = extra_request_deadline.unwrap_or(accept_deadline);
+                        if now >= deadline {
+                            break;
+                        }
+                        std::thread::yield_now();
+                    }
+                    Err(error) => panic!("accept check: {error}"),
+                }
+            }
+            captures
+        });
+
+        let receipt = std::env::temp_dir().join(format!(
+            "codegg-request-cap-{}-{}.jsonl",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .arg("--exact")
+            .arg(CHILD)
+            .env(CHILD_MARKER, "1")
+            .env("CODEGG_TEST_REQUEST_CAP_BASE", format!("http://{address}"))
+            .env("CODEGG_HARNESS_MAX_PROVIDER_REQUESTS", "2")
+            .env("CODEGG_HARNESS_PROVIDER_REQUEST_RECEIPT", &receipt)
+            .output()
+            .expect("run isolated provider-cap child");
+        assert!(
+            output.status.success(),
+            "child failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let captures = server.join().expect("capture server joins");
+        assert_eq!(captures.len(), 2, "request N+1 reached transport");
+        let lines: Vec<_> = std::fs::read_to_string(&receipt)
+            .expect("complete admission receipt")
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                r#"{"request_number":1,"limit":2}"#.to_string(),
+                r#"{"request_number":2,"limit":2}"#.to_string(),
+            ]
+        );
+        let _ = std::fs::remove_file(receipt);
+    }
 }
 
 /// Catalog qualification tests (M011 WP-D).

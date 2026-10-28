@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "provider": "local-openai-fixture",
+  "source_sha256": "4471d637ba93eaadc7a2a91c4061a4b2a6ecbbe32277ccba55510a7a8bd515b4",
+  "event_observation_state": "measured_no_gap",
+  "event_gap_count": 0,
+  "provider_calls": 10,
+  "wall_time_ms": 24459,
+  "tool_calls": [
+    {
+      "tool": "test",
+      "status": "completed",
+      "started_elapsed_ms": 1060,
+      "finished_elapsed_ms": 1089,
+      "job": {
+        "action": "submit",
+        "job_id": "74386df4-54d6-41eb-b2fc-0f52ade38983",
+        "status": null
+      }
+    },
+    {
+      "tool": "job",
+      "status": "completed",
+      "started_elapsed_ms": 1113,
+      "finished_elapsed_ms": 6129,
+      "job": {
+        "action": "wait",
+        "job_id": "74386df4-54d6-41eb-b2fc-0f52ade38983",
+        "status": null
+      }
+    },
+    {
+      "tool": "write",
+      "status": "completed",
+      "started_elapsed_ms": 6174,
+      "finished_elapsed_ms": 6182,
+      "job": null
+    },
+    {
+      "tool": "write",
+      "status": "completed",
+      "started_elapsed_ms": 6229,
+      "finished_elapsed_ms": 6238,
+      "job": null
+    },
+    {
+      "tool": "job",
+      "status": "completed",
+      "started_elapsed_ms": 6287,
+      "finished_elapsed_ms": 6300,
+      "job": {
+        "action": "status",
+        "job_id": "74386df4-54d6-41eb-b2fc-0f52ade38983",
+        "status": "running"
+      }
+    },
+    {
+      "tool": "write",
+      "status": "completed",
+      "started_elapsed_ms": 6347,
+      "finished_elapsed_ms": 6358,
+      "job": null
+    },
+    {
+      "tool": "job",
+      "status": "completed",
+      "started_elapsed_ms": 6402,
+      "finished_elapsed_ms": 6417,
+      "job": {
+        "action": "status",
+        "job_id": "74386df4-54d6-41eb-b2fc-0f52ade38983",
+        "status": "running"
+      }
+    },
+    {
+      "tool": "job",
+      "status": "completed",
+      "started_elapsed_ms": 6460,
+      "finished_elapsed_ms": 23552,
+      "job": {
+        "action": "wait",
+        "job_id": "74386df4-54d6-41eb-b2fc-0f52ade38983",
+        "status": "completed"
+      }
+    }
+  ]
+}

@@ -10,7 +10,9 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
+import os
 import shutil
+import shlex
 import subprocess
 import unittest
 from pathlib import Path
@@ -19,6 +21,16 @@ from dev.harness_lab import budget, long_horizon_report, recovery_controls_v2, s
 from dev.harness_lab.supervisor import HarnessError, run_tool_trial
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _observed_completed_job(calls, job_id):
+    """Return true only when the exact submitted job was observed completed."""
+    return any(
+        call.get("tool") == "job"
+        and call.get("job", {}).get("job_id") == job_id
+        and call.get("job", {}).get("status") == "completed"
+        for call in calls
+    )
 
 
 def _policy(**overrides):
@@ -356,6 +368,244 @@ class LongHorizonNativeJobTest(unittest.TestCase):
                 expected_exists=False, workspace_snapshot=self.fixture,
                 external_verifier=self.verifier)
         self.assertIn("public contract tests were modified", str(raised.exception))
+
+    def test_h006_real_background_job_is_observed_by_exact_id_while_work_continues(self):
+        configured_binary = os.environ.get("CODEGG_H006_CODEGG_BINARY")
+        binary = (Path(configured_binary) if configured_binary else
+                  REPO_ROOT / "target" / "debug" / "codegg")
+        self.assertTrue(binary.is_file(), "build CodeGG and set CODEGG_H006_CODEGG_BINARY")
+        rustup = shutil.which("rustup")
+        self.assertTrue(rustup, "the native test fixture requires the configured Rust toolchain")
+        cargo = subprocess.run([rustup, "which", "cargo"], capture_output=True,
+                               text=True, check=True).stdout.strip()
+        rustc = subprocess.run([rustup, "which", "rustc"], capture_output=True,
+                               text=True, check=True).stdout.strip()
+        self.assertTrue(Path(cargo).is_file(), "rustup must resolve a real cargo executable")
+        self.assertTrue(Path(rustc).is_file(), "rustup must resolve a real rustc executable")
+        sequence = [
+            {"name": "test", "arguments": {
+                "scope": "custom", "command": f"{shlex.quote(cargo)} test --offline --workspace",
+                "workdir": "job-check", "execution_mode": "background"}},
+            # This is a bounded wait on the actual submitted job, not a fixture
+            # delay. It gives the scheduler time to admit the real Cargo work
+            # while the session is free to make useful source changes.
+            {"name": "job", "arguments": {
+                "action": "wait", "job_id": "{job_id}", "timeout_ms": 5000}},
+            {"name": "write", "arguments": {
+                "path": "src/parser.rs", "content": "pub fn split_version(input: &str) -> Option<Vec<&str>> {\n    let trimmed = input.trim();\n    let normalized = trimmed.strip_prefix('v').unwrap_or(trimmed);\n    if normalized.is_empty() { return None; }\n    let parts: Vec<&str> = normalized.split('.').collect();\n    (parts.len() == 3 && parts.iter().all(|part| !part.is_empty()))\n        .then_some(parts)\n}\n"}},
+            {"name": "write", "arguments": {
+                "path": "src/normalize.rs", "content": "pub fn normalize(parts: Vec<&str>) -> Option<(u32, u32, u32)> {\n    let major = parts[0].parse::<u32>().ok()?;\n    let minor = parts[1].parse::<u32>().ok()?;\n    let patch = parts[2].parse::<u32>().ok()?;\n    Some((major, minor, patch))\n}\n"}},
+            {"name": "job", "arguments": {"action": "status", "job_id": "{job_id}"}},
+            {"name": "write", "arguments": {
+                "path": "src/lib.rs", "content": "mod normalize;\nmod parser;\n\npub fn parse_version(input: &str) -> Option<(u32, u32, u32)> {\n    let parts = parser::split_version(input)?;\n    normalize::normalize(parts)\n}\n"}},
+            {"name": "job", "arguments": {"action": "status", "job_id": "{job_id}"}},
+            {"name": "job", "arguments": {
+                "action": "wait", "job_id": "{job_id}", "timeout_ms": 300000}},
+        ]
+        trial = run_tool_trial(
+            binary, "workspace-write", timeout=300.0,
+            task_id="h006-real-job-observation", tool_sequence=sequence,
+            expected_file="never-created", expected_text=None, expected_exists=False,
+            workspace_snapshot=self.fixture, rustc_executable=Path(rustc),
+            initial_files={
+                "job-check/Cargo.toml": "[workspace]\nmembers = [\"core\", \"index\", \"store\", \"cli\"]\nresolver = \"2\"\n",
+                "job-check/core/Cargo.toml": "[package]\nname = \"job-core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+                "job-check/core/src/lib.rs": """#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct Row { pub timestamp: i64, pub id: String, pub amount: i64 }
+
+pub fn parse(input: &str) -> (Vec<Row>, Vec<String>) {
+    let mut rows = Vec::new();
+    let mut errors = Vec::new();
+    for (line, text) in input.lines().enumerate() {
+        let fields: Vec<_> = text.split('|').collect();
+        if fields.len() != 5 || fields[1].is_empty() || fields[4].is_empty()
+            || !matches!(fields[2], "open" | "close" | "transfer") {
+            errors.push(format!("invalid row {}", line + 1));
+            continue;
+        }
+        match (fields[0].parse::<i64>(), fields[3].parse::<i64>()) {
+            (Ok(timestamp), Ok(amount)) => rows.push(Row {
+                timestamp, id: fields[1].to_string(), amount,
+            }),
+            _ => errors.push(format!("invalid number on line {}", line + 1)),
+        }
+    }
+    (rows, errors)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn invalid_rows_report_their_line() {
+        let (rows, errors) = super::parse("1|a|open|2|source\\nbad");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(errors, vec!["invalid row 2"]);
+    }
+}
+""",
+                "job-check/index/Cargo.toml": "[package]\nname = \"job-index\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[dependencies]\njob-core = { path = \"../core\" }\n",
+                "job-check/index/src/lib.rs": """use std::collections::BTreeMap;
+
+pub fn index(row: job_core::Row) -> (i64, usize) { (row.amount, 1) }
+
+pub fn canonicalize(records: impl IntoIterator<Item = job_core::Row>) -> Result<Vec<job_core::Row>, String> {
+    let mut by_id = BTreeMap::new();
+    for record in records {
+        if let Some(existing) = by_id.get(&record.id) {
+            if existing != &record { return Err(format!("conflicting duplicate id {}", record.id)); }
+        } else { by_id.insert(record.id.clone(), record); }
+    }
+    let mut rows: Vec<_> = by_id.into_values().collect();
+    rows.sort_by(|a, b| (a.timestamp.div_euclid(60), &a.id).cmp(&(b.timestamp.div_euclid(60), &b.id)));
+    Ok(rows)
+}
+
+pub fn summaries(records: &[job_core::Row]) -> Vec<(i64, i64, usize)> {
+    let mut windows: BTreeMap<i64, (i64, usize)> = BTreeMap::new();
+    for row in records {
+        let entry = windows.entry(row.timestamp.div_euclid(60)).or_default();
+        entry.0 += row.amount;
+        entry.1 += 1;
+    }
+    windows.into_iter().map(|(window, (amount, count))| (window, amount, count)).collect()
+}
+""",
+                "job-check/store/Cargo.toml": "[package]\nname = \"job-store\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[dependencies]\njob-core = { path = \"../core\" }\njob-index = { path = \"../index\" }\n",
+                "job-check/store/src/lib.rs": """use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::Path;
+
+fn encode(row: &job_core::Row) -> String {
+    let body = format!("{}|{}|{}", row.timestamp, row.id, row.amount);
+    let checksum = body.bytes().fold(0u64, |sum, byte| sum.wrapping_add(u64::from(byte)));
+    format!("v1|{body}|{checksum:016x}")
+}
+
+fn decode(line: &str) -> Result<job_core::Row, String> {
+    let fields: Vec<_> = line.split('|').collect();
+    if fields.len() != 5 || fields[0] != "v1" { return Err("invalid journal record".into()); }
+    let body = fields[1..4].join("|");
+    let expected = body.bytes().fold(0u64, |sum, byte| sum.wrapping_add(u64::from(byte)));
+    if u64::from_str_radix(fields[4], 16).ok() != Some(expected) { return Err("checksum mismatch".into()); }
+    Ok(job_core::Row {
+        timestamp: fields[1].parse().map_err(|_| "invalid timestamp")?,
+        id: fields[2].to_string(),
+        amount: fields[3].parse().map_err(|_| "invalid amount")?,
+    })
+}
+
+pub fn store(row: job_core::Row) -> (i64, usize) { job_index::index(row) }
+
+pub fn append(path: &Path, rows: &[job_core::Row]) -> Result<(), String> {
+    if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+    let mut file = OpenOptions::new().create(true).append(true).open(path).map_err(|e| e.to_string())?;
+    for row in rows { writeln!(file, "{}", encode(row)).map_err(|e| e.to_string())?; }
+    file.sync_all().map_err(|e| e.to_string())
+}
+
+pub fn replay(path: &Path) -> Result<Vec<job_core::Row>, String> {
+    let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let lines: Vec<_> = text.lines().collect();
+    let mut rows = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        match decode(line) {
+            Ok(row) => rows.push(row),
+            Err(_error) if index + 1 == lines.len() => break,
+            Err(error) => return Err(format!("journal line {}: {error}", index + 1)),
+        }
+    }
+    job_index::canonicalize(rows)
+}
+""",
+                "job-check/cli/Cargo.toml": "[package]\nname = \"job-cli\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[dependencies]\njob-core = { path = \"../core\" }\njob-index = { path = \"../index\" }\njob-store = { path = \"../store\" }\n",
+                "job-check/cli/src/lib.rs": """pub fn run(value: i64) -> (i64, usize) {
+    job_store::store(job_core::Row { timestamp: value, id: value.to_string(), amount: value })
+}
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cli_contract() { assert_eq!(super::run(5), (5, 1)); }
+
+    #[test]
+    fn ingests_replays_and_merges_five_shards_at_scale() {
+        let root = std::env::temp_dir().join(format!("job-ledger-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let input: String = (0..1_000_000)
+            .map(|n| format!("{n}|event-{n}|transfer|{}|source\\n", n % 17))
+            .collect();
+        let (records, errors) = job_core::parse(&input);
+        assert!(errors.is_empty());
+        assert_eq!(records.len(), 1_000_000);
+        let mut shards: [Vec<job_core::Row>; 5] = std::array::from_fn(|_| Vec::new());
+        for (index, record) in records.into_iter().enumerate() {
+            shards[index % shards.len()].push(record);
+        }
+        let mut recovered = Vec::new();
+        for (index, shard) in shards.iter().enumerate() {
+            let path = root.join(format!("shard-{index}.journal"));
+            job_store::append(&path, shard).unwrap();
+            recovered.extend(job_store::replay(&path).unwrap());
+            assert_eq!(
+                job_store::replay(&path).unwrap(),
+                job_index::canonicalize(shard.clone()).unwrap()
+            );
+        }
+        let ordered = job_index::canonicalize(recovered).unwrap();
+        assert_eq!(ordered.len(), 1_000_000);
+        assert_eq!(
+            job_index::summaries(&ordered).iter().map(|(_, _, count)| count).sum::<usize>(),
+            1_000_000
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+""",
+                "job-check/cli/src/main.rs": "fn main() { assert_eq!(job_cli::run(5), (5, 1)); }\n",
+            })
+        self.addCleanup(shutil.rmtree, Path(trial["workspace"]).parent, ignore_errors=True)
+        calls = trial["tool_calls"]
+        submissions = [call for call in calls if call.get("job", {}).get("action") == "submit"]
+        observations = [call for call in calls if call.get("tool") == "job"]
+        self.assertEqual(len(submissions), 1)
+        job_id = submissions[0]["job"]["job_id"]
+        self.assertTrue(job_id)
+        exact = [call for call in observations if call.get("job", {}).get("job_id") == job_id]
+        running = [call for call in exact if call.get("job", {}).get("status") == "running"]
+        self.assertGreaterEqual(len(running), 2, calls)
+        self.assertTrue(_observed_completed_job(exact, job_id), calls)
+        first_running_at = running[0]["finished_elapsed_ms"]
+        second_running_at = running[1]["finished_elapsed_ms"]
+        intervening = [call for call in calls
+                       if first_running_at < call.get("started_elapsed_ms", 0) < second_running_at
+                       and call.get("tool") in {"write", "edit", "apply_patch"}]
+        self.assertGreaterEqual(len(intervening), 1, calls)
+        self.assertEqual(trial["event_observation_state"], "measured_no_gap")
+        receipt_path = os.environ.get("CODEGG_H006_JOB_RECEIPT")
+        if receipt_path:
+            receipt = {
+                "schema_version": 1,
+                "provider": "local-openai-fixture",
+                "source_sha256": trial["source_sha256"],
+                "event_observation_state": trial["event_observation_state"],
+                "event_gap_count": trial["event_gap_count"],
+                "provider_calls": trial["provider_calls"],
+                "wall_time_ms": trial["wall_time_ms"],
+                "tool_calls": [{
+                    "tool": call["tool"],
+                    "status": call["status"],
+                    "started_elapsed_ms": call["started_elapsed_ms"],
+                    "finished_elapsed_ms": call["finished_elapsed_ms"],
+                    "job": call.get("job"),
+                } for call in calls],
+            }
+            path = Path(receipt_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+
+    def test_failed_background_job_cannot_satisfy_h006_completion(self):
+        calls = [{"tool": "job", "job": {"job_id": "job-123", "status": "failed"}}]
+        self.assertFalse(_observed_completed_job(calls, "job-123"))
 
     def test_a_transport_fault_lane_does_not_stop_the_next_lane(self):
         binary = REPO_ROOT / "target" / "debug" / "codegg"
