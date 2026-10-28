@@ -1,6 +1,6 @@
 # H006 — Job-Observable Sustained Corrective Qualification
 
-Status: **offline prerequisites proven; exact-head hosted CI passed; fresh explicit live authorization required before live qualification**
+Status: **offline prerequisites and prior exact-head CI passed; first authorized live attempt failed on missing sandbox-helper runfile; paired-runfile preflight implemented and locally verified; corrective hosted CI pending**
 
 Subsystem roadmap: `plans/subsystems/harness-lab-mainline-and-long-horizon-qualification-addendum.md`
 
@@ -27,12 +27,13 @@ Use only CodeGG's existing `opencode_go` adapter and the already selected Muse S
 3. Verify request-cap binding from the run policy through `SubjectSpec.environment()` into the child and `crates/codegg-providers` request boundary. Tests must prove a trial-provided limit works without inherited parent environment, exactly `N` admissions succeed, admission `N+1` is refused before transport, and the receipt records each admitted request. Malformed or absent cap configuration must not silently report an enforced bounded run.
 4. Run focused job-observation and provider-cap tests. Record exact commands/results. Keep the private lane and receipt free of API secrets, raw provider response bodies, and unnecessary job output.
 5. Review the staged task against the independent hidden verifier before live admission. Keep a bounded dependency chain (for example, repair ingestion/parsing, add a derived index, recover a journal after a deterministic failure, then integrate a CLI query). The task must make useful progress possible after each stage and must include two diagnosable failure/repair cycles without requiring external network access.
+6. Build `codegg` and `codegg-sandbox-helper` into the same target directory with one pinned Rust toolchain. Before reserving any provider request, run the binary's native `doctor installation` report and require `Sandbox helper (...): present`. The autonomy runner enforces this preflight; a missing or invalid sibling is a setup refusal, not a live trial.
 
 If these prerequisites uncover a product defect, make the narrow corrective on the H006 branch and pass its focused offline tests before requesting live budget. H005 and PR #211 remain separately reviewable.
 
 ## 4. Live authorization gate
 
-No live attempt is authorized by this plan. Before starting one, obtain a new explicit approval that names:
+The first authorized H006 live attempt is consumed and failed because the binary bundle lacked `codegg-sandbox-helper`. Before any subsequent live attempt, complete the runfile preflight correction and obtain a new explicit approval that names:
 
 - `opencode_go` and the selected model route;
 - a hard provider-request ceiling that includes any fresh credential/catalog probes;
@@ -41,7 +42,7 @@ No live attempt is authorized by this plan. Before starting one, obtain a new ex
 - the treatment of unreported USD cost;
 - one attempt and the stop conditions below.
 
-The runner must bind and verify the request cap before its first provider request. Do not infer remaining budget from H005's receipt: its actual request usage is unknown. If no fresh approval arrives, stop after offline work and record H006 as blocked before live qualification.
+The runner must bind and verify the request cap before its first provider request. Do not infer remaining budget from H005's receipt: its actual request usage is unknown. Do not reuse the consumed H006 authorization. If no new approval arrives, stop after offline work and leave sustained qualification incomplete.
 
 The offline job-observation gate uses bounded job metadata parsed from native ACP tool output. It does not claim a separate automatic terminal notification or define a structured job-lifecycle event protocol; those require separate production-path evidence and scope.
 
@@ -67,6 +68,6 @@ Stop before live startup if the new authorization is absent, cap configuration c
 
 ## 7. Completion and handoff
 
-H006 closes as sustained-qualified only when all offline prerequisites and live workload criteria pass with a complete sanitized receipt and exact-head hosted CI. Otherwise close or leave it blocked with the failed criterion and evidence stated precisely. A successful offline cap or projection test is infrastructure evidence; it is not sustained autonomous capability evidence.
+H006 closes as sustained-qualified only when all offline prerequisites and live workload criteria pass with a complete sanitized receipt and exact-head hosted CI. The first live attempt is recorded as failed in `plans/closure/harness-lab-mainline-qualification/006-status.md`; its duration, one repair cycle, failed verifier, request count, and missing-helper cause do not qualify any live criterion. Any retry requires completed offline preflight work and fresh explicit authorization. A successful offline cap or projection test is infrastructure evidence; it is not sustained autonomous capability evidence.
 
 PR #211 can be reviewed and merged independently on its own exact-head hosted checks. H006 must use a separate branch and must not recast H005 as qualified.

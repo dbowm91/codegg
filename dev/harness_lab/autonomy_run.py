@@ -68,6 +68,8 @@ ACP_PROTOCOL_VERSION = 1
 #: A case whose verifier never ran is not a solved case. The receipt carries
 #: this explicitly instead of treating a missing verifier as a pass.
 VERIFIER_NOT_RUN = "not_run"
+H006_CASE_ID = "sustained-event-ledger"
+H006_INSTALLATION_PREFLIGHT_TIMEOUT_SECONDS = 15.0
 
 __all__ = [
     "AUTONOMY_ROOT_RELPATH",
@@ -558,6 +560,111 @@ def _remaining_provider_request_cap(policy: budget.BudgetPolicy,
     return max(0, limit - guard.provider_requests)
 
 
+def _preflight_h006_binary(binary: Path) -> Path:
+    """Resolve CodeGG and require its trusted sandbox runfile before H006."""
+    executable = binary.expanduser().resolve()
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise HarnessError(f"H006 CodeGG executable is not executable: {executable}")
+
+    helper_name = "codegg-sandbox-helper.exe" if os.name == "nt" else "codegg-sandbox-helper"
+    env = {key: os.environ[key] for key in
+           ("PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "TMP", "TEMP")
+           if key in os.environ}
+    try:
+        result = subprocess.run(
+            [str(executable), "doctor", "installation"],
+            cwd=str(executable.parent), capture_output=True, text=True,
+            timeout=H006_INSTALLATION_PREFLIGHT_TIMEOUT_SECONDS, check=False, env=env,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise HarnessError("H006 CodeGG installation preflight timed out") from error
+    except OSError as error:
+        raise HarnessError(f"H006 CodeGG installation preflight could not run: {error}") from error
+
+    report = (result.stdout or "") + "\n" + (result.stderr or "")
+    prefix = f"Sandbox helper ({helper_name}): ".casefold()
+    status_line = next((line.strip() for line in report.splitlines()
+                        if line.strip().casefold().startswith(prefix)), None)
+    if result.returncode != 0 or status_line is None \
+            or not status_line.casefold().startswith(prefix + "present at "):
+        detail = status_line or f"installation doctor exited {result.returncode} without helper status"
+        raise HarnessError(f"H006 CodeGG runfile preflight failed: {detail}")
+    return executable
+
+
+def _is_missing_trusted_helper_failure(notification: dict[str, Any]) -> bool:
+    """Recognize the known, unrecoverable H006 process-launch failure."""
+    params = notification.get("params", {})
+    update = params.get("update", {}) if isinstance(params, dict) else {}
+    if not isinstance(update, dict) or update.get("sessionUpdate") != "tool_call_update" \
+            or update.get("status") != "failed" \
+            or update.get("title") not in {"test", "job"}:
+        return False
+    raw_output = update.get("rawOutput")
+    if not isinstance(raw_output, str):
+        return False
+    lowered = raw_output.casefold()
+    return "trusted sandbox helper" in lowered \
+        and "codegg-sandbox-helper" in lowered \
+        and "could not be resolved" in lowered
+
+
+class _H006InfrastructureFailureWatcher:
+    """Cancel H006 when its managed process cannot launch for a known reason."""
+
+    def __init__(self, client: AcpClient, session_id: str, *,
+                 poll_seconds: float = 0.05) -> None:
+        self._client = client
+        self._session_id = session_id
+        self._poll_seconds = poll_seconds
+        self._absorbed = 0
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self.failure_observed = False
+        self.cancel_error: Optional[str] = None
+        self.cancel_requested = False
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, name="h006-infrastructure-watcher",
+                                        daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5.0)
+            self._thread = None
+        self._absorb()
+        if self.failure_observed:
+            self._cancel()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self._absorb()
+            if self.failure_observed:
+                self._cancel()
+                return
+            self._stop.wait(self._poll_seconds)
+        self._absorb()
+
+    def _cancel(self) -> None:
+        if self.cancel_requested:
+            return
+        self.cancel_requested = True
+        try:
+            self._client.notify("session/cancel", {"sessionId": self._session_id})
+        except (HarnessError, OSError, subprocess.SubprocessError) as error:
+            self.cancel_error = f"{type(error).__name__}: {error}"
+
+    def _absorb(self) -> None:
+        notifications = self._client.notifications
+        while self._absorbed < len(notifications):
+            notification = notifications[self._absorbed]
+            self._absorbed += 1
+            if _is_missing_trusted_helper_failure(notification):
+                self.failure_observed = True
+
+
 def _provider_allowance_from_receipt(receipt_path: Path) -> Optional[float]:
     """Sum durable OpenCode Go allowance observations without reading model text."""
     try:
@@ -648,6 +755,9 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     if min_free_disk_bytes is not None and initial_free_bytes is not None \
             and initial_free_bytes < min_free_disk_bytes:
         raise HarnessError("free disk is below the required floor; refusing the live case")
+    if case.case_id == H006_CASE_ID:
+        # Check required managed runfiles before budget reservation or ACP startup.
+        binary = _preflight_h006_binary(binary)
     remaining_seconds = guard.remaining_wallclock_seconds()
     case_seconds = float(case.budget["max_wallclock_seconds"])
     if remaining_seconds is not None:
@@ -768,6 +878,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     policy_receipt: Any = None
     watcher: Optional[_FaultWatcher] = None
     disk_watcher: Optional[_DiskFloorWatcher] = None
+    infrastructure_watcher: Optional[_H006InfrastructureFailureWatcher] = None
     resource_sampler: Optional[_ProcessTreeSampler] = None
     process_resources: Optional[dict[str, Any]] = None
     event_observer_drained = False
@@ -782,6 +893,9 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
             raise HarnessError("ACP did not return a session id for the autonomy case")
         resource_sampler = _ProcessTreeSampler(client.process.pid)
         policy_receipt = opened.get("codeggPolicy")
+        if case.case_id == H006_CASE_ID:
+            infrastructure_watcher = _H006InfrastructureFailureWatcher(client, session_id)
+            infrastructure_watcher.start()
         if fault_spec is not None:
             # The watcher stops the trial once the same call has failed the
             # declared number of times, so a faulted case is bounded even when
@@ -824,6 +938,8 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
             event_observer_drained = True
         except (HarnessError, OSError, subprocess.SubprocessError):
             pass
+        if infrastructure_watcher is not None:
+            infrastructure_watcher.stop()
         if applied_fault is not None:
             fault_restore_error = applied_fault.restore()
         client.close()
@@ -837,6 +953,14 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
             process_resources = resource_sampler.finish()
 
     duration_ms = int((time.monotonic() - started) * 1000)
+    if infrastructure_watcher is not None and infrastructure_watcher.failure_observed:
+        stop_reason = "missing_trusted_sandbox_helper"
+        terminal = "infrastructure_error"
+        failure = {
+            "kind": "MissingTrustedSandboxHelper",
+            "category": "infrastructure_error",
+            "cancel_error": infrastructure_watcher.cancel_error,
+        }
     tool_calls = _observed_tool_calls(client)
     observation_receipt = event_observation.observe_notifications(
         client.notifications, drained=event_observer_drained

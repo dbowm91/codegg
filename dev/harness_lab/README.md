@@ -297,6 +297,19 @@ python3 -m dev.harness_lab autonomy \
   --budget /path/to/budget.json --live-provider
 ```
 
+Before a live H006 run, build the complete runfile pair into the same target
+directory with the same pinned Rust toolchain:
+
+```bash
+cargo build --offline --locked --bin codegg --bin codegg-sandbox-helper
+```
+
+Then require `codegg doctor installation` to report the sandbox helper as present.
+The Python `dev.harness_lab doctor --binary` command checks only the executable
+path and digest; it does not check managed sidecars. The H006 autonomy runner
+also performs the native installation preflight before reserving a provider
+request.
+
 The runner copies the case's `fixture/` into a private lane workspace and
 keeps the verifier **outside** that workspace, so the agent under test can
 neither read the hidden contract nor edit the thing that judges it. It records
