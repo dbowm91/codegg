@@ -118,3 +118,7 @@ The deterministic advice is useful only if the model follows user intent without
 ## 12. Closure evidence
 
 Record the implementation source revision, exact focused and repository verification, placement output examples, paired receipts with secrets removed, per-language success/collision/cost table, evidence limits, and a go/no-go rationale. The live qualification and deterministic implementation are closed as no-go: the data do not support a positive placement-strategy or performance claim. The machine-readable receipts disclose the scoring-only correction that classified the unchanged unavailable-checkout scenario as a protected negative control and reran its six paired rows.
+
+## 13. Post-closure unavailable-checkout review
+
+The original hidden verifier incorrectly required one synchronous failed task-tool call and treated CodeGG runtime artifacts as fixture mutations. It consequently rejected six safe queue-then-failure observations. The executor rejected the missing exact worktree before child construction or dispatch; no parent fallback or replacement checkout occurred. The corrected verifier was run against the six saved transcripts and passed all six without provider calls. This correction does not change the no-go result: all five substantive task cases still had zero verifier passes in both arms. See the closure and validation record for the request-by-request evidence and revised redacted receipt.

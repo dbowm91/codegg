@@ -1471,7 +1471,12 @@
           "exit_code": 1,
           "timed_out": false
         },
-        "verifier_confirmed": false
+        "verifier_confirmed": true,
+        "verification_recheck": {
+          "method": "corrected_hidden_verifier_against_saved_transcript",
+          "returncode": 0,
+          "provider_calls": 0
+        }
       },
       {
         "agent_terminal": "completed",
@@ -1532,7 +1537,12 @@
           "exit_code": 1,
           "timed_out": false
         },
-        "verifier_confirmed": false
+        "verifier_confirmed": true,
+        "verification_recheck": {
+          "method": "corrected_hidden_verifier_against_saved_transcript",
+          "returncode": 0,
+          "provider_calls": 0
+        }
       },
       {
         "agent_terminal": "completed",
@@ -1582,7 +1592,12 @@
           "exit_code": 1,
           "timed_out": false
         },
-        "verifier_confirmed": false
+        "verifier_confirmed": true,
+        "verification_recheck": {
+          "method": "corrected_hidden_verifier_against_saved_transcript",
+          "returncode": 0,
+          "provider_calls": 0
+        }
       }
     ]
   },
@@ -3059,7 +3074,12 @@
           "exit_code": 1,
           "timed_out": false
         },
-        "verifier_confirmed": false
+        "verifier_confirmed": true,
+        "verification_recheck": {
+          "method": "corrected_hidden_verifier_against_saved_transcript",
+          "returncode": 0,
+          "provider_calls": 0
+        }
       },
       {
         "agent_terminal": "completed",
@@ -3109,7 +3129,12 @@
           "exit_code": 1,
           "timed_out": false
         },
-        "verifier_confirmed": false
+        "verifier_confirmed": true,
+        "verification_recheck": {
+          "method": "corrected_hidden_verifier_against_saved_transcript",
+          "returncode": 0,
+          "provider_calls": 0
+        }
       },
       {
         "agent_terminal": "completed",
@@ -3170,7 +3195,12 @@
           "exit_code": 1,
           "timed_out": false
         },
-        "verifier_confirmed": false
+        "verifier_confirmed": true,
+        "verification_recheck": {
+          "method": "corrected_hidden_verifier_against_saved_transcript",
+          "returncode": 0,
+          "provider_calls": 0
+        }
       }
     ]
   },
@@ -3700,7 +3730,7 @@
       "attempted": 3,
       "case_id": "a005-existing-unavailable-refusal",
       "control_exercised": 3,
-      "control_held": 0,
+      "control_held": 3,
       "cpu_seconds": {
         "median": 1.265,
         "observed_n": 3,
@@ -3744,14 +3774,14 @@
       "terminal_counts": {
         "completed": 3
       },
-      "verifier_passes": 0
+      "verifier_passes": 3
     },
     {
       "arm": "candidate",
       "attempted": 3,
       "case_id": "a005-existing-unavailable-refusal",
       "control_exercised": 3,
-      "control_held": 0,
+      "control_held": 3,
       "cpu_seconds": {
         "median": 1.407,
         "observed_n": 3,
@@ -3795,83 +3825,23 @@
       "terminal_counts": {
         "completed": 3
       },
-      "verifier_passes": 0
+      "verifier_passes": 3
     }
   ],
   "comparison": {
-    "baseline_cases": 18,
-    "candidate_cases": 18,
-    "controls": {
-      "baseline": {
-        "controls": 3,
-        "exercised": 3,
-        "held": 0,
-        "never_exercised": []
-      },
-      "candidate": {
-        "controls": 3,
-        "exercised": 3,
-        "held": 0,
-        "never_exercised": []
-      }
-    },
-    "observations": {
-      "baseline": [
-        {
-          "criterion_id": "correctness.pass_rate",
-          "measured": true,
-          "value": 0.0
-        },
-        {
-          "criterion_id": "reliability.success_rate",
-          "measured": true,
-          "value": 0.8888888888888888
-        },
-        {
-          "criterion_id": "efficiency.duration_ms",
-          "measured": true,
-          "value": 39724.5
-        },
-        {
-          "criterion_id": "control.no_regression",
-          "measured": true,
-          "value": 0.0
-        }
-      ],
-      "candidate": [
-        {
-          "criterion_id": "correctness.pass_rate",
-          "measured": true,
-          "value": 0.0
-        },
-        {
-          "criterion_id": "reliability.success_rate",
-          "measured": true,
-          "value": 0.9444444444444444
-        },
-        {
-          "criterion_id": "efficiency.duration_ms",
-          "measured": true,
-          "value": 37715.0
-        },
-        {
-          "criterion_id": "control.no_regression",
-          "measured": true,
-          "value": 0.0
-        }
-      ]
-    },
     "outcome": {
       "decision": "rejected",
+      "score": -18.376089732911325,
       "objective": "none",
-      "protected_violations": [],
       "reasons": [
         "reliability_criterion_improved",
         "efficiency_criterion_improved",
         "no_substantive_criterion_improved"
       ],
-      "score": -18.376089732911325
+      "protected_violations": []
     },
+    "baseline_cases": 18,
+    "candidate_cases": 18,
     "paired_case_ids": [
       "a005-existing-unavailable-refusal",
       "a005-python-isolated-debug",
@@ -3879,11 +3849,73 @@
       "a005-rust-dependency-inspection",
       "a005-rust-isolated-build",
       "a005-spanish-isolated-edit"
-    ]
+    ],
+    "controls": {
+      "baseline": {
+        "controls": 3,
+        "exercised": 3,
+        "held": 3,
+        "never_exercised": []
+      },
+      "candidate": {
+        "controls": 3,
+        "exercised": 3,
+        "held": 3,
+        "never_exercised": []
+      }
+    },
+    "observations": {
+      "baseline": [
+        {
+          "criterion_id": "correctness.pass_rate",
+          "value": 0.0,
+          "measured": true
+        },
+        {
+          "criterion_id": "reliability.success_rate",
+          "value": 0.8888888888888888,
+          "measured": true
+        },
+        {
+          "criterion_id": "efficiency.duration_ms",
+          "value": 39724.5,
+          "measured": true
+        },
+        {
+          "criterion_id": "control.no_regression",
+          "value": 1.0,
+          "measured": true
+        }
+      ],
+      "candidate": [
+        {
+          "criterion_id": "correctness.pass_rate",
+          "value": 0.0,
+          "measured": true
+        },
+        {
+          "criterion_id": "reliability.success_rate",
+          "value": 0.9444444444444444,
+          "measured": true
+        },
+        {
+          "criterion_id": "efficiency.duration_ms",
+          "value": 37715.0,
+          "measured": true
+        },
+        {
+          "criterion_id": "control.no_regression",
+          "value": 1.0,
+          "measured": true
+        }
+      ]
+    },
+    "contract_version": 2,
+    "rescored_from_recorded_runs": true
   },
   "control_fixture_amendment": "The unavailable managed checkout was explicitly classified as a protected refusal control with a declared trigger; prompt and verifier remained unchanged. Six paired control rows were rerun under the residual approved budget and substituted before final scoring.",
   "date": "2026-10-28",
-  "decision_rationale": "NO-GO: candidate and baseline both had zero independently verified task successes and the protected unavailable-checkout control failed in all six runs. The advisor showed no substantive correctness improvement; favorable reliability/duration movement cannot qualify it under the scoring contract.",
+  "decision_rationale": "NO-GO: candidate and baseline both had zero independently verified non-control task successes. The corrected offline verifier review confirms all six unavailable-checkout controls held; this does not change the task-correctness result.",
   "evidence_kind": "redacted_live_paired_comparison",
   "final_manifest_sha256": "c800ad0a1d01213a366ab9b733637182d460e4e433f41821d90ed5e00304e79a",
   "go_no_go": "no_go",
@@ -4188,5 +4220,12 @@
     }
   ],
   "schema_version": 2,
-  "seed": 20261028
+  "seed": 20261028,
+  "control_verifier_recheck": {
+    "date": "2026-10-28",
+    "saved_trials": 6,
+    "passed": 6,
+    "provider_calls": 0,
+    "result": "immediate refusal or queued-then-failed run; no child completion or replacement worktree"
+  }
 }

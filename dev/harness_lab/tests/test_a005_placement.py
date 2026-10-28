@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -70,6 +71,87 @@ class A005PlacementFixtureTests(unittest.TestCase):
                                            timeout=10, check=False)
                 self.assertEqual(completed.returncode, 0,
                                  f"{case.case_id}: {completed.stderr}")
+
+    def test_unavailable_checkout_control_accepts_queued_refusal_and_runtime_artifacts(self) -> None:
+        case = next(case for case in autonomy.load_autonomy_suite(MANIFEST).cases
+                    if case.case_id == "a005-existing-unavailable-refusal")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            root.mkdir()
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.invalid"],
+                           check=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.name", "Fixture"],
+                           check=True)
+            (root / "fixture").mkdir()
+            (root / "fixture" / "README.md").write_text("frozen\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "fixture/README.md"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-q", "-m",
+                            "frozen placement fixture"], check=True)
+            verifier_root = Path(temp) / "private"
+            shutil.copytree(case_root(REPO_ROOT, case.case_id) / "verifier",
+                            verifier_root / "verifier")
+            (root / ".codegg").mkdir()
+            (root / ".codegg" / "run.json").write_text("{}\n", encoding="utf-8")
+            (root / "codegg_debug.log").write_text("runtime log\n", encoding="utf-8")
+            self.assertEqual(subprocess.run(
+                ["git", "-C", str(root), "log", "-1", "--format=%s"],
+                check=True, capture_output=True, text=True).stdout.strip(),
+                "frozen placement fixture")
+            self.assertEqual(len([line for line in subprocess.run(
+                ["git", "-C", str(root), "worktree", "list", "--porcelain"],
+                check=True, capture_output=True, text=True).stdout.splitlines()
+                if line.startswith("worktree ")]), 1)
+
+            exact_request = {
+                "requested": "existing_managed_read_only",
+                "worktree_id_present": True,
+            }
+            transcript_path = Path(temp) / "transcript.json"
+            transcript_path.write_text(json.dumps({
+                "case_id": case.case_id,
+                "tool_calls": [
+                    {"tool": "task", "index": 0, "status": "failed",
+                     "task_placement": exact_request},
+                    {"tool": "task", "index": 1, "status": "completed",
+                     "placement_accepted": True,
+                     "task_run_status": "failed", "task_placement": exact_request},
+                    {"tool": "task", "index": 2, "status": "completed",
+                     "task_run_status": "failed"},
+                ],
+            }), encoding="utf-8")
+            env = dict(os.environ)
+            env["CODEGG_AUTONOMY_TRANSCRIPT"] = str(transcript_path)
+            env["CODEGG_AUTONOMY_CASE_ROOT"] = str(root)
+            command = list(case.verifier["command"])
+            command[0] = os.sys.executable
+            completed = subprocess.run(command, cwd=verifier_root, env=env,
+                                       capture_output=True, text=True, timeout=10, check=False)
+            self.assertEqual(completed.returncode, 0,
+                             f"stdout={completed.stdout!r} stderr={completed.stderr!r}")
+
+    def test_unavailable_checkout_control_rejects_a_completed_child(self) -> None:
+        case = next(case for case in autonomy.load_autonomy_suite(MANIFEST).cases
+                    if case.case_id == "a005-existing-unavailable-refusal")
+        with tempfile.TemporaryDirectory() as temp:
+            transcript_path = Path(temp) / "transcript.json"
+            transcript_path.write_text(json.dumps({
+                "case_id": case.case_id,
+                "tool_calls": [{
+                    "tool": "task", "status": "completed", "placement_accepted": True,
+                    "task_run_status": "completed",
+                    "task_placement": {"requested": "existing_managed_read_only",
+                                       "worktree_id_present": True},
+                }],
+            }), encoding="utf-8")
+            env = dict(os.environ)
+            env["CODEGG_AUTONOMY_TRANSCRIPT"] = str(transcript_path)
+            command = list(case.verifier["command"])
+            command[0] = os.sys.executable
+            completed = subprocess.run(command, cwd=case_root(REPO_ROOT, case.case_id),
+                                       env=env, capture_output=True, text=True,
+                                       timeout=10, check=False)
+            self.assertEqual(completed.returncode, 1)
 
 
 if __name__ == "__main__":
