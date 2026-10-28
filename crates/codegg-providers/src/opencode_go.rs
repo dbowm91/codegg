@@ -941,27 +941,39 @@ mod capture_tests {
 
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind request cap server");
         let address = listener.local_addr().expect("request cap address");
+        listener
+            .set_nonblocking(true)
+            .expect("bound request-cap fixture wait");
         let server = std::thread::spawn(move || {
             let mut captures = Vec::new();
-            for _ in 0..2 {
-                let (mut stream, _) = listener.accept().expect("accept admitted request");
-                captures.push(read_request(&mut stream));
-                let body = r#"{"error":"offline cap fixture"}"#;
-                write!(stream,
-                    "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()).expect("write fixture error");
-            }
-            listener
-                .set_nonblocking(true)
-                .expect("observe forbidden extra request");
-            let deadline = std::time::Instant::now() + Duration::from_millis(250);
-            while std::time::Instant::now() < deadline {
+            let accept_deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut extra_request_deadline = None;
+            loop {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        stream
+                            .set_nonblocking(false)
+                            .expect("accepted request uses blocking reads");
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .expect("bound request read");
                         captures.push(read_request(&mut stream));
-                        break;
+                        let body = r#"{"error":"offline cap fixture"}"#;
+                        write!(stream,
+                            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()).expect("write fixture error");
+                        if captures.len() == 2 {
+                            extra_request_deadline = Some(
+                                std::time::Instant::now() + Duration::from_millis(250),
+                            );
+                        }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        let now = std::time::Instant::now();
+                        let deadline = extra_request_deadline.unwrap_or(accept_deadline);
+                        if now >= deadline {
+                            break;
+                        }
                         std::thread::yield_now();
                     }
                     Err(error) => panic!("accept check: {error}"),
