@@ -1,6 +1,6 @@
 # Agent Worktree Placement and Build Affinity Corrective Addendum
 
-Status: **active** — A001/A003 strictly closed; A002 conditionally closed; A004 closed no-go; A005 implementation conditionally closed, qualification blocked
+Status: **active** — A001/A002/A003 strictly closed; A004 closed no-go; A005 implementation conditionally closed, qualification blocked
 Repository planning baseline: `d4241f08dcfede0534df3ea08c83d762fa1c55f7` (current plan branch at A002/A004 handoff). Earlier A001/A003 baseline `80171f45295bebb9ab0b521262c0b295acb93074` is historical.
 Source of truth: `plans/registry.md`
 
@@ -32,10 +32,10 @@ Preserve `Auto` as backwards-compatible. `IsolatedNew` is an **unconditional** i
 
 ## 6. Dependency graph
 A001 explicit-isolation semantics (closed)
-  └─ A002 explicit existing managed checkout, read-only (conditionally closed; strict qualification remains)
+  └─ A002 explicit existing managed checkout, read-only (closed)
 A003 repository-scoped build admission (closed, independent)
   └─ A004 optional cache economics pilot (closed no-go; use A003's production measurements)
-A002 + A003 (+ A004 decision evidence) → A005 conservative placement/affinity advisor (deterministic implementation conditionally closed; qualification blocked on A002 strict closure and live-model evaluation)
+A002 + A003 (+ A004 decision evidence) → A005 conservative placement/affinity advisor (deterministic implementation conditionally closed; qualification blocked on an enforceable live-model spend gate)
 W002 and W004 in the workspace-authority roadmap are closed and independent of A001/A003.
 
 ## 7. Milestones and boundaries
@@ -43,10 +43,10 @@ W002 and W004 in the workspace-authority roadmap are closed and independent of A
 | ID | Class | Objective | Dependency | Exit gate |
 |---|---|---|---|---|
 | A001 | invariant | Honor explicit `isolated_new` even for read-only profiles; fail closed without qualified repository/worktree; preserve `auto` and `serialized_shared`. | Closed M004/C008 | **Closed:** hosted Linux live-scheduler evidence creates two distinct contained checkouts; no fallthrough |
-| A002 | capability | Typed existing-managed-worktree selection for authorized **exclusive read-only** delegated inspection; reject occupied/active-session-owned/dirty/foreign/unmanaged/mutating intents. | Implementation conditionally closed; A001 strictly closed | Local production-scheduler refusal matrix passes; strict closure awaits exact-head hosted Linux qualification; see `plans/closure/agent-worktree-placement-and-build-affinity/002-status.md` |
+| A002 | capability | Typed existing-managed-worktree selection for authorized **exclusive read-only** delegated inspection; reject occupied/active-session-owned/dirty/foreign/unmanaged/mutating intents. | A001 strictly closed | **Closed:** local and exact-head hosted Linux production-scheduler success/refusal matrix passed; test-only creator means no native containment claim; see `plans/closure/agent-worktree-placement-and-build-affinity/002-status.md` |
 | A003 | infrastructure | Add canonical repository-scoped quotas/metrics for supported build jobs across sibling worktrees, with opt-in policy/default unchanged. | Closed M007 | **Closed:** production scheduler Cargo runs cover quota off/on for sibling worktrees and quota-on unrelated repositories; reports include CPU, RSS, wall time, disk growth, and lock waits |
 | A004 | polish/performance | Opt-in **measured** cross-worktree Cargo/sccache economics pilot with controlled cache/quota arms, realistic dependency graph and explicit go/no-go; no shipped cache change. | Closed no-go; A003 strictly closed | `plans/closure/agent-worktree-placement-and-build-affinity/004-status.md` records the scheduler pilot and no-go; keep isolated writable target directories |
-| A005 | capability/polish | Explicit conservative orchestrator strategy selection and reasoned recommendation; no inference of shared authorization. | Deterministic implementation conditionally closed; qualification blocked on A002 strict closure and enforceable spend gate | Complete the paired real-model before/after multi-language and Rust evaluation with failure/collision and cost accounting under the authorized 240-request / 60-minute / $10 ceilings |
+| A005 | capability/polish | Explicit conservative orchestrator strategy selection and reasoned recommendation; no inference of shared authorization. | Deterministic implementation conditionally closed; qualification blocked on enforceable spend gate | Complete the paired real-model before/after multi-language and Rust evaluation with failure/collision and cost accounting under the authorized 240-request / 60-minute / $10 ceilings |
 
 ## 8. Cross-cutting contract
 Storage: only additive versioned placement/config/status records; old payloads decode `Auto`. Protocol: placement intent typed, no model-supplied paths as identities. Authorization: same project/repository/principal, generation and lease checks; no operation on external worktrees. Concurrency: lease and group lifetime retained, queued admission holds no CPU/process permits, cancellation cannot release another job's budget. Observability: bounded, authorized placement choice/refusal, job waiting reasons, build resource and disk evidence; never leak command args, env, paths or cross-tenant cache material. UX: distinguish root checkout, managed existing checkout, isolated new and group-shared restricted checkout; display host-unavailable explicitly.
@@ -60,7 +60,7 @@ The existing shared profile **cannot run arbitrary process-capable tools**, so a
 ### Remaining integration and design gate
 A001/A003's **strict** hosted qualification and closure updates are on this planning branch, while `main` may still record their earlier *conditional* closure. Before merging a later A002/A004 implementation, reconcile the plan branch's closure records against current main and obtain exact resulting-head verification. This is a merge/qualification gate, **not** a new implementation milestone or permission to change the runtime.
 
-A005's bounded implementation plan and deterministic guidance are registered. Its roadmap qualification remains **blocked** pending A002 strict closure and an enforceable spend gate for a supported paired real-model route. The operator authorized 240 requests, 60 minutes, and $10; the available OpenCode Go Harness Lab receipt omits cost, so the configured gate refuses before any live request. A004's no-go decision is available and does not require a cache integration plan. Do not claim live-model success or a performance benefit from local tests.
+A005's bounded implementation plan and deterministic guidance are registered. A002 is strictly closed. A005's roadmap qualification remains **blocked** pending an enforceable spend gate for a supported paired real-model route. The operator authorized 240 requests, 60 minutes, and $10; the available OpenCode Go Harness Lab receipt omits cost, so the configured gate refuses before any live request. A004's no-go decision is available and does not require a cache integration plan. Do not claim live-model success or a performance benefit from local tests.
 
 ## 11. Completion
 Every ready milestone receives separate `plans/closure/agent-worktree-placement-and-build-affinity/NNN-status.md` evidence and registry transition, blocked milestones become ready only after closure/decision gates. No performance promise before paired trials.
@@ -69,7 +69,7 @@ Every ready milestone receives separate `plans/closure/agent-worktree-placement-
 | Milestone | Status | Plan | Blocker |
 |---|---|---|---|
 | A001 | closed | `plans/implementation/agent-worktree-placement-and-build-affinity/001-explicit-isolated-placement-contract.md` | Closure `plans/closure/agent-worktree-placement-and-build-affinity/001-status.md`; hosted Linux production contained-creator and live-scheduler success passed |
-| A002 | conditionally closed | `plans/implementation/agent-worktree-placement-and-build-affinity/002-existing-managed-read-only-placement.md` | Closure `plans/closure/agent-worktree-placement-and-build-affinity/002-status.md`; local production-scheduler refusal matrix passes; exact-head hosted Linux qualification remains |
+| A002 | closed | `plans/implementation/agent-worktree-placement-and-build-affinity/002-existing-managed-read-only-placement.md` | Closure `plans/closure/agent-worktree-placement-and-build-affinity/002-status.md`; exact-head hosted Linux run `40697779631` passed the production-scheduler success/refusal matrix |
 | A003 | closed | `plans/implementation/agent-worktree-placement-and-build-affinity/003-repository-scoped-build-admission.md` | Closure `plans/closure/agent-worktree-placement-and-build-affinity/003-status.md`; hosted production Cargo comparison passed with resource, target-size, and lock-wait evidence |
 | A004 | closed (no-go) | `plans/implementation/agent-worktree-placement-and-build-affinity/004-rust-cross-worktree-cache-economics-pilot.md` | Closure `plans/closure/agent-worktree-placement-and-build-affinity/004-status.md`; no Rust sccache hits and material time/CPU overhead in the measured scheduler pilot; any production cache proposal requires a separate plan |
 | A005 | blocked | `plans/implementation/agent-worktree-placement-and-build-affinity/005-conservative-placement-advisor.md` | Deterministic guidance is conditionally closed at `plans/closure/agent-worktree-placement-and-build-affinity/005-status.md`; roadmap qualification remains blocked on A002 strict closure, an enforceable spend gate, and live-model evaluation |
