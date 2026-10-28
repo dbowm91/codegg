@@ -603,9 +603,6 @@ pub fn sensitive_deny_paths() -> Vec<PathBuf> {
             paths.push(home.join(relative));
         }
     }
-    // Rustup's home can be overridden independently of HOME. Keep its
-    // credential material denied even when the managed runner uses a private
-    // toolchain root rather than ~/.rustup.
     if let Some(rustup_home) = configured_rustup_home() {
         paths.extend(rustup_credential_deny_paths(&rustup_home));
     }

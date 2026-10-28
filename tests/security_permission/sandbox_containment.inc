@@ -895,9 +895,6 @@ fn rustup_allowances_do_not_expose_credentials_or_symlink_targets() {
     std::os::unix::fs::symlink(outside.path(), toolchains.join("external-link"))
         .expect("external toolchain symlink");
 
-    // Seatbelt intentionally allows reads broadly, unlike Landlock's
-    // read-root view. Explicitly deny these sensitive/unapproved roots so the
-    // same path-deny contract is exercised by both native backends.
     let mut spec = spec_for(
         workspace.path(),
         SandboxMode::WorkspaceWrite,
