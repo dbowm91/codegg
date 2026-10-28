@@ -1041,7 +1041,7 @@ impl JobExecutor for SubagentJobExecutor {
             agent,
             model,
             parent_id,
-            denied_tools,
+            mut denied_tools,
             mut allowed_paths,
             max_tool_calls,
             run_id,
@@ -1150,14 +1150,26 @@ impl JobExecutor for SubagentJobExecutor {
             );
         }
         let mut owned_worktree = None;
+        let mut child_workspace_id = ctx.workspace_id.clone();
         // M005 corrective C007 §6.2: the group's shared checkout is tracked
         // apart from an isolated one, because the two differ in what happens
         // to the lease when this run ends. An isolated checkout's lease
         // belongs to the run; a shared checkout's lease belongs to the
         // **group**.
         let mut shared_checkout: Option<codegg_core::shared_checkout::SharedCheckout> = None;
+        // Once a delegated placement has claimed a checkout, every failure
+        // before provider dispatch must release that exact run-owned lease.
+        // The ordinary terminal path below owns release after dispatch.
+        macro_rules! fail_before_child_dispatch {
+            ($detail:expr) => {{
+                self.release_isolated_checkout(owned_worktree.as_ref(), shared_checkout.as_ref())
+                    .await;
+                return failure_completion(started, ExecutorStatus::Failed, $detail);
+            }};
+        }
         let needs_isolation = self.pool.requires_isolation(&agent, &denied_tools);
         let wants_isolated_new = placement.requires_new_isolated_checkout();
+        let existing_read_only = placement.existing_worktree_id().is_some();
         // M005 corrective C007 §6.4: the shared branch is entered on the
         // **placement**, not on `needs_isolation`. The placement used to be
         // honoured only when the run's own tool profile happened to need
@@ -1166,7 +1178,9 @@ impl JobExecutor for SubagentJobExecutor {
         // durable record carried no `worktree_id`.
         let shared_placement = placement.shared_group_id().cloned();
         let wants_shared_checkout = shared_placement.is_some();
-        if (needs_isolation || wants_shared_checkout || wants_isolated_new) && run_id.is_none() {
+        if (needs_isolation || wants_shared_checkout || wants_isolated_new || existing_read_only)
+            && run_id.is_none()
+        {
             return failure_completion(
                 started,
                 ExecutorStatus::Failed,
@@ -1174,6 +1188,9 @@ impl JobExecutor for SubagentJobExecutor {
                     "a shared placement must use the durable scheduler path".into()
                 } else if wants_isolated_new {
                     "an explicit isolated placement must use the durable scheduler path".into()
+                } else if existing_read_only {
+                    "existing managed read-only placement must use the durable scheduler path"
+                        .into()
                 } else {
                     "mutating delegated run must use the durable scheduler path for isolation"
                         .into()
@@ -1317,12 +1334,15 @@ impl JobExecutor for SubagentJobExecutor {
             // tool profile would not have needed isolation — and a placement
             // that cannot be honoured is refused with a typed error rather
             // than silently dropped in favour of the parent's workspace root.
-            if needs_isolation || wants_shared_checkout || wants_isolated_new {
+            if needs_isolation || wants_shared_checkout || wants_isolated_new || existing_read_only
+            {
                 let Some(worktree_service) = self.worktree_service.as_ref() else {
                     let reason = if wants_shared_checkout {
                         "a shared placement requires managed worktree isolation"
                     } else if wants_isolated_new {
                         "an explicit isolated placement requires managed worktree isolation"
+                    } else if existing_read_only {
+                        "existing managed read-only placement requires the managed worktree service"
                     } else {
                         "mutating delegated run requires managed worktree isolation"
                     };
@@ -1409,7 +1429,338 @@ impl JobExecutor for SubagentJobExecutor {
                 // default path below is untouched.
                 //
                 // c006-shared-placement: the group's shared checkout
-                if let Some(group_id) = shared_placement.clone() {
+                if let Some(worktree_id) = placement.existing_worktree_id() {
+                    let _repository_guard = match worktree_service
+                        .lock_repository_for_worktree(worktree_id)
+                        .await
+                    {
+                        Ok(guard) => guard,
+                        Err(error) => {
+                            let reason =
+                                format!("selected worktree lock could not be acquired: {error}");
+                            let _ = store
+                                .finish(
+                                    run_id,
+                                    codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                    None,
+                                    Some("existing_worktree_authority_unavailable".into()),
+                                    Some(reason.clone()),
+                                )
+                                .await;
+                            return failure_completion(started, ExecutorStatus::Failed, reason);
+                        }
+                    };
+                    let Some(repository_id) = task.repository_id.as_ref() else {
+                        let reason =
+                            "existing managed read-only placement requires a registered repository";
+                        let _ = store
+                            .finish(
+                                run_id,
+                                codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                None,
+                                Some("existing_worktree_unavailable".into()),
+                                Some(reason.into()),
+                            )
+                            .await;
+                        return failure_completion(started, ExecutorStatus::Failed, reason.into());
+                    };
+                    let mut selected = match worktree_service.refresh(worktree_id).await {
+                        Ok(record) => record,
+                        Err(error) => {
+                            let reason =
+                                format!("selected managed worktree is unavailable: {error}");
+                            let _ = store
+                                .finish(
+                                    run_id,
+                                    codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                    None,
+                                    Some("existing_worktree_unavailable".into()),
+                                    Some(reason.clone()),
+                                )
+                                .await;
+                            return failure_completion(started, ExecutorStatus::Failed, reason);
+                        }
+                    };
+                    let managed_root = match worktree_service.managed_root().canonicalize() {
+                        Ok(path) => path,
+                        Err(error) => {
+                            return failure_completion(
+                                started,
+                                ExecutorStatus::Failed,
+                                format!("managed worktree root could not be resolved: {error}"),
+                            );
+                        }
+                    };
+                    let selected_path = match selected.path.canonicalize() {
+                        Ok(path) => path,
+                        Err(error) => {
+                            return failure_completion(
+                                started,
+                                ExecutorStatus::Failed,
+                                format!("selected managed worktree path is unavailable: {error}"),
+                            );
+                        }
+                    };
+                    if !selected.managed
+                        || selected.project_id != task.project_id
+                        || &selected.repository_id != repository_id
+                        || selected.workspace_id != task.workspace_id
+                        || selected.state
+                            != codegg_core::worktree_service::ManagedWorktreeState::Ready
+                        || selected.owner_run_id.is_some()
+                        || selected.health != codegg_core::worktree_service::WorktreeHealth::Clean
+                        || !selected_path.starts_with(&managed_root)
+                    {
+                        let reason = "selected worktree is not an available clean managed checkout in this delegated project and repository";
+                        let _ = store
+                            .finish(
+                                run_id,
+                                codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                None,
+                                Some("existing_worktree_unavailable".into()),
+                                Some(reason.into()),
+                            )
+                            .await;
+                        return failure_completion(started, ExecutorStatus::Failed, reason.into());
+                    }
+                    let Some(pool) = self.authority.origin_attribution_pool.as_ref() else {
+                        let reason = "existing worktree ownership authority is unavailable";
+                        let _ = store
+                            .finish(
+                                run_id,
+                                codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                None,
+                                Some("existing_worktree_authority_unavailable".into()),
+                                Some(reason.into()),
+                            )
+                            .await;
+                        return failure_completion(started, ExecutorStatus::Failed, reason.into());
+                    };
+                    let target_workspace_id = match sqlx::query_scalar::<_, String>(
+                        "SELECT w.id FROM workspace w JOIN workspace_project_binding b ON b.workspace_id = w.id WHERE w.canonical_root = ? AND b.project_id = ? AND b.repository_id = ? AND b.worktree_id = ? AND b.status = 'resolved'",
+                    )
+                    .bind(selected_path.to_string_lossy().as_ref())
+                    .bind(task.project_id.as_str())
+                    .bind(repository_id.as_str())
+                    .bind(worktree_id.as_str())
+                    .fetch_optional(pool)
+                    .await
+                    {
+                        Ok(Some(workspace_id)) => {
+                            codegg_core::workspace::WorkspaceId::new_unchecked(workspace_id)
+                        }
+                        Ok(None) => {
+                            let reason = "selected worktree has no canonical workspace binding to the delegated project and repository";
+                            let _ = store
+                                .finish(
+                                    run_id,
+                                    codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                    None,
+                                    Some("existing_worktree_authority_unavailable".into()),
+                                    Some(reason.into()),
+                                )
+                                .await;
+                            return failure_completion(started, ExecutorStatus::Failed, reason.into());
+                        }
+                        Err(error) => {
+                            let reason = format!("selected worktree catalog binding lookup failed: {error}");
+                            let _ = store
+                                .finish(
+                                    run_id,
+                                    codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                    None,
+                                    Some("existing_worktree_authority_unavailable".into()),
+                                    Some(reason.clone()),
+                                )
+                                .await;
+                            return failure_completion(started, ExecutorStatus::Failed, reason);
+                        }
+                    };
+
+                    // A non-archived session is a potential writer even when
+                    // no agent turn is running at this instant. Missing or
+                    // unreadable session authority is not an empty result.
+                    let session_count = match sqlx::query_scalar::<_, i64>(
+                        "SELECT COUNT(*) FROM session WHERE workspace_id = ? AND time_archived IS NULL",
+                    )
+                    .bind(target_workspace_id.as_str())
+                    .fetch_one(pool)
+                    .await
+                    {
+                        Ok(count) => count,
+                        Err(error) => {
+                            let reason = format!("existing worktree session ownership lookup failed: {error}");
+                            let _ = store
+                                .finish(
+                                    run_id,
+                                    codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                    None,
+                                    Some("existing_worktree_authority_unavailable".into()),
+                                    Some(reason.clone()),
+                                )
+                                .await;
+                            return failure_completion(started, ExecutorStatus::Failed, reason);
+                        }
+                    };
+                    if session_count != 0 {
+                        let reason = "selected managed worktree is bound to a non-archived session";
+                        let _ = store
+                            .finish(
+                                run_id,
+                                codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                None,
+                                Some("existing_worktree_in_use".into()),
+                                Some(reason.into()),
+                            )
+                            .await;
+                        return failure_completion(started, ExecutorStatus::Failed, reason.into());
+                    }
+
+                    let Some(job_store) = ctx.subject_store.as_ref() else {
+                        let reason = "existing worktree job ownership authority is unavailable";
+                        let _ = store
+                            .finish(
+                                run_id,
+                                codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                None,
+                                Some("existing_worktree_authority_unavailable".into()),
+                                Some(reason.into()),
+                            )
+                            .await;
+                        return failure_completion(started, ExecutorStatus::Failed, reason.into());
+                    };
+                    let active_jobs = match job_store
+                        .list_jobs(codegg_core::jobs::JobStoreQuery {
+                            workspace_id: Some(target_workspace_id.clone()),
+                            states: codegg_core::jobs::JobState::non_terminal_states(),
+                            limit: None,
+                            ..Default::default()
+                        })
+                        .await
+                    {
+                        Ok(jobs) => jobs,
+                        Err(error) => {
+                            let reason =
+                                format!("existing worktree job ownership lookup failed: {error}");
+                            let _ = store
+                                .finish(
+                                    run_id,
+                                    codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                    None,
+                                    Some("existing_worktree_authority_unavailable".into()),
+                                    Some(reason.clone()),
+                                )
+                                .await;
+                            return failure_completion(started, ExecutorStatus::Failed, reason);
+                        }
+                    };
+                    if active_jobs.iter().any(|job| job.job_id != ctx.job.job_id) {
+                        let reason = "selected managed worktree has an active scheduler job";
+                        let _ = store
+                            .finish(
+                                run_id,
+                                codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                None,
+                                Some("existing_worktree_in_use".into()),
+                                Some(reason.into()),
+                            )
+                            .await;
+                        return failure_completion(started, ExecutorStatus::Failed, reason.into());
+                    }
+
+                    let lease = match worktree_service
+                        .acquire_read_only_lease_locked(worktree_id, run_id)
+                        .await
+                    {
+                        Ok(lease) => lease,
+                        Err(error) => {
+                            let reason = format!("selected managed worktree is in use: {error}");
+                            let _ = store
+                                .finish(
+                                    run_id,
+                                    codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                    None,
+                                    Some("existing_worktree_in_use".into()),
+                                    Some(reason.clone()),
+                                )
+                                .await;
+                            return failure_completion(started, ExecutorStatus::Failed, reason);
+                        }
+                    };
+                    selected = match worktree_service.refresh(worktree_id).await {
+                        Ok(record)
+                            if record.owner_run_id.as_ref() == Some(run_id)
+                                && record.lease_generation == lease.generation
+                                && record.state
+                                    == codegg_core::worktree_service::ManagedWorktreeState::InUse
+                                && record.health
+                                    == codegg_core::worktree_service::WorktreeHealth::Clean =>
+                        {
+                            record
+                        }
+                        Ok(_) | Err(_) => {
+                            let _ = worktree_service
+                                .release_lease(worktree_id, run_id, lease.generation)
+                                .await;
+                            let reason = "selected managed worktree changed while its read-only lease was being acquired";
+                            let _ = store
+                                .finish(
+                                    run_id,
+                                    codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                    None,
+                                    Some("existing_worktree_unavailable".into()),
+                                    Some(reason.into()),
+                                )
+                                .await;
+                            return failure_completion(
+                                started,
+                                ExecutorStatus::Failed,
+                                reason.into(),
+                            );
+                        }
+                    };
+                    if let Err(error) = store
+                        .attach_worktree(run_id, selected.worktree_id.clone())
+                        .await
+                    {
+                        let _ = worktree_service
+                            .release_lease(worktree_id, run_id, lease.generation)
+                            .await;
+                        let reason = format!("selected worktree linkage failed: {error}");
+                        let _ = store
+                            .finish(
+                                run_id,
+                                codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                None,
+                                Some("existing_worktree_unavailable".into()),
+                                Some(reason.clone()),
+                            )
+                            .await;
+                        return failure_completion(started, ExecutorStatus::Failed, reason);
+                    }
+                    if let Err(error) = store.mark_read_only_worktree(run_id).await {
+                        let _ = worktree_service
+                            .release_lease(worktree_id, run_id, lease.generation)
+                            .await;
+                        let reason =
+                            format!("selected read-only placement linkage failed: {error}");
+                        let _ = store
+                            .finish(
+                                run_id,
+                                codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                None,
+                                Some("existing_worktree_unavailable".into()),
+                                Some(reason.clone()),
+                            )
+                            .await;
+                        return failure_completion(started, ExecutorStatus::Failed, reason);
+                    }
+                    selected.path = selected_path;
+                    allowed_paths = vec![selected.path.to_string_lossy().into_owned()];
+                    workspace_root = selected.path.clone();
+                    child_workspace_id = target_workspace_id;
+                    owned_worktree = Some((selected, lease));
+                } else if let Some(group_id) = shared_placement.clone() {
                     let Some(repository_id) = task.repository_id.clone() else {
                         let reason = "a shared placement cannot be honoured: the workspace has \
                                      no repository identity, so there is no managed checkout to \
@@ -1677,11 +2028,7 @@ impl JobExecutor for SubagentJobExecutor {
                 .transition(run_id, codegg_core::agent_run::AgentRunStatus::Running)
                 .await
             {
-                return failure_completion(
-                    started,
-                    ExecutorStatus::Failed,
-                    format!("agent run start failed: {error}"),
-                );
+                fail_before_child_dispatch!(format!("agent run start failed: {error}"));
             }
             self.publish_run_projection(run_id).await;
             // Fix 3.1: heartbeat the Running transition, same sink as above.
@@ -1697,44 +2044,28 @@ impl JobExecutor for SubagentJobExecutor {
 
         let durable_context = if let Some(run_id) = run_id.as_ref() {
             let Some(store) = self.agent_runs.as_ref() else {
-                return failure_completion(
-                    started,
-                    ExecutorStatus::Failed,
-                    "durable subagent run has no run store".into(),
-                );
+                fail_before_child_dispatch!("durable subagent run has no run store".into());
             };
             let run = match store.get_run(run_id).await {
                 Ok(Some(run)) => run,
                 Ok(None) => {
-                    return failure_completion(
-                        started,
-                        ExecutorStatus::Failed,
-                        "durable subagent run is missing".into(),
-                    )
+                    fail_before_child_dispatch!("durable subagent run is missing".into())
                 }
                 Err(error) => {
-                    return failure_completion(
-                        started,
-                        ExecutorStatus::Failed,
-                        format!("durable subagent run lookup failed: {error}"),
-                    )
+                    fail_before_child_dispatch!(format!(
+                        "durable subagent run lookup failed: {error}"
+                    ))
                 }
             };
             let task = match store.get_task(&run.task_id).await {
                 Ok(Some(task)) => task,
                 Ok(None) => {
-                    return failure_completion(
-                        started,
-                        ExecutorStatus::Failed,
-                        "durable subagent task is missing".into(),
-                    )
+                    fail_before_child_dispatch!("durable subagent task is missing".into())
                 }
                 Err(error) => {
-                    return failure_completion(
-                        started,
-                        ExecutorStatus::Failed,
-                        format!("durable subagent task lookup failed: {error}"),
-                    )
+                    fail_before_child_dispatch!(format!(
+                        "durable subagent task lookup failed: {error}"
+                    ))
                 }
             };
             Some(codegg_core::agent_run::DelegatedAgentExecutionContext::from_records(&task, &run))
@@ -1754,11 +2085,9 @@ impl JobExecutor for SubagentJobExecutor {
             (Some(store), Some(run)) => match store.get_run(run).await {
                 Ok(record) => record.and_then(|record| record.worktree_id),
                 Err(error) => {
-                    return failure_completion(
-                        started,
-                        ExecutorStatus::Failed,
-                        format!("the agent-run record could not be read: {error}"),
-                    );
+                    fail_before_child_dispatch!(format!(
+                        "the agent-run record could not be read: {error}"
+                    ));
                 }
             },
             _ => None,
@@ -1776,11 +2105,9 @@ impl JobExecutor for SubagentJobExecutor {
                 {
                     Ok(fence) => fence,
                     Err(error) => {
-                        return failure_completion(
-                            started,
-                            ExecutorStatus::Failed,
-                            format!("writer fence resolution failed: {error}"),
-                        );
+                        fail_before_child_dispatch!(format!(
+                            "writer fence resolution failed: {error}"
+                        ));
                     }
                 }
             }
@@ -1832,6 +2159,11 @@ impl JobExecutor for SubagentJobExecutor {
             }
             _ => None,
         };
+        if existing_read_only {
+            denied_tools.push(crate::agent::worker::EXISTING_WORKTREE_READ_ONLY_SENTINEL.into());
+            denied_tools.sort();
+            denied_tools.dedup();
+        }
         let request = crate::agent::worker::SubAgentRequest {
             task_id,
             child_instance_id: String::new(),
@@ -1859,7 +2191,7 @@ impl JobExecutor for SubagentJobExecutor {
             default_working_directory,
             // The scheduler bound this job to a workspace; the child runs
             // under that identity rather than inventing one.
-            workspace_id: Some(ctx.workspace_id.clone()),
+            workspace_id: Some(child_workspace_id),
             workspace_locks: None,
             // M005: scheduler-owned children inherit the default ceiling;
             // isolated worktree roots become their writable sandbox roots
@@ -1886,11 +2218,7 @@ impl JobExecutor for SubagentJobExecutor {
         {
             if let Err(error) = store.reconcile_scratch_attempt_leases().await {
                 finish_scratch_admission_failure(store.as_ref(), run_id, &error.to_string()).await;
-                return failure_completion(
-                    started,
-                    ExecutorStatus::Failed,
-                    format!("scratch lease recovery failed: {error}"),
-                );
+                fail_before_child_dispatch!(format!("scratch lease recovery failed: {error}"));
             }
             match store
                 .acquire_scratch_attempt_leases(run_id, &ctx.job.job_id, &ctx.attempt_id)
@@ -1900,11 +2228,9 @@ impl JobExecutor for SubagentJobExecutor {
                 Err(error) => {
                     finish_scratch_admission_failure(store.as_ref(), run_id, &error.to_string())
                         .await;
-                    return failure_completion(
-                        started,
-                        ExecutorStatus::Failed,
-                        format!("scratch attempt lease acquisition failed: {error}"),
-                    );
+                    fail_before_child_dispatch!(format!(
+                        "scratch attempt lease acquisition failed: {error}"
+                    ));
                 }
             }
         } else {

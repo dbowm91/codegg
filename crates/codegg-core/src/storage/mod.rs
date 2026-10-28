@@ -53,7 +53,9 @@ use crate::error::StorageError;
 ///
 /// Milestone C004 adds **v90**, the delegated run's attempt record.
 /// ADR-0055 adds **v91**, the revisioned session-relative working directory.
-pub const STORAGE_LAYOUT_VERSION: u32 = 91;
+/// A002 adds **v92**, the durable marker for exclusive read-only worktree leases,
+/// and **v93**, the run's durable read-only placement projection flag.
+pub const STORAGE_LAYOUT_VERSION: u32 = 93;
 
 pub struct Database {
     pool: SqlitePool,

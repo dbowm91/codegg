@@ -541,10 +541,19 @@ only in its containment-only form. C006 made the shared checkout a real,
 | `Auto` (the default) | The run gets its own isolated managed checkout — exactly what it got before C006. |
 | `IsolatedNew` | The same isolation, pinned explicitly, so the durable payload records a *choice* rather than a default. |
 | `SerializedShared { group_id }` | The run joins the managed checkout held by a live agent-run group. |
+| `ExistingManagedReadOnly { worktree_id }` | A run claims one existing managed checkout with an exclusive read-only lease and an inspection-only tool allowlist. |
 
 A payload written before the placement existed decodes as `Auto`, and an
 older API client keeps the behaviour it had. Sharing is asked for; it is
 never deduced from a group, a session, or a model request.
+
+The existing-worktree mode resolves identity through the authorized project
+catalog and requires a clean, ready checkout with no active session or job
+owner. A generation-fenced lease excludes other managed users of that checkout
+for the attempt. The child registry retains only `read`, `list`, and `glob`;
+no shell, build, plugin, MCP, delegation, or mutation capability is available.
+Release returns the retained checkout to `Ready` and never removes or resets
+its files. It does not fence arbitrary external same-user processes.
 
 ### The group's checkout, not the caller's
 

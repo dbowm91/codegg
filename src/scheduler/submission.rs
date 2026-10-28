@@ -786,6 +786,12 @@ mod tests {
             .foreign_keys(true);
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
+            // The opt-in A004 matrix runs longer than SqlitePool's default
+            // connection lifetime. Retiring its sole shared-memory SQLite
+            // connection would discard the catalog schema mid-experiment.
+            .min_connections(1)
+            .max_lifetime(None)
+            .idle_timeout(None)
             .connect_with(options)
             .await
             .expect("connect sqlite");
@@ -1478,6 +1484,472 @@ mod tests {
         println!("quota disabled, sibling worktrees: wall={baseline_wall_ms}ms reports={baseline_reports:?} target_bytes={baseline_targets:?}");
         println!("repository quota=1, sibling worktrees: wall={limited_wall_ms}ms reports={limited_reports:?} target_bytes={limited_targets:?}");
         println!("repository quota=1, unrelated repositories: wall={unrelated_wall_ms}ms reports={unrelated_reports:?} target_bytes={unrelated_targets:?}");
+    }
+
+    /// A004's explicitly enabled, resource-intensive compiler-cache pilot.
+    /// The real repository is checked from two detached sibling worktrees,
+    /// each job gets its own target directory, and both quota policies cross
+    /// JobSubmissionService -> JobScheduler -> ManagedArgvExecutor.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "A004 opt-in real Cargo/sccache economics pilot"]
+    async fn a004_cargo_economics_through_production_scheduler() {
+        use std::process::Command;
+        use std::time::Instant;
+
+        if std::env::var("CODEGG_REGENERATE_ASSETS").as_deref() != Ok("1") {
+            panic!("set CODEGG_REGENERATE_ASSETS=1 to authorize Git worktree metadata writes");
+        }
+
+        fn directory_bytes(root: &std::path::Path) -> u64 {
+            let mut pending = vec![root.to_path_buf()];
+            let mut total = 0_u64;
+            while let Some(path) = pending.pop() {
+                let Ok(entries) = std::fs::read_dir(path) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Ok(metadata) = entry.metadata() {
+                        if metadata.is_dir() {
+                            pending.push(path);
+                        } else {
+                            total = total.saturating_add(metadata.len());
+                        }
+                    }
+                }
+            }
+            total
+        }
+
+        if std::env::var_os("CODEGG_RUN_A004_CARGO_ECONOMICS").as_deref()
+            != Some(std::ffi::OsStr::new("1"))
+        {
+            panic!("set CODEGG_RUN_A004_CARGO_ECONOMICS=1 to authorize the bounded pilot");
+        }
+        let sccache = std::env::var_os("CODEGG_A004_SCCACHE")
+            .map(std::path::PathBuf::from)
+            .expect("CODEGG_A004_SCCACHE must name the pinned sccache executable");
+        let cargo = std::env::var_os("CODEGG_A004_CARGO")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| "cargo".into());
+        let rustc = std::env::var_os("CODEGG_A004_RUSTC")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| "rustc".into());
+        let version = Command::new(&sccache)
+            .arg("--version")
+            .output()
+            .expect("run pinned sccache version check");
+        assert!(version.status.success());
+        let version = String::from_utf8_lossy(&version.stdout).trim().to_owned();
+        assert_eq!(
+            version, "sccache 0.18.0",
+            "A004 cache binary must be pinned"
+        );
+        let cargo_version = Command::new(&cargo)
+            .arg("--version")
+            .output()
+            .expect("record pinned Cargo version");
+        assert!(cargo_version.status.success());
+        let rustc_version = Command::new(&rustc)
+            .args(["--version", "--verbose"])
+            .output()
+            .expect("record pinned rustc version");
+        assert!(rustc_version.status.success());
+
+        let repository = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let revision = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repository)
+            .output()
+            .expect("read frozen source revision");
+        assert!(revision.status.success());
+        let revision = String::from_utf8_lossy(&revision.stdout).trim().to_owned();
+        let fixture = tempfile::tempdir().expect("A004 owned scratch root");
+        let first_root = fixture.path().join("sibling-a");
+        let second_root = fixture.path().join("sibling-b");
+        for path in [&first_root, &second_root] {
+            let output = Command::new("git")
+                .args(["worktree", "add", "--quiet", "--detach"])
+                .arg(path)
+                .arg(&revision)
+                .current_dir(&repository)
+                .output()
+                .expect("create frozen sibling worktree");
+            assert!(
+                output.status.success(),
+                "create A004 worktree: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        struct RemoveA004Worktrees {
+            repository: std::path::PathBuf,
+            worktrees: [std::path::PathBuf; 2],
+        }
+        impl Drop for RemoveA004Worktrees {
+            fn drop(&mut self) {
+                for worktree in &self.worktrees {
+                    let _ = Command::new("git")
+                        .args(["worktree", "remove", "--force"])
+                        .arg(worktree)
+                        .current_dir(&self.repository)
+                        .status();
+                }
+                let _ = Command::new("git")
+                    .args(["worktree", "prune"])
+                    .current_dir(&self.repository)
+                    .status();
+            }
+        }
+        let _remove_worktrees = RemoveA004Worktrees {
+            repository: repository.clone(),
+            worktrees: [first_root.clone(), second_root.clone()],
+        };
+        let cache_root = fixture.path().join("sccache");
+        std::fs::create_dir_all(&cache_root).expect("create task-owned cache");
+        let cache_env = [
+            ("SCCACHE_DIR", cache_root.to_string_lossy().into_owned()),
+            ("SCCACHE_CONF", "/dev/null".to_owned()),
+            ("SCCACHE_CACHE_SIZE", "3G".to_owned()),
+            (
+                "SCCACHE_BASEDIRS",
+                format!("{}:{}", first_root.display(), second_root.display()),
+            ),
+        ];
+        let started_server = Command::new(&sccache)
+            .arg("--start-server")
+            .envs(cache_env.iter().cloned())
+            .output()
+            .expect("start task-scoped local sccache server");
+        assert!(
+            started_server.status.success(),
+            "sccache server unavailable: {}",
+            String::from_utf8_lossy(&started_server.stderr)
+        );
+        struct StopSccache {
+            binary: std::path::PathBuf,
+            cache: std::path::PathBuf,
+        }
+        impl Drop for StopSccache {
+            fn drop(&mut self) {
+                let _ = Command::new(&self.binary)
+                    .arg("--stop-server")
+                    .env("SCCACHE_DIR", &self.cache)
+                    .status();
+            }
+        }
+        let _stop_server = StopSccache {
+            binary: sccache.clone(),
+            cache: cache_root.clone(),
+        };
+        let sccache_stats_before = Command::new(&sccache)
+            .arg("--zero-stats")
+            .envs(cache_env.iter().cloned())
+            .output()
+            .expect("reset scoped sccache counters");
+        assert!(sccache_stats_before.status.success());
+
+        let pool = goal_test_pool().await;
+        let workspace_store: Arc<dyn codegg_core::workspace::WorkspaceStore> = Arc::new(
+            codegg_core::workspace::SqliteWorkspaceStore::new(pool.clone()),
+        );
+        let workspace_registry = WorkspaceRegistry::load(workspace_store.clone())
+            .await
+            .expect("workspace registry");
+        let catalog = codegg_core::project_catalog::ProjectCatalog::new(pool.clone());
+        let project_storage = codegg_core::project_storage::ProjectStorage::new(pool.clone());
+        let source_workspace = workspace_registry
+            .get_or_register(&repository)
+            .await
+            .expect("register source workspace");
+        let project = catalog
+            .register_local_project(
+                codegg_core::project_catalog::RegisterLocalProject {
+                    display_name: "A004 compiler cache pilot".into(),
+                    description: None,
+                    tags: Vec::new(),
+                    primary_repository_id: None,
+                },
+                &source_workspace.id,
+                "a004-cargo-economics",
+            )
+            .await
+            .expect("register source repository");
+        let source_binding = project_storage
+            .workspace_binding(&source_workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let repository_id = source_binding.repository_id.unwrap();
+        let mut sibling_workspaces = Vec::new();
+        for path in [&first_root, &second_root] {
+            let workspace = workspace_registry
+                .get_or_register(path)
+                .await
+                .expect("register sibling checkout");
+            project_storage
+                .bind_checkout_workspace(
+                    &workspace,
+                    &project.project_id,
+                    &repository_id,
+                    &codegg_core::identity::WorktreeId::new(),
+                    "a004-cargo-economics",
+                )
+                .await
+                .expect("bind sibling to source repository");
+            sibling_workspaces.push(workspace.id.clone());
+        }
+        let resolver = Arc::new(codegg_core::context::ProjectContextResolver::new(
+            project_storage,
+            catalog,
+            workspace_store,
+        ));
+        let services = WorkspaceServiceRegistry::new(
+            workspace_registry,
+            Arc::new(ProductionWorkspaceServicesFactory),
+            WorkspaceServicePolicy::default(),
+        );
+        let mut rows = Vec::new();
+        let target_root = fixture.path().join("targets");
+        std::fs::create_dir_all(&target_root).expect("create target root");
+        let measurement_wrapper = fixture.path().join("measure.py");
+        std::fs::write(
+            &measurement_wrapper,
+            "import json, resource, subprocess, sys, time\n"
+                .to_owned()
+                + "report, log = sys.argv[1:3]\n"
+                + "start = time.perf_counter()\n"
+                + "with open(log, 'wb') as output: code = subprocess.run(sys.argv[3:], stdout=output, stderr=subprocess.STDOUT).returncode\n"
+                + "usage = resource.getrusage(resource.RUSAGE_CHILDREN)\n"
+                + "with open(report, 'w') as output: json.dump({'wall_s': time.perf_counter()-start, 'user_s': usage.ru_utime, 'system_s': usage.ru_stime, 'maxrss': usage.ru_maxrss}, output)\n"
+                + "sys.exit(code)\n",
+        )
+        .expect("write resource measurement wrapper");
+
+        let arms = [
+            (false, None),
+            (true, None),
+            (false, Some(1)),
+            (true, Some(1)),
+        ];
+        for repetition in 0..3_u8 {
+            let mut seed = usize::try_from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system clock after epoch")
+                    .as_nanos(),
+            )
+            .expect("nanosecond seed fits this host")
+                ^ usize::from(repetition);
+            let mut arm_order = [0, 1, 2, 3];
+            for index in (1..arm_order.len()).rev() {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                arm_order.swap(index, seed % (index + 1));
+            }
+            println!("A004_ARM_ORDER repetition={repetition} order={arm_order:?}");
+            for arm_index in arm_order {
+                let (cache_enabled, repository_quota) = arms[arm_index];
+                let pair_tag = format!(
+                    "r{repetition}-cache{}-quota{}",
+                    u8::from(cache_enabled),
+                    repository_quota.unwrap_or(0)
+                );
+                let store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
+                let mut config = crate::scheduler::config::ResolvedSchedulerConfig::default();
+                config.quota.max_concurrent_builds_per_repository = repository_quota;
+                config.resources.max_process_slots = 4;
+                let generation = DaemonGeneration::new_unchecked(format!(
+                    "a004-{pair_tag}-{}",
+                    uuid::Uuid::new_v4()
+                ));
+                let scheduler =
+                    JobScheduler::new(store.clone(), services.clone(), config, generation.clone());
+                scheduler
+                    .register_executor(Arc::new(
+                        crate::scheduler::executors::ManagedArgvExecutor::new("a004_cargo"),
+                    ))
+                    .await
+                    .expect("register production managed argv executor");
+                let submission = JobSubmissionService::new(
+                    store.clone(),
+                    scheduler.clone(),
+                    services.clone(),
+                    generation,
+                );
+                submission.set_context_resolver(resolver.clone());
+                let mut job_ids = Vec::new();
+                let mut reports = Vec::new();
+                let mut logs = Vec::new();
+                let pair_started = Instant::now();
+                for index in 0..2 {
+                    let worktree_index = usize::from((index + repetition) % 2);
+                    let target = target_root.join(format!("{pair_tag}-{index}"));
+                    let report = fixture.path().join(format!("{pair_tag}-{index}.json"));
+                    let log = fixture.path().join(format!("{pair_tag}-{index}.log"));
+                    let mut argv = vec![
+                        "python3".to_owned(),
+                        measurement_wrapper.to_string_lossy().into_owned(),
+                        report.to_string_lossy().into_owned(),
+                        log.to_string_lossy().into_owned(),
+                        cargo.to_string_lossy().into_owned(),
+                        "check".into(),
+                        "--locked".into(),
+                        "--offline".into(),
+                        "-p".into(),
+                        "codegg-core".into(),
+                    ];
+                    let mut env = vec![
+                        format!("CARGO_TARGET_DIR={}", target.display()),
+                        "CARGO_INCREMENTAL=0".into(),
+                        "CARGO_BUILD_JOBS=2".into(),
+                        "CARGO_TERM_COLOR=never".into(),
+                        format!("RUSTC={}", rustc.display()),
+                    ];
+                    if cache_enabled {
+                        env.extend(
+                            cache_env
+                                .iter()
+                                .map(|(key, value)| format!("{key}={value}")),
+                        );
+                        env.push(format!("RUSTC_WRAPPER={}", sccache.display()));
+                        // Client-side mode keeps compiler CPU and RSS under the
+                        // managed Cargo process tree, so the resource wrapper
+                        // measures compiler work rather than only the sccache
+                        // server client.
+                        env.push("SCCACHE_CLIENT_SIDE=1".into());
+                    } else {
+                        // An explicit empty value disables any user Cargo wrapper
+                        // only within this opt-in experiment process.
+                        env.push("RUSTC_WRAPPER=".into());
+                    }
+                    let mut command = vec!["/usr/bin/env".into()];
+                    if !cache_enabled {
+                        command.extend(["-u".into(), "SCCACHE_CLIENT_SIDE".into()]);
+                    }
+                    command.append(&mut env);
+                    command.append(&mut argv);
+                    let mut build = spec(sibling_workspaces[worktree_index].clone());
+                    build.kind = JobKind::Build;
+                    build.resource_request = ResourceRequest::for_kind(JobKind::Build);
+                    build.payload = JobPayload::ManagedArgv {
+                        argv: command,
+                        cwd: Some(
+                            [first_root.clone(), second_root.clone()][worktree_index]
+                                .to_string_lossy()
+                                .into_owned(),
+                        ),
+                        sandbox_profile: None,
+                        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+                    };
+                    build.idempotency = IdempotencyClass::SafeRepeat;
+                    build.timeout = Some(std::time::Duration::from_secs(900));
+                    let submitted = submission
+                        .submit(None, build)
+                        .await
+                        .unwrap_or_else(|error| panic!("submit A004 Cargo job: {error}"));
+                    job_ids.push(submitted.job_id);
+                    reports.push(report);
+                    logs.push(log);
+                }
+                let scheduler_task = scheduler.clone().spawn_run();
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1800);
+                loop {
+                    let mut terminal = true;
+                    for job_id in &job_ids {
+                        let record = store
+                            .get_job(job_id)
+                            .await
+                            .expect("read A004 job")
+                            .expect("submitted A004 job exists");
+                        if !record.state.is_terminal() {
+                            terminal = false;
+                        }
+                    }
+                    if terminal {
+                        break;
+                    }
+                    assert!(
+                        tokio::time::Instant::now() < deadline,
+                        "A004 pair timed out: {pair_tag}"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                let mut pair_rows = Vec::new();
+                for index in 0..2 {
+                    let record = store.get_job(&job_ids[index]).await.unwrap().unwrap();
+                    assert_eq!(
+                        record.state,
+                        JobState::Completed,
+                        "A004 Cargo failure: {record:#?}"
+                    );
+                    let measurement: serde_json::Value = serde_json::from_slice(
+                        &std::fs::read(&reports[index]).expect("read resource measurement"),
+                    )
+                    .expect("parse resource measurement");
+                    let output = std::fs::read_to_string(&logs[index]).expect("read Cargo log");
+                    assert!(
+                        output.contains("Finished"),
+                        "Cargo did not report completion: {output}"
+                    );
+                    let target = target_root.join(format!("{pair_tag}-{index}"));
+                    let target_bytes = directory_bytes(&target);
+                    assert!(target_bytes > 0, "Cargo target directory was empty");
+                    let row = serde_json::json!({
+                        "cache_enabled": cache_enabled,
+                        "repository_quota": repository_quota,
+                        "repetition": repetition,
+                        "worktree": index,
+                        "wall_s": measurement["wall_s"],
+                        "user_s": measurement["user_s"],
+                        "system_s": measurement["system_s"],
+                        "maxrss": measurement["maxrss"],
+                        "target_bytes": target_bytes,
+                        "cargo_lock_waits": output.lines().filter(|line| line.contains("Blocking waiting for file lock")).count(),
+                        "cargo_finished_line": output.lines().find(|line| line.contains("Finished")).unwrap_or_default(),
+                    });
+                    println!("A004_SAMPLE {row}");
+                    pair_rows.push(row);
+                }
+                println!(
+                    "A004_PAIR {{\"tag\":\"{pair_tag}\",\"scheduler_wall_ms\":{},\"rows\":{}}}",
+                    pair_started.elapsed().as_millis(),
+                    serde_json::Value::Array(pair_rows.clone())
+                );
+                scheduler
+                    .shutdown(crate::scheduler::SchedulerShutdownMode::ImmediateInterrupt)
+                    .await;
+                scheduler_task.await.expect("join A004 scheduler");
+                rows.extend(pair_rows);
+            }
+        }
+        let stats = Command::new(&sccache)
+            .arg("--show-stats")
+            .envs(cache_env.iter().cloned())
+            .output()
+            .expect("read scoped sccache counters");
+        assert!(stats.status.success());
+        println!(
+            "A004_HOST source={revision} sccache={version} cargo={} rustc={} host={} rows={} cache_bytes={} stats:\n{}",
+            String::from_utf8_lossy(&cargo_version.stdout).trim(),
+            String::from_utf8_lossy(&rustc_version.stdout)
+                .trim()
+                .replace('\n', "; "),
+            Command::new("uname")
+                .arg("-a")
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+                .unwrap_or_default(),
+            rows.len(),
+            directory_bytes(&cache_root),
+            String::from_utf8_lossy(&stats.stdout)
+        );
+        assert_eq!(rows.len(), 24, "three paired samples per four policy arms");
+        let _ = Command::new(&sccache)
+            .arg("--stop-server")
+            .envs(cache_env.iter().cloned())
+            .status();
     }
 
     fn spec(workspace_id: WorkspaceId) -> NewJob {

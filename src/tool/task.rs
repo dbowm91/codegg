@@ -1936,8 +1936,12 @@ impl Tool for TaskTool {
                 },
                 "placement": {
                     "type": "string",
-                    "enum": ["auto", "isolated_new", "serialized_shared"],
-                    "description": "M005 C006: where the delegated run is placed. 'auto' (default) allocates a managed checkout for mutating profiles but may inherit the workspace for read-only work. 'isolated_new' explicitly requires its own fresh managed checkout even for read-only work, and fails with a typed placement-unavailable reason if that cannot be honored. 'serialized_shared' places the run on the managed checkout of the group named by group_id: native file and Git writes then serialize through CodeGG's writer permit so exactly one writer holds the checkout at a time, and every process-capable tool is refused for the child. It is honoured for spawn_many, where the group is created with the children as members, and is refused outright on a platform with no native containment evidence."
+                    "enum": ["auto", "isolated_new", "serialized_shared", "existing_managed_read_only"],
+                    "description": "Conservative placement guide: use auto unless the user directs another checkout strategy; use isolated_new for independent edits when isolation is requested; use existing_managed_read_only only for user-directed inspection when the exact per-child worktree_id is known; use serialized_shared only for a deliberately created supported group. Existing read-only placement takes an exclusive run-owned lease and exposes only read/list/glob, refusing occupied, dirty, foreign, unmanaged or unavailable targets. Serialized shared denies process-class tools. Placement never enables Cargo cache reuse or shared target directories."
+                },
+                "worktree_id": {
+                    "type": "string",
+                    "description": "Required for placement=existing_managed_read_only. Exact managed WorktreeId; identity only, never a path or authorization token. Supply per child in spawn_many."
                 },
                 "join_policy": {
                     "type": "string",
@@ -2503,6 +2507,7 @@ impl TaskTool {
                     .transpose()
                     .map_err(|e| ToolError::Execution(format!("invalid group_id: {e}")))?
                     .unwrap_or_else(AgentRunGroupId::new);
+                let mut placement_reasons = Vec::new();
                 let (accepted, rejected) = if action == "spawn_many" {
                     let requests = input["requests"].as_array().ok_or_else(|| {
                         ToolError::Execution("spawn_many requires a requests array".into())
@@ -2541,9 +2546,13 @@ impl TaskTool {
                             .get("placement")
                             .and_then(|value| value.as_str())
                             .or_else(|| input["placement"].as_str());
+                        let target_worktree = object
+                            .get("worktree_id")
+                            .and_then(serde_json::Value::as_str);
                         let placement = match effective_child_placement(
                             effective_placement,
                             group_id_text.as_str(),
+                            target_worktree,
                         ) {
                             Ok(placement) => placement,
                             Err(error) => {
@@ -2559,6 +2568,12 @@ impl TaskTool {
                             "placement".into(),
                             serde_json::Value::String(placement.as_str().to_string()),
                         );
+                        if let Some(worktree_id) = placement.existing_worktree_id() {
+                            object.insert(
+                                "worktree_id".into(),
+                                serde_json::Value::String(worktree_id.as_str().to_string()),
+                            );
+                        }
                         if placement.is_shared() {
                             object.insert(
                                 "group_id".into(),
@@ -2572,6 +2587,10 @@ impl TaskTool {
                                     line.strip_prefix("Run: ")
                                         .and_then(|value| AgentRunId::parse(value.trim()).ok())
                                 }) {
+                                    placement_reasons.push(format!(
+                                        "{run_id}: {}",
+                                        placement_rationale(&placement)
+                                    ));
                                     accepted.push(run_id);
                                 } else {
                                     rejected.push(
@@ -2656,11 +2675,12 @@ impl TaskTool {
                     .await
                     .map_err(|error| ToolError::Execution(error.to_string()))?;
                 self.publish_group_projection(&summary);
-                return Ok(format_group_summary(
-                    &summary,
-                    !rejected.is_empty(),
-                    &rejected,
-                ));
+                let mut output = format_group_summary(&summary, !rejected.is_empty(), &rejected);
+                if !placement_reasons.is_empty() {
+                    output.push_str("\nPlacement rationale:\n");
+                    output.push_str(&placement_reasons.join("\n"));
+                }
+                return Ok(output);
             }
             let raw_group_id = input["group_id"]
                 .as_str()
@@ -2923,8 +2943,11 @@ impl TaskTool {
             // for the child before it runs, which is the profile-level half
             // of the C005 process deny contract. The other half — the
             // admission authority — still refuses the launch at execution.
-            let placement =
-                parse_run_placement(input["placement"].as_str(), input["group_id"].as_str())?;
+            let placement = parse_run_placement(
+                input["placement"].as_str(),
+                input["group_id"].as_str(),
+                input["worktree_id"].as_str(),
+            )?;
             let denied_tools = if placement.is_shared() {
                 crate::tool::process_capability::shared_profile_denied_tools(&self.denied_tools)
             } else {
@@ -2997,6 +3020,8 @@ impl TaskTool {
                         &allowed_paths,
                         parent_run_id.as_ref(),
                         &shared_scratch,
+                        &placement,
+                        &denied_tools,
                     );
                     let depth = next_durable_depth(
                         parent_run.as_ref().map(|run| run.depth),
@@ -3265,13 +3290,25 @@ impl TaskTool {
                     .await;
                 if let Some((durable_task_id, durable_run_id)) = durable_ids {
                     return Ok(format!(
-                        "Task queued\nTask: {}\nRun: {}\nStatus: queued\nCompatibility task: #{}\nScheduler job: {}",
-                        durable_task_id, durable_run_id, task_id, submitted.job_id
+                        "Task queued\nTask: {}\nRun: {}\nStatus: queued\nPlacement rationale: {}\nCompatibility task: #{}\nScheduler job: {}",
+                        durable_task_id,
+                        durable_run_id,
+                        placement_rationale(&placement),
+                        task_id,
+                        submitted.job_id
                     ));
                 }
                 return Ok(format!(
-                    "Task #{} queued as scheduler job {}",
-                    task_id, submitted.job_id
+                    "Task #{} queued as scheduler job {}\nPlacement rationale: {}",
+                    task_id,
+                    submitted.job_id,
+                    placement_rationale(&placement)
+                ));
+            }
+
+            if explicit_placement_requires_durable_scheduler(&placement) {
+                return Err(ToolError::Execution(
+                    "explicit placement requires the durable scheduler placement authority".into(),
                 ));
             }
 
@@ -3359,9 +3396,10 @@ impl TaskTool {
                     .await;
 
                 Ok(format!(
-                    "<task_result>\nSubagent spawned for task: {}\nTask ID: {}\nStatus: running\nParent session: {}\n</task_result>",
+                    "<task_result>\nSubagent spawned for task: {}\nTask ID: {}\nStatus: running\nPlacement rationale: {}\nParent session: {}\n</task_result>",
                     description,
                     task_id,
+                    placement_rationale(&placement),
                     self.parent_session_id.as_deref().unwrap_or("none")
                 ))
             } else {
@@ -3429,14 +3467,21 @@ fn parse_join_policy(value: &str) -> Result<RunJoinPolicy, ToolError> {
 fn effective_child_placement(
     effective_placement: Option<&str>,
     group_id: &str,
+    worktree_id: Option<&str>,
 ) -> Result<codegg_core::run_placement::RunPlacement, ToolError> {
-    parse_run_placement(effective_placement, Some(group_id))
+    parse_run_placement(effective_placement, Some(group_id), worktree_id)
 }
 
 fn parse_run_placement(
     placement: Option<&str>,
     group_id: Option<&str>,
+    worktree_id: Option<&str>,
 ) -> Result<codegg_core::run_placement::RunPlacement, ToolError> {
+    if worktree_id.is_some() && placement != Some("existing_managed_read_only") {
+        return Err(ToolError::Execution(
+            "worktree_id is only valid with placement=existing_managed_read_only".into(),
+        ));
+    }
     match placement {
         None | Some("auto") => Ok(codegg_core::run_placement::RunPlacement::Auto),
         Some("isolated_new") => Ok(codegg_core::run_placement::RunPlacement::IsolatedNew),
@@ -3461,8 +3506,41 @@ fn parse_run_placement(
             })?;
             Ok(codegg_core::run_placement::RunPlacement::SerializedShared { group_id })
         }
+        Some("existing_managed_read_only") => {
+            let raw = worktree_id.ok_or_else(|| {
+                ToolError::Execution(
+                    "placement=existing_managed_read_only requires worktree_id".into(),
+                )
+            })?;
+            let worktree_id = codegg_core::identity::WorktreeId::parse(raw)
+                .map_err(|error| ToolError::Execution(format!("invalid worktree_id: {error}")))?;
+            Ok(codegg_core::run_placement::RunPlacement::ExistingManagedReadOnly { worktree_id })
+        }
         Some(other) => Err(ToolError::Execution(format!("unknown placement '{other}'"))),
     }
+}
+
+fn placement_rationale(placement: &codegg_core::run_placement::RunPlacement) -> &'static str {
+    match placement {
+        codegg_core::run_placement::RunPlacement::Auto => {
+            "auto keeps the configured scheduler default because no alternate checkout was directed"
+        }
+        codegg_core::run_placement::RunPlacement::IsolatedNew => {
+            "a new managed checkout keeps independent edits isolated"
+        }
+        codegg_core::run_placement::RunPlacement::SerializedShared { .. } => {
+            "the deliberately selected group checkout remains process-restricted"
+        }
+        codegg_core::run_placement::RunPlacement::ExistingManagedReadOnly { .. } => {
+            "the exact existing managed checkout is leased exclusively for read-only inspection"
+        }
+    }
+}
+
+fn explicit_placement_requires_durable_scheduler(
+    placement: &codegg_core::run_placement::RunPlacement,
+) -> bool {
+    !matches!(placement, codegg_core::run_placement::RunPlacement::Auto)
 }
 
 fn format_group_summary(
@@ -3523,11 +3601,14 @@ fn spawn_request_fingerprint(
     allowed_paths: &[String],
     parent_run_id: Option<&AgentRunId>,
     shared_scratch: &[codegg_core::agent_run::SharedScratchGrant],
+    placement: &codegg_core::run_placement::RunPlacement,
+    denied_tools: &[String],
 ) -> String {
     let mut normalized_paths = allowed_paths.to_vec();
     normalized_paths.sort();
     let mut hasher = Sha256::new();
-    hasher.update(b"spawn-request-v1");
+    hasher.update(b"spawn-request-v2");
+    hasher.update(serde_json::to_vec(placement).unwrap_or_default());
     for value in [agent, description, prompt] {
         hasher.update((value.len() as u64).to_le_bytes());
         hasher.update(value.as_bytes());
@@ -3538,6 +3619,13 @@ fn spawn_request_fingerprint(
     for path in normalized_paths {
         hasher.update((path.len() as u64).to_le_bytes());
         hasher.update(path.as_bytes());
+    }
+    let mut denied_tools = denied_tools.to_vec();
+    denied_tools.sort();
+    denied_tools.dedup();
+    for tool in denied_tools {
+        hasher.update((tool.len() as u64).to_le_bytes());
+        hasher.update(tool.as_bytes());
     }
     let mut grants = shared_scratch.to_vec();
     grants.sort_by(|left, right| {
@@ -3687,8 +3775,9 @@ mod tests {
         let group_id = AgentRunGroupId::new();
 
         // The group's placement, with no placement on the child.
-        let placement = effective_child_placement(Some("auto"), group_id.to_string().as_str())
-            .expect("the group's auto placement resolves");
+        let placement =
+            effective_child_placement(Some("auto"), group_id.to_string().as_str(), None)
+                .expect("the group's auto placement resolves");
         assert_eq!(
             placement,
             codegg_core::run_placement::RunPlacement::Auto,
@@ -3697,7 +3786,7 @@ mod tests {
 
         // The child's own placement wins over the group's.
         let placement =
-            effective_child_placement(Some("isolated_new"), group_id.to_string().as_str())
+            effective_child_placement(Some("isolated_new"), group_id.to_string().as_str(), None)
                 .expect("the child's own placement resolves");
         assert_eq!(
             placement,
@@ -3708,12 +3797,62 @@ mod tests {
         // A placement that cannot be honoured is an error, never a silent
         // `Auto`.
         let error =
-            effective_child_placement(Some("not_a_placement"), group_id.to_string().as_str())
+            effective_child_placement(Some("not_a_placement"), group_id.to_string().as_str(), None)
                 .expect_err("an unknown placement must be refused");
         assert!(
             matches!(error, ToolError::Execution(_)),
             "the refusal must be typed, got {error:?}",
         );
+    }
+
+    #[test]
+    fn existing_read_only_placement_requires_and_carries_each_child_worktree_id() {
+        let worktree_id = codegg_core::identity::WorktreeId::new();
+        let id = worktree_id.to_string();
+        let placement = effective_child_placement(
+            Some("existing_managed_read_only"),
+            "unused-group",
+            Some(&id),
+        )
+        .expect("a valid target ID resolves");
+        assert_eq!(
+            placement,
+            codegg_core::run_placement::RunPlacement::ExistingManagedReadOnly { worktree_id }
+        );
+        assert!(effective_child_placement(
+            Some("existing_managed_read_only"),
+            "unused-group",
+            None
+        )
+        .is_err());
+        assert!(effective_child_placement(Some("auto"), "unused-group", Some(&id)).is_err());
+    }
+
+    #[test]
+    fn placement_rationale_preserves_conservative_authority_boundaries() {
+        use codegg_core::run_placement::RunPlacement;
+
+        let auto = placement_rationale(&RunPlacement::Auto);
+        assert!(auto.contains("configured scheduler default"));
+        let isolated = placement_rationale(&RunPlacement::IsolatedNew);
+        assert!(isolated.contains("edits"));
+        let shared = placement_rationale(&RunPlacement::SerializedShared {
+            group_id: AgentRunGroupId::new(),
+        });
+        assert!(shared.contains("process-restricted"));
+        let existing = placement_rationale(&RunPlacement::ExistingManagedReadOnly {
+            worktree_id: codegg_core::identity::WorktreeId::new(),
+        });
+        assert!(existing.contains("read-only inspection"));
+        assert!(![auto, isolated, shared, existing,]
+            .iter()
+            .any(|reason| reason.contains("cache")));
+        assert!(!explicit_placement_requires_durable_scheduler(
+            &RunPlacement::Auto
+        ));
+        assert!(explicit_placement_requires_durable_scheduler(
+            &RunPlacement::IsolatedNew
+        ));
     }
 
     /// M005 corrective C007 §6.1: the shared placement the group asked for
@@ -3727,8 +3866,11 @@ mod tests {
     #[test]
     fn the_shared_placement_carries_the_groups_identity() {
         let group_id = AgentRunGroupId::new();
-        let parsed =
-            effective_child_placement(Some("serialized_shared"), group_id.to_string().as_str());
+        let parsed = effective_child_placement(
+            Some("serialized_shared"),
+            group_id.to_string().as_str(),
+            None,
+        );
         match parsed {
             Ok(placement) => {
                 assert_eq!(
@@ -3829,6 +3971,8 @@ mod tests {
                 &["src".into()],
                 None,
                 &[],
+                &codegg_core::run_placement::RunPlacement::Auto,
+                &[],
             ),
             spawn_request_fingerprint(
                 "general",
@@ -3836,6 +3980,8 @@ mod tests {
                 "same prompt",
                 &["src".into()],
                 None,
+                &[],
+                &codegg_core::run_placement::RunPlacement::Auto,
                 &[],
             )
         );
@@ -3852,8 +3998,26 @@ mod tests {
             delegation_key("other-call")
         );
         assert_ne!(
-            spawn_request_fingerprint("general", "description-a", "prompt", &[], None, &[]),
-            spawn_request_fingerprint("general", "description-b", "prompt", &[], None, &[])
+            spawn_request_fingerprint(
+                "general",
+                "description-a",
+                "prompt",
+                &[],
+                None,
+                &[],
+                &codegg_core::run_placement::RunPlacement::Auto,
+                &[]
+            ),
+            spawn_request_fingerprint(
+                "general",
+                "description-b",
+                "prompt",
+                &[],
+                None,
+                &[],
+                &codegg_core::run_placement::RunPlacement::Auto,
+                &[]
+            )
         );
     }
 

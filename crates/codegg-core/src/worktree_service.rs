@@ -317,6 +317,14 @@ pub trait WorktreeStore: Send + Sync {
         id: &WorktreeId,
         owner: &AgentRunId,
     ) -> Result<WorktreeLease, WorktreeServiceError>;
+    /// Acquire an exclusive lease that also reserves the checkout against
+    /// non-broker writers and process launches for the lease lifetime.
+    async fn acquire_read_only_lease(
+        &self,
+        id: &WorktreeId,
+        owner: &AgentRunId,
+    ) -> Result<WorktreeLease, WorktreeServiceError>;
+    async fn has_read_only_lease(&self, id: &WorktreeId) -> Result<bool, WorktreeServiceError>;
     async fn renew_lease(
         &self,
         id: &WorktreeId,
@@ -430,6 +438,7 @@ pub trait ContainedWorktreeCreator: Send + Sync {
 struct MemoryWorktreeState {
     records: HashMap<WorktreeId, WorktreeRecord>,
     leases: Vec<WorktreeLease>,
+    read_only_leases: HashSet<(WorktreeId, u64)>,
 }
 
 #[derive(Default)]
@@ -547,10 +556,10 @@ impl WorktreeStore for InMemoryWorktreeStore {
         if record.owner_run_id.is_some() {
             return Err(WorktreeServiceError::LeaseConflict(id.to_string()));
         }
-        if !matches!(
-            record.state,
-            ManagedWorktreeState::Ready | ManagedWorktreeState::Reserved
-        ) {
+        // A lease is an execution claim, not a reservation claim. In
+        // particular, a Reserved checkout has no verified directory yet and
+        // must never be leased by a delegated inspection.
+        if record.state != ManagedWorktreeState::Ready {
             return Err(WorktreeServiceError::LeaseConflict(format!(
                 "{} is {:?}",
                 id, record.state
@@ -570,6 +579,49 @@ impl WorktreeStore for InMemoryWorktreeStore {
         };
         state.leases.push(lease.clone());
         Ok(lease)
+    }
+
+    async fn acquire_read_only_lease(
+        &self,
+        id: &WorktreeId,
+        owner: &AgentRunId,
+    ) -> Result<WorktreeLease, WorktreeServiceError> {
+        let mut state = self.state.lock().await;
+        let record = state
+            .records
+            .get_mut(id)
+            .ok_or_else(|| WorktreeServiceError::NotFound(id.to_string()))?;
+        if record.owner_run_id.is_some() || record.state != ManagedWorktreeState::Ready {
+            return Err(WorktreeServiceError::LeaseConflict(format!(
+                "{} is {:?}",
+                id, record.state
+            )));
+        }
+        let now = Utc::now().timestamp_millis();
+        record.lease_generation = record.lease_generation.saturating_add(1);
+        record.owner_run_id = Some(owner.clone());
+        transition(record, ManagedWorktreeState::InUse)?;
+        let lease = WorktreeLease {
+            worktree_id: id.clone(),
+            owner_run_id: owner.clone(),
+            generation: record.lease_generation,
+            acquired_at: now,
+            renewed_at: now,
+            released_at: None,
+        };
+        state
+            .read_only_leases
+            .insert((id.clone(), lease.generation));
+        state.leases.push(lease.clone());
+        Ok(lease)
+    }
+
+    async fn has_read_only_lease(&self, id: &WorktreeId) -> Result<bool, WorktreeServiceError> {
+        let state = self.state.lock().await;
+        Ok(state
+            .read_only_leases
+            .iter()
+            .any(|(worktree_id, _)| worktree_id == id))
     }
 
     async fn renew_lease(
@@ -638,6 +690,7 @@ impl WorktreeStore for InMemoryWorktreeStore {
             lease.released_at = Some(now);
             lease.renewed_at = now;
         }
+        state.read_only_leases.remove(&(id.clone(), generation));
         Ok(released_record)
     }
 }
@@ -800,10 +853,7 @@ impl WorktreeStore for SqliteWorktreeStore {
             return Err(WorktreeServiceError::LeaseConflict(id.to_string()));
         }
         let state = ManagedWorktreeState::parse_state(row.get::<String, _>("state").as_str())?;
-        if !matches!(
-            state,
-            ManagedWorktreeState::Ready | ManagedWorktreeState::Reserved
-        ) {
+        if state != ManagedWorktreeState::Ready {
             return Err(WorktreeServiceError::LeaseConflict(format!(
                 "{} is {:?}",
                 id, state
@@ -811,7 +861,7 @@ impl WorktreeStore for SqliteWorktreeStore {
         }
         let generation = row.get::<i64, _>("lease_generation") as u64 + 1;
         let now = Utc::now().timestamp_millis();
-        let changed = sqlx::query("UPDATE managed_worktree SET lease_generation = ?, owner_run_id = ?, state = 'in_use', updated_at = ? WHERE worktree_id = ? AND owner_run_id IS NULL").bind(generation as i64).bind(owner.as_str()).bind(now).bind(id.as_str()).execute(&mut *tx).await.map_err(|e| WorktreeServiceError::Storage(e.to_string()))?;
+        let changed = sqlx::query("UPDATE managed_worktree SET lease_generation = ?, owner_run_id = ?, state = 'in_use', updated_at = ? WHERE worktree_id = ? AND owner_run_id IS NULL AND state = 'ready'").bind(generation as i64).bind(owner.as_str()).bind(now).bind(id.as_str()).execute(&mut *tx).await.map_err(|e| WorktreeServiceError::Storage(e.to_string()))?;
         if changed.rows_affected() != 1 {
             return Err(WorktreeServiceError::LeaseConflict(id.to_string()));
         }
@@ -827,6 +877,84 @@ impl WorktreeStore for SqliteWorktreeStore {
             renewed_at: now,
             released_at: None,
         })
+    }
+
+    async fn acquire_read_only_lease(
+        &self,
+        id: &WorktreeId,
+        owner: &AgentRunId,
+    ) -> Result<WorktreeLease, WorktreeServiceError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| WorktreeServiceError::Storage(e.to_string()))?;
+        let row = sqlx::query(
+            "SELECT lease_generation, owner_run_id, state FROM managed_worktree WHERE worktree_id = ?",
+        )
+        .bind(id.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| WorktreeServiceError::Storage(e.to_string()))?
+        .ok_or_else(|| WorktreeServiceError::NotFound(id.to_string()))?;
+        if row.get::<Option<String>, _>("owner_run_id").is_some()
+            || row.get::<String, _>("state") != ManagedWorktreeState::Ready.as_str()
+        {
+            return Err(WorktreeServiceError::LeaseConflict(id.to_string()));
+        }
+        let generation = row.get::<i64, _>("lease_generation") as u64 + 1;
+        let now = Utc::now().timestamp_millis();
+        let changed = sqlx::query(
+            "UPDATE managed_worktree SET lease_generation = ?, owner_run_id = ?, state = 'in_use', updated_at = ? WHERE worktree_id = ? AND owner_run_id IS NULL AND state = 'ready'",
+        )
+        .bind(generation as i64)
+        .bind(owner.as_str())
+        .bind(now)
+        .bind(id.as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| WorktreeServiceError::Storage(e.to_string()))?;
+        if changed.rows_affected() != 1 {
+            return Err(WorktreeServiceError::LeaseConflict(id.to_string()));
+        }
+        sqlx::query(
+            "INSERT INTO worktree_lease (worktree_id, owner_run_id, generation, acquired_at, renewed_at, released_at) VALUES (?, ?, ?, ?, ?, NULL)",
+        )
+        .bind(id.as_str())
+        .bind(owner.as_str())
+        .bind(generation as i64)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| WorktreeServiceError::Storage(e.to_string()))?;
+        sqlx::query("INSERT INTO worktree_read_only_lease (worktree_id, generation) VALUES (?, ?)")
+            .bind(id.as_str())
+            .bind(generation as i64)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| WorktreeServiceError::Storage(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| WorktreeServiceError::Storage(e.to_string()))?;
+        Ok(WorktreeLease {
+            worktree_id: id.clone(),
+            owner_run_id: owner.clone(),
+            generation,
+            acquired_at: now,
+            renewed_at: now,
+            released_at: None,
+        })
+    }
+
+    async fn has_read_only_lease(&self, id: &WorktreeId) -> Result<bool, WorktreeServiceError> {
+        sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM worktree_read_only_lease WHERE worktree_id = ?)",
+        )
+        .bind(id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| WorktreeServiceError::Storage(e.to_string()))
     }
 
     async fn renew_lease(
@@ -892,6 +1020,14 @@ impl WorktreeStore for SqliteWorktreeStore {
         let now = Utc::now().timestamp_millis();
         sqlx::query("UPDATE managed_worktree SET owner_run_id = NULL, state = 'ready', updated_at = ? WHERE worktree_id = ? AND owner_run_id = ? AND lease_generation = ?").bind(now).bind(id.as_str()).bind(owner.as_str()).bind(generation as i64).execute(&mut *tx).await.map_err(|e| WorktreeServiceError::Storage(e.to_string()))?;
         sqlx::query("UPDATE worktree_lease SET released_at = ?, renewed_at = ? WHERE worktree_id = ? AND owner_run_id = ? AND generation = ? AND released_at IS NULL").bind(now).bind(now).bind(id.as_str()).bind(owner.as_str()).bind(generation as i64).execute(&mut *tx).await.map_err(|e| WorktreeServiceError::Storage(e.to_string()))?;
+        sqlx::query(
+            "DELETE FROM worktree_read_only_lease WHERE worktree_id = ? AND generation = ?",
+        )
+        .bind(id.as_str())
+        .bind(generation as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| WorktreeServiceError::Storage(e.to_string()))?;
         tx.commit()
             .await
             .map_err(|e| WorktreeServiceError::Storage(e.to_string()))?;
@@ -1264,6 +1400,32 @@ impl WorktreeService {
         let record = self.get(id).await?;
         let _guard = self.locks.acquire_repository(&record.repository_root).await;
         self.store.acquire_lease(id, owner).await
+    }
+
+    /// Acquire the repository lock used by delegated worktree claims and
+    /// session checkout binding. Callers hold this across ownership checks
+    /// and the durable lease/session association.
+    pub async fn lock_repository_for_worktree(
+        &self,
+        id: &WorktreeId,
+    ) -> Result<crate::workspace_services::WorkspaceRepositoryGuard, WorktreeServiceError> {
+        let record = self.get(id).await?;
+        Ok(self.locks.acquire_repository(&record.repository_root).await)
+    }
+
+    /// Acquire the read-only lease while the caller holds the repository lock
+    /// for this worktree's repository.
+    pub async fn acquire_read_only_lease_locked(
+        &self,
+        id: &WorktreeId,
+        owner: &AgentRunId,
+    ) -> Result<WorktreeLease, WorktreeServiceError> {
+        self.store.acquire_read_only_lease(id, owner).await
+    }
+
+    /// Whether the active generation is an exclusive read-only inspection.
+    pub async fn has_read_only_lease(&self, id: &WorktreeId) -> Result<bool, WorktreeServiceError> {
+        self.store.has_read_only_lease(id).await
     }
 
     pub async fn renew_lease(
@@ -1821,6 +1983,56 @@ mod tests {
             Err(WorktreeServiceError::StaleGeneration { .. })
         ));
         assert_eq!(second.generation, 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn read_only_lease_is_exclusive_and_releases_without_cleanup() {
+        let store = Arc::new(InMemoryWorktreeStore::new());
+        let now = Utc::now().timestamp_millis();
+        let (project, repository, workspace, owner) = ids();
+        let id = WorktreeId::new();
+        store
+            .insert_reserved(WorktreeRecord {
+                worktree_id: id.clone(),
+                project_id: project,
+                repository_id: repository,
+                workspace_id: workspace,
+                node_id: None,
+                repository_root: PathBuf::from("/repo"),
+                path: PathBuf::from("/managed/wt"),
+                branch: Some("codegg/worktree/read-only".into()),
+                base_commit: "a".repeat(40),
+                managed: true,
+                state: ManagedWorktreeState::Ready,
+                health: WorktreeHealth::Clean,
+                lease_generation: 0,
+                owner_run_id: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+
+        let lease = store.acquire_read_only_lease(&id, &owner).await.unwrap();
+        assert!(store.has_read_only_lease(&id).await.unwrap());
+        assert!(matches!(
+            store.acquire_read_only_lease(&id, &AgentRunId::new()).await,
+            Err(WorktreeServiceError::LeaseConflict(_))
+        ));
+        assert!(matches!(
+            store.acquire_lease(&id, &AgentRunId::new()).await,
+            Err(WorktreeServiceError::LeaseConflict(_))
+        ));
+
+        store
+            .release_lease(&id, &owner, lease.generation)
+            .await
+            .unwrap();
+        assert!(!store.has_read_only_lease(&id).await.unwrap());
+        let retained = store.get(&id).await.unwrap().expect("retained checkout");
+        assert_eq!(retained.state, ManagedWorktreeState::Ready);
+        assert_eq!(retained.owner_run_id, None);
+        assert_eq!(retained.path, PathBuf::from("/managed/wt"));
     }
 
     #[tokio::test(flavor = "current_thread")]

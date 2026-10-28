@@ -116,6 +116,7 @@ pub struct SidebarAgentRun {
     pub status: String,
     pub worktree: Option<String>,
     pub branch: Option<String>,
+    pub read_only_worktree: bool,
     pub result_commit: Option<String>,
     pub attention_required: bool,
     pub progress: Option<String>,
@@ -1704,7 +1705,13 @@ impl SidebarWidget {
                             .unwrap_or_else(|| format!("task-{}", node.task_id));
                         let location = run
                             .and_then(|run| run.branch.as_deref().or(run.worktree.as_deref()))
-                            .map(|value| format!(" {value}"))
+                            .map(|value| {
+                                if run.is_some_and(|run| run.read_only_worktree) {
+                                    format!(" {value} [read-only]")
+                                } else {
+                                    format!(" {value}")
+                                }
+                            })
                             .unwrap_or_default();
                         let commit = run
                             .and_then(|run| run.result_commit.as_deref())
@@ -2168,6 +2175,7 @@ mod tests {
             status: "completed".to_string(),
             worktree: None,
             branch: None,
+            read_only_worktree: false,
             result_commit: None,
             attention_required: false,
             progress: None,

@@ -334,6 +334,12 @@ jobs:
       - name: Scheduler bypass guard
         run: python3 scripts/check_scheduler_bypass.py
 
+      - name: Existing managed read-only placement guard self-test
+        run: python3 scripts/check_existing_worktree_read_only.py --self-test
+
+      - name: Existing managed read-only placement guard
+        run: python3 scripts/check_existing_worktree_read_only.py
+
       - name: Config merge coverage guard
         run: python3 scripts/check_config_merge_coverage.py
 

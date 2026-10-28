@@ -80,6 +80,7 @@ pub fn agent_run_summary(
         status: run.status.as_str().into(),
         depth: run.depth,
         worktree_id: run.worktree_id.as_ref().map(ToString::to_string),
+        read_only_worktree: run.read_only_worktree,
         branch: worktree.and_then(|worktree| worktree.branch.clone()),
         base_commit: worktree
             .map(|worktree| worktree.base_commit.clone())
@@ -580,6 +581,7 @@ mod tests {
             depth: 1,
             workspace_id: task.workspace_id.clone(),
             worktree_id: Some(worktree_id.clone()),
+            read_only_worktree: true,
             node_id: None,
             job_id: None,
             attempt_id: None,
@@ -629,6 +631,7 @@ mod tests {
         assert_eq!(summary.workspace_id, task.workspace_id.to_string());
         assert_eq!(summary.job_id, None);
         assert_eq!(summary.depth, 1);
+        assert!(summary.read_only_worktree);
         assert_eq!(summary.result_commit, None);
         let encoded = serde_json::to_string(&summary).unwrap();
         assert!(!encoded.contains("sensitive prompt"));

@@ -297,6 +297,12 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 91 {
         migrate_and_record(pool, 91).await?;
     }
+    if current_version < 92 {
+        migrate_and_record(pool, 92).await?;
+    }
+    if current_version < 93 {
+        migrate_and_record(pool, 93).await?;
+    }
 
     Ok(())
 }
@@ -400,6 +406,8 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             89 => migrate_v89(&mut tx).await?,
             90 => migrate_v90(&mut tx).await?,
             91 => migrate_v91(&mut tx).await?,
+            92 => migrate_v92(&mut tx).await?,
+            93 => migrate_v93(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -448,6 +456,35 @@ async fn migrate_v91(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
     Ok(())
+}
+
+/// Marks exclusive delegated inspection leases so all daemon writer and
+/// process-admission gates can refuse effects until the exact lease releases.
+async fn migrate_v92(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS worktree_read_only_lease (
+            worktree_id TEXT NOT NULL,
+            generation INTEGER NOT NULL CHECK (generation > 0),
+            PRIMARY KEY (worktree_id, generation),
+            FOREIGN KEY (worktree_id, generation)
+                REFERENCES worktree_lease(worktree_id, generation) ON DELETE CASCADE
+        )"#,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    Ok(())
+}
+
+/// Persists whether a delegated run used the existing managed read-only
+/// placement so replayed projections keep the operator-visible distinction.
+async fn migrate_v93(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    add_column_ignore_duplicate(
+        &mut *tx,
+        "ALTER TABLE agent_run ADD COLUMN read_only_worktree INTEGER NOT NULL DEFAULT 0"
+            .to_string(),
+    )
+    .await
 }
 
 /// Attempt-scoped execution subject provenance. NULL is intentionally retained

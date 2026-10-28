@@ -2931,6 +2931,7 @@ impl App {
                         status: run.status.clone(),
                         worktree: run.worktree_id.clone(),
                         branch: run.branch.clone(),
+                        read_only_worktree: run.read_only_worktree,
                         result_commit: run.result_commit.clone(),
                         attention_required: run.attention_required,
                         progress: run.progress.clone(),

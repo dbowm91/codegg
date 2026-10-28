@@ -1265,7 +1265,11 @@ impl CoreDaemon {
         let conflict = CheckoutConflict {
             sink,
             worktree_id: claim.worktree_id.to_string(),
-            group_id: claim.group_id.to_string(),
+            group_id: claim
+                .group_id
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default(),
             owner_run_id: claim.owner_run_id.to_string(),
             lookup_failure: None,
         };
@@ -1303,7 +1307,11 @@ impl CoreDaemon {
             Ok(CheckoutReservation::Reserved(claim)) => CheckoutConflict {
                 sink,
                 worktree_id: claim.worktree_id.to_string(),
-                group_id: claim.group_id.to_string(),
+                group_id: claim
+                    .group_id
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_default(),
                 owner_run_id: claim.owner_run_id.to_string(),
                 lookup_failure: None,
             },
@@ -1353,11 +1361,19 @@ impl CoreDaemon {
                 CheckoutConflict {
                     sink,
                     worktree_id: claim.worktree_id.to_string(),
-                    group_id: claim.group_id.to_string(),
+                    group_id: claim
+                        .group_id
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_default(),
                     owner_run_id: claim.owner_run_id.to_string(),
                     lookup_failure: None,
                 },
-                claim.group_id.to_string(),
+                claim
+                    .group_id
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_default(),
             ),
             Err(error) => (
                 CheckoutConflict {

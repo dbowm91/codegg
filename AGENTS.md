@@ -290,6 +290,11 @@ injects the defect and proves the guard rejects it:
   finite, closed over the catalog's frontend-effect forms, and carries no
   mutating disposition. A frontend that dispatches an undeclared action is a
   defect, and the guard catches it.
+- `check_existing_worktree_read_only.py` — a selected managed checkout remains
+  an exclusive read-only child profile: the scheduler arms the sentinel, the
+  worker narrows sandbox authority and keeps only `read`/`list`/`glob`, and
+  nested task delegation stays disabled. Its self-test removes the delegation
+  denial and proves the guard catches the widening.
 
 Re-derive the **automatic** set — every guard that runs in *both* `quick` and
 CI — rather than trusting a hand-copied list:

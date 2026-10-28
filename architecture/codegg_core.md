@@ -189,7 +189,7 @@ verified, and content-addressed.
 
 `init_daemon_catalog(&DaemonPaths)` owns the user-scoped catalog.
 `init_legacy_project_store(root)` retains backward compat. The current layout
-version is defined by `storage::STORAGE_LAYOUT_VERSION` (currently **89**,
+version is defined by `storage::STORAGE_LAYOUT_VERSION` (currently **93**,
 and `scripts/check_project_catalog_invariants.py` fails the build if it drifts
 below the highest migration number in `session/schema.rs`). `DaemonPaths` is
 the single source of truth for catalog and asset paths.

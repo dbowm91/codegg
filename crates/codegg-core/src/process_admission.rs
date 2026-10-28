@@ -211,8 +211,11 @@ impl ProcessDenial {
     /// filter, and a caller cannot opt a process back in.
     pub fn recovery(&self) -> &'static str {
         match self.reason {
-            ProcessDenialReason::SharedCheckout => {
+            ProcessDenialReason::SharedCheckout if self.group_id.is_some() => {
                 "this checkout is reserved by a live agent-run group, which admits no unqualified process; use an isolated checkout instead"
+            }
+            ProcessDenialReason::SharedCheckout => {
+                "an exclusive read-only inspection holds this checkout; retry after it finishes, or use a different checkout"
             }
             ProcessDenialReason::PersistentProcessPresent => {
                 "a persistent process is still live in this checkout; the reservation is refused until it is drained"
@@ -506,7 +509,7 @@ impl ProcessAdmissionService {
                 reason: ProcessDenialReason::SharedCheckout,
                 kind,
                 worktree_id: Some(claim.worktree_id.to_string()),
-                group_id: Some(claim.group_id.to_string()),
+                group_id: claim.group_id.as_ref().map(ToString::to_string),
             }),
         }
     }
