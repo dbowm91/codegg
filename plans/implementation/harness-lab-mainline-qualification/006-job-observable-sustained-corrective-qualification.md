@@ -1,6 +1,6 @@
 # H006 — Job-Observable Sustained Corrective Qualification
 
-Status: **offline prerequisites and prior exact-head CI passed; first authorized live attempt failed on missing sandbox-helper runfile; paired-runfile preflight implemented and locally verified; corrective hosted CI pending**
+Status: **offline prerequisites and prior exact-head CI passed; two authorized live attempts failed qualification; the latest used 34/120 requests and ended after 10 minutes with an incomplete implementation and verifier errors; no live authorization remains**
 
 Subsystem roadmap: `plans/subsystems/harness-lab-mainline-and-long-horizon-qualification-addendum.md`
 
@@ -33,7 +33,7 @@ If these prerequisites uncover a product defect, make the narrow corrective on t
 
 ## 4. Live authorization gate
 
-The first authorized H006 live attempt is consumed and failed because the binary bundle lacked `codegg-sandbox-helper`. Before any subsequent live attempt, complete the runfile preflight correction and obtain a new explicit approval that names:
+The first authorized H006 live attempt was consumed and failed because the binary bundle lacked `codegg-sandbox-helper`; its corrective preflight is now implemented and hosted-qualified. A second, separately authorized attempt ran on 2026-10-29 and is also consumed; it ended after 10 minutes, left a Rust syntax error, and did not observe an exact job ID while running. Before any further live attempt, resolve the transcript/verifier optional-job shape and the short-lived-job overlap gap, then obtain a new explicit approval that names:
 
 - `opencode_go` and the selected model route;
 - a hard provider-request ceiling that includes any fresh credential/catalog probes;
@@ -42,7 +42,7 @@ The first authorized H006 live attempt is consumed and failed because the binary
 - the treatment of unreported USD cost;
 - one attempt and the stop conditions below.
 
-The runner must bind and verify the request cap before its first provider request. Do not infer remaining budget from H005's receipt: its actual request usage is unknown. Do not reuse the consumed H006 authorization. If no new approval arrives, stop after offline work and leave sustained qualification incomplete.
+The runner must bind and verify the request cap before its first provider request. Do not infer remaining budget from H005's receipt: its actual request usage is unknown. Do not reuse either consumed H006 authorization. If no new approval arrives, stop after offline work and leave sustained qualification incomplete.
 
 The offline job-observation gate uses bounded job metadata parsed from native ACP tool output. It does not claim a separate automatic terminal notification or define a structured job-lifecycle event protocol; those require separate production-path evidence and scope.
 
@@ -68,6 +68,6 @@ Stop before live startup if the new authorization is absent, cap configuration c
 
 ## 7. Completion and handoff
 
-H006 closes as sustained-qualified only when all offline prerequisites and live workload criteria pass with a complete sanitized receipt and exact-head hosted CI. The first live attempt is recorded as failed in `plans/closure/harness-lab-mainline-qualification/006-status.md`; its duration, one repair cycle, failed verifier, request count, and missing-helper cause do not qualify any live criterion. Any retry requires completed offline preflight work and fresh explicit authorization. A successful offline cap or projection test is infrastructure evidence; it is not sustained autonomous capability evidence.
+H006 closes as sustained-qualified only when all offline prerequisites and live workload criteria pass with a complete sanitized receipt and exact-head hosted CI. The first and second live attempts are recorded as failed in `plans/closure/harness-lab-mainline-qualification/006-status.md` §§7–8; neither qualifies any live criterion. The second attempt confirms two repair cycles but fails the duration, running-job overlap, implementation, and verifier criteria. Any retry requires the named corrective work and fresh explicit authorization. A successful offline cap or projection test is infrastructure evidence; it is not sustained autonomous capability evidence.
 
 PR #211 can be reviewed and merged independently on its own exact-head hosted checks. H006 must use a separate branch and must not recast H005 as qualified.

@@ -1,0 +1,33 @@
+{
+  "live_fixture_and_verifier_modified": false,
+  "rerun_command": "python3 -m unittest discover -s verifier -v",
+  "rerun_result": "failed: 3 errors, 2 passed",
+  "rust_diagnostic": "ledger-store/src/lib.rs:59:5 unexpected closing delimiter `}`; opening delimiter at line 31, mismatched closure at line 58",
+  "tests": [
+    {
+      "cause": "cargo run failed because ledger-store did not compile",
+      "name": "test_end_to_end_journal_ingest_inspect_and_export",
+      "result": "error"
+    },
+    {
+      "name": "test_frozen_public_contract_and_checks_were_not_changed",
+      "result": "passed"
+    },
+    {
+      "cause": "AttributeError: 'NoneType' object has no attribute 'get'; the transcript emits job:null for ordinary tool calls and the verifier uses call.get('job', {}).get(...)",
+      "name": "test_transcript_proves_real_job_overlap_and_continuation",
+      "result": "error"
+    },
+    {
+      "name": "test_transcript_proves_two_failure_diagnosis_repair_cycles",
+      "result": "passed"
+    },
+    {
+      "cause": "cargo test failed because ledger-store did not compile",
+      "name": "test_workspace_tests_and_independent_scale_oracle",
+      "result": "error"
+    }
+  ],
+  "verifier_sha256": "b885dacfc60add5eb755004ec57810444fcd61a4a23fa4c8f5eb76eff96c53f9",
+  "verifier_unchanged": true
+}
