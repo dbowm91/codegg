@@ -1,6 +1,6 @@
 # M006 — Daemon LSP Process Budgets, Worktree Identity and Retirement
 
-Status: active — maintainer accepted bounded-admission policy defaults on 2026-10-28; real-server qualification is underway
+Status: active — bounded start-admission defaults accepted 2026-10-28; final qualification chose a total-live-server cap for strict closure, while automatic idle retirement is not required
 
 Primary class: infrastructure/polish.
 
@@ -18,6 +18,19 @@ Bound redundant LSP indexing and resource consumption when TUI, desktop and agen
 
 The maintainer accepted these policy boundaries on 2026-10-28: keep present concurrency unchanged by default; add an opt-in bounded admission budget; never retire or evict an attached editor server; include canonical worktree root, server/config fingerprint and execution profile in compatibility identity; and expose only bounded, redacted operational counts. Admission limits and queue saturation must produce typed, cancellable outcomes. Any idle retirement must prove there are no attachments, in-flight requests or open documents before stopping a process. No shared LSP process may cross worktree roots or execution profiles.
 
+The 2026-10-29 corrective qualification resolves the remaining closure policy:
+a **total-live-server count budget is required** for strict M006 closure because
+the existing start permits end at launch and the sustained mixed workload
+retained six rust-analyzer servers at up to 3.6 GiB aggregate descendant RSS.
+The count budget is opt-in and daemon-owned, shared by FullHost and constrained
+service scopes, retained until child exit is reaped, and refuses promptly with
+a typed/cancellable saturation outcome. No portable RSS threshold is inferred
+from the host-specific samples. **Automatic idle retirement is not required**:
+budget saturation refuses new starts rather than evicting attached editors;
+servers remain until owning-scope teardown or authorized stop. The complete
+method, repeated measurements and implementation gate are recorded in
+`artifacts/M006-sustained-frontend-agent-workload-20261029.md`.
+
 ## Work packages
 
 1. Audit every LSP spawn/restart/cancel path for FullHost daemon service, model-turn LSP, Linux constrained scope, standalone TUI legacy path and each platform; map which actually shares process identity and which must remain isolated. Audit profile, canonical worktree/root, server id, argv/env/config, trust and compatibility fingerprint. A new key must be stable and not leak secrets, and callers must never supply arbitrary root/profile.
@@ -25,10 +38,11 @@ The maintainer accepted these policy boundaries on 2026-10-28: keep present conc
 3. Introduce bounded *daemon-owned* start admission: concurrency cap, deterministic queue/coalescing per compatible key, optional workspace/global active limit, strict cancellation/timeout, no stalled warm-only editor read. Never kill an attached server without a defined user-visible `NotReady` transition and snapshot/replay semantics. Prefer explicit finite idle timeout and LRU policy only after acceptance. Constrained scope lifetime remains turn-bounded.
 4. Use the existing managed process-launch helper and lifecycle cleanup, respecting the Linux sandbox helper and platform-specific admission. Keep a separate worktree as a separate semantic root even when Cargo build output is shared. Do not use `CARGO_TARGET_DIR` tricks or Rust dependency caches as a reason to reuse one language server across incompatible roots.
 5. Test process admission under parallel agent substreams, two editors, shared checkout and separate worktrees, resource saturation, restart storms, cancelled startup, server crash and daemon shutdown. Surface bounded operator statuses through M003 if available; do not make M003 a hard correctness dependency on process accounting.
+6. Add a daemon-wide lifetime permit for every LSP child process across FullHost and constrained service scopes. Hold it from launch admission through successful exit reap; do not release it at initialize or when a startup semaphore is dropped. Saturation refuses promptly and never evicts an attached editor process. Automatic idle retirement is outside this milestone.
 
 ## Verification
 
-Run `cargo test -p egglsp --locked`, root `cargo test -p codegg --locked lsp`, `cargo check -p codegg --locked --features server`, `python3 scripts/check_authorization_matrix.py`, relevant managed-process/daemon-workspace static guards and root `scripts/verify.sh`. Native Linux contained LSP exchange must prove host-proc denial; macOS/Windows behavior must be separately qualified or explicitly disabled. Benchmark 1, 2 and 4 simultaneous editors/agents, 1 vs 3 worktrees, warm and cold starts, Rust and Python fixtures; record p50/p95 startup/read latency, number of child processes, peak RAM/CPU and disk-impact evidence with exact machine/model/server versions. No invented target SLO or false host-generalized throughput claims.
+Run `cargo test -p egglsp --locked`, root `cargo test -p codegg --locked lsp`, `cargo check -p codegg --locked --features server`, `python3 scripts/check_authorization_matrix.py`, relevant managed-process/daemon-workspace static guards and root `scripts/verify.sh`. Native Linux contained LSP exchange must prove host-proc denial; macOS behavior must be qualified and Windows constrained LSP remains explicitly disabled while its filesystem-enforcement backend is absent. Benchmark 1, 2 and 4 simultaneous editors/agents, 1 vs 3 worktrees, warm and cold starts, Rust and Python fixtures; record p50/p95 startup/read latency, number of child processes, peak RAM/CPU and disk-impact evidence with exact machine/model/server versions. Include mixed TUI/desktop daemon reads and separate agent service scopes with managed edits and a sustained analysis window. No invented target SLO or false host-generalized throughput claims.
 
 Current host qualification (2026-10-29): the fake-LSP integration family ran
 on this x86_64-reported macOS session with a compatible linker wrapper
@@ -55,6 +69,22 @@ daemon-owned constrained LSP duplex/procfs path and refusal under the
 restricted user-namespace policy; run receipts are linked from the multiworktree
 resource artifact.
 
+The corrective pass adds
+`rust_analyzer_sustained_tui_desktop_agent_worktrees`, run twice against
+rust-analyzer 1.89 on this native ARM64 host. It uses two concurrent
+frontend-shaped reads sharing one daemon service per root, separate agent
+service scopes per root, three worktrees, managed document changes, a 60-second
+active window, a 15-second idle-retention window, RSS/CPU sampling, workspace
+disk accounting, and process-teardown assertions. Evidence and dispersion are
+in `artifacts/M006-sustained-frontend-agent-workload-20261029.md`. This
+qualifies the service/process shape; it does not launch the TUI, desktop
+renderer, or agent runtime as separate application processes. The focused
+stdio supervisor coverage includes
+`real_server_restart_discards_an_inflight_old_generation_response`, where the
+old child is replaced while its request is outstanding, the pending request
+fails closed, and the replacement answers. An additional same-process delayed
+response race remains unqualified; it is not claimed by this corrective pass.
+
 Admission semantics are intentionally narrower than total process budgeting:
 `max_concurrent_starts` bounds launches inside the launcher and
 `max_admitted_starts` bounds starts concurrently admitted to that launcher.
@@ -63,15 +93,17 @@ against either bound. With no `lsp_process_admission` config, existing direct
 launch behavior remains. Do not describe these settings as an active-server,
 RAM, CPU or disk cap.
 
-The remaining gates are a true multi-editor-process/agent-substream workload,
-repeated p50/p95 plus sustained indexing/idle and disk observations, and the
-Windows constrained-LSP boundary (which remains unavailable because no
-filesystem-enforcement backend is registered). Normal service shutdown is
-process-exit qualified; no idle retirement policy was selected or implemented,
-and servers remain alive until their owning service/scope shuts down. M006
-remains active until the closure record either qualifies the approved scope
-with these limits explicit or a maintainer resolves whether a total-live-resource
-budget/idle-retirement policy is required.
+Remaining gates: implement and qualify the daemon-wide total-live-server
+lifetime budget, including cross-scope saturation, cancellation, process-exit
+release, restart, and shutdown. The sustained workload provides two host-local
+observations but does not establish a universal RAM/CPU limit, separate native
+TUI/desktop/agent application-process scale, or Windows constrained-LSP
+execution. Windows remains explicitly unavailable because no
+filesystem-enforcement backend is registered. Automatic idle retirement is a
+recorded non-requirement for this milestone; services retain idle processes
+until scope teardown or authorized stop. M006 remains active until the global
+count budget is implemented and its exact configuration semantics, negative
+tests, saturation behavior and platform status are recorded in the closure.
 
 ## Non-goals / closure
 

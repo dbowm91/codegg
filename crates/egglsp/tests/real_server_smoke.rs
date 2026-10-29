@@ -6741,6 +6741,141 @@ async fn daemon_process_resource_sample(root_pid: u32) -> Option<(usize, u64, f6
     Some(peak)
 }
 
+async fn daemon_process_resource_window(
+    root_pid: u32,
+    duration: Duration,
+) -> Option<Vec<(usize, u64, f64)>> {
+    let deadline = tokio::time::Instant::now() + duration;
+    let mut previous = daemon_process_accounting_once(root_pid)?;
+    let mut previous_at = tokio::time::Instant::now();
+    let mut samples = Vec::new();
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let current = daemon_process_accounting_once(root_pid)?;
+        let now = tokio::time::Instant::now();
+        let elapsed = now.duration_since(previous_at).as_secs_f64();
+        let cpu_percent = current.2.saturating_sub(previous.2) as f64 / elapsed.max(f64::EPSILON);
+        samples.push((current.0, current.1, cpu_percent));
+        previous = current;
+        previous_at = now;
+    }
+    Some(samples)
+}
+
+fn parse_ps_cpu_time_centiseconds(value: &str) -> Option<u64> {
+    let (days, clock) = if let Some((days, clock)) = value.split_once('-') {
+        (days.parse::<u64>().ok()?, clock)
+    } else {
+        (0, value)
+    };
+    let parts: Vec<_> = clock.split(':').collect();
+    let (hours, minutes, seconds) = match parts.as_slice() {
+        [seconds] => (0.0, 0.0, seconds.parse::<f64>().ok()?),
+        [minutes, seconds] => (
+            0.0,
+            minutes.parse::<f64>().ok()?,
+            seconds.parse::<f64>().ok()?,
+        ),
+        [hours, minutes, seconds] => (
+            hours.parse::<f64>().ok()?,
+            minutes.parse::<f64>().ok()?,
+            seconds.parse::<f64>().ok()?,
+        ),
+        _ => return None,
+    };
+    let total = days as f64 * 86_400.0 + hours * 3_600.0 + minutes * 60.0 + seconds;
+    Some((total * 100.0).round().max(0.0) as u64)
+}
+
+fn daemon_process_accounting_once(root_pid: u32) -> Option<(usize, u64, u64)> {
+    let output = std::process::Command::new("ps")
+        .args(["-Ao", "pid=,ppid=,rss=,time=,comm="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut processes = std::collections::HashMap::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(pid), Some(parent), Some(rss), Some(cpu_time), Some(command)) = (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+        ) else {
+            continue;
+        };
+        if let (Ok(pid), Ok(parent), Ok(rss), Some(cpu_cs)) = (
+            pid.parse::<u32>(),
+            parent.parse::<u32>(),
+            rss.parse::<u64>(),
+            parse_ps_cpu_time_centiseconds(cpu_time),
+        ) {
+            processes.insert(pid, (parent, rss, cpu_cs, command.to_ascii_lowercase()));
+        }
+    }
+    let mut parents = vec![root_pid];
+    let mut descendants = Vec::new();
+    while !parents.is_empty() {
+        let next: Vec<u32> = processes
+            .iter()
+            .filter(|(_, (parent, _, _, _))| parents.contains(parent))
+            .map(|(pid, _)| *pid)
+            .collect();
+        parents = next.clone();
+        descendants.extend(next);
+    }
+    let children: Vec<_> = descendants
+        .iter()
+        .filter_map(|pid| processes.get(pid))
+        .filter(|(_, _, _, command)| command != "ps")
+        .collect();
+    let direct_processes = children
+        .iter()
+        .filter(|(parent, _, _, _)| *parent == root_pid)
+        .count();
+    Some((
+        direct_processes,
+        children.iter().map(|(_, rss, _, _)| *rss).sum(),
+        children.iter().map(|(_, _, cpu_cs, _)| *cpu_cs).sum(),
+    ))
+}
+
+fn directory_bytes(root: &Path) -> u64 {
+    let mut pending = vec![root.to_path_buf()];
+    let mut bytes = 0_u64;
+    while let Some(path) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => pending.push(path),
+                Ok(kind) if kind.is_file() => {
+                    bytes = bytes.saturating_add(entry.metadata().map_or(0, |meta| meta.len()));
+                }
+                _ => {}
+            }
+        }
+    }
+    bytes
+}
+
+fn sample_percentile_u64(values: &mut [u64], percentile: usize) -> u64 {
+    values.sort_unstable();
+    let index = (values.len().saturating_sub(1) * percentile).div_ceil(100);
+    values[index]
+}
+
+fn sample_percentile_f64(values: &mut [f64], percentile: usize) -> f64 {
+    values.sort_by(f64::total_cmp);
+    let index = (values.len().saturating_sub(1) * percentile).div_ceil(100);
+    values[index]
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rust_analyzer_same_root_and_multiworktree_resource_matrix() {
@@ -7088,6 +7223,306 @@ async fn pyright_three_worktree_resource_matrix() {
             .unwrap()
             .0,
         0
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rust_analyzer_sustained_tui_desktop_agent_worktrees() {
+    use std::time::Instant;
+
+    assert_eq!(parse_ps_cpu_time_centiseconds("00:00.12"), Some(12));
+    assert_eq!(
+        parse_ps_cpu_time_centiseconds("1-00:00:00.12"),
+        Some(8_640_012)
+    );
+    if require_server_binary("CODEGG_RA_BIN", &["rust-analyzer"]).is_none() {
+        eprintln!("SKIP: rust-analyzer not found (set CODEGG_RA_BIN or install rust-analyzer)");
+        return;
+    }
+
+    let worktrees: Vec<_> = (0..3).map(|_| rust_fixture()).collect();
+    for (worktree_index, fixture) in worktrees.iter().enumerate() {
+        let generated = fixture.root.join("src/m006_workload");
+        std::fs::create_dir_all(&generated).expect("create indexing workload source tree");
+        for file_index in 0..12 {
+            let mut source = String::new();
+            for symbol_index in 0..32 {
+                source.push_str(&format!(
+                    "pub struct M006WorkloadW{worktree_index}F{file_index}S{symbol_index};\n"
+                ));
+            }
+            std::fs::write(
+                generated.join(format!("workload_{file_index:02}.rs")),
+                source,
+            )
+            .expect("write generated indexing workload");
+        }
+        let modules = (0..12)
+            .map(|file_index| format!("mod workload_{file_index:02};\n"))
+            .collect::<String>();
+        std::fs::write(generated.join("mod.rs"), modules)
+            .expect("write generated workload module declarations");
+        let lib_path = fixture.root.join("src/lib.rs");
+        let mut lib = std::fs::read_to_string(&lib_path).expect("read fixture lib.rs");
+        lib.push_str("\nmod m006_workload;\n");
+        std::fs::write(lib_path, lib).expect("include generated indexing workload");
+    }
+
+    let daemon_service =
+        egglsp::LspService::new_arc_with_start_admission(egglsp::LspConfig::default(), 2, 8)
+            .expect("daemon service start limits are valid");
+    let agent_services: Vec<_> = (0..worktrees.len())
+        .map(|_| {
+            egglsp::LspService::new_arc_with_start_admission(egglsp::LspConfig::default(), 2, 8)
+                .expect("agent scope start limits are valid")
+        })
+        .collect();
+    let mut daemon_keys = Vec::new();
+    let mut agent_keys = Vec::new();
+    let mut starts = tokio::task::JoinSet::new();
+    for (index, fixture) in worktrees.iter().enumerate() {
+        let daemon = Arc::clone(&daemon_service);
+        let daemon_path = fixture.primary_source.clone();
+        starts.spawn(async move {
+            daemon
+                .get_or_create_client(&daemon_path)
+                .await
+                .map(|(key, _)| ("daemon", index, key))
+        });
+        let agent = Arc::clone(&agent_services[index]);
+        let agent_path = fixture.primary_source.clone();
+        starts.spawn(async move {
+            agent
+                .get_or_create_client(&agent_path)
+                .await
+                .map(|(key, _)| ("agent", index, key))
+        });
+    }
+    while let Some(result) = starts.join_next().await {
+        let (owner, index, key) = result
+            .expect("workload server-start task completes")
+            .expect("workload server starts");
+        if owner == "daemon" {
+            daemon_keys.push((index, key));
+        } else {
+            agent_keys.push((index, key));
+        }
+    }
+    daemon_keys.sort_by_key(|(index, _)| *index);
+    agent_keys.sort_by_key(|(index, _)| *index);
+    assert_eq!(daemon_service.client_keys().await.len(), 3);
+    for service in &agent_services {
+        assert_eq!(service.client_keys().await.len(), 1);
+    }
+
+    let mut ready = tokio::task::JoinSet::new();
+    for ((_, daemon_key), ((_, agent_key), agent_service)) in daemon_keys
+        .iter()
+        .zip(agent_keys.iter().zip(agent_services.iter()))
+    {
+        let daemon = Arc::clone(&daemon_service);
+        let daemon_key = daemon_key.clone();
+        ready.spawn(async move {
+            daemon
+                .wait_for_readiness(
+                    &daemon_key,
+                    &egglsp::compatibility::LspReadinessPolicy::WaitForDiagnosticsOrTimeout {
+                        timeout: Duration::from_secs(45),
+                    },
+                )
+                .await
+        });
+        let agent = Arc::clone(agent_service);
+        let agent_key = agent_key.clone();
+        ready.spawn(async move {
+            agent
+                .wait_for_readiness(
+                    &agent_key,
+                    &egglsp::compatibility::LspReadinessPolicy::WaitForDiagnosticsOrTimeout {
+                        timeout: Duration::from_secs(45),
+                    },
+                )
+                .await
+        });
+    }
+    while let Some(result) = ready.join_next().await {
+        assert!(
+            matches!(
+                result.expect("server readiness task completes"),
+                egglsp::ReadinessResult::Ready { .. }
+            ),
+            "all daemon and isolated agent servers reach readiness"
+        );
+    }
+
+    for (index, fixture) in worktrees.iter().enumerate() {
+        daemon_service
+            .ensure_file_open_from_disk_for_key(&daemon_keys[index].1, &fixture.primary_source)
+            .await
+            .expect("daemon editor document opens");
+        agent_services[index]
+            .ensure_file_open_from_disk_for_key(&agent_keys[index].1, &fixture.primary_source)
+            .await
+            .expect("agent scope document opens");
+    }
+    let roots_bytes_before: u64 = worktrees
+        .iter()
+        .map(|fixture| directory_bytes(&fixture.root))
+        .sum();
+    let mut request_rounds = 0_u32;
+    let base_texts: Vec<_> = worktrees
+        .iter()
+        .map(|fixture| std::fs::read_to_string(&fixture.primary_source).expect("read base text"))
+        .collect();
+    let workload_started = Instant::now();
+    let workload_duration = Duration::from_secs(60);
+    let mut workload_samples = Vec::new();
+    let mut previous_accounting = daemon_process_accounting_once(std::process::id())
+        .expect("process accounting is available before the active workload");
+    let mut previous_sample_at = Instant::now();
+    while workload_started.elapsed() < workload_duration {
+        let mut reads = tokio::task::JoinSet::new();
+        for index in 0..worktrees.len() {
+            let changing_text = format!(
+                "{}\npub fn m006_sustained_edit_{request_rounds}() -> usize {{ {request_rounds} }}\n",
+                base_texts[index]
+            );
+            daemon_service
+                .set_managed_document_for_key(
+                    &daemon_keys[index].1,
+                    &worktrees[index].primary_source,
+                    &changing_text,
+                    true,
+                )
+                .await
+                .expect("daemon frontend edit is synchronized");
+            agent_services[index]
+                .set_managed_document_for_key(
+                    &agent_keys[index].1,
+                    &worktrees[index].primary_source,
+                    &changing_text,
+                    true,
+                )
+                .await
+                .expect("agent scope edit is synchronized");
+            let service = Arc::clone(&daemon_service);
+            let key = daemon_keys[index].1.clone();
+            let path = worktrees[index].primary_source.clone();
+            reads.spawn(async move {
+                let operations = egglsp::operations::LspOperations::new(service);
+                operations
+                    .document_symbols_for_warm_client(&key, &path)
+                    .await
+                    .map(|symbols| symbols.len())
+            });
+            let service = Arc::clone(&daemon_service);
+            let key = daemon_keys[index].1.clone();
+            let path = worktrees[index].primary_source.clone();
+            reads.spawn(async move {
+                let operations = egglsp::operations::LspOperations::new(service);
+                operations
+                    .document_symbols_for_warm_client(&key, &path)
+                    .await
+                    .map(|symbols| symbols.len())
+            });
+            let service = Arc::clone(&agent_services[index]);
+            let key = agent_keys[index].1.clone();
+            let agent_read = async move {
+                let operations = egglsp::operations::LspOperations::new(service);
+                let symbols = operations
+                    .workspace_symbols_for_warm_client(&key, "M006Workload")
+                    .await?;
+                Ok::<_, egglsp::LspError>(symbols.len())
+            };
+            reads.spawn(agent_read);
+        }
+        while let Some(result) = reads.join_next().await {
+            let symbols = result
+                .expect("frontend/agent read task completes")
+                .expect("frontend/agent semantic read succeeds");
+            assert!(symbols > 0, "workload query returns indexed symbols");
+        }
+        request_rounds += 1;
+        let accounting = daemon_process_accounting_once(std::process::id())
+            .expect("process accounting is available during workload");
+        let sampled_at = Instant::now();
+        let cpu_utilization_percent = accounting.2.saturating_sub(previous_accounting.2) as f64
+            / sampled_at
+                .duration_since(previous_sample_at)
+                .as_secs_f64()
+                .max(f64::EPSILON);
+        workload_samples.push((accounting.0, accounting.1, cpu_utilization_percent));
+        previous_accounting = accounting;
+        previous_sample_at = sampled_at;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    let active_elapsed = workload_started.elapsed();
+    let idle_samples = daemon_process_resource_window(std::process::id(), Duration::from_secs(15))
+        .await
+        .expect("process sampling is available for the idle-retention window");
+    let roots_bytes_after: u64 = worktrees
+        .iter()
+        .map(|fixture| directory_bytes(&fixture.root))
+        .sum();
+    let active_children =
+        daemon_process_resource_sample_once(std::process::id()).expect("process tree is queryable");
+
+    let summarize = |samples: &[(usize, u64, f64)]| {
+        let mut rss: Vec<u64> = samples.iter().map(|sample| sample.1).collect();
+        let mut cpu: Vec<f64> = samples.iter().map(|sample| sample.2.max(0.0)).collect();
+        let mut children: Vec<u64> = samples.iter().map(|sample| sample.0 as u64).collect();
+        let rss_max = *rss.iter().max().expect("RSS samples are present");
+        let cpu_max = cpu
+            .iter()
+            .copied()
+            .max_by(f64::total_cmp)
+            .expect("CPU samples are present");
+        (
+            sample_percentile_u64(&mut rss, 50),
+            sample_percentile_u64(&mut rss, 95),
+            rss_max,
+            sample_percentile_f64(&mut cpu, 50),
+            sample_percentile_f64(&mut cpu, 95),
+            cpu_max,
+            sample_percentile_u64(&mut children, 95),
+        )
+    };
+    let workload_summary = summarize(&workload_samples);
+    let idle_summary = summarize(&idle_samples);
+    eprintln!(
+        "M006_MIXED_RA worktrees=3 frontend_roles=tui+desktop_shared agent_scopes=3 processes={} workload_rounds={} active_samples={} idle_samples={} workload_ms={} disk_bytes_before={} disk_bytes_after={} workload_rss_kb_p50_p95_max={:?} workload_cpu_percent_p50_p95_max={:?} idle_rss_kb_p50_p95_max={:?} idle_cpu_percent_p50_p95_max={:?}",
+        active_children.0,
+        request_rounds,
+        workload_samples.len(),
+        idle_samples.len(),
+        active_elapsed.as_millis(),
+        roots_bytes_before,
+        roots_bytes_after,
+        (
+            workload_summary.0,
+            workload_summary.1,
+            workload_summary.2
+        ),
+        (
+            workload_summary.3,
+            workload_summary.4,
+            workload_summary.5
+        ),
+        (idle_summary.0, idle_summary.1, idle_summary.2),
+        (idle_summary.3, idle_summary.4, idle_summary.5)
+    );
+
+    daemon_service.shutdown_all().await;
+    for service in &agent_services {
+        service.shutdown_all().await;
+    }
+    assert_eq!(
+        daemon_process_resource_sample_once(std::process::id())
+            .expect("process tree is queryable after teardown")
+            .0,
+        0,
+        "all daemon and agent servers exit at their owning service teardown"
     );
 }
 

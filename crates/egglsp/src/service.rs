@@ -2402,15 +2402,37 @@ impl LspService {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, LspError> {
-        let client = {
+        let (client, generation) = {
             let clients = self.clients.read().await;
-            clients
+            let client = clients
                 .get(key)
                 .cloned()
-                .ok_or_else(|| LspError::NotInitialized(format!("client '{}' not found", key)))?
+                .ok_or_else(|| LspError::NotInitialized(format!("client '{}' not found", key)))?;
+            (client, self.generation_for_key(key).await)
         };
-        // Read lock released before await.
-        client.send_request(method, params).await
+        // Fence responses after client replacement or generation advance.
+        let result = client.send_request(method, params).await;
+        let current_generation = self.generation_for_key(key).await;
+        let current_client = self.lookup_client(key).await;
+        let restarting = matches!(
+            self.operational_state_for_key(key).await,
+            Some(LspOperationalState::Restarting { .. } | LspOperationalState::Initializing)
+        );
+        if current_generation != generation
+            || restarting
+            || current_client
+                .as_ref()
+                .is_some_and(|current| !Arc::ptr_eq(current, &client))
+        {
+            return Err(LspError::ServerRestarted {
+                server_id: key
+                    .rsplit_once(':')
+                    .map_or_else(|| key.to_owned(), |(_, id)| id.to_owned()),
+                old_generation: generation,
+                new_generation: (current_generation != generation).then_some(current_generation),
+            });
+        }
+        result
     }
 
     pub async fn client_keys(&self) -> Vec<String> {

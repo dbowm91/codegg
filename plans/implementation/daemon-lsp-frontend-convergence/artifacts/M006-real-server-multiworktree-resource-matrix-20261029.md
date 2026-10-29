@@ -94,3 +94,14 @@ budget.
 5. **No long-duration sample.** The 2-second sample window captures a peak during startup/readiness/use, not sustained idle/indexing behavior or a representative workday. A future repeatable baseline would be needed before choosing resource budgets from these values.
 
 These observations establish real-server reuse/isolation and bounded-start behavior on macOS, plus the contained Linux process/IPC contract on the exact implementation head. They do not establish general memory/CPU limits, retirement safety, or Windows qualification. M006 stays active until the accepted contract and closure conditions resolve the remaining gates.
+
+## Corrective qualification update — 2026-10-29
+
+The final mixed frontend/agent service workload, repeated sustained resource
+measurements, actual child-restart stale-response test, and resolved M006
+closure-policy choice are recorded in
+[`M006-sustained-frontend-agent-workload-20261029.md`](M006-sustained-frontend-agent-workload-20261029.md).
+That follow-up supersedes this artifact's open question about whether a
+total-live-server budget or idle-retirement policy is required: a total-live
+count budget is required; automatic idle retirement is not. The budget remains
+unimplemented, so M006 remains active.
