@@ -1,0 +1,126 @@
+{
+  "active_work_span_ms": 581715,
+  "activity_stall_triggered": false,
+  "authorization": {
+    "billed_usd_when_unavailable": "unknown",
+    "cancellation_conditions": [
+      "user request",
+      "provider request cap",
+      "60-minute wall-clock cap",
+      "free disk below 10 GiB",
+      "300 seconds without ACP tool activity",
+      "unverifiable request accounting",
+      "lost or mismatched exact-ID job observation"
+    ],
+    "consumed": true,
+    "fresh_user_authorized_attempt": true,
+    "max_provider_requests": 60,
+    "max_wallclock_seconds": 3600,
+    "minimum_free_disk_bytes": 10737418240,
+    "route": "opencode_go/muse-spark-1.3-contributor",
+    "stall_cancel_seconds": 300
+  },
+  "billed_usd": "unknown",
+  "binary_sha256": "80292d55a3ba9ba2291e2daffa67d083a450b9a4ebaeaf578ff882dda15bc04c",
+  "case_id": "build-provenance-catalog",
+  "continuation_confirmed": true,
+  "daemon_stop_error": null,
+  "disk_floor": {
+    "lowest_observed_free_bytes": 134013382656,
+    "minimum_free_bytes": 10737418240,
+    "triggered": false
+  },
+  "duration_ms": 601243,
+  "event_capture": {
+    "dropped": 0,
+    "gap_count": 0,
+    "state": "observed_complete",
+    "tool_started": 29,
+    "tool_terminal": 29
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "job_lifecycle_missing",
+  "implementation_revision": "d2ae03c201b575dadef0bf9d9506dc084d93eed7",
+  "independent_verifier": {
+    "exit_code": 1,
+    "failure_summary": "(errors=1)",
+    "ran": true,
+    "tests_run": 0
+  },
+  "job_lifecycle": {
+    "observations": [
+      {
+        "action": "submit",
+        "job_id": "3f05a118-1cea-4f5d-bf97-19bf90f88775",
+        "projected_status": null,
+        "tool_terminal": "failed"
+      },
+      {
+        "action": "submit",
+        "job_id": "8c42d413-620f-46a6-b23b-6d4dd7977fd3",
+        "projected_status": null,
+        "tool_terminal": "completed"
+      },
+      {
+        "action": "submit",
+        "job_id": "42df4723-7a1a-4761-b692-773f60979c0c",
+        "projected_status": null,
+        "tool_terminal": "failed"
+      },
+      {
+        "action": "submit",
+        "job_id": "56d35ac5-81ad-4b1d-9559-7d4082a40848",
+        "projected_status": null,
+        "tool_terminal": "completed"
+      },
+      {
+        "action": "submit",
+        "job_id": "3658d52c-d3ae-4eab-9c46-d28ada4f5b5b",
+        "projected_status": null,
+        "tool_terminal": "completed"
+      },
+      {
+        "action": "status",
+        "job_id": "3658d52c-d3ae-4eab-9c46-d28ada4f5b5b",
+        "projected_status": "failed",
+        "tool_terminal": "failed"
+      },
+      {
+        "action": "output",
+        "job_id": "3658d52c-d3ae-4eab-9c46-d28ada4f5b5b",
+        "projected_status": "failed",
+        "tool_terminal": "failed"
+      },
+      {
+        "action": "submit",
+        "job_id": "72836145-24c2-4e33-8d75-6dcc3256a528",
+        "projected_status": null,
+        "tool_terminal": "completed"
+      },
+      {
+        "action": "status",
+        "job_id": "72836145-24c2-4e33-8d75-6dcc3256a528",
+        "projected_status": "running",
+        "tool_terminal": "completed"
+      }
+    ],
+    "productive_work_during_job": false,
+    "same_id_running_and_terminal_observed": false
+  },
+  "maximum_activity_gap_limit_ms": 300000,
+  "maximum_activity_gap_ms": 90923,
+  "minimum_active_duration_ms": 1800000,
+  "minimum_repair_cycles": 2,
+  "preflight_refusals": [],
+  "provider_allowance_is_cash_charge": false,
+  "provider_allowance_value": 0.016423,
+  "provider_request_count_source": "codegg_provider_boundary_receipt",
+  "provider_requests": 21,
+  "repair_cycles": 0,
+  "retry_number": 6,
+  "run_date": "2026-10-29",
+  "schema_version": 1,
+  "stop_reason": "end_turn",
+  "task_outcome": "failed",
+  "terminal": "completed"
+}

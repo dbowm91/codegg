@@ -1,6 +1,6 @@
 # H007 — Deep Rust Workload and Separate Horizon Measures
 
-Status: **offline implementation and calibration complete; two separately authorized H007 live attempts are consumed without sustained qualification. Exact-head hosted CI passed through `647ac905`; the diagnostic-only repair-reason correction is committed separately.**
+Status: **offline implementation and calibration complete; seven H007 live attempts across three explicit authorizations are consumed without sustained qualification. Five additional authorized retries exercised the same Muse Spark route; none met the full qualification. Exact-head hosted CI passed through `647ac905`; the diagnostic-only repair-reason correction is committed separately.**
 
 Implementation source SHA: `d7f1f528df622e8e9bfe4a2d17e2f22ce90d93f5`.
 
@@ -10,7 +10,7 @@ Plan: [`007-deep-workload-and-separate-horizon-measures.md`](../../implementatio
 
 H007 supplies a deeper five-crate build-provenance catalog fixture, an independent holdout verifier, and a versioned result projection that reports task outcome separately from horizon outcome. A correct early completion is a task pass with horizon `not_observed`; duration cannot turn correctness into failure. Horizon qualification still requires a 30-minute active span, no activity gap above five minutes, exact-ID job lifecycle and productive overlap, continuation, at least two repair cycles, and complete verifier/event evidence. H006 receipts and scoring remain unchanged.
 
-The H007 plan delivered offline fixture and measurement calibration; its offline completion did not authorize a live provider run. Two later, separately authorized attempts used `opencode_go/muse-spark-1.3-contributor`, each capped at 60 provider requests and 3,600 seconds, with a 10 GiB disk floor, 300-second ACP inactivity cancellation, user cancellation, and unknown billed USD when unavailable. Both authorizations are consumed. The results do not establish sustained autonomous qualification or billed USD cost.
+The H007 plan delivered offline fixture and measurement calibration; its offline completion did not authorize a live provider run. The seven attempts used `opencode_go/muse-spark-1.3-contributor`, each capped at 60 provider requests and 3,600 seconds, with a 10 GiB disk floor, 300-second ACP inactivity cancellation, user cancellation, and billed USD recorded as unknown when unavailable. The first two attempts had separate authorizations; a third authorization covered attempts 3–7. All are consumed. The results do not establish sustained autonomous qualification or billed USD cost.
 
 ## Separately authorized live attempt — 2026-10-29
 
@@ -38,7 +38,30 @@ The runner's original `horizon_reason` was `continuation_missing`, even though `
 - Attempt 2 completed normally after 35 requests. It proved same-ID running/terminal observation, productive overlap, continuation, and complete event capture, but the agent completed only one of two required repair cycles and the verifier failed that criterion.
 - The observed job and ACP surfaces behaved correctly in the retry. The first provider timeout did not recur, so these two trials do not establish a persistent provider reliability defect. They do show that the selected agent/provider route can complete a live turn, while this run's immediate task failure was insufficient repair work. The next narrow owner is the agent task-execution/recovery behavior that stops after one repair; do not reopen daemon, scheduler, or ACP architecture. Track the OpenCode Go timeout separately if it recurs.
 
-The second attempt's sanitized machine-readable record is [`evidence/007-live-attempt-2.json`](evidence/007-live-attempt-2.json). Both live authorizations are consumed; another provider run requires fresh authorization.
+The second attempt's sanitized machine-readable record is [`evidence/007-live-attempt-2.json`](evidence/007-live-attempt-2.json).
+
+## Five additional authorized retries — 2026-10-29
+
+The user authorized up to five additional runs of the same frozen case and route. Attempts 3–7 each used a fresh private lane and the existing limits: 60 requests, 3,600 seconds, a 10 GiB free-disk floor, 300-second ACP inactivity cancellation, and user cancellation. No run hit its request, wall-clock, disk, or inactivity cap. USD billing was unavailable; the OpenCode Go allowance observations are quota metadata, not cash charges.
+
+| Attempt | Elapsed | Requests | Active span | Task result | Exact-ID running/terminal with overlap | Repairs | Verifier |
+| --- | ---: | ---: | ---: | --- | --- | ---: | --- |
+| 3 | 456 s | 8 | 191 s | Inconclusive: typed `provider_timeout` | No | 0 | Error before tests completed |
+| 4 | 686 s | 17 | 674 s | Failed implementation | No | 0 | Cargo test setup failed after `catalog-index` missing-key panics |
+| 5 | 121 s | 27 | 111 s | Failed qualification | No qualifying lifecycle | 0 | 4/5 passed; exact-ID productive overlap absent |
+| 6 | 612 s | 21 | 582 s | Failed implementation | No | 0 | Cargo test setup failed on `catalog-query` lineage provenance assertion |
+| 7 | 248 s | 40 | 235 s | Failed qualification | Yes | 1 of 2 | 4/5 passed; second repair absent |
+
+All five runs had complete ACP tool-event capture: starts equaled terminals, with zero gaps and zero dropped events. The lowest observed free-disk measurement across them was 124 GiB, well above the 10 GiB floor. Continuation was confirmed in attempts 5–7. Attempt 7 demonstrated the exact same job ID observed running and completed, with productive work during the running interval. No run reached the 30-minute active-work threshold; the longest span was 674 seconds.
+
+### What the five retries establish
+
+- The ACP event stream and provider request accounting remained complete in every receipt. The CodeGG job surface demonstrated the required same-ID lifecycle and productive overlap in attempt 7. These runs provide no evidence for a daemon, scheduler, ACP projection, or event-loss defect.
+- One of five retries ended in a typed provider timeout (attempt 3). The other four ended normally. That isolated timeout shows route variability, but it did not recur often enough to establish a persistent OpenCode Go transport failure.
+- The recurring miss was agent task execution. Attempts 4 and 6 ended with failing Rust implementation tests; attempts 3–6 did not demonstrate the exact-ID productive job lifecycle; no retry completed both distinct repair cycles. Attempt 7 completed the job lifecycle and continuation checks but stopped after one repair cycle and 235 seconds of active work.
+- Therefore the harness is not the supported corrective owner. The evidence points to the selected model/provider route's inconsistent completion of the task's required recovery sequence and sustained horizon, with one separate provider timeout. Any further live attempt needs fresh authorization. Keep the next corrective narrow to task-execution/recovery qualification or a separately evaluated model/provider choice; do not reopen daemon, scheduler, ACP event projection, or multi-provider architecture.
+
+Sanitized machine-readable receipts: [`attempt 3`](evidence/007-live-attempt-3.json), [`attempt 4`](evidence/007-live-attempt-4.json), [`attempt 5`](evidence/007-live-attempt-5.json), [`attempt 6`](evidence/007-live-attempt-6.json), and [`attempt 7`](evidence/007-live-attempt-7.json). The five-run authorization is consumed; additional live provider execution requires fresh explicit authorization.
 
 ## Fixture and verifier calibration
 
@@ -68,7 +91,7 @@ Completed focused evidence before the final hosted run:
 
 ### Exact-head hosted verification
 
-The offline implementation at `d7f1f528df622e8e9bfe4a2d17e2f22ce90d93f5` passed exact-head hosted CI: [run 40949588693](https://github.com/dbowm91/codegg/actions/runs/40949588693). The live preflight packaging correction at `959509dc3a945eb7c465b975c05561d5f98f5eb3` passed exact-head hosted CI in [run 40963335943](https://github.com/dbowm91/codegg/actions/runs/40963335943). The subsequent diagnostic-only repair-reason correction is `75613e050625c9d39456b5e69132fa665a3cb13a`; its 15 focused H007 tests and test-quality guards pass locally, while hosted CI for this newest head is pending.
+The offline implementation at `d7f1f528df622e8e9bfe4a2d17e2f22ce90d93f5` passed exact-head hosted CI: [run 40949588693](https://github.com/dbowm91/codegg/actions/runs/40949588693). The live preflight packaging correction at `959509dc3a945eb7c465b975c05561d5f98f5eb3` passed exact-head hosted CI in [run 40963335943](https://github.com/dbowm91/codegg/actions/runs/40963335943). The diagnostic-only repair-reason correction and attempt-2 closure evidence at `d2ae03c201b575dadef0bf9d9506dc084d93eed7` passed exact-head hosted CI in [run 40967248271](https://github.com/dbowm91/codegg/actions/runs/40967248271). The additional attempt-3-through-7 closure records in this update do not change runtime or harness code; hosted checks will run on the resulting PR head.
 
 ## Changed files
 
