@@ -473,13 +473,9 @@ async fn a_read_after_an_outside_mutation_still_reports_a_captured_generation() 
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_repeat_read_of_an_unchanged_repository_is_served_from_the_capture_cache() {
-    // The preparation cache is a best-effort mechanism with eviction, not a
-    // durability boundary. A cache-served read is therefore a *captured*
-    // generation, not an immutable current one — that distinction is what
-    // keeps the receipt truthful under cache eviction. The fixture holds the
-    // cache lock so no concurrent test can evict this repository's cached
-    // generation between the two reads.
+async fn a_repeat_read_of_an_unchanged_repository_stays_generation_consistent() {
+    // The fixture holds the preparation-cache lock so another test cannot
+    // evict this repository's generation between the two reads.
     let dir = repository_scratch();
     let _cache_guard = object_view_cache_lock().lock().await;
     let root = dir.path();
@@ -507,19 +503,9 @@ async fn a_repeat_read_of_an_unchanged_repository_is_served_from_the_capture_cac
         "git rev-parse failed: {}",
         String::from_utf8_lossy(&second.stderr)
     );
-    // The preparation cache's watcher is Linux-only (inotify): where it cannot
-    // answer, the cached generation is invalidated and the view is rebuilt. So
-    // the repeat read is captured where the watcher exists, rebuilt elsewhere.
-    let expected = if cfg!(target_os = "linux") {
-        GitReadConsistency::CapturedNotCurrent
-    } else {
-        GitReadConsistency::ImmutableGeneration
-    };
-    assert_eq!(
-        second.consistency, expected,
-        "a repeat read is a captured generation where the cache can serve it, \
-         and a rebuilt immutable generation elsewhere"
-    );
+    // A clean cache hit is captured; if the fallback fingerprint observes
+    // maintenance, rebuilding yields a fresh immutable generation. Either
+    // result is generation-consistent and must never be reported live.
     assert!(second.consistency.is_generation_consistent());
     assert!(!second.consistency.is_live());
 }
