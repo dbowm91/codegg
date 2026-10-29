@@ -39,6 +39,21 @@ class H007CaseAndResultTests(unittest.TestCase):
         self.assertEqual(case.network, "none")
         self.assertFalse(case.protected)
 
+    def test_live_case_root_contains_the_frozen_agent_fixture(self):
+        from dev.harness_lab import autonomy_run
+
+        case = autonomy.load_autonomy_suite(MANIFEST.parent).case("build-provenance-catalog")
+        case_root = autonomy_run.case_root(REPO_ROOT, case.case_id)
+        packaged_fixture = case_root / "fixture"
+        files = lambda root: {
+            path.relative_to(root).as_posix(): _sha(path)
+            for path in root.rglob("*")
+            if path.is_file() and "target" not in path.relative_to(root).parts
+        }
+        self.assertTrue(packaged_fixture.is_dir(), "the live runner's editable fixture is missing")
+        self.assertTrue((case_root / "verifier").is_dir(), "the independent verifier is missing")
+        self.assertEqual(files(packaged_fixture), files(STARTER))
+
     def test_h007_task_and_horizon_truth_table_is_independent(self):
         calls = [
             {"tool": "test", "started_elapsed_ms": 0, "finished_elapsed_ms": 10,
