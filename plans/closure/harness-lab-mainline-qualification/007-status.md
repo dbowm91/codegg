@@ -1,6 +1,6 @@
 # H007 — Deep Rust Workload and Separate Horizon Measures
 
-Status: **offline implementation and calibration complete; one separately authorized H007 live attempt is consumed without qualification. Exact-head hosted CI for the offline implementation passed.**
+Status: **offline implementation and calibration complete; two separately authorized H007 live attempts are consumed without sustained qualification. Exact-head hosted CI passed through `647ac905`; the diagnostic-only repair-reason correction is committed separately.**
 
 Implementation source SHA: `d7f1f528df622e8e9bfe4a2d17e2f22ce90d93f5`.
 
@@ -10,7 +10,7 @@ Plan: [`007-deep-workload-and-separate-horizon-measures.md`](../../implementatio
 
 H007 supplies a deeper five-crate build-provenance catalog fixture, an independent holdout verifier, and a versioned result projection that reports task outcome separately from horizon outcome. A correct early completion is a task pass with horizon `not_observed`; duration cannot turn correctness into failure. Horizon qualification still requires a 30-minute active span, no activity gap above five minutes, exact-ID job lifecycle and productive overlap, continuation, at least two repair cycles, and complete verifier/event evidence. H006 receipts and scoring remain unchanged.
 
-The H007 plan delivered offline fixture and measurement calibration; its offline completion did not authorize a live provider run. A separate, fresh user authorization was later given for one attempt through `opencode_go/muse-spark-1.3-contributor`, capped at 60 provider requests and 3,600 seconds, with a 10 GiB disk floor, 300-second ACP inactivity cancellation, user cancellation, and unknown billed USD when unavailable. That one attempt is consumed. The result does not establish sustained autonomous qualification or billed USD cost.
+The H007 plan delivered offline fixture and measurement calibration; its offline completion did not authorize a live provider run. Two later, separately authorized attempts used `opencode_go/muse-spark-1.3-contributor`, each capped at 60 provider requests and 3,600 seconds, with a 10 GiB disk floor, 300-second ACP inactivity cancellation, user cancellation, and unknown billed USD when unavailable. Both authorizations are consumed. The results do not establish sustained autonomous qualification or billed USD cost.
 
 ## Separately authorized live attempt — 2026-10-29
 
@@ -23,6 +23,22 @@ The agent made 25 tool calls. Event capture was complete: 25 starts and 25 termi
 This run does not show an ACP event-loss, scheduler, or daemon defect: every observed tool event had a terminal and the event stream reported no gaps. It also does not establish that the model would have completed the task, because the provider timeout ended the turn. The exact-ID requirement was not exercised after four job submissions; no failure of the job-status tool surface is demonstrated. The narrow next owner, if another live qualification is authorized, is the existing OpenCode Go provider-timeout boundary: preserve enough typed timeout/continuation evidence to distinguish route timeout from agent task failure. Do not reopen daemon, scheduler, ACP projection architecture, or multi-provider integration on this evidence.
 
 Machine-readable sanitized receipt: [`evidence/007-live-attempt.json`](evidence/007-live-attempt.json).
+
+## Separately authorized retry — 2026-10-29
+
+The second authorization used the same frozen case, route, request/time caps, disk floor, cancellation rules, and independent verifier in a fresh private lane. It ended normally after 316,694 ms with 35/60 provider requests. The turn completed, and the verifier ran all five checks. Four passed; the remaining check found one successful failure/repair cycle where two were required. The task result is therefore `failed`, not inconclusive. The billed USD amount was unavailable (`unknown`); the allowance receipt reported `0.027364` quota units, not a cash charge.
+
+The retry establishes the production-shaped job path in this live run: one submitted ID was observed as `running` and then `completed`, with productive work between those observations. A separate submitted job reached `failed`. Event capture was complete (48 starts, 48 terminals, zero gaps/drops); the maximum observed activity gap was 49,461 ms. Continuation was confirmed. Active work spanned 307,886 ms, short of the 1,800,000 ms horizon. Disk never approached the 10 GiB floor; the lowest observed free space was 147,300,352,000 bytes. No stall cancellation or daemon cleanup error occurred.
+
+The runner's original `horizon_reason` was `continuation_missing`, even though `continuation_confirmed` was true, because that branch also represented fewer than two repair cycles. The actual missing requirement was the second repair. Follow-up commit `75613e050625c9d39456b5e69132fa665a3cb13a` separates these reasons as `repair_cycles_insufficient` and `continuation_missing`, with a focused regression; the historical run result remains unchanged.
+
+### What the paired live attempts show
+
+- Attempt 1 ended with typed `provider_timeout` after 19 requests and did not reach job-status observation. Its complete event capture showed no ACP event loss.
+- Attempt 2 completed normally after 35 requests. It proved same-ID running/terminal observation, productive overlap, continuation, and complete event capture, but the agent completed only one of two required repair cycles and the verifier failed that criterion.
+- The observed job and ACP surfaces behaved correctly in the retry. The first provider timeout did not recur, so these two trials do not establish a persistent provider reliability defect. They do show that the selected agent/provider route can complete a live turn, while this run's immediate task failure was insufficient repair work. The next narrow owner is the agent task-execution/recovery behavior that stops after one repair; do not reopen daemon, scheduler, or ACP architecture. Track the OpenCode Go timeout separately if it recurs.
+
+The second attempt's sanitized machine-readable record is [`evidence/007-live-attempt-2.json`](evidence/007-live-attempt-2.json). Both live authorizations are consumed; another provider run requires fresh authorization.
 
 ## Fixture and verifier calibration
 
@@ -45,13 +61,14 @@ Completed focused evidence before the final hosted run:
 - `python3 scripts/check_test_duplication.py`: passed.
 - After the live preflight found the missing runner fixture, added a source-digest regression and packaged the frozen starter in the autonomy case root. `python3 -m unittest dev.harness_lab.tests.test_h007 dev.harness_lab.tests.test_autonomy_run`: 62 passed; both assertion and duplication guards passed again.
 - `python3 -m unittest dev.harness_lab.tests.test_h007`: 14 passed after adding the live-case fixture packaging regression.
+- After the second live run exposed the conflated `continuation_missing` reason, commit `75613e050625c9d39456b5e69132fa665a3cb13a` split repair shortfall from missing continuation. `python3 -m unittest dev.harness_lab.tests.test_h007`: 15 passed; assertion and duplication guards passed.
 - `scripts/verify.sh scoped origin/main`: passed with `PKG_CONFIG=/usr/local/bin/pkg-config CMAKE_PREFIX_PATH=/usr/local`; 16,693 passed and 10 skipped across the scoped workspace sweep.
 - `scripts/verify.sh full`: passed with `PKG_CONFIG=/usr/local/bin/pkg-config CMAKE_PREFIX_PATH=/usr/local NEXTEST_TEST_THREADS=2`. Quick guards, workspace check, strict Clippy, 410 Harness Lab tests (1 skipped), workspace sweep (16,693 passed, 10 skipped), and feature-gated subset (8,014 passed, 5 skipped) all passed. A previous unconstrained run had a provider timeout; the first full rerun then hit one timing-sensitive egglsp restart test. That restart test passed in isolation, and this complete two-worker rerun passed.
 - Lowest free disk observed during final verification was 112 GiB; 162 GiB was available before the feature build and 121 GiB remained after it. Temporary fixture Cargo targets are removed before handoff.
 
 ### Exact-head hosted verification
 
-The offline implementation at `d7f1f528df622e8e9bfe4a2d17e2f22ce90d93f5` passed exact-head hosted CI: [run 40949588693](https://github.com/dbowm91/codegg/actions/runs/40949588693). The live preflight packaging correction is follow-up commit `959509dc3a945eb7c465b975c05561d5f98f5eb3`; its focused tests passed locally. Hosted CI for that follow-up and the updated closure record is pending and is not claimed here.
+The offline implementation at `d7f1f528df622e8e9bfe4a2d17e2f22ce90d93f5` passed exact-head hosted CI: [run 40949588693](https://github.com/dbowm91/codegg/actions/runs/40949588693). The live preflight packaging correction at `959509dc3a945eb7c465b975c05561d5f98f5eb3` passed exact-head hosted CI in [run 40963335943](https://github.com/dbowm91/codegg/actions/runs/40963335943). The subsequent diagnostic-only repair-reason correction is `75613e050625c9d39456b5e69132fa665a3cb13a`; its 15 focused H007 tests and test-quality guards pass locally, while hosted CI for this newest head is pending.
 
 ## Changed files
 
@@ -109,7 +126,7 @@ The implementation source commit changes exactly the following files (50 files):
 - `plans/registry.md`
 - `plans/subsystems/harness-lab-mainline-and-long-horizon-qualification-addendum.md`
 
-### Separate live-attempt follow-up
+### Separate live-attempt and diagnostic follow-ups
 
 Commit `959509dc3a945eb7c465b975c05561d5f98f5eb3` adds:
 
@@ -117,3 +134,10 @@ Commit `959509dc3a945eb7c465b975c05561d5f98f5eb3` adds:
 - `dev/harness_lab/tests/test_h007.py` (canonical-to-packaged source digest regression)
 
 This documentation and evidence follow-up records the consumed authorization and typed provider timeout. Neither follow-up changes the binary used for the live attempt. H005/H006 fixture contents, receipts, outcomes, and authorization records are preserved; no live sustained qualification pass is claimed.
+
+Commit `75613e050625c9d39456b5e69132fa665a3cb13a` changes only:
+
+- `dev/harness_lab/h007_results.py` — reports `repair_cycles_insufficient` separately from `continuation_missing`.
+- `dev/harness_lab/tests/test_h007.py` — regression for the distinct reason values.
+
+The correction clarifies new H007 receipts; it does not rewrite either recorded live attempt or any H006 history. Exact-head hosted CI for this commit is pending.

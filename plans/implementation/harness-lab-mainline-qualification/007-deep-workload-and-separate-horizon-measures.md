@@ -1,6 +1,6 @@
 # H007 — Deep Rust Workload and Separate Horizon Measures
 
-Status: offline workload calibration complete. One separately authorized live attempt was consumed without qualification; any further attempt requires fresh explicit authorization.
+Status: offline workload calibration complete. Two separately authorized live attempts were consumed without sustained qualification; any further attempt requires fresh explicit authorization.
 
 Repository baseline: `origin/main` at `f3c0a9e2e9903bb097d8bf56641138e03d964eb7` (H006 corrective PR #216 merged)
 
@@ -245,5 +245,5 @@ Stop and report rather than expanding scope if:
 - Use the H006 corrective as the measurement baseline and H005/H006 fixtures as historical comparators only; do not copy H006 and merely increase loop count.
 - Keep verifier inputs outside the agent-writable tree. Store only sanitized tool/job metadata, never raw provider output or credentials.
 - The request ceiling for any future live run is a fresh operator decision; do not inherit H006's 120-request value. Use a hard 60-minute maximum, a free-disk floor of at least 10 GiB, and record unavailable billed USD as unknown.
-- The selected route remains the existing `opencode_go` integration if and only if freshly authorized. The 2026-10-29 authorization is consumed; no alternate provider is a fallback.
+- The selected route remains the existing `opencode_go` integration if and only if freshly authorized. Both 2026-10-29 authorizations are consumed; no alternate provider is a fallback.
 - Report task success even when the run is too short to qualify horizon reliability. Those are independent conclusions.
