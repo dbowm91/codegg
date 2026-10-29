@@ -133,6 +133,30 @@ class H007CaseAndResultTests(unittest.TestCase):
         self.assertEqual(result["horizon_outcome"], "not_qualified")
         self.assertEqual(result["horizon_reason"], "job_lifecycle_missing")
 
+    def test_missing_repair_cycle_is_not_reported_as_missing_continuation(self):
+        calls = [
+            {"tool": "test", "started_elapsed_ms": 0, "finished_elapsed_ms": 1,
+             "job": {"job_id": "j1", "action": "submit", "status": None}},
+            {"tool": "job", "started_elapsed_ms": 2, "finished_elapsed_ms": 3,
+             "job": {"job_id": "j1", "action": "status", "status": "running"}},
+            {"tool": "edit", "started_elapsed_ms": 4, "finished_elapsed_ms": 5},
+            {"tool": "job", "started_elapsed_ms": 6, "finished_elapsed_ms": 7,
+             "job": {"job_id": "j1", "action": "status", "status": "completed"}},
+        ]
+        repair_missing = h007_results.project_result(
+            terminal="completed", verifier_ran=True, verifier_exit_code=1,
+            duration_ms=8, tool_calls=calls, measurement_complete=True,
+            continuation_confirmed=True, repair_cycles=1)
+        self.assertEqual(repair_missing["task_outcome"], "failed")
+        self.assertTrue(repair_missing["horizon_evidence"]["continuation_confirmed"])
+        self.assertEqual(repair_missing["horizon_reason"], "repair_cycles_insufficient")
+
+        continuation_missing = h007_results.project_result(
+            terminal="completed", verifier_ran=True, verifier_exit_code=1,
+            duration_ms=8, tool_calls=calls, measurement_complete=True,
+            continuation_confirmed=False, repair_cycles=2)
+        self.assertEqual(continuation_missing["horizon_reason"], "continuation_missing")
+
     def test_summary_keeps_task_and_horizon_denominators_separate(self):
         summary = h007_results.summarize_h007([
             {"task_outcome": "passed", "horizon_outcome": "not_observed"},

@@ -14,7 +14,8 @@ H007_MIN_ACTIVE_DURATION_MS = 30 * 60 * 1000
 H007_MAX_ACTIVITY_GAP_MS = 5 * 60 * 1000
 HORIZON_REASONS = frozenset({
     "activity_span_short", "activity_gap_exceeded", "job_lifecycle_missing",
-    "continuation_missing", "task_completed_before_threshold", "measurement_incomplete",
+    "repair_cycles_insufficient", "continuation_missing",
+    "task_completed_before_threshold", "measurement_incomplete",
 })
 
 
@@ -70,8 +71,10 @@ def project_result(*, terminal: str, verifier_ran: bool, verifier_exit_code: int
         reason = "task_completed_before_threshold"
     elif not lifecycle or not overlap:
         reason = "job_lifecycle_missing"
-    elif not continuation_confirmed or repair_cycles < 2:
+    elif not continuation_confirmed:
         reason = "continuation_missing"
+    elif repair_cycles < 2:
+        reason = "repair_cycles_insufficient"
     elif gap > H007_MAX_ACTIVITY_GAP_MS:
         reason = "activity_gap_exceeded"
     elif span < H007_MIN_ACTIVE_DURATION_MS:
