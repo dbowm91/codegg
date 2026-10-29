@@ -895,15 +895,15 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     // it shares the reads' classification. Denial *is* audited upstream
     // by `authorize_request`.
     "continuation_grant_status",
-    // M006-B (ADR-0012): authorized LSP reads of project file content. Same
-    // shape as `document_read` above — a capability-gated read that discloses
-    // content the principal may already read, and discloses no mutation, so
-    // per-call audit would be noise. Denial *is* audited upstream by
-    // `authorize_request`.
+    // M006-B/M003/M004: capability-gated session LSP reads disclose authorized
+    // content or inert summaries and mutate nothing, so per-call audit is noise.
+    // Denials are audited upstream by `authorize_request`.
     "lsp_read_get",
     "lsp_diagnostics_get",
     "lsp_diagnostics_subscribe",
     "lsp_server_status_get",
+    "lsp_cache_status_get",
+    "lsp_workflow_execute",
     // M003 (ADR-0021): the completion read is the same shape — `via_session`
     // + `file.read`, inert candidates, no mutation — so it shares the reads'
     // classification rather than inventing per-keystroke audit events.
@@ -2329,7 +2329,12 @@ mod tests {
             INSTRUMENTED_OPERATIONS.iter().map(|(op, _)| *op).collect();
         let uninstrumented: std::collections::HashSet<&str> =
             UNINSTRUMENTED_OPERATIONS.iter().copied().collect();
-        for operation in ["git_read", "skill_catalogue_list"] {
+        for operation in [
+            "git_read",
+            "skill_catalogue_list",
+            "lsp_cache_status_get",
+            "lsp_workflow_execute",
+        ] {
             assert!(
                 uninstrumented.contains(operation),
                 "{operation} is a read and must be classified"

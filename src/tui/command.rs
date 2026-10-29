@@ -824,11 +824,11 @@ impl CommandRegistry {
             Command::new("/lsp-restart", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspRestart))
                 .with_description("Restart an LSP server (args: server-key)"),
             Command::new("/lsp-stop", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspStop))
-                .with_description("Stop LSP servers (args: server-key or --all)"),
+                .with_description("Stop one LSP server in the active session workspace"),
             Command::new("/lsp-cache-status", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspCacheStatus))
                 .with_description("Show LSP semantic cache status and stats"),
             Command::new("/lsp-cache-clear", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspCacheClear))
-                .with_description("Clear LSP semantic cache (args: --all or <root-path>)"),
+                .with_description("Clear the active session workspace's LSP semantic cache"),
             Command::new("/lsp-doctor", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspDoctor))
                 .with_description("Diagnose LSP status for a file path (args: <path>)"),
             Command::new("/lsp-context-diagnostics", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspContextDiagnostics))
