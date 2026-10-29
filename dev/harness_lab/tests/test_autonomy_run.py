@@ -70,6 +70,22 @@ class BuildTranscriptTests(unittest.TestCase):
         self.assertEqual(transcript["tool_calls"][1]["status"], "failed")
 
 
+class H006DeadlineTests(unittest.TestCase):
+    def test_turn_can_run_for_thirty_minutes_and_verifier_stays_inside_hard_stop(self) -> None:
+        turn = autonomy_run._turn_timeout(
+            "sustained-event-ledger", 3540.0, 3600.0, 3600.0)
+        self.assertEqual(turn, 3300.0)
+        self.assertGreaterEqual(turn, 30 * 60)
+        self.assertEqual(autonomy_run._verifier_timeout(
+            "sustained-event-ledger", turn, 240.0), 240.0)
+        self.assertEqual(autonomy_run._verifier_timeout(
+            "sustained-event-ledger", turn, 30.0), 30.0)
+
+    def test_other_cases_keep_their_proportional_suite_timeout(self) -> None:
+        self.assertEqual(autonomy_run._turn_timeout(
+            "ordinary-case", 3600.0, 3600.0, 3600.0), 1200.0)
+
+
 class ProviderRequestAccountingTests(unittest.TestCase):
     def test_a005_unavailable_checkout_refusal_is_a_declared_negative_control(self) -> None:
         suite = autonomy.load_autonomy_suite(

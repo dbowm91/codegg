@@ -529,6 +529,30 @@ def _run_verifier(command: list[str], cwd: Path, env: dict[str, str],
             "output_tail": tail, "tests_run": tests_run, "failure_summary": failure_summary}
 
 
+def _turn_timeout(case_id: str, requested_timeout: float, case_timeout: float,
+                  remaining_seconds: Optional[float]) -> float:
+    """Bound one agent turn while reserving enough time for its verifier."""
+    if remaining_seconds is None:
+        return min(requested_timeout, case_timeout)
+    if case_id == H006_CASE_ID:
+        # H006 requires at least 30 minutes of active agent work. A generic
+        # per-case share (one third) made that impossible under its one-hour
+        # authorization. Reserve five minutes for teardown and verification.
+        available = max(1.0, remaining_seconds - 300.0)
+    else:
+        # Divide suite time across the turn, verifier, lane setup, and cleanup.
+        available = max(1.0, remaining_seconds / 3.0)
+    return min(requested_timeout, case_timeout, available)
+
+
+def _verifier_timeout(case_id: str, turn_timeout: float,
+                      remaining_seconds: Optional[float]) -> float:
+    """Keep H006's independent verifier inside the remaining hard deadline."""
+    if case_id != H006_CASE_ID or remaining_seconds is None:
+        return turn_timeout
+    return min(turn_timeout, max(1.0, remaining_seconds))
+
+
 def _provider_request_admissions(stderr_path: Path) -> Optional[int]:
     """Count safe provider-boundary request admissions from JSONL or CodeGG logs."""
     try:
@@ -782,13 +806,9 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     if case.case_id == H006_CASE_ID:
         # Check required managed runfiles before budget reservation or ACP startup.
         binary = _preflight_h006_binary(binary)
-    remaining_seconds = guard.remaining_wallclock_seconds()
     case_seconds = float(case.budget["max_wallclock_seconds"])
-    if remaining_seconds is not None:
-        # Leave time for the turn, verifier, lane setup, and cleanup.
-        timeout = min(timeout, case_seconds, max(1.0, remaining_seconds / 3.0))
-    else:
-        timeout = min(timeout, case_seconds)
+    timeout = _turn_timeout(case.case_id, timeout, case_seconds,
+                             guard.remaining_wallclock_seconds())
 
     disk_before_bytes = _directory_size_bytes(lane_root)
     supervisor.private_dir(lane_root)
@@ -1030,8 +1050,10 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     verifier_env = dict(os.environ)
     verifier_env[CASE_ROOT_ENV] = str(agent_root)
     verifier_env[TRANSCRIPT_ENV] = str(transcript_path)
+    verifier_timeout = _verifier_timeout(
+        case.case_id, timeout, guard.remaining_wallclock_seconds())
     verification = _run_verifier(list(case.verifier["command"]), private_root,
-                                 verifier_env, timeout)
+                                 verifier_env, verifier_timeout)
 
     raw_usage = result.get("codeggUsage") if isinstance(result, dict) else None
     usage = None
