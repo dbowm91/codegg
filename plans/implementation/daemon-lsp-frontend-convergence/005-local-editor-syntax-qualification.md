@@ -1,6 +1,6 @@
 # M005 — Daemon-Backed Structural Selection (Helix M014)
 
-Status: ready — ADR-0034 Option B accepted 2026-10-28; implementation qualification remains
+Status: closed — ADR-0034 Option B accepted 2026-10-28; stale-response and large-document responsiveness qualification passed 2026-10-29
 
 Primary class: capability/infrastructure.
 
@@ -14,13 +14,15 @@ Provide asynchronous syntax-structure expansion and contraction in the TUI throu
 
 ## Current evidence
 
-`src/tui/commands/editor.rs` and `src/tui/editor_lsp.rs` consume optimistic `DocumentController` snapshots. `DocumentSymbol` reads already have bounded daemon routing and revision witnesses. `egglsp` owns semantic language-server processes and can answer protocol structural-range requests; a new operation must remain warm-only and return its selected ranges without source text or arbitrary server data. Fake-daemon integration trajectories check a bounded nested range chain, explicit unsupported behavior, cold-root no-spawn behavior, reversed-range rejection, depth truncation and oversized-response rejection; `cargo check -p codegg --features server,lsp-test-support --test lsp_test_support` compiles the trajectories.
+The typed `SelectionRange` operation is implemented through `codegg-protocol`, `egglsp`, the daemon warm-read route, and the frontend-neutral client operation set. `src/tui/commands/editor.rs` binds Alt+O/Alt+I to asynchronous expand/shrink; response admission checks document revision and cursor position before changing the selection. The TUI does not await LSP I/O on the key path. Fake-daemon trajectories cover a bounded nested range chain, explicit unsupported behavior, cold-root no-spawn behavior, reversed-range rejection, depth truncation, and oversized-response rejection. The App-path regression test added during this closeout checks request issuance, unchanged document while pending, and delayed-response suppression after cursor movement.
+
+The focused `codegg` App-path test passes on ARM64 and verifies that Alt+O issues a `SelectionRange` request without changing the document while pending, local cursor input is handled before the response, and delayed results are discarded after cursor movement, a 128 KiB document edit, route change and server-generation change. The 71-test `lsp_test_support` family passes, including bounded selection ranges, cold no-spawn, unsupported capability, reversed-range refusal, depth truncation and oversized-response refusal. The authorization matrix, editor-key authority guard, editor text-authority guard, and root `scripts/verify.sh quick` pass. The visible desktop session E2E passed 10/10; its local key-to-paint evidence is independent of the TUI structural-selection proof. The broader Helix M014 syntax-node text objects and syntax-aware bracket match remain outside M005; ADR-0034 Option B authorizes only the daemon structural-range operation.
 
 ## Decision and design package
 
 1. Add a typed `SelectionRange` read operation through `codegg-protocol`, `egglsp` and the existing daemon/client route. Resolve the server only through the warm-client path, validate the authorized workspace-relative document, and cap both requested positions and returned nesting depth/range count.
 2. Bind every returned chain to the active attachment, document generation/revision, cursor position and server generation. Return typed `NotReady`, `Unsupported`, `Ambiguous`, `Stale` and truncation outcomes; never return source text or an unbounded raw JSON-RPC value.
-3. Add one Helix-style expand/shrink structural selection pair in the TUI using the async editor request path. Keep the current selection unchanged while pending and discard a result after cursor, document, route or server generation changes. No redraw or input handler may await process startup or LSP I/O.
+3. Implemented: one Helix-style expand/shrink structural selection pair in the TUI uses the async editor request path. Preserve and qualify the current-selection-while-pending behavior and stale discard after cursor, document, route or server-generation changes. No redraw or input handler may await process startup or LSP I/O.
 4. A server without `textDocument/selectionRange` reports a visible unsupported state. Do not approximate syntax selection using a byte delimiter fallback on the same chord. Preserve existing byte/grapheme motions and all non-syntax bindings.
 5. Keep desktop behavior unchanged unless it can consume the same typed result and revision contract through its existing document replica. No second text buffer or browser-side server process is in scope.
 
@@ -28,14 +30,13 @@ Provide asynchronous syntax-structure expansion and contraction in the TUI throu
 
 Fake-stdio tests must cover range-chain decoding, maximum depth/truncation, invalid or reversed ranges, UTF-16 positions, oversized responses, path escape, no warm server, unsupported capability, delayed response after edit/cursor/tab/route change, and restart generation change. A rapid-input trajectory proves the editor remains responsive while a request is pending and never paints a stale range. A large-file/read-response test proves work and payload stay bounded. Run the focused `egglsp`, root TUI, authorization-matrix and keymap/text-authority guards, then root and desktop gates as affected.
 
-Current host qualification: the x86_64 macOS host ran
-`cargo test -p codegg --features server,lsp-test-support --test
-lsp_test_support` with a compatible linker wrapper: 71/71 passed. The family
-covers a warm bounded nested range, explicit unsupported capability, cold
-no-spawn behavior, reversed-range refusal, depth truncation, and oversized
-response refusal. This verifies the current typed structural read contract;
-the M005 TUI gesture, revision/cursor stale discard, rapid-input responsiveness
-and larger-file qualification remain implementation gates.
+Current host qualification: the 71-test `lsp_test_support` family passed on
+ARM64 macOS and covers a warm bounded nested range, explicit unsupported
+capability, cold no-spawn behavior, reversed-range refusal, depth truncation,
+and oversized-response refusal. The App-path structural-selection test passed
+with a 128 KiB document and stale-result checks after cursor movement, edit,
+route change and server-generation change. Root quick verification passed;
+details are in `plans/closure/daemon-lsp-frontend-convergence/005-status.md`.
 
 ## Storage/security/compatibility
 

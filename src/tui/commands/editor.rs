@@ -12016,6 +12016,161 @@ mod tests {
         (app, reads_rx)
     }
 
+    #[tokio::test]
+    async fn structural_selection_is_async_and_discards_a_moved_cursor_response() {
+        let document = "x".repeat(128 * 1024);
+        let (state, _daemon) = opened_writer(&document).await;
+        let (mut app, mut reads) = app_with_a_lsp_scope(state).await;
+
+        assert!(handle_editor_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::ALT),
+        ));
+        let request = next_read(&mut reads).await;
+        assert_eq!(request.operation, LspReadOperation::SelectionRange);
+        assert_eq!(
+            editor_text(&app.editor_state),
+            document,
+            "waiting for the daemon leaves the document untouched"
+        );
+
+        let scope = current_lsp_scope(&app).expect("the scope resolved");
+        let (revision, request_position) = {
+            let session = app.editor_state.session.as_ref().unwrap();
+            let snapshot = session.try_snapshot().unwrap();
+            let position = editor_lsp_position(session).unwrap();
+            (snapshot.revision().get(), position)
+        };
+        assert!(
+            handle_editor_key(&mut app, key(KeyCode::Right)),
+            "local cursor input remains available while the daemon read is pending"
+        );
+        assert_ne!(
+            editor_lsp_position(app.editor_state.session.as_ref().unwrap()),
+            Some(request_position),
+            "the local keypress moves the cursor before the read returns"
+        );
+        let selection = crate::tui::helix_selection::Selection::new(
+            crate::tui::editor::EditorPoint { line: 0, byte: 0 },
+            crate::tui::helix_selection::SelectionMode::Char,
+        );
+        app.editor_state
+            .session
+            .as_mut()
+            .unwrap()
+            .presentation_mut()
+            .selections = vec![selection];
+
+        let request_id = app.editor_state.lsp.read_request_id;
+        let result = LspReadResultDto {
+            operation: LspReadOperation::SelectionRange,
+            status: LspReadStatus::Ready,
+            payload: Some(crate::protocol::lsp::LspReadPayloadDto::SelectionRanges {
+                ranges: vec![codegg_protocol::lsp::LspRangeDto {
+                    path: "doc".to_string(),
+                    workspace_relative_path: Some("doc".to_string()),
+                    start_line: 0,
+                    start_column: 0,
+                    end_line: 0,
+                    end_column: 5,
+                }],
+                truncated: false,
+            }),
+        };
+        apply_editor_lsp_read_fresh(
+            &mut app,
+            request_id,
+            scope.clone(),
+            LspReadOperation::SelectionRange,
+            revision,
+            Some(request_position),
+            Some(result.clone()),
+            None,
+        );
+
+        let revision_after_cursor = app
+            .editor_state
+            .session
+            .as_ref()
+            .unwrap()
+            .try_snapshot()
+            .unwrap()
+            .revision()
+            .get();
+        editor_insert_literal(&mut app.editor_state, "z");
+        let revision_after_edit = app
+            .editor_state
+            .session
+            .as_ref()
+            .unwrap()
+            .try_snapshot()
+            .unwrap()
+            .revision()
+            .get();
+        assert_ne!(revision_after_edit, revision_after_cursor);
+        let current_position = editor_lsp_position(app.editor_state.session.as_ref().unwrap());
+        apply_editor_lsp_read_fresh(
+            &mut app,
+            request_id,
+            scope.clone(),
+            LspReadOperation::SelectionRange,
+            revision,
+            current_position,
+            Some(result.clone()),
+            None,
+        );
+
+        app.project_tabs.set_active_identities(
+            Some("project-2".to_string()),
+            Some("workspace-2".to_string()),
+            Some("session-2".to_string()),
+        );
+        let current_position = editor_lsp_position(app.editor_state.session.as_ref().unwrap());
+        apply_editor_lsp_read_fresh(
+            &mut app,
+            request_id,
+            scope.clone(),
+            LspReadOperation::SelectionRange,
+            revision,
+            current_position,
+            Some(result.clone()),
+            None,
+        );
+
+        app.project_tabs.set_active_identities(
+            Some("project-1".to_string()),
+            Some("workspace-1".to_string()),
+            Some("session-1".to_string()),
+        );
+        app.editor_state.generation = scope.generation.saturating_add(1);
+        let current_position = editor_lsp_position(app.editor_state.session.as_ref().unwrap());
+        apply_editor_lsp_read_fresh(
+            &mut app,
+            request_id,
+            scope,
+            LspReadOperation::SelectionRange,
+            revision,
+            current_position,
+            Some(result),
+            None,
+        );
+
+        assert!(
+            app.editor_state
+                .session
+                .as_ref()
+                .unwrap()
+                .presentation()
+                .selections
+                .is_empty(),
+            "a stale result must not create a selection"
+        );
+        assert!(
+            app.editor_state.lsp.read_result.is_none(),
+            "the stale result must not reach the LSP result panel"
+        );
+    }
+
     /// Wait for the read the daemon was handed.
     async fn next_read(
         reads: &mut tokio::sync::mpsc::UnboundedReceiver<LspReadRequestDto>,

@@ -1865,7 +1865,7 @@ impl RealServerHarness {
             None => return None,
         };
 
-        let (runtime, _join) = spawn_process_runtime(server_id, root, 1, child, stderr);
+        let (runtime, _join) = spawn_process_runtime(server_id, root, 1, child, stderr, None);
 
         Some(Self { client, runtime })
     }
@@ -1990,6 +1990,7 @@ async fn run_smoke_suite(
 ) -> LspCompatibilityReport {
     let root = fixture.root.clone();
     let mut checks: Vec<SmokeCheck> = Vec::new();
+    let mut operation_records: Vec<egglsp::compatibility::LspOperationCompatibility> = Vec::new();
     let mut stderr_tail: Vec<String> = Vec::new();
 
     // Build launch spec — pass PATH and HOME so the server process can find
@@ -2299,6 +2300,24 @@ async fn run_smoke_suite(
             diag_ms,
         ));
     }
+    let diagnostics_observed = diag_snapshot.is_some();
+    operation_records.push(
+        OperationOutcome {
+            operation: "diagnostics".to_string(),
+            advertised: caps.supports_diagnostics,
+            exercised: true,
+            request_succeeded: diagnostics_observed,
+            response_parsed: diagnostics_observed,
+            semantic_assertion_passed: diag_count > 0,
+            requirement: if diagnostics_required {
+                CompatibilityRequirement::Required
+            } else {
+                CompatibilityRequirement::Optional
+            },
+            known_limit: None,
+        }
+        .into_record(),
+    );
 
     let primary_uri = url::Url::from_file_path(&fixture.primary_source).unwrap();
 
@@ -2308,7 +2327,7 @@ async fn run_smoke_suite(
         let result =
             tokio::time::timeout(REQUEST_TIMEOUT, client.document_symbols(&primary_uri)).await;
         let ms = start.elapsed().as_millis() as u64;
-        match result {
+        let (request_succeeded, response_parsed, semantic_assertion_passed) = match result {
             Ok(Ok(symbols)) => {
                 if !symbols.is_empty() {
                     let names: Vec<String> = symbols.iter().map(|s| s.name.clone()).collect();
@@ -2328,6 +2347,7 @@ async fn run_smoke_suite(
                             CompatibilityRequirement::RequiredIfAdvertised,
                             ms,
                         ));
+                        (true, true, true)
                     } else {
                         checks.push(SmokeCheck::fail(
                             "document_symbols",
@@ -2338,6 +2358,7 @@ async fn run_smoke_suite(
                             ),
                             ms,
                         ));
+                        (true, true, false)
                     }
                 } else {
                     checks.push(SmokeCheck::fail(
@@ -2346,27 +2367,47 @@ async fn run_smoke_suite(
                         "0 symbols found at primary source",
                         ms,
                     ));
+                    (true, true, false)
                 }
             }
-            Ok(Err(e)) => checks.push(SmokeCheck::fail(
-                "document_symbols",
-                CompatibilityRequirement::RequiredIfAdvertised,
-                format!("{e}"),
-                ms,
-            )),
-            Err(_elapsed) => checks.push(SmokeCheck::fail(
-                "document_symbols",
-                CompatibilityRequirement::RequiredIfAdvertised,
-                stage_timeout_error(
-                    &profile.server_id,
-                    bin_path,
+            Ok(Err(e)) => {
+                checks.push(SmokeCheck::fail(
                     "document_symbols",
-                    REQUEST_TIMEOUT,
-                    &stderr_tail,
-                ),
-                ms,
-            )),
-        }
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    format!("{e}"),
+                    ms,
+                ));
+                (false, false, false)
+            }
+            Err(_elapsed) => {
+                checks.push(SmokeCheck::fail(
+                    "document_symbols",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    stage_timeout_error(
+                        &profile.server_id,
+                        bin_path,
+                        "document_symbols",
+                        REQUEST_TIMEOUT,
+                        &stderr_tail,
+                    ),
+                    ms,
+                ));
+                (false, false, false)
+            }
+        };
+        operation_records.push(
+            OperationOutcome {
+                operation: "documentSymbol".to_string(),
+                advertised: true,
+                exercised: true,
+                request_succeeded,
+                response_parsed,
+                semantic_assertion_passed,
+                requirement: CompatibilityRequirement::RequiredIfAdvertised,
+                known_limit: None,
+            }
+            .into_record(),
+        );
     } else {
         checks.push(SmokeCheck::unsupported(
             "document_symbols",
@@ -2385,39 +2426,62 @@ async fn run_smoke_suite(
         )
         .await;
         let ms = start.elapsed().as_millis() as u64;
-        match result {
+        let (request_succeeded, response_parsed, semantic_assertion_passed) = match result {
             Ok(Ok(Some(_))) => {
                 checks.push(SmokeCheck::pass(
                     "definition (found)",
                     CompatibilityRequirement::RequiredIfAdvertised,
                     ms,
                 ));
+                (true, true, true)
             }
-            Ok(Ok(None)) => checks.push(SmokeCheck::fail(
-                "definition",
-                CompatibilityRequirement::RequiredIfAdvertised,
-                "no definition returned at call site",
-                ms,
-            )),
-            Ok(Err(e)) => checks.push(SmokeCheck::fail(
-                "definition",
-                CompatibilityRequirement::RequiredIfAdvertised,
-                format!("{e}"),
-                ms,
-            )),
-            Err(_elapsed) => checks.push(SmokeCheck::fail(
-                "definition",
-                CompatibilityRequirement::RequiredIfAdvertised,
-                stage_timeout_error(
-                    &profile.server_id,
-                    bin_path,
+            Ok(Ok(None)) => {
+                checks.push(SmokeCheck::fail(
                     "definition",
-                    REQUEST_TIMEOUT,
-                    &stderr_tail,
-                ),
-                ms,
-            )),
-        }
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    "no definition returned at call site",
+                    ms,
+                ));
+                (true, true, false)
+            }
+            Ok(Err(e)) => {
+                checks.push(SmokeCheck::fail(
+                    "definition",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    format!("{e}"),
+                    ms,
+                ));
+                (false, false, false)
+            }
+            Err(_elapsed) => {
+                checks.push(SmokeCheck::fail(
+                    "definition",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    stage_timeout_error(
+                        &profile.server_id,
+                        bin_path,
+                        "definition",
+                        REQUEST_TIMEOUT,
+                        &stderr_tail,
+                    ),
+                    ms,
+                ));
+                (false, false, false)
+            }
+        };
+        operation_records.push(
+            OperationOutcome {
+                operation: "definition".to_string(),
+                advertised: true,
+                exercised: true,
+                request_succeeded,
+                response_parsed,
+                semantic_assertion_passed,
+                requirement: CompatibilityRequirement::RequiredIfAdvertised,
+                known_limit: None,
+            }
+            .into_record(),
+        );
     } else {
         checks.push(SmokeCheck::unsupported(
             "definition",
@@ -2436,43 +2500,91 @@ async fn run_smoke_suite(
     // the Python cross-file check requires two distinct URIs.
     if caps.supports_references {
         let start = std::time::Instant::now();
-        let result = tokio::time::timeout(
+        let mut result = tokio::time::timeout(
             REQUEST_TIMEOUT,
             client.find_references(&primary_uri, fixture.references_position),
         )
         .await;
+        let mut retried_content_modified = false;
+        if matches!(
+            &result,
+            Ok(Err(egglsp::error::LspError::RequestFailed(message)))
+                if message.contains("-32801")
+        ) {
+            retried_content_modified = true;
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            result = tokio::time::timeout(
+                REQUEST_TIMEOUT,
+                client.find_references(&primary_uri, fixture.references_position),
+            )
+            .await;
+        }
         let ms = start.elapsed().as_millis() as u64;
-        let check = match result {
-            Ok(Ok(refs)) => {
-                compatibility::evaluate_references_check(caps.supports_references, &refs, 1)
-            }
-            Ok(Err(e)) => SmokeCheck::fail(
-                "references",
-                CompatibilityRequirement::RequiredIfAdvertised,
-                format!("{e}"),
-                ms,
-            )
-            .to_compatibility_check(),
-            Err(_elapsed) => SmokeCheck::fail(
-                "references",
-                CompatibilityRequirement::RequiredIfAdvertised,
-                stage_timeout_error(
-                    &profile.server_id,
-                    bin_path,
+        let (check, request_succeeded, response_parsed) = match result {
+            Ok(Ok(refs)) => (
+                compatibility::evaluate_references_check(caps.supports_references, &refs, 1),
+                true,
+                true,
+            ),
+            Ok(Err(e)) => (
+                SmokeCheck::fail(
                     "references",
-                    REQUEST_TIMEOUT,
-                    &stderr_tail,
-                ),
-                ms,
-            )
-            .to_compatibility_check(),
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    format!("{e}"),
+                    ms,
+                )
+                .to_compatibility_check(),
+                false,
+                false,
+            ),
+            Err(_elapsed) => (
+                SmokeCheck::fail(
+                    "references",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    stage_timeout_error(
+                        &profile.server_id,
+                        bin_path,
+                        "references",
+                        REQUEST_TIMEOUT,
+                        &stderr_tail,
+                    ),
+                    ms,
+                )
+                .to_compatibility_check(),
+                false,
+                false,
+            ),
         };
-        let detail = check.detail.clone();
+        let detail = check.detail.clone().map(|detail| {
+            if retried_content_modified {
+                format!("{detail}; succeeded after one ContentModified retry")
+            } else {
+                detail
+            }
+        });
         let status = check.status.clone();
         let _ = check; // consumed below
-        let pass = matches!(
-            status,
-            CompatibilityCheckStatus::Passing | CompatibilityCheckStatus::PassingWithKnownLimits
+        let semantic_assertion_passed = status == CompatibilityCheckStatus::Passing;
+        let pass =
+            semantic_assertion_passed || status == CompatibilityCheckStatus::PassingWithKnownLimits;
+        operation_records.push(
+            OperationOutcome {
+                operation: "references".to_string(),
+                advertised: true,
+                exercised: true,
+                request_succeeded,
+                response_parsed,
+                semantic_assertion_passed,
+                requirement: fixture.references_requirement,
+                known_limit: (fixture.references_requirement
+                    == CompatibilityRequirement::KnownLimitation)
+                    .then(|| {
+                        detail
+                            .clone()
+                            .unwrap_or_else(|| "documented limitation".to_string())
+                    }),
+            }
+            .into_record(),
         );
         if pass {
             checks.push(SmokeCheck::pass(
@@ -2496,61 +2608,108 @@ async fn run_smoke_suite(
         if let Some(secondary) = fixture.secondary_source.as_ref() {
             let start = std::time::Instant::now();
             let secondary_uri = url::Url::from_file_path(secondary).unwrap();
-            let result = tokio::time::timeout(
+            let mut result = tokio::time::timeout(
                 REQUEST_TIMEOUT,
                 client.find_references(&secondary_uri, fixture.cross_file_references_position),
             )
             .await;
+            let mut retried_content_modified = false;
+            if matches!(
+                &result,
+                Ok(Err(egglsp::error::LspError::RequestFailed(message)))
+                    if message.contains("-32801")
+            ) {
+                retried_content_modified = true;
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                result = tokio::time::timeout(
+                    REQUEST_TIMEOUT,
+                    client.find_references(&secondary_uri, fixture.cross_file_references_position),
+                )
+                .await;
+            }
             let ms = start.elapsed().as_millis() as u64;
-            match result {
-                Ok(Ok(refs)) => {
-                    let check = compatibility::evaluate_references_check_with_min(
+            let (check, request_succeeded, response_parsed) = match result {
+                Ok(Ok(refs)) => (
+                    compatibility::evaluate_references_check_with_min(
                         caps.supports_references,
                         &refs,
                         1,
                         2,
-                    );
-                    let pass = matches!(
-                        check.status,
-                        CompatibilityCheckStatus::Passing
-                            | CompatibilityCheckStatus::PassingWithKnownLimits
-                    );
-                    if pass {
-                        checks.push(SmokeCheck::pass(
-                            format!(
-                                "cross-file references ({})",
-                                check.detail.unwrap_or_default()
-                            ),
-                            CompatibilityRequirement::RequiredIfAdvertised,
-                            ms,
-                        ));
-                    } else {
-                        checks.push(SmokeCheck::fail(
-                            "cross-file references",
-                            fixture.references_requirement,
-                            check.detail.unwrap_or_else(|| "<no detail>".to_string()),
-                            ms,
-                        ));
-                    }
-                }
-                Ok(Err(e)) => checks.push(SmokeCheck::fail(
-                    "cross-file references",
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    format!("{e}"),
-                    ms,
-                )),
-                Err(_elapsed) => checks.push(SmokeCheck::fail(
-                    "cross-file references",
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    stage_timeout_error(
-                        &profile.server_id,
-                        bin_path,
-                        "cross-file references",
-                        REQUEST_TIMEOUT,
-                        &stderr_tail,
                     ),
+                    true,
+                    true,
+                ),
+                Ok(Err(e)) => (
+                    SmokeCheck::fail(
+                        "cross-file references",
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        format!("{e}"),
+                        ms,
+                    )
+                    .to_compatibility_check(),
+                    false,
+                    false,
+                ),
+                Err(_elapsed) => (
+                    SmokeCheck::fail(
+                        "cross-file references",
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        stage_timeout_error(
+                            &profile.server_id,
+                            bin_path,
+                            "cross-file references",
+                            REQUEST_TIMEOUT,
+                            &stderr_tail,
+                        ),
+                        ms,
+                    )
+                    .to_compatibility_check(),
+                    false,
+                    false,
+                ),
+            };
+            let detail = check.detail.clone().map(|detail| {
+                if retried_content_modified {
+                    format!("{detail}; succeeded after one ContentModified retry")
+                } else {
+                    detail
+                }
+            });
+            let semantic_assertion_passed = check.status == CompatibilityCheckStatus::Passing;
+            let pass = semantic_assertion_passed
+                || check.status == CompatibilityCheckStatus::PassingWithKnownLimits;
+            operation_records.push(
+                OperationOutcome {
+                    operation: "referencesCrossFile".to_string(),
+                    advertised: caps.supports_references,
+                    exercised: true,
+                    request_succeeded,
+                    response_parsed,
+                    semantic_assertion_passed,
+                    requirement: fixture.references_requirement,
+                    known_limit: (fixture.references_requirement
+                        == CompatibilityRequirement::KnownLimitation)
+                        .then(|| {
+                            detail
+                                .clone()
+                                .unwrap_or_else(|| "documented limitation".to_string())
+                        }),
+                }
+                .into_record(),
+            );
+            if pass {
+                checks.push(SmokeCheck::pass(
+                    format!("cross-file references ({})", detail.unwrap_or_default()),
+                    CompatibilityRequirement::RequiredIfAdvertised,
                     ms,
-                )),
+                ));
+            } else {
+                checks.push(SmokeCheck::fail(
+                    "cross-file references",
+                    fixture.references_requirement,
+                    detail.unwrap_or_else(|| "<no detail>".to_string()),
+                    ms,
+                ));
             }
         }
     } else {
@@ -2571,39 +2730,64 @@ async fn run_smoke_suite(
         )
         .await;
         let ms = start.elapsed().as_millis() as u64;
-        match result {
+        let (request_succeeded, response_parsed, semantic_assertion_passed) = match result {
             Ok(Ok(Some(_))) => {
                 checks.push(SmokeCheck::pass(
                     "hover (found)",
                     CompatibilityRequirement::RequiredIfAdvertised,
                     ms,
                 ));
+                (true, true, true)
             }
-            Ok(Ok(None)) => checks.push(SmokeCheck::fail(
-                "hover",
-                fixture.hover_requirement,
-                "no hover returned at fixture position",
-                ms,
-            )),
-            Ok(Err(e)) => checks.push(SmokeCheck::fail(
-                "hover",
-                fixture.hover_requirement,
-                format!("{e}"),
-                ms,
-            )),
-            Err(_elapsed) => checks.push(SmokeCheck::fail(
-                "hover",
-                CompatibilityRequirement::RequiredIfAdvertised,
-                stage_timeout_error(
-                    &profile.server_id,
-                    bin_path,
+            Ok(Ok(None)) => {
+                checks.push(SmokeCheck::fail(
                     "hover",
-                    REQUEST_TIMEOUT,
-                    &stderr_tail,
-                ),
-                ms,
-            )),
-        }
+                    fixture.hover_requirement,
+                    "no hover returned at fixture position",
+                    ms,
+                ));
+                (true, true, false)
+            }
+            Ok(Err(e)) => {
+                checks.push(SmokeCheck::fail(
+                    "hover",
+                    fixture.hover_requirement,
+                    format!("{e}"),
+                    ms,
+                ));
+                (false, false, false)
+            }
+            Err(_elapsed) => {
+                checks.push(SmokeCheck::fail(
+                    "hover",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    stage_timeout_error(
+                        &profile.server_id,
+                        bin_path,
+                        "hover",
+                        REQUEST_TIMEOUT,
+                        &stderr_tail,
+                    ),
+                    ms,
+                ));
+                (false, false, false)
+            }
+        };
+        operation_records.push(
+            OperationOutcome {
+                operation: "hover".to_string(),
+                advertised: true,
+                exercised: true,
+                request_succeeded,
+                response_parsed,
+                semantic_assertion_passed,
+                requirement: fixture.hover_requirement,
+                known_limit: (fixture.hover_requirement
+                    == CompatibilityRequirement::KnownLimitation)
+                    .then(|| "server returned no hover at the fixture position".to_string()),
+            }
+            .into_record(),
+        );
     } else {
         checks.push(SmokeCheck::unsupported(
             "hover",
@@ -2622,7 +2806,6 @@ async fn run_smoke_suite(
     // fixture does not require touching the harness — only the
     // per-language constructor needs to opt in to the new
     // operations.
-    let mut operation_records: Vec<egglsp::compatibility::LspOperationCompatibility> = Vec::new();
     run_generalized_operation_checks(
         client,
         fixture,
@@ -6489,6 +6672,424 @@ fn assert_required_checks(report: &LspCompatibilityReport) {
 }
 
 // ── Rust Analyzer Tests ────────────────────────────────────────────
+
+fn daemon_process_resource_sample_once(root_pid: u32) -> Option<(usize, u64, f64)> {
+    let output = std::process::Command::new("ps")
+        .args(["-Ao", "pid=,ppid=,rss=,%cpu=,comm="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut processes = std::collections::HashMap::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(pid), Some(parent), Some(rss), Some(cpu), Some(command)) = (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+        ) else {
+            continue;
+        };
+        if let (Ok(pid), Ok(parent), Ok(rss), Ok(cpu)) = (
+            pid.parse::<u32>(),
+            parent.parse::<u32>(),
+            rss.parse::<u64>(),
+            cpu.parse::<f64>(),
+        ) {
+            processes.insert(pid, (parent, rss, cpu, command.to_ascii_lowercase()));
+        }
+    }
+    let mut parents = vec![root_pid];
+    let mut descendants = Vec::new();
+    while !parents.is_empty() {
+        let next: Vec<u32> = processes
+            .iter()
+            .filter(|(_, (parent, _, _, _))| parents.contains(parent))
+            .map(|(pid, _)| *pid)
+            .collect();
+        parents = next.clone();
+        descendants.extend(next);
+    }
+    let children: Vec<_> = descendants
+        .iter()
+        .filter_map(|pid| processes.get(pid))
+        .filter(|(_, _, _, command)| command != "ps")
+        .collect();
+    let direct_processes = children
+        .iter()
+        .filter(|(parent, _, _, _)| *parent == root_pid)
+        .count();
+    Some((
+        direct_processes,
+        children.iter().map(|(_, rss, _, _)| *rss).sum(),
+        children.iter().map(|(_, _, cpu, _)| *cpu).sum(),
+    ))
+}
+
+async fn daemon_process_resource_sample(root_pid: u32) -> Option<(usize, u64, f64)> {
+    let mut peak = (0, 0, 0.0_f64);
+    for _ in 0..40 {
+        let sample = daemon_process_resource_sample_once(root_pid)?;
+        peak.0 = peak.0.max(sample.0);
+        peak.1 = peak.1.max(sample.1);
+        peak.2 = peak.2.max(sample.2);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    Some(peak)
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rust_analyzer_same_root_and_multiworktree_resource_matrix() {
+    use std::time::Instant;
+
+    if require_server_binary("CODEGG_RA_BIN", &["rust-analyzer"]).is_none() {
+        eprintln!("SKIP: rust-analyzer not found (set CODEGG_RA_BIN or install rust-analyzer)");
+        return;
+    }
+    let worktrees: Vec<_> = (0..3).map(|_| rust_fixture()).collect();
+    let service =
+        egglsp::LspService::new_arc_with_start_admission(egglsp::LspConfig::default(), 2, 8)
+            .expect("bounded start admission limits are valid");
+
+    let cold_started = Instant::now();
+    let (same_root_key, _) = service
+        .get_or_create_client(&worktrees[0].primary_source)
+        .await
+        .expect("the first same-root editor starts rust-analyzer");
+    let cold_ms = cold_started.elapsed().as_millis();
+    let second_started = Instant::now();
+    let (second_key, _) = service
+        .get_or_create_client(&worktrees[0].primary_source)
+        .await
+        .expect("the second same-root editor reuses rust-analyzer");
+    let second_ms = second_started.elapsed().as_millis();
+    let mut editor_calls = tokio::task::JoinSet::new();
+    for _ in 0..2 {
+        let service = Arc::clone(&service);
+        let path = worktrees[0].primary_source.clone();
+        editor_calls.spawn(async move {
+            let started = Instant::now();
+            let (key, _) = service.get_or_create_client(&path).await?;
+            Ok::<_, egglsp::LspError>((key, started.elapsed().as_millis()))
+        });
+    }
+    let mut four_editor_ms = Vec::new();
+    while let Some(result) = editor_calls.join_next().await {
+        let (key, elapsed) = result
+            .expect("editor acquisition task completed")
+            .expect("same-root acquisition succeeds");
+        assert_eq!(key, same_root_key);
+        four_editor_ms.push(elapsed);
+    }
+    assert_eq!(second_key, same_root_key);
+    assert_eq!(service.client_keys().await.len(), 1);
+    service
+        .ensure_file_open_from_disk_for_key(&same_root_key, &worktrees[0].primary_source)
+        .await
+        .expect("the one-root editor document opens");
+    let operations = egglsp::operations::LspOperations::new(Arc::clone(&service));
+    let read_started = Instant::now();
+    assert!(!operations
+        .document_symbols_for_warm_client(&same_root_key, &worktrees[0].primary_source)
+        .await
+        .expect("the warm one-root symbol request succeeds")
+        .is_empty());
+    let one_root_read_ms = read_started.elapsed().as_millis();
+    let one_root_sample = daemon_process_resource_sample(std::process::id())
+        .await
+        .expect("process resource sampling through ps is available");
+    assert_eq!(
+        one_root_sample.0, 1,
+        "one root and server profile owns one child"
+    );
+    eprintln!(
+        "M006_REAL_RA editors=1,2,4 worktrees=1 start_ms={cold_ms} second_editor_ms={second_ms} fourth_editor_ms={four_editor_ms:?} warm_symbol_read_ms={one_root_read_ms} child_processes={} rss_kb={} aggregate_cpu_percent={:.1}",
+        one_root_sample.0, one_root_sample.1, one_root_sample.2
+    );
+    service.shutdown_all().await;
+    assert_eq!(
+        daemon_process_resource_sample_once(std::process::id())
+            .unwrap()
+            .0,
+        0,
+        "the one-root server exits after service shutdown"
+    );
+
+    let service =
+        egglsp::LspService::new_arc_with_start_admission(egglsp::LspConfig::default(), 2, 8)
+            .expect("bounded start admission limits are valid");
+    let mut worktree_starts = tokio::task::JoinSet::new();
+    for (index, fixture) in worktrees.iter().enumerate() {
+        let service = Arc::clone(&service);
+        let path = fixture.primary_source.clone();
+        worktree_starts.spawn(async move {
+            let started = Instant::now();
+            let (key, _) = service.get_or_create_client(&path).await?;
+            Ok::<_, egglsp::LspError>((index, key, started.elapsed().as_millis()))
+        });
+    }
+    let mut start_ms = Vec::new();
+    let mut worktree_keys = Vec::new();
+    while let Some(result) = worktree_starts.join_next().await {
+        let (index, key, elapsed) = result
+            .expect("worktree start task completed")
+            .expect("worktree LSP starts succeed");
+        assert!(key.contains(":rust-analyzer"));
+        start_ms.push(elapsed);
+        worktree_keys.push((index, key));
+    }
+    assert_eq!(service.client_keys().await.len(), 3);
+    worktree_keys.sort_by_key(|(index, _)| *index);
+    let mut readiness = tokio::task::JoinSet::new();
+    for key in service.client_keys().await {
+        let service = Arc::clone(&service);
+        readiness.spawn(async move {
+            let readiness = service
+                .wait_for_readiness(
+                    &key,
+                    &egglsp::compatibility::LspReadinessPolicy::WaitForDiagnosticsOrTimeout {
+                        timeout: Duration::from_secs(30),
+                    },
+                )
+                .await;
+            readiness
+        });
+    }
+    while let Some(result) = readiness.join_next().await {
+        let state = result.expect("readiness task completed");
+        assert!(
+            matches!(state, egglsp::ReadinessResult::Ready { .. }),
+            "readiness was {state:?}"
+        );
+    }
+    let mut warm_reads = tokio::task::JoinSet::new();
+    for (fixture, (_, key)) in worktrees.iter().zip(worktree_keys.iter()) {
+        let service = Arc::clone(&service);
+        let operations = egglsp::operations::LspOperations::new(Arc::clone(&service));
+        let path = fixture.primary_source.clone();
+        let key = key.clone();
+        warm_reads.spawn(async move {
+            service
+                .ensure_file_open_from_disk_for_key(&key, &path)
+                .await?;
+            let started = Instant::now();
+            let symbols = operations
+                .document_symbols_for_warm_client(&key, &path)
+                .await?;
+            assert!(!symbols.is_empty());
+            Ok::<_, egglsp::LspError>(started.elapsed().as_millis())
+        });
+    }
+    let mut warm_read_ms = Vec::new();
+    while let Some(result) = warm_reads.join_next().await {
+        warm_read_ms.push(
+            result
+                .expect("warm read task completed")
+                .expect("warm per-worktree symbol read succeeds"),
+        );
+    }
+    let multiworktree_sample = daemon_process_resource_sample(std::process::id())
+        .await
+        .expect("process resource sampling through ps is available");
+    assert_eq!(
+        multiworktree_sample.0, 3,
+        "three roots retain three isolated children"
+    );
+    eprintln!(
+        "M006_REAL_RA editors=1 worktrees=3 bounded_starts=2/8 start_ms={start_ms:?} warm_symbol_read_ms={warm_read_ms:?} child_processes={} rss_kb={} aggregate_cpu_percent={:.1}",
+        multiworktree_sample.0, multiworktree_sample.1, multiworktree_sample.2
+    );
+    service.shutdown_all().await;
+    assert_eq!(
+        daemon_process_resource_sample_once(std::process::id())
+            .unwrap()
+            .0,
+        0
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pyright_three_worktree_resource_matrix() {
+    use std::time::Instant;
+
+    let Some(bin) = require_server_binary(
+        "CODEGG_PYRIGHT_BIN",
+        &[
+            "basedpyright-langserver",
+            "basedpyright",
+            "pyright-langserver",
+            "pyright",
+        ],
+    ) else {
+        eprintln!("SKIP: pyright/basedpyright not found (set CODEGG_PYRIGHT_BIN)");
+        return;
+    };
+    let command = vec![bin.to_string_lossy().to_string(), "--stdio".to_string()];
+    let config = egglsp::LspConfig::Rules(std::collections::HashMap::from([(
+        "pyright".to_string(),
+        egglsp::LspRule::Active {
+            command,
+            extensions: Some(vec!["py".to_string()]),
+            disabled: None,
+            env: None,
+            initialization: None,
+            workspace_configuration: None,
+            restart: None,
+        },
+    )]));
+    let same_root = python_fixture();
+    let same_root_service = egglsp::LspService::new_arc_with_start_admission(config.clone(), 2, 8)
+        .expect("bounded start admission limits are valid");
+    let cold_started = Instant::now();
+    let (same_root_key, _) = same_root_service
+        .get_or_create_client(&same_root.primary_source)
+        .await
+        .expect("the first Pyright editor starts the server");
+    let cold_ms = cold_started.elapsed().as_millis();
+    let mut editor_calls = tokio::task::JoinSet::new();
+    for _ in 0..3 {
+        let service = Arc::clone(&same_root_service);
+        let path = same_root.primary_source.clone();
+        editor_calls.spawn(async move {
+            let started = Instant::now();
+            let (key, _) = service.get_or_create_client(&path).await?;
+            Ok::<_, egglsp::LspError>((key, started.elapsed().as_millis()))
+        });
+    }
+    let mut concurrent_editor_ms = Vec::new();
+    while let Some(result) = editor_calls.join_next().await {
+        let (key, elapsed) = result
+            .expect("Pyright editor acquisition task completed")
+            .expect("same-root Pyright acquisition succeeds");
+        assert_eq!(key, same_root_key);
+        concurrent_editor_ms.push(elapsed);
+    }
+    assert_eq!(same_root_service.client_keys().await.len(), 1);
+    same_root_service
+        .ensure_file_open_from_disk_for_key(&same_root_key, &same_root.primary_source)
+        .await
+        .expect("the Pyright document opens");
+    assert!(matches!(
+        same_root_service
+            .wait_for_readiness(
+                &same_root_key,
+                &egglsp::compatibility::LspReadinessPolicy::WaitForDiagnosticsOrTimeout {
+                    timeout: Duration::from_secs(30),
+                },
+            )
+            .await,
+        egglsp::ReadinessResult::Ready { .. }
+    ));
+    let operations = egglsp::operations::LspOperations::new(Arc::clone(&same_root_service));
+    let warm_started = Instant::now();
+    assert!(!operations
+        .document_symbols_for_warm_client(&same_root_key, &same_root.primary_source)
+        .await
+        .expect("the warm Pyright symbol read succeeds")
+        .is_empty());
+    let warm_read_ms = warm_started.elapsed().as_millis();
+    let same_root_sample = daemon_process_resource_sample(std::process::id())
+        .await
+        .expect("process resource sampling through ps is available");
+    assert_eq!(same_root_sample.0, 1, "one root owns one Pyright child");
+    eprintln!(
+        "M006_PYRIGHT editors=1,2,4 worktrees=1 start_ms={cold_ms} concurrent_editor_ms={concurrent_editor_ms:?} warm_symbol_read_ms={warm_read_ms} child_processes={} rss_kb={} aggregate_cpu_percent={:.1}",
+        same_root_sample.0, same_root_sample.1, same_root_sample.2
+    );
+    same_root_service.shutdown_all().await;
+    assert_eq!(
+        daemon_process_resource_sample_once(std::process::id())
+            .unwrap()
+            .0,
+        0,
+        "the one-root Pyright server exits after service shutdown"
+    );
+
+    let worktrees: Vec<_> = (0..3).map(|_| python_fixture()).collect();
+    let service = egglsp::LspService::new_arc_with_start_admission(config, 2, 8)
+        .expect("bounded start admission limits are valid");
+    let mut starts = tokio::task::JoinSet::new();
+    for (index, fixture) in worktrees.iter().enumerate() {
+        let service = Arc::clone(&service);
+        let path = fixture.primary_source.clone();
+        starts.spawn(async move {
+            let started = Instant::now();
+            let (key, _) = service.get_or_create_client(&path).await?;
+            Ok::<_, egglsp::LspError>((index, key, started.elapsed().as_millis()))
+        });
+    }
+    let mut start_ms = Vec::new();
+    let mut keys = Vec::new();
+    while let Some(result) = starts.join_next().await {
+        let (index, key, elapsed) = result
+            .expect("Pyright worktree start completed")
+            .expect("Pyright starts in each worktree");
+        assert!(key.contains(":pyright"));
+        keys.push((index, key));
+        start_ms.push(elapsed);
+    }
+    assert_eq!(service.client_keys().await.len(), 3);
+    keys.sort_by_key(|(index, _)| *index);
+
+    let mut reads = tokio::task::JoinSet::new();
+    for (fixture, (_, key)) in worktrees.iter().zip(keys.iter()) {
+        let service = Arc::clone(&service);
+        let operations = egglsp::operations::LspOperations::new(Arc::clone(&service));
+        let path = fixture.primary_source.clone();
+        let key = key.clone();
+        reads.spawn(async move {
+            service
+                .ensure_file_open_from_disk_for_key(&key, &path)
+                .await?;
+            let readiness = service
+                .wait_for_readiness(
+                    &key,
+                    &egglsp::compatibility::LspReadinessPolicy::WaitForDiagnosticsOrTimeout {
+                        timeout: Duration::from_secs(30),
+                    },
+                )
+                .await;
+            assert!(matches!(readiness, egglsp::ReadinessResult::Ready { .. }));
+            let started = Instant::now();
+            let symbols = operations
+                .document_symbols_for_warm_client(&key, &path)
+                .await?;
+            assert!(!symbols.is_empty());
+            Ok::<_, egglsp::LspError>(started.elapsed().as_millis())
+        });
+    }
+    let mut read_ms = Vec::new();
+    while let Some(result) = reads.join_next().await {
+        read_ms.push(
+            result
+                .expect("Pyright warm read completed")
+                .expect("Pyright warm symbols read succeeds"),
+        );
+    }
+    let sample = daemon_process_resource_sample(std::process::id())
+        .await
+        .expect("process resource sampling through ps is available");
+    assert_eq!(
+        sample.0, 3,
+        "three Python roots retain three isolated servers"
+    );
+    eprintln!(
+        "M006_PYRIGHT worktrees=3 bounded_starts=2/8 start_ms={start_ms:?} warm_symbol_read_ms={read_ms:?} child_processes={} rss_kb={} aggregate_cpu_percent={:.1}",
+        sample.0, sample.1, sample.2
+    );
+    service.shutdown_all().await;
+    assert_eq!(
+        daemon_process_resource_sample_once(std::process::id())
+            .unwrap()
+            .0,
+        0
+    );
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rust_analyzer_smoke() {

@@ -222,3 +222,54 @@ authorize those implementations.
 > ADR-0056 (`plans/closure/daemon-lsp-frontend-convergence/003-status.md` and
 > `004-status.md`), and M005 and M006 are **ready** under their accepted
 > decisions. The sentence above records the state at M002's closure.
+## Requalification note — 2026-10-29
+
+The visible key-to-paint helper described by the closure evidence above was
+later found to accept a fixed 250-ms fallback when animation frames did not
+arrive. Its historical 280–306 ms samples are invalid as a baseline. The
+corrected probe and the first 31-sample visible cold-state set (p50 25 ms,
+p95 39 ms) are recorded in
+`plans/implementation/daemon-lsp-frontend-convergence/artifacts/M002-key-to-paint-instrumentation-correction-20261029.md`.
+
+## Requalification completed — 2026-10-29
+
+The visible key-to-paint probe now arms within the page keydown handler,
+observes the re-rendered caret, requires animation frames, and rejects if the
+window is not visible/focused or the paint boundary does not arrive. Window
+show/focus is enabled only in the generated E2E capability, not the shipped
+desktop capability.
+
+| Measurement | Samples | p50 | p95 | Server state |
+|---|---:|---:|---:|---|
+| Visible key-to-paint, unloaded | 31 | 30 ms | 36 ms | `no_warm_server` |
+| Visible key-to-paint, four CPU workers | 31 | 27 ms | 34 ms | `no_warm_server` |
+| Cold request-to-result, unloaded | 31 | 1 ms | 1 ms | `no_warm_server` |
+| Cold request-to-result, four CPU workers | 31 | 1 ms | 1 ms | `no_warm_server` |
+
+Host: Apple M4 Pro, macOS 26.6.2, ARM64 execution under a shell reporting
+x86_64 via Rosetta; Rust 1.89 ARM64 daemon and Rust 1.90 ARM64 desktop host.
+The cold request route did not spawn an LSP process. These are one-run local
+observations, not a hard SLO or before/after claim. The fake-stdio benchmark
+above remains the warm/cold request comparison and records the intentional
+40-ms production debounce separately.
+
+Final visible session command:
+
+```bash
+RUSTC=/Users/davidbowman/.rustup/toolchains/1.90.0-aarch64-apple-darwin/bin/rustc \
+CODEGG_DAEMON_EXECUTABLE=/Users/davidbowman/.codex/worktrees/755a/codegg/target/debug/codegg \
+apps/desktop/e2e/run-e2e.sh session
+```
+
+Result: 10/10 session E2E tests passed, including cold diagnostics, the two
+latency conditions, deterministic turn, reconnect, renderer reload and native
+close. `npm run typecheck --prefix apps/desktop` passed. The current branch's
+`RUSTC=/Users/davidbowman/.rustup/toolchains/1.89-aarch64-apple-darwin/bin/rustc
+scripts/verify.sh quick` passed with formatting, generated assets, all guards,
+392 Python harness tests (one skipped), and workspace all-target check. The
+historical full suite and fake-stdio comparison above remain the broadest test
+and warm-server evidence; this requalification only changes E2E measurement
+instrumentation and plan records.
+
+M002 is reclosed. The old 280–306 ms key-to-paint values remain invalid and
+must not be used for comparisons.

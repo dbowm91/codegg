@@ -393,11 +393,27 @@ satisfied-by = "the `lsp-real-server-tests` cargo feature (the target's required
 
 [[skip-exceptions]]
 file = "crates/egglsp/tests/real_server_smoke.rs"
+line = 6746
+name = "rust_analyzer_same_root_and_multiworktree_resource_matrix"
+class = "environment-absent"
+condition = "the rust-analyzer binary is not on PATH and CODEGG_RA_BIN is unset"
+satisfied-by = "the `lsp-real-server-tests` cargo feature, with rust-analyzer installed; exact ARM64 qualification command is recorded in the M006 resource-matrix artifact"
+
+[[skip-exceptions]]
+file = "crates/egglsp/tests/real_server_smoke.rs"
 line = 6558
 name = "basedpyright_smoke"
 class = "environment-absent"
 condition = "neither pyright nor basedpyright is on PATH and CODEGG_PYRIGHT_BIN is unset"
 satisfied-by = "the `lsp-real-server-tests` cargo feature, with basedpyright installed"
+
+[[skip-exceptions]]
+file = "crates/egglsp/tests/real_server_smoke.rs"
+line = 6917
+name = "pyright_three_worktree_resource_matrix"
+class = "environment-absent"
+condition = "neither pyright nor basedpyright is on PATH and CODEGG_PYRIGHT_BIN is unset"
+satisfied-by = "the `lsp-real-server-tests` cargo feature, with Pyright installed; exact ARM64 qualification command is recorded in the M006 resource-matrix artifact"
 
 [[skip-exceptions]]
 file = "crates/egglsp/tests/real_server_smoke.rs"

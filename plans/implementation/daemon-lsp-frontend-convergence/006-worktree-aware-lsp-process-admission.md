@@ -1,6 +1,6 @@
 # M006 — Daemon LSP Process Budgets, Worktree Identity and Retirement
 
-Status: ready — maintainer accepted bounded-admission policy defaults on 2026-10-28; implementation qualification remains
+Status: active — maintainer accepted bounded-admission policy defaults on 2026-10-28; real-server qualification is underway
 
 Primary class: infrastructure/polish.
 
@@ -30,13 +30,44 @@ The maintainer accepted these policy boundaries on 2026-10-28: keep present conc
 
 Run `cargo test -p egglsp --locked`, root `cargo test -p codegg --locked lsp`, `cargo check -p codegg --locked --features server`, `python3 scripts/check_authorization_matrix.py`, relevant managed-process/daemon-workspace static guards and root `scripts/verify.sh`. Native Linux contained LSP exchange must prove host-proc denial; macOS/Windows behavior must be separately qualified or explicitly disabled. Benchmark 1, 2 and 4 simultaneous editors/agents, 1 vs 3 worktrees, warm and cold starts, Rust and Python fixtures; record p50/p95 startup/read latency, number of child processes, peak RAM/CPU and disk-impact evidence with exact machine/model/server versions. No invented target SLO or false host-generalized throughput claims.
 
-Current host qualification: the fake-LSP integration family ran on this
-x86_64 macOS host with a compatible linker wrapper (71/71 passed), as did the
-full `egglsp` package suite (1,038 tests). These are source correctness
-checks, not process-admission qualification. No multi-editor/worktree
-benchmark or process-count evidence has been recorded; M006 remains ready for
-implementation and active-resource measurement under the accepted defaults.
+Current host qualification (2026-10-29): the fake-LSP integration family ran
+on this x86_64-reported macOS session with a compatible linker wrapper
+(71/71 passed), as did the full `egglsp` package suite (1,038 tests). Native
+ARM64 macOS real-server evidence is recorded in
+`artifacts/M006-real-server-single-workspace-baseline-20261029.md` and
+`artifacts/M006-real-server-multiworktree-resource-matrix-20261029.md`.
+The latter covers same-root 1/2/4 service acquisitions and three isolated
+worktrees for rust-analyzer 1.89.0 and Pyright 1.1.411, including readiness,
+warm symbol reads, process counts, peak sampled descendant RSS/CPU and normal
+service teardown. It demonstrates per-root reuse/isolation and start-admission
+behavior on this host; it does not establish a total live-process or memory
+budget. The acquisition timings are single observations, not p50/p95.
+The M006 update reran `cargo test -p egglsp --locked` with matching ARM64
+Rust 1.89 `rustc` and `rustdoc`: all 1,038 unit and integration tests passed,
+and the doctest target passed (zero doctests). The final
+`scripts/verify.sh quick` passed, including formatting, generated assets, all
+guards, 392 Python harness tests (one skipped), and workspace all-target
+`cargo check`.
+
+Admission semantics are intentionally narrower than total process budgeting:
+`max_concurrent_starts` bounds launches inside the launcher and
+`max_admitted_starts` bounds starts concurrently admitted to that launcher.
+Both permits are released when launch returns, so ready servers are not counted
+against either bound. With no `lsp_process_admission` config, existing direct
+launch behavior remains. Do not describe these settings as an active-server,
+RAM, CPU or disk cap.
+
+The remaining gates are a true multi-editor-process/agent-substream workload,
+repeated p50/p95 plus sustained indexing/idle and disk observations, and native
+Linux M004 containment evidence on an exact hosted head. Windows constrained
+LSP remains unavailable because no filesystem-enforcement backend is
+registered. Normal service shutdown is process-exit qualified; no idle
+retirement policy was selected or implemented, and servers remain alive until
+their owning service/scope shuts down. M006 remains active until the closure
+record either qualifies the approved scope with these limits explicit or a
+maintainer resolves whether a total-live-resource budget/idle-retirement policy
+is required.
 
 ## Non-goals / closure
 
-No globally shared LSP process across distinct roots or sandbox profiles; no new language-server binary download policy, code execution from frontend, scheduler changes, build-cache reconfiguration, persistence schema or untrusted config overrides. Close only with approved admission policy, invariant/negative tests, benchmark evidence and no introduced cold-read stall. Closure `plans/closure/daemon-lsp-frontend-convergence/006-status.md` contains exact configuration semantics, tests, platform matrix and known unqualified modes. If resource tracking would require a new host-agent service, defer to a separate roadmap instead of expanding this milestone.
+No globally shared LSP process across distinct roots or sandbox profiles; no new language-server binary download policy, code execution from frontend, scheduler changes, build-cache reconfiguration, persistence schema or untrusted config overrides. Close only with approved admission policy, invariant/negative tests, benchmark evidence and no introduced cold-read stall. Closure `plans/closure/daemon-lsp-frontend-convergence/006-status.md` must contain exact configuration semantics, tests, platform matrix and known unqualified modes. If resource tracking would require a new host-agent service, defer to a separate roadmap instead of expanding this milestone.

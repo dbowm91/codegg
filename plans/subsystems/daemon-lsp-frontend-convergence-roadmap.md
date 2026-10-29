@@ -1,6 +1,6 @@
 # Daemon LSP and Frontend Editor Convergence Roadmap
 
-Status: active — M001–M004 closed; M005/M006 are decision-ready for implementation
+Status: active — M001–M005 closed; M006 process-budget qualification active
 
 Planning baseline: `main` at `7de6f237c0c4ab2abff120f39b7ae98e7107bec3` (2026-10-28). Revalidate current source before implementing each milestone.
 
@@ -8,7 +8,7 @@ Primary class: infrastructure, with separate capability and latency-polish miles
 
 Long-term authority: `plans/000-long-term-specification.md` §§4, 13, 24–25; `plans/001-terminology-and-domain-model.md`; `plans/002-long-term-roadmap.md`; `plans/003-planning-process.md`.
 
-Controlling accepted ADRs: ADR-0008 (checked LSP preview application), ADR-0010 (shared client), ADR-0011 (canonical document and optimistic replicas), ADR-0012 (native LSP reads/diagnostics), ADR-0018 (authorized navigation identity), ADR-0021 (revision-bound completion and local application), ADR-0034 (daemon structural selection), ADR-0052 (command catalog/execute), and ADR-0056 (typed daemon-owned LSP operations and low-frequency command parity). ADR-0034 Option B is accepted; M005 is ready for bounded daemon structural reads, with implementation evidence gates remaining. Related existing roadmap: `plans/subsystems/desktop-frontend-ide-foundation-roadmap.md` M007-F and `plans/subsystems/tui-editor-helix-parity-roadmap.md` M014. This roadmap does NOT reopen already closed milestones.
+Controlling accepted ADRs: ADR-0008 (checked LSP preview application), ADR-0010 (shared client), ADR-0011 (canonical document and optimistic replicas), ADR-0012 (native LSP reads/diagnostics), ADR-0018 (authorized navigation identity), ADR-0021 (revision-bound completion and local application), ADR-0034 (daemon structural selection), ADR-0052 (command catalog/execute), and ADR-0056 (typed daemon-owned LSP operations and low-frequency command parity). ADR-0034 Option B is accepted; M005's bounded daemon structural reads and TUI gesture closed on 2026-10-29. Related existing roadmap: `plans/subsystems/desktop-frontend-ide-foundation-roadmap.md` M007-F and `plans/subsystems/tui-editor-helix-parity-roadmap.md` M014. This roadmap does NOT reopen already closed milestones.
 
 ## 1. Purpose and ownership
 
@@ -26,7 +26,7 @@ No renderer/host/CLI may create a competing daemon-session LSP process, bypass `
 - `src/tui/commands/editor.rs` and `src/tui/editor_lsp.rs`: native editor diagnostics/semantic/navigation; `src/tui/editor_completion.rs`: its own epoch/invalidation. `apps/desktop/src-tauri/src/document.rs`: native diagnostics/completion/navigation, no independent language-server owner.
 - `crates/codegg-client/src/lsp.rs` owns the consumer-tested cross-frontend request lifecycle and diagnostics reconciliation contract. M002 owns migration of remaining gestures, parity coverage and renewed latency measurements against that contract.
 - `src/main.rs` still attaches `app.lsp_tool` in **non-socket** mode. M003 adds session-rooted inspection plus `lsp.control` lifecycle/cache routes; M004 adds eight bounded daemon semantic workflows and desktop format/rename preview with explicit checked apply. M007-F remains split across M003/M004 under accepted ADR-0056. Keep the generated form inventory current and advertise a form as served only after its typed path, authorization and failure behavior exist. Preview-registry commands, doctor, hunk repair, diff review and security review remain explicitly unavailable.
-- ADR-0034 Option B was accepted on 2026-10-28. M005 is ready to implement bounded daemon structural reads and the TUI gesture; no frontend parser is approved. Distinguish syntax-aware *local text interaction* from cross-file semantic LSP reads.
+- ADR-0034 Option B was accepted on 2026-10-28. M005 is closed with bounded daemon structural reads and the TUI gesture; no frontend parser was added. Broader syntax-node text objects and bracket matching remain separate Helix-parity work. Distinguish syntax-aware *local text interaction* from cross-file semantic LSP reads.
 
 ## 3. Non-negotiable invariants
 
@@ -42,15 +42,15 @@ No renderer/host/CLI may create a competing daemon-session LSP process, bypass `
 | ID | Primary class | Deliverable / exit | Dependencies | Status |
 |---|---|---|---|---|
 | M001 | infrastructure | Shared `codegg-client` LSP request lifecycle + diagnostics reconciliation, consumed by one real editor path in each frontend | Existing ADR-0011/0012/0021 interfaces (closed) | **closed — 2026-10-28** |
-| M002 | capability/polish | Both editors use shared coordination for remaining LSP gestures, bounded debounce/coalescing and stale drop; measurable local vs IPC latency | M001 **hard — closed** | **closed — 2026-10-28** |
+| M002 | capability/polish | Both editors use shared coordination for remaining LSP gestures, bounded debounce/coalescing and stale drop; measurable local vs IPC latency | M001 **hard — closed** | **closed — 2026-10-29; corrected visible E2E and loaded-CPU sample passed** |
 | M003 | capability | Typed daemon LSP server inspection, status, restart/stop/cache controls and low-frequency `/lsp-*` command parity (M007-F part 1) | ADR-0056 **accepted** | **closed — 2026-10-28** |
 | M004 | capability | Daemon LSP semantic repair/review recipe parity and checked human preview flow (M007-F part 2) | M003 **closed**; ADR-0056 **accepted** | **closed — 2026-10-28** |
-| M005 | capability | Bounded daemon LSP structural selection for the TUI/Helix M014, with stale discard and explicit unsupported state; no frontend parser | ADR-0034 **accepted Option B**; M001 interface **soft** | **ready** |
-| M006 | infrastructure/polish | Opt-in bounded LSP process admission, canonical worktree/config/profile identity and qualified retirement/resource evidence | Maintainer-approved admission defaults recorded in M006 plan | **ready** |
+| M005 | capability | Bounded daemon LSP structural selection for the TUI/Helix M014, with stale discard and explicit unsupported state; no frontend parser | ADR-0034 **accepted Option B**; M001 interface **soft** | **closed — 2026-10-29; `plans/closure/daemon-lsp-frontend-convergence/005-status.md`** |
+| M006 | infrastructure/polish | Opt-in bounded LSP process admission, canonical worktree/config/profile identity and qualified retirement/resource evidence | Maintainer-approved admission defaults recorded in M006 plan | **active — ARM64 real-server 1/2/4 same-root and 1/3 worktree matrices recorded; total live-process budget, sustained/percentile evidence, hosted Linux containment and retirement policy remain unresolved** |
 
 Milestone plans: `plans/implementation/daemon-lsp-frontend-convergence/001-shared-lsp-client-coordination.md` through `006-worktree-aware-lsp-process-admission.md`. M003 and M004 are an implementation continuation of desktop M007-F, NOT a second command-catalog workstream. M005 coordinates with Helix M014 rather than duplicating its bindings.
 
-Execution order: M001–M004 are closed; M005 and M006 are ready under their recorded decisions. They remain separate implementation milestones with their own qualification gates.
+Execution order: M001–M005 are closed; M006 process-budget qualification remains active under its accepted start-admission defaults. The configured bounds cover concurrent/admitted starts, not ready servers, memory, CPU or disk.
 
 ## 5. User-visible completion
 

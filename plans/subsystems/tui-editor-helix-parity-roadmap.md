@@ -1333,7 +1333,7 @@ nobody has made. The plan is registered as **M005** at
 M014 remains blocked on that implementation and its cross-roadmap
 reconciliation; M009's closed byte-derived scope is unchanged.
 
-> **M014 planning addendum (2026-10-28; status reconciled 2026-10-29).** The candidate is registered at `plans/implementation/daemon-lsp-frontend-convergence/005-local-editor-syntax-qualification.md` under M005 of the LSP convergence roadmap. ADR-0034 Option B was accepted on 2026-10-28; M005 is dependency-ready, with daemon-backed structural ranges, the TUI gesture, stale-result discard and responsiveness still required. M014 remains blocked on that implementation and its cross-roadmap reconciliation; M009's closed byte-derived scope is unchanged.
+> **M014 planning addendum (2026-10-28; implementation status updated 2026-10-29).** The earlier statement that no plan existed records why M014 was originally left unplanned. The candidate is registered at `plans/implementation/daemon-lsp-frontend-convergence/005-local-editor-syntax-qualification.md` under M005 of the LSP convergence roadmap. ADR-0034 Option B was accepted on 2026-10-28. The daemon-backed structural-range operation and TUI expand/shrink gesture are implemented and M005 is closed with stale-result and 128 KiB responsiveness evidence in `plans/closure/daemon-lsp-frontend-convergence/005-status.md`. This delivers structural selection only: M014's broader syntax-node text objects and syntax-aware bracket match remain unimplemented and need their own bounded plan if still desired. M009's closed byte-derived scope is unchanged.
 
 ### M015 — LSP preview leaves
 

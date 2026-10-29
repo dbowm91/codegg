@@ -1,6 +1,6 @@
 # M002 — Cross-Frontend LSP Parity and Latency Discipline
 
-Status: closed — 2026-10-28 after M001 correctness qualification
+Status: closed — visible-host latency requalification completed 2026-10-29; closure record updated
 
 Primary class: capability/polish.
 
@@ -19,6 +19,8 @@ The TUI already has `EditorLspState`, `EditorCompletionState` and direct `LspRea
 M001 closed on 2026-10-28 after production diagnostics subscription, recovery, reconnect, stale-response and two-client evidence; its requirement/evidence matrix is `plans/closure/daemon-lsp-frontend-convergence/001-status.md`.
 
 Historical gesture/source audit: `plans/implementation/daemon-lsp-frontend-convergence/artifacts/M002-gesture-and-latency-audit-20261027.md`. Earlier qualification and measurements in `plans/closure/daemon-lsp-frontend-convergence/002-status.md` are historical baseline only; they do not close this reopened work. Update that record after remaining parity and latency work is complete.
+
+Latency measurement follow-up: `plans/implementation/daemon-lsp-frontend-convergence/artifacts/M002-key-to-paint-instrumentation-correction-20261029.md` records why the prior visible-host samples are invalid and contains the corrected 31-sample unloaded and loaded results. The final visible desktop session E2E passes 10/10; full evidence and exact host details are appended to the closure record.
 
 ## Work packages
 
