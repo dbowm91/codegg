@@ -132,7 +132,7 @@ so the two actions differ.
 for a frontend-effect form, `None` for a daemon-effect form. The field is
 **additive** and `#[serde(default)]`, so an older client still decodes the
 DTO. It is populated from `FrontendAction::as_str()`
-(`src/core/daemon_commands.rs:733-738`), so the string is generated from the
+(`src/core/daemon_commands.rs:887`), so the string is generated from the
 enum and **cannot be a typo**.
 
 The daemon's catalog DTO is the only place the action is published. The
@@ -160,7 +160,7 @@ run's scope before the row is built**:
 - `HumanShellRunService::scope_for(run_id)` (`src/shell/daemon.rs:433`)
   answers the run's own binding from the daemon's registry. The runs are in
   memory, so it answers `None` for a run the daemon does not hold.
-- `CoreDaemon::resolve_command_authority` (`src/core/daemon_commands.rs:751`)
+- `CoreDaemon::resolve_command_authority` (`src/core/daemon_commands.rs:900`)
   resolves it before the row is built and carries it in
   `CommandContext.authority` (`:86`).
 - `argument_identifier` (`:98`) is shared by the row and the resolver, so
@@ -172,7 +172,7 @@ run's scope before the row is built**:
 A run the daemon does not hold has no binding, so the row **refuses the
 call** rather than building a scope-built request — and the form stays
 served, because serve-ability is a property of the form
-(`serves_form`, `src/core/daemon_commands.rs:629`), not of one call's
+(`serves_form`, `src/core/daemon_commands.rs:778`), not of one call's
 argument.
 
 **The behaviour this changes, named.** The old row could cancel only a run

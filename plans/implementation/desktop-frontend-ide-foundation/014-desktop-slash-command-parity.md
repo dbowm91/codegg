@@ -223,18 +223,24 @@ Stable interface dependencies:
   audited route over existing daemon handlers**, not a rewrite of 130 command implementations.
 - **A small, verified set is not daemon-routed today.** Six commands are frontend-local while
   their effect is daemon-owned, and they seed the Work package F inventory: `Compact` (the arm
-  only toasts at `src/tui/app/mod.rs:5958`; `TuiCommand::CompactSession` is declared at
-  `src/tui/app/commands.rs:282` and handled at `src/tui/runtime/command_dispatch.rs:773` but **has
-  no sender**), `Status` (formats from frontend state at `src/tui/app/mod.rs:5971`), `State`
-  (formats from `self.session_state_derived` at `src/tui/app/mod.rs:7389`), `Logs` (reads the
+  only toasts at `src/tui/app/mod.rs:5989`; `TuiCommand::CompactSession` is declared at
+  `src/tui/app/commands.rs:296` and handled at `src/tui/runtime/command_dispatch.rs:839` but **has
+  no sender**), `Status` (formats from frontend state at `src/tui/app/mod.rs:6002`), `State`
+  (formats from `self.session_state_derived` at `src/tui/app/mod.rs:7430`), `Logs` (reads the
   daemon's log file directly from the frontend's filesystem at `src/tui/app/modal.rs:124-144`),
-  `Skills` (formats from the projection snapshot at `src/tui/app/mod.rs:5689`), and the bare
-  `/agents` form (opens a dialog at `src/tui/app/mod.rs:5824`, while its `show` / `--all` /
+  `Skills` (formats from the projection snapshot at `src/tui/app/mod.rs:5720`), and the bare
+  `/agents` form (opens a dialog at `src/tui/app/mod.rs:5829`, while its `show` / `--all` /
   `diff` / `validate` / `reload` / `rebuild` subcommand forms are daemon-routed).
 - **The LSP family's frontend tool is absent in the default mode.** `app.lsp_tool` is `None` in
-  socket mode (`src/tui/commands/change_review.rs:659`, `architecture/lsp.md:929-930`, `:987`), so
+  socket mode (`src/tui/commands/change_review.rs:659`, `architecture/lsp.md:1055-1060`), so
   every `/lsp-*` arm already refuses in the daemon-connected configuration. The authoritative LSP
-  service is daemon-owned (`architecture/lsp.md:81-84`).
+  service is daemon-owned (`architecture/lsp.md:83-84`).
+
+  > **Reconciled 2026-10-29.** The refusal above is the state at this plan's authoring.
+  > Under accepted ADR-0056 the daemon now serves the `/lsp-*` forms and the TUI routes its
+  > reads through the daemon's command path, so the arms no longer refuse in the
+  > daemon-connected configuration. `app.lsp_tool` is still `None` in socket mode
+  > (`src/main.rs:4022`).
 - **The desktop boundary guard constrains the host bridge's shape.**
   `scripts/check-desktop-boundary.sh:23-26` rejects `core_request`, `read_file`, or
   `invoke.*shell` anywhere in `apps/desktop/src` or `apps/desktop/src-tauri/src` — a **generic
@@ -538,167 +544,167 @@ that makes a misclassification detectable.
 
 | # | Command | Action | Kind | Authority the effect lives in | Dispatcher arm |
 |---|---------|--------|------|------------------------------|-----------------|
-| 1 | `/init` | `ProjectInit` | **D** | the daemon's project-init draft | `src/tui/app/mod.rs:5670` |
-| 2 | `/projects` | `Projects` | **F** | opens the project picker; the list arrives over the picker's own path | `src/tui/app/mod.rs:6490` |
-| 3 | `/workspace` | `Workspace` | **F** | opens the Workspace view; the dashboard fills over its own path | `src/tui/app/mod.rs:6770` |
-| 4 | `/workspaces` | `Workspaces` | **F** | baseline advisory toast naming `/sessions` | `src/tui/app/mod.rs:6680` |
-| 5 | `/tree` | `Tree` | **F** | opens the file-tree dialog | `src/tui/app/mod.rs:5770` |
-| 6 | `/editor` | `Editor` | **F** | launches the user's `$EDITOR`; frontend-local, no daemon state | `src/tui/app/mod.rs:6711` |
-| 7 | `/open` | `OpenDocument` | **D** | the daemon's `DocumentService` | `src/tui/app/mod.rs:6714` |
-| 8 | `/worktree` | `Worktree` | **D** | daemon-owned git worktrees | `src/tui/app/mod.rs:6685` |
-| 9 | `/agent` | `AgentSelect` | **D** | the session's agent selection | `src/tui/app/mod.rs:5774` |
-| 10 | `/agents` | `Agents` | **F**/**D** | bare form opens the agent dialog; `show`/`--all`/`diff`/`validate`/`reload`/`rebuild` are daemon-routed | `src/tui/app/mod.rs:5798` |
-| 11 | `/new` | `New` | **D** | creates a session in the daemon | `src/tui/app/mod.rs:5951` |
-| 12 | `/compact` | `Compact` | **D** | compaction is daemon-owned — **recorded baseline discrepancy**, §14 | `src/tui/app/mod.rs:5958` |
-| 13 | `/sessions` | `Sessions` | **F** | opens the session dialog; the list arrives over the dialog's own path | `src/tui/app/mod.rs:6487` |
-| 14 | `/share` | `Share` | **D** | a daemon-owned share URL | `src/tui/app/mod.rs:6499` |
-| 15 | `/unshare` | `Unshare` | **D** | revokes a daemon-owned share URL | `src/tui/app/mod.rs:6525` |
-| 16 | `/export` | `Export` | **D** | daemon-owned session state | `src/tui/app/mod.rs:6558` |
-| 17 | `/import` | `Import` | **D** | session state, through the daemon | `src/tui/app/mod.rs:6572` |
-| 18 | `/rename` | `Rename` | **F** | baseline advisory toast naming `/sessions` | `src/tui/app/mod.rs:6536` |
-| 19 | `/timeline` | `Timeline` | **F** | shows the timeline view | `src/tui/app/mod.rs:6541` |
-| 20 | `/undo` | `Undo` | **F** | undoes a local message-list edit | `src/tui/app/mod.rs:6544` |
-| 21 | `/redo` | `Redo` | **F** | redoes a local message-list edit | `src/tui/app/mod.rs:6551` |
-| 22 | `/status` | `Status` | **D** | daemon-resolved session status and effective policy | `src/tui/app/mod.rs:5971` |
-| 23 | `/state` | `State` | **D** | the daemon-resolved session, goal and plan state | `src/tui/app/mod.rs:7389` |
-| 24 | `/start` | `StartTurn` | **D** | resumes a daemon-owned stopped turn | `src/tui/app/mod.rs:6496` |
-| 25 | `/stop` | `Stop` | **D** | cancels the daemon's running turn | `src/tui/app/mod.rs:6493` |
-| 26 | `/loop` | `Loop` | **D** | schedules a recurring daemon-owned prompt | `src/tui/app/mod.rs:6727` |
-| 27 | `/schedules` | `Schedules` | **D** | daemon-owned background schedules | `src/tui/app/mod.rs:6777` |
-| 28 | `/task-del` | `TaskDel` | **D** | deletes a daemon-owned background schedule | `src/tui/app/mod.rs:6784` |
-| 29 | `/tasks` | `Tasks` | **D** | daemon-owned work-order tasks | `src/tui/app/mod.rs:6758` |
-| 30 | `/task` | `Task` | **D** | a daemon-owned task | `src/tui/app/mod.rs:6767` |
-| 31 | `/goal` | `Goal` | **D** | the daemon-owned goal | `src/tui/app/mod.rs:7133` |
-| 32 | `/plan` | `Plan` | **D** | the daemon-owned plan | `src/tui/app/mod.rs:7275` |
-| 33 | `/tests` | `Tests` | **D** | daemon-owned test results | `src/tui/app/mod.rs:8164` |
-| 34 | `/test` | `Test` | **D** | runs a daemon-owned test | `src/tui/app/mod.rs:8169` |
-| 35 | `/diff` | `Diff` | **D** | a daemon-owned workspace diff | `src/tui/app/mod.rs:8155` |
-| 36 | `/revert` | `Revert` | **D** | mutates the workspace through the daemon | `src/tui/app/mod.rs:8182` |
-| 37 | `/review-change` | `Review` | **D** | daemon-owned change previews | `src/tui/app/mod.rs:7579` |
-| 38 | `/edit-undo` | `EditUndo` | **D** | undoes a daemon-owned edit | `src/tui/app/mod.rs:8191` |
-| 39 | `/edit-reapply` | `EditReapply` | **D** | reapplies a daemon-owned edit | `src/tui/app/mod.rs:8237` |
-| 40 | `/edit-checkpoints` | `EditCheckpoints` | **D** | daemon-owned edit checkpoints | `src/tui/app/mod.rs:8283` |
-| 41 | `/connect` | `Connect` | **F** | opens the connect dialog | `src/tui/app/mod.rs:5963` |
-| 42 | `/connections` | `Connections` | **F** | opens the connection-selection dialog | `src/tui/app/mod.rs:5967` |
-| 43 | `/models-refresh` | `ModelsRefresh` | **D** | the daemon/provider model catalog | `src/tui/app/mod.rs:6658` |
-| 44 | `/variants` | `Variants` | **F** | baseline advisory toast naming the model's base | `src/tui/app/mod.rs:6661` |
-| 45 | `/approval` | `Approval` | **D** | the daemon's approval mode | `src/tui/app/mod.rs:6006` |
-| 46 | `/sandbox` | `Sandbox` | **D** | the daemon's sandbox profile | `src/tui/app/mod.rs:6030` |
-| 47 | `/network` | `Network` | **D** | the daemon's child network intent | `src/tui/app/mod.rs:6056` |
-| 48 | `/policy` | `Policy` | **D** | the daemon's effective policy | `src/tui/app/mod.rs:5991` |
-| 49 | `/tool-backends` | `ToolBackends` | **F** | the local search-backend configuration | `src/tui/app/mod.rs:8134` |
-| 50 | `/tool-contracts` | `ToolContracts` | **D** | the daemon's tool contracts | `src/tui/app/mod.rs:7477` |
-| 51 | `/chat` | `Chat` | **F** | focuses the chat panel or opens the chat dialog | `src/tui/app/mod.rs:6215` |
-| 52 | `/chat-send` | `ChatSend` | **D** | the daemon-owned project chat | `src/tui/app/mod.rs:6227` |
-| 53 | `/chat-reply` | `ChatReply` | **D** | a daemon-owned chat message | `src/tui/app/mod.rs:6240` |
-| 54 | `/chat-history` | `ChatHistory` | **D** | daemon-owned chat history | `src/tui/app/mod.rs:6271` |
-| 55 | `/chat-sync` | `ChatSync` | **D** | daemon-owned chat state | `src/tui/app/mod.rs:6291` |
-| 56 | `/chat-read` | `ChatRead` | **D** | a daemon-owned chat message | `src/tui/app/mod.rs:6303` |
-| 57 | `/chat-edit` | `ChatEdit` | **D** | edits a daemon-owned chat message | `src/tui/app/mod.rs:6315` |
-| 58 | `/chat-redact` | `ChatRedact` | **D** | redacts a daemon-owned chat message | `src/tui/app/mod.rs:6345` |
-| 59 | `/chat-composing` | `ChatComposing` | **D** | the daemon-owned composing state | `src/tui/app/mod.rs:6370` |
-| 60 | `/chat-action-task` | `ChatActionTask` | **D** | a daemon-owned chat action task | `src/tui/app/mod.rs:6393` |
-| 61 | `/chat-action-review` | `ChatActionReview` | **D** | a daemon-owned chat action | `src/tui/app/mod.rs:6429` |
-| 62 | `/chat-action-list` | `ChatActionList` | **D** | daemon-owned chat actions | `src/tui/app/mod.rs:6464` |
-| 63 | `/collaborators` | `Collaborators` | **D** | daemon-owned presence state | `src/tui/app/mod.rs:6126` |
-| 64 | `/team` | `Team` | **D** | daemon-owned team membership | `src/tui/app/mod.rs:6142` |
-| 65 | `/control` | `Control` | **D** | the daemon's control plane | `src/tui/app/mod.rs:6154` |
-| 66 | `/observe` | `Observe` | **D** | a daemon-owned observation lease | `src/tui/app/mod.rs:6167` |
-| 67 | `/stop-observing` | `StopObserving` | **D** | releases the daemon-owned observation lease | `src/tui/app/mod.rs:6197` |
-| 68 | `/subagent-send` | `SubagentSend` | **D** | addresses a prompt to a running subagent | `src/tui/app/mod.rs:5680` |
-| 69 | `/memory` | `Memory` | **D** | the daemon-owned memory store | `src/tui/app/mod.rs:6800` |
-| 70 | `/memory-search` | `MemorySearch` | **D** | searches the daemon-owned memory store | `src/tui/app/mod.rs:6807` |
-| 71 | `/memory-list` | `MemoryList` | **D** | lists the daemon-owned memory store | `src/tui/app/mod.rs:6815` |
-| 72 | `/memory-remember` | `MemoryRemember` | **D** | writes the daemon-owned memory store | `src/tui/app/mod.rs:6823` |
-| 73 | `/memory-forget` | `MemoryForget` | **D** | deletes from the daemon-owned memory store | `src/tui/app/mod.rs:6831` |
-| 74 | `/memory-consolidate` | `MemoryConsolidate` | **D** | consolidates the daemon-owned memory store | `src/tui/app/mod.rs:6839` |
-| 75 | `/habits` | `Habits` | **D** | the daemon-owned habit store | `src/tui/app/mod.rs:6842` |
-| 76 | `/habit-dismiss` | `HabitDismiss` | **D** | dismisses a daemon-owned habit | `src/tui/app/mod.rs:6852` |
-| 77 | `/skills` | `Skills` | **D** | the daemon's effective skill registry | `src/tui/app/mod.rs:5689` |
-| 78 | `/skill-promote` | `SkillPromote` | **D** | the daemon-owned skill store | `src/tui/app/mod.rs:6866` |
-| 79 | `/skill-proposals` | `SkillProposals` | **D** | daemon-owned skill proposals | `src/tui/app/mod.rs:6928` |
-| 80 | `/skill-proposal` | `SkillProposal` | **D** | publishes or resolves a daemon-owned skill proposal | `src/tui/app/mod.rs:6965` |
-| 81 | `/research` | `Research` | **D** | starts a daemon-owned research run | `src/tui/app/mod.rs:8313` |
-| 82 | `/research-runs` | `ResearchRuns` | **D** | daemon-owned research runs | `src/tui/app/mod.rs:8324` |
-| 83 | `/research-open` | `ResearchOpen` | **D** | opens a daemon-owned research run | `src/tui/app/mod.rs:8328` |
-| 84 | `/research-show` | `ResearchShow` | **D** | shows a daemon-owned research run | `src/tui/app/mod.rs:8339` |
-| 85 | `/search` | `Search` | **D** | daemon-owned workspace content | `src/tui/app/mod.rs:7439` |
-| 86 | `/doctor` | `Doctor` | **D** | the daemon's diagnostic pass | `src/tui/app/mod.rs:7460` |
-| 87 | `/logs` | `Logs` | **D** | the daemon's log tail, which the frontend reads off disk today | `src/tui/app/mod.rs:7473` |
-| 88 | `/nodes` | `Nodes` | **D** | daemon-owned node telemetry | `src/tui/app/mod.rs:7494` |
-| 89 | `/lsp-status` | `LspStatus` | **D** | the daemon's LSP service status | `src/tui/app/mod.rs:7486` |
-| 90 | `/lsp-servers` | `LspServers` | **D** | the daemon's LSP servers | `src/tui/app/mod.rs:7668` |
-| 91 | `/lsp-capabilities` | `LspCapabilities` | **D** | daemon-owned LSP capabilities | `src/tui/app/mod.rs:7683` |
-| 92 | `/lsp-errors` | `LspErrors` | **D** | daemon-owned LSP diagnostics | `src/tui/app/mod.rs:7705` |
-| 93 | `/lsp-root` | `LspRoot` | **D** | a daemon-owned LSP root | `src/tui/app/mod.rs:7726` |
-| 94 | `/lsp-doctor` | `LspDoctor` | **D** | the daemon's LSP diagnostic pass | `src/tui/app/mod.rs:7740` |
-| 95 | `/lsp-context-diagnostics` | `LspContextDiagnostics` | **D** | daemon-owned LSP context diagnostics | `src/tui/app/mod.rs:7756` |
-| 96 | `/lsp-repair-local` | `LspRepairLocal` | **D** | mutates the workspace through the daemon's LSP | `src/tui/app/mod.rs:7773` |
-| 97 | `/lsp-repair-hunk` | `LspRepairHunk` | **D** | mutates the workspace through the daemon's LSP | `src/tui/app/mod.rs:7803` |
-| 98 | `/lsp-review-file` | `LspReviewFile` | **D** | reviews a daemon-owned file | `src/tui/app/mod.rs:7832` |
-| 99 | `/lsp-review-diff` | `LspReviewDiff` | **D** | reviews a daemon-owned diff | `src/tui/app/mod.rs:7859` |
-| 100 | `/lsp-security-review` | `LspSecurityReview` | **D** | the daemon's LSP security review | `src/tui/app/mod.rs:7880` |
-| 101 | `/lsp-impact` | `LspImpact` | **D** | daemon-owned LSP impact | `src/tui/app/mod.rs:7908` |
-| 102 | `/lsp-test-repair` | `LspTestRepair` | **D** | mutates the workspace through the daemon's LSP | `src/tui/app/mod.rs:7938` |
-| 103 | `/lsp-interface` | `LspInterface` | **D** | daemon-owned LSP interface detail | `src/tui/app/mod.rs:7969` |
-| 104 | `/lsp-cross-repair` | `LspCrossRepair` | **D** | mutates the workspace through the daemon's LSP | `src/tui/app/mod.rs:8000` |
-| 105 | `/lsp-call-neighbors` | `LspCallNeighbors` | **D** | daemon-owned LSP call neighbours | `src/tui/app/mod.rs:8032` |
-| 106 | `/lsp-restart` | `LspRestart` | **D** | restarts a daemon-owned LSP server | `src/tui/app/mod.rs:8070` |
-| 107 | `/lsp-stop` | `LspStop` | **D** | stops a daemon-owned LSP server | `src/tui/app/mod.rs:8086` |
-| 108 | `/lsp-cache-status` | `LspCacheStatus` | **D** | the daemon's LSP cache status | `src/tui/app/mod.rs:8104` |
-| 109 | `/lsp-cache-clear` | `LspCacheClear` | **D** | clears the daemon's LSP cache | `src/tui/app/mod.rs:8113` |
-| 110 | `/lsp-previews` | `LspPreviews` | **D** | daemon-owned LSP previews | `src/tui/app/mod.rs:7501` |
-| 111 | `/lsp-preview` | `LspPreview` | **D** | a daemon-owned LSP preview | `src/tui/app/mod.rs:7510` |
-| 112 | `/lsp-preview-clear` | `LspPreviewClear` | **D** | clears daemon-owned LSP previews | `src/tui/app/mod.rs:7527` |
-| 113 | `/lsp-preview-refresh` | `LspPreviewRefresh` | **D** | refreshes a daemon-owned LSP preview | `src/tui/app/mod.rs:7552` |
-| 114 | `/lsp-preview-apply` | `LspPreviewApply` | **D** | applies a daemon-owned preview to the workspace | `src/tui/app/mod.rs:7584` |
-| 115 | `/security-review` | `SecurityReview` | **D** | the daemon's security review | `src/tui/app/mod.rs:8377` |
-| 116 | `/security-review-show` | `SecurityReviewShow` | **D** | a daemon-owned security-review result | `src/tui/app/mod.rs:8452` |
-| 117 | `/security-review-cancel` | `SecurityReviewCancel` | **D** | cancels a daemon-owned security review | `src/tui/app/mod.rs:8462` |
-| 118 | `/shell-include` | `ShellInclude` | **D** | stages daemon-owned shell output | `src/tui/app/mod.rs:8466` |
-| 119 | `/shell-rerun` | `ShellRerun` | **D** | reruns a daemon-owned shell command | `src/tui/app/mod.rs:8510` |
-| 120 | `/shell-kill` | `ShellKill` | **D** | kills a daemon-owned shell command | `src/tui/app/mod.rs:8526` |
-| 121 | `/shell-list` | `ShellList` | **D** | lists daemon-owned shell commands | `src/tui/app/mod.rs:8542` |
-| 122 | `/shell-show` | `ShellShow` | **D** | shows a daemon-owned shell command | `src/tui/app/mod.rs:8574` |
-| 123 | `/shell-expand` | `ShellExpand` | **D** | expands a daemon-owned shell command's output | `src/tui/app/mod.rs:8590` |
-| 124 | `/shell-ask` | `ShellAsk` | **D** | asks about a daemon-owned shell command | `src/tui/app/mod.rs:8869` |
-| 125 | `/plugins` | `Plugins` | **D** | lists daemon-owned plugins | `src/tui/app/mod.rs:8617` |
-| 126 | `/plugin-info` | `PluginInfo` | **D** | daemon-owned plugin state | `src/tui/app/mod.rs:8814` |
-| 127 | `/plugin-enable` | `PluginEnable` | **D** | enables a daemon-owned plugin | `src/tui/app/mod.rs:8824` |
-| 128 | `/plugin-disable` | `PluginDisable` | **D** | disables a daemon-owned plugin | `src/tui/app/mod.rs:8834` |
-| 129 | `/plugin-doctor` | `PluginDoctor` | **D** | diagnoses daemon-owned plugins | `src/tui/app/mod.rs:8844` |
-| 130 | `/plugin-remove` | `PluginRemove` | **D** | removes a daemon-owned plugin | `src/tui/app/mod.rs:8849` |
-| 131 | `/plugin-install` | `PluginInstall` | **D** | installs a daemon-owned plugin | `src/tui/app/mod.rs:8859` |
-| 132 | `/terminal` | `Terminal` | **D** | opens a daemon-owned interactive process | `src/tui/app/mod.rs:8665` |
-| 133 | `/terminal-create` | `TerminalCreate` | **D** | creates a daemon-owned interactive process | `src/tui/app/mod.rs:8620` |
-| 134 | `/terminal-list` | `TerminalList` | **D** | lists daemon-owned interactive processes | `src/tui/app/mod.rs:8634` |
-| 135 | `/terminal-attach` | `TerminalAttach` | **D** | attaches to a daemon-owned interactive process | `src/tui/app/mod.rs:8637` |
-| 136 | `/terminal-show` | `TerminalShow` | **D** | shows a daemon-owned interactive process | `src/tui/app/mod.rs:8650` |
-| 137 | `/terminal-clear` | `TerminalClear` | **D** | clears a daemon-owned interactive-process buffer | `src/tui/app/mod.rs:8699` |
-| 138 | `/terminal-focus` | `TerminalFocus` | **F** | moves focus to a terminal panel | `src/tui/app/mod.rs:8726` |
-| 139 | `/terminal-send` | `TerminalSend` | **D** | sends input to a daemon-owned interactive process | `src/tui/app/mod.rs:8735` |
-| 140 | `/terminal-resize` | `TerminalResize` | **D** | resizes a daemon-owned interactive process | `src/tui/app/mod.rs:8752` |
-| 141 | `/terminal-resume` | `TerminalResume` | **D** | resumes a daemon-owned interactive process | `src/tui/app/mod.rs:8778` |
-| 142 | `/terminal-detach` | `TerminalDetach` | **D** | detaches from a daemon-owned interactive process | `src/tui/app/mod.rs:8787` |
-| 143 | `/terminal-terminate` | `TerminalTerminate` | **D** | terminates a daemon-owned interactive process | `src/tui/app/mod.rs:8796` |
-| 144 | `/terminal-remove` | `TerminalRemove` | **D** | removes a daemon-owned interactive process | `src/tui/app/mod.rs:8805` |
-| 145 | `/exit` | `Exit` | **F** | stops the frontend's event loop | `src/tui/app/mod.rs:5759` |
-| 146 | `/help` | `Help` | **F** | opens the help dialog | `src/tui/app/mod.rs:5763` |
-| 147 | `/panels` | `Panels` | **F** | opens the panel manager | `src/tui/app/mod.rs:6203` |
-| 148 | `/context` | `Context` | **F** | opens the context dialog | `src/tui/app/mod.rs:6102` |
-| 149 | `/cost` | `Cost` | **F** | opens the cost dialog | `src/tui/app/mod.rs:6106` |
-| 150 | `/usage` | `Usage` | **F** | opens the usage dialog | `src/tui/app/mod.rs:6110` |
-| 151 | `/queue` | `Queue` | **F** | opens the queue box; its contents arrive over the box's own path | `src/tui/app/mod.rs:5677` |
-| 152 | `/reload` | `Reload` | **D** | the daemon's runtime-asset registry | `src/tui/app/mod.rs:5683` |
-| 153 | `/reasoning` | `Reasoning` | **D** | the daemon-owned reasoning preference | `src/tui/app/mod.rs:6602` |
-| 154 | `/timestamps` | `Timestamps` | **F** | toggles the local timestamp display | `src/tui/app/mod.rs:6579` |
-| 155 | `/thinking` | `Thinking` | **F** | toggles the local reasoning display | `src/tui/app/mod.rs:6588` |
-| 156 | `/expand-all` | `ExpandAllDisclosures` | **F** | expands local disclosures | `src/tui/app/mod.rs:6597` |
-| 157 | `/themes` | `Themes` | **F** | changes the frontend's theme | `src/tui/app/mod.rs:6114` |
-| 158 | `/tui` | `Tui` | **F** | toggles the frontend's fullscreen mode | `src/tui/app/mod.rs:6117` |
+| 1 | `/init` | `ProjectInit` | **D** | the daemon's project-init draft | `src/tui/app/mod.rs:5701` |
+| 2 | `/projects` | `Projects` | **F** | opens the project picker; the list arrives over the picker's own path | `src/tui/app/mod.rs:6521` |
+| 3 | `/workspace` | `Workspace` | **F** | opens the Workspace view; the dashboard fills over its own path | `src/tui/app/mod.rs:6801` |
+| 4 | `/workspaces` | `Workspaces` | **F** | baseline advisory toast naming `/sessions` | `src/tui/app/mod.rs:6711` |
+| 5 | `/tree` | `Tree` | **F** | opens the file-tree dialog | `src/tui/app/mod.rs:5801` |
+| 6 | `/editor` | `Editor` | **F** | launches the user's `$EDITOR`; frontend-local, no daemon state | `src/tui/app/mod.rs:6742` |
+| 7 | `/open` | `OpenDocument` | **D** | the daemon's `DocumentService` | `src/tui/app/mod.rs:6745` |
+| 8 | `/worktree` | `Worktree` | **D** | daemon-owned git worktrees | `src/tui/app/mod.rs:6716` |
+| 9 | `/agent` | `AgentSelect` | **D** | the session's agent selection | `src/tui/app/mod.rs:5805` |
+| 10 | `/agents` | `Agents` | **F**/**D** | bare form opens the agent dialog; `show`/`--all`/`diff`/`validate`/`reload`/`rebuild` are daemon-routed | `src/tui/app/mod.rs:5829` |
+| 11 | `/new` | `New` | **D** | creates a session in the daemon | `src/tui/app/mod.rs:5982` |
+| 12 | `/compact` | `Compact` | **D** | compaction is daemon-owned — **recorded baseline discrepancy**, §14 | `src/tui/app/mod.rs:5989` |
+| 13 | `/sessions` | `Sessions` | **F** | opens the session dialog; the list arrives over the dialog's own path | `src/tui/app/mod.rs:6518` |
+| 14 | `/share` | `Share` | **D** | a daemon-owned share URL | `src/tui/app/mod.rs:6530` |
+| 15 | `/unshare` | `Unshare` | **D** | revokes a daemon-owned share URL | `src/tui/app/mod.rs:6556` |
+| 16 | `/export` | `Export` | **D** | daemon-owned session state | `src/tui/app/mod.rs:6589` |
+| 17 | `/import` | `Import` | **D** | session state, through the daemon | `src/tui/app/mod.rs:6603` |
+| 18 | `/rename` | `Rename` | **F** | baseline advisory toast naming `/sessions` | `src/tui/app/mod.rs:6567` |
+| 19 | `/timeline` | `Timeline` | **F** | shows the timeline view | `src/tui/app/mod.rs:6572` |
+| 20 | `/undo` | `Undo` | **F** | undoes a local message-list edit | `src/tui/app/mod.rs:6575` |
+| 21 | `/redo` | `Redo` | **F** | redoes a local message-list edit | `src/tui/app/mod.rs:6582` |
+| 22 | `/status` | `Status` | **D** | daemon-resolved session status and effective policy | `src/tui/app/mod.rs:6002` |
+| 23 | `/state` | `State` | **D** | the daemon-resolved session, goal and plan state | `src/tui/app/mod.rs:7430` |
+| 24 | `/start` | `StartTurn` | **D** | resumes a daemon-owned stopped turn | `src/tui/app/mod.rs:6527` |
+| 25 | `/stop` | `Stop` | **D** | cancels the daemon's running turn | `src/tui/app/mod.rs:6524` |
+| 26 | `/loop` | `Loop` | **D** | schedules a recurring daemon-owned prompt | `src/tui/app/mod.rs:6758` |
+| 27 | `/schedules` | `Schedules` | **D** | daemon-owned background schedules | `src/tui/app/mod.rs:6808` |
+| 28 | `/task-del` | `TaskDel` | **D** | deletes a daemon-owned background schedule | `src/tui/app/mod.rs:6815` |
+| 29 | `/tasks` | `Tasks` | **D** | daemon-owned work-order tasks | `src/tui/app/mod.rs:6789` |
+| 30 | `/task` | `Task` | **D** | a daemon-owned task | `src/tui/app/mod.rs:6798` |
+| 31 | `/goal` | `Goal` | **D** | the daemon-owned goal | `src/tui/app/mod.rs:7174` |
+| 32 | `/plan` | `Plan` | **D** | the daemon-owned plan | `src/tui/app/mod.rs:7316` |
+| 33 | `/tests` | `Tests` | **D** | daemon-owned test results | `src/tui/app/mod.rs:8266` |
+| 34 | `/test` | `Test` | **D** | runs a daemon-owned test | `src/tui/app/mod.rs:8271` |
+| 35 | `/diff` | `Diff` | **D** | a daemon-owned workspace diff | `src/tui/app/mod.rs:8257` |
+| 36 | `/revert` | `Revert` | **D** | mutates the workspace through the daemon | `src/tui/app/mod.rs:8284` |
+| 37 | `/review-change` | `Review` | **D** | daemon-owned change previews | `src/tui/app/mod.rs:7624` |
+| 38 | `/edit-undo` | `EditUndo` | **D** | undoes a daemon-owned edit | `src/tui/app/mod.rs:8293` |
+| 39 | `/edit-reapply` | `EditReapply` | **D** | reapplies a daemon-owned edit | `src/tui/app/mod.rs:8339` |
+| 40 | `/edit-checkpoints` | `EditCheckpoints` | **D** | daemon-owned edit checkpoints | `src/tui/app/mod.rs:8385` |
+| 41 | `/connect` | `Connect` | **F** | opens the connect dialog | `src/tui/app/mod.rs:5994` |
+| 42 | `/connections` | `Connections` | **F** | opens the connection-selection dialog | `src/tui/app/mod.rs:5998` |
+| 43 | `/models-refresh` | `ModelsRefresh` | **D** | the daemon/provider model catalog | `src/tui/app/mod.rs:6689` |
+| 44 | `/variants` | `Variants` | **F** | baseline advisory toast naming the model's base | `src/tui/app/mod.rs:6692` |
+| 45 | `/approval` | `Approval` | **D** | the daemon's approval mode | `src/tui/app/mod.rs:6037` |
+| 46 | `/sandbox` | `Sandbox` | **D** | the daemon's sandbox profile | `src/tui/app/mod.rs:6061` |
+| 47 | `/network` | `Network` | **D** | the daemon's child network intent | `src/tui/app/mod.rs:6087` |
+| 48 | `/policy` | `Policy` | **D** | the daemon's effective policy | `src/tui/app/mod.rs:6022` |
+| 49 | `/tool-backends` | `ToolBackends` | **F** | the local search-backend configuration | `src/tui/app/mod.rs:8236` |
+| 50 | `/tool-contracts` | `ToolContracts` | **D** | the daemon's tool contracts | `src/tui/app/mod.rs:7518` |
+| 51 | `/chat` | `Chat` | **F** | focuses the chat panel or opens the chat dialog | `src/tui/app/mod.rs:6246` |
+| 52 | `/chat-send` | `ChatSend` | **D** | the daemon-owned project chat | `src/tui/app/mod.rs:6258` |
+| 53 | `/chat-reply` | `ChatReply` | **D** | a daemon-owned chat message | `src/tui/app/mod.rs:6271` |
+| 54 | `/chat-history` | `ChatHistory` | **D** | daemon-owned chat history | `src/tui/app/mod.rs:6302` |
+| 55 | `/chat-sync` | `ChatSync` | **D** | daemon-owned chat state | `src/tui/app/mod.rs:6322` |
+| 56 | `/chat-read` | `ChatRead` | **D** | a daemon-owned chat message | `src/tui/app/mod.rs:6334` |
+| 57 | `/chat-edit` | `ChatEdit` | **D** | edits a daemon-owned chat message | `src/tui/app/mod.rs:6346` |
+| 58 | `/chat-redact` | `ChatRedact` | **D** | redacts a daemon-owned chat message | `src/tui/app/mod.rs:6376` |
+| 59 | `/chat-composing` | `ChatComposing` | **D** | the daemon-owned composing state | `src/tui/app/mod.rs:6401` |
+| 60 | `/chat-action-task` | `ChatActionTask` | **D** | a daemon-owned chat action task | `src/tui/app/mod.rs:6424` |
+| 61 | `/chat-action-review` | `ChatActionReview` | **D** | a daemon-owned chat action | `src/tui/app/mod.rs:6460` |
+| 62 | `/chat-action-list` | `ChatActionList` | **D** | daemon-owned chat actions | `src/tui/app/mod.rs:6495` |
+| 63 | `/collaborators` | `Collaborators` | **D** | daemon-owned presence state | `src/tui/app/mod.rs:6157` |
+| 64 | `/team` | `Team` | **D** | daemon-owned team membership | `src/tui/app/mod.rs:6173` |
+| 65 | `/control` | `Control` | **D** | the daemon's control plane | `src/tui/app/mod.rs:6185` |
+| 66 | `/observe` | `Observe` | **D** | a daemon-owned observation lease | `src/tui/app/mod.rs:6198` |
+| 67 | `/stop-observing` | `StopObserving` | **D** | releases the daemon-owned observation lease | `src/tui/app/mod.rs:6228` |
+| 68 | `/subagent-send` | `SubagentSend` | **D** | addresses a prompt to a running subagent | `src/tui/app/mod.rs:5711` |
+| 69 | `/memory` | `Memory` | **D** | the daemon-owned memory store | `src/tui/app/mod.rs:6831` |
+| 70 | `/memory-search` | `MemorySearch` | **D** | searches the daemon-owned memory store | `src/tui/app/mod.rs:6843` |
+| 71 | `/memory-list` | `MemoryList` | **D** | lists the daemon-owned memory store | `src/tui/app/mod.rs:6851` |
+| 72 | `/memory-remember` | `MemoryRemember` | **D** | writes the daemon-owned memory store | `src/tui/app/mod.rs:6864` |
+| 73 | `/memory-forget` | `MemoryForget` | **D** | deletes from the daemon-owned memory store | `src/tui/app/mod.rs:6872` |
+| 74 | `/memory-consolidate` | `MemoryConsolidate` | **D** | consolidates the daemon-owned memory store | `src/tui/app/mod.rs:6880` |
+| 75 | `/habits` | `Habits` | **D** | the daemon-owned habit store | `src/tui/app/mod.rs:6883` |
+| 76 | `/habit-dismiss` | `HabitDismiss` | **D** | dismisses a daemon-owned habit | `src/tui/app/mod.rs:6893` |
+| 77 | `/skills` | `Skills` | **D** | the daemon's effective skill registry | `src/tui/app/mod.rs:5720` |
+| 78 | `/skill-promote` | `SkillPromote` | **D** | the daemon-owned skill store | `src/tui/app/mod.rs:6907` |
+| 79 | `/skill-proposals` | `SkillProposals` | **D** | daemon-owned skill proposals | `src/tui/app/mod.rs:6969` |
+| 80 | `/skill-proposal` | `SkillProposal` | **D** | publishes or resolves a daemon-owned skill proposal | `src/tui/app/mod.rs:7006` |
+| 81 | `/research` | `Research` | **D** | starts a daemon-owned research run | `src/tui/app/mod.rs:8415` |
+| 82 | `/research-runs` | `ResearchRuns` | **D** | daemon-owned research runs | `src/tui/app/mod.rs:8426` |
+| 83 | `/research-open` | `ResearchOpen` | **D** | opens a daemon-owned research run | `src/tui/app/mod.rs:8430` |
+| 84 | `/research-show` | `ResearchShow` | **D** | shows a daemon-owned research run | `src/tui/app/mod.rs:8441` |
+| 85 | `/search` | `Search` | **D** | daemon-owned workspace content | `src/tui/app/mod.rs:7480` |
+| 86 | `/doctor` | `Doctor` | **D** | the daemon's diagnostic pass | `src/tui/app/mod.rs:7501` |
+| 87 | `/logs` | `Logs` | **D** | the daemon's log tail, which the frontend reads off disk today | `src/tui/app/mod.rs:7514` |
+| 88 | `/nodes` | `Nodes` | **D** | daemon-owned node telemetry | `src/tui/app/mod.rs:7531` |
+| 89 | `/lsp-status` | `LspStatus` | **D** | the daemon's LSP service status | `src/tui/app/mod.rs:7527` |
+| 90 | `/lsp-servers` | `LspServers` | **D** | the daemon's LSP servers | `src/tui/app/mod.rs:7713` |
+| 91 | `/lsp-capabilities` | `LspCapabilities` | **D** | daemon-owned LSP capabilities | `src/tui/app/mod.rs:7717` |
+| 92 | `/lsp-errors` | `LspErrors` | **D** | daemon-owned LSP diagnostics | `src/tui/app/mod.rs:7730` |
+| 93 | `/lsp-root` | `LspRoot` | **D** | a daemon-owned LSP root | `src/tui/app/mod.rs:7743` |
+| 94 | `/lsp-doctor` | `LspDoctor` | **D** | the daemon's LSP diagnostic pass | `src/tui/app/mod.rs:7762` |
+| 95 | `/lsp-context-diagnostics` | `LspContextDiagnostics` | **D** | daemon-owned LSP context diagnostics | `src/tui/app/mod.rs:7782` |
+| 96 | `/lsp-repair-local` | `LspRepairLocal` | **D** | mutates the workspace through the daemon's LSP | `src/tui/app/mod.rs:7804` |
+| 97 | `/lsp-repair-hunk` | `LspRepairHunk` | **D** | mutates the workspace through the daemon's LSP | `src/tui/app/mod.rs:7839` |
+| 98 | `/lsp-review-file` | `LspReviewFile` | **D** | reviews a daemon-owned file | `src/tui/app/mod.rs:7872` |
+| 99 | `/lsp-review-diff` | `LspReviewDiff` | **D** | reviews a daemon-owned diff | `src/tui/app/mod.rs:7904` |
+| 100 | `/lsp-security-review` | `LspSecurityReview` | **D** | the daemon's LSP security review | `src/tui/app/mod.rs:7929` |
+| 101 | `/lsp-impact` | `LspImpact` | **D** | daemon-owned LSP impact | `src/tui/app/mod.rs:7961` |
+| 102 | `/lsp-test-repair` | `LspTestRepair` | **D** | mutates the workspace through the daemon's LSP | `src/tui/app/mod.rs:7996` |
+| 103 | `/lsp-interface` | `LspInterface` | **D** | daemon-owned LSP interface detail | `src/tui/app/mod.rs:8032` |
+| 104 | `/lsp-cross-repair` | `LspCrossRepair` | **D** | mutates the workspace through the daemon's LSP | `src/tui/app/mod.rs:8068` |
+| 105 | `/lsp-call-neighbors` | `LspCallNeighbors` | **D** | daemon-owned LSP call neighbours | `src/tui/app/mod.rs:8105` |
+| 106 | `/lsp-restart` | `LspRestart` | **D** | restarts a daemon-owned LSP server | `src/tui/app/mod.rs:8148` |
+| 107 | `/lsp-stop` | `LspStop` | **D** | stops a daemon-owned LSP server | `src/tui/app/mod.rs:8161` |
+| 108 | `/lsp-cache-status` | `LspCacheStatus` | **D** | the daemon's LSP cache status | `src/tui/app/mod.rs:8190` |
+| 109 | `/lsp-cache-clear` | `LspCacheClear` | **D** | clears the daemon's LSP cache | `src/tui/app/mod.rs:8204` |
+| 110 | `/lsp-previews` | `LspPreviews` | **D** | daemon-owned LSP previews | `src/tui/app/mod.rs:7538` |
+| 111 | `/lsp-preview` | `LspPreview` | **D** | a daemon-owned LSP preview | `src/tui/app/mod.rs:7547` |
+| 112 | `/lsp-preview-clear` | `LspPreviewClear` | **D** | clears daemon-owned LSP previews | `src/tui/app/mod.rs:7568` |
+| 113 | `/lsp-preview-refresh` | `LspPreviewRefresh` | **D** | refreshes a daemon-owned LSP preview | `src/tui/app/mod.rs:7593` |
+| 114 | `/lsp-preview-apply` | `LspPreviewApply` | **D** | applies a daemon-owned preview to the workspace | `src/tui/app/mod.rs:7629` |
+| 115 | `/security-review` | `SecurityReview` | **D** | the daemon's security review | `src/tui/app/mod.rs:8479` |
+| 116 | `/security-review-show` | `SecurityReviewShow` | **D** | a daemon-owned security-review result | `src/tui/app/mod.rs:8554` |
+| 117 | `/security-review-cancel` | `SecurityReviewCancel` | **D** | cancels a daemon-owned security review | `src/tui/app/mod.rs:8564` |
+| 118 | `/shell-include` | `ShellInclude` | **D** | stages daemon-owned shell output | `src/tui/app/mod.rs:8568` |
+| 119 | `/shell-rerun` | `ShellRerun` | **D** | reruns a daemon-owned shell command | `src/tui/app/mod.rs:8612` |
+| 120 | `/shell-kill` | `ShellKill` | **D** | kills a daemon-owned shell command | `src/tui/app/mod.rs:8628` |
+| 121 | `/shell-list` | `ShellList` | **D** | lists daemon-owned shell commands | `src/tui/app/mod.rs:8644` |
+| 122 | `/shell-show` | `ShellShow` | **D** | shows a daemon-owned shell command | `src/tui/app/mod.rs:8676` |
+| 123 | `/shell-expand` | `ShellExpand` | **D** | expands a daemon-owned shell command's output | `src/tui/app/mod.rs:8692` |
+| 124 | `/shell-ask` | `ShellAsk` | **D** | asks about a daemon-owned shell command | `src/tui/app/mod.rs:8971` |
+| 125 | `/plugins` | `Plugins` | **D** | lists daemon-owned plugins | `src/tui/app/mod.rs:8719` |
+| 126 | `/plugin-info` | `PluginInfo` | **D** | daemon-owned plugin state | `src/tui/app/mod.rs:8916` |
+| 127 | `/plugin-enable` | `PluginEnable` | **D** | enables a daemon-owned plugin | `src/tui/app/mod.rs:8926` |
+| 128 | `/plugin-disable` | `PluginDisable` | **D** | disables a daemon-owned plugin | `src/tui/app/mod.rs:8936` |
+| 129 | `/plugin-doctor` | `PluginDoctor` | **D** | diagnoses daemon-owned plugins | `src/tui/app/mod.rs:8946` |
+| 130 | `/plugin-remove` | `PluginRemove` | **D** | removes a daemon-owned plugin | `src/tui/app/mod.rs:8951` |
+| 131 | `/plugin-install` | `PluginInstall` | **D** | installs a daemon-owned plugin | `src/tui/app/mod.rs:8961` |
+| 132 | `/terminal` | `Terminal` | **D** | opens a daemon-owned interactive process | `src/tui/app/mod.rs:8767` |
+| 133 | `/terminal-create` | `TerminalCreate` | **D** | creates a daemon-owned interactive process | `src/tui/app/mod.rs:8722` |
+| 134 | `/terminal-list` | `TerminalList` | **D** | lists daemon-owned interactive processes | `src/tui/app/mod.rs:8736` |
+| 135 | `/terminal-attach` | `TerminalAttach` | **D** | attaches to a daemon-owned interactive process | `src/tui/app/mod.rs:8739` |
+| 136 | `/terminal-show` | `TerminalShow` | **D** | shows a daemon-owned interactive process | `src/tui/app/mod.rs:8752` |
+| 137 | `/terminal-clear` | `TerminalClear` | **D** | clears a daemon-owned interactive-process buffer | `src/tui/app/mod.rs:8801` |
+| 138 | `/terminal-focus` | `TerminalFocus` | **F** | moves focus to a terminal panel | `src/tui/app/mod.rs:8828` |
+| 139 | `/terminal-send` | `TerminalSend` | **D** | sends input to a daemon-owned interactive process | `src/tui/app/mod.rs:8837` |
+| 140 | `/terminal-resize` | `TerminalResize` | **D** | resizes a daemon-owned interactive process | `src/tui/app/mod.rs:8854` |
+| 141 | `/terminal-resume` | `TerminalResume` | **D** | resumes a daemon-owned interactive process | `src/tui/app/mod.rs:8880` |
+| 142 | `/terminal-detach` | `TerminalDetach` | **D** | detaches from a daemon-owned interactive process | `src/tui/app/mod.rs:8889` |
+| 143 | `/terminal-terminate` | `TerminalTerminate` | **D** | terminates a daemon-owned interactive process | `src/tui/app/mod.rs:8898` |
+| 144 | `/terminal-remove` | `TerminalRemove` | **D** | removes a daemon-owned interactive process | `src/tui/app/mod.rs:8907` |
+| 145 | `/exit` | `Exit` | **F** | stops the frontend's event loop | `src/tui/app/mod.rs:5790` |
+| 146 | `/help` | `Help` | **F** | opens the help dialog | `src/tui/app/mod.rs:5794` |
+| 147 | `/panels` | `Panels` | **F** | opens the panel manager | `src/tui/app/mod.rs:6234` |
+| 148 | `/context` | `Context` | **F** | opens the context dialog | `src/tui/app/mod.rs:6133` |
+| 149 | `/cost` | `Cost` | **F** | opens the cost dialog | `src/tui/app/mod.rs:6137` |
+| 150 | `/usage` | `Usage` | **F** | opens the usage dialog | `src/tui/app/mod.rs:6141` |
+| 151 | `/queue` | `Queue` | **F** | opens the queue box; its contents arrive over the box's own path | `src/tui/app/mod.rs:5708` |
+| 152 | `/reload` | `Reload` | **D** | the daemon's runtime-asset registry | `src/tui/app/mod.rs:5714` |
+| 153 | `/reasoning` | `Reasoning` | **D** | the daemon-owned reasoning preference | `src/tui/app/mod.rs:6633` |
+| 154 | `/timestamps` | `Timestamps` | **F** | toggles the local timestamp display | `src/tui/app/mod.rs:6610` |
+| 155 | `/thinking` | `Thinking` | **F** | toggles the local reasoning display | `src/tui/app/mod.rs:6619` |
+| 156 | `/expand-all` | `ExpandAllDisclosures` | **F** | expands local disclosures | `src/tui/app/mod.rs:6628` |
+| 157 | `/themes` | `Themes` | **F** | changes the frontend's theme | `src/tui/app/mod.rs:6145` |
+| 158 | `/tui` | `Tui` | **F** | toggles the frontend's fullscreen mode | `src/tui/app/mod.rs:6148` |
 | 159 | `/stats`, `/tui-stats` | `TuiStats` | **F** | opens the stats dialog | `src/tui/app/mod.rs:6120` |
-| 160 | `/tts` | `Tts` | **F** | toggles the frontend's text-to-speech | `src/tui/app/mod.rs:6123` |
-| 161 | `/fork` | `Fork` | **F** | baseline advisory toast naming the CLI `--fork` flag | `src/tui/app/mod.rs:6668` |
+| 160 | `/tts` | `Tts` | **F** | toggles the frontend's text-to-speech | `src/tui/app/mod.rs:6154` |
+| 161 | `/fork` | `Fork` | **F** | baseline advisory toast naming the CLI `--fork` flag | `src/tui/app/mod.rs:6699` |
 
 4. **Who reviews it.** The classification is reviewed by the repository owner before Work package
    D begins, because a wrong kind is a security-relevant defect (ADR-0052, Consequences, Negative).

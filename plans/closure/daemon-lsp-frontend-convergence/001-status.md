@@ -111,3 +111,7 @@ production frontends, and their lifecycle, freshness, authorization, cold
 status and recovery contracts pass the focused root and visible-host
 qualification. M002 is active; it owns the remaining gesture audit,
 parity/lifecycle qualification and measured latency record.
+
+> **Status reconciled 2026-10-29.** M002 has since **closed** — its closure
+> record is `plans/closure/daemon-lsp-frontend-convergence/002-status.md`. The
+> sentence above records the state at M001's closure.

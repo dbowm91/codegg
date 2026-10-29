@@ -603,17 +603,16 @@ smuggled into this milestone.
   capabilities, root, restart and stop, a cache status and clear, a doctor, and
   the repair, review, impact, test-repair, interface, cross-repair and
   call-neighbours workflows. The daemon's `egglsp` instance is authoritative and
-  the TUI's `LspTool` is a second, non-authoritative one. The catalog declares
-  26 `/lsp-*` forms; the daemon serves 4 of them (`status`, `servers`,
-  `capabilities`, and `errors`) through the session-scoped
-  `lsp_server_status_get` operation. `/lsp-errors` and `/lsp-capabilities`
-  require a daemon-validated server identity. The TUI routes these reads
-  through its core client asynchronously; standalone mode retains the local
-  fallback. The other 22 forms remain unavailable in daemon-connected mode
-  until their typed handlers are implemented. The 22 unavailable palette
-  rows accurately describe the daemon's current command surface. | **yes** — the authoritative language
+  the TUI's `LspTool` is a second, non-authoritative one in standalone mode.
+  The catalog declares
+  26 `/lsp-*` forms; the daemon serves 17 of them and
+  leaves 9 unavailable in daemon-connected mode until their
+  typed handlers are implemented. The unavailable forms are
+  `/lsp-previews`, `/lsp-preview`, `/lsp-preview-clear`, `/lsp-preview-refresh`, `/lsp-preview-apply`, `/lsp-doctor`, `/lsp-repair-hunk`, `/lsp-review-diff`, `/lsp-security-review`. The unavailable palette rows accurately describe the
+  daemon's current command surface, and the inventory above lists every form's
+  route. M007-F is closed under accepted ADR-0056. | **yes** — the authoritative language
   server's command surface is a new ownership boundary, and ADR-0052 does not
-  cover it |
+  cover it; ADR-0056 records the accepted decision |
 | M007-G | the daemon's plugin catalogue: list, info, enable, disable, doctor,
   remove and install over the plugin registry the daemon actually loads. The
   TUI's `PluginManager` is its own instance and the daemon has none. | **yes** —

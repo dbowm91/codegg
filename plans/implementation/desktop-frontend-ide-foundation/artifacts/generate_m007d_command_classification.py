@@ -1192,21 +1192,28 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     write("")
     write("| follow-up | surface it needs | ADR |")
     write("|---|---|---|")
+    # The `/lsp-*` counts are **derived**, never written by hand. A hardcoded
+    # count here is the same defect the `40`/`44`/`45` figures were: the prose
+    # contradicts the table the same generator writes a few hundred lines
+    # earlier, and `--check` cannot see it because both come from this file.
+    lsp_rows = [row for row in rows if row["name"].startswith("/lsp-")]
+    lsp_served = [row for row in lsp_rows if row["served"]]
+    lsp_unserved = [row for row in lsp_rows if not row["served"]]
+    lsp_unserved_names = ", ".join(f"`{row['name']}`" for row in lsp_unserved)
     write("| M007-F | the daemon's LSP command surface: a preview list, a server list,")
     write("  capabilities, root, restart and stop, a cache status and clear, a doctor, and")
     write("  the repair, review, impact, test-repair, interface, cross-repair and")
     write("  call-neighbours workflows. The daemon's `egglsp` instance is authoritative and")
-    write("  the TUI's `LspTool` is a second, non-authoritative one. The catalog declares")
-    write("  26 `/lsp-*` forms; the daemon serves 4 of them (`status`, `servers`,")
-    write("  `capabilities`, and `errors`) through the session-scoped")
-    write("  `lsp_server_status_get` operation. `/lsp-errors` and `/lsp-capabilities`")
-    write("  require a daemon-validated server identity. The TUI routes these reads")
-    write("  through its core client asynchronously; standalone mode retains the local")
-    write("  fallback. The other 22 forms remain unavailable in daemon-connected mode")
-    write("  until their typed handlers are implemented. The 22 unavailable palette")
-    write("  rows accurately describe the daemon's current command surface. | **yes** — the authoritative language")
+    write("  the TUI's `LspTool` is a second, non-authoritative one in standalone mode.")
+    write("  The catalog declares")
+    write(f"  {len(lsp_rows)} `/lsp-*` forms; the daemon serves {len(lsp_served)} of them and")
+    write(f"  leaves {len(lsp_unserved)} unavailable in daemon-connected mode until their")
+    write("  typed handlers are implemented. The unavailable forms are")
+    write(f"  {lsp_unserved_names}. The unavailable palette rows accurately describe the")
+    write("  daemon's current command surface, and the inventory above lists every form's")
+    write("  route. M007-F is closed under accepted ADR-0056. | **yes** — the authoritative language")
     write("  server's command surface is a new ownership boundary, and ADR-0052 does not")
-    write("  cover it |")
+    write("  cover it; ADR-0056 records the accepted decision |")
     write("| M007-G | the daemon's plugin catalogue: list, info, enable, disable, doctor,")
     write("  remove and install over the plugin registry the daemon actually loads. The")
     write("  TUI's `PluginManager` is its own instance and the daemon has none. | **yes** —")

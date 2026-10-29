@@ -51,7 +51,7 @@ Long-term requirements:
 Applicable architecture:
 
 - `architecture/document.md` — the `document.v1` contract and the M005 limitations that still hold.
-- `architecture/lsp.md:925` — the native LSP read surface (M006-B, ADR-0012).
+- `architecture/lsp.md:995` — the native LSP read surface (M006-B, ADR-0012).
 - `architecture/desktop.md` — §8 renderer security boundary, §"Deferred surfaces"
   (`architecture/desktop.md:291-292`), and the paused hosted lane
   (`architecture/desktop.md:154-180`).
@@ -142,7 +142,7 @@ up, don't build*.
   when the controller is not idle/saving, when there is no writer lease, or when the pending queue
   is full (`crates/codegg-client/src/document.rs:618-674`).
 - `lsp_read`, `lsp_completion` and `lsp_diagnostics` are **inherent methods on `LocalSocketClient`**
-  (`crates/codegg-client/src/lsp.rs:64`, `:93`, `:107`), re-exported through the `LspReadClient`
+  (`crates/codegg-client/src/lsp.rs:509`, `:538`, `:552`), re-exported through the `LspReadClient`
   trait (`crates/codegg-client/src/lib.rs:33-36`), alongside a `DiagnosticsReconciler`
   (`crates/codegg-client/src/lsp.rs:173`).
 - The daemon's `document.v1` surface is complete and additive: `DocumentCapabilities`,
@@ -447,11 +447,11 @@ and never as an empty tree; a test asserts that an entry outside the workspace i
 
 **Intent.** Show the language server's view of the edited file.
 
-**Required changes.** The host calls `lsp_diagnostics` (`crates/codegg-client/src/lsp.rs:107`),
+**Required changes.** The host calls `lsp_diagnostics` (`crates/codegg-client/src/lsp.rs:552`),
 `lsp_completion` (`:93`) and `lsp_read` (`:64`). Diagnostics are pulled on open, after a successful
 save, and on an explicit refresh, exactly as M006-C does in the TUI; no push stream is promised.
 `NotReady` is presented as "no warm server" — distinct from an error and distinct from an empty
-successful result (`LspReadStatus` at `crates/codegg-protocol/src/lsp.rs:433-443`). Navigation
+successful result (`LspReadStatus` at `crates/codegg-protocol/src/lsp.rs:439-450`). Navigation
 results are workspace-relative and are validated before the editor opens them; an out-of-workspace
 result is surfaced, not opened.
 
