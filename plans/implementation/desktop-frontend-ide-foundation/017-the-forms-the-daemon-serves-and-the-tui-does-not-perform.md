@@ -93,16 +93,16 @@ table (`src/core/daemon_commands.rs`) and the TUI's own arm.
 
 | form | the daemon's row serves | the TUI's arm performs | class | decision |
 |---|---|---|---|---|
-| `skills` | `skill_catalogue_list` (`src/core/daemon_commands.rs:256`) | a read of the TUI's own asset snapshot (`src/tui/app/mod.rs:5691`) | **kind** | the arm is a frontend-local read → correct the kind to `FrontendEffect` and declare the action it performs |
-| `status` | `session_lifecycle_get` (`src/core/daemon_commands.rs:308`) | a locally assembled status string — session status, token counters, the current model (`src/tui/app/mod.rs:5971`) | **kind** | same |
-| `tool_contracts` | `tool_program_list` (`src/core/daemon_commands.rs:269`) | a read of the TUI's **local** tool registry (`src/tui/commands/diagnostics.rs:354`) — tool *contracts*, not tool *programs* | **kind** | same |
+| `skills` | `skill_catalogue_list` (`src/core/daemon_commands.rs:256`) | a read of the TUI's own asset snapshot (`src/tui/app/mod.rs:5720`) | **kind** | the arm is a frontend-local read → correct the kind to `FrontendEffect` and declare the action it performs |
+| `status` | `session_lifecycle_get` (`src/core/daemon_commands.rs:308`) | a locally assembled status string — session status, token counters, the current model (`src/tui/app/mod.rs:6002`) | **kind** | same |
+| `tool_contracts` | `tool_program_list` (`src/core/daemon_commands.rs:269`) | a read of the TUI's **local** tool registry (`src/tui/commands/diagnostics.rs:661`) — tool *contracts*, not tool *programs* | **kind** | same |
 | `worktree` | `managed_worktree_list` (`src/core/daemon_commands.rs:262`) | `worktree_list` by project directory — the checkout listing, a different request (`src/tui/commands/tasks.rs:587`) | **kind** | same |
 | `shell_list` | `human_shell_run_capabilities` (`src/core/daemon_commands.rs:571`) | a read of the TUI's **local** shell store | **kind** | same |
-| `terminal_show` | `interactive_process_list` (`src/core/daemon_commands.rs:599`) | a purely frontend-local action — switch the view to the named terminal (`src/tui/app/mod.rs:8660`) | **kind** | same |
-| `shell_show` | `human_shell_run_read` (`src/core/daemon_commands.rs:572`) | a read of the TUI's local shell store | **granularity** | the daemon's request is issued by the `!`-shell path's **polling loop** — one read per poll. Routing it through `command.execute` would open a canonical `Run` per poll. **Owner decision** |
-| `shell_expand` | `human_shell_run_read` (`src/core/daemon_commands.rs:572`) | the same local store, expanded | **granularity** | same, and it shares the row with `shell_show` |
-| `shell_kill` | `human_shell_run_cancel` (`src/core/daemon_commands.rs:583`) | a local kill for a local run, and a cancel for a remote one (`src/tui/commands/shell.rs:1173`) | **authority** | the cancel's authority is the **run's own** project, workspace and session — the ones the binding carries — not the caller's scope. A scope-built row could address the wrong run. **Owner decision** |
-| `terminal_send` | `interactive_process_input` (`src/core/daemon_commands.rs:604`) | the interactive terminal's **input path**, shared by the `/terminal-send` arm and the live typing path (`src/tui/commands/interactive_terminal.rs:1097`, `:2833`) | **granularity** | the path issues one request **per keystroke**; routing it through `command.execute` would open a canonical `Run` per keystroke. **Owner decision** |
+| `terminal_show` | `interactive_process_list` (`src/core/daemon_commands.rs:599`) | a purely frontend-local action — switch the view to the named terminal (`src/tui/app/mod.rs:8752`) | **kind** | same |
+| `shell_show` | `human_shell_run_read` (`src/core/daemon_commands.rs:553`) | a read of the TUI's local shell store | **granularity** | the daemon's request is issued by the `!`-shell path's **polling loop** — one read per poll. Routing it through `command.execute` would open a canonical `Run` per poll. **Owner decision** |
+| `shell_expand` | `human_shell_run_read` (`src/core/daemon_commands.rs:553`) | the same local store, expanded | **granularity** | same, and it shares the row with `shell_show` |
+| `shell_kill` | `human_shell_run_cancel` (`src/core/daemon_commands.rs:566`) | a local kill for a local run, and a cancel for a remote one (`src/tui/commands/shell.rs:1173`) | **authority** | the cancel's authority is the **run's own** project, workspace and session — the ones the binding carries — not the caller's scope. A scope-built row could address the wrong run. **Owner decision** |
+| `terminal_send` | `interactive_process_input` (`src/core/daemon_commands.rs:597`) | the interactive terminal's **input path**, shared by the `/terminal-send` arm and the live typing path (`src/tui/commands/interactive_terminal.rs:1097`, `:2833`) | **granularity** | the path issues one request **per keystroke**; routing it through `command.execute` would open a canonical `Run` per keystroke. **Owner decision** |
 
 ### 3.1 The three classes, and what each one means
 
@@ -146,7 +146,7 @@ the owner does not object**, and it needs no new decision shape.
 
 ### 3.2 The two `/lsp-*` forms are decided and are not this milestone's work
 
-`/lsp-status` and `/lsp-errors` are served (`src/core/daemon_commands.rs:611`
+`/lsp-status` and `/lsp-errors` are served (`src/core/daemon_commands.rs:604`
 — one row serves both) and are **not** migrated. The arm's behaviour differs
 by mode: in the socket configuration `app.lsp_tool` is `None`, so the arm
 refuses with `LSP not available`; in local mode the same arm works, against

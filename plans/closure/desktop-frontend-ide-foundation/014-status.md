@@ -564,7 +564,7 @@ The arm's behaviour differs by mode, and that is the reason:
 
 - In the **socket** (daemon-connected) configuration the arm refuses with the
   toast `LSP not available`, because `app.lsp_tool` is `None` there —
-  `src/main.rs:4014` attaches the TUI's own `LspTool` only when the TUI is
+  `src/main.rs:4020-4023` attaches the TUI's own `LspTool` only when the TUI is
   **not** in socket mode.
 - In **local** mode the same arm works, against that second, non-authoritative
   language server.

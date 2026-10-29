@@ -1,6 +1,6 @@
 # TUI Editor Helix Keybinding Parity Roadmap
 
-Status: closed (M001–M013 and M015–M020 closed; M014 blocked on ADR-0034 acceptance — the named exception, and not a precondition for closing; ADR-0034 proposed)
+Status: closed (M001–M013 and M015–M020 closed; M014 blocked on the M005 structural-selection implementation — the named exception, and not a precondition for closing; ADR-0034 Option B accepted 2026-10-28)
 
 Long-term references:
 
@@ -817,7 +817,8 @@ and never scan the whole buffer per keystroke.
 >    arming arm. The final figure is still 71, recomputed once at the end.
 > 5. **The byte-derived boundary is what landed, and it is the whole of this
 >    milestone's scope.** The syntax-node object slice (`f`, `t`, `a`, `c`,
->    `T`, `x`) and a syntax-aware `m m` remain M014's, blocked on ADR-0034.
+>    `T`, `x`) and a syntax-aware `m m` remain M014's, blocked on the M005
+>    structural-selection implementation.
 
 ### M013 — LSP read delivery and editor reachability
 
@@ -1323,15 +1324,16 @@ Exit conditions: every object kind resolves against a real syntax tree; an
 unavailable grammar is reported as such rather than silently falling back to
 the byte-derived object; the byte-derived objects are unchanged.
 
-**No implementation plan exists yet, deliberately.** ADR-0034 **recommends
-Option B** (extend the daemon-owned, read-only LSP surface with structural
-reads) but records that *"no option is selected by this record"*, and Option
-A (a frontend tree-sitter dependency) and Option B produce **different
-contracts** and would need different plans. Writing this plan now would be
-writing a plan against a decision nobody has made. The plan is written
-immediately after the ADR is accepted, against the option it selects.
+**The implementation plan exists now, under the LSP convergence roadmap.**
+ADR-0034 **selected Option B** (extend the daemon-owned, read-only LSP surface
+with structural reads) and was **accepted 2026-10-28**, so this milestone is
+written against the option that was chosen rather than against a decision
+nobody has made. The plan is registered as **M005** at
+`plans/implementation/daemon-lsp-frontend-convergence/005-local-editor-syntax-qualification.md`.
+M014 remains blocked on that implementation and its cross-roadmap
+reconciliation; M009's closed byte-derived scope is unchanged.
 
-> **M014 planning addendum (2026-10-28; status reconciled 2026-10-29).** The earlier statement that no plan existed records why M014 was originally left unplanned. The candidate is registered at `plans/implementation/daemon-lsp-frontend-convergence/005-local-editor-syntax-qualification.md` under M005 of the LSP convergence roadmap. ADR-0034 Option B was accepted on 2026-10-28; M005 is dependency-ready, with daemon-backed structural ranges, the TUI gesture, stale-result discard and responsiveness still required. M014 remains blocked on that implementation and its cross-roadmap reconciliation; M009's closed byte-derived scope is unchanged.
+> **M014 planning addendum (2026-10-28; status reconciled 2026-10-29).** The candidate is registered at `plans/implementation/daemon-lsp-frontend-convergence/005-local-editor-syntax-qualification.md` under M005 of the LSP convergence roadmap. ADR-0034 Option B was accepted on 2026-10-28; M005 is dependency-ready, with daemon-backed structural ranges, the TUI gesture, stale-result discard and responsiveness still required. M014 remains blocked on that implementation and its cross-roadmap reconciliation; M009's closed byte-derived scope is unchanged.
 
 ### M015 — LSP preview leaves
 
@@ -1869,8 +1871,9 @@ This roadmap closes when:
 
 - Every milestone through M015 is closed with an individual closure record, or
   the roadmap is explicitly superseded by a successor that owns its remainder.
-  **M014 is the exception, and it is a named one:** it is blocked on
-  ADR-0034, and the completion definition below already says the
+  **M014 is the exception, and it is a named one:** it is blocked on the M005
+  structural-selection implementation, and the completion definition below
+  already says the
   ADR-0034-gated slices remain owned elsewhere. M014 closing is not a
   precondition for this roadmap closing.
 - No declared binding is unreachable, and the reachability guard is in the

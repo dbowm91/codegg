@@ -217,3 +217,8 @@ documented and are outside this milestone's requirement to claim unsupported
 parity. No numerical latency SLO is claimed. M003/M004, M005 and M006 remain
 blocked on their separately recorded decisions/policy; closing M002 does not
 authorize those implementations.
+
+> **Status reconciled 2026-10-29.** M003 and M004 are **closed** under accepted
+> ADR-0056 (`plans/closure/daemon-lsp-frontend-convergence/003-status.md` and
+> `004-status.md`), and M005 and M006 are **ready** under their accepted
+> decisions. The sentence above records the state at M002's closure.
