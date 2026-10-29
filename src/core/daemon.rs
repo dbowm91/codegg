@@ -3729,6 +3729,9 @@ impl CoreDaemon {
             // still resolved server-side from the session row, so a caller
             // cannot name a project it has no claim on.
             CoreRequest::LspReadGet { request } => Some(request.session_id.as_str()),
+            CoreRequest::LspWorkflowExecute { request } => Some(request.session_id.as_str()),
+            CoreRequest::LspServerStatusGet { request } => Some(request.session_id.as_str()),
+            CoreRequest::LspControl { request } => Some(request.session_id.as_str()),
             // M003: the completion read resolves its session exactly like the
             // preview-apply write, so a team principal with `file.read` on
             // the session's project passes and one without is denied — never

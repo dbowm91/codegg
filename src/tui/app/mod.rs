@@ -3894,6 +3894,7 @@ impl App {
 
     pub fn prepare_shutdown(&mut self) {
         self.invalidate_pending_session_submit(false);
+        self.change_review_state.reject();
         // C004 bounded shutdown policy: signal the in-flight blocking scan
         // cooperatively (it exits at its next entry, within the examined
         // budget), drop any queued latest intent, and abort waiters. A worker
@@ -7548,6 +7549,10 @@ impl App {
                 let id = argument;
                 if id.is_empty() {
                     self.messages_state.toasts.info("Usage: /lsp-preview <id>");
+                } else if self.core_client.is_some() {
+                    self.messages_state
+                        .toasts
+                        .info("LSP preview details are not available through this daemon yet");
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
                     match lsp_tool.preview_detail_text(id) {
                         Some(detail) => self.messages_state.toasts.info(&detail),
@@ -7592,6 +7597,10 @@ impl App {
                     self.messages_state
                         .toasts
                         .info("Usage: /lsp-preview-refresh <id>");
+                } else if self.core_client.is_some() {
+                    self.messages_state
+                        .toasts
+                        .info("LSP preview refresh is not available through this daemon yet");
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
                     match lsp_tool.refresh_preview_staleness(id) {
                         Some((true, detail)) => {
@@ -7738,6 +7747,11 @@ impl App {
                     self.messages_state
                         .toasts
                         .info("Usage: /lsp-root <file-path>");
+                } else if self.core_client.is_some() {
+                    self.enqueue_tui_command(TuiCommand::LspWorkflowRequested {
+                        command_id: "lsp_root",
+                        argument: path_arg.to_string(),
+                    });
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
                     let text = lsp_tool.lsp_root_diagnose(path_arg);
                     self.messages_state.toasts.info(&text);
@@ -7752,6 +7766,10 @@ impl App {
                     self.messages_state
                         .toasts
                         .info("Usage: /lsp-doctor <file-path>");
+                } else if self.core_client.is_some() {
+                    self.messages_state
+                        .toasts
+                        .info("LSP doctor is not available through this daemon yet");
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
                     let text = tokio::task::block_in_place(|| {
                         tokio::runtime::Handle::current().block_on(lsp_tool.lsp_doctor(path_arg))
@@ -7768,6 +7786,11 @@ impl App {
                     self.messages_state
                         .toasts
                         .info("Usage: /lsp-context-diagnostics <file-path>");
+                } else if self.core_client.is_some() {
+                    self.enqueue_tui_command(TuiCommand::LspWorkflowRequested {
+                        command_id: "lsp_context_diagnostics",
+                        argument: path_arg.to_string(),
+                    });
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
                     let text = tokio::task::block_in_place(|| {
                         tokio::runtime::Handle::current()
@@ -7785,6 +7808,11 @@ impl App {
                     self.messages_state
                         .toasts
                         .info("Usage: /lsp-repair-local <path[:line]>");
+                } else if self.core_client.is_some() {
+                    self.enqueue_tui_command(TuiCommand::LspWorkflowRequested {
+                        command_id: "lsp_repair_local",
+                        argument: arg.to_string(),
+                    });
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
                     let (path, line, col) = parse_path_line_col(arg);
                     let invocation = LspWorkflowInvocation {
@@ -7815,6 +7843,10 @@ impl App {
                     self.messages_state
                         .toasts
                         .info("Usage: /lsp-repair-hunk <path> [hunk-id|range]");
+                } else if self.core_client.is_some() {
+                    self.messages_state
+                        .toasts
+                        .info("LSP hunk repair is not available through this daemon yet");
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
                     let parts: Vec<&str> = arg.splitn(2, ' ').collect();
                     let path = parts[0].to_string();
@@ -7844,6 +7876,11 @@ impl App {
                     self.messages_state
                         .toasts
                         .info("Usage: /lsp-review-file <path>");
+                } else if self.core_client.is_some() {
+                    self.enqueue_tui_command(TuiCommand::LspWorkflowRequested {
+                        command_id: "lsp_review_file",
+                        argument: arg.to_string(),
+                    });
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
                     let invocation = LspWorkflowInvocation {
                         recipe: LspWorkflowRecipe::ReviewFile,
@@ -7866,7 +7903,11 @@ impl App {
             }
             B::LspReviewDiff => {
                 self.ui_state.command_mode = false;
-                if let Some(ref lsp_tool) = self.lsp_tool {
+                if self.core_client.is_some() {
+                    self.messages_state
+                        .toasts
+                        .info("LSP diff review is not available through this daemon yet");
+                } else if let Some(ref lsp_tool) = self.lsp_tool {
                     let invocation = LspWorkflowInvocation {
                         recipe: LspWorkflowRecipe::ReviewDiff,
                         ..Default::default()
@@ -7888,7 +7929,11 @@ impl App {
             B::LspSecurityReview => {
                 self.ui_state.command_mode = false;
                 let arg = argument;
-                if let Some(ref lsp_tool) = self.lsp_tool {
+                if self.core_client.is_some() {
+                    self.messages_state
+                        .toasts
+                        .info("LSP security review is not available through this daemon yet");
+                } else if let Some(ref lsp_tool) = self.lsp_tool {
                     let review_mode = if arg.is_empty() {
                         Some("diff".to_string())
                     } else {
@@ -7920,6 +7965,11 @@ impl App {
                     self.messages_state
                         .toasts
                         .info("Usage: /lsp-impact <path:line:col>");
+                } else if self.core_client.is_some() {
+                    self.enqueue_tui_command(TuiCommand::LspWorkflowRequested {
+                        command_id: "lsp_impact",
+                        argument: arg.to_string(),
+                    });
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
                     let (path, line, col) = parse_path_line_col(arg);
                     let invocation = LspWorkflowInvocation {
@@ -7950,6 +8000,11 @@ impl App {
                     self.messages_state
                         .toasts
                         .info("Usage: /lsp-test-repair <test-file> [failure-text]");
+                } else if self.core_client.is_some() {
+                    self.enqueue_tui_command(TuiCommand::LspWorkflowRequested {
+                        command_id: "lsp_test_repair",
+                        argument: arg.to_string(),
+                    });
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
                     let parts: Vec<&str> = arg.splitn(2, ' ').collect();
                     let test_file = parts[0].to_string();
@@ -7981,6 +8036,11 @@ impl App {
                     self.messages_state
                         .toasts
                         .info("Usage: /lsp-interface <path[:symbol]>");
+                } else if self.core_client.is_some() {
+                    self.enqueue_tui_command(TuiCommand::LspWorkflowRequested {
+                        command_id: "lsp_interface",
+                        argument: arg.to_string(),
+                    });
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
                     let parts: Vec<&str> = arg.splitn(2, ':').collect();
                     let path = parts[0].to_string();
@@ -8012,6 +8072,11 @@ impl App {
                     self.messages_state
                         .toasts
                         .info("Usage: /lsp-cross-repair <primary> [related...]");
+                } else if self.core_client.is_some() {
+                    self.enqueue_tui_command(TuiCommand::LspWorkflowRequested {
+                        command_id: "lsp_cross_repair",
+                        argument: arg.to_string(),
+                    });
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
                     let parts: Vec<&str> = arg.split_whitespace().collect();
                     let primary = parts[0].to_string();
@@ -8044,6 +8109,11 @@ impl App {
                     self.messages_state.toasts.info(
                         "Usage: /lsp-call-neighbors <path:line:col> [incoming|outgoing|both]",
                     );
+                } else if self.core_client.is_some() {
+                    self.enqueue_tui_command(TuiCommand::LspWorkflowRequested {
+                        command_id: "lsp_call_neighbors",
+                        argument: arg.to_string(),
+                    });
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
                     let parts: Vec<&str> = arg.splitn(2, ' ').collect();
                     let (path, line, col) = parse_path_line_col(parts[0]);
@@ -8091,7 +8161,18 @@ impl App {
             B::LspStop => {
                 self.ui_state.command_mode = false;
                 let arg = argument;
-                if let Some(ref lsp_tool) = self.lsp_tool {
+                if self.core_client.is_some() {
+                    if arg.trim().is_empty() || arg.trim() == "--all" {
+                        self.messages_state.toasts.info(
+                            "Usage: /lsp-stop <server-key> (select one server from /lsp-servers)",
+                        );
+                    } else {
+                        self.enqueue_tui_command(TuiCommand::LspControlRequested {
+                            command_id: "lsp_stop",
+                            argument: arg.trim().to_string(),
+                        });
+                    }
+                } else if let Some(ref lsp_tool) = self.lsp_tool {
                     let key_opt = if arg.is_empty() || arg == "--all" {
                         None
                     } else {
@@ -8108,7 +8189,12 @@ impl App {
             }
             B::LspCacheStatus => {
                 self.ui_state.command_mode = false;
-                if let Some(ref lsp_tool) = self.lsp_tool {
+                if self.core_client.is_some() {
+                    self.enqueue_tui_command(TuiCommand::LspControlRequested {
+                        command_id: "lsp_cache_status",
+                        argument: String::new(),
+                    });
+                } else if let Some(ref lsp_tool) = self.lsp_tool {
                     let text = lsp_tool.lsp_cache_status();
                     self.messages_state.toasts.info(&text);
                 } else {
@@ -8118,7 +8204,18 @@ impl App {
             B::LspCacheClear => {
                 self.ui_state.command_mode = false;
                 let arg = argument;
-                if let Some(ref lsp_tool) = self.lsp_tool {
+                if self.core_client.is_some() {
+                    if !arg.trim().is_empty() && arg.trim() != "--all" {
+                        self.messages_state.toasts.info(
+                            "Cache clear is scoped to the active session workspace; no root argument is accepted",
+                        );
+                    } else {
+                        self.enqueue_tui_command(TuiCommand::LspControlRequested {
+                            command_id: "lsp_cache_clear",
+                            argument: String::new(),
+                        });
+                    }
+                } else if let Some(ref lsp_tool) = self.lsp_tool {
                     if arg.is_empty() || arg == "--all" {
                         let count = lsp_tool.clear_semantic_cache();
                         self.messages_state
@@ -10832,6 +10929,7 @@ impl App {
         }
 
         self.invalidate_pending_session_submit(false);
+        self.change_review_state.reject();
         // Clear the view immediately so the user sees a fresh composer, then
         // create the backing session. Creating it (rather than leaving
         // `session` as None) is what makes /models, /sessions and every other
@@ -12682,6 +12780,9 @@ impl App {
             self.invalidate_pending_session_submit(false);
         }
         let sess_id = sess.id.clone();
+        if self.active_session_id() != Some(sess_id.as_str()) {
+            self.change_review_state.reject();
+        }
         let session_directory = sess.directory.clone();
         let project_id = if sess.project_id.is_empty() {
             None

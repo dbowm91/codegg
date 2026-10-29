@@ -1331,7 +1331,7 @@ contracts** and would need different plans. Writing this plan now would be
 writing a plan against a decision nobody has made. The plan is written
 immediately after the ADR is accepted, against the option it selects.
 
-> **M014 planning addendum (2026-10-28; not an ADR acceptance).** The earlier statement that no plan existed records why M014 was originally left unplanned. A candidate implementation plan is registered at `plans/implementation/daemon-lsp-frontend-convergence/005-local-editor-syntax-qualification.md` under M005 of the LSP convergence roadmap. It is NOT dependency-ready: ADR-0034 remains proposed with no selected option. The M005 candidate currently covers daemon-backed structural ranges; reconcile it with ADR-0034's final decision before implementation. M014 remains blocked, and M009's closed byte-derived scope is unchanged.
+> **M014 planning addendum (2026-10-28; status reconciled 2026-10-29).** The earlier statement that no plan existed records why M014 was originally left unplanned. The candidate is registered at `plans/implementation/daemon-lsp-frontend-convergence/005-local-editor-syntax-qualification.md` under M005 of the LSP convergence roadmap. ADR-0034 Option B was accepted on 2026-10-28; M005 is dependency-ready, with daemon-backed structural ranges, the TUI gesture, stale-result discard and responsiveness still required. M014 remains blocked on that implementation and its cross-roadmap reconciliation; M009's closed byte-derived scope is unchanged.
 
 ### M015 — LSP preview leaves
 

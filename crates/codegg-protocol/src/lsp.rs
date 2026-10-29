@@ -982,6 +982,9 @@ pub struct LspServerStatusResultDto {
 #[serde(rename_all = "snake_case")]
 pub enum LspControlActionDto {
     Restart,
+    Stop,
+    CacheStatus,
+    CacheClear,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -993,10 +996,67 @@ pub struct LspControlRequestDto {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LspControlResultDto {
+    #[serde(default)]
     pub server_id: String,
+    #[serde(default)]
     pub previous_generation: u64,
+    #[serde(default)]
     pub generation: u64,
     pub state: String,
+    #[serde(default)]
+    pub cache_enabled: bool,
+    #[serde(default)]
+    pub cache_entries: usize,
+    #[serde(default)]
+    pub cache_bytes: usize,
+    #[serde(default)]
+    pub cleared_entries: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspWorkflowRequestDto {
+    pub session_id: String,
+    pub workflow: LspWorkflowKindDto,
+    #[serde(default)]
+    pub primary_path: String,
+    #[serde(default)]
+    pub related_paths: Vec<String>,
+    #[serde(default)]
+    pub line: Option<u32>,
+    #[serde(default)]
+    pub column: Option<u32>,
+    #[serde(default)]
+    pub symbol: Option<String>,
+    #[serde(default)]
+    pub direction: Option<String>,
+    #[serde(default)]
+    pub failure_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LspWorkflowKindDto {
+    RootDiagnosis,
+    RepairLocal,
+    ReviewFile,
+    ImpactAnalysis,
+    TestFailureRepair,
+    InterfaceBoundary,
+    CrossFileRepair,
+    CallNeighborhood,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspWorkflowResultDto {
+    pub workflow: LspWorkflowKindDto,
+    pub title: String,
+    pub target: String,
+    pub rendered: String,
+    pub evidence_count: usize,
+    pub fresh_count: usize,
+    pub stale_count: usize,
+    pub truncated: bool,
+    pub notes: Vec<String>,
 }
 
 /// The authoritative diagnostic set for one file.

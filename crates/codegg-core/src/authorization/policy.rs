@@ -1005,10 +1005,27 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::ViaSession,
             Some(Capability::FileRead),
         ),
+        R::LspControl { request }
+            if matches!(
+                &request.action,
+                codegg_protocol::lsp::LspControlActionDto::CacheStatus
+            ) =>
+        {
+            OperationDescriptor::new(
+                "lsp_cache_status_get",
+                ScopeKind::ViaSession,
+                Some(Capability::FileRead),
+            )
+        }
         R::LspControl { .. } => OperationDescriptor::new(
             "lsp_control",
             ScopeKind::ViaSession,
             Some(Capability::LspControl),
+        ),
+        R::LspWorkflowExecute { .. } => OperationDescriptor::new(
+            "lsp_workflow_execute",
+            ScopeKind::ViaSession,
+            Some(Capability::FileRead),
         ),
         // M006-B: the diagnostics *stream* needs `file.read`, not the
         // `project.observe` the generic `ProjectionSubscribe` uses. See ADR-0012
@@ -2127,6 +2144,26 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
                 action: codegg_protocol::lsp::LspControlActionDto::Restart,
             },
         },
+        R::LspControl {
+            request: codegg_protocol::lsp::LspControlRequestDto {
+                session_id: String::new(),
+                server_id: String::new(),
+                action: codegg_protocol::lsp::LspControlActionDto::CacheStatus,
+            },
+        },
+        R::LspWorkflowExecute {
+            request: codegg_protocol::lsp::LspWorkflowRequestDto {
+                session_id: String::new(),
+                workflow: codegg_protocol::lsp::LspWorkflowKindDto::ReviewFile,
+                primary_path: String::new(),
+                related_paths: Vec::new(),
+                line: None,
+                column: None,
+                symbol: None,
+                direction: None,
+                failure_text: None,
+            },
+        },
         R::LspDiagnosticsSubscribe {
             request: dummy_lsp_diagnostics_subscribe(),
         },
@@ -2867,5 +2904,29 @@ mod tests {
         assert_eq!(descriptor.operation, "skill_catalogue_list");
         assert_eq!(descriptor.scope_kind, ScopeKind::DirectProject);
         assert_eq!(descriptor.capability_name(), "project.read");
+    }
+
+    #[test]
+    fn lsp_cache_inspection_and_mutation_have_separate_authority() {
+        let status = operation_descriptor(&CoreRequest::LspControl {
+            request: codegg_protocol::lsp::LspControlRequestDto {
+                session_id: "session-1".to_owned(),
+                server_id: String::new(),
+                action: codegg_protocol::lsp::LspControlActionDto::CacheStatus,
+            },
+        });
+        assert_eq!(status.operation, "lsp_cache_status_get");
+        assert_eq!(status.scope_kind, ScopeKind::ViaSession);
+        assert_eq!(status.capability_name(), "file.read");
+
+        let clear = operation_descriptor(&CoreRequest::LspControl {
+            request: codegg_protocol::lsp::LspControlRequestDto {
+                session_id: "session-1".to_owned(),
+                server_id: String::new(),
+                action: codegg_protocol::lsp::LspControlActionDto::CacheClear,
+            },
+        });
+        assert_eq!(clear.operation, "lsp_control");
+        assert_eq!(clear.capability_name(), "lsp.control");
     }
 }

@@ -108,8 +108,8 @@ pub(crate) fn request_lsp_server_status(
                     crate::tui::command_route::command_execute(
                         scope,
                         command_id,
-                        server_id.as_deref().unwrap_or_default(),
                         "",
+                        server_id.as_deref().unwrap_or_default(),
                     ),
                 );
                 let response = match client.request(request).await {
@@ -224,8 +224,8 @@ pub(crate) fn request_lsp_restart(app: &mut App, server_id: String) {
                     crate::tui::command_route::command_execute(
                         scope,
                         "lsp_restart",
-                        &server_id,
                         "",
+                        &server_id,
                     ),
                 );
                 let detail = match client.request(request).await {
@@ -271,6 +271,105 @@ pub(crate) fn request_lsp_restart(app: &mut App, server_id: String) {
         "lsp_restart_standalone",
         async move {
             let detail = Some(lsp_tool.lsp_restart_server(&server_id).await);
+            Some(TuiCommand::LspStatusDetailLoaded { detail })
+        },
+    );
+}
+
+pub(crate) fn request_lsp_control(app: &mut App, command_id: &'static str, argument: String) {
+    let Some(client) = app.core_client.clone() else {
+        app.messages_state
+            .toasts
+            .warning("LSP control requires a daemon connection");
+        return;
+    };
+    let scope = crate::tui::command_route::scope_for(app);
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        command_id,
+        async move {
+            let request = crate::core::new_request(
+                uuid::Uuid::new_v4().to_string(),
+                crate::tui::command_route::command_execute(scope, command_id, "", &argument),
+            );
+            let detail = match client.request(request).await {
+                Ok(response) => {
+                    match crate::tui::command_route::unwrap_inner_result(Ok(response)) {
+                        Ok(crate::protocol::core::CoreResponse::LspControlResult { result }) => {
+                            let text = match command_id {
+                                "lsp_stop" => {
+                                    format!("Stopped {} ({})", result.server_id, result.state)
+                                }
+                                "lsp_cache_status" => format!(
+                                    "LSP semantic cache: {} entries, {} bytes ({})",
+                                    result.cache_entries, result.cache_bytes, result.state
+                                ),
+                                "lsp_cache_clear" => format!(
+                                    "Cleared {} LSP cache entries; {} remain",
+                                    result.cleared_entries, result.cache_entries
+                                ),
+                                _ => format!("LSP control completed ({})", result.state),
+                            };
+                            Some(text)
+                        }
+                        Ok(crate::protocol::core::CoreResponse::Error { message, .. }) => {
+                            Some(message)
+                        }
+                        Ok(crate::protocol::core::CoreResponse::CommandExecute { result }) => {
+                            Some(crate::tui::command_route::refusal_parts(&result).1)
+                        }
+                        Ok(other) => Some(format!("Unexpected LSP control response: {other:?}")),
+                        Err(error) => Some(error.to_string()),
+                    }
+                }
+                Err(error) => Some(error.to_string()),
+            };
+            Some(TuiCommand::LspStatusDetailLoaded { detail })
+        },
+    );
+}
+
+pub(crate) fn request_lsp_workflow(app: &mut App, command_id: &'static str, argument: String) {
+    let Some(client) = app.core_client.clone() else {
+        app.messages_state
+            .toasts
+            .warning("This LSP workflow requires the daemon connection");
+        return;
+    };
+    let scope = crate::tui::command_route::scope_for(app);
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "lsp_workflow",
+        async move {
+            let request = crate::core::new_request(
+                uuid::Uuid::new_v4().to_string(),
+                crate::tui::command_route::command_execute(scope, command_id, "", &argument),
+            );
+            let detail = match client.request(request).await {
+                Ok(response) => {
+                    match crate::tui::command_route::unwrap_inner_result(Ok(response)) {
+                        Ok(crate::protocol::core::CoreResponse::LspWorkflowResult { result }) => {
+                            Some(result.rendered)
+                        }
+                        Ok(crate::protocol::core::CoreResponse::CommandExecute { result }) => {
+                            let (_, message) = crate::tui::command_route::refusal_parts(&result);
+                            Some(message)
+                        }
+                        Ok(crate::protocol::core::CoreResponse::Error { message, .. }) => {
+                            Some(message)
+                        }
+                        Ok(other) => Some(format!("Unexpected LSP workflow response: {other:?}")),
+                        Err(error) => Some(error.to_string()),
+                    }
+                }
+                Err(error) => Some(error.to_string()),
+            };
             Some(TuiCommand::LspStatusDetailLoaded { detail })
         },
     );

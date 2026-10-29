@@ -501,6 +501,26 @@ impl LspSemanticCache {
         }
     }
 
+    pub fn stats_for_root(&self, root: &Path) -> LspCacheStats {
+        let entries: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|(key, _)| key.workspace_root() == root)
+            .map(|(_, entry)| entry)
+            .collect();
+        LspCacheStats {
+            entries: entries.len(),
+            bytes: entries
+                .iter()
+                .map(|entry| Self::estimate_entry_bytes(&entry.packet))
+                .sum(),
+            hits: 0,
+            misses: 0,
+            stale_misses: 0,
+            evictions: 0,
+        }
+    }
+
     /// Returns `true` if the cache is enabled (Memory mode).
     pub fn is_enabled(&self) -> bool {
         self.config.mode == LspCacheMode::Memory
@@ -670,6 +690,33 @@ mod tests {
         let stats = cache.stats();
         assert_eq!(stats.entries, 1);
         assert_eq!(stats.hits, 1);
+    }
+
+    #[test]
+    fn cache_root_stats_and_clear_do_not_cross_workspace_boundaries() {
+        let mut cache = LspSemanticCache::new(make_config_enabled(64, 4 * 1024 * 1024, 300));
+        let workspace_key =
+            LspCacheKeyBuilder::new("/workspace", "rust-analyzer", "review").build();
+        let other_key = LspCacheKeyBuilder::new("/other", "rust-analyzer", "review").build();
+        cache.insert(
+            workspace_key,
+            make_packet("workspace"),
+            LspEvidenceFreshness::Fresh,
+            Some(1),
+        );
+        cache.insert(
+            other_key,
+            make_packet("other"),
+            LspEvidenceFreshness::Fresh,
+            Some(1),
+        );
+
+        let workspace_stats = cache.stats_for_root(Path::new("/workspace"));
+        assert_eq!(workspace_stats.entries, 1);
+        assert!(workspace_stats.bytes > 0);
+        assert_eq!(cache.clear_for_root(Path::new("/workspace")), 1);
+        assert_eq!(cache.stats_for_root(Path::new("/workspace")).entries, 0);
+        assert_eq!(cache.stats_for_root(Path::new("/other")).entries, 1);
     }
 
     #[test]

@@ -5,6 +5,7 @@ import type {
   EditorCompletionView,
   EditorDiagnosticsView,
   EditorNavigationView,
+  LspPreviewView,
   EditorPanelProps,
   EditorStateView,
   EditorTreeView,
@@ -61,6 +62,8 @@ export function useEditorSession(options: EditorSessionOptions): EditorPanelProp
   const [diagnostics, setDiagnostics] = useState<EditorDiagnosticsView | null>(null);
   const [completion, setCompletion] = useState<EditorCompletionView | null>(null);
   const [navigation, setNavigation] = useState<EditorNavigationView | null>(null);
+  const [preview, setPreview] = useState<LspPreviewView | null>(null);
+  const [previewSessionId, setPreviewSessionId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mounted = useRef(true);
@@ -132,6 +135,7 @@ export function useEditorSession(options: EditorSessionOptions): EditorPanelProp
   /** Move the caret by one named movement. */
   const moveCursor = useCallback(
     async (movement: string, extend: boolean) => {
+      setPreview(null);
       await run(
         () => bridge.documentCursor(movement, extend),
         (view) => setViewport(view),
@@ -143,6 +147,7 @@ export function useEditorSession(options: EditorSessionOptions): EditorPanelProp
   /** Apply one edit over a byte range. */
   const edit = useCallback(
     async (start: number, end: number, insert: string) => {
+      setPreview(null);
       await run(() => bridge.documentEdit(start, end, insert), () => undefined);
       await refreshViewport();
     },
@@ -151,6 +156,7 @@ export function useEditorSession(options: EditorSessionOptions): EditorPanelProp
 
   /** Undo the newest edit. */
   const undo = useCallback(async () => {
+    setPreview(null);
     await run(() => bridge.documentUndo(), () => undefined);
     await refreshViewport();
     await refreshStatus();
@@ -158,6 +164,7 @@ export function useEditorSession(options: EditorSessionOptions): EditorPanelProp
 
   /** Redo the newest undone edit. */
   const redo = useCallback(async () => {
+    setPreview(null);
     await run(() => bridge.documentRedo(), () => undefined);
     await refreshViewport();
     await refreshStatus();
@@ -165,18 +172,21 @@ export function useEditorSession(options: EditorSessionOptions): EditorPanelProp
 
   /** Save the open document. */
   const save = useCallback(async () => {
+    setPreview(null);
     await run(() => bridge.documentSave(), (view) => setStatus(view));
     await refreshViewport();
   }, [refreshViewport, run]);
 
   /** Reload the open document from disk. */
   const reload = useCallback(async () => {
+    setPreview(null);
     await run(() => bridge.documentReload(), (view) => setStatus(view));
     await refreshViewport();
   }, [refreshViewport, run]);
 
   /** Resynchronise the open document with the daemon. */
   const resync = useCallback(async () => {
+    setPreview(null);
     await run(() => bridge.documentResync(), (view) => setStatus(view));
     await refreshViewport();
   }, [refreshViewport, run]);
@@ -187,6 +197,8 @@ export function useEditorSession(options: EditorSessionOptions): EditorPanelProp
     setViewport(null);
     setCompletion(null);
     setNavigation(null);
+    setPreview(null);
+    setPreviewSessionId(null);
   }, [run]);
 
   /** Re-read the workspace file tree. */
@@ -220,6 +232,30 @@ export function useEditorSession(options: EditorSessionOptions): EditorPanelProp
     [routeGeneration, run, sessionId, viewport],
   );
 
+  const requestPreview = useCallback(
+    async (operation: 'format' | 'rename', newName?: string) => {
+      if (routeGeneration === null || sessionId === null) return;
+      setPreview(null);
+      setPreviewSessionId(sessionId);
+      await run(
+        () => bridge.documentPreview(operation, newName ?? null, routeGeneration),
+        (view) => setPreview(view),
+        `preview:${routeGeneration}:${sessionId}:${viewport?.revision ?? -1}:${operation}:${newName ?? ''}`,
+      );
+    },
+    [routeGeneration, run, sessionId, viewport],
+  );
+
+  const applyPreview = useCallback(async () => {
+    if (!preview?.candidate || routeGeneration === null || sessionId === null || previewSessionId !== sessionId) return;
+    await run(
+      () => bridge.documentPreviewApply(preview.candidate!.candidate, routeGeneration),
+      () => setPreview(null),
+    );
+    await refreshViewport();
+    await refreshStatus();
+  }, [preview, previewSessionId, refreshStatus, refreshViewport, routeGeneration, run, sessionId]);
+
   /** Scroll the viewport to a first visible line. */
   const scroll = useCallback(
     async (firstLine: number) => {
@@ -236,8 +272,10 @@ export function useEditorSession(options: EditorSessionOptions): EditorPanelProp
     setDiagnostics(null);
     setCompletion(null);
     setNavigation(null);
+    setPreview(null);
+    setPreviewSessionId(null);
     setError(null);
-  }, [routeGeneration, sessionId]);
+  }, [connectionGeneration, routeGeneration, sessionId]);
 
   // The workspace became available: read its file tree.
   useEffect(() => {
@@ -277,6 +315,7 @@ export function useEditorSession(options: EditorSessionOptions): EditorPanelProp
     diagnostics,
     completion,
     navigation,
+    preview,
     busy,
     error,
     onOpen: (relativePath) => void open(relativePath),
@@ -290,6 +329,8 @@ export function useEditorSession(options: EditorSessionOptions): EditorPanelProp
     onClose: () => void close(),
     onComplete: () => void complete(),
     onNavigate: (operation) => void navigate(operation),
+    onPreview: (operation, newName) => void requestPreview(operation, newName),
+    onApplyPreview: () => void applyPreview(),
     onScroll: (firstLine) => void scroll(firstLine),
     onRefreshTree: () => void refreshTree(),
   };

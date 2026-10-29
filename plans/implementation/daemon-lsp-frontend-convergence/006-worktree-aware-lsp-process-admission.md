@@ -1,6 +1,6 @@
 # M006 — Daemon LSP Process Budgets, Worktree Identity and Retirement
 
-Status: blocked — resource-admission policy pending; current-head process audit is recorded.
+Status: ready — maintainer accepted bounded-admission policy defaults on 2026-10-28; implementation qualification remains
 
 Primary class: infrastructure/polish.
 
@@ -16,7 +16,7 @@ Bound redundant LSP indexing and resource consumption when TUI, desktop and agen
 
 `crates/egglsp/src/service.rs` keys clients as canonical root/server ID and coalesces starts per key; `src/lsp/m004.rs` creates per-turn scoped LSP services. Cross-worktree process reuse is *not* established. `crates/codegg-core/src/process_admission.rs` names `LanguageServer` as a process kind; `src/tool/process_capability.rs` marks `lsp` and `lsp_read` persistent. Production socket/stdio/HTTP constructors now inject a daemon-owned `LspService`; same-root reuse is scoped to that service instance, whose config and launcher are immutable. The full current-head audit is `plans/implementation/daemon-lsp-frontend-convergence/artifacts/M006-process-identity-audit-20261027.md`.
 
-The maintainer approved these policy boundaries on 2026-10-27: keep present concurrency unchanged by default; add an opt-in bounded admission budget; never retire or evict an attached editor server; include canonical worktree root, server/config fingerprint and execution profile in compatibility identity; and expose only bounded, redacted operational counts. Admission limits and queue saturation must produce typed, cancellable outcomes. Any idle retirement must prove there are no attachments, in-flight requests or open documents before stopping a process. No shared LSP process may cross worktree roots or execution profiles.
+The maintainer accepted these policy boundaries on 2026-10-28: keep present concurrency unchanged by default; add an opt-in bounded admission budget; never retire or evict an attached editor server; include canonical worktree root, server/config fingerprint and execution profile in compatibility identity; and expose only bounded, redacted operational counts. Admission limits and queue saturation must produce typed, cancellable outcomes. Any idle retirement must prove there are no attachments, in-flight requests or open documents before stopping a process. No shared LSP process may cross worktree roots or execution profiles.
 
 ## Work packages
 
@@ -30,14 +30,12 @@ The maintainer approved these policy boundaries on 2026-10-27: keep present conc
 
 Run `cargo test -p egglsp --locked`, root `cargo test -p codegg --locked lsp`, `cargo check -p codegg --locked --features server`, `python3 scripts/check_authorization_matrix.py`, relevant managed-process/daemon-workspace static guards and root `scripts/verify.sh`. Native Linux contained LSP exchange must prove host-proc denial; macOS/Windows behavior must be separately qualified or explicitly disabled. Benchmark 1, 2 and 4 simultaneous editors/agents, 1 vs 3 worktrees, warm and cold starts, Rust and Python fixtures; record p50/p95 startup/read latency, number of child processes, peak RAM/CPU and disk-impact evidence with exact machine/model/server versions. No invented target SLO or false host-generalized throughput claims.
 
-Current host qualification: `scripts/verify.sh quick` passes and compiles all
-workspace targets; `cargo check -p codegg --locked --features
-server,lsp-test-support --tests` also compiles the focused trajectory and
-source regression tests. Executing the root LSP trajectory fails at link time:
-the selected x86_64 toolchain ignores arm64 MacPorts `liblzma`, `libiconv` and
-`libz`, leaving native symbols unresolved. No multi-editor/worktree benchmark
-or process-count evidence has been recorded yet; keep this milestone active
-until those gaps are closed or an explicitly approved scope change exists.
+Current host qualification: the fake-LSP integration family ran on this
+x86_64 macOS host with a compatible linker wrapper (71/71 passed), as did the
+full `egglsp` package suite (1,038 tests). These are source correctness
+checks, not process-admission qualification. No multi-editor/worktree
+benchmark or process-count evidence has been recorded; M006 remains ready for
+implementation and active-resource measurement under the accepted defaults.
 
 ## Non-goals / closure
 

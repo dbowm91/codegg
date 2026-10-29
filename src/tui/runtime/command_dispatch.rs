@@ -241,6 +241,14 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::LspRestartRequested { server_id } => {
             crate::tui::commands::diagnostics::request_lsp_restart(app, server_id);
         }
+        TuiCommand::LspControlRequested {
+            command_id,
+            argument,
+        } => crate::tui::commands::diagnostics::request_lsp_control(app, command_id, argument),
+        TuiCommand::LspWorkflowRequested {
+            command_id,
+            argument,
+        } => crate::tui::commands::diagnostics::request_lsp_workflow(app, command_id, argument),
         TuiCommand::LspStatusDetailLoaded { detail } => match detail {
             Some(text) => app.messages_state.toasts.info(&text),
             None => app.messages_state.toasts.info("No LSP server connected"),

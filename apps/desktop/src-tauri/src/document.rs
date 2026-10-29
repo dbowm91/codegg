@@ -51,7 +51,8 @@ use codegg_protocol::document::{
 };
 use codegg_protocol::lsp::{
     LspCompletionApplicabilityDto, LspCompletionRequestDto, LspCompletionStatus,
-    LspDiagnosticsStatus, LspReadOperation, LspReadRequestDto, LspReadStatus,
+    LspDiagnosticsStatus, LspPreviewApplyRequestDto, LspReadOperation, LspReadPayloadDto,
+    LspReadRequestDto, LspReadStatus,
 };
 use serde::Serialize;
 use std::time::Duration;
@@ -323,6 +324,23 @@ pub struct EditorNavigationView {
     pub locations: Vec<EditorLocationView>,
     /// Whether the server trimmed the list.
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspPreviewCandidate {
+    pub candidate: codegg_protocol::lsp::LspPreviewCandidateDto,
+    pub diff: String,
+    pub file_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspPreview {
+    pub status: String,
+    pub message: String,
+    pub candidate: Option<LspPreviewCandidate>,
+    pub stale: bool,
 }
 
 // ── The frontend-owned, bounded state ─────────────────────────────────────
@@ -1987,6 +2005,277 @@ pub(crate) async fn desktop_document_navigate_with_state(
     }
     let result = response?;
     Ok(navigation_view(result))
+}
+
+#[tauri::command]
+pub(crate) async fn desktop_document_preview(
+    state: State<'_, Arc<HostState>>,
+    operation: String,
+    new_name: Option<String>,
+    route_generation: u64,
+) -> Result<LspPreview, String> {
+    desktop_document_preview_with_state(state.inner(), operation, new_name, route_generation).await
+}
+
+pub(crate) async fn desktop_document_preview_with_state(
+    state: &Arc<HostState>,
+    operation: String,
+    new_name: Option<String>,
+    route_generation: u64,
+) -> Result<LspPreview, String> {
+    let (project_id, workspace_id, _) = state.route_selection(route_generation, false).await?;
+    let session = live_session(state).await?;
+    let read = match operation.as_str() {
+        "format" => LspReadOperation::FormatPreview,
+        "rename" => LspReadOperation::RenamePreview,
+        _ => return Err("the editor supports format and rename previews only".to_owned()),
+    };
+    let attachment = session
+        .controller()
+        .try_attachment_info()
+        .ok_or_else(|| "the document attachment is unavailable".to_owned())?;
+    if attachment.project_id != project_id || attachment.workspace_id != workspace_id {
+        return Err("the open document belongs to a different editor route".to_owned());
+    }
+    let (snapshot, revision) = session.snapshot()?;
+    let position = if read == LspReadOperation::RenamePreview {
+        let caret = session.frontend.lock().await.cursor.caret;
+        Some(utf16_position(&snapshot, caret)?)
+    } else {
+        None
+    };
+    let request = LspReadRequestDto {
+        operation: read,
+        session_id: route_session(state).await?,
+        path: session.relative_path().await,
+        line: position.map(|position| position.0),
+        column: position.map(|position| position.1),
+        query: None,
+        server_id: None,
+        new_name: if read == LspReadOperation::RenamePreview {
+            let value = new_name.unwrap_or_default();
+            if value.trim().is_empty() || value.len() > 256 {
+                return Err("enter a new name of at most 256 bytes".to_owned());
+            }
+            Some(value)
+        } else {
+            if new_name.is_some() {
+                return Err("a new name is valid only for a rename preview".to_owned());
+            }
+            None
+        },
+    };
+    request
+        .validate()
+        .map_err(|error| format!("the preview request is invalid: {error:?}"))?;
+    let (client, _) = state.route_request().await?;
+    let coordinator_scope = codegg_client::LspRequestScope {
+        frontend_id: "desktop".to_owned(),
+        attachment_id: attachment.document_id.clone(),
+        route_generation,
+        connection_generation: state.current_generation(),
+        project_id: attachment.project_id.clone(),
+        workspace_id: attachment.workspace_id.clone(),
+        session_id: request.session_id.clone(),
+        document_id: Some(attachment.document_id.clone()),
+        path: Some(request.path.clone()),
+        server_id: None,
+    };
+    let ticket = match state
+        .lsp_request_coordinator
+        .begin(codegg_client::LspRequestKey {
+            scope: coordinator_scope.clone(),
+            operation: codegg_client::LspRequestOperation::Read(read),
+            document_generation: revision,
+            position,
+            argument: request.new_name.clone(),
+        }) {
+        codegg_client::LspRequestStart::Started(ticket) => ticket,
+        codegg_client::LspRequestStart::AlreadyInFlight => {
+            return Err("an equivalent preview request is already in flight".to_owned());
+        }
+        codegg_client::LspRequestStart::AtCapacity => {
+            return Err("the LSP request queue is full".to_owned());
+        }
+    };
+    let cancellation = ticket.cancellation_token();
+    let response = tokio::select! {
+        _ = cancellation.cancelled() => {
+            let _ = state.lsp_request_coordinator.finish(&ticket, &coordinator_scope, revision);
+            return Err("the preview request was superseded".to_owned());
+        },
+        response = client.lsp_read(request) => response,
+    }
+    .map_err(|error| format!("the preview could not be read: {error}"));
+    let active = match live_session(state).await {
+        Ok(active) => active,
+        Err(_) => {
+            let _ = state
+                .lsp_request_coordinator
+                .finish(&ticket, &coordinator_scope, revision);
+            return Err("the editor attachment changed during preview".to_owned());
+        }
+    };
+    let active_attachment = active.controller().try_attachment_info();
+    let active_revision = active.snapshot().map(|(_, revision)| revision).ok();
+    if state
+        .route_selection(route_generation, false)
+        .await
+        .is_err()
+    {
+        let _ = state
+            .lsp_request_coordinator
+            .finish(&ticket, &coordinator_scope, revision);
+        return Err("the editor route changed during preview".to_owned());
+    }
+    let active_session_id = match route_session(state).await {
+        Ok(session_id) => session_id,
+        Err(error) => {
+            let _ = state
+                .lsp_request_coordinator
+                .finish(&ticket, &coordinator_scope, revision);
+            return Err(error);
+        }
+    };
+    let active_scope = match active_attachment {
+        Some(info) => codegg_client::LspRequestScope {
+            frontend_id: "desktop".to_owned(),
+            attachment_id: info.document_id.clone(),
+            route_generation,
+            connection_generation: state.current_generation(),
+            project_id: info.project_id,
+            workspace_id: info.workspace_id,
+            session_id: active_session_id,
+            document_id: Some(info.document_id),
+            path: Some(active.relative_path().await),
+            server_id: None,
+        },
+        None => {
+            let _ = state
+                .lsp_request_coordinator
+                .finish(&ticket, &coordinator_scope, revision);
+            return Err("the editor attachment changed during preview".to_owned());
+        }
+    };
+    if active_revision != Some(revision)
+        || !state
+            .lsp_request_coordinator
+            .finish(&ticket, &active_scope, revision)
+    {
+        return Err("the preview response belongs to a stale editor attachment".to_owned());
+    }
+    let result = response?;
+    let mut candidate_view: Option<LspPreviewCandidate> = None;
+    let mut stale = false;
+    let message = match result.status {
+        LspReadStatus::Ready => match result.payload {
+            Some(LspReadPayloadDto::FormatPreview(preview)) => {
+                stale = preview.base_stale || preview.truncated;
+                candidate_view = preview.candidate.map(|candidate| LspPreviewCandidate {
+                    file_count: candidate.patches.len(),
+                    candidate,
+                    diff: preview.diff,
+                });
+                "format preview ready for review"
+            }
+            Some(LspReadPayloadDto::RenamePreview(preview)) => {
+                stale = preview.base_stale || preview.truncated;
+                candidate_view = preview.candidate.map(|candidate| LspPreviewCandidate {
+                    file_count: candidate.patches.len(),
+                    diff: candidate
+                        .patches
+                        .iter()
+                        .map(|patch| format!("--- {} ---\n{}", patch.path, patch.patch))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    candidate,
+                });
+                "rename preview ready for review"
+            }
+            _ => "the server returned no reviewable preview",
+        },
+        LspReadStatus::NotReady => "no warm server is available for this document",
+        LspReadStatus::Ambiguous => "more than one server could answer this document",
+        LspReadStatus::Unsupported => "the language server does not support this preview",
+    };
+    Ok(LspPreview {
+        status: if candidate_view.is_some() && !stale {
+            "ready"
+        } else {
+            "unavailable"
+        }
+        .into(),
+        message: if stale {
+            "the preview is incomplete or its base changed; generate a fresh preview".into()
+        } else {
+            message.into()
+        },
+        candidate: if stale { None } else { candidate_view },
+        stale,
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn desktop_document_preview_apply(
+    state: State<'_, Arc<HostState>>,
+    candidate: codegg_protocol::lsp::LspPreviewCandidateDto,
+    route_generation: u64,
+) -> Result<String, String> {
+    let (_, workspace_id, _) = state.route_selection(route_generation, true).await?;
+    candidate
+        .validate()
+        .map_err(|error| format!("the preview candidate was refused: {}", error.message()))?;
+    let session_id = route_session(&state).await?;
+    let session = live_session(&state).await?;
+    if session.state_view().await.dirty {
+        return Err(
+            "save or discard the editor's unsaved changes before applying this preview".into(),
+        );
+    }
+    let Some(client) = state.client.lock().await.clone() else {
+        return Err("desktop is not connected".to_owned());
+    };
+    let candidate_id = candidate.preview_id.clone();
+    let request = LspPreviewApplyRequestDto {
+        preview_id: candidate.preview_id,
+        preview_revision: candidate.preview_revision,
+        preview_digest: candidate.preview_digest,
+        kind: candidate.kind,
+        title: candidate.title,
+        provenance: candidate.provenance,
+        workspace_id,
+        session_id,
+        turn_id: None,
+        patches: candidate.patches,
+    };
+    let response = client
+        .request(RequestEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            payload: CoreRequest::LspPreviewApply { request },
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    let result = match response {
+        CoreResponse::LspPreviewApplyResult { result } => result,
+        other => {
+            return Err(match other {
+                CoreResponse::Error { message, .. } => message,
+                other => format!("the daemon returned an unexpected preview response: {other:?}"),
+            })
+        }
+    };
+    session
+        .controller()
+        .reload_from_disk()
+        .await
+        .map_err(|error| {
+            format!("the edit was applied, but the editor could not reload: {error}")
+        })?;
+    Ok(format!(
+        "Applied {candidate_id} to {} file(s)",
+        result.written_files.len()
+    ))
 }
 
 /// The live session, with the controller reattached after a reconnect.

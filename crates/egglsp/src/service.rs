@@ -285,6 +285,8 @@ enum RuntimeTerminationReason {
     ServiceShutdown,
     /// Operator-initiated manual restart.
     ManualRestart,
+    /// Operator-initiated manual stop.
+    ManualStop,
     /// Client constructed but never published (failure cleanup).
     /// Pass 3 — `FailedPublication` is now used by the
     /// monitor's runtime-install rejection path and by the
@@ -801,7 +803,7 @@ const SHUTDOWN_GLOBAL_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// Bounded timeout for manual restart to wait for an in-flight
 /// automatic owner to signal completion. The owner is signalled
-/// via its lease token (intent) but the manual restart cannot
+/// via its lease token but manual restart cannot
 /// touch the live client until the in-flight owner has released
 /// its slot. A timeout here means the in-flight owner is hung
 /// and the manual restart aborts without disturbing the
@@ -839,19 +841,9 @@ const MANUAL_SUPERSESSION_OWNER_TIMEOUT: Duration = Duration::from_secs(3);
 ///   cancellation tokens, and awaits all completion receivers
 ///   concurrently under one aggregate deadline. No nested locks.
 ///
-/// ## Client-map lock discipline
-///
-/// Non-mutating access (get, contains_key, keys, clone handle) uses a
-/// **read guard** so that independent diagnostics, request routing,
-/// capability reads, file-lifecycle lookups, and client enumeration
-/// are not serialized against each other.
-///
-/// Write guards are limited to:
-/// - slot election / client publication (atomic insertion during init);
-/// - shutdown drain (`shutdown_all`); and
-/// - any genuine client-map mutation.
-///
-/// No client-map guard is ever held across client I/O.
+/// ## Client-map locks
+/// Reads use a read guard. Writes are limited to publication, shutdown, and
+/// genuine map changes. No map guard is held across client I/O.
 ///
 /// ## Shutdown completion signaling
 ///
@@ -865,6 +857,8 @@ const MANUAL_SUPERSESSION_OWNER_TIMEOUT: Duration = Duration::from_secs(3);
 /// See `architecture/lsp.md` for the full contract.
 pub struct LspService {
     clients: ClientMap,
+    semantic_caches:
+        std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<crate::cache::LspSemanticCache>>>>,
     /// Tracks in-progress initializations for single-flight semantics.
     initializing: InitMap,
     /// Tracks spawned initialization tasks for shutdown coordination.
@@ -959,6 +953,83 @@ pub struct LspService {
 }
 
 impl LspService {
+    pub fn shared_semantic_cache(
+        &self,
+        config: crate::cache::LspCacheConfig,
+    ) -> Arc<std::sync::Mutex<crate::cache::LspSemanticCache>> {
+        let fingerprint = format!(
+            "{:?}:{}:{}:{}",
+            config.mode, config.max_entries, config.max_bytes, config.ttl_seconds
+        );
+        let mut caches = self
+            .semantic_caches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        caches
+            .entry(fingerprint)
+            .or_insert_with(|| {
+                Arc::new(std::sync::Mutex::new(crate::cache::LspSemanticCache::new(
+                    config,
+                )))
+            })
+            .clone()
+    }
+
+    pub fn semantic_cache_stats_for_root(&self, root: &Path) -> crate::cache::LspCacheStats {
+        let caches: Vec<_> = self
+            .semantic_caches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
+        let mut total = crate::cache::LspCacheStats::default();
+        for cache in caches {
+            let stats = cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .stats_for_root(root);
+            total.entries += stats.entries;
+            total.bytes += stats.bytes;
+        }
+        total
+    }
+
+    pub fn semantic_cache_enabled(&self) -> bool {
+        let caches: Vec<_> = self
+            .semantic_caches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
+        caches.into_iter().any(|cache| {
+            let cache = cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            cache.is_enabled()
+        })
+    }
+
+    pub fn clear_semantic_cache_for_root(&self, root: &Path) -> usize {
+        let caches: Vec<_> = self
+            .semantic_caches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
+        caches
+            .into_iter()
+            .map(|cache| {
+                cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clear_for_root(root)
+            })
+            .sum()
+    }
+
     /// Build a new service. Returns the bare value; callers that
     /// intend to use the auto-activation path should wrap the
     /// result in `Arc::new_cyclic_back_ref` (or use
@@ -980,6 +1051,7 @@ impl LspService {
         let exit_rx = Arc::new(Mutex::new(Some(exit_rx)));
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
+            semantic_caches: std::sync::Mutex::new(HashMap::new()),
             initializing: Arc::new(Mutex::new(HashMap::new())),
             active_init_tasks: Arc::new(Mutex::new(HashMap::new())),
             document_owners: Arc::new(RwLock::new(HashMap::new())),
@@ -1041,6 +1113,7 @@ impl LspService {
         let exit_rx = Arc::new(Mutex::new(Some(exit_rx)));
         Arc::new_cyclic(|weak| Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
+            semantic_caches: std::sync::Mutex::new(HashMap::new()),
             initializing: Arc::new(Mutex::new(HashMap::new())),
             active_init_tasks: Arc::new(Mutex::new(HashMap::new())),
             document_owners: Arc::new(RwLock::new(HashMap::new())),
@@ -1132,6 +1205,7 @@ impl LspService {
         let (exit_tx, exit_rx) = tokio::sync::mpsc::channel(64);
         Arc::new_cyclic(|weak| Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
+            semantic_caches: std::sync::Mutex::new(HashMap::new()),
             initializing: Arc::new(Mutex::new(HashMap::new())),
             active_init_tasks: Arc::new(Mutex::new(HashMap::new())),
             document_owners: Arc::new(RwLock::new(HashMap::new())),
@@ -1168,6 +1242,7 @@ impl LspService {
         let (exit_tx, exit_rx) = tokio::sync::mpsc::channel(64);
         Arc::new_cyclic(|weak| Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
+            semantic_caches: std::sync::Mutex::new(HashMap::new()),
             initializing: Arc::new(Mutex::new(HashMap::new())),
             active_init_tasks: Arc::new(Mutex::new(HashMap::new())),
             document_owners: Arc::new(RwLock::new(HashMap::new())),
@@ -2957,6 +3032,80 @@ impl LspService {
             OwnedRestartOptions::manual(),
         )
         .await
+    }
+
+    pub async fn manual_stop_client(&self, key: &str) -> Result<(), LspError> {
+        {
+            let lifecycle = self.lifecycle.read().await;
+            if lifecycle.phase != ServiceLifecycle::Running {
+                return Err(LspError::InitializationCancelled(
+                    "service is not running".to_string(),
+                ));
+            }
+        }
+        let before_wait_generation = self.generation_for_key(key).await;
+        if let Some(waiter) =
+            super::restart::cancel_restart_ownership(&self.restart_tasks, key).await
+        {
+            waiter.wait(MANUAL_SUPERSESSION_OWNER_TIMEOUT).await?;
+        }
+        let lease = match acquire_restart_ownership(
+            &self.restart_tasks,
+            &self.restart_owner_counter,
+            key,
+            RestartTrigger::Manual,
+        )
+        .await
+        {
+            RestartLeaseAcquisition::Acquired(lease) => lease,
+            RestartLeaseAcquisition::AlreadyInProgress { .. } => {
+                return Err(LspError::InitializationCancelled(
+                    "another lifecycle operation is in progress".to_string(),
+                ));
+            }
+        };
+        let generation = self.generation_for_key(key).await;
+        if generation > before_wait_generation {
+            let _ = lease.release().await;
+            return Err(LspError::ServerRestarted {
+                server_id: key.rsplit(':').next().unwrap_or(key).to_string(),
+                old_generation: before_wait_generation,
+                new_generation: Some(generation),
+            });
+        }
+        let client = self.clients.read().await.get(key).cloned();
+        if let Some(client) = client {
+            let deadline = Instant::now() + Duration::from_secs(6);
+            let graceful_deadline = Instant::now() + Duration::from_secs(2);
+            let outcome = terminate_runtime(
+                &self.runtime_map,
+                key,
+                generation,
+                Some(client.clone()),
+                graceful_deadline,
+                deadline,
+                RuntimeTerminationReason::ManualStop,
+            )
+            .await;
+            if !outcome.runtime_present {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if !remaining.is_zero() {
+                    let _ = tokio::time::timeout(remaining, client.shutdown()).await;
+                }
+            }
+        }
+        {
+            let mut clients = self.clients.write().await;
+            clients.remove(key);
+        }
+        self.operational_state
+            .write()
+            .await
+            .entry(key.to_string())
+            .or_default()
+            .state = LspOperationalState::Stopped;
+        let _ = lease.release().await;
+        Ok(())
     }
 
     /// Private restart entry point that applies a specific

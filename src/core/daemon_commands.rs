@@ -620,7 +620,7 @@ pub fn build_inner_request(
                 },
             })
         }
-        ("lsp_restart", "") => {
+        ("lsp_restart", "") | ("lsp_stop", "") => {
             let Some(session_id) = session else {
                 return Some(CommandEffect::NeedsSession);
             };
@@ -632,9 +632,132 @@ pub fn build_inner_request(
                 "request": {
                     "session_id": session_id,
                     "server_id": argument.trim(),
-                    "action": "restart",
+                    "action": if command_id == "lsp_stop" { "stop" } else { "restart" },
                 },
             })
+        }
+        ("lsp_cache_status", "") | ("lsp_cache_clear", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            json!({
+                "type": "lsp_control",
+                "request": {
+                    "session_id": session_id,
+                    "server_id": "",
+                    "action": if command_id == "lsp_cache_clear" { "cache_clear" } else { "cache_status" },
+                },
+            })
+        }
+        ("lsp_root", "")
+        | ("lsp_repair_local", "")
+        | ("lsp_review_file", "")
+        | ("lsp_context_diagnostics", "")
+        | ("lsp_impact", "")
+        | ("lsp_test_repair", "")
+        | ("lsp_interface", "")
+        | ("lsp_cross_repair", "")
+        | ("lsp_call_neighbors", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            let argument = argument.trim();
+            if argument.is_empty() {
+                return Some(CommandEffect::UnreadableArgument);
+            }
+            let mut request = serde_json::Map::new();
+            request.insert("session_id".into(), json!(session_id));
+            let mut primary_path = argument;
+            let mut related_paths: Vec<&str> = Vec::new();
+            let mut line = None;
+            let mut column = None;
+            let mut symbol = None;
+            let mut direction = None;
+            let mut failure_text = None;
+            let workflow = match command_id {
+                "lsp_root" => "root_diagnosis",
+                "lsp_repair_local" => {
+                    let parts: Vec<&str> = argument.splitn(3, ':').collect();
+                    primary_path = parts[0];
+                    line = parts.get(1).and_then(|value| value.parse::<u32>().ok());
+                    column = parts.get(2).and_then(|value| value.parse::<u32>().ok());
+                    if (parts.get(1).is_some() && line.is_none())
+                        || (parts.get(2).is_some() && column.is_none())
+                    {
+                        return Some(CommandEffect::UnreadableArgument);
+                    }
+                    "repair_local"
+                }
+                "lsp_review_file" | "lsp_context_diagnostics" => "review_file",
+                "lsp_impact" => {
+                    let parts: Vec<&str> = argument.splitn(3, ':').collect();
+                    if parts.len() != 3 {
+                        return Some(CommandEffect::UnreadableArgument);
+                    }
+                    let (Ok(parsed_line), Ok(parsed_column)) =
+                        (parts[1].parse::<u32>(), parts[2].parse::<u32>())
+                    else {
+                        return Some(CommandEffect::UnreadableArgument);
+                    };
+                    primary_path = parts[0];
+                    line = Some(parsed_line);
+                    column = Some(parsed_column);
+                    "impact_analysis"
+                }
+                "lsp_test_repair" => {
+                    let (path, detail) = argument.split_once(' ').unwrap_or((argument, ""));
+                    primary_path = path;
+                    failure_text = (!detail.is_empty()).then_some(detail);
+                    "test_failure_repair"
+                }
+                "lsp_interface" => {
+                    let (path, name) = argument.split_once(':').unwrap_or((argument, ""));
+                    primary_path = path;
+                    symbol = (!name.is_empty()).then_some(name);
+                    "interface_boundary"
+                }
+                "lsp_cross_repair" => {
+                    let paths: Vec<&str> = argument.split_whitespace().collect();
+                    if paths.is_empty() || paths.len() > 9 {
+                        return Some(CommandEffect::UnreadableArgument);
+                    }
+                    primary_path = paths[0];
+                    related_paths = paths[1..].to_vec();
+                    "cross_file_repair"
+                }
+                "lsp_call_neighbors" => {
+                    let mut parts = argument.split_whitespace();
+                    let position = parts.next().unwrap_or_default();
+                    let position_parts: Vec<&str> = position.splitn(3, ':').collect();
+                    if position_parts.len() != 3 {
+                        return Some(CommandEffect::UnreadableArgument);
+                    }
+                    let (Ok(parsed_line), Ok(parsed_column)) = (
+                        position_parts[1].parse::<u32>(),
+                        position_parts[2].parse::<u32>(),
+                    ) else {
+                        return Some(CommandEffect::UnreadableArgument);
+                    };
+                    primary_path = position_parts[0];
+                    line = Some(parsed_line);
+                    column = Some(parsed_column);
+                    direction = parts.next();
+                    if parts.next().is_some() {
+                        return Some(CommandEffect::UnreadableArgument);
+                    }
+                    "call_neighborhood"
+                }
+                _ => unreachable!("matched LSP workflow command above"),
+            };
+            request.insert("workflow".into(), json!(workflow));
+            request.insert("primary_path".into(), json!(primary_path));
+            request.insert("related_paths".into(), json!(related_paths));
+            request.insert("line".into(), json!(line));
+            request.insert("column".into(), json!(column));
+            request.insert("symbol".into(), json!(symbol));
+            request.insert("direction".into(), json!(direction));
+            request.insert("failure_text".into(), json!(failure_text));
+            json!({ "type": "lsp_workflow_execute", "request": request })
         }
 
         _ => return None,
@@ -1228,6 +1351,45 @@ fn render_lines(value: Option<&serde_json::Value>, kind: &str) -> Vec<String> {
     let Some(object) = value.and_then(|value| value.as_object()) else {
         return vec![kind.to_string()];
     };
+    if kind == "lsp_workflow_result" {
+        if let Some(rendered) = object
+            .get("result")
+            .and_then(|result| result.get("rendered"))
+            .and_then(serde_json::Value::as_str)
+        {
+            return rendered
+                .lines()
+                .take(bounds::MAX_RESULT_LINES)
+                .map(|line| line.chars().take(2_000).collect())
+                .collect();
+        }
+    }
+    if kind == "lsp_control_result" {
+        if let Some(result) = object.get("result").and_then(serde_json::Value::as_object) {
+            let server_id = result
+                .get("server_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let state = result
+                .get("state")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            if !server_id.is_empty() {
+                return vec![format!("{server_id}: {state}")];
+            }
+            let entries = result
+                .get("cache_entries")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            let bytes = result
+                .get("cache_bytes")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            return vec![format!(
+                "LSP semantic cache: {entries} entries, {bytes} bytes ({state})"
+            )];
+        }
+    }
     for field in ["items", "sessions", "entries", "skills", "records", "rows"] {
         let Some(serde_json::Value::Array(items)) = object.get(field) else {
             continue;
@@ -1339,6 +1501,18 @@ mod tests {
         ("lsp_capabilities", "", "rust-analyzer"),
         ("lsp_errors", "", "rust-analyzer"),
         ("lsp_restart", "", "rust-analyzer"),
+        ("lsp_stop", "", "rust-analyzer"),
+        ("lsp_cache_status", "", ""),
+        ("lsp_cache_clear", "", ""),
+        ("lsp_review_file", "", "src/lib.rs"),
+        ("lsp_impact", "", "src/lib.rs:1:1"),
+        ("lsp_root", "", "src/lib.rs"),
+        ("lsp_context_diagnostics", "", "src/lib.rs"),
+        ("lsp_repair_local", "", "src/lib.rs:1"),
+        ("lsp_test_repair", "", "tests/foo.rs failed"),
+        ("lsp_interface", "", "src/lib.rs:Thing"),
+        ("lsp_cross_repair", "", "src/lib.rs tests/foo.rs"),
+        ("lsp_call_neighbors", "", "src/lib.rs:1:1 incoming"),
     ];
 
     fn daemon_effect_forms() -> Vec<(&'static str, &'static str)> {
@@ -1420,6 +1594,53 @@ mod tests {
                 "{command_id}/{form} must build a request for the argument it declares"
             );
         }
+    }
+
+    #[test]
+    fn lsp_workflow_forms_build_typed_session_scoped_requests() {
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session"),
+            argument: "src/lib.rs:5:7 outgoing",
+            authority: None,
+        };
+        let Some(CommandEffect::Ready(request)) =
+            build_inner_request("lsp_call_neighbors", "", &ctx)
+        else {
+            panic!("call-neighborhood command must build its typed request");
+        };
+        let value = serde_json::to_value(request).expect("request serializes");
+        assert_eq!(value["type"], "lsp_workflow_execute");
+        assert_eq!(value["request"]["session_id"], "session");
+        assert_eq!(value["request"]["workflow"], "call_neighborhood");
+        assert_eq!(value["request"]["primary_path"], "src/lib.rs");
+        assert_eq!(value["request"]["line"], 5);
+        assert_eq!(value["request"]["column"], 7);
+        assert_eq!(value["request"]["direction"], "outgoing");
+    }
+
+    #[test]
+    fn lsp_workflow_rejects_malformed_position_and_excess_related_paths() {
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session"),
+            argument: "src/lib.rs:not-a-position",
+            authority: None,
+        };
+        assert!(matches!(
+            build_inner_request("lsp_impact", "", &ctx),
+            Some(CommandEffect::UnreadableArgument)
+        ));
+        let ctx = CommandContext {
+            argument: "primary.rs a.rs b.rs c.rs d.rs e.rs f.rs g.rs h.rs i.rs",
+            ..ctx
+        };
+        assert!(matches!(
+            build_inner_request("lsp_cross_repair", "", &ctx),
+            Some(CommandEffect::UnreadableArgument)
+        ));
     }
 
     /// An unreadable argument is refused as such, and the form stays

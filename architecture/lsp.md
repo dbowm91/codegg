@@ -80,59 +80,46 @@ interleave their disk checks.
 
 ### The `/lsp-*` command forms (M007-D)
 
-The daemon's command catalog classifies **26** `/lsp-*` forms as
-**daemon effects**, and that classification is **correct**: the
-authoritative language server is daemon-owned, and a frontend cannot own
-one. It is also, today, **mostly unserved**.
+The daemon's command catalog classifies **26** `/lsp-*` forms as daemon
+effects because the authoritative language server is daemon-owned. The
+generated M007-D inventory records the current served count. The five status
+and control forms are `/lsp-status`, `/lsp-servers`, `/lsp-capabilities`,
+`/lsp-errors`, and `/lsp-restart`; `/lsp-stop` stops only the selected warm
+server, while cache status and clear are restricted to the active session
+workspace. Restart, stop, and cache clear independently require
+Maintainer-or-Owner `lsp.control`. No control accepts a caller root, process
+ID, or argv, and `--all` cannot address every daemon client.
 
-- **5** forms are served: `/lsp-status`, `/lsp-servers`,
-  `/lsp-capabilities`, `/lsp-errors`, and `/lsp-restart`. The first four use
-  the session-scoped `LspServerStatusGet` request; restart uses typed
-  `LspControl` and the independent `lsp.control` capability.
-- **21** forms have **no daemon request at all**. The daemon owns the
-  language server but exposes no request for the preview, repair and review
-  surfaces, cache and stop controls, or diagnostics-context surface.
+`/lsp-root` uses a session-rooted bounded diagnosis. Eight file-scoped
+semantic workflows use the typed `LspWorkflowExecute` route: context
+diagnostics, local repair, file review, impact analysis, test repair,
+interface review, cross-file repair, and call neighborhood. The route requires
+`file.read`, validates every path against the session workspace, rejects
+symlinks and traversal, caps input and output, and uses the daemon's
+`LspService`; it does not accept a caller root. Standalone mode preserves its
+local `LspTool` behavior; socket TUI and desktop palette use daemon routes.
 
-The TUI routes the five served forms through daemon requests in socket mode;
-the remaining forms stay unavailable there. Standalone mode continues to use
-its local LSP service for the operations it supports.
+Preview-registry list/show/clear/refresh/apply commands, diff-wide/security
+review, doctor, and hunk repair remain unavailable in the command catalog.
+Their current local registries or diff/hunk semantics do not have a bounded
+session-bound daemon route with an equivalent user surface. This does not
+disable editor format and rename previews: TUI uses the existing typed read
+surface, and desktop now exposes format/rename candidates with an explicit
+checked apply through `CoreRequest::LspPreviewApply`. Candidates stay inert
+until accepted, are tied to the active desktop session/route/document state,
+and edits or session changes invalidate them.
 
-**Whether the refusal is reached depends on the mode**, and the difference
-is load-bearing:
+The same catalog and `CommandExecute` path feeds both the socket TUI and the
+desktop palette. The TUI keeps standalone local behavior for supported forms;
+in socket mode it sends served forms to the daemon and explicitly refuses
+unserved forms without consulting a local `LspTool`. Production socket, stdio,
+and HTTP constructors install the configured daemon-owned `LspService`.
+Linux constrained turns retain their isolated per-turn service scope; the
+human command route does not accept a caller-selected root or control that
+constrained scope.
 
-- In the **socket** (daemon-connected) configuration `app.lsp_tool` is
-  `None`; the five served forms use `core_client`, while unserved forms report
-  their unavailable status. The local `LspTool` is attached only outside
-  socket mode.
-- In **local** mode `app.lsp_tool` is `Some`, and the same arm works —
-  against the TUI's **own** language server, which is the second,
-  non-authoritative one.
-
-Production socket, stdio, and HTTP constructors now install the configured
-daemon-owned `LspService`. Linux constrained turns retain their isolated
-per-turn service scope.
-
-`/lsp-preview-apply` is the sharpest case: it reaches the daemon only
-inside the `else if let Some(ref lsp_tool)` branch
-(`src/tui/app/mod.rs:7601`), so in socket mode it never gets there at all.
-
-The daemon-backed inspection and restart commands execute in socket mode;
-standalone mode preserves local service behavior. M007-F remains the owner of
-the other command forms and the desktop parity work.
-
-Both refusals state the same fact — the authoritative language server is the
-daemon's — so the desktop palette showing those 24 forms as unavailable is
-**correct, not a gap**. The daemon's catalog publishes the classification
-and publishes, per form, whether the daemon can serve it (`daemon_served`),
-and a frontend refuses an unserved form rather than dispatching it.
-
-**This document must not claim a daemon route that does not exist.** The
-classification and the per-form verdict are recorded in the M007-D
-classification artifact
-(`plans/implementation/desktop-frontend-ide-foundation/artifacts/m007-d-command-classification.md` §10),
-which routes the 24 to a follow-up milestone (M007-F): giving the daemon an
-LSP command surface is a new capability with its own ADR, and it is **not**
-built inside a desktop-parity milestone.
+The exact per-form command availability is generated in the M007-D
+classification artifact and must be regenerated after every route change.
 
 `NotReady` is a separate fact and keeps its own meaning here: it means
 **no warm server** — start one — and not "this command is unsupported".

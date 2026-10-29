@@ -157,6 +157,27 @@ export interface EditorNavigationView {
   truncated: boolean;
 }
 
+export interface LspPreviewCandidate {
+  preview_id: string;
+  preview_revision: number;
+  preview_digest: string;
+  kind: string;
+  title: string;
+  provenance: string;
+  patches: { path: string; patch: string; original_hash: string }[];
+}
+
+export interface LspPreviewView {
+  status: string;
+  message: string;
+  candidate: {
+    candidate: LspPreviewCandidate;
+    diff: string;
+    fileCount: number;
+  } | null;
+  stale: boolean;
+}
+
 /**
  * What the editor panel renders.
  *
@@ -184,6 +205,8 @@ export interface EditorPanelProps {
   completion: EditorCompletionView | null;
   /** The navigation targets, or null before they have been asked for. */
   navigation: EditorNavigationView | null;
+  /** The most recent inert format or rename preview. */
+  preview: LspPreviewView | null;
   /** Whether a host call is in flight. */
   busy: boolean;
   /** The last failure, if any. */
@@ -210,6 +233,10 @@ export interface EditorPanelProps {
   onComplete: () => void;
   /** Ask for navigation targets at the caret. */
   onNavigate: (operation: string) => void;
+  /** Request a read-only formatting or rename preview. */
+  onPreview: (operation: 'format' | 'rename', newName?: string) => void;
+  /** Apply the exact displayed candidate through the daemon's checked path. */
+  onApplyPreview: () => void;
   /** Scroll the viewport to a first visible line. */
   onScroll: (firstLine: number) => void;
   /** Re-read the workspace file tree. */

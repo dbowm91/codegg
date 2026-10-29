@@ -248,6 +248,12 @@ impl CoreDaemon {
                 Ok(result) => Ok(CoreResponse::LspControlResult { result }),
                 Err((code, message)) => Ok(CoreResponse::Error { code, message }),
             },
+            CoreRequest::LspWorkflowExecute { request } => {
+                match self.lsp_workflow_execute(request).await {
+                    Ok(result) => Ok(CoreResponse::LspWorkflowResult { result }),
+                    Err((code, message)) => Ok(CoreResponse::Error { code, message }),
+                }
+            }
             CoreRequest::LspDiagnosticsSubscribe { request } => {
                 self.lsp_diagnostics_subscribe(request, trusted_client_id)
                     .await
@@ -388,7 +394,14 @@ impl CoreDaemon {
     ) -> Result<codegg_protocol::lsp::LspControlResultDto, (String, String)> {
         use codegg_protocol::lsp::LspControlActionDto;
         let server_id = request.server_id.trim();
-        if server_id.is_empty() || server_id.len() > 256 {
+        let cache_action = matches!(
+            &request.action,
+            LspControlActionDto::CacheStatus | LspControlActionDto::CacheClear
+        );
+        let is_restart = matches!(&request.action, LspControlActionDto::Restart);
+        if (cache_action && !server_id.is_empty())
+            || (!cache_action && (server_id.is_empty() || server_id.len() > 256))
+        {
             return Err((
                 "invalid_lsp_server_id".into(),
                 "a valid server id is required".into(),
@@ -401,44 +414,343 @@ impl CoreDaemon {
         let service = self
             .lsp_service()
             .map_err(|denial| (denial.code().into(), denial.message().into()))?;
-        let keys = service.existing_client_keys_for_root(&root).await;
-        let key = keys
-            .into_iter()
-            .find(|key| {
-                key == server_id || key.rsplit_once(':').is_some_and(|(_, id)| id == server_id)
-            })
-            .ok_or_else(|| {
-                (
-                    "lsp_server_not_found".into(),
-                    "server not found in this session workspace".into(),
-                )
-            })?;
-        let previous_generation = service.generation_for_key(&key).await;
+        let mut selected_server = String::new();
+        let mut previous_generation = 0;
+        let mut generation = 0;
+        let state: String;
+        let mut cache_enabled = false;
+        let mut cache_entries = 0;
+        let mut cache_bytes = 0;
+        let mut cleared_entries = 0;
         match request.action {
-            LspControlActionDto::Restart => {
-                service.manual_restart_client(&key).await.map_err(|_| {
-                    (
-                        "lsp_control_failed".into(),
-                        "the language server could not be restarted".into(),
-                    )
-                })?
+            LspControlActionDto::Restart | LspControlActionDto::Stop => {
+                let keys = service.existing_client_keys_for_root(&root).await;
+                let key = keys
+                    .into_iter()
+                    .find(|key| {
+                        key == server_id
+                            || key.rsplit_once(':').is_some_and(|(_, id)| id == server_id)
+                    })
+                    .ok_or_else(|| {
+                        (
+                            "lsp_server_not_found".into(),
+                            "server not found in this session workspace".into(),
+                        )
+                    })?;
+                selected_server = server_id.to_string();
+                previous_generation = service.generation_for_key(&key).await;
+                if is_restart {
+                    service.manual_restart_client(&key).await.map_err(|_| {
+                        (
+                            "lsp_control_failed".into(),
+                            "the language server could not be restarted".into(),
+                        )
+                    })?
+                } else {
+                    service.manual_stop_client(&key).await.map_err(|_| {
+                        (
+                            "lsp_control_failed".into(),
+                            "the language server could not be stopped".into(),
+                        )
+                    })?;
+                }
+                generation = service.generation_for_key(&key).await;
+                state = service
+                    .operational_health_snapshot(&key)
+                    .await
+                    .map(|snapshot| snapshot.state.label().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+            }
+            LspControlActionDto::CacheStatus => {
+                cache_enabled = service.semantic_cache_enabled();
+                let stats = service.semantic_cache_stats_for_root(&root);
+                cache_entries = stats.entries;
+                cache_bytes = stats.bytes;
+                state = if cache_enabled { "memory" } else { "disabled" }.into();
+            }
+            LspControlActionDto::CacheClear => {
+                cleared_entries = service.clear_semantic_cache_for_root(&root);
+                cache_enabled = service.semantic_cache_enabled();
+                let stats = service.semantic_cache_stats_for_root(&root);
+                cache_entries = stats.entries;
+                cache_bytes = stats.bytes;
+                state = if cache_enabled { "memory" } else { "disabled" }.into();
             }
         }
-        let generation = service.generation_for_key(&key).await;
-        let state = service
-            .operational_health_snapshot(&key)
-            .await
-            .map(|snapshot| snapshot.state.label().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
         Ok(codegg_protocol::lsp::LspControlResultDto {
-            server_id: service
-                .operational_health_snapshot(&key)
-                .await
-                .map(|snapshot| snapshot.server_id)
-                .unwrap_or_else(|| server_id.to_string()),
+            server_id: selected_server,
             previous_generation,
             generation,
             state,
+            cache_enabled,
+            cache_entries,
+            cache_bytes,
+            cleared_entries,
+        })
+    }
+
+    async fn lsp_workflow_execute(
+        &self,
+        request: codegg_protocol::lsp::LspWorkflowRequestDto,
+    ) -> Result<codegg_protocol::lsp::LspWorkflowResultDto, (String, String)> {
+        use codegg_protocol::lsp::LspWorkflowKindDto as Kind;
+        use egglsp::context::HierarchyDirection;
+        use egglsp::{LspWorkflowInvocation, LspWorkflowRecipe};
+
+        const MAX_WORKFLOW_PATHS: usize = 8;
+        const MAX_WORKFLOW_PATH_BYTES: usize = 1024;
+        const MAX_WORKFLOW_FAILURE_BYTES: usize = 4096;
+        const MAX_WORKFLOW_RENDERED_BYTES: usize = 24_000;
+        if request.related_paths.len() > MAX_WORKFLOW_PATHS
+            || request
+                .related_paths
+                .iter()
+                .any(|path| path.len() > MAX_WORKFLOW_PATH_BYTES)
+            || request.primary_path.len() > MAX_WORKFLOW_PATH_BYTES
+            || request
+                .failure_text
+                .as_ref()
+                .is_some_and(|text| text.len() > MAX_WORKFLOW_FAILURE_BYTES)
+            || request
+                .symbol
+                .as_ref()
+                .is_some_and(|symbol| symbol.len() > 512)
+            || request
+                .direction
+                .as_ref()
+                .is_some_and(|direction| direction.len() > 16)
+        {
+            return Err((
+                "invalid_lsp_workflow".into(),
+                "the LSP workflow input exceeds its bounded request shape".into(),
+            ));
+        }
+        let shape_is_valid = match request.workflow {
+            Kind::RootDiagnosis | Kind::ReviewFile => {
+                request.related_paths.is_empty()
+                    && request.line.is_none()
+                    && request.column.is_none()
+                    && request.symbol.is_none()
+                    && request.direction.is_none()
+                    && request.failure_text.is_none()
+            }
+            Kind::RepairLocal => {
+                request.related_paths.is_empty()
+                    && request.symbol.is_none()
+                    && request.direction.is_none()
+                    && request.failure_text.is_none()
+            }
+            Kind::ImpactAnalysis => {
+                request.symbol.is_none()
+                    && request.direction.is_none()
+                    && request.failure_text.is_none()
+                    && request.line.is_some()
+                    && request.column.is_some()
+            }
+            Kind::TestFailureRepair => {
+                request.line.is_none()
+                    && request.column.is_none()
+                    && request.symbol.is_none()
+                    && request.direction.is_none()
+            }
+            Kind::InterfaceBoundary => {
+                request.related_paths.is_empty()
+                    && request.line.is_none()
+                    && request.column.is_none()
+                    && request.direction.is_none()
+                    && request.failure_text.is_none()
+            }
+            Kind::CrossFileRepair => {
+                request.line.is_none()
+                    && request.column.is_none()
+                    && request.symbol.is_none()
+                    && request.direction.is_none()
+                    && request.failure_text.is_none()
+            }
+            Kind::CallNeighborhood => {
+                request.related_paths.is_empty()
+                    && request.line.is_some()
+                    && request.column.is_some()
+                    && request.symbol.is_none()
+                    && request.failure_text.is_none()
+            }
+        };
+        let path_bytes: usize = request.primary_path.len()
+            + request.related_paths.iter().map(String::len).sum::<usize>();
+        if !shape_is_valid || path_bytes > MAX_WORKFLOW_PATH_BYTES * MAX_WORKFLOW_PATHS {
+            return Err((
+                "invalid_lsp_workflow".into(),
+                "the LSP workflow fields do not match the selected operation".into(),
+            ));
+        }
+
+        let root = self
+            .lsp_workspace_root(&request.session_id)
+            .await
+            .map_err(|denial| (denial.code().into(), denial.message().into()))?;
+        if request.workflow == Kind::RootDiagnosis {
+            let path = if request.primary_path.is_empty()
+                || request.primary_path.len() > MAX_WORKFLOW_PATH_BYTES
+                || request.primary_path.contains('\0')
+                || Path::new(&request.primary_path).is_absolute()
+            {
+                return Err((
+                    "invalid_lsp_workflow_path".into(),
+                    "workflow paths must be non-empty workspace-relative files".into(),
+                ));
+            } else {
+                crate::tool::util::validate_target_path(Path::new(&request.primary_path), &root)
+                    .map_err(|_| {
+                        (
+                            "lsp_workflow_path_unavailable".into(),
+                            "the requested workflow file is not available".into(),
+                        )
+                    })?
+            };
+            let result = egglsp::root::diagnose_root(&path, Some(&root));
+            let diagnosis = egglsp::tui_summary::RootDiagnosis {
+                input_path: result.input_path,
+                detected_language: result.detected_language,
+                root_markers_found: result.root_markers_found,
+                selected_root: result.selected_root,
+                server_profile: result.server_profile,
+                inside_allowed_root: result.inside_allowed_root,
+                issues: result.issues,
+            };
+            return Ok(codegg_protocol::lsp::LspWorkflowResultDto {
+                workflow: Kind::RootDiagnosis,
+                title: "root_diagnosis".into(),
+                target: request.primary_path,
+                rendered: egglsp::tui_summary::render_root_diagnosis(&diagnosis),
+                evidence_count: 0,
+                fresh_count: 0,
+                stale_count: 0,
+                truncated: false,
+                notes: Vec::new(),
+            });
+        }
+        let resolve_file = |path: &str| -> Result<PathBuf, (String, String)> {
+            if path.is_empty() || path.contains('\0') || Path::new(path).is_absolute() {
+                return Err((
+                    "invalid_lsp_workflow_path".into(),
+                    "workflow paths must be non-empty workspace-relative files".into(),
+                ));
+            }
+            let resolved =
+                crate::tool::util::validate_path(Path::new(path), &root).map_err(|_| {
+                    (
+                        "lsp_workflow_path_unavailable".into(),
+                        "a requested workflow file is not available".into(),
+                    )
+                })?;
+            if !resolved.is_file() {
+                return Err((
+                    "lsp_workflow_path_unavailable".into(),
+                    "a requested workflow file is not available".into(),
+                ));
+            }
+            Ok(resolved)
+        };
+        let primary = resolve_file(&request.primary_path)?;
+        let related = request
+            .related_paths
+            .iter()
+            .map(|path| resolve_file(path))
+            .collect::<Result<Vec<_>, _>>()?;
+        let workflow = match request.workflow {
+            Kind::RootDiagnosis => unreachable!("root diagnosis returned above"),
+            Kind::RepairLocal => LspWorkflowRecipe::RepairLocal,
+            Kind::ReviewFile => LspWorkflowRecipe::ReviewFile,
+            Kind::ImpactAnalysis => LspWorkflowRecipe::ImpactAnalysis,
+            Kind::TestFailureRepair => LspWorkflowRecipe::TestFailureRepair,
+            Kind::InterfaceBoundary => LspWorkflowRecipe::InterfaceBoundary,
+            Kind::CrossFileRepair => LspWorkflowRecipe::CrossFileRepair,
+            Kind::CallNeighborhood => LspWorkflowRecipe::CallNeighborhood,
+        };
+        let direction = match request.direction.as_deref() {
+            None | Some("both") => Some(HierarchyDirection::Both),
+            Some("incoming") => Some(HierarchyDirection::Incoming),
+            Some("outgoing") => Some(HierarchyDirection::Outgoing),
+            Some(_) => {
+                return Err((
+                    "invalid_lsp_workflow".into(),
+                    "direction must be incoming, outgoing, or both".into(),
+                ));
+            }
+        };
+        if request.line.is_some_and(|line| line > 1_000_000)
+            || request.column.is_some_and(|column| column > 1_000_000)
+        {
+            return Err((
+                "invalid_lsp_workflow".into(),
+                "workflow position exceeds its bound".into(),
+            ));
+        }
+        let invocation = LspWorkflowInvocation {
+            recipe: workflow,
+            primary_path: Some(primary.to_string_lossy().into_owned()),
+            line: request.line,
+            column: request.column,
+            symbol: request.symbol,
+            direction,
+            related_files: related
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect(),
+            failure_text: request.failure_text,
+            ..Default::default()
+        };
+        let service = self
+            .lsp_service()
+            .map_err(|denial| (denial.code().into(), denial.message().into()))?;
+        let provider = egglsp::evidence_adapter::ServiceLspEvidenceProvider::new(service, root);
+        let outcome = invocation.execute_composed(&provider).await.map_err(|_| {
+            (
+                "lsp_workflow_failed".into(),
+                "the requested LSP workflow could not be completed".into(),
+            )
+        })?;
+        let mut rendered = String::new();
+        let mut truncated = false;
+        for character in outcome.rendered.chars() {
+            if rendered.len() + character.len_utf8() > MAX_WORKFLOW_RENDERED_BYTES {
+                truncated = true;
+                break;
+            }
+            rendered.push(character);
+        }
+        if truncated {
+            rendered.push_str("\n[workflow output truncated]");
+        }
+        Ok(codegg_protocol::lsp::LspWorkflowResultDto {
+            workflow: request.workflow,
+            title: workflow.to_string(),
+            target: request.primary_path,
+            rendered,
+            evidence_count: outcome.packet.items.len(),
+            fresh_count: outcome
+                .packet
+                .items
+                .iter()
+                .filter(|item| {
+                    item.provenance.freshness == egglsp::context::LspEvidenceFreshness::Fresh
+                })
+                .count(),
+            stale_count: outcome
+                .packet
+                .items
+                .iter()
+                .filter(|item| {
+                    item.provenance.freshness != egglsp::context::LspEvidenceFreshness::Fresh
+                })
+                .count(),
+            truncated,
+            notes: outcome
+                .notes
+                .into_iter()
+                .take(8)
+                .map(|note| note.chars().take(256).collect())
+                .collect(),
         })
     }
 
