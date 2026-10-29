@@ -1,6 +1,6 @@
 # H006 — Job-Observable Sustained Corrective Qualification
 
-Status: **two authorized live attempts failed qualification; the latest ended after 10 minutes; transcript/verifier shape, async workload duration, and active-duration guard corrections now pass focused offline checks; no live authorization remains**
+Status: **three authorized live attempts ended without sustained qualification; the latest completed the task and passed the hidden verifier but reached only 10m43s of active work; offline job-observation, request-cap, overlap, and duration gates pass; all live authorizations are consumed**
 
 Subsystem roadmap: `plans/subsystems/harness-lab-mainline-and-long-horizon-qualification-addendum.md`
 
@@ -33,7 +33,7 @@ If these prerequisites uncover a product defect, make the narrow corrective on t
 
 ## 4. Live authorization gate
 
-The first authorized H006 live attempt was consumed and failed because the binary bundle lacked `codegg-sandbox-helper`; its corrective preflight is now implemented and hosted-qualified. A second, separately authorized attempt ran on 2026-10-29 and is also consumed; it ended after 10 minutes, left a Rust syntax error, and did not observe an exact job ID while running. The transcript/verifier optional-job shape and short-lived-job overlap have focused offline corrections in §9 of the closure record. Before any further live attempt, review those corrections at exact head and obtain a new explicit approval that names:
+The first authorized H006 live attempt was consumed and failed because the binary bundle lacked `codegg-sandbox-helper`; its corrective preflight is now implemented and hosted-qualified. A second, separately authorized attempt ran on 2026-10-29 and is also consumed; it ended after 10 minutes, left a Rust syntax error, and did not observe an exact job ID while running. A third separately authorized attempt completed the task, observed the exact job in `running` and `completed`, passed its independent verifier and repair checks, but ended after 10m43s without meeting the 30-minute active-work threshold. Its result is in §10 of the closure record. Before any further live attempt, calibrate a deeper legitimate workload and obtain new explicit approval that names:
 
 - `opencode_go` and the selected model route;
 - a hard provider-request ceiling that includes any fresh credential/catalog probes;
@@ -42,7 +42,7 @@ The first authorized H006 live attempt was consumed and failed because the binar
 - the treatment of unreported USD cost;
 - one attempt and the stop conditions below.
 
-The runner must bind and verify the request cap before its first provider request. Do not infer remaining budget from H005's receipt: its actual request usage is unknown. Do not reuse either consumed H006 authorization. If no new approval arrives, stop after offline work and leave sustained qualification incomplete.
+The runner must bind and verify the request cap before its first provider request. Do not infer remaining budget from H005's receipt: its actual request usage is unknown. Do not reuse any consumed H006 authorization. If no new approval arrives, stop after offline work and leave sustained qualification incomplete.
 
 The offline job-observation gate uses bounded job metadata parsed from native ACP tool output. It does not claim a separate automatic terminal notification or define a structured job-lifecycle event protocol; those require separate production-path evidence and scope.
 
@@ -68,6 +68,6 @@ Stop before live startup if the new authorization is absent, cap configuration c
 
 ## 7. Completion and handoff
 
-H006 closes as sustained-qualified only when all offline prerequisites and live workload criteria pass with a complete sanitized receipt and exact-head hosted CI. The first and second live attempts are recorded as failed in `plans/closure/harness-lab-mainline-qualification/006-status.md` §§7–8; neither qualifies any live criterion. The second attempt confirms two repair cycles but fails the duration, running-job overlap, implementation, and verifier criteria. Any retry requires the named corrective work and fresh explicit authorization. A successful offline cap or projection test is infrastructure evidence; it is not sustained autonomous capability evidence.
+H006 closes as sustained-qualified only when all offline prerequisites and live workload criteria pass with a complete sanitized receipt and exact-head hosted CI. The first and second live attempts are recorded in `plans/closure/harness-lab-mainline-qualification/006-status.md` §§7–8; neither qualifies the live objective. The third attempt is recorded in §10: it passed the hidden verifier, two repair cycles, exact-ID running/completed lifecycle, and continuation checks, but failed the 30-minute active-work minimum. The remaining corrective owner is workload/task calibration: the current fixture was completed correctly in under eleven minutes. Any further attempt requires a deeper independently verifiable workload and fresh explicit authorization. A successful offline cap or projection test is infrastructure evidence; it is not sustained autonomous capability evidence.
 
 PRs #211 and #212 are merged; their offline work is integrated. H006's live qualification remains separate from H005 and must not recast H005 as qualified.

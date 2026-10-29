@@ -1,0 +1,1 @@
+{"detail": {"invalid_caps": [], "missing_sources": [], "reason": ""}, "enforced_caps": ["max_provider_requests", "max_wallclock_seconds"], "missing_source": null, "status": "admitted"}

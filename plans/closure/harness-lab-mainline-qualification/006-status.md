@@ -1,10 +1,10 @@
 # H006 — Job-Observable Sustained Corrective Qualification
 
-Status: **offline prerequisites and paired-runfile preflight passed; two separately authorized live attempts failed qualification; the latest ended before 30 minutes and its unchanged verifier failed; no live authorization remains**
+Status: **offline prerequisites passed; three separately authorized live attempts ended without sustained qualification; the latest completed the task and passed its independent verifier but ended before 30 minutes; all live authorizations are consumed**
 
 Implementation: branch `plans/harness-lab-h006-job-observable-20261028`.
 Prior live evidence: H005 remains unqualified and its authorization remains consumed (`005-status.md`).
-The initial H006 closure covered offline evidence only. The first authorized live attempt and its failure remain recorded unchanged in §7. The fresh 2026-10-29 attempt is recorded in §8; its authorization is consumed as well.
+The initial H006 closure covered offline evidence only. The first and second authorized live attempts and their failures remain recorded unchanged in §§7–8. A third, freshly authorized attempt ran on 2026-10-29 after the duration-gate correction; its result is recorded in §10 and its authorization is consumed.
 
 ## 1. Offline job lifecycle evidence
 
@@ -56,7 +56,7 @@ Calibration used isolated copies under `/tmp/codegg-h006-ledger-calibration-run`
 
 ## 5. Qualification boundary
 
-H006's offline prerequisites include hosted evidence for the composed native job lifecycle, sanitized receipt, request-cap propagation/enforcement, and passing exact-head CI. Job state is projected from bounded native ACP tool output; a separate automatic terminal notification and a structured job-lifecycle event protocol remain unproven and out of H006's demonstrated result. Both live attempts failed and did not establish sustained autonomous qualification; see §§7–8. Any further attempt requires separate explicit approval naming the `opencode_go` route, request and time caps, disk stop floor, cost handling, and cancellation conditions.
+H006's offline prerequisites include hosted evidence for the composed native job lifecycle, sanitized receipt, request-cap propagation/enforcement, and passing exact-head CI. Job state is projected from bounded native ACP tool output; a separate automatic terminal notification and a structured job-lifecycle event protocol remain unproven and out of H006's demonstrated result. All three live attempts failed to establish sustained autonomous qualification; see §§7–8 and §10. Any further attempt requires separate explicit approval naming the `opencode_go` route, request and time caps, disk stop floor, cost handling, and cancellation conditions.
 
 ## 6. Exact-head corrective follow-up
 
@@ -98,4 +98,22 @@ The two findings above received focused corrections without changing the failed 
 
 Verification before the activity-gap refinement: `python3 -m unittest dev.harness_lab.tests.test_autonomy_run dev.harness_lab.tests.test_autonomy_faults dev.harness_lab.tests.test_autonomy` passed (141 tests); the high-volume Cargo integration test passed (1 test, 34.76 s); the unchanged hidden overlap test passed against the production-shaped sequence; the unchanged frozen-input verifier test passed; test assertion-quality and duplication guards passed; Python compilation, `rustfmt --check`, and `git diff --check` passed. Hosted exact-head verification passed for commit `a97908f2689d6abb5583e88aee0e156a4db529e1` in [run 40873237715](https://github.com/dbowm91/codegg/actions/runs/40873237715). The activity-gap refinement is a separate follow-up and requires its own exact-head CI result. No live provider qualification was run.
 
-H006 remains unqualified and both live authorizations remain consumed. Any next live run needs a fresh explicit authorization after review of this corrective; the completed offline tests do not satisfy the sustained live criteria.
+H006 remains unqualified and all three live authorizations remain consumed. Any next live run needs fresh explicit authorization after review of the corrective owner identified in §10; the completed offline tests and a fast successful solution do not satisfy the sustained live criterion.
+
+## 10. Third live attempt — task and verifier passed; sustained duration not qualified
+
+On 2026-10-29, after the activity-gap guard passed exact-head hosted CI, the user separately authorized one live attempt on `opencode_go/muse-spark-1.3-contributor`. The authorization set a 120-request ceiling, a 60-minute hard stop, a 10 GiB free-disk floor, unknown treatment for billed USD cost when unavailable, and cancellation on cap/accounting uncertainty, disk-floor breach, unrecoverable daemon/job-state loss, or job identity/status mismatch. The paired ARM64 `codegg` and `codegg-sandbox-helper` binaries were built with Rust 1.89 from source commit `acffcf373b33fd0105b7f28422899c09121ba74`; both hashes and preflight evidence are in the invocation receipt. Two setup refusals and a socket-path-length rejection occurred before provider reservation or process startup and are preserved separately; they are not additional live attempts.
+
+The live session ended naturally after 643,355 ms (10m43s), with 21/120 provider requests admitted. The request-boundary receipt is the authoritative count; it has 21 request admissions and 21 allowance-observation rows. The independent verifier ran all five checks and exited 0. The receipt records `verifier_confirmed: true`, `terminal: completed`, and `solved: false` because `duration_qualified` was false. Thus the implementation, two repair cycles, continuation, and hidden verifier passed, but the 30-minute sustained-work threshold did not. The agent-observed activity span was 634,803 ms (10m34s), and the maximum gap between activity observations was 179,859 ms (3m00s). The run recorded the same exact job ID `bff24b99-04fc-4091-a581-e407327a282d` as `running` twice and later `completed`; the hidden overlap verifier passed. ACP event observation was complete (31 starts, 31 terminals, zero gaps), and the disk floor did not trigger (lowest observed free space: 268,210,425,856 bytes). Neither the request cap nor wall-clock cap triggered.
+
+The route exposed an allowance valuation in its receipt, but this is not a provider invoice or independently verified billed amount. Actual billed USD cost remains unknown. The runner's `cost_usd` field is therefore preserved as raw allowance-derived evidence and must not be represented as actual spend.
+
+**Corrective owner: H006 workload/task calibration.** This run provides positive evidence for the ACP projection, daemon/job lifecycle, exact-ID tracking, continuation, two repairs, and verifier. It provides no basis for another daemon, scheduler, ACP watcher, or broad harness redesign. The model completed the current legitimate task in about eleven minutes, so the remaining gap is that the fixture does not require 30 minutes of active engineering. A successor should add genuinely dependent engineering stages with independently verifiable work and calibrate their natural completion time offline; it must not add sleeps, arbitrary waits, or simply lengthen the existing stress loop. Any new live qualification requires a separate plan and fresh authorization.
+
+Evidence:
+
+- [`006-live-attempt-activity-gap-corrective-20261029.json`](evidence/006-live-attempt-activity-gap-corrective-20261029.json)
+- [`006-live-runner-invocation-activity-gap-corrective-20261029.json`](evidence/006-live-runner-invocation-activity-gap-corrective-20261029.json)
+- [`006-live-provider-request-admissions-activity-gap-corrective-20261029.json`](evidence/006-live-provider-request-admissions-activity-gap-corrective-20261029.json)
+- [`006-live-budget-activity-gap-corrective-20261029.json`](evidence/006-live-budget-activity-gap-corrective-20261029.json)
+- [`006-live-budget-admission-activity-gap-corrective-20261029.json`](evidence/006-live-budget-admission-activity-gap-corrective-20261029.json)
