@@ -957,6 +957,7 @@ mod tests {
             lsp_process_admission: Some(crate::schema::LspProcessAdmissionConfig {
                 max_concurrent_starts: 2,
                 max_admitted_starts: 8,
+                max_live_servers: None,
             }),
             keybinds: Some(keybinds),
             vim_mode: Some(true),

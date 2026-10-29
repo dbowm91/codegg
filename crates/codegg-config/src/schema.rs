@@ -525,6 +525,7 @@ pub struct Config {
 pub struct LspProcessAdmissionConfig {
     pub max_concurrent_starts: usize,
     pub max_admitted_starts: usize,
+    pub max_live_servers: Option<usize>,
 }
 
 impl Default for LspProcessAdmissionConfig {
@@ -532,6 +533,7 @@ impl Default for LspProcessAdmissionConfig {
         Self {
             max_concurrent_starts: 2,
             max_admitted_starts: 8,
+            max_live_servers: None,
         }
     }
 }

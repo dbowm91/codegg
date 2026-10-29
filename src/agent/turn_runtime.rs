@@ -117,6 +117,7 @@ pub struct TurnRunInput {
     /// Shared LSP service for injecting LSP context into the system prompt.
     /// `None` when LSP is not available (e.g. socket mode).
     pub lsp_service: Option<Arc<crate::lsp::service::LspService>>,
+    pub lsp_process_budget: Option<Arc<egglsp::launch::LspLiveProcessBudget>>,
     /// Daemon-owned canonical editor buffers for checked preview gating.
     pub document_service: Option<Arc<crate::document_service::DocumentService>>,
     /// Optional task-aware metadata for assembling LSP context.
@@ -365,11 +366,12 @@ impl TurnRuntime for DefaultTurnRuntime {
         {
             #[cfg(target_os = "linux")]
             {
-                match crate::lsp::m004::M004LspServiceScope::new_with_network_intent(
+                match crate::lsp::m004::M004LspServiceScope::new_with_network_intent_and_live_process_budget(
                     profile,
                     input.network_intent.unwrap_or_default(),
                     input.execution.workspace_root.clone(),
                     crate::lsp::config_lsp_to_egglsp(input.config.lsp.clone().unwrap_or_default()),
+                    input.lsp_process_budget.clone(),
                 ) {
                     Ok(scope) => Some(scope),
                     Err(error) => {
@@ -407,6 +409,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             session_tool_contracts,
             turn_id,
             lsp_service: _,
+            lsp_process_budget: _,
             document_service,
             lsp_context_input,
             plugin_service,

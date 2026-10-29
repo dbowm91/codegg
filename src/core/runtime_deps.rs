@@ -96,6 +96,7 @@ pub struct CoreRuntimeDeps {
     /// Shared LSP service for context assembly in agent prompts.
     /// `None` in socket/remote mode; `Some` in local mode.
     pub lsp_service: Option<Arc<crate::lsp::service::LspService>>,
+    pub lsp_process_budget: Option<Arc<egglsp::launch::LspLiveProcessBudget>>,
     /// Phase 3: workspace services registry. The daemon owns exactly
     /// one of these; it is created during `CoreDaemon` construction
     /// using the daemon's workspace registry and a factory appropriate
@@ -218,6 +219,7 @@ impl Clone for CoreRuntimeDeps {
             convergence_store: Arc::clone(&self.convergence_store),
             turn_runtime: Arc::clone(&self.turn_runtime),
             lsp_service: self.lsp_service.clone(),
+            lsp_process_budget: self.lsp_process_budget.clone(),
             workspace_services: self.workspace_services.clone(),
             worktree_service: self.worktree_service.clone(),
             writer_permit_service: self.writer_permit_service.clone(),
@@ -358,6 +360,7 @@ impl CoreRuntimeDeps {
             convergence_store,
             turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
             lsp_service: None,
+            lsp_process_budget: None,
             workspace_services: None,
             worktree_service: Some(codegg_core::worktree_service::WorktreeService::memory(
                 std::path::PathBuf::from(".codegg/worktrees"),
@@ -412,6 +415,7 @@ impl CoreRuntimeDeps {
             convergence_store,
             turn_runtime,
             lsp_service: None,
+            lsp_process_budget: None,
             workspace_services: None,
             worktree_service: Some(codegg_core::worktree_service::WorktreeService::memory(
                 std::path::PathBuf::from(".codegg/worktrees"),
@@ -538,6 +542,7 @@ impl CoreRuntimeDeps {
             convergence_store,
             turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
             lsp_service: None,
+            lsp_process_budget: None,
             workspace_services: None,
             worktree_service: Some(worktree_service),
             writer_permit_service: Some(writer_permit_service),
@@ -600,6 +605,7 @@ impl CoreRuntimeDeps {
     }
 
     pub fn with_lsp_service(mut self, service: Arc<crate::lsp::service::LspService>) -> Self {
+        self.lsp_process_budget = service.live_process_budget();
         self.lsp_service = Some(service);
         self
     }
@@ -650,5 +656,26 @@ impl CoreRuntimeDeps {
     ) -> Self {
         self.connection_manager = Some(manager);
         self
+    }
+}
+
+#[cfg(test)]
+mod lsp_process_budget_tests {
+    use super::*;
+
+    #[test]
+    fn daemon_dependencies_retain_the_shared_lsp_live_process_budget() {
+        let budget = Arc::new(egglsp::launch::LspLiveProcessBudget::new(3).unwrap());
+        let service =
+            crate::lsp::service::LspService::new_arc_with_launcher_and_live_process_budget(
+                egglsp::config::LspConfig::Disabled(false),
+                Arc::new(egglsp::launch::DirectLspProcessLauncher),
+                Some(budget.clone()),
+            );
+        let deps = CoreRuntimeDeps::new(None, None, None).with_lsp_service(service);
+        assert!(Arc::ptr_eq(
+            &deps.lsp_process_budget.expect("daemon budget"),
+            &budget
+        ));
     }
 }

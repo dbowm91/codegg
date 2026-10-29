@@ -543,6 +543,7 @@ pub struct LspClient {
     /// process monitoring. `None` after the handle has been taken by
     /// the supervisor monitor task.
     pub(crate) child: Mutex<Option<tokio::process::Child>>,
+    pub(crate) live_process_permit: Mutex<Option<crate::launch::LspLiveProcessPermit>>,
     /// Optional private containment-status owner returned by a daemon-owned
     /// launcher. The process runtime takes and awaits it when the child exits.
     pub(crate) status_task: Mutex<Option<tokio::task::JoinHandle<Result<(), String>>>>,
@@ -574,6 +575,49 @@ pub struct LspClient {
     #[cfg(test)]
     test_shutdown_count: Option<Arc<std::sync::atomic::AtomicUsize>>,
     _reader_task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for LspClient {
+    fn drop(&mut self) {
+        let child = self.child.get_mut().take();
+        let permit = self.live_process_permit.get_mut().take();
+        let status_task = self.status_task.get_mut().take();
+        let Some(mut child) = child else {
+            if let Some(permit) = permit {
+                permit.quarantine();
+            }
+            return;
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = child.start_kill();
+                let reaped = child.wait().await.is_ok();
+                if let Some(mut task) = status_task {
+                    if tokio::time::timeout(std::time::Duration::from_secs(2), &mut task)
+                        .await
+                        .is_err()
+                    {
+                        task.abort();
+                    }
+                }
+                if let Some(permit) = permit {
+                    if reaped {
+                        permit.release_after_reap();
+                    } else {
+                        permit.quarantine();
+                    }
+                }
+            });
+        } else {
+            let _ = child.start_kill();
+            if let Some(task) = status_task {
+                task.abort();
+            }
+            if let Some(permit) = permit {
+                permit.quarantine();
+            }
+        }
+    }
 }
 
 /// Snapshot of LspClient operational health.
@@ -682,6 +726,16 @@ impl LspClient {
         configuration: serde_json::Value,
         options: LspClientOptions,
     ) -> Result<Self, LspError> {
+        let root_uri = Url::from_file_path(root)
+            .map_err(|_| LspError::LaunchFailed("invalid root path".to_string()))
+            .and_then(|uri| url_to_uri(&uri));
+        let root_uri = match root_uri {
+            Ok(root_uri) => root_uri,
+            Err(error) => {
+                crate::launch::reap_unclaimed_process(process).await;
+                return Err(error);
+            }
+        };
         // Take the stderr pipe. The authoritative process runtime
         // (see `crate::runtime`) is the preferred owner of the
         // reader because it bounds capture and surfaces the tail in
@@ -706,6 +760,7 @@ impl LspClient {
         // Extract child handle for process monitoring after stdout/stdin are taken.
         let child = process.child;
         let status_task = process.status_task;
+        let live_process_permit = process.live_process_permit;
 
         let diagnostics: Arc<Mutex<HashMap<String, DiagnosticCacheEntry>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -747,10 +802,7 @@ impl LspClient {
             root: root.to_path_buf(),
             configuration,
             workspace_folders: vec![lsp_types::WorkspaceFolder {
-                uri: url_to_uri(
-                    &url::Url::from_file_path(root)
-                        .map_err(|_| LspError::LaunchFailed("invalid root path".to_string()))?,
-                )?,
+                uri: root_uri,
                 name: root
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
@@ -795,6 +847,7 @@ impl LspClient {
             transport_state,
             dynamic_registrations,
             child: Mutex::new(Some(child)),
+            live_process_permit: Mutex::new(live_process_permit),
             status_task: Mutex::new(status_task),
             stderr: Mutex::new(stderr_handle),
             server_generation,
@@ -924,6 +977,7 @@ impl LspClient {
             transport_state,
             dynamic_registrations,
             child: Mutex::new(Some(child)),
+            live_process_permit: Mutex::new(None),
             status_task: Mutex::new(None),
             // Test stubs use the legacy stderr drain; no runtime
             // owns the stderr pipe.

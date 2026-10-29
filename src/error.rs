@@ -128,6 +128,9 @@ impl IntoResponse for AxumAppError {
             AppError::Lsp(LspError::ServerNotFound(_)) => StatusCode::NOT_FOUND,
             AppError::Lsp(LspError::UnsupportedLanguage(_)) => StatusCode::BAD_REQUEST,
             AppError::Lsp(LspError::NotInitialized(_)) => StatusCode::CONFLICT,
+        AppError::Lsp(LspError::LiveProcessBudgetExhausted { .. }) => {
+            StatusCode::TOO_MANY_REQUESTS
+        }
             AppError::Lsp(LspError::RequestTimeout(_))
             | AppError::Lsp(LspError::DownloadFailed(_))
             | AppError::Lsp(LspError::LaunchFailed(_))

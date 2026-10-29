@@ -1,6 +1,6 @@
 # M006 — Daemon LSP Process Budgets, Worktree Identity and Retirement
 
-Status: active — bounded start-admission defaults accepted 2026-10-28; final qualification chose a total-live-server cap for strict closure, while automatic idle retirement is not required
+Status: active — the opt-in daemon-wide live-child count budget is implemented and lifecycle-qualified locally; exact-head hosted qualification and closure record remain. Bounded start-admission defaults were accepted 2026-10-28; automatic idle retirement is not required.
 
 Primary class: infrastructure/polish.
 
@@ -93,17 +93,38 @@ against either bound. With no `lsp_process_admission` config, existing direct
 launch behavior remains. Do not describe these settings as an active-server,
 RAM, CPU or disk cap.
 
-Remaining gates: implement and qualify the daemon-wide total-live-server
-lifetime budget, including cross-scope saturation, cancellation, process-exit
-release, restart, and shutdown. The sustained workload provides two host-local
-observations but does not establish a universal RAM/CPU limit, separate native
-TUI/desktop/agent application-process scale, or Windows constrained-LSP
-execution. Windows remains explicitly unavailable because no
-filesystem-enforcement backend is registered. Automatic idle retirement is a
-recorded non-requirement for this milestone; services retain idle processes
-until scope teardown or authorized stop. M006 remains active until the global
-count budget is implemented and its exact configuration semantics, negative
-tests, saturation behavior and platform status are recorded in the closure.
+The implementation adds the opt-in
+`lsp_process_admission.max_live_servers: Option<usize>` setting (default
+`null`; zero rejected). One daemon-owned semaphore is retained by FullHost
+dependencies and forwarded into each Linux constrained turn scope. The budget
+launcher reserves before invoking a child launcher, keeps ownership across
+caller cancellation, transfers the permit with the child, and returns capacity
+only after successful wait/reap. Failed reaping quarantines the permit. A
+replacement generation requires its own permit while the old generation is
+still alive; saturation returns `LiveProcessBudgetExhausted` immediately and
+does not stop or evict an attached server. The root error maps this refusal to
+HTTP 429. With no configured `max_live_servers`, existing unbounded live-child
+behavior remains.
+
+Local lifecycle coverage now includes concurrent FullHost/constrained-scope
+launcher competition at a one-child limit, immediate typed refusal, launch
+cancellation before a child is returned, cancellation after a child starts,
+crash exit/reap, overlapping restart generations, and daemon shutdown/reap.
+The focused `egglsp` lifecycle unit group passed (6/6); production stdio tests
+for after-spawn cancellation and shutdown passed (2/2). These tests establish
+count ownership and cleanup behavior, not a portable RSS/CPU bound. Exact-head
+hosted CI, Linux M004 process/IPC and restricted-userns qualification, Desktop
+E2E, and the root quick gate remain required before M006 can be marked closed.
+
+The sustained workload provides two host-local observations but does not
+establish a universal RAM/CPU limit, separate native TUI/desktop/agent
+application-process scale, or Windows constrained-LSP execution. Windows
+remains explicitly unavailable because no filesystem-enforcement backend is
+registered. Automatic idle retirement is a recorded non-requirement for this
+milestone; services retain idle processes until scope teardown or authorized
+stop. M005's bounded structural-selection slice is closed separately; broader
+Helix M014 syntax-node text objects are outside M006 and do not block its
+closure.
 
 ## Non-goals / closure
 
