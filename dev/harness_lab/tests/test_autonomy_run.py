@@ -295,21 +295,31 @@ class RunCaseRefusalTests(unittest.TestCase):
                         min_free_disk_bytes=10 * 1024**3)
             self.assertEqual(guard.provider_requests, 0)
 
-    def test_helper_failure_watcher_cancels_the_known_unrecoverable_tool_error(self) -> None:
-        notification = {
-            "params": {"update": {
-                "sessionUpdate": "tool_call_update",
-                "status": "failed",
-                "title": "job",
-                "rawOutput": "trusted sandbox helper codegg-sandbox-helper "
-                             "could not be resolved: No such file or directory",
+    def test_helper_failure_watcher_correlates_production_shaped_acp_events(self) -> None:
+        # In ACP, title belongs to tool_call. Its terminal update contains the
+        # call ID, status, and raw output, without repeating title.
+        notifications = [
+            {"jsonrpc": "2.0", "method": "session/update", "params": {
+                "sessionId": "session-1", "update": {
+                    "sessionUpdate": "tool_call", "toolCallId": "call-job-7",
+                    "title": "job", "status": "in_progress",
+                    "codeggArgumentsSha256": "a" * 64,
+                    "codeggAction": "status",
+                },
             }},
-        }
+            {"jsonrpc": "2.0", "method": "session/update", "params": {
+                "sessionId": "session-1", "update": {
+                    "sessionUpdate": "tool_call_update", "toolCallId": "call-job-7",
+                    "status": "failed",
+                    "rawOutput": "trusted sandbox helper codegg-sandbox-helper "
+                                 "could not be resolved: No such file or directory",
+                },
+            }},
+        ]
 
         class FakeClient:
-            notifications = [notification]
-
             def __init__(self) -> None:
+                self.notifications = list(notifications)
                 self.sent: list[tuple[str, dict]] = []
 
             def notify(self, method: str, params: dict) -> None:
@@ -322,17 +332,43 @@ class RunCaseRefusalTests(unittest.TestCase):
         self.assertEqual(client.sent, [("session/cancel", {"sessionId": "session-1"})])
 
     def test_helper_failure_watcher_ignores_nonterminal_and_unrelated_errors(self) -> None:
-        cases = [
-            {"sessionUpdate": "tool_call_update", "status": "running", "title": "job",
+        updates = [
+            # An in-progress update is not terminal evidence.
+            {"sessionUpdate": "tool_call", "toolCallId": "job-running",
+             "title": "job", "status": "in_progress"},
+            {"sessionUpdate": "tool_call_update", "toolCallId": "job-running",
+             "status": "in_progress",
              "rawOutput": "trusted sandbox helper codegg-sandbox-helper could not be resolved"},
-            {"sessionUpdate": "tool_call_update", "status": "failed", "title": "test",
-             "rawOutput": "Cargo test failed: assertion did not hold"},
-            {"sessionUpdate": "tool_call_update", "status": "failed", "title": "read",
+            # A failed managed test with a different error is recoverable.
+            {"sessionUpdate": "tool_call", "toolCallId": "test-other",
+             "title": "test", "status": "in_progress"},
+            {"sessionUpdate": "tool_call_update", "toolCallId": "test-other",
+             "status": "failed", "rawOutput": "Cargo test failed: assertion did not hold"},
+            # The same text from an unrelated tool is not the managed launch error.
+            {"sessionUpdate": "tool_call", "toolCallId": "read-other",
+             "title": "read", "status": "in_progress"},
+            {"sessionUpdate": "tool_call_update", "toolCallId": "read-other",
+             "status": "failed",
+             "rawOutput": "trusted sandbox helper codegg-sandbox-helper could not be resolved"},
+            # A terminal without a matching start cannot be attributed to a job/test.
+            {"sessionUpdate": "tool_call_update", "toolCallId": "orphan",
+             "status": "failed",
              "rawOutput": "trusted sandbox helper codegg-sandbox-helper could not be resolved"},
         ]
-        for update in cases:
-            self.assertFalse(autonomy_run._is_missing_trusted_helper_failure(
-                {"params": {"update": update}}))
+
+        class FakeClient:
+            notifications = [
+                {"jsonrpc": "2.0", "method": "session/update", "params": {
+                    "sessionId": "session-1", "update": update,
+                }} for update in updates
+            ]
+
+            def notify(self, _method: str, _params: dict) -> None:
+                raise AssertionError("unrelated ACP events must not cancel the session")
+
+        watcher = autonomy_run._H006InfrastructureFailureWatcher(FakeClient(), "session-1")
+        watcher._absorb()
+        self.assertFalse(watcher.failure_observed)
 
     def test_a_model_without_a_provider_is_refused(self) -> None:
         with self.assertRaises(HarnessError):

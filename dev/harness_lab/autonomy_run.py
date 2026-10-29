@@ -592,13 +592,20 @@ def _preflight_h006_binary(binary: Path) -> Path:
     return executable
 
 
-def _is_missing_trusted_helper_failure(notification: dict[str, Any]) -> bool:
-    """Recognize the known, unrecoverable H006 process-launch failure."""
+def _is_missing_trusted_helper_failure(notification: dict[str, Any], *,
+                                       tool_name: Optional[str] = None) -> bool:
+    """Recognize the known, unrecoverable H006 process-launch failure.
+
+    ACP carries the tool name on ``tool_call`` and carries only the matching
+    ``toolCallId`` on ``tool_call_update``. The watcher supplies the name it
+    correlated from the start event; terminal-event payloads are not expected
+    to repeat it.
+    """
     params = notification.get("params", {})
     update = params.get("update", {}) if isinstance(params, dict) else {}
     if not isinstance(update, dict) or update.get("sessionUpdate") != "tool_call_update" \
             or update.get("status") != "failed" \
-            or update.get("title") not in {"test", "job"}:
+            or tool_name not in {"test", "job"}:
         return False
     raw_output = update.get("rawOutput")
     if not isinstance(raw_output, str):
@@ -618,6 +625,7 @@ class _H006InfrastructureFailureWatcher:
         self._session_id = session_id
         self._poll_seconds = poll_seconds
         self._absorbed = 0
+        self._tool_names_by_id: dict[str, str] = {}
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.failure_observed = False
@@ -661,7 +669,23 @@ class _H006InfrastructureFailureWatcher:
         while self._absorbed < len(notifications):
             notification = notifications[self._absorbed]
             self._absorbed += 1
-            if _is_missing_trusted_helper_failure(notification):
+            params = notification.get("params", {})
+            update = params.get("update", {}) if isinstance(params, dict) else {}
+            if not isinstance(update, dict):
+                continue
+            kind = update.get("sessionUpdate")
+            call_id = update.get("toolCallId")
+            if not isinstance(call_id, str):
+                continue
+            if kind == "tool_call":
+                title = update.get("title")
+                if isinstance(title, str) and title in {"test", "job"}:
+                    self._tool_names_by_id[call_id] = title
+                continue
+            if kind != "tool_call_update":
+                continue
+            tool_name = self._tool_names_by_id.pop(call_id, None)
+            if _is_missing_trusted_helper_failure(notification, tool_name=tool_name):
                 self.failure_observed = True
 
 
