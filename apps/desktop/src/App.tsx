@@ -1312,7 +1312,15 @@ export function App() {
             );
           }}
           onDaemonResult={(result) =>
-            setPaletteNotice(result.status === 'completed' ? result.summary : result.lines.join('\n'))
+            setPaletteNotice(
+              result.status === 'completed' &&
+                !(result.response &&
+                  typeof result.response === 'object' &&
+                  'type' in result.response &&
+                  result.response.type === 'lsp_workflow_result')
+                ? result.summary
+                : result.lines.join('\n'),
+            )
           }
         />
       </div>

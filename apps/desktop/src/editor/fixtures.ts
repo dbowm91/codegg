@@ -17,6 +17,7 @@ export function emptyEditorPanelProps(): EditorPanelProps {
     diagnostics: null,
     completion: null,
     navigation: null,
+    preview: null,
     busy: false,
     error: null,
     onOpen: () => undefined,
@@ -30,6 +31,8 @@ export function emptyEditorPanelProps(): EditorPanelProps {
     onClose: () => undefined,
     onComplete: () => undefined,
     onNavigate: () => undefined,
+    onPreview: () => undefined,
+    onApplyPreview: () => undefined,
     onScroll: () => undefined,
     onRefreshTree: () => undefined,
   };

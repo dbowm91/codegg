@@ -42,7 +42,8 @@ use codegg_protocol::document::DocumentScope;
 use codegg_protocol::lsp::{
     LspControlActionDto, LspControlRequestDto, LspDiagnosticsGetRequestDto, LspDiagnosticsStatus,
     LspDiagnosticsSubscribeRequestDto, LspReadOperation, LspReadPayloadDto, LspReadRequestDto,
-    LspReadResultDto, LspReadStatus, LspServerStatusGetRequestDto,
+    LspReadResultDto, LspReadStatus, LspServerStatusGetRequestDto, LspWorkflowKindDto,
+    LspWorkflowRequestDto,
 };
 use egglsp::{LspConfig, LspRule};
 use serde_json::{json, Value};
@@ -53,6 +54,7 @@ const M002_LATENCY_SAMPLE_COUNT: usize = 31;
 
 const MEMBER: &str = "client-member";
 const PEER: &str = "client-peer";
+const MAINTAINER: &str = "client-maintainer";
 const SERVER: &str = "rust-analyzer";
 const OTHER_SERVER: &str = "gopls";
 
@@ -176,10 +178,8 @@ impl Fixture {
     /// Open the Rust document through the daemon.
     ///
     /// This does two things the tests need and neither is incidental: it is
-    /// what binds the calling client to the project scope (an LSP read is
-    /// `direct_project`-gated, so a client that has never opened anything is
-    /// denied before it reaches the resolver), and it is what pushes the file
-    /// to the language server, so the server is warm.
+    /// what binds the calling client to the project scope and pushes the
+    /// document to the configured server.
     async fn open_lib(&self) {
         match call(
             &self.daemon,
@@ -728,6 +728,25 @@ async fn fixture(behaviour: RustBehaviour, go_steps: Vec<Value>) -> Fixture {
     daemon
         .clients
         .register_with_principal(PEER.to_owned(), format!("{PEER}-name"), None, peer);
+    let maintainer = human_token(&team, "Maintainer", MAINTAINER).await;
+    let maintainer_principal = team
+        .get_principal(maintainer.principal_id())
+        .await
+        .unwrap()
+        .unwrap();
+    team.create_membership(
+        &ProjectId::parse(&project_id).expect("registered project id parses"),
+        &maintainer_principal.id,
+        ProjectRole::Maintainer,
+    )
+    .await
+    .unwrap();
+    daemon.clients.register_with_principal(
+        MAINTAINER.to_owned(),
+        format!("{MAINTAINER}-name"),
+        None,
+        maintainer,
+    );
     let peer = human_token(&team, "Peer", PEER).await;
     let peer_principal = team
         .get_principal(peer.principal_id())
@@ -770,6 +789,7 @@ enum RustBehaviour {
     MultiClientParity,
     /// Answer a hover, so a point read has something to return.
     Hover,
+    Workflow,
     /// Answer enough hovers for the bounded M002 latency sample.
     LatencySample,
     SelectionRange,
@@ -781,6 +801,13 @@ enum RustBehaviour {
 impl RustBehaviour {
     fn steps(self, lib_uri: &str) -> Vec<Value> {
         let init = match self {
+            RustBehaviour::Workflow => json!({
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {"capabilities": {
+                    "documentSymbolProvider": true
+                }}}]
+            }),
             RustBehaviour::SelectionRange
             | RustBehaviour::InvalidSelectionRange
             | RustBehaviour::DeepSelectionRange
@@ -795,12 +822,15 @@ impl RustBehaviour {
             }),
             _ => init_step(),
         };
-        let mut steps = vec![init];
-        steps.push(match self {
+        let initialized_actions = match self {
             RustBehaviour::Diagnostics | RustBehaviour::MultiClientParity => {
-                initialized_step(vec![push_diagnostic_step(lib_uri)])
+                vec![push_diagnostic_step(lib_uri)]
             }
-            RustBehaviour::SelectionRange => initialized_step(vec![json!({
+            _ => Vec::new(),
+        };
+        let mut steps = vec![init, initialized_step(initialized_actions)];
+        match self {
+            RustBehaviour::SelectionRange => steps.push(json!({
                 "type": "ExpectRequest",
                 "method": "textDocument/selectionRange",
                 "then": [{
@@ -818,8 +848,17 @@ impl RustBehaviour {
                         }
                     }]
                 }]
-            })]),
-            RustBehaviour::InvalidSelectionRange => initialized_step(vec![json!({
+            })),
+            RustBehaviour::Workflow => {
+                for _ in 0..2 {
+                    steps.push(json!({
+                        "type": "ExpectRequest",
+                        "method": "textDocument/documentSymbol",
+                        "then": [{"type": "RespondResult", "result": []}]
+                    }));
+                }
+            }
+            RustBehaviour::InvalidSelectionRange => steps.push(json!({
                 "type": "ExpectRequest",
                 "method": "textDocument/selectionRange",
                 "then": [{
@@ -831,7 +870,7 @@ impl RustBehaviour {
                         }
                     }]
                 }]
-            })]),
+            })),
             RustBehaviour::DeepSelectionRange => {
                 let range = json!({
                     "start": {"line": 0, "character": 0},
@@ -841,16 +880,16 @@ impl RustBehaviour {
                 for _ in 0..codegg_protocol::lsp::MAX_LSP_SELECTION_RANGE_DEPTH {
                     chain = json!({"range": range, "parent": chain});
                 }
-                initialized_step(vec![json!({
+                steps.push(json!({
                     "type": "ExpectRequest",
                     "method": "textDocument/selectionRange",
                     "then": [{"type": "RespondResult", "result": [chain]}]
-                })])
+                }));
             }
             RustBehaviour::OversizedSelectionRange => {
                 let padding =
                     "x".repeat(codegg_protocol::lsp::MAX_LSP_SELECTION_RANGE_RESPONSE_BYTES + 1);
-                initialized_step(vec![json!({
+                steps.push(json!({
                     "type": "ExpectRequest",
                     "method": "textDocument/selectionRange",
                     "then": [{
@@ -863,16 +902,17 @@ impl RustBehaviour {
                             "padding": padding
                         }]
                     }]
-                })])
+                }));
             }
-            _ => initialized_step(vec![]),
-        });
+            _ => {}
+        }
         let hover_count = match self {
             RustBehaviour::Hover => 1,
             RustBehaviour::LatencySample => 160,
             RustBehaviour::Diagnostics => 0,
             RustBehaviour::MultiClientParity => 2,
             RustBehaviour::SelectionRange
+            | RustBehaviour::Workflow
             | RustBehaviour::InvalidSelectionRange
             | RustBehaviour::DeepSelectionRange
             | RustBehaviour::OversizedSelectionRange => 0,
@@ -922,7 +962,11 @@ async fn selection_range_reports_unsupported_without_an_approximation() {
     let result = as_read(call(&fixture.daemon, MEMBER, CoreRequest::LspReadGet { request }).await);
 
     assert_eq!(result.status, LspReadStatus::Unsupported);
-    assert!(result.payload.is_none());
+    assert!(matches!(
+        result.payload,
+        Some(LspReadPayloadDto::UnsupportedCapability { ref capability })
+            if capability == "selectionRangeProvider"
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1018,6 +1062,38 @@ async fn server_status_is_session_scoped_and_control_needs_maintainer_capability
         other => panic!("expected the session's attached server status, got {other:?}"),
     }
 
+    let peer_status = call(
+        &fixture.daemon,
+        PEER,
+        CoreRequest::LspServerStatusGet {
+            request: LspServerStatusGetRequestDto {
+                session_id: fixture.session_id.clone(),
+                server_id: None,
+            },
+        },
+    )
+    .await;
+    match peer_status {
+        CoreResponse::LspServerStatusGetResult { result } => {
+            assert_eq!(result.servers.len(), 1);
+            assert_eq!(result.servers[0].server_id, SERVER);
+        }
+        other => panic!("the peer must inspect the same daemon server: {other:?}"),
+    }
+    let canonical_root = fixture
+        .root
+        .canonicalize()
+        .expect("canonical workspace root");
+    assert_eq!(
+        fixture
+            .service
+            .existing_client_keys_for_root(&canonical_root)
+            .await
+            .len(),
+        1,
+        "two clients inspecting the root must share one attached server"
+    );
+
     let denied = call(
         &fixture.daemon,
         MEMBER,
@@ -1034,6 +1110,294 @@ async fn server_status_is_session_scoped_and_control_needs_maintainer_capability
         CoreResponse::Error { code, .. } => assert_eq!(code, "authorization_denied"),
         other => panic!("a Contributor must not control the shared LSP, got {other:?}"),
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn maintainer_control_stops_only_the_selected_warm_server_and_scopes_cache() {
+    let fixture = fixture(RustBehaviour::Hover, go_only_warming()).await;
+    let canonical_root = fixture
+        .root
+        .canonicalize()
+        .expect("canonical workspace root");
+    fixture.open_lib().await;
+    fixture
+        .service
+        .get_or_create_client(&fixture.root.join("src/main.go"))
+        .await
+        .expect("warm the second language server");
+    assert_eq!(
+        fixture
+            .service
+            .existing_client_keys_for_root(&canonical_root)
+            .await
+            .len(),
+        2
+    );
+
+    let denied = call(
+        &fixture.daemon,
+        MEMBER,
+        CoreRequest::LspControl {
+            request: LspControlRequestDto {
+                session_id: fixture.session_id.clone(),
+                server_id: SERVER.to_owned(),
+                action: LspControlActionDto::Stop,
+            },
+        },
+    )
+    .await;
+    assert!(
+        matches!(
+            &denied,
+            CoreResponse::Error { code, .. } if code == "authorization_denied"
+        ),
+        "Contributor stop must fail at the capability gate: {denied:?}"
+    );
+
+    let stopped = call(
+        &fixture.daemon,
+        MAINTAINER,
+        CoreRequest::LspControl {
+            request: LspControlRequestDto {
+                session_id: fixture.session_id.clone(),
+                server_id: SERVER.to_owned(),
+                action: LspControlActionDto::Stop,
+            },
+        },
+    )
+    .await;
+    match stopped {
+        CoreResponse::LspControlResult { result } => {
+            assert_eq!(result.server_id, SERVER);
+            assert_eq!(result.state, "stopped");
+        }
+        other => panic!("maintainer stop should complete through LSP control: {other:?}"),
+    }
+    assert_eq!(
+        fixture
+            .service
+            .existing_client_keys_for_root(&canonical_root)
+            .await,
+        vec![format!("{}:{OTHER_SERVER}", canonical_root.display())],
+        "stopping one server must leave the other session-workspace client attached"
+    );
+
+    let cache_status = call(
+        &fixture.daemon,
+        MEMBER,
+        CoreRequest::LspControl {
+            request: LspControlRequestDto {
+                session_id: fixture.session_id.clone(),
+                server_id: String::new(),
+                action: LspControlActionDto::CacheStatus,
+            },
+        },
+    )
+    .await;
+    match cache_status {
+        CoreResponse::LspControlResult { result } => {
+            assert_eq!(result.cache_entries, 0);
+            assert_eq!(result.cache_bytes, 0);
+        }
+        other => panic!("a Contributor with file.read can inspect bounded cache counts: {other:?}"),
+    }
+
+    let denied_clear = call(
+        &fixture.daemon,
+        MEMBER,
+        CoreRequest::LspControl {
+            request: LspControlRequestDto {
+                session_id: fixture.session_id.clone(),
+                server_id: String::new(),
+                action: LspControlActionDto::CacheClear,
+            },
+        },
+    )
+    .await;
+    assert!(matches!(
+        denied_clear,
+        CoreResponse::Error { ref code, .. } if code == "authorization_denied"
+    ));
+
+    let cleared = call(
+        &fixture.daemon,
+        MAINTAINER,
+        CoreRequest::LspControl {
+            request: LspControlRequestDto {
+                session_id: fixture.session_id.clone(),
+                server_id: String::new(),
+                action: LspControlActionDto::CacheClear,
+            },
+        },
+    )
+    .await;
+    match cleared {
+        CoreResponse::LspControlResult { result } => {
+            assert_eq!(result.cache_entries, 0);
+            assert_eq!(result.cache_bytes, 0);
+        }
+        other => panic!("maintainer cache clear should remain workspace-scoped: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn daemon_lsp_root_diagnosis_is_session_scoped_and_rejects_escape() {
+    let fixture = fixture(RustBehaviour::Hover, go_only_warming()).await;
+    let response = call(
+        &fixture.daemon,
+        MEMBER,
+        CoreRequest::LspWorkflowExecute {
+            request: LspWorkflowRequestDto {
+                session_id: fixture.session_id.clone(),
+                workflow: LspWorkflowKindDto::RootDiagnosis,
+                primary_path: "src/lib.rs".to_owned(),
+                related_paths: Vec::new(),
+                line: None,
+                column: None,
+                symbol: None,
+                direction: None,
+                failure_text: None,
+            },
+        },
+    )
+    .await;
+    match response {
+        CoreResponse::LspWorkflowResult { result } => {
+            assert_eq!(result.workflow, LspWorkflowKindDto::RootDiagnosis);
+            assert_eq!(result.target, "src/lib.rs");
+            assert!(result.rendered.contains("Inside allowed root: yes"));
+        }
+        other => panic!("expected bounded root diagnosis, got {other:?}"),
+    }
+
+    let escaped = call(
+        &fixture.daemon,
+        MEMBER,
+        CoreRequest::LspWorkflowExecute {
+            request: LspWorkflowRequestDto {
+                session_id: fixture.session_id.clone(),
+                workflow: LspWorkflowKindDto::RootDiagnosis,
+                primary_path: "../outside.rs".to_owned(),
+                related_paths: Vec::new(),
+                line: None,
+                column: None,
+                symbol: None,
+                direction: None,
+                failure_text: None,
+            },
+        },
+    )
+    .await;
+    match escaped {
+        CoreResponse::Error { code, .. } => assert_eq!(code, "lsp_workflow_path_unavailable"),
+        other => panic!("a path outside the session workspace must be refused, got {other:?}"),
+    }
+    assert!(fixture.service.client_keys().await.is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn daemon_lsp_root_diagnosis_rejects_symlink_escape() {
+    let fixture = fixture(RustBehaviour::Hover, go_only_warming()).await;
+    let outside = TempDir::new().expect("create an outside workspace");
+    let outside_file = outside.path().join("outside.rs");
+    std::fs::write(&outside_file, "pub fn outside() {}\n").expect("write outside file");
+    std::os::unix::fs::symlink(&outside_file, fixture.root.join("src/escape.rs"))
+        .expect("create an in-root symlink to outside content");
+
+    let response = call(
+        &fixture.daemon,
+        MEMBER,
+        CoreRequest::LspWorkflowExecute {
+            request: LspWorkflowRequestDto {
+                session_id: fixture.session_id.clone(),
+                workflow: LspWorkflowKindDto::RootDiagnosis,
+                primary_path: "src/escape.rs".to_owned(),
+                related_paths: Vec::new(),
+                line: None,
+                column: None,
+                symbol: None,
+                direction: None,
+                failure_text: None,
+            },
+        },
+    )
+    .await;
+
+    assert!(matches!(
+        response,
+        CoreResponse::Error { ref code, .. } if code == "lsp_workflow_path_unavailable"
+    ));
+    assert!(fixture.service.client_keys().await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn daemon_review_workflow_uses_the_session_lsp_service() {
+    let fixture = fixture(RustBehaviour::Workflow, go_only_warming()).await;
+    std::fs::write(
+        fixture.root.join("src/other.rs"),
+        "pub fn beta() -> u32 { 2 }\n",
+    )
+    .expect("create a second workspace file");
+    fixture.open_lib().await;
+    let response = call(
+        &fixture.daemon,
+        MEMBER,
+        review_command(&fixture, "src/lib.rs"),
+    )
+    .await;
+    let response = codegg::tui::command_route::unwrap_inner_response(response);
+    match response {
+        CoreResponse::LspWorkflowResult { result } => {
+            assert_eq!(result.workflow, LspWorkflowKindDto::ReviewFile);
+            assert_eq!(result.target, "src/lib.rs");
+            assert!(
+                !result.rendered.trim().is_empty(),
+                "review workflow should return bounded human-readable evidence"
+            );
+            assert!(result.evidence_count <= 30);
+        }
+        other => panic!("expected bounded review evidence, got {other:?}"),
+    }
+    let peer_response = call(
+        &fixture.daemon,
+        PEER,
+        review_command(&fixture, "src/other.rs"),
+    )
+    .await;
+    let peer_response = codegg::tui::command_route::unwrap_inner_response(peer_response);
+    match peer_response {
+        CoreResponse::LspWorkflowResult { result } => {
+            assert_eq!(result.workflow, LspWorkflowKindDto::ReviewFile);
+            assert_eq!(result.target, "src/other.rs");
+        }
+        other => panic!("the second authorized frontend must share the daemon workflow: {other:?}"),
+    }
+    assert_eq!(
+        fixture.service.client_keys().await.len(),
+        1,
+        "two authorized clients reviewing two files must share one warm server"
+    );
+    let transcript = std::fs::read_to_string(fixture.root.join("rust-analyzer-transcript.jsonl"))
+        .expect("fake server records its protocol transcript");
+    assert_eq!(
+        transcript.matches("textDocument/documentSymbol").count(),
+        2,
+        "the same server must answer each frontend's file-scoped review"
+    );
+}
+
+fn review_command(fixture: &Fixture, path: &str) -> CoreRequest {
+    codegg::tui::command_route::command_execute(
+        codegg::protocol::core::CommandCatalogScopeDto {
+            project_id: fixture.project_id.clone(),
+            workspace_id: fixture.workspace_id.clone(),
+            session_id: Some(fixture.session_id.clone()),
+        },
+        "lsp_review_file",
+        "",
+        path,
+    )
 }
 
 fn read_request(fixture: &Fixture, server_id: Option<&str>) -> LspReadRequestDto {

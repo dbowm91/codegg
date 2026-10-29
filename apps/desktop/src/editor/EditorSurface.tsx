@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { ALL_ACTION_DECLARATIONS, EDITOR_SCOPE, normalizeChord, resolveAction } from '../keymap';
 import { editorIntent } from './actions';
@@ -141,6 +141,7 @@ function TreeEntry({
 export function EditorSurface(props: EditorPanelProps) {
   const { viewport, status, tree, diagnostics, completion, navigation } = props;
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const [renameValue, setRenameValue] = useState('');
 
   const selection = useMemo(() => {
     if (!viewport) return null;
@@ -411,6 +412,52 @@ export function EditorSurface(props: EditorPanelProps) {
             </>
           ) : (
             <p data-testid="editor-navigation-empty">no navigation</p>
+          )}
+        </section>
+        <section className="editor-preview" data-testid="editor-preview">
+          <h3>Checked previews</h3>
+          <button type="button" data-testid="editor-format-preview" onClick={() => props.onPreview('format')}>
+            format preview
+          </button>
+          <label>
+            rename to
+            <input
+              data-testid="editor-rename-value"
+              value={renameValue}
+              onChange={(event) => setRenameValue(event.currentTarget.value)}
+            />
+          </label>
+          <button
+            type="button"
+            data-testid="editor-rename-preview"
+            disabled={!renameValue.trim()}
+            onClick={() => props.onPreview('rename', renameValue)}
+          >
+            rename preview
+          </button>
+          {props.preview ? (
+            <>
+              <p data-testid="editor-preview-status" data-status={props.preview.status}>
+                {props.preview.message}
+              </p>
+              {props.preview.candidate ? (
+                <>
+                  <p data-testid="editor-preview-title">{props.preview.candidate.candidate.title}</p>
+                  <p data-testid="editor-preview-files">{props.preview.candidate.fileCount} file(s)</p>
+                  <pre data-testid="editor-preview-diff">{props.preview.candidate.diff}</pre>
+                  <button
+                    type="button"
+                    data-testid="editor-preview-apply"
+                    disabled={status?.dirty ?? true}
+                    onClick={() => props.onApplyPreview()}
+                  >
+                    apply reviewed preview
+                  </button>
+                </>
+              ) : null}
+            </>
+          ) : (
+            <p data-testid="editor-preview-empty">no preview</p>
           )}
         </section>
       </footer>

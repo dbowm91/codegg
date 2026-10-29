@@ -255,4 +255,92 @@ describe('the editor surface', () => {
     render(<EditorSurface {...props({ error: 'the daemon connection was lost' })} />);
     expect(screen.getByTestId('editor-error')).toHaveTextContent('the daemon connection was lost');
   });
+
+  it('keeps preview generation inert and requires an explicit apply action', () => {
+    const onPreview = vi.fn();
+    const onApplyPreview = vi.fn();
+    render(
+      <EditorSurface
+        {...props({
+          onPreview,
+          onApplyPreview,
+          status: {
+            state: 'ready',
+            message: 'document is saved',
+            relativePath: 'src/lib.rs',
+            revision: 4,
+            writable: true,
+            dirty: false,
+            conflicted: false,
+            pendingChanges: 0,
+            canUndo: false,
+            canRedo: false,
+          },
+          preview: {
+            status: 'ready',
+            message: 'format preview ready for review',
+            stale: false,
+            candidate: {
+              fileCount: 1,
+              diff: '--- a/src/lib.rs\n+++ b/src/lib.rs',
+              candidate: {
+                preview_id: 'preview-1',
+                preview_revision: 1,
+                preview_digest: 'a'.repeat(64),
+                kind: 'formatting',
+                title: 'Format src/lib.rs',
+                provenance: 'editor:format',
+                patches: [{ path: 'src/lib.rs', patch: 'patch', original_hash: 'b'.repeat(64) }],
+              },
+            },
+          },
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('editor-format-preview'));
+    expect(onPreview).toHaveBeenCalledWith('format');
+    expect(screen.getByTestId('editor-preview-diff')).toHaveTextContent('src/lib.rs');
+    fireEvent.click(screen.getByTestId('editor-preview-apply'));
+    expect(onApplyPreview).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not offer checked apply while the document has unsaved changes', () => {
+    render(
+      <EditorSurface
+        {...props({
+          status: {
+            state: 'dirty',
+            message: 'unsaved changes',
+            relativePath: 'src/lib.rs',
+            revision: 4,
+            writable: true,
+            dirty: true,
+            conflicted: false,
+            pendingChanges: 1,
+            canUndo: true,
+            canRedo: false,
+          },
+          preview: {
+            status: 'ready',
+            message: 'rename preview ready for review',
+            stale: false,
+            candidate: {
+              fileCount: 1,
+              diff: 'rename diff',
+              candidate: {
+                preview_id: 'preview-2',
+                preview_revision: 2,
+                preview_digest: 'c'.repeat(64),
+                kind: 'rename',
+                title: 'Rename thing',
+                provenance: 'editor:rename',
+                patches: [{ path: 'src/lib.rs', patch: 'patch', original_hash: 'd'.repeat(64) }],
+              },
+            },
+          },
+        })}
+      />,
+    );
+    expect(screen.getByTestId('editor-preview-apply')).toBeDisabled();
+  });
 });

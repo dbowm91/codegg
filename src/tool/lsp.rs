@@ -603,7 +603,7 @@ pub struct LspTool {
     /// the async tool path can register without `await` holding
     /// the lock.
     preview_registry: crate::tool::LspPreviewRegistryHandle,
-    semantic_cache: parking_lot::Mutex<egglsp::cache::LspSemanticCache>,
+    semantic_cache: Arc<std::sync::Mutex<egglsp::cache::LspSemanticCache>>,
 }
 
 impl std::fmt::Debug for LspTool {
@@ -614,7 +614,7 @@ impl std::fmt::Debug for LspTool {
             .field("preview_registry_len", &self.preview_registry.lock().len())
             .field(
                 "semantic_cache_entries",
-                &self.semantic_cache.lock().stats().entries,
+                &self.semantic_cache().stats().entries,
             )
             .finish()
     }
@@ -654,15 +654,14 @@ impl LspTool {
         service: Arc<crate::lsp::service::LspService>,
         cache_config: Option<egglsp::cache::LspCacheConfig>,
     ) -> Self {
+        let semantic_cache = service.shared_semantic_cache(cache_config.unwrap_or_default());
         Self {
             service,
             allowed_root: crate::tool::util::unresolved_workspace_root(),
             preview_registry: Arc::new(parking_lot::Mutex::new(
                 egglsp::preview_registry::PreviewArtifactRegistry::new(),
             )),
-            semantic_cache: parking_lot::Mutex::new(egglsp::cache::LspSemanticCache::new(
-                cache_config.unwrap_or_default(),
-            )),
+            semantic_cache,
         }
     }
 
@@ -691,14 +690,16 @@ impl LspTool {
     }
 
     /// Borrow the shared semantic cache for inspection.
-    pub fn semantic_cache(&self) -> parking_lot::MutexGuard<'_, egglsp::cache::LspSemanticCache> {
-        self.semantic_cache.lock()
+    pub fn semantic_cache(&self) -> std::sync::MutexGuard<'_, egglsp::cache::LspSemanticCache> {
+        self.semantic_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Render cache status as human-readable text.
     pub fn lsp_cache_status(&self) -> String {
         let cache = self.semantic_cache();
-        let stats = cache.stats();
+        let stats = cache.stats_for_root(&self.allowed_root);
         let mode = if cache.is_enabled() {
             "memory"
         } else {
@@ -712,11 +713,7 @@ impl LspTool {
 
     /// Clear the entire semantic cache. Returns number of entries cleared.
     pub fn clear_semantic_cache(&self) -> usize {
-        let mut cache = self.semantic_cache();
-        let stats = cache.stats();
-        let count = stats.entries;
-        cache.clear();
-        count
+        self.clear_semantic_cache_for_root(&self.allowed_root)
     }
 
     /// Clear semantic cache entries for a specific workspace root.
@@ -915,9 +912,9 @@ impl LspTool {
 
         let has_primary = !matches!(request, egglsp::LspContextRequest::Review { .. });
         let cache_eligible =
-            self.semantic_cache.lock().is_enabled() && !(file_hashes.is_empty() && has_primary);
+            self.semantic_cache().is_enabled() && !(file_hashes.is_empty() && has_primary);
 
-        if file_hashes.is_empty() && has_primary && self.semantic_cache.lock().is_enabled() {
+        if file_hashes.is_empty() && has_primary && self.semantic_cache().is_enabled() {
             tracing::debug!(
                 "lsp_context_for_agent_with_input: file_hashes empty for primary-file \
                  request; bypassing semantic cache"
@@ -945,8 +942,7 @@ impl LspTool {
             let key = key_builder.build();
 
             let cache_hit: Option<egglsp::context::LspContextPacket> = self
-                .semantic_cache
-                .lock()
+                .semantic_cache()
                 .get(&key, server_generation, &file_hashes)
                 .cloned();
 
@@ -969,7 +965,7 @@ impl LspTool {
                     }
                 };
                 let original_freshness = derive_cache_freshness(&fresh);
-                self.semantic_cache.lock().insert(
+                self.semantic_cache().insert(
                     key,
                     fresh.clone(),
                     original_freshness,

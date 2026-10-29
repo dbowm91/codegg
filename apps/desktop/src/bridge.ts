@@ -24,6 +24,8 @@ import type {
   EditorDiagnosticsView,
   EditorEditView,
   EditorNavigationView,
+  LspPreviewCandidate,
+  LspPreviewView,
   EditorOpenView,
   EditorStateView,
   EditorTreeView,
@@ -131,6 +133,14 @@ export const bridge = {
     invoke<EditorCompletionView>('desktop_document_completion', { trigger }),
   documentNavigate: (operation: string) =>
     invoke<EditorNavigationView>('desktop_document_navigate', { operation }),
+  documentPreview: (operation: 'format' | 'rename', newName: string | null, routeGeneration: number) =>
+    invoke<LspPreviewView>('desktop_document_preview', {
+      operation,
+      newName,
+      routeGeneration,
+    }),
+  documentPreviewApply: (candidate: LspPreviewCandidate, routeGeneration: number) =>
+    invoke<string>('desktop_document_preview_apply', { candidate, routeGeneration }),
   disconnect: () => invoke<void>('desktop_disconnect'),
   unsubscribe: (subscriptionId: string) =>
     invoke<void>('desktop_unsubscribe_events', { subscriptionId }),

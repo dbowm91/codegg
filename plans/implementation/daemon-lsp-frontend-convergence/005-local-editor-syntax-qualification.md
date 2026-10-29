@@ -1,12 +1,12 @@
 # M005 — Daemon-Backed Structural Selection (Helix M014)
 
-Status: blocked — ADR-0034 decision pending
+Status: ready — ADR-0034 Option B accepted 2026-10-28; implementation qualification remains
 
 Primary class: capability/infrastructure.
 
 Repository planning baseline: `80171f45295bebb9ab0b521262c0b295acb93074` (`main`, 2026-10-27). Reinspect live branch before implementation. Roadmap: `plans/subsystems/daemon-lsp-frontend-convergence-roadmap.md`; governance: `plans/003-planning-process.md`; long-term specification §§4,13,24–25.
 
-ADR-0034 currently evaluates Option B: extend the daemon-owned read surface with bounded structural ranges. Do not add a frontend parser while the ADR decision is pending. Once unblocked, coordinate with the Helix M014 entry; do not claim per-kind Tree-sitter parity beyond the structural range operations actually delivered.
+ADR-0034 accepts Option B: extend the daemon-owned read surface with bounded structural ranges. Do not add a frontend parser. Coordinate with the Helix M014 entry; do not claim per-kind Tree-sitter parity beyond the structural range operations actually delivered.
 
 ## Objective
 
@@ -28,12 +28,14 @@ Provide asynchronous syntax-structure expansion and contraction in the TUI throu
 
 Fake-stdio tests must cover range-chain decoding, maximum depth/truncation, invalid or reversed ranges, UTF-16 positions, oversized responses, path escape, no warm server, unsupported capability, delayed response after edit/cursor/tab/route change, and restart generation change. A rapid-input trajectory proves the editor remains responsive while a request is pending and never paints a stale range. A large-file/read-response test proves work and payload stay bounded. Run the focused `egglsp`, root TUI, authorization-matrix and keymap/text-authority guards, then root and desktop gates as affected.
 
-Current host qualification: `cargo check -p codegg --locked --features
-server,lsp-test-support --test lsp_test_support` compiles the new daemon
-integration trajectories, and `scripts/verify.sh quick` passes. Runtime test
-execution remains open because this host's x86_64/arm64 native-library setup
-cannot link the LSP test binaries; the compile check is not latency or stale
-discard evidence.
+Current host qualification: the x86_64 macOS host ran
+`cargo test -p codegg --features server,lsp-test-support --test
+lsp_test_support` with a compatible linker wrapper: 71/71 passed. The family
+covers a warm bounded nested range, explicit unsupported capability, cold
+no-spawn behavior, reversed-range refusal, depth truncation, and oversized
+response refusal. This verifies the current typed structural read contract;
+the M005 TUI gesture, revision/cursor stale discard, rapid-input responsiveness
+and larger-file qualification remain implementation gates.
 
 ## Storage/security/compatibility
 

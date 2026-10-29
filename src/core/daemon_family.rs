@@ -107,6 +107,7 @@ impl DaemonRequestFamily {
             | CoreRequest::LspDiagnosticsGet { .. }
             | CoreRequest::LspServerStatusGet { .. }
             | CoreRequest::LspControl { .. }
+            | CoreRequest::LspWorkflowExecute { .. }
             | CoreRequest::LspDiagnosticsSubscribe { .. }
             | CoreRequest::LspCompletionGet { .. } => Self::Lsp,
             // M006: the scratch census is measurement only. It never mutates

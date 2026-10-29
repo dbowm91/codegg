@@ -101,8 +101,8 @@ PANEL_LAYER_DIRS = (
 BRIDGE_MODULE = Path("apps/desktop/src/bridge.ts")
 HOST_COMMAND_TABLE = Path("apps/desktop/src-tauri/src/lib.rs")
 
-# The recorded bridge baseline: the desktop's 40 `invoke` targets, which are
-# the same 40 commands the host registers. The set is recorded **here**
+# The recorded bridge baseline: the desktop's 44 `invoke` targets, which are
+# the same 44 commands the host registers. The set is recorded **here**
 # rather than measured from the tree at run time, because a baseline that is
 # measured is a baseline that grows by itself.
 #
@@ -119,9 +119,11 @@ HOST_COMMAND_TABLE = Path("apps/desktop/src-tauri/src/lib.rs")
 # * M001 adds `desktop_document_diagnostics_subscribe` and
 #   `desktop_document_diagnostics_unsubscribe`: the bounded loss-aware LSP
 #   stream lifecycle, kept as two named read/cleanup commands.
+# * M007-F adds the named LSP preview and checked-apply commands for the
+#   desktop editor's review surface.
 #
-# The baseline was re-measured once all three additions were present: 42
-# targets, and the same 42 the host's `generate_handler!` table registers.
+# The baseline was re-measured once all four additions were present: 44
+# targets, and the same 44 the host's `generate_handler!` table registers.
 # The sets are disjoint and the union is what the guard holds.
 RECORDED_BRIDGE_TARGETS = frozenset(
     {
@@ -141,6 +143,8 @@ RECORDED_BRIDGE_TARGETS = frozenset(
         "desktop_document_edit",
         "desktop_document_navigate",
         "desktop_document_open",
+        "desktop_document_preview",
+        "desktop_document_preview_apply",
         "desktop_document_redo",
         "desktop_document_reload",
         "desktop_document_resync",

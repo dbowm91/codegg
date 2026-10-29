@@ -1520,6 +1520,14 @@ pub enum TuiCommand {
     LspRestartRequested {
         server_id: String,
     },
+    LspControlRequested {
+        command_id: &'static str,
+        argument: String,
+    },
+    LspWorkflowRequested {
+        command_id: &'static str,
+        argument: String,
+    },
     /// Eggwork M002: request the host telemetry of the configured remote
     /// nodes. Awaiting the daemon is off the render path.
     NodeTelemetryRequested,

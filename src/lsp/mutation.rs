@@ -1055,6 +1055,49 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "changed\n");
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_acceptance_of_one_preview_writes_exactly_once() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = root.path().join("main.rs");
+        let original = "old\n";
+        std::fs::write(&path, original).expect("write original");
+        let candidate = request(root.path(), &path, original);
+        let locks = Arc::new(WorkspaceLockTable::new());
+        let pool = pool().await;
+        let first = apply_preview(
+            candidate.clone(),
+            root.path().to_path_buf(),
+            locks.clone(),
+            pool.clone(),
+            None,
+            None,
+            None,
+        );
+        let second = apply_preview(
+            candidate,
+            root.path().to_path_buf(),
+            locks,
+            pool,
+            None,
+            None,
+            None,
+        );
+        let (first, second) = tokio::join!(first, second);
+        let successes = usize::from(first.is_ok()) + usize::from(second.is_ok());
+        let stale_refusals = usize::from(matches!(first, Err(LspMutationApplyError::Stale(_))))
+            + usize::from(matches!(second, Err(LspMutationApplyError::Stale(_))));
+
+        assert_eq!(
+            successes, 1,
+            "one acceptance must win the shared workspace lock"
+        );
+        assert_eq!(
+            stale_refusals, 1,
+            "the second acceptance must see the changed base"
+        );
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "new\n");
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn dirty_document_service_rejects_preview_before_disk_write() {
         let root = tempfile::tempdir().expect("tempdir");

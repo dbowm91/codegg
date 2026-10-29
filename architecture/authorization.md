@@ -608,12 +608,14 @@ approval preferences and never project-keyed):
 | `job_submit` | via_session | `job.submit` |
 | `job_wait` | via_job | `session.read` |
 | `lsp_completion_get` | via_session | `file.read` |
+| `lsp_cache_status_get` | via_session | `file.read` |
 | `lsp_control` | via_session | `lsp.control` |
 | `lsp_diagnostics_get` | direct_project | `file.read` |
 | `lsp_diagnostics_subscribe` | direct_project | `file.read` |
 | `lsp_preview_apply` | via_session | `file.modify` |
 | `lsp_read_get` | via_session | `file.read` |
 | `lsp_server_status_get` | via_session | `file.read` |
+| `lsp_workflow_execute` | via_session | `file.read` |
 | `managed_worktree_archive` | opaque | `worktree.remove` |
 | `managed_worktree_cleanup` | opaque | `worktree.remove` |
 | `managed_worktree_get` | opaque | `git.read` |
@@ -874,11 +876,15 @@ load-bearing:
   its own catalog before it executes anything — a request that names a
   form the daemon does not serve is refused with a typed reason, not
   executed.
-- LSP restart is a deliberately narrower inner effect: the command still
-  requires `command.execute`, and its typed `LspControl` request independently
-  requires `lsp.control` (`Maintainer` and `Owner`). Contributor command access
-  cannot restart a daemon-shared language server, and the selector is resolved
-  only against an existing server under the authorized session workspace.
+- LSP restart, per-server stop, and semantic-cache clear are deliberately
+  narrower inner effects: the command still requires `command.execute`, and
+  its typed `LspControl` request independently requires `lsp.control`
+  (`Maintainer` and `Owner`). Contributor command access cannot control a
+  daemon-shared language server or clear its cache. Cache status is a separate
+  `file.read` inspection and returns only bounded counts for the active
+  session workspace. Server selectors resolve only against an existing server
+  under the authorized session workspace; cache operations use that session
+  workspace without accepting a root from the caller.
 - **Reading the catalog is not executing a command.** `command_catalog`
   takes the same `project.read` grant the skill catalogue takes
   (`policy.rs:156`): knowing that `/reload` exists says nothing about

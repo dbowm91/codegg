@@ -138,13 +138,13 @@ jobs:
   process-ipc:
     if: ${{ github.event_name != 'workflow_dispatch' || github.ref_name != 'planning/linux-sandbox-next-admission-and-adr-cleanup' }}
     runs-on: ubuntu-24.04
-    # This job builds the whole workspace from a cold cargo cache (~6 min on
-    # the hosted runner) and then runs the M004/M005 suite, which launches a
-    # contained process per case. The previous 20-minute budget was consumed
-    # by the build alone plus part of the suite, so the job was cancelled
-    # before it could finish and the qualification produced no evidence at
-    # all. The budget is raised to cover the cold build plus the full suite.
-    timeout-minutes: 45
+    # This job builds the whole workspace from a cold cargo cache and then
+    # runs the M004/M005 suite, which launches a contained process per case.
+    # On the same head, the push-triggered job completed in 37m42s, while two
+    # PR-triggered attempts reached the 45-minute limit during final LSP
+    # qualification. Give runner variance enough headroom to finish the whole
+    # suite; individual containment probes retain their own 10-minute bounds.
+    timeout-minutes: 60
     env:
       CARGO_BUILD_JOBS: 4
       CODEGG_RUN_M004_BWRAP_NATIVE: '1'

@@ -1,6 +1,6 @@
 # ADR-0034: Syntax-awareness source for TUI editor structural editing
 
-Status: proposed
+Status: accepted — Option B accepted 2026-10-28 by the project maintainer
 
 Date: 2026-10-17
 
@@ -182,12 +182,12 @@ diagnose, this is rejected as disproportionate for the value delivered.
 
 ## Decision
 
-The project maintainer selected **Option B** on 2026-10-27: add bounded,
-revision-bound structural reads to the daemon-owned LSP surface. The decision
-is not yet marked accepted; acceptance awaits the contract, bounds and
-no-server evidence listed under Verification below. M009's byte-derived scope
-remains closed and is not gated by this ADR. The syntax-node slice M014 is
-unblocked for implementation against Option B.
+The project maintainer selected **Option B** on 2026-10-27 and accepted it on
+2026-10-28: add bounded, revision-bound structural reads to the daemon-owned
+LSP surface. M009's byte-derived scope remains closed and is not gated by this
+ADR. The syntax-node slice M014 is unblocked for implementation against
+Option B. M005/M014 closure still requires the contract, bounds, no-server,
+stale-discard and responsiveness evidence listed under Verification.
 
 If Option B is accepted:
 
@@ -294,10 +294,10 @@ Evidence required before this ADR can be marked accepted:
 5. For either: a negative test proving a structural binding reports an
    unavailable state rather than silently no-opping when no server is attached.
 
-The maintainer's recorded Option B selection authorizes M005 to implement the
-bounded structural-read contract. Mark this ADR accepted only after the
-verification evidence above is attached to M005's closure. The proposed
-record alone did not authorize parser work; no parser dependency is selected.
+The maintainer's accepted Option B decision authorizes M005 to implement the
+bounded structural-read contract. The verification evidence above remains an
+M005/M014 implementation-closure requirement. No parser dependency is
+selected.
 
 ## Supersession
 
