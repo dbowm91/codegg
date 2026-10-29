@@ -1,8 +1,8 @@
 # H006 — Job-Observable Sustained Corrective Qualification
 
-Status: **offline prerequisites passed; three separately authorized live attempts ended without sustained qualification; the latest completed the task and passed its independent verifier but ended before 30 minutes; all live authorizations are consumed**
+Status: **H006 corrective implementation completed successfully and merged in PR #216 at `f3c0a9e2`; sustained live qualification remains unachieved after three consumed authorizations. The latest task and verifier passed, but active work ended before 30 minutes.**
 
-Implementation: branch `plans/harness-lab-h006-job-observable-20261028`.
+Implementation: PR #216 merged at `f3c0a9e2e9903bb097d8bf56641138e03d964eb7` from `plans/h006-live-qualification-20261029`.
 Prior live evidence: H005 remains unqualified and its authorization remains consumed (`005-status.md`).
 The initial H006 closure covered offline evidence only. The first and second authorized live attempts and their failures remain recorded unchanged in §§7–8. A third, freshly authorized attempt ran on 2026-10-29 after the duration-gate correction; its result is recorded in §10 and its authorization is consumed.
 
@@ -101,6 +101,8 @@ Verification before the activity-gap refinement: `python3 -m unittest dev.harnes
 H006 remains unqualified and all three live authorizations remain consumed. Any next live run needs fresh explicit authorization after review of the corrective owner identified in §10; the completed offline tests and a fast successful solution do not satisfy the sustained live criterion.
 
 ## 10. Third live attempt — task and verifier passed; sustained duration not qualified
+
+PR #216, the H006 corrective implementation, merged successfully at `f3c0a9e2e9903bb097d8bf56641138e03d964eb7`. Its exact-head hosted verification passed in [run 40897534593](https://github.com/dbowm91/codegg/actions/runs/40897534593), including strict Clippy and the workspace sweep. This integration result closes the corrective implementation; it does not qualify H006's sustained live objective.
 
 On 2026-10-29, after the activity-gap guard passed exact-head hosted CI, the user separately authorized one live attempt on `opencode_go/muse-spark-1.3-contributor`. The authorization set a 120-request ceiling, a 60-minute hard stop, a 10 GiB free-disk floor, unknown treatment for billed USD cost when unavailable, and cancellation on cap/accounting uncertainty, disk-floor breach, unrecoverable daemon/job-state loss, or job identity/status mismatch. The paired ARM64 `codegg` and `codegg-sandbox-helper` binaries were built with Rust 1.89 from source commit `acffcf373b33fd0105b7f28422899c09121ba74`; both hashes and preflight evidence are in the invocation receipt. Two setup refusals and a socket-path-length rejection occurred before provider reservation or process startup and are preserved separately; they are not additional live attempts.
 
