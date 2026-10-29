@@ -1,6 +1,6 @@
 # H007 — Deep Rust Workload and Separate Horizon Measures
 
-Status: complete for offline workload calibration. Sustained live qualification is not claimed and requires fresh explicit authorization.
+Status: offline workload calibration complete. One separately authorized live attempt was consumed without qualification; any further attempt requires fresh explicit authorization.
 
 Repository baseline: `origin/main` at `f3c0a9e2e9903bb097d8bf56641138e03d964eb7` (H006 corrective PR #216 merged)
 
@@ -237,7 +237,7 @@ Stop and report rather than expanding scope if:
 - Production-shaped exact-ID running/terminal overlap, repair cycles, continuation, event-gap and cleanup evidence.
 - Task/horizon result truth-table evidence, including a quick correct completion that remains a task pass.
 - Focused tests, assertion/duplication guards, scoped/full verification and exact-head hosted CI.
-- Explicit statement that no live authorization or live qualification is implied by offline completion.
+- Explicit statement that no live authorization or live qualification is implied by offline completion; any later separately authorized attempt is recorded in the closure record.
 - Unblock audit and roadmap/registry reconciliation.
 
 ## 16. Handoff notes
@@ -245,5 +245,5 @@ Stop and report rather than expanding scope if:
 - Use the H006 corrective as the measurement baseline and H005/H006 fixtures as historical comparators only; do not copy H006 and merely increase loop count.
 - Keep verifier inputs outside the agent-writable tree. Store only sanitized tool/job metadata, never raw provider output or credentials.
 - The request ceiling for any future live run is a fresh operator decision; do not inherit H006's 120-request value. Use a hard 60-minute maximum, a free-disk floor of at least 10 GiB, and record unavailable billed USD as unknown.
-- The selected route remains the existing `opencode_go` integration if and only if separately authorized. No alternate provider is a fallback.
+- The selected route remains the existing `opencode_go` integration if and only if freshly authorized. The 2026-10-29 authorization is consumed; no alternate provider is a fallback.
 - Report task success even when the run is too short to qualify horizon reliability. Those are independent conclusions.
