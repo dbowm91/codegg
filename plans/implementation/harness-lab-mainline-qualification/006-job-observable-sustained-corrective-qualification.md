@@ -56,7 +56,7 @@ On approval, run one coherent native CodeGG session against the immutable H006 f
 - wait on the same ID and observe a terminal status/result before using its evidence;
 - diagnose and repair two distinct seeded or naturally occurring failures;
 - survive the planned continuation/recovery boundary without losing task state or repeating already completed work;
-- reach at least 30 minutes of active session time, with observed tool activity spanning at least 30 minutes, and stop no later than 60 minutes. The runner records this as an explicit qualification condition; sleeps or idle time cannot qualify.
+- reach at least 30 minutes of active session time, with observed tool activity spanning at least 30 minutes and no gap between observed tool-call start/finish events exceeding five minutes, and stop no later than 60 minutes. The runner records both duration and activity-gap conditions; sleeps or long idle gaps cannot qualify.
 
 The verifier checks stage outputs, both repair chains, exact job lifecycle ordering, continued work during the active interval, continuation state, event integrity, request/time/disk bounds, and cleanup. A failed or unreachable verifier, null/mismatched job status, cap uncertainty, insufficient active duration, or incomplete cleanup is a failed qualification, even if some source files compile.
 

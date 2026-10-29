@@ -71,6 +71,7 @@ VERIFIER_NOT_RUN = "not_run"
 H006_CASE_ID = "sustained-event-ledger"
 H006_INSTALLATION_PREFLIGHT_TIMEOUT_SECONDS = 15.0
 H006_MIN_ACTIVE_DURATION_MS = 30 * 60 * 1000
+H006_MAX_ACTIVITY_GAP_MS = 5 * 60 * 1000
 
 __all__ = [
     "AUTONOMY_ROOT_RELPATH",
@@ -568,21 +569,37 @@ def _verifier_timeout(case_id: str, turn_timeout: float,
 
 def _duration_qualified(case_id: str, duration_ms: int,
                         tool_calls: list[dict[str, Any]]) -> bool:
-    """Require H006 work to remain active through its declared 30-minute minimum."""
+    """Require sustained H006 activity through its declared 30-minute minimum."""
     if case_id != H006_CASE_ID:
         return True
-    activity_times = [
-        call.get("finished_elapsed_ms") for call in tool_calls
+    activity_times = _activity_elapsed_ms(tool_calls)
+    finished_times = [
+        call["finished_elapsed_ms"] for call in tool_calls
         if isinstance(call.get("finished_elapsed_ms"), int)
     ]
-    if not activity_times:
+    if not activity_times or not finished_times:
         return False
     first_activity_ms = min(activity_times)
     last_activity_ms = max(activity_times)
     active_work_span_ms = last_activity_ms - first_activity_ms
+    maximum_activity_gap_ms = max(
+        (later - earlier for earlier, later in zip(activity_times, activity_times[1:])),
+        default=0,
+    )
     return duration_ms >= H006_MIN_ACTIVE_DURATION_MS \
-        and last_activity_ms >= H006_MIN_ACTIVE_DURATION_MS \
-        and active_work_span_ms >= H006_MIN_ACTIVE_DURATION_MS
+        and max(finished_times) >= H006_MIN_ACTIVE_DURATION_MS \
+        and active_work_span_ms >= H006_MIN_ACTIVE_DURATION_MS \
+        and maximum_activity_gap_ms <= H006_MAX_ACTIVITY_GAP_MS
+
+
+def _activity_elapsed_ms(tool_calls: list[dict[str, Any]]) -> list[int]:
+    """Return sorted start/finish observations for the session's projected tool calls."""
+    return sorted(
+        elapsed_ms
+        for call in tool_calls
+        for elapsed_ms in (call.get("started_elapsed_ms"), call.get("finished_elapsed_ms"))
+        if isinstance(elapsed_ms, int) and not isinstance(elapsed_ms, bool)
+    )
 
 
 def _active_work_span_ms(tool_calls: list[dict[str, Any]]) -> int:
@@ -1144,6 +1161,11 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     first_activity_elapsed_ms = min(activity_times) if activity_times else None
     last_activity_elapsed_ms = max(activity_times) if activity_times else None
     active_work_span_ms = _active_work_span_ms(tool_calls)
+    activity_times = _activity_elapsed_ms(tool_calls)
+    maximum_activity_gap_ms = max(
+        (later - earlier for earlier, later in zip(activity_times, activity_times[1:])),
+        default=0,
+    )
     duration_qualified = _duration_qualified(case.case_id, duration_ms, tool_calls)
     solved = bool(verifier_confirmed and terminal == "completed" and not case.protected
                   and duration_qualified)
@@ -1171,6 +1193,8 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         "active_work_span_ms": active_work_span_ms,
         "minimum_active_duration_ms": (H006_MIN_ACTIVE_DURATION_MS
                                         if case.case_id == H006_CASE_ID else None),
+        "maximum_activity_gap_ms": (maximum_activity_gap_ms
+                                    if case.case_id == H006_CASE_ID else None),
         "disk_floor": None if disk_watcher is None else {
             "minimum_free_bytes": min_free_disk_bytes,
             "last_free_bytes": disk_watcher.free_bytes,

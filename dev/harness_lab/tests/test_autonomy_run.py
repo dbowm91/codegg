@@ -134,6 +134,7 @@ class H006VerifierTranscriptCompatibilityTests(unittest.TestCase):
 
     def test_h006_minimum_duration_is_a_hard_qualification_condition(self) -> None:
         minimum = autonomy_run.H006_MIN_ACTIVE_DURATION_MS
+        max_gap = autonomy_run.H006_MAX_ACTIVITY_GAP_MS
         self.assertFalse(autonomy_run._duration_qualified(
             "sustained-event-ledger", minimum - 1,
             [{"finished_elapsed_ms": 0}, {"finished_elapsed_ms": minimum}]))
@@ -143,9 +144,19 @@ class H006VerifierTranscriptCompatibilityTests(unittest.TestCase):
         self.assertFalse(autonomy_run._duration_qualified(
             "sustained-event-ledger", minimum,
             [{"finished_elapsed_ms": minimum}]))
-        self.assertTrue(autonomy_run._duration_qualified(
+        self.assertFalse(autonomy_run._duration_qualified(
             "sustained-event-ledger", minimum,
             [{"finished_elapsed_ms": 0}, {"finished_elapsed_ms": minimum}]))
+        self.assertFalse(autonomy_run._duration_qualified(
+            "sustained-event-ledger", minimum,
+            [{"started_elapsed_ms": 0, "finished_elapsed_ms": 1},
+             {"started_elapsed_ms": max_gap + 2,
+              "finished_elapsed_ms": max_gap + 3},
+             {"started_elapsed_ms": minimum, "finished_elapsed_ms": minimum + 1}]))
+        self.assertTrue(autonomy_run._duration_qualified(
+            "sustained-event-ledger", minimum,
+            [{"started_elapsed_ms": elapsed_ms, "finished_elapsed_ms": elapsed_ms + 1}
+             for elapsed_ms in range(0, minimum + 1, max_gap)]))
         self.assertTrue(autonomy_run._duration_qualified("ordinary-case", 1, []))
 
 
