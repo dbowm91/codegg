@@ -1,6 +1,6 @@
 # Daemon LSP and Frontend Editor Convergence Roadmap
 
-Status: active — M001–M005 closed; M006 process-budget qualification active
+Status: closed — M001–M006 closed
 
 Planning baseline: `main` at `7de6f237c0c4ab2abff120f39b7ae98e7107bec3` (2026-10-28). Revalidate current source before implementing each milestone.
 
@@ -46,11 +46,11 @@ No renderer/host/CLI may create a competing daemon-session LSP process, bypass `
 | M003 | capability | Typed daemon LSP server inspection, status, restart/stop/cache controls and low-frequency `/lsp-*` command parity (M007-F part 1) | ADR-0056 **accepted** | **closed — 2026-10-28** |
 | M004 | capability | Daemon LSP semantic repair/review recipe parity and checked human preview flow (M007-F part 2) | M003 **closed**; ADR-0056 **accepted** | **closed — 2026-10-28** |
 | M005 | capability | Bounded daemon LSP structural selection for the TUI/Helix M014, with stale discard and explicit unsupported state; no frontend parser | ADR-0034 **accepted Option B**; M001 interface **soft** | **closed — 2026-10-29; `plans/closure/daemon-lsp-frontend-convergence/005-status.md`** |
-| M006 | infrastructure/polish | Opt-in bounded LSP process admission, canonical worktree/config/profile identity and qualified lifecycle/resource evidence | Maintainer-approved start-admission defaults plus 2026-10-29 total-live-server budget policy | **active — daemon-wide live-child budget and local lifecycle tests implemented; exact-head CI, Linux constrained-process qualification, Desktop E2E, and closure record remain. Automatic idle retirement is explicitly not required; saturation refuses promptly without evicting attached servers** |
+| M006 | infrastructure/polish | Opt-in bounded LSP process admission, canonical worktree/config/profile identity and qualified lifecycle/resource evidence | Maintainer-approved start-admission defaults plus 2026-10-29 total-live-server budget policy | **closed — daemon-wide live-child budget and lifecycle qualification; exact-head CI 40953681531, Linux process/IPC qualification 40953681698, and Desktop E2E 40953681191 passed at `e75ff289c62672640593b4bdafb4fd618b7ac533`; closure: `plans/closure/daemon-lsp-frontend-convergence/006-status.md`. Automatic idle retirement is not required; saturation refuses without evicting attached servers** |
 
 Milestone plans: `plans/implementation/daemon-lsp-frontend-convergence/001-shared-lsp-client-coordination.md` through `006-worktree-aware-lsp-process-admission.md`. M003 and M004 are an implementation continuation of desktop M007-F, NOT a second command-catalog workstream. M005 coordinates with Helix M014 rather than duplicating its bindings.
 
-Execution order: M001–M005 are closed; M006's required opt-in total-live-server count budget is implemented and locally lifecycle-qualified, with exact-head hosted gates and its closure record outstanding. Existing configured bounds cover concurrent/admitted starts and, when opted in, daemon-wide live children; they do not bound memory, CPU or disk. Automatic idle retirement is out of M006 scope; a full budget returns an immediate typed saturation outcome without evicting an attached server. Broader Helix M014 syntax-node text objects remain separate from M005's closed bounded structural-selection slice and do not block M006.
+Execution order: M001–M006 are closed. Existing configured bounds cover concurrent/admitted starts and, when opted in, daemon-wide live children; they do not bound memory, CPU or disk. Automatic idle retirement is out of M006 scope; a full budget returns an immediate typed saturation outcome without evicting an attached server. Broader Helix M014 syntax-node text objects remain separate from M005's closed bounded structural-selection slice and do not reopen M006.
 
 ## 5. User-visible completion
 

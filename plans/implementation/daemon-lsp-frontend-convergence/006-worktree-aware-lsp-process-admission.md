@@ -1,6 +1,6 @@
 # M006 — Daemon LSP Process Budgets, Worktree Identity and Retirement
 
-Status: active — the opt-in daemon-wide live-child count budget is implemented and lifecycle-qualified locally; exact-head hosted qualification and closure record remain. Bounded start-admission defaults were accepted 2026-10-28; automatic idle retirement is not required.
+Status: closed — the opt-in daemon-wide live-child count budget is implemented and lifecycle-qualified locally and on exact-head hosted gates. See `plans/closure/daemon-lsp-frontend-convergence/006-status.md`. Bounded start-admission defaults were accepted 2026-10-28; automatic idle retirement is not required.
 
 Primary class: infrastructure/polish.
 
@@ -106,15 +106,18 @@ does not stop or evict an attached server. The root error maps this refusal to
 HTTP 429. With no configured `max_live_servers`, existing unbounded live-child
 behavior remains.
 
-Local lifecycle coverage now includes concurrent FullHost/constrained-scope
+Lifecycle coverage includes concurrent FullHost/constrained-scope
 launcher competition at a one-child limit, immediate typed refusal, launch
 cancellation before a child is returned, cancellation after a child starts,
 crash exit/reap, overlapping restart generations, and daemon shutdown/reap.
 The focused `egglsp` lifecycle unit group passed (6/6); production stdio tests
 for after-spawn cancellation and shutdown passed (2/2). These tests establish
 count ownership and cleanup behavior, not a portable RSS/CPU bound. Exact-head
-hosted CI, Linux M004 process/IPC and restricted-userns qualification, Desktop
-E2E, and the root quick gate remain required before M006 can be marked closed.
+hosted CI (40953681531), Linux M004 process/IPC and restricted-userns
+qualification (40953681698), and Desktop E2E (40953681191) all passed at
+`e75ff289c62672640593b4bdafb4fd618b7ac533`. The closure record contains the
+complete evidence matrix, platform limits, configuration semantics and
+remaining non-goals.
 
 The sustained workload provides two host-local observations but does not
 establish a universal RAM/CPU limit, separate native TUI/desktop/agent
@@ -123,9 +126,8 @@ remains explicitly unavailable because no filesystem-enforcement backend is
 registered. Automatic idle retirement is a recorded non-requirement for this
 milestone; services retain idle processes until scope teardown or authorized
 stop. M005's bounded structural-selection slice is closed separately; broader
-Helix M014 syntax-node text objects are outside M006 and do not block its
-closure.
+Helix M014 syntax-node text objects are outside M006 and do not reopen it.
 
 ## Non-goals / closure
 
-No globally shared LSP process across distinct roots or sandbox profiles; no new language-server binary download policy, code execution from frontend, scheduler changes, build-cache reconfiguration, persistence schema or untrusted config overrides. Close only with approved admission policy, invariant/negative tests, benchmark evidence and no introduced cold-read stall. Closure `plans/closure/daemon-lsp-frontend-convergence/006-status.md` must contain exact configuration semantics, tests, platform matrix and known unqualified modes. If resource tracking would require a new host-agent service, defer to a separate roadmap instead of expanding this milestone.
+No globally shared LSP process across distinct roots or sandbox profiles; no new language-server binary download policy, code execution from frontend, scheduler changes, build-cache reconfiguration, persistence schema or untrusted config overrides. M006 is closed with approved admission policy, invariant/negative tests, benchmark evidence, no introduced cold-read stall and the closure record at `plans/closure/daemon-lsp-frontend-convergence/006-status.md`. If resource tracking would require a new host-agent service, defer to a separate roadmap instead of expanding this milestone.
