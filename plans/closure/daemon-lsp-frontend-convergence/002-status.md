@@ -273,3 +273,9 @@ instrumentation and plan records.
 
 M002 is reclosed. The old 280–306 ms key-to-paint values remain invalid and
 must not be used for comparisons.
+
+The corrective implementation head
+`f206acd0543d4bc626c9a8dc65e5c63ec6dd8a57` passed hosted CI run
+[40912531183](https://github.com/dbowm91/codegg/actions/runs/40912531183) and
+hosted Desktop E2E run
+[40912552091](https://github.com/dbowm91/codegg/actions/runs/40912552091).

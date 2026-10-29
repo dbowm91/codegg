@@ -48,6 +48,12 @@ and the doctest target passed (zero doctests). The final
 `scripts/verify.sh quick` passed, including formatting, generated assets, all
 guards, 392 Python harness tests (one skipped), and workspace all-target
 `cargo check`.
+On that same implementation head, hosted CI passed (run 40912531183), Linux
+M004 process/IPC and restricted-userns qualification passed (run 40912541817),
+and Desktop E2E passed (run 40912552091). The Linux lane exercised the
+daemon-owned constrained LSP duplex/procfs path and refusal under the
+restricted user-namespace policy; run receipts are linked from the multiworktree
+resource artifact.
 
 Admission semantics are intentionally narrower than total process budgeting:
 `max_concurrent_starts` bounds launches inside the launcher and
@@ -58,15 +64,14 @@ launch behavior remains. Do not describe these settings as an active-server,
 RAM, CPU or disk cap.
 
 The remaining gates are a true multi-editor-process/agent-substream workload,
-repeated p50/p95 plus sustained indexing/idle and disk observations, and native
-Linux M004 containment evidence on an exact hosted head. Windows constrained
-LSP remains unavailable because no filesystem-enforcement backend is
-registered. Normal service shutdown is process-exit qualified; no idle
-retirement policy was selected or implemented, and servers remain alive until
-their owning service/scope shuts down. M006 remains active until the closure
-record either qualifies the approved scope with these limits explicit or a
-maintainer resolves whether a total-live-resource budget/idle-retirement policy
-is required.
+repeated p50/p95 plus sustained indexing/idle and disk observations, and the
+Windows constrained-LSP boundary (which remains unavailable because no
+filesystem-enforcement backend is registered). Normal service shutdown is
+process-exit qualified; no idle retirement policy was selected or implemented,
+and servers remain alive until their owning service/scope shuts down. M006
+remains active until the closure record either qualifies the approved scope
+with these limits explicit or a maintainer resolves whether a total-live-resource
+budget/idle-retirement policy is required.
 
 ## Non-goals / closure
 

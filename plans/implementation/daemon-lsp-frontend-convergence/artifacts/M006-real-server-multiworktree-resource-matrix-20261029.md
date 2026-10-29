@@ -65,12 +65,32 @@ rust-analyzer; the process-count and teardown assertions remained stable.
 - Production `configured_service` applies the optional `lsp_process_admission` config. Omission preserves the historical direct launcher, as accepted.
 - The matrix's `2/8` setting qualifies starts under three-root parallel acquisition, not a total process or memory budget.
 
+## Exact-head hosted platform qualification
+
+On implementation commit `f206acd0543d4bc626c9a8dc65e5c63ec6dd8a57`:
+
+- Routine hosted CI passed as run
+  [40912531183](https://github.com/dbowm91/codegg/actions/runs/40912531183).
+- Linux M004 process/IPC qualification passed as run
+  [40912541817](https://github.com/dbowm91/codegg/actions/runs/40912541817).
+  Both `process-ipc` and `restricted-userns-fails-closed` succeeded, including
+  the daemon-owned constrained LSP duplex/procfs proof and the constrained LSP
+  launch refusal under the restricted user-namespace host policy. The unrelated
+  git-cost pilot was skipped.
+- Hosted Desktop E2E passed as run
+  [40912552091](https://github.com/dbowm91/codegg/actions/runs/40912552091).
+
+This discharges the current-head hosted Linux M004 containment gate and the
+desktop/CI qualification for this implementation head. It does not qualify
+real rust-analyzer/Pyright resource use on Linux or create a total live-server
+budget.
+
 ## Remaining closure gates
 
 1. **No live-process/resource cap is selected.** `max_admitted_starts` bounds starts, not ready processes, and this workstream has no approved RSS target or eviction rule. Attached editor servers must not be evicted. Keep this distinction explicit; do not present start admission as a cap on total resource use.
 2. **Retirement is only qualified at service shutdown.** No idle retirement policy or lease exists. A separate maintainer decision is needed before implementing idle retirement; if none is selected, closure must explicitly record that idle servers remain until service/scope teardown and narrow the objective accordingly.
-3. **Platform matrix is incomplete.** These real-server resource observations are macOS ARM64 only. Linux M004 host-process denial and contained LSP exchange need hosted exact-head evidence. Windows has no registered filesystem-enforcement backend, so constrained LSP launch must remain unavailable there; no Windows LSP resource qualification is claimed.
+3. **Platform matrix is incomplete.** These real-server resource observations are macOS ARM64 only. Linux M004 host-process denial and contained LSP exchange passed on the exact implementation head above. Windows has no registered filesystem-enforcement backend, so constrained LSP launch must remain unavailable there; no Windows LSP resource qualification is claimed.
 4. **Scale coverage remains bounded.** The real matrix covers one and three worktrees, one/two/four repeated same-root acquisitions, and one real server process per root. It does not launch four independent editor processes, model parallel agent substreams, measure disk impact, or report p50/p95 across repeated trials.
 5. **No long-duration sample.** The 2-second sample window captures a peak during startup/readiness/use, not sustained idle/indexing behavior or a representative workday. A future repeatable baseline would be needed before choosing resource budgets from these values.
 
-These observations establish real-server reuse/isolation and bounded-start behavior on this host. They do not establish general memory/CPU limits, retirement safety, Linux containment, or cross-platform qualification. M006 stays active until the accepted contract and closure conditions resolve the remaining gates.
+These observations establish real-server reuse/isolation and bounded-start behavior on macOS, plus the contained Linux process/IPC contract on the exact implementation head. They do not establish general memory/CPU limits, retirement safety, or Windows qualification. M006 stays active until the accepted contract and closure conditions resolve the remaining gates.

@@ -43,3 +43,10 @@ debounce, is in `plans/closure/daemon-lsp-frontend-convergence/002-status.md`.
 Root x86_64 linking also fails because the host has only ARM64 zlib, libiconv,
 and lzma libraries; explicit ARM64 `RUSTC` overrides build both daemon and
 desktop binaries.
+
+## Exact-head hosted requalification
+
+On commit `f206acd0543d4bc626c9a8dc65e5c63ec6dd8a57`, hosted Desktop E2E
+passed as run [40912552091](https://github.com/dbowm91/codegg/actions/runs/40912552091).
+Hosted CI also passed on the same exact head as run
+[40912531183](https://github.com/dbowm91/codegg/actions/runs/40912531183).
