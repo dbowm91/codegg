@@ -1,6 +1,6 @@
 # H006 — Job-Observable Sustained Corrective Qualification
 
-Status: **offline prerequisites and prior exact-head CI passed; two authorized live attempts failed qualification; the latest used 34/120 requests and ended after 10 minutes with an incomplete implementation and verifier errors; no live authorization remains**
+Status: **two authorized live attempts failed qualification; the latest ended after 10 minutes; transcript/verifier shape, async workload duration, and active-duration guard corrections now pass focused offline checks; no live authorization remains**
 
 Subsystem roadmap: `plans/subsystems/harness-lab-mainline-and-long-horizon-qualification-addendum.md`
 
@@ -33,7 +33,7 @@ If these prerequisites uncover a product defect, make the narrow corrective on t
 
 ## 4. Live authorization gate
 
-The first authorized H006 live attempt was consumed and failed because the binary bundle lacked `codegg-sandbox-helper`; its corrective preflight is now implemented and hosted-qualified. A second, separately authorized attempt ran on 2026-10-29 and is also consumed; it ended after 10 minutes, left a Rust syntax error, and did not observe an exact job ID while running. Before any further live attempt, resolve the transcript/verifier optional-job shape and the short-lived-job overlap gap, then obtain a new explicit approval that names:
+The first authorized H006 live attempt was consumed and failed because the binary bundle lacked `codegg-sandbox-helper`; its corrective preflight is now implemented and hosted-qualified. A second, separately authorized attempt ran on 2026-10-29 and is also consumed; it ended after 10 minutes, left a Rust syntax error, and did not observe an exact job ID while running. The transcript/verifier optional-job shape and short-lived-job overlap have focused offline corrections in §9 of the closure record. Before any further live attempt, review those corrections at exact head and obtain a new explicit approval that names:
 
 - `opencode_go` and the selected model route;
 - a hard provider-request ceiling that includes any fresh credential/catalog probes;
@@ -52,11 +52,11 @@ On approval, run one coherent native CodeGG session against the immutable H006 f
 
 - make progress through multiple dependent Rust stages;
 - submit a real CodeGG-owned asynchronous test/validation job and observe that exact job ID in `running` state;
-- continue meaningful downstream coding while that job remains active;
+- use the task-owned `ledger-index/tests/high_volume.rs` workload (24 deterministic passes of 500,000 records) as the background validation, and continue at least two meaningful downstream CLI source edits while it remains active;
 - wait on the same ID and observe a terminal status/result before using its evidence;
 - diagnose and repair two distinct seeded or naturally occurring failures;
 - survive the planned continuation/recovery boundary without losing task state or repeating already completed work;
-- reach at least 30 minutes of active session time and stop no later than 60 minutes.
+- reach at least 30 minutes of active session time, with observed tool activity spanning at least 30 minutes, and stop no later than 60 minutes. The runner records this as an explicit qualification condition; sleeps or idle time cannot qualify.
 
 The verifier checks stage outputs, both repair chains, exact job lifecycle ordering, continued work during the active interval, continuation state, event integrity, request/time/disk bounds, and cleanup. A failed or unreachable verifier, null/mismatched job status, cap uncertainty, insufficient active duration, or incomplete cleanup is a failed qualification, even if some source files compile.
 

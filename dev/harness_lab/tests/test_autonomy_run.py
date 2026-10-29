@@ -12,6 +12,7 @@ not by the unit suite.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import subprocess
 import tempfile
@@ -68,6 +69,84 @@ class BuildTranscriptTests(unittest.TestCase):
         self.assertEqual(transcript["terminal"], "completed")
         self.assertEqual(len(transcript["tool_calls"]), 2)
         self.assertEqual(transcript["tool_calls"][1]["status"], "failed")
+
+
+class H006VerifierTranscriptCompatibilityTests(unittest.TestCase):
+    def test_production_shaped_job_events_pass_the_unchanged_overlap_verifier(self) -> None:
+        suite = autonomy.load_autonomy_suite(
+            REPO_ROOT / "dev" / "harness_lab" / "fixtures" / "agent_autonomy_h005")
+        case = suite.case("sustained-event-ledger")
+        projector = autonomy_run._ToolCallProjector()
+
+        def call(call_id: str, title: str, action: str | None, start: int,
+                 finish: int, output: str) -> None:
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": start,
+                              "params": {"update": {
+                                  "sessionUpdate": "tool_call", "toolCallId": call_id,
+                                  "title": title, "codeggArgumentsSha256": "a" * 64,
+                                  "codeggAction": action,
+                              }}})
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": finish,
+                              "params": {"update": {
+                                  "sessionUpdate": "tool_call_update", "toolCallId": call_id,
+                                  "status": "completed", "rawOutput": output,
+                              }}})
+
+        call("read-1", "read", None, 10, 20, "Inline { output: README }\n")
+        call("submit-1", "test", "submit", 30, 40,
+             "Inline { output: job queued\njob_id: "
+             "74386df4-54d6-41eb-b2fc-0f52ade38983 }")
+        call("edit-1", "edit", None, 50, 60, "Inline { output: updated parser }")
+        call("edit-2", "apply_patch", None, 70, 80, "Inline { output: updated cli }")
+        call("status-1", "job", "status", 90, 100,
+             "Inline { output: job running\njob_id: "
+             "74386df4-54d6-41eb-b2fc-0f52ade38983 }")
+        call("terminal-1", "job", "wait", 110, 120,
+             "Inline { output: job completed\njob_id: "
+             "74386df4-54d6-41eb-b2fc-0f52ade38983 }")
+
+        tool_calls = projector.calls()
+        self.assertNotIn("job", tool_calls[0])
+        self.assertEqual(tool_calls[1]["job"]["action"], "submit")
+        self.assertEqual(tool_calls[4]["job"]["status"], "running")
+        self.assertEqual(tool_calls[5]["job"]["status"], "completed")
+        transcript = autonomy_run.build_transcript(
+            case, tool_calls, terminal="completed", stop_reason="end_turn")
+
+        with tempfile.TemporaryDirectory() as temp:
+            transcript_path = pathlib.Path(temp) / "TRANSCRIPT.json"
+            transcript_path.write_text(json.dumps(transcript), encoding="utf-8")
+            verifier_root = autonomy_run.case_root(REPO_ROOT, case.case_id) / "verifier"
+            environment = dict(os.environ)
+            environment[autonomy_run.CASE_ROOT_ENV] = str(
+                autonomy_run.case_root(REPO_ROOT, case.case_id))
+            environment[autonomy_run.TRANSCRIPT_ENV] = str(transcript_path)
+            checked = subprocess.run(
+                ["python3", "-m", "unittest", "-v",
+                 "test_event_ledger_contract.EventLedgerContract."
+                 "test_transcript_proves_real_job_overlap_and_continuation"],
+                cwd=verifier_root, env=environment, capture_output=True, text=True,
+                timeout=30, check=False)
+
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertIn("Ran 1 test", checked.stderr)
+        self.assertIn("OK", checked.stderr)
+
+    def test_h006_minimum_duration_is_a_hard_qualification_condition(self) -> None:
+        minimum = autonomy_run.H006_MIN_ACTIVE_DURATION_MS
+        self.assertFalse(autonomy_run._duration_qualified(
+            "sustained-event-ledger", minimum - 1,
+            [{"finished_elapsed_ms": 0}, {"finished_elapsed_ms": minimum}]))
+        self.assertFalse(autonomy_run._duration_qualified(
+            "sustained-event-ledger", minimum,
+            [{"finished_elapsed_ms": 0}, {"finished_elapsed_ms": minimum - 1}]))
+        self.assertFalse(autonomy_run._duration_qualified(
+            "sustained-event-ledger", minimum,
+            [{"finished_elapsed_ms": minimum}]))
+        self.assertTrue(autonomy_run._duration_qualified(
+            "sustained-event-ledger", minimum,
+            [{"finished_elapsed_ms": 0}, {"finished_elapsed_ms": minimum}]))
+        self.assertTrue(autonomy_run._duration_qualified("ordinary-case", 1, []))
 
 
 class H006DeadlineTests(unittest.TestCase):
