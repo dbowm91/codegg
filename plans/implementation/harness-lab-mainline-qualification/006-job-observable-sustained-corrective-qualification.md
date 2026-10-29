@@ -70,4 +70,4 @@ Stop before live startup if the new authorization is absent, cap configuration c
 
 H006 closes as sustained-qualified only when all offline prerequisites and live workload criteria pass with a complete sanitized receipt and exact-head hosted CI. The first and second live attempts are recorded as failed in `plans/closure/harness-lab-mainline-qualification/006-status.md` §§7–8; neither qualifies any live criterion. The second attempt confirms two repair cycles but fails the duration, running-job overlap, implementation, and verifier criteria. Any retry requires the named corrective work and fresh explicit authorization. A successful offline cap or projection test is infrastructure evidence; it is not sustained autonomous capability evidence.
 
-PR #211 can be reviewed and merged independently on its own exact-head hosted checks. H006 must use a separate branch and must not recast H005 as qualified.
+PRs #211 and #212 are merged; their offline work is integrated. H006's live qualification remains separate from H005 and must not recast H005 as qualified.
