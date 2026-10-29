@@ -43,7 +43,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Optional
 
-from . import autonomy, budget, event_observation, faults, scoring, supervisor
+from . import autonomy, budget, event_observation, faults, h007_results, scoring, supervisor
 
 from .autonomy import AutonomyCase, AutonomySuite, verify_isolation
 from .pilot import _prepare_lane_home, opencode_go_credential
@@ -69,9 +69,12 @@ ACP_PROTOCOL_VERSION = 1
 #: this explicitly instead of treating a missing verifier as a pass.
 VERIFIER_NOT_RUN = "not_run"
 H006_CASE_ID = "sustained-event-ledger"
+H007_CASE_ID = "build-provenance-catalog"
 H006_INSTALLATION_PREFLIGHT_TIMEOUT_SECONDS = 15.0
 H006_MIN_ACTIVE_DURATION_MS = 30 * 60 * 1000
 H006_MAX_ACTIVITY_GAP_MS = 5 * 60 * 1000
+H007_MIN_ACTIVE_DURATION_MS = H006_MIN_ACTIVE_DURATION_MS
+H007_MAX_ACTIVITY_GAP_MS = H006_MAX_ACTIVITY_GAP_MS
 
 __all__ = [
     "AUTONOMY_ROOT_RELPATH",
@@ -116,7 +119,8 @@ def build_transcript(case: AutonomyCase, tool_calls: list[dict[str, Any]], *,
     rather than left out.
     """
     return {
-        "schema_version": 3 if case.case_id == "sustained-event-ledger" else 1,
+        "schema_version": (3 if case.case_id == H006_CASE_ID else
+                           4 if case.case_id == H007_CASE_ID else 1),
         "case_id": case.case_id,
         "family": case.family,
         "group_id": case.group_id,
@@ -409,6 +413,50 @@ class _DiskFloorWatcher:
                 return
 
 
+class _ActivityStallWatcher:
+    """Cancel H007 if no ACP tool activity is observed within its stall bound."""
+
+    def __init__(self, client: AcpClient, session_id: str, stall_seconds: int, *,
+                 poll_seconds: float = 0.25) -> None:
+        self.client = client
+        self.session_id = session_id
+        self.stall_seconds = stall_seconds
+        self.poll_seconds = poll_seconds
+        self.stop_event = threading.Event()
+        self.thread: Optional[threading.Thread] = None
+        self.triggered = False
+        self.cancel_error: Optional[str] = None
+        self._last_activity = time.monotonic()
+        self._absorbed = 0
+
+    def start(self) -> None:
+        self.thread = threading.Thread(target=self._run, name="h007-activity-stall",
+                                       daemon=True)
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        if self.thread is not None:
+            self.thread.join(timeout=2.0)
+            self.thread = None
+
+    def _run(self) -> None:
+        while not self.stop_event.wait(self.poll_seconds):
+            notifications = self.client.notifications
+            for notification in notifications[self._absorbed:]:
+                if notification.get("method") == "session/update":
+                    self._last_activity = time.monotonic()
+                self._absorbed += 1
+            if time.monotonic() - self._last_activity < self.stall_seconds:
+                continue
+            self.triggered = True
+            try:
+                self.client.notify("session/cancel", {"sessionId": self.session_id})
+            except (HarnessError, OSError, BrokenPipeError) as error:
+                self.cancel_error = type(error).__name__
+            return
+
+
 def _observed_tool_calls(client: AcpClient) -> list[dict[str, Any]]:
     """Return the observed tool calls in order.
 
@@ -548,7 +596,7 @@ def _turn_timeout(case_id: str, requested_timeout: float, case_timeout: float,
     """Bound one agent turn while reserving enough time for its verifier."""
     if remaining_seconds is None:
         return min(requested_timeout, case_timeout)
-    if case_id == H006_CASE_ID:
+    if case_id in {H006_CASE_ID, H007_CASE_ID}:
         # H006 requires at least 30 minutes of active agent work. A generic
         # per-case share (one third) made that impossible under its one-hour
         # authorization. Reserve five minutes for teardown and verification.
@@ -562,7 +610,7 @@ def _turn_timeout(case_id: str, requested_timeout: float, case_timeout: float,
 def _verifier_timeout(case_id: str, turn_timeout: float,
                       remaining_seconds: Optional[float]) -> float:
     """Keep H006's independent verifier inside the remaining hard deadline."""
-    if case_id != H006_CASE_ID or remaining_seconds is None:
+    if case_id not in {H006_CASE_ID, H007_CASE_ID} or remaining_seconds is None:
         return turn_timeout
     return min(turn_timeout, max(1.0, remaining_seconds))
 
@@ -570,7 +618,7 @@ def _verifier_timeout(case_id: str, turn_timeout: float,
 def _duration_qualified(case_id: str, duration_ms: int,
                         tool_calls: list[dict[str, Any]]) -> bool:
     """Require sustained H006 activity through its declared 30-minute minimum."""
-    if case_id != H006_CASE_ID:
+    if case_id not in {H006_CASE_ID, H007_CASE_ID}:
         return True
     activity_times = _activity_elapsed_ms(tool_calls)
     finished_times = [
@@ -586,10 +634,14 @@ def _duration_qualified(case_id: str, duration_ms: int,
         (later - earlier for earlier, later in zip(activity_times, activity_times[1:])),
         default=0,
     )
-    return duration_ms >= H006_MIN_ACTIVE_DURATION_MS \
-        and max(finished_times) >= H006_MIN_ACTIVE_DURATION_MS \
-        and active_work_span_ms >= H006_MIN_ACTIVE_DURATION_MS \
-        and maximum_activity_gap_ms <= H006_MAX_ACTIVITY_GAP_MS
+    minimum = (H007_MIN_ACTIVE_DURATION_MS if case_id == H007_CASE_ID
+               else H006_MIN_ACTIVE_DURATION_MS)
+    maximum_gap = (H007_MAX_ACTIVITY_GAP_MS if case_id == H007_CASE_ID
+                   else H006_MAX_ACTIVITY_GAP_MS)
+    return duration_ms >= minimum \
+        and max(finished_times) >= minimum \
+        and active_work_span_ms >= minimum \
+        and maximum_activity_gap_ms <= maximum_gap
 
 
 def _activity_elapsed_ms(tool_calls: list[dict[str, Any]]) -> list[int]:
@@ -609,6 +661,41 @@ def _active_work_span_ms(tool_calls: list[dict[str, Any]]) -> int:
         if isinstance(call.get("finished_elapsed_ms"), int)
     ]
     return max(activity_times) - min(activity_times) if activity_times else 0
+
+
+def _h007_repair_cycles(tool_calls: list[dict[str, Any]]) -> int:
+    """Count distinct failed test jobs followed by later successful test jobs."""
+    submitted: list[tuple[int, str]] = []
+    terminal_by_id: dict[str, tuple[int, str]] = {}
+    for index, call in enumerate(tool_calls):
+        job = call.get("job")
+        if not isinstance(job, dict) or not isinstance(job.get("job_id"), str):
+            continue
+        job_id = job["job_id"]
+        if call.get("tool") == "test" and job.get("action") == "submit":
+            submitted.append((index, job_id))
+        if job.get("status") in {"completed", "failed", "cancelled", "timed_out"}:
+            terminal_by_id[job_id] = (index, job["status"])
+    failed_indices = [terminal_by_id[job_id][0] for _submitted_at, job_id in submitted
+                      if job_id in terminal_by_id and terminal_by_id[job_id][1] == "failed"]
+    successful_indices = [terminal_by_id[job_id][0] for _submitted_at, job_id in submitted
+                          if job_id in terminal_by_id and terminal_by_id[job_id][1] == "completed"]
+    return sum(any(success_at > failed_at for success_at in successful_indices)
+               for failed_at in sorted(failed_indices))
+
+
+def _h007_continuation_confirmed(tool_calls: list[dict[str, Any]]) -> bool:
+    """Require productive agent work after a submitted test reaches terminal."""
+    terminal_indices = [index for index, call in enumerate(tool_calls)
+                        if isinstance(call.get("job"), dict)
+                        and call["job"].get("status") in
+                        {"completed", "failed", "cancelled", "timed_out"}]
+    if not terminal_indices:
+        return False
+    last_terminal = max(terminal_indices)
+    return any(index > last_terminal and call.get("tool") in
+               {"write", "edit", "apply_patch", "bash", "test"}
+               for index, call in enumerate(tool_calls))
 
 
 def _provider_request_admissions(stderr_path: Path) -> Optional[int]:
@@ -815,7 +902,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     """
     if "/" not in model:
         raise HarnessError("model must be a provider/model composite")
-    if case.case_id == "sustained-event-ledger":
+    if case.case_id == H006_CASE_ID:
         if budget_policy.max_provider_requests is None:
             raise HarnessError("H006 sustained qualification requires an explicit provider request cap")
         if model != "opencode_go/muse-spark-1.3-contributor":
@@ -824,6 +911,20 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
             raise HarnessError("H005 timeout must be positive and no greater than 3600 seconds")
         if min_free_disk_bytes != 10 * 1024**3:
             raise HarnessError("H005 requires the approved 10 GiB free-disk floor")
+    elif case.case_id == H007_CASE_ID:
+        if budget_policy.max_provider_requests is None:
+            raise HarnessError("H007 requires a fresh explicit provider request cap")
+        if budget_policy.max_provider_requests > int(case.budget["max_provider_requests"]):
+            raise HarnessError("H007 provider request cap exceeds its frozen 60-request ceiling")
+        if budget_policy.max_wallclock_seconds is None \
+                or budget_policy.max_wallclock_seconds > 3600:
+            raise HarnessError("H007 requires an explicit wall-clock cap no greater than 3600 seconds")
+        if model != "opencode_go/muse-spark-1.3-contributor":
+            raise HarnessError("H007 is scoped to opencode_go/muse-spark-1.3-contributor")
+        if timeout <= 0 or timeout > 3600:
+            raise HarnessError("H007 timeout must be positive and no greater than 3600 seconds")
+        if min_free_disk_bytes is None or min_free_disk_bytes < 10 * 1024**3:
+            raise HarnessError("H007 requires an explicit free-disk floor of at least 10 GiB")
     elif min_free_disk_bytes is not None and min_free_disk_bytes <= 0:
         raise HarnessError("minimum free disk bytes must be a positive integer")
     if profile not in {"full-host", "workspace-write"}:
@@ -861,7 +962,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     if min_free_disk_bytes is not None and initial_free_bytes is not None \
             and initial_free_bytes < min_free_disk_bytes:
         raise HarnessError("free disk is below the required floor; refusing the live case")
-    if case.case_id == H006_CASE_ID:
+    if case.case_id in {H006_CASE_ID, H007_CASE_ID}:
         # Check required managed runfiles before budget reservation or ACP startup.
         binary = _preflight_h006_binary(binary)
     case_seconds = float(case.budget["max_wallclock_seconds"])
@@ -900,10 +1001,15 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     private_root.mkdir(parents=True, exist_ok=True)
     _copy_tree(source / "fixture", fixture_destination)
     _copy_tree(source / "verifier", private_root / "verifier")
-    if case.case_id == "sustained-event-ledger":
+    if case.case_id == H006_CASE_ID:
         metadata = repository / "dev/harness_lab/fixtures/sustained_event_ledger.case.json"
         if not metadata.is_file():
             raise HarnessError("the H005 frozen case metadata is missing")
+        shutil.copy2(metadata, private_root / "case-metadata.json")
+    elif case.case_id == H007_CASE_ID:
+        metadata = repository / "dev/harness_lab/fixtures/build_provenance_catalog.case.json"
+        if not metadata.is_file():
+            raise HarnessError("the H007 frozen case metadata is missing")
         shutil.copy2(metadata, private_root / "case-metadata.json")
     if case.family == "delegation":
         # Managed placement requires a real repository identity. Initialize a
@@ -980,6 +1086,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     policy_receipt: Any = None
     watcher: Optional[_FaultWatcher] = None
     disk_watcher: Optional[_DiskFloorWatcher] = None
+    stall_watcher: Optional[_ActivityStallWatcher] = None
     infrastructure_watcher: Optional[_H006InfrastructureFailureWatcher] = None
     resource_sampler: Optional[_ProcessTreeSampler] = None
     process_resources: Optional[dict[str, Any]] = None
@@ -995,7 +1102,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
             raise HarnessError("ACP did not return a session id for the autonomy case")
         resource_sampler = _ProcessTreeSampler(client.process.pid)
         policy_receipt = opened.get("codeggPolicy")
-        if case.case_id == H006_CASE_ID:
+        if case.case_id in {H006_CASE_ID, H007_CASE_ID}:
             infrastructure_watcher = _H006InfrastructureFailureWatcher(client, session_id)
             infrastructure_watcher.start()
         if fault_spec is not None:
@@ -1014,6 +1121,10 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
                 failure = {"kind": "DiskFloor", "category": "infrastructure_error",
                            "usage_reason": disk_watcher.error or "minimum_free_space_breached"}
                 raise HarnessError("disk floor unavailable or already breached")
+        if case.case_id == H007_CASE_ID:
+            stall_watcher = _ActivityStallWatcher(
+                client, session_id, int(case.abort["stall_seconds"]))
+            stall_watcher.start()
         result = client.request("session/prompt", {
             "sessionId": session_id,
             "model": model,
@@ -1033,6 +1144,8 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     finally:
         if disk_watcher is not None:
             disk_watcher.stop()
+        if stall_watcher is not None:
+            stall_watcher.stop()
         if watcher is not None:
             watcher.stop()
         try:
@@ -1168,10 +1281,32 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     )
     duration_qualified = _duration_qualified(case.case_id, duration_ms, tool_calls)
     solved = bool(verifier_confirmed and terminal == "completed" and not case.protected
-                  and duration_qualified)
+                  and (case.case_id == H007_CASE_ID or duration_qualified))
+
+    h007_projection = None
+    if case.case_id == H007_CASE_ID:
+        repair_cycles = _h007_repair_cycles(tool_calls)
+        continuation_confirmed = _h007_continuation_confirmed(tool_calls)
+        h007_projection = h007_results.project_result(
+            terminal=terminal,
+            verifier_ran=verification.get("exit_code") is not None,
+            verifier_exit_code=verification.get("exit_code"),
+            duration_ms=duration_ms,
+            tool_calls=tool_calls,
+            measurement_complete=(terminal == "completed"
+                                 and verification.get("exit_code") is not None
+                                 and observation_receipt.get("event_gap_count") == 0
+                                 and all(call.get("status") != "unknown"
+                                         for call in tool_calls)),
+            continuation_confirmed=continuation_confirmed,
+            repair_cycles=repair_cycles,
+            protected=case.protected,
+        )
+        solved = h007_projection["task_outcome"] == "passed"
 
     receipt: dict[str, Any] = {
-        "schema_version": 3 if case.case_id == "sustained-event-ledger" else 1,
+        "schema_version": (3 if case.case_id == H006_CASE_ID else
+                           4 if case.case_id == H007_CASE_ID else 1),
         "case_id": case.case_id,
         "family": case.family,
         "group_id": case.group_id,
@@ -1246,6 +1381,22 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
                                      if isinstance(call.get("started_elapsed_ms"), int)
                                      and isinstance(call.get("finished_elapsed_ms"), int)),
         }
+    if h007_projection is not None:
+        receipt.update(h007_projection)
+        receipt["activity_stall"] = {
+            "stall_limit_seconds": stall_watcher.stall_seconds if stall_watcher else None,
+            "triggered": stall_watcher.triggered if stall_watcher else False,
+            "cancel_error": stall_watcher.cancel_error if stall_watcher else None,
+        }
+        receipt["cost_outcome"] = (
+            "reported" if isinstance((usage or {}).get("provider_allowance_usd"), (int, float))
+            else "unknown"
+        )
+        metadata_path = repository / "dev/harness_lab/fixtures/build_provenance_catalog.case.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        receipt["fixture_metadata_sha256"] = hashlib.sha256(metadata_path.read_bytes()).hexdigest()
+        receipt["manifest_sha256"] = metadata["manifest_sha256"]
+        receipt["hidden_verifier_sha256"] = metadata["hidden_verifier_sha256"]
     if failure is not None:
         receipt["terminal_failure"] = failure
     else:
@@ -1297,11 +1448,16 @@ def run_suite(binary: Path, suite: AutonomySuite, model: str, *,
             receipt = {"case_id": case_id, "terminal": "refused", "ok": False,
                        "error": str(error), "solved": False, "protected": case.protected}
         runs.append(receipt)
-    return {"schema_version": 1, "model": model,
-            "binary_sha256": runs[0].get("binary_sha256") if runs else None,
-            "case_ids": list(case_ids), "runs": runs,
-            "budget": guard.as_dict(),
-            "solved_cases": sum(1 for run in runs if run.get("solved"))}
+    h007_runs = [run for run in runs if run.get("case_id") == H007_CASE_ID
+                 and "task_outcome" in run]
+    result = {"schema_version": 1, "model": model,
+              "binary_sha256": runs[0].get("binary_sha256") if runs else None,
+              "case_ids": list(case_ids), "runs": runs,
+              "budget": guard.as_dict(),
+              "solved_cases": sum(1 for run in runs if run.get("solved"))}
+    if h007_runs:
+        result["h007_outcomes"] = h007_results.summarize_h007(h007_runs)
+    return result
 
 
 def run_paired_comparison(baseline_binary: Path, candidate_binary: Path,
@@ -1380,7 +1536,13 @@ def run_paired_comparison(baseline_binary: Path, candidate_binary: Path,
             os.fsync(checkpoint.fileno())
     comparison = compare_runs(scoring.default_contract(), sides["baseline"],
                               sides["candidate"])
-    return {"schema_version": 1, "model": model, "seed": seed,
+    h007_outcomes = {
+        arm: h007_results.summarize_h007(
+            [run for run in sides[arm] if run.get("case_id") == H007_CASE_ID
+             and "task_outcome" in run])
+        for arm in ("baseline", "candidate")
+    }
+    result = {"schema_version": 1, "model": model, "seed": seed,
             "repetitions": repetitions, "case_ids": list(selected),
             "baseline_binary_sha256": sha256_file(baseline_binary),
             "candidate_binary_sha256": sha256_file(candidate_binary),
@@ -1388,6 +1550,9 @@ def run_paired_comparison(baseline_binary: Path, candidate_binary: Path,
             "baseline": {"runs": sides["baseline"]},
             "candidate": {"runs": sides["candidate"]},
             "comparison": comparison, "budget": guard.as_dict()}
+    if any(run.get("case_id") == H007_CASE_ID for arm in sides.values() for run in arm):
+        result["h007_outcomes"] = h007_outcomes
+    return result
 
 
 def resume_paired_comparison(checkpoint_path: Path, baseline_binary: Path,
@@ -1479,14 +1644,21 @@ def resume_paired_comparison(checkpoint_path: Path, baseline_binary: Path,
     comparison = compare_runs(scoring.default_contract(), sides["baseline"],
                               sides["candidate"])
     cumulative_allowance = prior_allowance_usd + guard.cost_usd
-    return {"schema_version": 1, "model": model, "seed": seed,
+    h007_outcomes = {
+        arm: h007_results.summarize_h007(
+            [run for run in sides[arm] if run.get("case_id") == H007_CASE_ID
+             and "task_outcome" in run])
+        for arm in ("baseline", "candidate")
+    }
+    result = {"schema_version": 1, "model": model, "seed": seed,
             "repetitions": repetitions, "case_ids": selected,
             "baseline_binary_sha256": baseline_hash,
             "candidate_binary_sha256": candidate_hash,
             "schedule": final_schedule,
             "baseline": {"runs": sides["baseline"]},
             "candidate": {"runs": sides["candidate"]},
-            "comparison": comparison, "budget": guard.as_dict(),
+            "comparison": comparison,
+            "budget": guard.as_dict(),
             "resumption": {"resumed_trials": resumed,
                            "source_checkpoint": str(checkpoint_path),
                            "prior_provider_requests": prior_provider_requests,
@@ -1497,6 +1669,9 @@ def resume_paired_comparison(checkpoint_path: Path, baseline_binary: Path,
                            "cumulative_allowance_usd": cumulative_allowance,
                            "cumulative_elapsed_seconds":
                                prior_elapsed_seconds + guard.as_dict()["elapsed_seconds"]}}
+    if any(run.get("case_id") == H007_CASE_ID for arm in sides.values() for run in arm):
+        result["h007_outcomes"] = h007_outcomes
+    return result
 
 
 def paired_schedule(case_ids: list[str], repetitions: int, seed: int) -> list[dict[str, Any]]:

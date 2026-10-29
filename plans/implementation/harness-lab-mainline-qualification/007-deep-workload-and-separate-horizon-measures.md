@@ -1,6 +1,6 @@
 # H007 — Deep Rust Workload and Separate Horizon Measures
 
-Status: ready for handoff
+Status: implementation complete; exact-head hosted CI pending. Sustained live qualification is not claimed.
 
 Repository baseline: `origin/main` at `f3c0a9e2e9903bb097d8bf56641138e03d964eb7` (H006 corrective PR #216 merged)
 
