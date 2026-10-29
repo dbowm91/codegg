@@ -1,6 +1,6 @@
 # H007 — Deep Rust Workload and Separate Horizon Measures
 
-Status: implementation complete; exact-head hosted CI pending. Sustained live qualification is not claimed.
+Status: complete for offline workload calibration. Sustained live qualification is not claimed and requires fresh explicit authorization.
 
 Repository baseline: `origin/main` at `f3c0a9e2e9903bb097d8bf56641138e03d964eb7` (H006 corrective PR #216 merged)
 
