@@ -70,6 +70,8 @@ ACP_PROTOCOL_VERSION = 1
 VERIFIER_NOT_RUN = "not_run"
 H006_CASE_ID = "sustained-event-ledger"
 H006_INSTALLATION_PREFLIGHT_TIMEOUT_SECONDS = 15.0
+H006_MIN_ACTIVE_DURATION_MS = 30 * 60 * 1000
+H006_MAX_ACTIVITY_GAP_MS = 5 * 60 * 1000
 
 __all__ = [
     "AUTONOMY_ROOT_RELPATH",
@@ -217,11 +219,23 @@ class _ToolCallProjector:
                 "status": self._finished.get(call_id, "unknown"),
                 "started_elapsed_ms": started.get("started_elapsed_ms"),
                 "finished_elapsed_ms": self._elapsed.get(call_id),
-                "job": self._job.get(call_id),
                 # ACP terminal status is typed evidence. Error-like output text
                 # may be ordinary file content and never changes the outcome.
                 "failed": self._finished.get(call_id) == faults.STATUS_FAILED,
             }
+            job = self._job.get(call_id)
+            if job is not None:
+                # The verifier treats an omitted job field as an empty mapping.
+                # Preserve that shape for non-job tools; job/test calls with
+                # unrecognized output still carry explicit null metadata.
+                call["job"] = job
+            elif started["tool"] in {"job", "test"}:
+                call["job"] = {
+                    "job_id": None,
+                    "action": started.get("action")
+                    or ("submit" if started["tool"] == "test" else "unknown"),
+                    "status": None,
+                }
             if started["task_placement"] is not None:
                 call["task_placement"] = started["task_placement"]
             if call_id in self._placement_accepted:
@@ -529,6 +543,74 @@ def _run_verifier(command: list[str], cwd: Path, env: dict[str, str],
             "output_tail": tail, "tests_run": tests_run, "failure_summary": failure_summary}
 
 
+def _turn_timeout(case_id: str, requested_timeout: float, case_timeout: float,
+                  remaining_seconds: Optional[float]) -> float:
+    """Bound one agent turn while reserving enough time for its verifier."""
+    if remaining_seconds is None:
+        return min(requested_timeout, case_timeout)
+    if case_id == H006_CASE_ID:
+        # H006 requires at least 30 minutes of active agent work. A generic
+        # per-case share (one third) made that impossible under its one-hour
+        # authorization. Reserve five minutes for teardown and verification.
+        available = max(1.0, remaining_seconds - 300.0)
+    else:
+        # Divide suite time across the turn, verifier, lane setup, and cleanup.
+        available = max(1.0, remaining_seconds / 3.0)
+    return min(requested_timeout, case_timeout, available)
+
+
+def _verifier_timeout(case_id: str, turn_timeout: float,
+                      remaining_seconds: Optional[float]) -> float:
+    """Keep H006's independent verifier inside the remaining hard deadline."""
+    if case_id != H006_CASE_ID or remaining_seconds is None:
+        return turn_timeout
+    return min(turn_timeout, max(1.0, remaining_seconds))
+
+
+def _duration_qualified(case_id: str, duration_ms: int,
+                        tool_calls: list[dict[str, Any]]) -> bool:
+    """Require sustained H006 activity through its declared 30-minute minimum."""
+    if case_id != H006_CASE_ID:
+        return True
+    activity_times = _activity_elapsed_ms(tool_calls)
+    finished_times = [
+        call["finished_elapsed_ms"] for call in tool_calls
+        if isinstance(call.get("finished_elapsed_ms"), int)
+    ]
+    if not activity_times or not finished_times:
+        return False
+    first_activity_ms = min(activity_times)
+    last_activity_ms = max(activity_times)
+    active_work_span_ms = last_activity_ms - first_activity_ms
+    maximum_activity_gap_ms = max(
+        (later - earlier for earlier, later in zip(activity_times, activity_times[1:])),
+        default=0,
+    )
+    return duration_ms >= H006_MIN_ACTIVE_DURATION_MS \
+        and max(finished_times) >= H006_MIN_ACTIVE_DURATION_MS \
+        and active_work_span_ms >= H006_MIN_ACTIVE_DURATION_MS \
+        and maximum_activity_gap_ms <= H006_MAX_ACTIVITY_GAP_MS
+
+
+def _activity_elapsed_ms(tool_calls: list[dict[str, Any]]) -> list[int]:
+    """Return sorted start/finish observations for the session's projected tool calls."""
+    return sorted(
+        elapsed_ms
+        for call in tool_calls
+        for elapsed_ms in (call.get("started_elapsed_ms"), call.get("finished_elapsed_ms"))
+        if isinstance(elapsed_ms, int) and not isinstance(elapsed_ms, bool)
+    )
+
+
+def _active_work_span_ms(tool_calls: list[dict[str, Any]]) -> int:
+    """Return the elapsed span between the first and last observed tool calls."""
+    activity_times = [
+        call.get("finished_elapsed_ms") for call in tool_calls
+        if isinstance(call.get("finished_elapsed_ms"), int)
+    ]
+    return max(activity_times) - min(activity_times) if activity_times else 0
+
+
 def _provider_request_admissions(stderr_path: Path) -> Optional[int]:
     """Count safe provider-boundary request admissions from JSONL or CodeGG logs."""
     try:
@@ -782,13 +864,9 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     if case.case_id == H006_CASE_ID:
         # Check required managed runfiles before budget reservation or ACP startup.
         binary = _preflight_h006_binary(binary)
-    remaining_seconds = guard.remaining_wallclock_seconds()
     case_seconds = float(case.budget["max_wallclock_seconds"])
-    if remaining_seconds is not None:
-        # Leave time for the turn, verifier, lane setup, and cleanup.
-        timeout = min(timeout, case_seconds, max(1.0, remaining_seconds / 3.0))
-    else:
-        timeout = min(timeout, case_seconds)
+    timeout = _turn_timeout(case.case_id, timeout, case_seconds,
+                             guard.remaining_wallclock_seconds())
 
     disk_before_bytes = _directory_size_bytes(lane_root)
     supervisor.private_dir(lane_root)
@@ -1030,8 +1108,10 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     verifier_env = dict(os.environ)
     verifier_env[CASE_ROOT_ENV] = str(agent_root)
     verifier_env[TRANSCRIPT_ENV] = str(transcript_path)
+    verifier_timeout = _verifier_timeout(
+        case.case_id, timeout, guard.remaining_wallclock_seconds())
     verification = _run_verifier(list(case.verifier["command"]), private_root,
-                                 verifier_env, timeout)
+                                 verifier_env, verifier_timeout)
 
     raw_usage = result.get("codeggUsage") if isinstance(result, dict) else None
     usage = None
@@ -1074,7 +1154,21 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     # A protected control is never a solved task. Its task is impossible by
     # construction, so "solved" would only ever mean "the harness credited an
     # impossible task" — and the control must never count toward a score.
-    solved = bool(verifier_confirmed and terminal == "completed" and not case.protected)
+    activity_times = [
+        call.get("finished_elapsed_ms") for call in tool_calls
+        if isinstance(call.get("finished_elapsed_ms"), int)
+    ]
+    first_activity_elapsed_ms = min(activity_times) if activity_times else None
+    last_activity_elapsed_ms = max(activity_times) if activity_times else None
+    active_work_span_ms = _active_work_span_ms(tool_calls)
+    activity_times = _activity_elapsed_ms(tool_calls)
+    maximum_activity_gap_ms = max(
+        (later - earlier for earlier, later in zip(activity_times, activity_times[1:])),
+        default=0,
+    )
+    duration_qualified = _duration_qualified(case.case_id, duration_ms, tool_calls)
+    solved = bool(verifier_confirmed and terminal == "completed" and not case.protected
+                  and duration_qualified)
 
     receipt: dict[str, Any] = {
         "schema_version": 3 if case.case_id == "sustained-event-ledger" else 1,
@@ -1093,6 +1187,14 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         "agent_terminal": agent_terminal,
         "stop_reason": stop_reason,
         "duration_ms": duration_ms,
+        "duration_qualified": duration_qualified,
+        "first_activity_elapsed_ms": first_activity_elapsed_ms,
+        "last_activity_elapsed_ms": last_activity_elapsed_ms,
+        "active_work_span_ms": active_work_span_ms,
+        "minimum_active_duration_ms": (H006_MIN_ACTIVE_DURATION_MS
+                                        if case.case_id == H006_CASE_ID else None),
+        "maximum_activity_gap_ms": (maximum_activity_gap_ms
+                                    if case.case_id == H006_CASE_ID else None),
         "disk_floor": None if disk_watcher is None else {
             "minimum_free_bytes": min_free_disk_bytes,
             "last_free_bytes": disk_watcher.free_bytes,

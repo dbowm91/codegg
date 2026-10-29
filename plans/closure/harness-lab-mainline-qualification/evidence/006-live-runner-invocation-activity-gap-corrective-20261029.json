@@ -1,0 +1,56 @@
+{
+  "authorization": "Fresh authorization from user message: looks good; go ahead with the live attempt.",
+  "binary": "/tmp/h006-qualification-pinned-target/aarch64-apple-darwin/debug/codegg",
+  "binary_sha256": "6e678fa37bfc03cde22b288997a4dc6db305d8d769be2fe0b076cc65751696bf",
+  "branch": "plans/h006-live-qualification-20261029",
+  "case": "sustained-event-ledger",
+  "cost_observable": false,
+  "hard_wallclock_seconds": 3600,
+  "lane_root": "/Users/davidbowman/.codegg-harness-lanes/h6-20261029a",
+  "lane_root_created_private_before_start": true,
+  "minimum_free_disk_bytes": 10737418240,
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "pre_start_free_disk_bytes": 271532904448,
+  "preflight_refusal_elapsed_seconds": 0.001,
+  "preflight_refusal_provider_requests": 0,
+  "preflight_refusal_reason": "lane parent missing; disk usage unavailable; runner refused before provider reservation or process startup",
+  "preflight_refusal_receipt": "plans/closure/harness-lab-mainline-qualification/evidence/006-live-preflight-refusal-activity-gap-corrective-20261029.json",
+  "preflight_refusals": [
+    {
+      "elapsed_seconds": 0.001,
+      "provider_requests": 0,
+      "reason": "lane parent missing; disk usage unavailable; refused before provider reservation or process startup",
+      "receipt": "plans/closure/harness-lab-mainline-qualification/evidence/006-live-preflight-refusal-activity-gap-corrective-20261029.json"
+    },
+    {
+      "elapsed_seconds": 0.0,
+      "provider_requests": 0,
+      "reason": "suite lane root missing; disk usage unavailable; refused before provider reservation or process startup",
+      "receipt": "plans/closure/harness-lab-mainline-qualification/evidence/006-live-preflight-refusal-case-parent-activity-gap-corrective-20261029.json"
+    },
+    {
+      "elapsed_seconds": null,
+      "provider_requests": 0,
+      "reason": "candidate long lane name would exceed the 96-byte native daemon socket path limit; rejected before runner startup"
+    }
+  ],
+  "provider_request_ceiling": 120,
+  "receipt": "plans/closure/harness-lab-mainline-qualification/evidence/006-live-attempt-activity-gap-corrective-20261029.json",
+  "rust_toolchain": "1.89-aarch64-apple-darwin",
+  "sandbox_helper": "/tmp/h006-qualification-pinned-target/aarch64-apple-darwin/debug/codegg-sandbox-helper",
+  "sandbox_helper_preflight": "present",
+  "sandbox_helper_sha256": "218f3e9781ecdf3c6b7a6d462cc8a098522293d55918530d348d6a583deef021",
+  "schema_version": 1,
+  "seatbelt_preflight": "available",
+  "source_commit": "acffcf3735b33fd0105b7f28422899c09121ba74",
+  "stop_conditions": [
+    "user cancellation",
+    "60-minute wall-clock cap",
+    "free disk below 10 GiB",
+    "provider request cap exhaustion or accounting uncertainty",
+    "unrecoverable daemon or job-state loss",
+    "submitted job ID or observed status mismatch"
+  ],
+  "target": "aarch64-apple-darwin",
+  "usd_cost_treatment": "actual billed USD cost will be recorded as unknown if unavailable; do not claim zero or infer it from provider allowance"
+}

@@ -1,0 +1,690 @@
+{
+  "binary_sha256": "c8ec65634b11d8bcb23340478b80de7b55a810a5396f78ee8c493f0f2f83729a",
+  "budget": {
+    "cost_source": "opencode_go_allowance_receipt",
+    "cost_usd": 0.017106,
+    "elapsed_seconds": 603.996,
+    "exhausted_cap": null,
+    "input_tokens": 48465,
+    "output_tokens": 1792,
+    "provider_requests": 34,
+    "total_tokens": 50257
+  },
+  "case_ids": [
+    "sustained-event-ledger"
+  ],
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "runs": [
+    {
+      "agent": "build",
+      "agent_terminal": "completed",
+      "attempt_id": "sustained-event-ledger:0",
+      "binary_sha256": "c8ec65634b11d8bcb23340478b80de7b55a810a5396f78ee8c493f0f2f83729a",
+      "budget": {
+        "cost_source": "opencode_go_allowance_receipt",
+        "cost_usd": 0.017106,
+        "elapsed_seconds": 603.994,
+        "exhausted_cap": null,
+        "input_tokens": 48465,
+        "output_tokens": 1792,
+        "provider_requests": 34,
+        "total_tokens": 50257
+      },
+      "case_id": "sustained-event-ledger",
+      "continuation_evidence": {
+        "job_observations": [
+          {
+            "action": "submit",
+            "job_id": "d1b9d308-a148-4a3f-9581-8018770cf8dc",
+            "status": null
+          },
+          {
+            "action": "submit",
+            "job_id": "c7d7fcb6-103c-427e-8dd2-8e599c34702c",
+            "status": null
+          },
+          {
+            "action": "submit",
+            "job_id": "622d803c-f2ab-4c5a-adac-5fc6cf084079",
+            "status": null
+          },
+          {
+            "action": "submit",
+            "job_id": "0e218590-a85f-429b-b320-5cff57808d38",
+            "status": null
+          },
+          {
+            "action": "submit",
+            "job_id": "db77e2cf-b895-494a-a48f-ddd5bb3918f5",
+            "status": null
+          },
+          {
+            "action": "status",
+            "job_id": "db77e2cf-b895-494a-a48f-ddd5bb3918f5",
+            "status": "completed"
+          },
+          {
+            "action": "submit",
+            "job_id": "1911c862-2328-461e-9efd-74588cdc5cc1",
+            "status": null
+          },
+          {
+            "action": "submit",
+            "job_id": "03b2257f-5d91-4e68-92a4-a0af34494343",
+            "status": null
+          },
+          {
+            "action": "status",
+            "job_id": "03b2257f-5d91-4e68-92a4-a0af34494343",
+            "status": "completed"
+          },
+          {
+            "action": "submit",
+            "job_id": "263a869e-285f-47ef-a0da-19e14b808826",
+            "status": null
+          },
+          {
+            "action": "status",
+            "job_id": "263a869e-285f-47ef-a0da-19e14b808826",
+            "status": "completed"
+          },
+          {
+            "action": "submit",
+            "job_id": "d060c27d-b690-402d-9d75-e1b4d7908f85",
+            "status": null
+          }
+        ],
+        "timed_tool_calls": 45
+      },
+      "control_exercised": false,
+      "daemon_stop_error": null,
+      "disk_floor": {
+        "last_free_bytes": 156925538304,
+        "lowest_observed_free_bytes": 154950729728,
+        "measurement_error": null,
+        "minimum_free_bytes": 10737418240,
+        "triggered": false
+      },
+      "duration_ms": 600432,
+      "event_gap": {
+        "event_gap_count": 0,
+        "event_gap_dropped": 0,
+        "event_gaps": [],
+        "event_observation_state": "observed_complete",
+        "tool_started_count": 45,
+        "tool_terminal_count": 45,
+        "tool_unpaired_start_count": 0
+      },
+      "family": "background_job",
+      "fault": null,
+      "fixture_metadata_sha256": "76f1bb49ec0e8947869e5398a53974b42db4ffa8a854222d6b7f983e2e66f232",
+      "group_id": "h005-multistage-ledger",
+      "lane_root": "/private/tmp/h006-live-20261029/lane/case00",
+      "measurement_failures": 0,
+      "measurement_retry_state": "not_needed",
+      "model": "opencode_go/muse-spark-1.3-contributor",
+      "placement_advisor_enabled": true,
+      "policy_receipt": {
+        "effective": {
+          "approvalMode": "yolo",
+          "revision": "1",
+          "sandbox": "workspace_write"
+        },
+        "requested": {
+          "approvalMode": "yolo",
+          "sandbox": "workspace_write"
+        }
+      },
+      "profile": "workspace-write",
+      "protected": false,
+      "provider_request_count": 34,
+      "provider_request_count_source": "codegg_provider_boundary_receipt",
+      "provider_usage": {
+        "cached_tokens": null,
+        "input_tokens": 48465,
+        "output_tokens": 1792,
+        "provider_allowance_usd": 0.017106,
+        "reasoning_tokens": null,
+        "turn_id": "turn-39e201bb-80f0-4de0-a97d-2ef7f8878615"
+      },
+      "repeated_identical_failure": false,
+      "resource_usage": {
+        "cpu_seconds": 9.773,
+        "lane_disk_growth_bytes": 58725931,
+        "peak_rss_bytes": 847622144,
+        "sample_count": 1098
+      },
+      "schema_version": 3,
+      "session_id": "cab8d8b1-c4ba-4d3e-a72c-bf9971d4d3f3",
+      "solved": false,
+      "source_revision": "d7863245b65e9bf0f5713b4ceaaa6c3c38f1fc45",
+      "stop_reason": "end_turn",
+      "terminal": "completed",
+      "terminal_failure": null,
+      "tool_call_count": 45,
+      "tool_calls": [
+        {
+          "arguments_sha256": "1f2f5c09079d4214089318775bd5cbb72cd8a18170c844302648443f6cef67fb",
+          "failed": false,
+          "finished_elapsed_ms": 3518,
+          "index": 0,
+          "job": null,
+          "started_elapsed_ms": 3481,
+          "status": "completed",
+          "tool": "read"
+        },
+        {
+          "arguments_sha256": "f2e809e834277466778ce9749f15004642b87ae8f583574799dbbfcd52e459aa",
+          "failed": false,
+          "finished_elapsed_ms": 3518,
+          "index": 1,
+          "job": null,
+          "started_elapsed_ms": 3481,
+          "status": "completed",
+          "tool": "read"
+        },
+        {
+          "arguments_sha256": "a882010639b4186ec8f8988815fa25bd56d926099aec3096bb5b073f799d83e8",
+          "failed": false,
+          "finished_elapsed_ms": 3518,
+          "index": 2,
+          "job": null,
+          "started_elapsed_ms": 3481,
+          "status": "completed",
+          "tool": "list"
+        },
+        {
+          "arguments_sha256": "80dff910b10d38fd46990795c1d40c93a1be7abf45267b623b9095d5f37272e3",
+          "failed": false,
+          "finished_elapsed_ms": 6917,
+          "index": 3,
+          "job": null,
+          "started_elapsed_ms": 6851,
+          "status": "completed",
+          "tool": "read"
+        },
+        {
+          "arguments_sha256": "8eefea267b9050ca6e069df6103f6626bac0ae6037efb5a01aa81263f8490522",
+          "failed": false,
+          "finished_elapsed_ms": 6917,
+          "index": 4,
+          "job": null,
+          "started_elapsed_ms": 6852,
+          "status": "completed",
+          "tool": "read"
+        },
+        {
+          "arguments_sha256": "877fcee7f8638e4b7fe69147d9e99c5665abab0a866fdd669a10f64d7c5e3acc",
+          "failed": false,
+          "finished_elapsed_ms": 6917,
+          "index": 5,
+          "job": null,
+          "started_elapsed_ms": 6852,
+          "status": "completed",
+          "tool": "read"
+        },
+        {
+          "arguments_sha256": "0341181e05f29edd6a88685d42ff7ebb4b32a5eed280fa39a67b28a10a4ae76f",
+          "failed": false,
+          "finished_elapsed_ms": 6917,
+          "index": 6,
+          "job": null,
+          "started_elapsed_ms": 6852,
+          "status": "completed",
+          "tool": "read"
+        },
+        {
+          "arguments_sha256": "8892ed1341524ef0cd364916706f97137203e82fc26cbf2fa7f69f268074d1fe",
+          "failed": false,
+          "finished_elapsed_ms": 6917,
+          "index": 7,
+          "job": null,
+          "started_elapsed_ms": 6854,
+          "status": "completed",
+          "tool": "read"
+        },
+        {
+          "arguments_sha256": "e48c15efed4c0df9efd3e1944b0dbba77cda7a24a2e0e020a003c614679dabde",
+          "failed": false,
+          "finished_elapsed_ms": 21752,
+          "index": 8,
+          "job": null,
+          "started_elapsed_ms": 21707,
+          "status": "completed",
+          "tool": "read"
+        },
+        {
+          "arguments_sha256": "eef07255bff4b553debaa030f691984ba5b3797aaf0d04f13002eab5aae94509",
+          "failed": false,
+          "finished_elapsed_ms": 21752,
+          "index": 9,
+          "job": null,
+          "started_elapsed_ms": 21707,
+          "status": "completed",
+          "tool": "read"
+        },
+        {
+          "arguments_sha256": "f5c1ac913153445784b95d520d3d3c3c3e623787ac663103b4d7122ac44cdfa0",
+          "failed": false,
+          "finished_elapsed_ms": 21752,
+          "index": 10,
+          "job": null,
+          "started_elapsed_ms": 21709,
+          "status": "completed",
+          "tool": "read"
+        },
+        {
+          "arguments_sha256": "d06c301cbdcd2f0a28ddbb84119a6c5f16443d9e65b38bfda3188147d6c063f3",
+          "failed": false,
+          "finished_elapsed_ms": 21752,
+          "index": 11,
+          "job": null,
+          "started_elapsed_ms": 21710,
+          "status": "completed",
+          "tool": "read"
+        },
+        {
+          "arguments_sha256": "2ece41df292ac9e7d07470b95db6745edeeccb8a3da7656f1ab92adbe8f2a1c8",
+          "failed": true,
+          "finished_elapsed_ms": 27825,
+          "index": 12,
+          "job": {
+            "action": "submit",
+            "job_id": "d1b9d308-a148-4a3f-9581-8018770cf8dc",
+            "status": null
+          },
+          "started_elapsed_ms": 23884,
+          "status": "failed",
+          "tool": "test"
+        },
+        {
+          "arguments_sha256": "8242a6e17242c26fb4befcd8ad7efc132c154c413deda375dd7d451126d722c5",
+          "failed": false,
+          "finished_elapsed_ms": 33951,
+          "index": 13,
+          "job": null,
+          "started_elapsed_ms": 33892,
+          "status": "completed",
+          "tool": "edit"
+        },
+        {
+          "arguments_sha256": "977a7559c9711dd3b966a18a238fcab663b450d51befd84027cdb79b40d55e6e",
+          "failed": false,
+          "finished_elapsed_ms": 48253,
+          "index": 14,
+          "job": null,
+          "started_elapsed_ms": 48230,
+          "status": "completed",
+          "tool": "glob"
+        },
+        {
+          "arguments_sha256": "2ece41df292ac9e7d07470b95db6745edeeccb8a3da7656f1ab92adbe8f2a1c8",
+          "failed": false,
+          "finished_elapsed_ms": 51921,
+          "index": 15,
+          "job": {
+            "action": "submit",
+            "job_id": "c7d7fcb6-103c-427e-8dd2-8e599c34702c",
+            "status": null
+          },
+          "started_elapsed_ms": 49944,
+          "status": "completed",
+          "tool": "test"
+        },
+        {
+          "arguments_sha256": "653b05fc96e44eaf454b69051dec826de154ce3c318f4d0d5641fbad080727e3",
+          "failed": true,
+          "finished_elapsed_ms": 55958,
+          "index": 16,
+          "job": {
+            "action": "submit",
+            "job_id": "622d803c-f2ab-4c5a-adac-5fc6cf084079",
+            "status": null
+          },
+          "started_elapsed_ms": 54046,
+          "status": "failed",
+          "tool": "test"
+        },
+        {
+          "arguments_sha256": "994bfef38becc792f305155b4abf93b6e3bfde2df1cd561bb635ebb03bae86b1",
+          "failed": false,
+          "finished_elapsed_ms": 65091,
+          "index": 17,
+          "job": null,
+          "started_elapsed_ms": 65038,
+          "status": "completed",
+          "tool": "edit"
+        },
+        {
+          "arguments_sha256": "653b05fc96e44eaf454b69051dec826de154ce3c318f4d0d5641fbad080727e3",
+          "failed": false,
+          "finished_elapsed_ms": 76637,
+          "index": 18,
+          "job": {
+            "action": "submit",
+            "job_id": "0e218590-a85f-429b-b320-5cff57808d38",
+            "status": null
+          },
+          "started_elapsed_ms": 71278,
+          "status": "completed",
+          "tool": "test"
+        },
+        {
+          "arguments_sha256": "8de65afe7fda4da5c8a16a63a30f72f04a61f8e1d665a831f28b2c3951321c55",
+          "failed": false,
+          "finished_elapsed_ms": 83319,
+          "index": 19,
+          "job": {
+            "action": "submit",
+            "job_id": "db77e2cf-b895-494a-a48f-ddd5bb3918f5",
+            "status": null
+          },
+          "started_elapsed_ms": 83253,
+          "status": "completed",
+          "tool": "test"
+        },
+        {
+          "arguments_sha256": "37cc58d13dde32ad36242c8fb8d7c2daa965024ec43f53420d3a9df46a06e5a4",
+          "failed": false,
+          "finished_elapsed_ms": 118566,
+          "index": 20,
+          "job": null,
+          "started_elapsed_ms": 118501,
+          "status": "completed",
+          "tool": "edit"
+        },
+        {
+          "arguments_sha256": "c7a2f5eb65f19778d56a429d71c5ed31543ab301c7681d9267fd8a4ab0d0a4b7",
+          "failed": false,
+          "finished_elapsed_ms": 125999,
+          "index": 21,
+          "job": null,
+          "started_elapsed_ms": 125947,
+          "status": "completed",
+          "tool": "edit"
+        },
+        {
+          "arguments_sha256": "8892ed1341524ef0cd364916706f97137203e82fc26cbf2fa7f69f268074d1fe",
+          "failed": false,
+          "finished_elapsed_ms": 129842,
+          "index": 22,
+          "job": null,
+          "started_elapsed_ms": 129796,
+          "status": "completed",
+          "tool": "read"
+        },
+        {
+          "arguments_sha256": "36a93a6794bb21bedfae9976ccd9a7e9f7475174d79b80b5812d2111e69b18bc",
+          "failed": false,
+          "finished_elapsed_ms": 146774,
+          "index": 23,
+          "job": {
+            "action": "status",
+            "job_id": "db77e2cf-b895-494a-a48f-ddd5bb3918f5",
+            "status": "completed"
+          },
+          "started_elapsed_ms": 146709,
+          "status": "completed",
+          "tool": "job"
+        },
+        {
+          "arguments_sha256": "eb39017a120d782f64013614d5643fa4b3b04c3c61cd06e6783bf802530cba78",
+          "failed": false,
+          "finished_elapsed_ms": 190005,
+          "index": 24,
+          "job": null,
+          "started_elapsed_ms": 189224,
+          "status": "completed",
+          "tool": "bash"
+        },
+        {
+          "arguments_sha256": "8de65afe7fda4da5c8a16a63a30f72f04a61f8e1d665a831f28b2c3951321c55",
+          "failed": false,
+          "finished_elapsed_ms": 216341,
+          "index": 25,
+          "job": {
+            "action": "submit",
+            "job_id": "1911c862-2328-461e-9efd-74588cdc5cc1",
+            "status": null
+          },
+          "started_elapsed_ms": 216275,
+          "status": "completed",
+          "tool": "test"
+        },
+        {
+          "arguments_sha256": "7302818469ee427ed5a64b38c9c61eee23712ea752ea182e302de8e595a82e42",
+          "failed": false,
+          "finished_elapsed_ms": 235591,
+          "index": 26,
+          "job": null,
+          "started_elapsed_ms": 235518,
+          "status": "completed",
+          "tool": "edit"
+        },
+        {
+          "arguments_sha256": "2c830af41365ced50308fa820645a05c37eb385fa75a767f0baadd11a033794e",
+          "failed": false,
+          "finished_elapsed_ms": 293393,
+          "index": 27,
+          "job": null,
+          "started_elapsed_ms": 292331,
+          "status": "completed",
+          "tool": "bash"
+        },
+        {
+          "arguments_sha256": "8de65afe7fda4da5c8a16a63a30f72f04a61f8e1d665a831f28b2c3951321c55",
+          "failed": false,
+          "finished_elapsed_ms": 309904,
+          "index": 28,
+          "job": {
+            "action": "submit",
+            "job_id": "03b2257f-5d91-4e68-92a4-a0af34494343",
+            "status": null
+          },
+          "started_elapsed_ms": 309848,
+          "status": "completed",
+          "tool": "test"
+        },
+        {
+          "arguments_sha256": "698b7f8bd5b1511aa5964e17c2353598de038a13f618d0ab69f95f773e687630",
+          "failed": false,
+          "finished_elapsed_ms": 329200,
+          "index": 29,
+          "job": null,
+          "started_elapsed_ms": 329143,
+          "status": "completed",
+          "tool": "edit"
+        },
+        {
+          "arguments_sha256": "8892ed1341524ef0cd364916706f97137203e82fc26cbf2fa7f69f268074d1fe",
+          "failed": false,
+          "finished_elapsed_ms": 336986,
+          "index": 30,
+          "job": null,
+          "started_elapsed_ms": 336974,
+          "status": "completed",
+          "tool": "read"
+        },
+        {
+          "arguments_sha256": "041240c713c1f882d8fc28428821962fd05c87fa5a64b470144665b72c9d27ef",
+          "failed": false,
+          "finished_elapsed_ms": 347582,
+          "index": 31,
+          "job": null,
+          "started_elapsed_ms": 347506,
+          "status": "completed",
+          "tool": "edit"
+        },
+        {
+          "arguments_sha256": "8892ed1341524ef0cd364916706f97137203e82fc26cbf2fa7f69f268074d1fe",
+          "failed": false,
+          "finished_elapsed_ms": 366178,
+          "index": 32,
+          "job": null,
+          "started_elapsed_ms": 366148,
+          "status": "completed",
+          "tool": "read"
+        },
+        {
+          "arguments_sha256": "877fcee7f8638e4b7fe69147d9e99c5665abab0a866fdd669a10f64d7c5e3acc",
+          "failed": false,
+          "finished_elapsed_ms": 366178,
+          "index": 33,
+          "job": null,
+          "started_elapsed_ms": 366148,
+          "status": "completed",
+          "tool": "read"
+        },
+        {
+          "arguments_sha256": "0341181e05f29edd6a88685d42ff7ebb4b32a5eed280fa39a67b28a10a4ae76f",
+          "failed": false,
+          "finished_elapsed_ms": 366179,
+          "index": 34,
+          "job": null,
+          "started_elapsed_ms": 366148,
+          "status": "completed",
+          "tool": "read"
+        },
+        {
+          "arguments_sha256": "d92eb81c410d1024f53afee4e3093bf00d1c570b6530bca2fbe2efb2204a5ee6",
+          "failed": false,
+          "finished_elapsed_ms": 395654,
+          "index": 35,
+          "job": {
+            "action": "status",
+            "job_id": "03b2257f-5d91-4e68-92a4-a0af34494343",
+            "status": "completed"
+          },
+          "started_elapsed_ms": 395586,
+          "status": "completed",
+          "tool": "job"
+        },
+        {
+          "arguments_sha256": "ed9b28a699cc7bc66d80ba9f70b5cb46052dce60f83740c2b037aecfc5a47262",
+          "failed": false,
+          "finished_elapsed_ms": 419072,
+          "index": 36,
+          "job": null,
+          "started_elapsed_ms": 418475,
+          "status": "completed",
+          "tool": "bash"
+        },
+        {
+          "arguments_sha256": "8de65afe7fda4da5c8a16a63a30f72f04a61f8e1d665a831f28b2c3951321c55",
+          "failed": false,
+          "finished_elapsed_ms": 420560,
+          "index": 37,
+          "job": {
+            "action": "submit",
+            "job_id": "263a869e-285f-47ef-a0da-19e14b808826",
+            "status": null
+          },
+          "started_elapsed_ms": 420490,
+          "status": "completed",
+          "tool": "test"
+        },
+        {
+          "arguments_sha256": "c9c81f44b995161af7ee27079e8160c15059ceb93cefee2cb40c95ceb6425294",
+          "failed": false,
+          "finished_elapsed_ms": 475785,
+          "index": 38,
+          "job": null,
+          "started_elapsed_ms": 475686,
+          "status": "completed",
+          "tool": "edit"
+        },
+        {
+          "arguments_sha256": "382397843376012f9fc2df17a3f8f083b659701838164d1bca2b44d0ec2d7fdd",
+          "failed": false,
+          "finished_elapsed_ms": 503202,
+          "index": 39,
+          "job": null,
+          "started_elapsed_ms": 503146,
+          "status": "completed",
+          "tool": "edit"
+        },
+        {
+          "arguments_sha256": "d64b3563754f39dd8be4a7747cc4c7a92918ed7f8c8e39906d6723876d0f0e4c",
+          "failed": false,
+          "finished_elapsed_ms": 523929,
+          "index": 40,
+          "job": {
+            "action": "status",
+            "job_id": "263a869e-285f-47ef-a0da-19e14b808826",
+            "status": "completed"
+          },
+          "started_elapsed_ms": 523849,
+          "status": "completed",
+          "tool": "job"
+        },
+        {
+          "arguments_sha256": "b6bd07c11ab8d4c529c7bb4a5f92a2854917eda16704b36eb575af1dd9be81e1",
+          "failed": false,
+          "finished_elapsed_ms": 546835,
+          "index": 41,
+          "job": null,
+          "started_elapsed_ms": 546259,
+          "status": "completed",
+          "tool": "bash"
+        },
+        {
+          "arguments_sha256": "8de65afe7fda4da5c8a16a63a30f72f04a61f8e1d665a831f28b2c3951321c55",
+          "failed": false,
+          "finished_elapsed_ms": 575677,
+          "index": 42,
+          "job": {
+            "action": "submit",
+            "job_id": "d060c27d-b690-402d-9d75-e1b4d7908f85",
+            "status": null
+          },
+          "started_elapsed_ms": 575631,
+          "status": "completed",
+          "tool": "test"
+        },
+        {
+          "arguments_sha256": "8892ed1341524ef0cd364916706f97137203e82fc26cbf2fa7f69f268074d1fe",
+          "failed": false,
+          "finished_elapsed_ms": 579332,
+          "index": 43,
+          "job": null,
+          "started_elapsed_ms": 579305,
+          "status": "completed",
+          "tool": "read"
+        },
+        {
+          "arguments_sha256": "75faa9e1fbf21c49a06839a3138840641427674cfd8ee66fb70db365998934c3",
+          "failed": false,
+          "finished_elapsed_ms": 600321,
+          "index": 44,
+          "job": null,
+          "started_elapsed_ms": 600263,
+          "status": "completed",
+          "tool": "edit"
+        }
+      ],
+      "transcript_path": "/private/tmp/h006-live-20261029/lane/case00/private/TRANSCRIPT.json",
+      "usage_unavailable_reason": null,
+      "verification": {
+        "command": [
+          "python3",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "verifier",
+          "-v"
+        ],
+        "cwd": "/private/tmp/h006-live-20261029/lane/case00/private",
+        "duration_ms": 2734,
+        "exit_code": 1,
+        "failure_summary": "(errors=3)",
+        "output_tail": "    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n                   check=True, timeout=240, stdout=subprocess.DEVNULL)\n                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py\", line 577, in run\n    raise CalledProcessError(retcode, process.args,\n                             output=stdout, stderr=stderr)\nsubprocess.CalledProcessError: Command '['cargo', 'test', '--offline', '--locked', '--workspace']' returned non-zero exit status 101.\n\n----------------------------------------------------------------------\nRan 5 tests in 2.455s\n\nFAILED (errors=3)",
+        "tests_run": 5,
+        "timed_out": false
+      },
+      "verifier_confirmed": false
+    }
+  ],
+  "schema_version": 1,
+  "solved_cases": 0
+}

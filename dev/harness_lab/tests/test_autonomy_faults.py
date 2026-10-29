@@ -355,6 +355,15 @@ class ToolErrorEnvelopeTests(unittest.TestCase):
         self.assertEqual(projected["job"], {"job_id": None, "action": "status", "status": None})
         self.assertNotIn("request unavailable", repr(projected))
 
+        projector.absorb({"method": "session/update", "params": {"update": {
+            "sessionUpdate": "tool_call", "toolCallId": "j-no-output", "title": "job",
+            "codeggArgumentsSha256": "c" * 64, "codeggAction": "wait"}}})
+        projector.absorb({"method": "session/update", "params": {"update": {
+            "sessionUpdate": "tool_call_update", "toolCallId": "j-no-output",
+            "status": "completed"}}})
+        self.assertEqual(projector.calls()[1]["job"], {
+            "job_id": None, "action": "wait", "status": None})
+
     def test_task_placement_receipt_keeps_enum_and_refusal_status_only(self) -> None:
         projector = autonomy_run._ToolCallProjector()
         projector.absorb({"method": "session/update", "params": {"update": {

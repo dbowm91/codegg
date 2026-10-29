@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "source": "CodeGG opencode_go provider-boundary receipt; request admission rows only",
+  "max_provider_requests": 120,
+  "provider_requests_admitted": 21,
+  "provider_requests": [
+    {
+      "kind": "request",
+      "request_number": 1,
+      "limit": 120
+    },
+    {
+      "kind": "request",
+      "request_number": 2,
+      "limit": 120
+    },
+    {
+      "kind": "request",
+      "request_number": 3,
+      "limit": 120
+    },
+    {
+      "kind": "request",
+      "request_number": 4,
+      "limit": 120
+    },
+    {
+      "kind": "request",
+      "request_number": 5,
+      "limit": 120
+    },
+    {
+      "kind": "request",
+      "request_number": 6,
+      "limit": 120
+    },
+    {
+      "kind": "request",
+      "request_number": 7,
+      "limit": 120
+    },
+    {
+      "kind": "request",
+      "request_number": 8,
+      "limit": 120
+    },
+    {
+      "kind": "request",
+      "request_number": 9,
+      "limit": 120
+    },
+    {
+      "kind": "request",
+      "request_number": 10,
+      "limit": 120
+    },
+    {
+      "kind": "request",
+      "request_number": 11,
+      "limit": 120
+    },
+    {
+      "kind": "request",
+      "request_number": 12,
+      "limit": 120
+    },
+    {
+      "kind": "request",
+      "request_number": 13,
+      "limit": 120
+    },
+    {
+      "kind": "request",
+      "request_number": 14,
+      "limit": 120
+    },
+    {
+      "kind": "request",
+      "request_number": 15,
+      "limit": 120
+    },
+    {
+      "kind": "request",
+      "request_number": 16,
+      "limit": 120
+    },
+    {
+      "kind": "request",
+      "request_number": 17,
+      "limit": 120
+    },
+    {
+      "kind": "request",
+      "request_number": 18,
+      "limit": 120
+    },
+    {
+      "kind": "request",
+      "request_number": 19,
+      "limit": 120
+    },
+    {
+      "kind": "request",
+      "request_number": 20,
+      "limit": 120
+    },
+    {
+      "kind": "request",
+      "request_number": 21,
+      "limit": 120
+    }
+  ],
+  "allowance_usd_is_not_billed_cost": true
+}
