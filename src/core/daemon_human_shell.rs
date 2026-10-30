@@ -7,6 +7,12 @@ use codegg_core::project_storage::{BindingStatus, ProjectStorage};
 use codegg_protocol::human_shell::HumanShellRunMetadataDto;
 use sha2::Digest;
 
+/// The bound on one run listing.
+const MAX_HUMAN_SHELL_LIST_RUNS: usize = 64;
+
+/// The bound on one run listing when the caller names none.
+const DEFAULT_HUMAN_SHELL_LIST_RUNS: usize = 20;
+
 impl CoreDaemon {
     pub(crate) async fn handle_human_shell_request(
         &self,
@@ -254,6 +260,39 @@ impl CoreDaemon {
                     session_id: dto.session_id,
                 };
                 Ok(self.human_shell_runs.cancel(&scope, &dto.run_id).await)
+            }
+            CoreRequest::HumanShellRunList { request: dto } => {
+                if dto.protocol_version
+                    != codegg_protocol::human_shell::HUMAN_SHELL_PROTOCOL_VERSION
+                {
+                    return Ok(error(
+                        "human_shell_invalid_request",
+                        "unsupported human shell protocol version",
+                    ));
+                }
+                if let Err(response) = validate_workspace_scope(
+                    self,
+                    authority,
+                    &dto.project_id,
+                    &dto.workspace_id,
+                    dto.session_id.as_deref(),
+                )
+                .await
+                {
+                    return Ok(*response);
+                }
+                let scope = crate::shell::daemon::HumanShellRunScope {
+                    principal_id: authority.principal_id().as_str().to_owned(),
+                    project_id: dto.project_id,
+                    workspace_id: dto.workspace_id,
+                    session_id: dto.session_id,
+                };
+                let limit = dto
+                    .limit
+                    .map(|limit| (limit as usize).min(MAX_HUMAN_SHELL_LIST_RUNS))
+                    .unwrap_or(DEFAULT_HUMAN_SHELL_LIST_RUNS);
+                let runs = self.human_shell_runs.list_for_scope(&scope, limit).await;
+                Ok(CoreResponse::HumanShellRunList { runs })
             }
             _ => Ok(error(
                 "human_shell_invalid_request",

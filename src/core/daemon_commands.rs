@@ -70,6 +70,8 @@ pub struct CommandContext<'a> {
     pub workspace_id: &'a str,
     /// The session the command acts on, when the caller named one.
     pub session_id: Option<&'a str>,
+    /// The turn the effect acts on, when the daemon resolved one.
+    pub turn_id: Option<&'a str>,
     /// The command's argument.
     pub argument: &'a str,
     /// The authority the effect resolves for an identity the caller named.
@@ -199,13 +201,9 @@ pub fn build_inner_request(
 
         // ── the effective policy and the preferences ──
         //
-        // M007-D, decision shape one: the `policy` row names **no**
-        // session. The effective runtime policy is a global reading, and
-        // the TUI asks for it with `session_id: None`; a session-scoped
-        // read answers a different question, so passing the scope's
-        // session here would show the user a different policy than the
-        // one they saw before the migration. `approval` and `reasoning`
-        // carry no session at all.
+        // M007-D, decision shape one: the `policy` row names **no** session.
+        // The effective runtime policy is a global reading, so a
+        // session-scoped read would answer a different question.
         ("policy", "") => json!({
             "type": "execution_policy_get",
             "session_id": null,
@@ -241,12 +239,9 @@ pub fn build_inner_request(
         // ── sessions ──
         //
         // M007-D, decision shape two: the session a share, an unshare or
-        // an export acts on is the one the **caller** named, not the one
-        // the scope happens to carry, so the session id travels as the
-        // argument — the same place the turn id travels for `stop`. A call
-        // that names no session is refused with `no_session`: the daemon
-        // serves the form, it just cannot guess which session the caller
-        // meant.
+        // an export acts on is the one the **caller** named, so the session id
+        // travels as the argument — the same place the turn id travels for
+        // `stop`. A call that names no session is refused with `no_session`.
         ("share", "") => {
             if first.is_empty() {
                 return Some(CommandEffect::NeedsSession);
@@ -529,6 +524,108 @@ pub fn build_inner_request(
                 "workspace_id": workspace_id,
                 "session_id": session_id,
                 "limit": 20,
+            })
+        }
+
+        // ── the editor and the subagents ──
+        //
+        // M007-H: `/open` opens a document; the argument is the path.
+        ("open_document", "") => {
+            let path = argument.trim();
+            if path.is_empty() {
+                return Some(CommandEffect::UnreadableArgument);
+            }
+            json!({
+                "type": "document_open",
+                "project_id": project_id,
+                "workspace_id": workspace_id,
+                "relative_path": path,
+            })
+        }
+        // M007-H: `/subagent-send` steers the **parent** turn, so the row
+        // names the turn the session is running. A session with no active
+        // turn names none, and the turn handler refuses it — exactly as the
+        // `stop` row refuses a turn it cannot name.
+        ("subagent_send", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            json!({
+                "type": "turn_steer",
+                "session_id": session_id,
+                "turn_id": ctx.turn_id.unwrap_or(""),
+                "text": argument,
+            })
+        }
+        ("review", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            if first.is_empty() {
+                return Some(CommandEffect::UnreadableArgument);
+            }
+            json!({
+                "type": "lsp_preview_read",
+                "request": {
+                    "preview_id": first,
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                }
+            })
+        }
+        ("security_review", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            json!({
+                "type": "security_review_start",
+                "request": {
+                    "protocol_version": codegg_protocol::security_review::SECURITY_REVIEW_PROTOCOL_VERSION,
+                    "project_id": project_id,
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                    "argument": argument.trim(),
+                }
+            })
+        }
+        ("security_review_show", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            json!({
+                "type": "security_review_read",
+                "request": {
+                    "protocol_version": codegg_protocol::security_review::SECURITY_REVIEW_PROTOCOL_VERSION,
+                    "project_id": project_id,
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                    "run_id": if first.is_empty() { serde_json::Value::Null } else { json!(first) },
+                }
+            })
+        }
+        ("security_review_cancel", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            json!({
+                "type": "turn_cancel",
+                "session_id": session_id,
+                "turn_id": ctx.turn_id.unwrap_or(""),
+            })
+        }
+        ("shell_rerun", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            json!({
+                "type": "human_shell_run_list",
+                "request": {
+                    "protocol_version": codegg_protocol::human_shell::HUMAN_SHELL_PROTOCOL_VERSION,
+                    "project_id": project_id,
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                    "limit": 20,
+                }
             })
         }
 
@@ -823,6 +920,7 @@ pub fn serves_form(command_id: &str, form: &str) -> bool {
         argument: "",
 
         authority: None,
+        turn_id: None,
     };
     build_inner_request(command_id, form, &ctx).is_some()
 }
@@ -1049,10 +1147,32 @@ impl CoreDaemon {
             workspace_id: scope.workspace_id.as_str(),
             session_id: scope.session_id.as_deref(),
         });
+        // M007-H: a row that steers a turn names the turn the session runs.
+        let active_turn_id = match request.scope.session_id.as_deref() {
+            Some(session_id) => match self.sessions.get(session_id) {
+                Some(runtime) => runtime
+                    .active_turn
+                    .read()
+                    .await
+                    .as_ref()
+                    .map(|handle| handle.turn_id.clone()),
+                None => None,
+            },
+            None => None,
+        };
+        // M007-H: the cancel names the review run's turn.
+        let turn_id = match request.command_id.as_str() {
+            "security_review_cancel" => match request.scope.session_id.as_deref() {
+                Some(session_id) => self.security_reviews.running_turn_id(session_id),
+                None => None,
+            },
+            _ => active_turn_id,
+        };
         let ctx = CommandContext {
             project_id: &request.scope.project_id,
             workspace_id: &request.scope.workspace_id,
             session_id: request.scope.session_id.as_deref(),
+            turn_id: turn_id.as_deref(),
             argument: &request.argument,
             authority: command_authority,
         };
@@ -1547,6 +1667,14 @@ mod tests {
         ("edit_undo", "", ""),
         ("edit_reapply", "", ""),
         ("edit_checkpoints", "", ""),
+        // M007-H: the editor, the subagents, the review, the shell.
+        ("open_document", "", "src/lib.rs"),
+        ("subagent_send", "", "probe-agent"),
+        ("review", "", "preview-1"),
+        ("security_review", "", "--changed"),
+        ("security_review_show", "", ""),
+        ("security_review_cancel", "", ""),
+        ("shell_rerun", "", "run-1"),
         ("shell_show", "", "probe"),
         ("shell_expand", "", "probe"),
         ("shell_kill", "", "probe"),
@@ -1640,6 +1768,7 @@ mod tests {
                 session_id: Some("session"),
                 argument: "",
                 authority: None,
+                turn_id: None,
             };
             assert!(
                 build_inner_request(command_id, "", &ctx).is_none(),
@@ -1660,6 +1789,7 @@ mod tests {
                 session_id: Some("session-1"),
                 argument: target,
                 authority: None,
+                turn_id: None,
             };
             let effect = build_inner_request(command_id, "", &ctx)
                 .unwrap_or_else(|| panic!("{command_id} must have a row"));
@@ -1683,6 +1813,7 @@ mod tests {
                 session_id: None,
                 argument: target,
                 authority: None,
+                turn_id: None,
             };
             let refused = build_inner_request(command_id, "", &without_session)
                 .unwrap_or_else(|| panic!("{command_id} must have a row"));
@@ -1717,6 +1848,7 @@ mod tests {
                     workspace_id: "workspace",
                     session_id: Some("session"),
                 }),
+                turn_id: Some("turn-1"),
             };
             let effect = build_inner_request(command_id, form, &ctx)
                 .unwrap_or_else(|| panic!("{command_id}/{form} must have a row"));
@@ -1735,6 +1867,7 @@ mod tests {
             session_id: Some("session"),
             argument: "src/lib.rs:5:7 outgoing",
             authority: None,
+            turn_id: None,
         };
         let Some(CommandEffect::Ready(request)) =
             build_inner_request("lsp_call_neighbors", "", &ctx)
@@ -1759,6 +1892,7 @@ mod tests {
             session_id: Some("session"),
             argument: "src/lib.rs:not-a-position",
             authority: None,
+            turn_id: None,
         };
         assert!(matches!(
             build_inner_request("lsp_impact", "", &ctx),
@@ -1790,6 +1924,7 @@ mod tests {
             argument: "channel-1 not-a-number",
 
             authority: None,
+            turn_id: None,
         };
         let effect = build_inner_request("chat_sync", "", &ctx);
         assert!(
@@ -1827,6 +1962,7 @@ mod tests {
             argument: "",
 
             authority: None,
+            turn_id: None,
         };
         let effect = build_inner_request("share", "", &ctx).expect("share has a row");
         assert!(
@@ -1861,6 +1997,7 @@ mod tests {
                 workspace_id: "run-workspace",
                 session_id: Some("run-session"),
             }),
+            turn_id: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("shell_kill", "", &ctx)
         else {
@@ -1888,6 +2025,7 @@ mod tests {
             session_id: Some("caller-session"),
             argument: "run-1",
             authority: None,
+            turn_id: None,
         };
         assert!(
             matches!(
@@ -1922,6 +2060,7 @@ mod tests {
             session_id: Some("scope-session"),
             argument: "panel-project",
             authority: None,
+            turn_id: None,
         };
         let Some(CommandEffect::Ready(request)) =
             build_inner_request("collaborators", "presence", &ctx)
@@ -1967,6 +2106,7 @@ mod tests {
             argument: "turn-1",
 
             authority: None,
+            turn_id: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("stop", "", &ctx) else {
             panic!("stop must build a request");
@@ -1987,6 +2127,7 @@ mod tests {
             argument: "channel-1 message-1",
 
             authority: None,
+            turn_id: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("chat_action_list", "", &ctx)
         else {
@@ -2011,6 +2152,7 @@ mod tests {
             argument: "channel-1",
 
             authority: None,
+            turn_id: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("chat_action_list", "", &ctx)
         else {
@@ -2041,6 +2183,7 @@ mod tests {
             argument: "subscription-1",
 
             authority: None,
+            turn_id: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("stop_observing", "", &ctx)
         else {
@@ -2062,6 +2205,7 @@ mod tests {
             argument: "schedule-1",
 
             authority: None,
+            turn_id: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("task_del", "", &ctx) else {
             panic!("task_del must build a request");
@@ -2078,13 +2222,9 @@ mod tests {
     /// The policy rows name no session, and the preference rows cannot.
     ///
     /// M007-D, decision shape one. The effective runtime policy is a
-    /// **global** reading: the TUI asks for it with no session, and a
-    /// session-scoped read answers a different question. So the `policy`
-    /// row names no session even when the scope carries one.
-    ///
-    /// `approval` and `reasoning` are unit variants: their requests carry
-    /// no session field at all, so the scope's session cannot change what
-    /// they answer.
+    /// **global** reading, so the `policy` row names no session even when
+    /// the scope carries one. `approval` and `reasoning` are unit variants:
+    /// their requests carry no session field at all.
     #[test]
     fn the_policy_rows_name_no_session() {
         let ctx = CommandContext {
@@ -2094,6 +2234,7 @@ mod tests {
             argument: "",
 
             authority: None,
+            turn_id: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("policy", "", &ctx) else {
             panic!("policy must build a request");
@@ -2140,6 +2281,7 @@ mod tests {
             argument: "named-session",
 
             authority: None,
+            turn_id: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("share", "", &ctx) else {
             panic!("share must build a request");
@@ -2217,6 +2359,7 @@ mod tests {
             argument: "offline 7",
 
             authority: None,
+            turn_id: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("network", "", &ctx) else {
             panic!("network must build a request");
@@ -2275,6 +2418,7 @@ mod tests {
             argument: "200",
 
             authority: None,
+            turn_id: None,
         };
         for command_id in ["tasks", "task"] {
             let Some(CommandEffect::Ready(request)) = build_inner_request(command_id, "", &ctx)
@@ -2321,6 +2465,7 @@ mod tests {
             argument: "channel-1",
 
             authority: None,
+            turn_id: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("chat_history", "", &ctx)
         else {
@@ -2343,6 +2488,7 @@ mod tests {
             argument: "channel-1 42",
 
             authority: None,
+            turn_id: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("chat_sync", "", &ctx) else {
             panic!("chat_sync must build a request");
@@ -2364,6 +2510,7 @@ mod tests {
             argument: "channel-1 42",
 
             authority: None,
+            turn_id: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("chat_read", "", &ctx) else {
             panic!("chat_read must build a request");
@@ -2385,6 +2532,7 @@ mod tests {
             argument: "handle-1 42",
 
             authority: None,
+            turn_id: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("terminal_attach", "", &ctx)
         else {
@@ -2407,6 +2555,7 @@ mod tests {
             argument: "handle-1",
 
             authority: None,
+            turn_id: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("terminal_attach", "", &ctx)
         else {
@@ -2429,6 +2578,7 @@ mod tests {
             argument: "attachment-1 42",
 
             authority: None,
+            turn_id: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("terminal_resume", "", &ctx)
         else {
@@ -2452,6 +2602,7 @@ mod tests {
             argument: "job-1",
 
             authority: None,
+            turn_id: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("test", "", &ctx) else {
             panic!("test must build a request");

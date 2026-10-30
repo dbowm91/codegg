@@ -94,6 +94,9 @@ pub mod job_state_terminality_c004;
 #[path = "launch_directory_bootstrap.inc"]
 pub mod launch_directory_bootstrap;
 
+#[path = "m007h_daemon_read_surfaces.inc"]
+pub mod m007h_daemon_read_surfaces;
+
 #[path = "model_preference_convergence.inc"]
 pub mod model_preference_convergence;
 

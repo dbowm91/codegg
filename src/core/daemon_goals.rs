@@ -1,5 +1,7 @@
 //! M002: `goals` request family for `CoreDaemon`.
 
+use std::sync::Arc;
+
 use crate::error::AppError;
 use crate::protocol::core::{CoreRequest, CoreResponse};
 
@@ -860,10 +862,7 @@ impl CoreDaemon {
 
                 // M005 corrective C008: the gate's answer is a fast
                 // pre-filter; the answer that counts is the one taken with
-                // the repository lock held. The window between the gate and
-                // the write is the lock wait, not the instruction gap, so a
-                // writer that queued behind another writer may find the
-                // checkout reserved by the time its turn comes.
+                // the repository lock held.
                 if let Err(conflict) = self
                     .recheck_checkout_reservation(
                         &crate::core::daemon::CheckoutRefusalContext {
@@ -935,10 +934,7 @@ impl CoreDaemon {
 
                 // M005 corrective C008: the gate's answer is a fast
                 // pre-filter; the answer that counts is the one taken with
-                // the repository lock held. The window between the gate and
-                // the write is the lock wait, not the instruction gap, so a
-                // writer that queued behind another writer may find the
-                // checkout reserved by the time its turn comes.
+                // the repository lock held.
                 if let Err(conflict) = self
                     .recheck_checkout_reservation(
                         &crate::core::daemon::CheckoutRefusalContext {
@@ -1011,10 +1007,7 @@ impl CoreDaemon {
 
                 // M005 corrective C008: the gate's answer is a fast
                 // pre-filter; the answer that counts is the one taken with
-                // the repository lock held. The window between the gate and
-                // the write is the lock wait, not the instruction gap, so a
-                // writer that queued behind another writer may find the
-                // checkout reserved by the time its turn comes.
+                // the repository lock held.
                 if let Err(conflict) = self
                     .recheck_checkout_reservation(
                         &crate::core::daemon::CheckoutRefusalContext {
@@ -1086,10 +1079,7 @@ impl CoreDaemon {
 
                 // M005 corrective C008: the gate's answer is a fast
                 // pre-filter; the answer that counts is the one taken with
-                // the repository lock held. The window between the gate and
-                // the write is the lock wait, not the instruction gap, so a
-                // writer that queued behind another writer may find the
-                // checkout reserved by the time its turn comes.
+                // the repository lock held.
                 if let Err(conflict) = self
                     .recheck_checkout_reservation(
                         &crate::core::daemon::CheckoutRefusalContext {
@@ -1185,15 +1175,11 @@ impl CoreDaemon {
                         })
                     }
                 };
-                // M005 corrective C008: the LSP applier acquires the
-                // repository lock itself, inside
-                // `crate::lsp::mutation::apply_preview`, so the under-lock
-                // re-check belongs there — this handler cannot hold the
-                // lock and hand it over, because the applier would wait on
-                // a mutex it already holds. The pre-dispatch gate remains
-                // the fast pre-filter for this sink; the applier calls back
-                // into the daemon **while it holds the lock**, which is the
-                // only point at which the answer is current.
+                // M005 corrective C008: the LSP applier takes the repository
+                // lock itself, inside `crate::lsp::mutation::apply_preview`,
+                // so the under-lock re-check belongs there. The applier calls
+                // back into the daemon **while it holds the lock**, the only
+                // point at which the answer is current.
                 let reservation_check = DaemonUnderLockReservationCheck {
                     daemon: self,
                     context: crate::core::daemon::CheckoutRefusalContext {
@@ -1217,12 +1203,10 @@ impl CoreDaemon {
                     Ok(result) => Ok(CoreResponse::LspPreviewApplyResult { result }),
                     // M005 corrective C008: a reservation refusal is a
                     // **conflict**, not an authorization failure — the same
-                    // disposition every other mediated sink gives it.
-                    //
-                    // M005 corrective C008 (implementation review): the
-                    // refusal's own code travels with it, so a refusal
-                    // raised because the authority could not be reached is
-                    // not reported as an observed reservation.
+                    // disposition every other mediated sink gives it. The
+                    // refusal's own code travels with it, so a refusal raised
+                    // because the authority could not be reached is not
+                    // reported as an observed reservation.
                     Err(crate::lsp::mutation::LspMutationApplyError::CheckoutReserved(refusal)) => {
                         Ok(CoreResponse::Error {
                             code: refusal.code,
@@ -1234,6 +1218,108 @@ impl CoreDaemon {
                         message: error.to_string(),
                     }),
                 }
+            }
+            CoreRequest::SecurityReviewStart { request } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "security_review_unavailable".into(),
+                        message: "the security review requires a durable database pool".into(),
+                    });
+                };
+                if let Err(error) =
+                    crate::core::security_review_store::validate_security_review_scope(
+                        &pool,
+                        request.protocol_version,
+                        &request.project_id,
+                        &request.workspace_id,
+                        &request.session_id,
+                    )
+                    .await
+                {
+                    return Ok(CoreResponse::Error {
+                        code: error.0.into(),
+                        message: error.1,
+                    });
+                }
+                let workspace_id = codegg_core::workspace::WorkspaceId::new_unchecked(
+                    request.workspace_id.clone(),
+                );
+                let Some(record) = self.workspaces.resolve(&workspace_id).await else {
+                    return Ok(CoreResponse::Error {
+                        code: "workspace_not_found".into(),
+                        message: format!("workspace {} not found", request.workspace_id),
+                    });
+                };
+                let args = crate::security::workflow::report::parse_security_review_args(
+                    &request.argument,
+                );
+                let run_id = format!("sr-{}", uuid::Uuid::new_v4());
+                let turn_id = format!("turn-{}", uuid::Uuid::new_v4());
+                let started_at_ms = chrono::Utc::now().timestamp_millis();
+                let run = codegg_protocol::security_review::SecurityReviewRunDto {
+                    run_id: run_id.clone(),
+                    turn_id,
+                    session_id: request.session_id.clone(),
+                    status: codegg_protocol::security_review::SecurityReviewRunStatusDto::Running,
+                    report: None,
+                    error: None,
+                    finding_count: 0,
+                    prompt_count: 0,
+                    note_count: 0,
+                    enriched: false,
+                    lsp_available: false,
+                    completed_at_ms: None,
+                };
+                let cancel = self.security_reviews.start(
+                    run.clone(),
+                    request.session_id.clone(),
+                    request.workspace_id.clone(),
+                    started_at_ms,
+                );
+                let root = record.canonical_root.clone();
+                // The daemon's own LSP instance is the authority.
+                let lsp_tool = self.deps.lsp_service.clone().map(|service| {
+                    Arc::new(
+                        crate::tool::lsp::LspTool::new(service).with_allowed_root(root.clone()),
+                    )
+                });
+                let store = self.security_reviews.clone();
+                tokio::spawn(async move {
+                    // M007-H: the cancel arrives through `TurnCancel`.
+                    let outcome = tokio::select! {
+                        outcome = crate::security::workflow::report::run_security_review_background(
+                            root, args, lsp_tool,
+                        ) => Some(outcome),
+                        _ = cancel.notified() => None,
+                    };
+                    let Some(outcome) = outcome else {
+                        return;
+                    };
+                    store.finish(&run_id, |run| match outcome {
+                        Ok(receipt) => {
+                            run.status =
+                                codegg_protocol::security_review::SecurityReviewRunStatusDto::Completed;
+                            run.report = Some(
+                                crate::core::security_review_store::bound_security_review_report(
+                                    &receipt.rendered_report,
+                                ),
+                            );
+                            run.finding_count = receipt.output.findings.len();
+                            run.prompt_count = receipt.output.review_prompts.len();
+                            run.note_count = receipt.output.notes.len();
+                            run.enriched = receipt.enriched;
+                            run.lsp_available = receipt.lsp_available;
+                            run.completed_at_ms = Some(receipt.completed_at_ms);
+                        }
+                        Err(error) => {
+                            run.status =
+                                codegg_protocol::security_review::SecurityReviewRunStatusDto::Failed;
+                            run.error = Some(error);
+                            run.completed_at_ms = Some(chrono::Utc::now().timestamp_millis());
+                        }
+                    });
+                });
+                Ok(CoreResponse::SecurityReviewRun { run })
             }
             _ => {
                 tracing::warn!("Unhandled CoreRequest variant");

@@ -452,9 +452,7 @@ impl HumanShellRunService {
         }
     }
 
-    /// The session's runs, newest first; a run with no start timestamp
-    /// sorts last. The daemon's registry is the authority for which runs
-    /// exist, and the listing carries no output: `read` serves that.
+    /// The session's runs, newest first; the listing carries no output.
     pub async fn list_for_session(&self, session_id: &str) -> Vec<HumanShellRunMetadataDto> {
         let mut inner = self.inner.lock().await;
         Self::prune(&mut inner);
@@ -474,10 +472,39 @@ impl HumanShellRunService {
         runs
     }
 
-    /// The run's own binding, for a run this daemon still holds.
+    /// The runs in one exact scope, newest first and bounded by `limit`.
     ///
-    /// A cancel's authority is the **run's own** binding; the runs live in
-    /// memory, so this answers `None` for a run the daemon does not hold.
+    /// The scope is exact — principal, project, workspace and session.
+    pub async fn list_for_scope(
+        &self,
+        scope: &HumanShellRunScope,
+        limit: usize,
+    ) -> Vec<HumanShellRunMetadataDto> {
+        let mut inner = self.inner.lock().await;
+        Self::prune(&mut inner);
+        let mut runs: Vec<HumanShellRunMetadataDto> = inner
+            .runs
+            .values()
+            .filter_map(|record| {
+                let run = record.lock();
+                (run.scope.principal_id == scope.principal_id
+                    && run.scope.project_id == scope.project_id
+                    && run.scope.workspace_id == scope.workspace_id
+                    && run.scope.session_id == scope.session_id)
+                    .then(|| run.meta.clone())
+            })
+            .collect();
+        runs.sort_by(|left, right| {
+            run_order_key(right)
+                .cmp(&run_order_key(left))
+                .then_with(|| left.run_id.cmp(&right.run_id))
+        });
+        runs.truncate(limit);
+        runs
+    }
+
+    /// The run's own binding: a cancel's authority, for a run this daemon
+    /// still holds. The runs live in memory, so an absent run answers `None`.
     pub async fn scope_for(&self, run_id: &str) -> Option<HumanShellRunScope> {
         let mut inner = self.inner.lock().await;
         Self::prune(&mut inner);

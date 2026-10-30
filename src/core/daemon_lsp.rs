@@ -39,8 +39,8 @@ use std::sync::Arc;
 use codegg_protocol::lsp::{
     LspCodeActionDto, LspCodeActionUnavailable, LspDiagnosticsGetRequestDto,
     LspDiagnosticsResultDto, LspFormatPreviewDto, LspHighlightDto, LspPreviewCandidateDto,
-    LspPreviewPatchDto, LspRangeDto, LspReadOperation, LspReadPayloadDto, LspReadRequestDto,
-    LspReadResultDto, LspRenameFileDto, LspRenamePreviewDto, LspServerStatusDto,
+    LspPreviewPatchDto, LspPreviewReadDto, LspRangeDto, LspReadOperation, LspReadPayloadDto,
+    LspReadRequestDto, LspReadResultDto, LspRenameFileDto, LspRenamePreviewDto, LspServerStatusDto,
     LspServerStatusGetRequestDto, LspServerStatusResultDto, LspSignatureDto,
     LspSignatureParameterDto, LspSymbolDto, MAX_LSP_CODE_ACTIONS, MAX_LSP_PREVIEW_CANDIDATE_BYTES,
     MAX_LSP_PREVIEW_CANDIDATE_PATCHES, MAX_LSP_PREVIEW_CANDIDATE_PATCH_BYTES,
@@ -261,11 +261,70 @@ impl CoreDaemon {
             CoreRequest::LspCompletionGet { request } => {
                 Ok(super::daemon_lsp_completion::completion_response(self, request).await)
             }
+            CoreRequest::LspPreviewRead { request } => match self.lsp_preview_read(request).await {
+                Ok(candidate) => Ok(CoreResponse::LspPreviewRead { candidate }),
+                Err(denial) => Ok(CoreResponse::Error {
+                    code: denial.code().into(),
+                    message: denial.message().into(),
+                }),
+            },
+            CoreRequest::SecurityReviewRead { request } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "security_review_unavailable".into(),
+                        message: "the security review requires a durable database pool".into(),
+                    });
+                };
+                if let Err(error) =
+                    crate::core::security_review_store::validate_security_review_scope(
+                        &pool,
+                        request.protocol_version,
+                        &request.project_id,
+                        &request.workspace_id,
+                        &request.session_id,
+                    )
+                    .await
+                {
+                    return Ok(CoreResponse::Error {
+                        code: error.0.into(),
+                        message: error.1,
+                    });
+                }
+                let run = match request.run_id.as_deref() {
+                    Some(run_id) => self.security_reviews.get(&request.session_id, run_id),
+                    None => self.security_reviews.newest(&request.session_id),
+                };
+                match run {
+                    Some(run) => Ok(CoreResponse::SecurityReviewRun { run }),
+                    None => Ok(CoreResponse::Error {
+                        code: "security_review_run_not_found".into(),
+                        message: "no security review run for this session".into(),
+                    }),
+                }
+            }
             other => Ok(CoreResponse::Error {
                 code: "unsupported_lsp_request".into(),
                 message: format!("{other:?} is not an LSP read request"),
             }),
         }
+    }
+
+    /// Read one preview candidate the daemon minted, bound to the session
+    /// that minted it.
+    async fn lsp_preview_read(
+        &self,
+        request: LspPreviewReadDto,
+    ) -> Result<Option<LspPreviewCandidateDto>, LspReadDenial> {
+        if request.preview_id.is_empty() || request.session_id.is_empty() {
+            return Err(LspReadDenial::IncoherentRequest);
+        }
+        let (workspace_id, _root) = self.lsp_workspace_binding(&request.session_id).await?;
+        if workspace_id != request.workspace_id {
+            return Err(LspReadDenial::SessionNotFound);
+        }
+        Ok(self
+            .lsp_previews
+            .get(&request.session_id, &request.preview_id))
     }
 
     async fn lsp_server_status_get(
@@ -763,6 +822,17 @@ impl CoreDaemon {
         &self,
         session_id: &str,
     ) -> Result<PathBuf, LspReadDenial> {
+        self.lsp_workspace_binding(session_id)
+            .await
+            .map(|(_, root)| root)
+    }
+
+    /// The daemon-owned workspace binding for a session locator: the
+    /// workspace id and the root come from the session row together.
+    pub(crate) async fn lsp_workspace_binding(
+        &self,
+        session_id: &str,
+    ) -> Result<(String, PathBuf), LspReadDenial> {
         let Some(pool) = self.pool.clone() else {
             return Err(LspReadDenial::ServiceUnavailable);
         };
@@ -790,7 +860,10 @@ impl CoreDaemon {
         let Some(record) = self.workspaces.resolve(&workspace_id).await else {
             return Err(LspReadDenial::SessionNotFound);
         };
-        Ok(record.canonical_root.clone())
+        Ok((
+            workspace_id.as_str().to_owned(),
+            record.canonical_root.clone(),
+        ))
     }
 
     /// The daemon's `LspService`, or a denial.
@@ -892,6 +965,16 @@ impl CoreDaemon {
     /// whole-document formatting request has no cursor to anchor to. The old
     /// name would have papered over exactly the distinction that made the
     /// original shape confusing.
+    fn register_preview_candidate(
+        &self,
+        session_id: &str,
+        candidate: Option<&LspPreviewCandidateDto>,
+    ) {
+        if let Some(candidate) = candidate {
+            self.lsp_previews.register(session_id, candidate.clone());
+        }
+    }
+
     async fn lsp_anchored_read(
         &self,
         service: &Arc<LspService>,
@@ -1237,6 +1320,7 @@ impl CoreDaemon {
                                     )],
                                 )
                             };
+                        self.register_preview_candidate(&request.session_id, candidate.as_ref());
                         LspReadPayloadDto::FormatPreview(LspFormatPreviewDto {
                             path,
                             edit_count: preview.edit_count,
@@ -1291,6 +1375,7 @@ impl CoreDaemon {
                         // preview, or a file whose patch was omitted, leaves
                         // the preview a preview.
                         let candidate = mint_rename_candidate(root, &preview, truncated);
+                        self.register_preview_candidate(&request.session_id, candidate.as_ref());
                         LspReadPayloadDto::RenamePreview(LspRenamePreviewDto {
                             old_name: preview.old_name,
                             new_name: preview.new_name,
@@ -1346,6 +1431,12 @@ impl CoreDaemon {
                             entries,
                             MAX_LSP_READ_CANDIDATE_BYTES,
                         );
+                        for action in &actions {
+                            self.register_preview_candidate(
+                                &request.session_id,
+                                action.candidate.as_ref(),
+                            );
+                        }
                         LspReadPayloadDto::CodeActions { actions, truncated }
                     }
                     Err(err) => return Self::read_operation_error(operation, &err),
@@ -2015,26 +2106,14 @@ impl CoreDaemon {
     /// Start the daemon-owned diagnostics cadence.
     ///
     /// M013 found [`publish_changed_diagnostics`] with **zero callers**: the
-    /// whole store, the digest tracker, the resync authority and this cadence
-    /// existed, and nothing ever ran them, so `LspDiagnosticsUpdated` was
-    /// never emitted and every client saw a permanently cold stream. The
-    /// function was correct and unreachable.
+    /// store, the digest tracker, the resync authority and this cadence all
+    /// existed and nothing ran them, so every client saw a cold stream.
     ///
-    /// Why the daemon and not the frontend: ADR-0011 requires that a process
-    /// with a workspace root may start a language server. A frontend-triggered
-    /// poll would put that decision on whichever client happened to be open,
-    /// and `NotReady` would then be indistinguishable from "this client
-    /// never asked". Only a daemon-owned cadence has the workspace root for
-    /// every live session regardless of who is connected.
-    ///
-    /// Why the [`SessionRuntimeRegistry`] rather than the session table: it
-    /// holds sessions this daemon has actually resolved, so a session from a
-    /// previous run — with a root that may since have been deleted — is not
-    /// walked every 750 ms forever. It is the same registry the idle wake
-    /// resolves through, so the cadence cannot outlive the sessions it serves.
-    ///
-    /// Holds a [`Weak`], so the task ends when the daemon does instead of
-    /// keeping it alive.
+    /// Why the daemon: ADR-0011 lets a process with a workspace root start a
+    /// language server, and only a daemon-owned cadence has that root for
+    /// every live session. Why the [`SessionRuntimeRegistry`]: it holds the
+    /// sessions this daemon resolved, so a stale one is not walked forever.
+    /// It holds a [`Weak`], so the task ends with the daemon.
     pub fn start_lsp_diagnostics_driver(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
         tokio::spawn(async move {

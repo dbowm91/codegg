@@ -39,6 +39,10 @@ pub struct CoreDaemon {
     /// streamed. `parking_lot` because tracking is a short in-memory
     /// critical section, never held across an await.
     pub lsp_diagnostics: Arc<parking_lot::Mutex<super::lsp_diagnostics_store::LspDiagnosticsStore>>,
+    /// M007-H: the preview candidates the daemon minted, and the runs it
+    /// started. Both are daemon-owned, so a client reads the daemon's state.
+    pub lsp_previews: Arc<super::lsp_preview_store::LspPreviewStore>,
+    pub security_reviews: Arc<super::security_review_store::SecurityReviewStore>,
     pub sessions: Arc<crate::core::session_runtime::SessionRuntimeRegistry>,
     pub clients: Arc<super::client_registry::ClientRegistry>,
     pub notification_router: Arc<super::notification::NotificationRouter>,
@@ -1713,6 +1717,9 @@ impl CoreDaemon {
             CoreRequest::CommandExecute { request } => Some(request.scope.project_id.as_str()),
             CoreRequest::HumanShellRunRead { request } => Some(request.project_id.as_str()),
             CoreRequest::HumanShellRunCancel { request } => Some(request.project_id.as_str()),
+            // M007-H: the run listing names its project directly, exactly as
+            // the read and the cancel do.
+            CoreRequest::HumanShellRunList { request } => Some(request.project_id.as_str()),
             CoreRequest::SessionList { project_id, .. } => Some(project_id),
             // M006: a launch names the project it places a session in.
             // Without this arm the `session_launch` descriptor's
@@ -3649,6 +3656,7 @@ impl CoreDaemon {
             CoreRequest::HumanShellRunCreate { request } => request.session_id.as_deref(),
             CoreRequest::HumanShellRunRead { request } => request.session_id.as_deref(),
             CoreRequest::HumanShellRunCancel { request } => request.session_id.as_deref(),
+            CoreRequest::HumanShellRunList { request } => request.session_id.as_deref(),
             CoreRequest::SessionAttach { session_id }
             | CoreRequest::SessionLoad { session_id }
             | CoreRequest::SessionMessagesLoad { session_id }
@@ -3706,19 +3714,15 @@ impl CoreDaemon {
             | CoreRequest::EditCheckpointReapply { session_id, .. }
             | CoreRequest::EditCheckpointReapplyLatest { session_id, .. } => Some(session_id),
             CoreRequest::LspPreviewApply { request } => Some(request.session_id.as_str()),
-            // M013: the M006-B read surface resolves its session exactly like
-            // the completion read and the preview-apply write.
-            //
-            // This arm did not exist. `LspReadGet` is `ViaSession + FileRead`,
-            // so with no locator the daemon resolved no project, and every
-            // read from a team principal failed closed with
-            // `authorization_scope_required` — before the request ever reached
-            // the warm-client resolver. The whole M006-B editor read surface
-            // was unreachable from a socket-connected client, and the failure
-            // was indistinguishable from "you may not read this". It was
-            // invisible because M006-B's own tests called the daemon as
-            // LocalOwner, which bypasses scope resolution entirely.
-            //
+            // M007-H: the three session-scoped reads resolve their session
+            // exactly like the preview-apply write does.
+            CoreRequest::LspPreviewRead { request } => Some(request.session_id.as_str()),
+            CoreRequest::SecurityReviewStart { request } => Some(request.session_id.as_str()),
+            CoreRequest::SecurityReviewRead { request } => Some(request.session_id.as_str()),
+            // M013: `LspReadGet` is `ViaSession + FileRead`, so with no
+            // locator the daemon resolved no project and every read from a
+            // team principal failed closed with `authorization_scope_required`
+            // — invisible because M006-B's own tests ran as LocalOwner.
             // Deliberately *not* widened beyond `ViaSession`: the project is
             // resolved server-side from the session row.
             CoreRequest::LspReadGet { request } => Some(request.session_id.as_str()),
@@ -3946,6 +3950,13 @@ impl CoreDaemon {
                 chain.session_id = Some(request.session_id.clone());
                 if let Some(turn) = request.turn_id.clone() {
                     chain.turn_id = Some(turn);
+                }
+            }
+            // M007-H: the security-review read names the run it reads, so
+            // the audit chain carries the run the event belongs to.
+            CoreRequest::SecurityReviewRead { request } => {
+                if let Some(run_id) = request.run_id.clone() {
+                    chain.run_id = Some(run_id);
                 }
             }
             CoreRequest::EditCheckpointUndo { session_id, .. }
@@ -4830,6 +4841,7 @@ impl CoreDaemon {
                 | CoreRequest::HumanShellRunCreate { .. }
                 | CoreRequest::HumanShellRunRead { .. }
                 | CoreRequest::HumanShellRunCancel { .. }
+                | CoreRequest::HumanShellRunList { .. }
         )
     }
 
@@ -5979,28 +5991,11 @@ mod tests {
     #[tokio::test]
     async fn resume_returns_typed_resync_when_seq_too_old() {
         // This test exercises the same path as before -- a too-old seq
-        // when nothing is recorded anywhere. To force the ring to
-        // have no record of seq 1, we use a no-pool daemon (so the
-        // DB layer is bypassed) and a small ring, then evict the
-        // only event by overflowing the ring.
+        // when nothing is recorded anywhere. With no pool the ring is the
+        // source of truth; the truly "too old" case below uses a pool.
         let daemon = CoreDaemon::new(None, None, None);
-        // No pool is configured, so the event log is in-memory only
-        // and the ring is the source of truth.
-        // Publish a few events to a small ring by setting capacity
-        // indirectly: we use the default capacity (4096) and publish
-        // a single event so seq=1 is in the ring, then issue a
-        // resume from seq 0 with no pool -- this would be covered by
-        // the ring. To get a true "too old" we need to evict seq 1.
-        // The cleanest way without changing daemon internals is to
-        // request a seq the ring definitely does not have; with no
-        // pool, the only valid request is one the ring can satisfy.
-        // A future seq (e.g. 999_999) is treated as caught-up and
-        // returns Events(empty), NOT ResyncRequired. So we use a
-        // daemon without a pool and no events at all, with a
-        // from_event_seq < current_seq (0 < 0 is false). The truly
-        // "too old" case below uses a pool + eviction.
-        // With no events and from_event_seq=0 and current_seq=0, the
-        // path is caught-up and returns empty events.
+        // A future seq is caught-up, not "too old": the ring answers
+        // from_event_seq=0 with empty events.
         let req = crate::core::new_request(
             "req-resume-future".into(),
             CoreRequest::Resume {

@@ -1552,6 +1552,9 @@ impl CoreDaemon {
                 session_id,
                 turn_id,
             } => {
+                if self.security_reviews.cancel_by_turn(&session_id, &turn_id) {
+                    return Ok(CoreResponse::Ack);
+                }
                 let Some(runtime) = self.sessions.get(&session_id) else {
                     return Ok(CoreResponse::Error {
                         code: "session_not_found".to_string(),
