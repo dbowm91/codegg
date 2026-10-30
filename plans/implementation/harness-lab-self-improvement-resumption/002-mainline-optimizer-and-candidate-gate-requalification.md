@@ -1,8 +1,8 @@
 # Harness Lab Self-Improvement S002 — Mainline Optimizer and Candidate-Gate Requalification
 
-Status: **blocked** until S001 closes and PR #217/H007 is merged and reconciled on actual mainline. Offline plan ready for later handoff; no provider-backed calls authorized.
+Status: **blocked** until S001 closes and H007's resulting-mainline CI/source is qualified. PR #217 is merged. Offline plan ready; no provider-backed calls authorized.
 
-Repository baseline: `main@4aea3df5e93c60aa85f55e805f2a8e9e947ab083`; H007 PR #217 head `ab22d66f28681321b8d2b46001ed6698764c9484`. Re-read exact main before execution.
+Repository baseline: `main@99cecc050ed1ae418af62d2d10e6d34d791513e1` (PR #217 merge). Re-read exact main and hosted CI before execution.
 Source roadmap: `plans/subsystems/harness-lab-self-improvement-resumption-roadmap.md`, S002.
 Long-term references: `plans/000-long-term-specification.md` §§23–24, 26–29; `plans/001-terminology-and-domain-model.md`; `plans/003-planning-process.md`. Accepted ADR: `plans/adrs/ADR-0040-evidence-based-agent-recovery-termination.md` (do not synthesize terminal stalls). Primary class: **invariant**.
 
@@ -16,7 +16,7 @@ Prove that the **existing** `dev.harness_lab optimize` and `qualify` pipeline ca
 
 M005 implemented an outer `run_optimizer` and hash-linked `OptimizationCheckpoint` with bounded iterations and resumable candidate qualification. C002 corrected acceptance over-relaxation, incomplete/negative controls and ledger replay. C003 ran an authenticated OpenCode proposal correcting headless workspace binding: 13/13 pairs, one correctness improvement, zero regressions, and a real killed/restarted replay. D001 established the fix on mainline. H006 proved native job status and provider cap in a live test; H007 introduced separate task/horizon outcomes. **Do not rebuild any of these components** unless a current-main failing-first reproduction demonstrates regression.
 
-Hard dependencies: S001 closed with an evidence-qualified target/none disposition; PR #217 merged with actual resulting-main CI and H007 score/fixture tests, rather than a passing divergent branch alone. The 30-minute H007 sustained-success target is **not** a dependency.
+Hard dependencies: S001 closed with an evidence-qualified target/none disposition; independently verify H007's **actual resulting-mainline** CI and score/fixture tests. The PR #217 merge is complete; branch CI alone remains insufficient. The 30-minute H007 sustained-success target is **not** a dependency.
 
 ## 3. Current implementation and risk inventory
 
@@ -54,7 +54,7 @@ Out: live model requests, new provider adapter, fixing model's Rust ability, bro
 
 ## 7. Ordered work packages
 
-**A — Exact-main audit and scope selection.** After H007 merges, pin resulting main, evaluate S001 findings and list already implemented contracts. Build matching `codegg` and trusted `codegg-sandbox-helper`; run `codegg doctor installation`, two-subject smoke and tool-path fixture in separate private roots. Freeze one deterministic defect-candidate pair and separate protected controls. If no current harness defect is available, seed an explicitly labelled *historical* regression solely to prove controller mechanics.
+**A — Exact-main audit and scope selection.** With H007 merged, pin resulting main, evaluate S001 findings and list already implemented contracts. Build matching `codegg` and trusted `codegg-sandbox-helper`; run `codegg doctor installation`, two-subject smoke and tool-path fixture in separate private roots. Freeze one deterministic defect-candidate pair and separate protected controls. If no current harness defect is available, seed an explicitly labelled *historical* regression solely to prove controller mechanics.
 
 **B — Offline candidate acceptance and rejection.** Run manual/mocked proposal with isolated worktree and target, full build/fmt/focused native test, frozen ACP suite, hidden/negative controls and complete ledger comparator. Prove a known-correct candidate accepted on frozen synthetic evidence, and a no-op, incomplete patch and changed-expected-terminal candidate rejected. Prove a fast task pass stays a task pass under the H007 reader. Capture source/candidate binary hashes and all trial pairs.
 
@@ -110,7 +110,7 @@ A clean worktree and documented tools reproduce the *existing* optimizer's lifec
 
 ## 14. Stop conditions
 
-Stop for a missing H007 mainline merge, unresolved S001 finding, inability to freeze an independent verifier, inability to isolate two private subjects, failure to enforce the proposed spending boundary, missing usable local binary/helper, or required changes that would weaken native permissions or allow candidate-modified scoring. Escalate a true unrelated runtime defect to its owning subsystem.
+Stop for a missing resulting-mainline verification, unresolved S001 finding, inability to freeze an independent verifier, inability to isolate two private subjects, failure to enforce the proposed spending boundary, missing usable local binary/helper, or required changes that would weaken native permissions or allow candidate-modified scoring. Escalate a true unrelated runtime defect to its owning subsystem.
 
 ## 15. Closure evidence
 
