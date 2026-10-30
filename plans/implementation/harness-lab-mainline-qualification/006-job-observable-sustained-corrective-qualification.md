@@ -1,6 +1,6 @@
 # H006 — Job-Observable Sustained Corrective Qualification
 
-Status: **three authorized live attempts ended without sustained qualification; the latest completed the task and passed the hidden verifier but reached only 10m43s of active work; offline job-observation, request-cap, overlap, and duration gates pass; all live authorizations are consumed**
+Status: **corrective implementation completed successfully and merged by PR #216 at `f3c0a9e2`; H006 sustained live qualification remains unachieved after three consumed authorizations. The latest task and hidden verifier passed but reached only 10m43s of active work.**
 
 Subsystem roadmap: `plans/subsystems/harness-lab-mainline-and-long-horizon-qualification-addendum.md`
 

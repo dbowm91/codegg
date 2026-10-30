@@ -1,0 +1,120 @@
+{
+  "active_work_span_ms": 301922,
+  "activity_stall_triggered": false,
+  "authorization": {
+    "cancellation_conditions": [
+      "user request",
+      "provider request cap",
+      "60-minute wall-clock cap",
+      "free disk below 10 GiB",
+      "300 seconds without ACP tool activity",
+      "unverifiable request accounting",
+      "lost or mismatched exact-ID job observation"
+    ],
+    "consumed": true,
+    "fresh_user_authorized_attempt": true,
+    "max_provider_requests": 60,
+    "max_wallclock_seconds": 3600,
+    "minimum_free_disk_bytes": 10737418240,
+    "route": "opencode_go/muse-spark-1.3-contributor",
+    "stall_cancel_seconds": 300,
+    "usd_cost_unavailable_policy": "record billed USD as unknown; retain provider allowance separately",
+    "usd_cost_when_unavailable": "unknown"
+  },
+  "billed_usd": "unknown",
+  "binary_sha256": "80292d55a3ba9ba2291e2daffa67d083a450b9a4ebaeaf578ff882dda15bc04c",
+  "case_id": "build-provenance-catalog",
+  "continuation_confirmed": false,
+  "daemon_stop_error": null,
+  "disk_floor": {
+    "lowest_observed_free_bytes": 143434752000,
+    "minimum_free_bytes": 10737418240,
+    "triggered": false
+  },
+  "duration_ms": 488641,
+  "event_capture": {
+    "dropped": 0,
+    "gap_count": 0,
+    "state": "observed_complete",
+    "tool_started": 25,
+    "tool_terminal": 25
+  },
+  "fixture_metadata_sha256": "08b51eaf8c61373ddf492a5594e84991cac9b1e2dabb03388662286e454f24bd",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "measurement_incomplete",
+  "implementation_revision": "96b70206e40019e337772fbdd495ecaa35e91412",
+  "independent_verifier": {
+    "exit_code": 1,
+    "failure_summary": "(errors=1)",
+    "ran": true
+  },
+  "job_lifecycle": {
+    "explicit_job_status_calls": 0,
+    "productive_overlap": false,
+    "same_id_running_and_terminal_observed": false,
+    "submission_count": 4,
+    "submissions": [
+      {
+        "job_id": "8c19e7e9-c30f-40ea-bbb5-4e52e0f5fe5d",
+        "projected_job_status": null,
+        "source_tool": "test",
+        "submission_status": "completed"
+      },
+      {
+        "job_id": "38d54a48-c6fd-4bc0-862b-67e7db1be963",
+        "projected_job_status": null,
+        "source_tool": "test",
+        "submission_status": "failed"
+      },
+      {
+        "job_id": "e5b1afb4-c33f-462c-bcd0-cc1eee859ebd",
+        "projected_job_status": null,
+        "source_tool": "test",
+        "submission_status": "completed"
+      },
+      {
+        "job_id": "6bf0e729-e905-4821-b8bd-21c2a5d8a1f5",
+        "projected_job_status": null,
+        "source_tool": "test",
+        "submission_status": "failed"
+      }
+    ]
+  },
+  "manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "maximum_activity_gap_limit_ms": 300000,
+  "maximum_activity_gap_ms": 172169,
+  "minimum_active_duration_ms": 1800000,
+  "preflight_refusals": [
+    {
+      "corrective": "packaged frozen fixture and added byte-digest regression",
+      "provider_requests": 0,
+      "reason": "missing_editable_case_fixture"
+    },
+    {
+      "corrective": "used a dedicated pre-created private lane root",
+      "provider_requests": 0,
+      "reason": "default_lane_disk_probe_parent_missing"
+    }
+  ],
+  "provider_allowance_is_cash_charge": false,
+  "provider_allowance_usd": 0.011578,
+  "provider_request_count_source": "codegg_provider_boundary_receipt",
+  "provider_requests": 19,
+  "repair_cycles": 0,
+  "resource_usage": {
+    "cpu_seconds": 2.987,
+    "lane_disk_growth_bytes": 60828434,
+    "peak_rss_bytes": 362201088,
+    "sample_count": 898
+  },
+  "run_date": "2026-10-29",
+  "schema_version": 1,
+  "task_outcome": "inconclusive",
+  "terminal": "failed",
+  "terminal_failure": {
+    "category": "provider_timeout",
+    "kind": "HarnessTurnFailure",
+    "usage_reason": null
+  }
+}

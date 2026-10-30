@@ -1,0 +1,142 @@
+{
+  "active_work_span_ms": 307886,
+  "activity_stall_triggered": false,
+  "authorization": {
+    "billed_usd_when_unavailable": "unknown",
+    "cancellation_conditions": [
+      "user request",
+      "provider request cap",
+      "60-minute wall-clock cap",
+      "free disk below 10 GiB",
+      "300 seconds without ACP tool activity",
+      "unverifiable request accounting",
+      "lost or mismatched exact-ID job observation"
+    ],
+    "consumed": true,
+    "fresh_user_authorized_attempt": true,
+    "max_provider_requests": 60,
+    "max_wallclock_seconds": 3600,
+    "minimum_free_disk_bytes": 10737418240,
+    "route": "opencode_go/muse-spark-1.3-contributor",
+    "stall_cancel_seconds": 300
+  },
+  "billed_usd": "unknown",
+  "binary_sha256": "80292d55a3ba9ba2291e2daffa67d083a450b9a4ebaeaf578ff882dda15bc04c",
+  "case_id": "build-provenance-catalog",
+  "continuation_confirmed": true,
+  "daemon_stop_error": null,
+  "disk_floor": {
+    "lowest_observed_free_bytes": 147300352000,
+    "minimum_free_bytes": 10737418240,
+    "triggered": false
+  },
+  "duration_ms": 316694,
+  "event_capture": {
+    "dropped": 0,
+    "gap_count": 0,
+    "state": "observed_complete",
+    "tool_started": 48,
+    "tool_terminal": 48
+  },
+  "fixture_metadata_sha256": "08b51eaf8c61373ddf492a5594e84991cac9b1e2dabb03388662286e454f24bd",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "continuation_missing",
+  "horizon_reason_projection_note": {
+    "clarified_reason": "repair_cycles_insufficient",
+    "follow_up_commit": "75613e050625c9d39456b5e69132fa665a3cb13a",
+    "historical_outcome_rewritten": false,
+    "observed_continuation_confirmed": true,
+    "recorded_reason": "continuation_missing",
+    "repair_cycles": 1,
+    "required_repair_cycles": 2
+  },
+  "implementation_revision": "647ac905c5bc6d5c11093c03292372017eb26640",
+  "independent_verifier": {
+    "exit_code": 1,
+    "failed_assertion": "one repair cycle observed; at least two required",
+    "failure_summary": "(failures=1)",
+    "ran": true,
+    "tests_run": 5
+  },
+  "job_lifecycle": {
+    "jobs": [
+      {
+        "job_id": "5dd2d4c6-ff7d-4404-a55d-4f1479203071",
+        "source_actions": [
+          {
+            "action": "submit",
+            "projected_status": null,
+            "tool": "test",
+            "tool_terminal": "completed"
+          },
+          {
+            "action": "status",
+            "projected_status": "failed",
+            "tool": "job",
+            "tool_terminal": "failed"
+          },
+          {
+            "action": "output",
+            "projected_status": "failed",
+            "tool": "job",
+            "tool_terminal": "failed"
+          }
+        ]
+      },
+      {
+        "job_id": "0656b312-dc92-4ace-81ee-5b715e071a83",
+        "source_actions": [
+          {
+            "action": "submit",
+            "projected_status": null,
+            "tool": "test",
+            "tool_terminal": "completed"
+          },
+          {
+            "action": "status",
+            "projected_status": "running",
+            "tool": "job",
+            "tool_terminal": "completed"
+          },
+          {
+            "action": "status",
+            "projected_status": "completed",
+            "tool": "job",
+            "tool_terminal": "completed"
+          },
+          {
+            "action": "output",
+            "projected_status": "completed",
+            "tool": "job",
+            "tool_terminal": "completed"
+          }
+        ]
+      }
+    ],
+    "productive_work_during_job": true,
+    "same_id_running_and_terminal_observed": true
+  },
+  "manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "maximum_activity_gap_limit_ms": 300000,
+  "maximum_activity_gap_ms": 49461,
+  "minimum_active_duration_ms": 1800000,
+  "preflight_refusals": [],
+  "provider_allowance_is_cash_charge": false,
+  "provider_allowance_usd": 0.027364,
+  "provider_request_count_source": "codegg_provider_boundary_receipt",
+  "provider_requests": 35,
+  "repair_cycles": 1,
+  "resource_usage": {
+    "cpu_seconds": 20.628,
+    "lane_disk_growth_bytes": 94221785,
+    "peak_rss_bytes": 543989760,
+    "sample_count": 577
+  },
+  "retry_number": 2,
+  "run_date": "2026-10-29",
+  "schema_version": 1,
+  "stop_reason": "end_turn",
+  "task_outcome": "failed",
+  "terminal": "completed"
+}
