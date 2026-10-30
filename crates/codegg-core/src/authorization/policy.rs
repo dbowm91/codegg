@@ -971,11 +971,8 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::ViaSession,
             Some(Capability::FileModify),
         ),
-        // M007-H (plan 020, work package B). Reading a minted preview
-        // candidate discloses the same source content the apply acts on, so it
-        // mirrors `lsp_preview_apply`'s `ViaSession` scope and takes
-        // `FileRead` rather than `FileModify`. There is deliberately no
-        // weaker `project.observe` shortcut: a preview carries code.
+        // M007-H: a preview carries code, so the read mirrors
+        // `lsp_preview_apply`'s scope and takes `FileRead`.
         R::LspPreviewRead { .. } => OperationDescriptor::new(
             "lsp_preview_read",
             ScopeKind::ViaSession,
@@ -1047,12 +1044,9 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::FileRead),
         ),
-        // M007-H (plan 020, work package B, D7). The security review is one
-        // item across three surfaces: starting it is the surface that asks
-        // for the review to run and may apply a checked change, so it takes
-        // the same `ViaSession` + `FileModify` gate as `lsp_preview_apply`.
-        // Reading a run's state discloses the report and its findings, which
-        // carry source excerpts, so it takes `FileRead` at the same scope.
+        // M007-H: the start is the surface that may apply a checked change,
+        // so it takes `lsp_preview_apply`'s gate; the read carries source
+        // excerpts, so it takes `FileRead` at the same scope.
         R::SecurityReviewStart { .. } => OperationDescriptor::new(
             "security_review_start",
             ScopeKind::ViaSession,
@@ -1076,9 +1070,7 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::CommandExecute),
         ),
-        // M007-H (plan 020, work package B, D4). Listing the recent runs
-        // discloses the same command and working directory the read discloses,
-        // so it shares `human_shell_run_read`'s gate.
+        // M007-H: the list discloses what the read discloses.
         R::HumanShellRunList { .. } => OperationDescriptor::new(
             "human_shell_run_list",
             ScopeKind::DirectProject,

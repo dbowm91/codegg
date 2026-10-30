@@ -105,10 +105,7 @@ impl DaemonRequestFamily {
             | CoreRequest::LspWorkflowExecute { .. }
             | CoreRequest::LspDiagnosticsSubscribe { .. }
             | CoreRequest::LspCompletionGet { .. }
-            // M007-H (plan 020, work package B). Reading a minted preview
-            // candidate is read authority, so it joins `Lsp`; the write-side
-            // `LspPreviewApply` stays in `Goals` below, exactly as M006-B
-            // split it.
+            // M007-H: a preview read is read authority.
             | CoreRequest::LspPreviewRead { .. }
             | CoreRequest::SecurityReviewRead { .. } => Self::Lsp,
             // M006: the scratch census is measurement only. It never mutates
@@ -291,11 +288,7 @@ impl DaemonRequestFamily {
             CoreRequest::GoalSet { .. } => Self::Goals,
             CoreRequest::GoalSetBudget { .. } => Self::Goals,
             CoreRequest::GoalShow { .. } => Self::Goals,
-            // M007-H (plan 020, work package B, D7). The security review is
-            // one item across three surfaces. Its start is the surface that
-            // runs the review and may apply a checked change, so it takes the
-            // same owner as `LspPreviewApply` — ADR-0008's write path. Its
-            // read is read authority and is routed to `Lsp` above.
+            // M007-H: the review's start takes ADR-0008's write path.
             CoreRequest::LspPreviewApply { .. } | CoreRequest::SecurityReviewStart { .. } => {
                 Self::Goals
             }
