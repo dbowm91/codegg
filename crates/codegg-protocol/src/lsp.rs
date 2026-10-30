@@ -81,6 +81,14 @@ pub struct LspPreviewApplyRequestDto {
     pub patches: Vec<LspPreviewPatchDto>,
 }
 
+/// Read one reviewable preview candidate the daemon minted.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LspPreviewReadDto {
+    pub preview_id: String,
+    pub workspace_id: String,
+    pub session_id: String,
+}
+
 /// Result of a controlled LSP preview application.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LspPreviewApplyResultDto {

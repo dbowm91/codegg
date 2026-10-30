@@ -104,7 +104,13 @@ impl DaemonRequestFamily {
             | CoreRequest::LspControl { .. }
             | CoreRequest::LspWorkflowExecute { .. }
             | CoreRequest::LspDiagnosticsSubscribe { .. }
-            | CoreRequest::LspCompletionGet { .. } => Self::Lsp,
+            | CoreRequest::LspCompletionGet { .. }
+            // M007-H (plan 020, work package B). Reading a minted preview
+            // candidate is read authority, so it joins `Lsp`; the write-side
+            // `LspPreviewApply` stays in `Goals` below, exactly as M006-B
+            // split it.
+            | CoreRequest::LspPreviewRead { .. }
+            | CoreRequest::SecurityReviewRead { .. } => Self::Lsp,
             // M006: the scratch census is measurement only. It never mutates
             // the tree it measures, so it owns no write authority. M007: the
             // operator disposition removes one tree, and it owns no project
@@ -285,7 +291,14 @@ impl DaemonRequestFamily {
             CoreRequest::GoalSet { .. } => Self::Goals,
             CoreRequest::GoalSetBudget { .. } => Self::Goals,
             CoreRequest::GoalShow { .. } => Self::Goals,
-            CoreRequest::LspPreviewApply { .. } => Self::Goals,
+            // M007-H (plan 020, work package B, D7). The security review is
+            // one item across three surfaces. Its start is the surface that
+            // runs the review and may apply a checked change, so it takes the
+            // same owner as `LspPreviewApply` — ADR-0008's write path. Its
+            // read is read authority and is routed to `Lsp` above.
+            CoreRequest::LspPreviewApply { .. } | CoreRequest::SecurityReviewStart { .. } => {
+                Self::Goals
+            }
             CoreRequest::TodoList { .. } => Self::Goals,
             CoreRequest::WorkPlanBindRepository { .. } => Self::Goals,
             CoreRequest::WorkPlanRepositoryBinding { .. } => Self::Goals,
@@ -384,6 +397,7 @@ impl DaemonRequestFamily {
             CoreRequest::HumanShellRunCapabilities
             | CoreRequest::HumanShellRunCreate { .. }
             | CoreRequest::HumanShellRunRead { .. }
+            | CoreRequest::HumanShellRunList { .. }
             | CoreRequest::HumanShellRunCancel { .. } => Self::HumanShell,
             CoreRequest::Initialize => Self::Turns,
         }

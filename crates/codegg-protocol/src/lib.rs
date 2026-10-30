@@ -40,6 +40,7 @@ pub mod projection;
 pub mod provider;
 pub mod runtime_assets;
 pub mod scratch;
+pub mod security_review;
 pub mod skill;
 pub mod tui;
 pub mod ui;

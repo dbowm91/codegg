@@ -2085,6 +2085,18 @@ pub enum CoreResponse {
     HumanShellRunCancelled {
         run_id: String,
     },
+    HumanShellRunList {
+        runs: Vec<crate::human_shell::HumanShellRunMetadataDto>,
+    },
+    /// One reviewable preview candidate, or `None` when the daemon does
+    /// not hold it.
+    LspPreviewRead {
+        candidate: Option<crate::lsp::LspPreviewCandidateDto>,
+    },
+    /// One security review run, as the daemon holds it.
+    SecurityReviewRun {
+        run: crate::security_review::SecurityReviewRunDto,
+    },
     // ── Presence and Observation M001: Project-Scoped Presence Leases ──
     /// Acknowledgement of a heartbeat with the server-computed expiry.
     PresenceHeartbeatAck {
@@ -3540,6 +3552,10 @@ pub enum CoreRequest {
     LspPreviewApply {
         request: crate::lsp::LspPreviewApplyRequestDto,
     },
+    /// Read one reviewable preview candidate the daemon minted.
+    LspPreviewRead {
+        request: crate::lsp::LspPreviewReadDto,
+    },
     /// M006-B: one bounded LSP read — hover, definition, references, document
     /// symbols, workspace symbols, or semantic tokens
     /// (`via_session` + `file.read`).
@@ -3677,6 +3693,10 @@ pub enum CoreRequest {
     /// Cancel a caller-owned human shell run.
     HumanShellRunCancel {
         request: crate::human_shell::HumanShellRunCancelDto,
+    },
+    /// List a session's recent human shell runs.
+    HumanShellRunList {
+        request: crate::human_shell::HumanShellRunListDto,
     },
     // ── Presence and Observation M001: Project-Scoped Presence Leases ──
     /// Capability negotiation for the presence surface. Unknown
@@ -4245,6 +4265,14 @@ pub enum CoreRequest {
     /// removed.
     ScratchReclaim {
         request: crate::scratch::ScratchReclaimRequestDto,
+    },
+    /// Start one daemon-owned security review run.
+    SecurityReviewStart {
+        request: crate::security_review::SecurityReviewStartDto,
+    },
+    /// Read one security review run's daemon-owned state.
+    SecurityReviewRead {
+        request: crate::security_review::SecurityReviewReadDto,
     },
 }
 

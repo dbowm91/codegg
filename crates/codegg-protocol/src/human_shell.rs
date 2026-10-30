@@ -107,3 +107,14 @@ pub struct HumanShellRunCancelDto {
     #[serde(default)]
     pub session_id: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HumanShellRunListDto {
+    pub protocol_version: u32,
+    pub project_id: String,
+    pub workspace_id: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
