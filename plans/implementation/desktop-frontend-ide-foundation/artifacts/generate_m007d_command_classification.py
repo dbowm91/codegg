@@ -23,6 +23,9 @@ The sources it reads:
 * `src/tui/app/mod.rs` — the TUI's dispatcher: the requests an arm issues.
 * `src/tui/commands/**` and `src/tui/runtime/command_dispatch.rs` — the
   handlers an arm reaches.
+* `crates/codegg-client/src/**` — the client crate the TUI reaches the
+  daemon's document path through; an index that stops at `src/tui` cannot
+  see the requests that path issues.
 
 No cargo, no network: this is a textual measurement, like the guards that
 read the same files.
@@ -51,6 +54,15 @@ DAEMON_COMMANDS = "src/core/daemon_commands.rs"
 TUI_REGISTRY = "src/tui/command.rs"
 TUI_DISPATCH = "src/tui/app/mod.rs"
 TUI_DIR = "src/tui"
+# The trees the resolver reads. The TUI reaches the daemon's document path
+# through `codegg-client`, so an index that stops at `src/tui` cannot see
+# the requests that path issues.
+SOURCE_TREES = ("src/tui", "crates/codegg-client/src")
+# The module path each tree's modules are reachable under.
+MODULE_ROOTS = {
+    "src/tui": "",
+    "crates/codegg-client/src": "codegg_client::",
+}
 
 
 # ── Reading the sources ─────────────────────────────────────────────────────
@@ -226,18 +238,434 @@ def parse_registry(text: str) -> dict[str, str]:
 # ── The TUI's arms ──────────────────────────────────────────────────────────
 
 FN_RE = re.compile(r"(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)\s*(?:<[^>]*>)?\s*\(")
-REQ_RE = re.compile(r"CoreRequest::([A-Za-z0-9_]+)\s*\{([^{}]*)\}")
-# The command execution carries its request DTO, so its block holds a
-# nested struct literal and the flat pattern above cannot see it. Every
-# migrated arm builds one, so a scan that misses it reports those arms as
-# issuing no daemon request at all.
-CMD_RE = re.compile(r"CoreRequest::CommandExecute\s*\{((?:[^{}]|\{[^{}]*\})*)\}")
+# A request's payload is often a struct of its own
+# (`CoreRequest::InteractiveProcessCreate { request: .. }`), so the block is
+# scanned by its braces rather than by a regular expression: a flat
+# expression cannot see the closing brace of that payload, and a scan that
+# misses it reports the arm as issuing no daemon request at all.
+CTOR_RE = re.compile(r"CoreRequest::([A-Za-z0-9_]+)\s*\{")
 CALL_RE = re.compile(r"\b([a-z_][a-z0-9_]*)\s*\(")
 KEYWORDS = {
     "if", "for", "while", "match", "fn", "Some", "None", "Ok", "Err", "Vec", "String",
     "HashMap", "HashSet", "Box", "Arc", "move", "return", "let", "in", "else", "loop",
     "break", "continue", "as", "ref", "self",
 }
+# The keywords that cannot begin an expression. A method call's receiver
+# ends at the last of them — the `if` of `if app.state.view(..)` is not
+# part of the receiver.
+EXPRESSION_KEYWORDS = {
+    "as", "async", "await", "break", "const", "continue", "else", "enum", "fn",
+    "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut",
+    "pub", "ref", "return", "static", "struct", "unsafe", "use", "where", "while",
+    "yield",
+}
+
+
+# ── The resolver's lexical layer ───────────────────────────────────────────
+#
+# The resolver reads Rust as text, and three rules keep that honest:
+#
+# * A **literal is not syntax.** A brace, a parenthesis or a `=>` inside a
+#   string or a comment cannot open a block, so every scan runs over a
+#   *mask* in which the literals and the comments are blanked out. The mask
+#   keeps every offset, so a position in the mask is a position in the text.
+# * A **call names its callee and its arguments.** The arguments are what
+#   decide which arm of a dispatch site runs, so the resolver reads them.
+# * A **dispatch site is not a call.** A `match` over an enum dispatches to
+#   many variants, and the *caller* picks the one that runs. The resolver
+#   splits a body into the parts a given caller can reach and never unions
+#   the arms of a dispatch site into one set — a union is how an arm comes
+#   to own requests it never issues.
+
+
+def _blank(out: list[str], start: int, end: int) -> None:
+    for position in range(start, end):
+        out[position] = " "
+
+
+def _blank_string(text: str, start: int, out: list[str]) -> int:
+    """Blank the string literal at `start`; return the index past it."""
+    index = start + 1
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+            continue
+        if text[index] == '"':
+            index += 1
+            break
+        index += 1
+    _blank(out, start, min(index, len(text)))
+    return index
+
+
+def _blank_raw(text: str, start: int, out: list[str]) -> int:
+    """Blank the raw string literal at `start`; return the index past it."""
+    index = start
+    while index < len(text) and text[index] in "rb":
+        index += 1
+    hashes = 0
+    while index < len(text) and text[index] == "#":
+        hashes += 1
+        index += 1
+    if index >= len(text) or text[index] != '"':
+        return start
+    index += 1
+    terminator = '"' + "#" * hashes
+    end = text.find(terminator, index)
+    end = len(text) if end < 0 else end + len(terminator)
+    _blank(out, start, end)
+    return end
+
+
+def _blank_char(text: str, start: int) -> int:
+    """The index past the char literal at `start`, or `start` for a lifetime."""
+    if start + 1 < len(text) and text[start + 1] == "\\":
+        end = text.find("'", start + 2)
+        return len(text) if end < 0 else end + 1
+    if start + 2 < len(text) and text[start + 2] == "'":
+        return start + 3
+    return start
+
+
+def mask_literals(text: str) -> str:
+    """`text` with every string, char literal and comment blanked out."""
+    out = list(text)
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if text.startswith("//", index):
+            end = text.find("\n", index)
+            end = length if end < 0 else end
+            _blank(out, index, end)
+            index = end
+            continue
+        if text.startswith("/*", index):
+            depth = 1
+            end = index + 2
+            while end < length and depth:
+                if text.startswith("/*", end):
+                    depth += 1
+                    end += 2
+                elif text.startswith("*/", end):
+                    depth -= 1
+                    end += 2
+                else:
+                    end += 1
+            _blank(out, index, min(end, length))
+            index = end
+            continue
+        if char == '"':
+            index = _blank_string(text, index, out)
+            continue
+        if char in "rb":
+            end = _blank_raw(text, index, out)
+            if end > index:
+                index = end
+                continue
+        if char == "'":
+            end = _blank_char(text, index)
+            if end > index:
+                _blank(out, index, end)
+                index = end
+                continue
+        index += 1
+    return "".join(out)
+
+
+def matching_paren(masked: str, start: int) -> int:
+    """The index of the `)` closing the `(` at `start`, or -1."""
+    depth = 0
+    for position in range(start, len(masked)):
+        char = masked[position]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return position
+    return -1
+
+
+def _block_open(masked: str, start: int) -> int:
+    """The index of the `{` that opens the block starting at `start`, or -1."""
+    depth = 0
+    for position in range(start, len(masked)):
+        char = masked[position]
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+        elif char == "{" and depth == 0:
+            return position
+    return -1
+
+
+def _matching_brace(masked: str, start: int) -> int:
+    """The index of the `}` closing the `{` at `start`, or -1."""
+    depth = 0
+    for position in range(start, len(masked)):
+        char = masked[position]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return position
+    return -1
+
+
+def _receiver_of(text: str, masked: str, name_start: int) -> str | None:
+    """The expression a method name is called on.
+
+    `self.controller.open(..)` is called on `self.controller`; a plain call
+    has no receiver. The walk runs over the **masked** text, so a comment
+    in front of the call cannot be mistaken for the receiver, and the
+    tokens in front that cannot begin an expression — the `if` of
+    `if app.state.view(..)` — are dropped.
+    """
+    index = name_start - 1
+    while index >= 0 and masked[index] in " \t\r\n":
+        index -= 1
+    if index < 0 or masked[index] != ".":
+        return None
+    end = index
+    index -= 1
+    while index >= 0 and (
+        masked[index].isalnum() or masked[index] in "_." or masked[index] in " \t\r\n"
+    ):
+        index -= 1
+    offset = 0
+    for match in re.finditer(r"[A-Za-z_][A-Za-z0-9_]*", masked[index + 1 : end]):
+        if match.group(0) not in EXPRESSION_KEYWORDS:
+            break
+        offset = match.end()
+    receiver = text[index + 1 + offset : end].strip()
+    return receiver or None
+
+
+def call_sites(text: str) -> list[tuple[str, str, str | None]]:
+    """Every call in `text`: its name, its arguments, and its receiver."""
+    masked = mask_literals(text)
+    sites: list[tuple[str, str, str | None]] = []
+    for match in CALL_RE.finditer(masked):
+        name = match.group(1)
+        if name in KEYWORDS:
+            continue
+        open_paren = match.end() - 1
+        close = matching_paren(masked, open_paren)
+        if close < 0:
+            continue
+        sites.append((name, text[open_paren + 1 : close], _receiver_of(text, masked, match.start(1))))
+    return sites
+
+
+QUALIFIED_RE = re.compile(r"crate::tui::((?:\w+::)+)(\w+)")
+
+
+def qualified_calls(body: str) -> list[tuple[str, str, str]]:
+    """The `(module, function, arguments)` of every qualified call in `body`."""
+    masked = mask_literals(body)
+    calls: list[tuple[str, str, str]] = []
+    for match in QUALIFIED_RE.finditer(masked):
+        module = match.group(1)[:-2] if match.group(1).endswith("::") else match.group(1)
+        args = ""
+        open_paren = match.end()
+        if open_paren < len(masked) and masked[open_paren] == "(":
+            close = matching_paren(masked, open_paren)
+            if close >= 0:
+                args = body[open_paren + 1 : close]
+        calls.append((module, match.group(2), args))
+    return calls
+
+
+VARIANT_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]*)\s*::\s*([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def variant_hint(args: str) -> frozenset[str]:
+    """The enum variants an argument list names.
+
+    A dispatch site's arms are selected by the value the caller passes, and
+    the only thing the resolver can read about that value is the variant
+    the argument names. An argument that names none selects **nothing**:
+    the resolver cannot know which arm runs, and a guess is exactly the
+    defect this layer exists to remove.
+    """
+    return frozenset(
+        f"{match.group(1)}::{match.group(2)}"
+        for match in VARIANT_RE.finditer(mask_literals(args))
+    )
+
+
+def match_spans(text: str) -> list[tuple[int, int]]:
+    """The `(start, end)` of the braces of every `match` block in `text`."""
+    masked = mask_literals(text)
+    spans: list[tuple[int, int]] = []
+    for match in re.finditer(r"\bmatch\b", masked):
+        brace = _block_open(masked, match.end())
+        if brace < 0:
+            continue
+        close = _matching_brace(masked, brace)
+        if close < 0:
+            continue
+        spans.append((brace, close))
+    return spans
+
+
+def split_arms(content: str) -> list[tuple[str, str]]:
+    """The `(pattern, body)` of each arm of a match block.
+
+    A block-bodied arm needs **no** trailing comma in Rust, so the arms
+    cannot be found by the commas between them: the arms are found by
+    their `=>`, and each body ends where the body itself ends — at the
+    block's closing brace, or at the next comma.
+    """
+    masked = mask_literals(content)
+    arrows: list[int] = []
+    depth = 0
+    position = 0
+    while position < len(masked):
+        char = masked[position]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif depth == 0 and masked.startswith("=>", position):
+            arrows.append(position)
+            position += 2
+            continue
+        position += 1
+    arms: list[tuple[str, str]] = []
+    cursor = 0
+    for arrow in arrows:
+        pattern = masked[cursor:arrow].strip()
+        body, end = _arm_body(masked, content, arrow + 2)
+        arms.append((pattern, body))
+        cursor = end
+    return arms
+
+
+def _arm_body(masked: str, content: str, start: int) -> tuple[str, int]:
+    """An arm's body, and the index the next arm's pattern starts at."""
+    index = start
+    while index < len(masked) and masked[index] in " \t\r\n":
+        index += 1
+    if index < len(masked) and masked[index] == "{":
+        close = _matching_brace(masked, index)
+        if close < 0:
+            return content[start:], len(content)
+        end = close + 1
+        probe = end
+        while probe < len(masked) and masked[probe] in " \t\r\n":
+            probe += 1
+        if probe < len(masked) and masked[probe] == ",":
+            end = probe + 1
+        return content[start:end], end
+    depth = 0
+    for position in range(index, len(masked)):
+        char = masked[position]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            return content[start:position], position + 1
+    return content[start:], len(content)
+
+
+def arm_variants(pattern: str) -> list[tuple[str, str]]:
+    """The `(type, variant)` pairs a match arm's pattern names.
+
+    Only the pattern's **leading** path counts: `Err(TerminalInputError::NotLive(_))`
+    matches over a `Result`, not over `TerminalInputError`, and reading it
+    as the latter would turn a two-arm `Result` match into a dispatch site
+    the resolver cannot select an arm of.
+    """
+    variants: list[tuple[str, str]] = []
+    for alternative in _pattern_alternatives(pattern):
+        match = re.match(
+            r"\s*(?:[A-Za-z_][A-Za-z0-9_]*::)*"
+            r"([A-Z][A-Za-z0-9_]*)\s*::\s*([A-Za-z_][A-Za-z0-9_]*)",
+            alternative,
+        )
+        if match:
+            variants.append((match.group(1), match.group(2)))
+    return variants
+
+
+def _pattern_alternatives(pattern: str) -> list[str]:
+    """The `|`-separated alternatives of a match arm's pattern."""
+    masked = mask_literals(pattern)
+    depth = 0
+    start = 0
+    parts: list[str] = []
+    for position, char in enumerate(masked):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "|" and depth == 0:
+            parts.append(pattern[start:position])
+            start = position + 1
+    parts.append(pattern[start:])
+    return parts
+
+
+def dispatch_arms(arms: list[tuple[str, str]]) -> tuple[str, list[tuple[str, str]]] | None:
+    """The enum a match dispatches over, and the arms that name its variants.
+
+    A match whose arms name the variants of one enum is a **dispatch site**:
+    the caller chooses the arm, so the arms are not all reachable from it.
+    A match over `Option`, `Result` or a plain value names no variant and is
+    not a dispatch site — every one of its arms can run.
+    """
+    counts: dict[str, int] = defaultdict(int)
+    for pattern, _ in arms:
+        for enum_type, _ in arm_variants(pattern):
+            counts[enum_type] += 1
+    if not counts:
+        return None
+    enum_type = max(counts, key=lambda key: counts[key])
+    named = [
+        (pattern, body)
+        for pattern, body in arms
+        if any(kind == enum_type for kind, _ in arm_variants(pattern))
+    ]
+    if len(named) == len(arms) and len(named) < 2:
+        # One arm, and it is the only one: every caller reaches it.
+        return None
+    return enum_type, named
+
+
+def segments(body: str, hint: frozenset[str]) -> list[str]:
+    """The parts of `body` a caller with `hint` can reach.
+
+    A dispatch site's arms are reachable only when the hint selects them.
+    The rest of the body is always reachable.
+    """
+    parts: list[str] = []
+    cursor = 0
+    covered = 0
+    for start, end in match_spans(body):
+        if start < covered:
+            # A nested match: its arms live inside the arm that selected it.
+            continue
+        arms = split_arms(body[start + 1 : end])
+        dispatch = dispatch_arms(arms)
+        if dispatch is None:
+            continue
+        enum_type, named = dispatch
+        parts.append(body[cursor:start])
+        for pattern, arm_body in named:
+            selected = any(
+                f"{enum_type}::{variant}" in hint for _, variant in arm_variants(pattern)
+            )
+            if selected:
+                parts.extend(segments(arm_body, hint))
+        cursor = end + 1
+        covered = end
+    parts.append(body[cursor:])
+    return [part for part in parts if part.strip()]
 
 
 def _names_a_pattern(body: str, end: int) -> bool:
@@ -260,80 +688,323 @@ def _names_a_pattern(body: str, end: int) -> bool:
 def requests_in(body: str) -> set[str]:
     """The `CoreRequest` variants `body` **constructs**.
 
-    A construction initialises its fields (`field: value`); a match arm
-    names them (`{ .. }` or `{ field, .. }`). Counting a pattern as a
-    construction would attribute every request the arm *matches* to it,
-    which is the opposite of what this column measures.
+    A construction initialises its fields — spelled out (`field: value`) or
+    shorthand (`field`) — and a match arm names them. Counting a pattern as
+    a construction would attribute every request the arm *matches* to it,
+    which is the opposite of what this column measures. The two are told
+    apart by what follows the variant: a pattern is followed by `=>` (a
+    match arm) or by `=` (a `let` or an `if let`), and a construction by
+    neither.
+
+    The block is scanned by its braces rather than by a regular
+    expression, because a request's payload is often a struct of its own
+    (`CoreRequest::InteractiveProcessCreate { request: .. }`) and a
+    one-level expression cannot see the closing brace of that payload.
     """
     found: set[str] = set()
-    for match in REQ_RE.finditer(body):
-        block = match.group(2)
-        if ".." in block or "=>" in block:
+    masked = mask_literals(body)
+    for match in CTOR_RE.finditer(masked):
+        brace = match.end() - 1
+        close = _matching_brace(masked, brace)
+        if close < 0:
             continue
-        if ":" not in block:
+        block = masked[brace + 1 : close]
+        if _has_top_level(block, "..") or _has_top_level(block, "=>"):
             continue
-        if _names_a_pattern(body, match.end()):
+        if _names_a_pattern(masked, close + 1):
             continue
         found.add(match.group(1))
-    for match in CMD_RE.finditer(body):
-        block = match.group(1)
-        if ".." in block or "=>" in block:
-            continue
-        if ":" not in block:
-            continue
-        if _names_a_pattern(body, match.end()):
-            continue
-        found.add("CommandExecute")
     return found
 
 
-def _bodies(text: str) -> list[tuple[str, str]]:
-    bodies: list[tuple[str, str]] = []
-    for match in FN_RE.finditer(text):
-        index = match.end() - 1
-        depth = 0
-        cursor = index
-        while cursor < len(text):
-            if text[cursor] == "(":
-                depth += 1
-            elif text[cursor] == ")":
-                depth -= 1
-                if depth == 0:
-                    break
-            cursor += 1
-        brace = text.find("{", cursor)
+def _has_top_level(block: str, token: str) -> bool:
+    """Whether `token` appears in `block` outside every nested brace."""
+    masked = mask_literals(block)
+    depth = 0
+    for position, char in enumerate(masked):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif depth == 0 and masked.startswith(token, position):
+            return True
+    return False
+
+
+@dataclass
+class Function:
+    """One function: its body, its owner, and what its signature says."""
+
+    path: str
+    name: str
+    body: str
+    impl_type: str | None
+    return_type: str
+    params: dict[str, str]
+
+
+WRAPPERS = (
+    "Arc", "Rc", "Box", "Option", "Result", "Mutex", "AsyncMutex", "RwLock",
+    "RefCell", "Cell", "Pin",
+)
+
+
+def _first_generic_arg(inner: str) -> str:
+    """The first generic argument of a wrapper's argument list."""
+    depth = 1
+    for index, char in enumerate(inner):
+        if char == "<":
+            depth += 1
+        elif char == ">":
+            depth -= 1
+            if depth == 0:
+                return inner[:index]
+        elif char == "," and depth == 1:
+            return inner[:index]
+    return inner
+
+
+def unwrap_type(expr: str) -> str:
+    """The type name a type expression names.
+
+    `&mut App` is `App`, `Arc<DocumentController>` is `DocumentController`,
+    and `Option<TuiDocumentSession>` is `TuiDocumentSession`: the resolver
+    reads a receiver's type to find the method it carries, and neither the
+    reference nor the container is part of that identity.
+    """
+    text = re.sub(r"^&+\s*(?:mut\s+)?", "", expr.strip()).strip()
+    while True:
+        match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*<", text)
+        if match is None or match.group(1) not in WRAPPERS:
+            break
+        inner = _first_generic_arg(text[match.end() :])
+        if not inner:
+            break
+        text = re.sub(r"^&+\s*(?:mut\s+)?", "", inner).strip()
+    segment = text.split("::")[-1].strip()
+    match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)", segment)
+    return match.group(1) if match else ""
+
+
+def _strip_generics(header: str) -> str:
+    """The header with every generic argument list removed."""
+    text = header
+    while True:
+        stripped = re.sub(r"<[^<>]*>", " ", text)
+        if stripped == text:
+            return text
+        text = stripped
+
+
+def _decl_name(header: str) -> str | None:
+    """The name a declaration's header names."""
+    match = re.search(r"\b([A-Z][A-Za-z0-9_]*)\b", _strip_generics(header))
+    return match.group(1) if match else None
+
+
+def _impl_spans(masked: str) -> list[tuple[str | None, int, int]]:
+    """The `(type, start, end)` of every `impl` block in the masked text."""
+    spans: list[tuple[str | None, int, int]] = []
+    for match in re.finditer(r"\bimpl\b", masked):
+        brace = _block_open(masked, match.end())
         if brace < 0:
             continue
-        depth = 0
-        end = brace
-        while end < len(text):
-            if text[end] == "{":
-                depth += 1
-            elif text[end] == "}":
-                depth -= 1
-                if depth == 0:
-                    break
-            end += 1
-        bodies.append((match.group(1), text[brace : end + 1]))
-    return bodies
+        close = _matching_brace(masked, brace)
+        if close < 0:
+            continue
+        header = masked[match.end() : brace]
+        names = re.findall(r"\b([A-Z][A-Za-z0-9_]*)\b", _strip_generics(header))
+        spans.append((names[-1] if names else None, match.start(), close))
+    return spans
 
 
-class TuiIndex:
-    """The TUI's functions, module paths, and `use` imports."""
+def _param_types(params: str) -> dict[str, str]:
+    """The `name: type` pairs of a parameter list."""
+    result: dict[str, str] = {}
+    masked = mask_literals(params)
+    depth = 0
+    start = 0
+    parts: list[str] = []
+    for position, char in enumerate(masked):
+        if char in "([{<":
+            depth += 1
+        elif char in ")]}>":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(params[start:position])
+            start = position + 1
+    parts.append(params[start:])
+    for part in parts:
+        match = re.match(r"\s*(?:mut\s+)?([a-z_][a-z0-9_]*)\s*:\s*(.+)", part, re.S)
+        if match:
+            result[match.group(1)] = match.group(2).strip()
+    return result
+
+
+def _struct_fields(text: str) -> dict[str, dict[str, str]]:
+    """The `field: type` pairs of every struct in `text`."""
+    masked = mask_literals(text)
+    fields: dict[str, dict[str, str]] = {}
+    for match in re.finditer(r"\bstruct\b", masked):
+        brace = _block_open(masked, match.end())
+        if brace < 0:
+            continue
+        close = _matching_brace(masked, brace)
+        if close < 0:
+            continue
+        header = masked[match.end() : brace]
+        if ";" in header:
+            # A unit struct: there are no fields to read.
+            continue
+        name = _decl_name(header)
+        if name is None:
+            continue
+        entries: dict[str, str] = {}
+        for line in text[brace + 1 : close].split("\n"):
+            entry = re.match(
+                r"\s*(?:pub(?:\([^)]*\))?\s+)?([a-z_][a-z0-9_]*)\s*:\s*(.+?)(?:,\s*)?$", line
+            )
+            if entry:
+                entries[entry.group(1)] = entry.group(2).strip()
+        fields.setdefault(name, {}).update(entries)
+    return fields
+
+
+def _functions(text: str) -> list[Function]:
+    """Every function in `text`, with the `impl` block that owns it."""
+    masked = mask_literals(text)
+    impls = _impl_spans(masked)
+    functions: list[Function] = []
+    for match in FN_RE.finditer(masked):
+        open_paren = match.end() - 1
+        close = matching_paren(masked, open_paren)
+        if close < 0:
+            continue
+        brace = text.find("{", close)
+        if brace < 0:
+            continue
+        end = _matching_brace(masked, brace)
+        if end < 0:
+            continue
+        tail = text[close + 1 : brace]
+        return_type = ""
+        arrow = tail.find("->")
+        if arrow >= 0:
+            return_type = tail[arrow + 2 :].strip()
+        owner = None
+        for impl_type, start, stop in impls:
+            if start <= match.start() <= stop:
+                owner = impl_type
+        functions.append(
+            Function(
+                path="",
+                name=match.group(1),
+                body=text[brace : end + 1],
+                impl_type=owner,
+                return_type=return_type,
+                params=_param_types(text[open_paren + 1 : close]),
+            )
+        )
+    return functions
+
+
+LET_RE = re.compile(r"\blet\s+(?:mut\s+)?([a-z_][a-z0-9_]*)\s*(?::\s*([^=;]+?))?\s*=\s*")
+
+
+def _initializer(body: str, start: int) -> str | None:
+    """The expression a `let` binding initialises, up to its `;`."""
+    masked = mask_literals(body)
+    depth = 0
+    for position in range(start, len(masked)):
+        char = masked[position]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == ";" and depth == 0:
+            return body[start:position].strip()
+    return None
+
+
+def _split_chain(expr: str) -> tuple[str, list[tuple[str, bool]]] | None:
+    """The base of an expression and the `.step`s that follow it.
+
+    A step is a field access (`name`) or a method call (`name(..)`). An
+    expression the resolver cannot read — one with an operator in it, or a
+    call whose result is used — reads as nothing, and the caller falls
+    back to resolving the callee by name.
+    """
+    text = expr.strip()
+    match = re.match(r"^(?:self\b|[A-Za-z_][A-Za-z0-9_]*)", text)
+    if match is None:
+        return None
+    base = match.group(0)
+    index = match.end()
+    steps: list[tuple[str, bool]] = []
+    while index < len(text):
+        probe = index
+        while probe < len(text) and text[probe] in " \t\r\n":
+            probe += 1
+        if probe >= len(text) or text[probe] != ".":
+            return None
+        index = probe + 1
+        name_match = re.match(r"[A-Za-z_][A-Za-z0-9_]*", text[index:])
+        if name_match is None:
+            return None
+        name = name_match.group(0)
+        index += len(name)
+        is_call = False
+        probe = index
+        while probe < len(text) and text[probe] in " \t\r\n":
+            probe += 1
+        if probe < len(text) and text[probe] == "(":
+            close = matching_paren(mask_literals(text), probe)
+            if close < 0:
+                return None
+            index = close + 1
+            is_call = True
+        steps.append((name, is_call))
+    return base, steps
+
+
+class SourceIndex:
+    """The Rust the resolver reads.
+
+    The TUI reaches the daemon's document path through `codegg-client`, so
+    an index that stops at `src/tui` cannot see the requests that path
+    issues. The index therefore covers every tree the TUI calls into, and
+    it resolves a method call by the **type** of its receiver rather than
+    by its name: a name is not an identity, and two types can share one.
+    """
 
     def __init__(self, root: Path) -> None:
         self.files: dict[str, str] = {}
-        for path in sorted((root / TUI_DIR).rglob("*.rs")):
-            self.files[str(path.relative_to(root))] = read(path)
-        self.bodies: dict[str, list[tuple[str, str]]] = {
-            name: _bodies(text) for name, text in self.files.items()
-        }
+        for tree in SOURCE_TREES:
+            for path in sorted((root / tree).rglob("*.rs")):
+                self.files[str(path.relative_to(root))] = read(path)
+        self.functions: dict[str, list[Function]] = {}
+        self.methods: dict[str, dict[str, Function]] = defaultdict(dict)
+        self.fields: dict[str, dict[str, str]] = defaultdict(dict)
+        for name, text in self.files.items():
+            definitions = _functions(text)
+            for function in definitions:
+                function.path = name
+                if function.impl_type:
+                    self.methods[function.impl_type][function.name] = function
+            self.functions[name] = definitions
+            for type_name, entries in _struct_fields(text).items():
+                self.fields[type_name].update(entries)
         self.module_path: dict[str, str] = {}
         for name in self.files:
-            rel = name[len(TUI_DIR) + 1 : -3]
-            if rel.endswith("/mod"):
-                rel = rel[:-4]
-            self.module_path[rel.replace("/", "::")] = name
+            for tree, prefix in MODULE_ROOTS.items():
+                if not name.startswith(tree + "/"):
+                    continue
+                rel = name[len(tree) + 1 : -3]
+                if rel.endswith("/mod"):
+                    rel = rel[:-4]
+                if rel.endswith("/lib"):
+                    rel = rel[:-4]
+                self.module_path[prefix + rel.replace("/", "::")] = name
         self.imports: dict[str, dict[str, str]] = {}
         for name, text in self.files.items():
             self.imports[name] = self._parse_imports(text)
@@ -376,57 +1047,182 @@ class TuiIndex:
 
     def resolve_qualified(self, body: str, out: set[str]) -> None:
         """The requests reachable from the qualified calls in `body`."""
-        for match in re.finditer(r"crate::tui::((?:\w+::)+)(\w+)", body):
-            module = match.group(1)[:-2] if match.group(1).endswith("::") else match.group(1)
+        for module, name, args in qualified_calls(body):
             resolved = self.module_path.get(module)
             if resolved:
-                self.resolve(resolved, match.group(2), set(), out)
+                self.resolve(resolved, name, set(), out, 0, variant_hint(args))
 
-    def function(self, path: str, name: str) -> str | None:
-        for candidate, body in self.bodies.get(path, []):
-            if candidate == name:
-                return body
+    def function(self, path: str, name: str) -> Function | None:
+        for candidate in self.functions.get(path, []):
+            if candidate.name == name:
+                return candidate
         return None
 
-    def resolve(
-        self, path: str, name: str, seen: set[tuple[str, str]], out: set[str], depth: int = 0
-    ) -> None:
-        """The requests reachable from calling `name` inside `path`."""
-        if depth > 5 or (path, name) in seen:
-            return
-        seen.add((path, name))
-        body = self.function(path, name)
-        target = path
-        if body is None:
-            imported = self.imports.get(path, {}).get(name)
-            if imported is not None:
-                body = self.function(imported, name)
-                target = imported
-            if body is None:
-                # A sibling module of the same directory may define it.
-                directory = os.path.dirname(path)
-                for candidate in self.files:
-                    if os.path.dirname(candidate) != directory:
-                        continue
-                    body = self.function(candidate, name)
-                    if body is not None:
-                        target = candidate
-                        break
-            if body is None:
-                return
-        out.update(requests_in(body))
-        for match in re.finditer(r"crate::tui::((?:\w+::)+)(\w+)", body):
-            module = match.group(1)[:-2] if match.group(1).endswith("::") else match.group(1)
-            resolved = self.module_path.get(module)
-            if resolved:
-                self.resolve(resolved, match.group(2), seen, out, depth + 1)
-        for call in CALL_RE.findall(body):
-            if call in KEYWORDS:
+    def _lookup(self, path: str, name: str) -> tuple[Function | None, str]:
+        """The function `name` reaches from `path`, and the file it lives in."""
+        definition = self.function(path, name)
+        if definition is not None:
+            return definition, path
+        imported = self.imports.get(path, {}).get(name)
+        if imported is not None:
+            definition = self.function(imported, name)
+            if definition is not None:
+                return definition, imported
+        # A sibling module of the same directory may define it.
+        directory = os.path.dirname(path)
+        for candidate in self.files:
+            if os.path.dirname(candidate) != directory:
                 continue
-            self.resolve(target, call, seen, out, depth + 1)
+            definition = self.function(candidate, name)
+            if definition is not None:
+                return definition, candidate
+        return None, path
+
+    def expr_type(
+        self,
+        path: str,
+        definition: Function,
+        expr: str,
+        seen: set[tuple[str, str, str]] | None = None,
+    ) -> str | None:
+        """The type an expression names, when the index can read it."""
+        if seen is None:
+            seen = set()
+        chain = _split_chain(expr)
+        if chain is None:
+            return None
+        base, steps = chain
+        current = self._base_type(definition, base, seen)
+        if current is None:
+            return None
+        for name, is_call in steps:
+            if is_call:
+                method = self.methods.get(current, {}).get(name)
+                if method is None:
+                    # A method the index does not know leaves the receiver's
+                    # type alone: `Option::as_ref` and `Option::expect` are
+                    # std's, and the type they carry is the one the caller
+                    # already had.
+                    continue
+                current = unwrap_type(method.return_type)
+            else:
+                field = self.fields.get(current, {}).get(name)
+                if field is None:
+                    return None
+                current = unwrap_type(field)
+        return current
+
+    def _base_type(
+        self, definition: Function, name: str, seen: set[tuple[str, str, str]]
+    ) -> str | None:
+        """The type a name refers to: `self`, a parameter, or a local."""
+        if name == "self":
+            return definition.impl_type
+        if name in definition.params:
+            return unwrap_type(definition.params[name])
+        return self._local_type(definition, name, seen)
+
+    def _local_type(
+        self, definition: Function, name: str, seen: set[tuple[str, str, str]]
+    ) -> str | None:
+        """The type a `let` binding gives a local, when the index can read it."""
+        key = (definition.path, definition.name, name)
+        if key in seen:
+            # A binding that reads itself resolves to nothing: the resolver
+            # cannot tell which of the two it means.
+            return None
+        seen.add(key)
+        for match in LET_RE.finditer(definition.body):
+            if match.group(1) != name:
+                continue
+            if match.group(2):
+                return unwrap_type(match.group(2))
+            expression = _initializer(definition.body, match.end())
+            if expression is None:
+                return None
+            return self.expr_type(definition.path, definition, expression, seen)
+        return None
+
+    def _resolve_call(
+        self,
+        target: str,
+        definition: Function,
+        call: str,
+        args: str,
+        receiver: str | None,
+        seen: set[tuple[str, str, frozenset[str]]],
+        out: set[str],
+        depth: int,
+        flow: frozenset[str],
+    ) -> None:
+        """Follow one call to the function it reaches.
+
+        A **method** call is resolved by the type of its receiver, or not at
+        all: a name is not an identity, and two types can share one. A
+        call whose receiver's type the index cannot read is therefore left
+        unresolved rather than matched by name — resolving it by name is
+        how `report.render()` comes to mean `App::render`, and how an arm
+        comes to own a request it never issues.
+
+        `flow` carries the variants that may reach the callee. A variant
+        the caller names travels with the value it binds, so a dispatch
+        site further down can still be told which of its arms runs.
+        """
+        hint = variant_hint(args)
+        if receiver is not None:
+            receiver_type = self.expr_type(target, definition, receiver)
+            if not receiver_type:
+                return
+            method = self.methods.get(receiver_type, {}).get(call)
+            if method is None:
+                return
+            self.resolve(method.path, method.name, seen, out, depth + 1, hint | flow)
+            return
+        self.resolve(target, call, seen, out, depth + 1, hint | flow)
+
+    def resolve(
+        self,
+        path: str,
+        name: str,
+        seen: set[tuple[str, str, frozenset[str]]],
+        out: set[str],
+        depth: int = 0,
+        hint: frozenset[str] = frozenset(),
+    ) -> None:
+        """The requests reachable from calling `name` inside `path`.
+
+        `hint` names the enum variants the caller's argument selects. It is
+        what keeps a dispatch site's arms apart: without it the resolver
+        would union every arm of every `match` it walked through, and an
+        arm would inherit requests it never issues.
+        """
+        key = (path, name, hint)
+        if depth > 5 or key in seen:
+            return
+        seen.add(key)
+        definition, target = self._lookup(path, name)
+        if definition is None:
+            return
+        for segment in segments(definition.body, hint):
+            out.update(requests_in(segment))
+            for call, args, receiver in call_sites(segment):
+                self._resolve_call(
+                    target, definition, call, args, receiver, seen, out, depth, hint
+                )
+            for module, function_name, args in qualified_calls(segment):
+                resolved = self.module_path.get(module)
+                if resolved:
+                    self.resolve(
+                        resolved,
+                        function_name,
+                        seen,
+                        out,
+                        depth + 1,
+                        variant_hint(args) | hint,
+                    )
 
 
-def arm_requests(index: TuiIndex) -> dict[str, tuple[int, list[str]]]:
+def arm_requests(index: SourceIndex) -> dict[str, tuple[int, list[str]]]:
     """The requests each dispatcher arm issues, and the arm's line."""
     dispatch = index.files[TUI_DISPATCH]
     lines = dispatch.split("\n")
@@ -458,11 +1254,9 @@ def arm_requests(index: TuiIndex) -> dict[str, tuple[int, list[str]]]:
             else len(runtime_lines)
         )
         body = "\n".join(runtime_lines[line_no:end])
-        requests: set[str] = requests_in(body)
-        for call in set(CALL_RE.findall(body)):
-            if call in KEYWORDS:
-                continue
-            index.resolve(runtime, call, set(), requests)
+        requests: set[str] = set(requests_in(body))
+        for call, args, _receiver in call_sites(body):
+            index.resolve(runtime, call, set(), requests, 0, variant_hint(args))
         index.resolve_qualified(body, requests)
         channel.setdefault(variant, set()).update(requests)
 
@@ -470,11 +1264,9 @@ def arm_requests(index: TuiIndex) -> dict[str, tuple[int, list[str]]]:
     for position, (line_no, name) in enumerate(arms):
         end = arms[position + 1][0] if position + 1 < len(arms) else start + 3600
         body = "\n".join(lines[line_no:end])
-        requests: set[str] = requests_in(body)
-        for call in set(CALL_RE.findall(body)):
-            if call in KEYWORDS:
-                continue
-            index.resolve(TUI_DISPATCH, call, set(), requests)
+        requests: set[str] = set(requests_in(body))
+        for call, args, _receiver in call_sites(body):
+            index.resolve(TUI_DISPATCH, call, set(), requests, 0, variant_hint(args))
         index.resolve_qualified(body, requests)
         for match in re.finditer(r"TuiCommand::(\w+)", body):
             requests |= channel.get(match.group(1), set())
@@ -510,9 +1302,14 @@ def _missing(name: str, surface: str, reason: str) -> None:
 
 
 # The habit store, the skill-promotion store, the transcript search, the
-# doctor routine, the plugin manager and the interactive terminal are all
-# **the frontend's own**: the TUI opens the file, keeps the buffer, or runs
-# the routine. None of them touches daemon-owned state.
+# doctor routine and the plugin manager are all **the frontend's own**: the
+# TUI opens the file, keeps the buffer, or runs the routine. None of them
+# touches daemon-owned state.
+#
+# The interactive terminal is **not** in this list: the daemon owns the
+# interactive process, answers every `CoreRequest::InteractiveProcess*`, and
+# the terminal arms issue those requests. The terminal's forms are
+# classified in the table below, where the arm's requests are counted.
 _misclassified(
     "/habits",
     "the TUI's own `HabitStore` on the local filesystem — not the daemon's memory store",
@@ -541,20 +1338,18 @@ _misclassified("/plugin-disable", "the TUI's own `PluginManager`")
 _misclassified("/plugin-doctor", "the TUI's own `PluginManager`")
 _misclassified("/plugin-remove", "the TUI's own `PluginManager`")
 _misclassified("/plugin-install", "the TUI's own `PluginManager`")
-_misclassified("/terminal", "the TUI's own interactive terminal")
-_misclassified("/terminal-create", "the TUI's own interactive terminal")
-_misclassified("/terminal-resize", "the TUI's own interactive terminal")
-_misclassified("/terminal-detach", "the TUI's own interactive terminal")
-_misclassified("/terminal-terminate", "the TUI's own interactive terminal")
-_misclassified("/terminal-remove", "the TUI's own interactive terminal")
 
 # The language server is daemon-owned: `egglsp` is authoritative and the
 # TUI's `LspTool` is a second, non-authoritative instance that is absent in
 # the daemon-connected configuration, so every `/lsp-*` arm already refuses
 # there. The classification is right and the daemon lacks the surface.
+#
+# `/lsp-preview-apply` is **not** in this list: its arm builds the daemon's
+# `LspPreviewApply` request, so the daemon holds the surface and the form
+# is classified in the table below, where the arm's requests are counted.
 for _lsp in (
     "/lsp-previews", "/lsp-preview", "/lsp-preview-clear", "/lsp-preview-refresh",
-    "/lsp-preview-apply", "/lsp-servers", "/lsp-capabilities", "/lsp-root",
+    "/lsp-servers", "/lsp-capabilities", "/lsp-root",
     "/lsp-restart", "/lsp-stop", "/lsp-cache-status", "/lsp-cache-clear",
     "/lsp-doctor", "/lsp-context-diagnostics", "/lsp-repair-local",
     "/lsp-repair-hunk", "/lsp-review-file", "/lsp-review-diff",
@@ -566,6 +1361,51 @@ for _lsp in (
         "M007-F — the daemon's LSP command surface",
         "the authoritative language server is daemon-owned, and the daemon has no request for this surface",
     )
+
+# The agent registry is the TUI's own: `app.agent_state` holds the agents
+# the TUI loaded from its asset snapshot, and both arms read it directly.
+_misclassified(
+    "/agent",
+    "the TUI selects from its own agent registry (`app.agent_state`); the catalog's kind is wrong and the corrected kind is `FrontendEffect`",
+)
+_misclassified(
+    "/agents",
+    "the TUI lists its own agent registry (`app.agent_state`); the catalog's kind is wrong and the corrected kind is `FrontendEffect`",
+)
+
+# The git-review diff view is the frontend's own: the arm runs one local
+# `git` subprocess — `git diff`, or `git show HEAD:<path>` when a path is
+# given — and reads one file, and the two branches are mutually exclusive.
+# The git root comes from `crate::worktree::find_git_root`, which is
+# `egggit`'s read-only worktree reader, not `codegg-git`'s typed writer.
+_misclassified(
+    "/diff",
+    "the arm's effect is the frontend's own: one local `git` subprocess and one file read, "
+    "with the git root read through the read-only `egggit` crate — no daemon-mediated "
+    "process is driven",
+)
+
+# The research forms read the TUI's own research service over the local
+# filesystem. No daemon request is their effect.
+_misclassified(
+    "/research-open",
+    "the TUI's own `ResearchService` over the local filesystem; the catalog's kind is wrong and the corrected kind is `FrontendEffect`",
+)
+_misclassified(
+    "/research-runs",
+    "the TUI's own `ResearchService` over the local filesystem; the catalog's kind is wrong and the corrected kind is `FrontendEffect`",
+)
+_misclassified(
+    "/research-show",
+    "the TUI's own `ResearchService` over the local filesystem; the catalog's kind is wrong and the corrected kind is `FrontendEffect`",
+)
+
+_misclassified(
+    "/import",
+    "the arm only opens the import dialog (`src/tui/app/mod.rs:6603`); the fork "
+    "itself travels as the daemon's own `SessionFork` request, so the command form "
+    "is a `FrontendEffect` and the catalog's kind is wrong",
+)
 
 _missing(
     "/compact",
@@ -608,14 +1448,22 @@ _missing(
     "cancelling a security-review run is a daemon-owned turn cancellation",
 )
 _missing(
-    "/review-change",
+    "/security-review-show",
     "M007-H — the daemon's missing command surfaces",
-    "the change-review workflow is a daemon-owned agent turn",
+    "the arm shows the TUI's cached review result, and the daemon has no request that reads one — the same missing surface as `/security-review`",
 )
 _missing(
     "/open",
     "M007-H — the daemon's missing command surfaces",
-    "opening a document is daemon-owned workspace state",
+    "the daemon has `DocumentOpen` and the TUI already issues it, but the daemon "
+    "exposes no `/open` command form, so the catalog's form is unserved",
+)
+_missing(
+    "/review-change",
+    "M007-H — the daemon's missing command surfaces",
+    "the canonical checked apply `CoreRequest::LspPreviewApply` exists, but the "
+    "daemon exposes no `/review-change` command form, so the catalog's form is "
+    "unserved",
 )
 _missing(
     "/shell-rerun",
@@ -659,24 +1507,6 @@ def _arm(name: str, verdict: str, reason: str) -> None:
     ARM_VERDICTS[name] = (verdict, reason)
 
 
-# The agent registry is the TUI's own: `app.agent_state` holds the agents the
-# TUI loaded from its asset snapshot, and both arms read it directly. The
-# daemon request they issue is a project lookup, not the effect.
-_arm(
-    "/agent",
-    "misclassified",
-    "the TUI selects from its own agent registry (`app.agent_state`); the catalog's kind is wrong and the corrected kind is `FrontendEffect`",
-)
-_arm(
-    "/agents",
-    "misclassified",
-    "the TUI lists its own agent registry (`app.agent_state`); the catalog's kind is wrong and the corrected kind is `FrontendEffect`",
-)
-_arm(
-    "/security-review-show",
-    "not mechanical",
-    "the arm shows the TUI's cached review result, and the daemon has no request that reads one — the same missing surface as `/security-review` (M007-H)",
-)
 # The collaboration forms. The chat ones split: three carry a channel and a
 # number, and the argument's convention carries both; the rest carry free
 # text, a structured payload, a list or a second effect.
@@ -778,12 +1608,62 @@ _arm(
     "the arm's effect is the job wait, and `JobWait` takes one identifier — the job id — which travels as the argument; the workspace registration stays a prerequisite",
 )
 
-# The git-review and memory forms are subsystem moves.
+# The interactive terminal is **daemon-owned**: the daemon answers every
+# `CoreRequest::InteractiveProcess*`, and the terminal's arms issue those
+# requests. The forms split on what the request carries: the detach,
+# terminate and remove requests carry one identifier, and the resize and
+# create requests carry more than the argument's convention can hold.
 _arm(
-    "/diff",
-    "subsystem move",
-    "the arm drives {n} daemon requests; moving it is a subsystem, not a table row",
+    "/terminal-detach",
+    "mechanical",
+    "`InteractiveProcessDetach` takes one identifier — the resolved attachment id — which travels as the argument",
 )
+_arm(
+    "/terminal-terminate",
+    "mechanical",
+    "`InteractiveProcessTerminate` takes one identifier — the resolved attachment id — which travels as the argument",
+)
+_arm(
+    "/terminal-remove",
+    "mechanical",
+    "`InteractiveProcessRemove` takes one identifier — the resolved attachment id — which travels as the argument",
+)
+_arm(
+    "/terminal-resize",
+    "not mechanical",
+    "`InteractiveProcessResize` carries three values — the attachment id, the columns and the rows — and the argument's convention carries a handle and at most one number",
+)
+_arm(
+    "/terminal",
+    "not mechanical",
+    "`InteractiveProcessCreate` carries the whole create request — the workspace, the argv, the cwd, the environment overrides and the viewport — and the argument's convention cannot carry it",
+)
+_arm(
+    "/terminal-create",
+    "not mechanical",
+    "`InteractiveProcessCreate` carries the whole create request — the workspace, the argv, the cwd, the environment overrides and the viewport — and the argument's convention cannot carry it",
+)
+
+# The document and change-review forms: the daemon holds both surfaces
+# (`DocumentOpen` and `LspPreviewApply`), so neither is a missing
+# capability; each request carries more than the scope and an argument.
+_arm(
+    "/open",
+    "not mechanical",
+    "`DocumentOpen` carries the project, the workspace, the relative path and the scope, and the writer lease carries the document id; the argument's convention has room for one token",
+)
+_arm(
+    "/review-change",
+    "not mechanical",
+    "the arm builds the whole `LspPreviewApply` request — the candidate's title, kind, provenance and patches — and the argument's convention cannot carry it",
+)
+_arm(
+    "/lsp-preview-apply",
+    "not mechanical",
+    "the arm builds the whole `LspPreviewApply` request — the candidate's title, kind, provenance and patches — and the argument's convention cannot carry it",
+)
+
+# The git-review and memory forms are subsystem moves.
 _arm(
     "/memory-consolidate",
     "not mechanical",
@@ -795,30 +1675,7 @@ _arm(
     "the arm drives {n} daemon requests; moving it is a subsystem, not a table row",
 )
 
-# The research forms read the TUI's own research service over the local
-# filesystem. No daemon request is their effect.
-_arm(
-    "/research-open",
-    "misclassified",
-    "the TUI's own `ResearchService` over the local filesystem; the catalog's kind is wrong and the corrected kind is `FrontendEffect`",
-)
-_arm(
-    "/research-runs",
-    "misclassified",
-    "the TUI's own `ResearchService` over the local filesystem; the catalog's kind is wrong and the corrected kind is `FrontendEffect`",
-)
-_arm(
-    "/research-show",
-    "misclassified",
-    "the TUI's own `ResearchService` over the local filesystem; the catalog's kind is wrong and the corrected kind is `FrontendEffect`",
-)
-
 # The session forms.
-_arm(
-    "/import",
-    "not mechanical",
-    "the arm opens the import dialog; the daemon request is issued by the dialog's own submit path, not by the command",
-)
 _arm(
     "/new",
     "not mechanical",
@@ -847,7 +1704,7 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     registry = parse_registry(read(ROOT / TUI_REGISTRY))
     daemon_text = read(ROOT / DAEMON_COMMANDS)
     requests = parse_effect_requests(daemon_text)
-    index = TuiIndex(ROOT)
+    index = SourceIndex(ROOT)
     arms = arm_requests(index)
 
     rows: list[dict] = []
@@ -1218,16 +2075,28 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     write("  remove and install over the plugin registry the daemon actually loads. The")
     write("  TUI's `PluginManager` is its own instance and the daemon has none. | **yes** —")
     write("  the plugin registry's owner is a new ownership boundary |")
-    write("| M007-H | the daemon's missing command surfaces: compaction, subagent steer,")
-    write("  the plan list, the test suite, a git revert, the research turn, the security-")
-    write("  review and change-review workflows, opening a document, re-running a human-")
-    write("  shell run, and a log tail. Each is an existing request family the daemon has")
-    write("  not grown yet. | no — these extend request families that already exist |")
-    write("| M007-I | the three **subsystem moves**: the git-review diff view, the")
-    write("  skill-promotion workflow, and the human-shell ask workflow. Each is a")
-    write("  workflow of dozens of daemon requests rather than one effect, so moving")
-    write("  it is a milestone with its own ownership question — which daemon owns")
-    write("  the workflow's state, and whether the frontend keeps any of it. | **yes** —")
+    # The follow-up lists are **derived** from the verdict tables, never
+    # written by hand. A hand-written name drifts from the row it names —
+    # a form that stops being a missing capability leaves the list, and a
+    # hand-written list would keep it — and `--check` cannot see it,
+    # because both come from this file.
+    m007h = sorted(
+        name
+        for name, (_verdict, surface, _reason) in VERDICTS.items()
+        if surface == "M007-H — the daemon's missing command surfaces"
+    )
+    m007i = sorted(
+        name for name, (verdict, _reason) in ARM_VERDICTS.items() if verdict == "subsystem move"
+    )
+    write(f"| M007-H | the daemon's missing command surfaces: {len(m007h)} of them —")
+    write("  " + ", ".join(f"`{name}`" for name in m007h) + ". Each is a surface the")
+    write("  daemon has not exposed as a command. | no — these extend request")
+    write("  families that already exist |")
+    write(f"| M007-I | the {len(m007i)} **subsystem moves**:")
+    write("  " + ", ".join(f"`{name}`" for name in m007i) + ". Each is a workflow of")
+    write("  more than one daemon request rather than one effect, so moving it is a")
+    write("  milestone with its own ownership question — which daemon owns the")
+    write("  workflow's state, and whether the frontend keeps any of it. | **yes** —")
     write("  each is a new ownership boundary, and ADR-0052 does not cover it |")
     write("")
     write("### The forms whose TUI arm issues a daemon request")
@@ -1336,12 +2205,22 @@ def migrated_commands() -> dict[str, str]:
 def self_test() -> int:
     """Prove the generator's own invariants, by injecting their defects.
 
-    Two properties are load-bearing and neither fails loudly on its own:
+    Five properties are load-bearing and none fails loudly on its own:
 
     * a **match arm** names a request; it does not construct one. A test
       double's arm would otherwise put a request the production path never
       issues into the artifact — which is exactly what happened when the
       corrective pass taught a double to answer a command execution.
+    * a **shorthand** construction counts, and a construction whose payload
+      nests a struct counts. Both are ordinary Rust, and a scan that
+      misses them reports the arm as issuing no request at all.
+    * a **dispatch site** — a `match` over an enum — does not union its
+      arms. The caller picks the arm, so an arm that inherited the other
+      arms' requests would issue requests it never sends.
+    * the index reaches the **client crate**, and a method call is
+      resolved by the **type** of its receiver. A name is not an
+      identity: two types can share one, and `report.render()` is not
+      `App::render`.
     * the `--check` mode must **reject** a stale artifact. A check that
       accepts everything proves nothing.
     """
@@ -1362,6 +2241,20 @@ def self_test() -> int:
         requests_in("CoreRequest::WorkspaceDashboard { id: value }"),
         {"WorkspaceDashboard"},
     )
+    # A shorthand construction counts: `CoreRequest::LspPreviewApply {
+    # request }` moves the value into the field.
+    expect(
+        "a shorthand construction counts",
+        requests_in("Ok(crate::protocol::core::CoreRequest::LspPreviewApply { request })"),
+        {"LspPreviewApply"},
+    )
+    # A construction whose payload nests a struct counts: the block is
+    # closed by its own braces, not by the first `}` inside it.
+    expect(
+        "a construction with a nested payload counts",
+        requests_in("CoreRequest::InteractiveProcessCreate { request: Dto { argv } }"),
+        {"InteractiveProcessCreate"},
+    )
     # A match arm names the variant: it does not count. Its `=>` follows the
     # block, so the block alone cannot tell the two apart.
     expect(
@@ -1379,6 +2272,60 @@ def self_test() -> int:
         requests_in("CoreRequest::WorkspaceDashboard { .. } => { let _ = 1; }"),
         set(),
     )
+
+    # A dispatch site is not a call: the caller picks the arm, so the
+    # resolver must not union the arms into one set.
+    dispatch_body = (
+        "{\n"
+        "    match msg {\n"
+        "        TuiMsg::First => { self.first(); }\n"
+        "        TuiMsg::Second => { self.second(); }\n"
+        "    }\n"
+        "}\n"
+    )
+    selected = " ".join(segments(dispatch_body, frozenset({"TuiMsg::First"})))
+    expect("a dispatch site selects the hinted arm", "self.first()" in selected, True)
+    expect("a dispatch site drops the other arms", "self.second()" in selected, False)
+    unhinted = " ".join(segments(dispatch_body, frozenset()))
+    expect("a dispatch site with no hint selects no arm", "self.first()" in unhinted, False)
+    expect("a dispatch site with no hint selects no other arm", "self.second()" in unhinted, False)
+
+    # The index reaches the crate the TUI calls through, and a method is
+    # resolved by the type of its receiver.
+    index = SourceIndex(ROOT)
+    expect(
+        "the index reaches the client crate",
+        "crates/codegg-client/src/document.rs" in index.files,
+        True,
+    )
+    controller = index.methods.get("DocumentController", {}).get("open")
+    expect("the client's document controller is indexed", controller is not None, True)
+    if controller is not None:
+        expect(
+            "the client's controller opens the daemon's document",
+            "DocumentOpen" in requests_in(controller.body),
+            True,
+        )
+    editor = index.function("src/tui/commands/editor.rs", "open_editor_in")
+    expect("the editor's opener is indexed", editor is not None, True)
+    if editor is not None:
+        expect(
+            "the editor's controller resolves to the client crate's type",
+            index.expr_type("src/tui/commands/editor.rs", editor, "controller"),
+            "DocumentController",
+        )
+        # `open` is a method on two types in the tree, and only the
+        # receiver's type says which one runs. Resolved by name, the
+        # controller's `open` becomes the review surface's `open`, and the
+        # arm issues the wrong request.
+        opened: set[str] = set()
+        index.resolve("src/tui/commands/editor.rs", "open_editor_in", set(), opened, 0)
+        expect("the opener issues the document request", "DocumentOpen" in opened, True)
+        expect(
+            "the opener does not reach a same-named method elsewhere",
+            "LspPreviewApply" in opened,
+            False,
+        )
 
     # The `--check` mode has teeth: a perturbed artifact is not the derived
     # one, so the comparison can fail.
@@ -1401,7 +2348,10 @@ def self_test() -> int:
         for failure in failures:
             print(f"self-test failed: {failure}", file=sys.stderr)
         return 1
-    print("self-test passed: the generator counts constructions, not patterns")
+    print(
+        "self-test passed: the generator counts constructions, not patterns, "
+        "and keeps a dispatch site's arms apart"
+    )
     return 0
 
 

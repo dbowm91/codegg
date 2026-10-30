@@ -475,14 +475,15 @@ live-turn leg in the M004 `session` phase above, which asserts the typed
 `model_unselected` fail-closed path before arming a loopback mock model
 server and then a real assistant turn with a denied write.
 
-**The editor is implemented; the terminal and the remaining graphical
-surfaces are deferred.** The
+**The editor is implemented; the terminal is implemented; the remaining
+graphical surfaces are deferred.** The
 M007 line delivered, in order: the desktop build and hosted gate (M007-A), a
 main chat region with a dockable side panel (M007-B), keyboard-first input
 with mouse parity (M007-C), the shared `/` command surface (M007-D,
-unblocked by ADR-0052's acceptance on 2026-10-24), and a first-party editor
+unblocked by ADR-0052's acceptance on 2026-10-24), a first-party editor
 over the shared `DocumentController` and the native LSP read surface
-(M007-E). The **editor surface** is implemented: the desktop opens a project
+(M007-E), and a terminal surface over the daemon's interactive-process
+service (M007-J). The **editor surface** is implemented: the desktop opens a project
 document, edits it, undoes and redoes the edit, saves it, and reads LSP
 diagnostics, completion and navigation — over the **shared** document
 foundation, with the daemon owning the buffer and the host holding only a
@@ -494,10 +495,13 @@ mapping, and it establishes readiness with the authorized diagnostics pull
 after subscribing; the stream snapshot alone is never rendered as a clean
 result.
 
-The **graphical terminal**, a Git UI and the other graphical surfaces remain
+The **graphical terminal** is implemented — see "The terminal surface
+(M007-J)" below. A Git UI and the other graphical surfaces remain
 deferred. A third-party editor engine remains deferred too, and would need
 its own ADR, because adopting one changes the renderer's CSP, worker and
-bundle boundary.
+bundle boundary. The same reasoning governs a third-party **terminal**
+engine, and it is why the desktop's terminal renders with a first-party
+bounded VT renderer rather than a bundled one.
 
 The renderer has gained a panel set over a projected session — activity, git,
 skills, subagents, tasks, tool detail, transcript and turn summary — and now
@@ -513,6 +517,49 @@ what gives it the `/` surface; **M007-E** is what gives it the editor.
 out of scope for M007: adopting one changes the renderer's Content Security
 Policy, its worker model, and the bundle and signing boundary that §8
 currently pins to local assets only, so it needs its own ADR.
+
+## The terminal surface (M007-J)
+
+The desktop has a **terminal**: a dockable panel over the daemon's
+already-served interactive-process service. The daemon needed no change
+and no ADR for it — all ten `CoreRequest::InteractiveProcess*` variants
+were already served (`src/core/daemon.rs:4834-4996`) — so the work was
+entirely the desktop half.
+
+**The bridge.** Six named commands, in the host module
+`apps/desktop/src-tauri/src/terminal.rs`:
+`desktop_terminal_list`, `desktop_terminal_attach`,
+`desktop_terminal_resume`, `desktop_terminal_input`,
+`desktop_terminal_resize` and `desktop_terminal_detach`. Each is a
+bounded operation; none is a generic request passthrough. They are
+reached through the daemon's catalog rather than through `command.execute`,
+because the catalog serves only four of the ten terminal forms and its
+`terminal_send` row is not base64-correct.
+
+**The scope is the connection, not the route.** The daemon derives an
+attachment's ownership from the transport connection's client id, so a
+route change does not invalidate an attachment that is already open. These
+commands therefore carry no `route_generation` — the same distinction the
+editor's document-bound commands make.
+
+**The renderer** holds a **first-party bounded VT renderer**
+(`apps/desktop/src/terminal/vt.ts`). The daemon publishes raw PTY bytes,
+so the desktop interprets escape sequences itself. The subset is bounded:
+printable bytes, `CR`/`LF`/`BS`, the erase and cursor-movement `CSI`
+forms, and `SGR` for the eight standard colours plus bold. Everything
+else is consumed and reported rather than leaked into the visible text.
+
+**The limits, stated as limits.** No alternate-buffer applications (`vim`,
+`less`, `htop` will not render correctly), no mouse reporting, no
+256-colour palette, no `OSC` title-setting. The scrollback is bounded at
+2000 lines and 256 KiB. The desktop cannot **create** a terminal — that
+needs a working-directory decision and a launcher capability this
+milestone does not make — and it never terminates one.
+
+**The authority** is the daemon's. The terminal's state lives above the
+panel in `useTerminalSession`; the panel renders props and calls nothing.
+The resume cadence is a single 100 ms interval that runs only while an
+attachment is live.
 
 ## Developer commands
 

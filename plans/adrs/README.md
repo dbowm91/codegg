@@ -164,7 +164,7 @@ were never active on main and must not be reused for Windows references.
 - ADR-0031 — **accepted** authenticated idle continuation and delegated turn admission (current-main decision).
 - ADR-0032 — **accepted** daemon-owned agent workstream coordination and explicit shared-checkout mutation; production shared writes remain gated on M005.
 - ADR-0033 — **accepted** directory-tied project identity and client working directory.
-- ADR-0034 — **proposed** editor syntax-tree dependency (current-main decision).
+- ADR-0034 — **accepted** editor syntax-tree dependency (current-main decision; Option B accepted 2026-10-28). See `ADR-0034-editor-syntax-tree-dependency.md`.
 - ADR-0035 through ADR-0041 — current-main accepted decisions; see their individual records.
 - ADR-0042 — **accepted** composer normal-mode key ownership (current-main decision).
 - ADR-0043 — **accepted** session-owned subagent lifecycle projection (current-main decision; Option A accepted 2026-10-19).
