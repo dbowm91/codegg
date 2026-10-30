@@ -296,6 +296,8 @@ Every command below was run in this worktree. Outcomes are as observed.
 | `cargo test -p codegg-protocol` | **pass** — 331 tests, 0 failed |
 | `cargo test -p codegg-providers` | **pass** — 314 tests, 0 failed (the plugin code does not live in this crate; it was run because the brief listed it) |
 | `cargo test --test core_daemon -- plugin` | **pass** — 2 tests, 0 failed: `plugin_catalogue_m007g::the_four_mutating_plugin_forms_are_served_and_audited_as_runs` and `plugin_catalogue_m007g::the_mutating_plugin_forms_require_the_plugin_manage_capability` |
+| `cargo test --test core_daemon -- command_catalog` | **pass** — 12 tests, 0 failed, after the count correction of §3.7; `command_catalog_carries_the_reviewed_classification` and `command_catalog_publishes_the_action_of_every_frontend_effect` are among them |
+| `cargo test -p codegg --lib a_frontend_effect_is_dispatched_from_the_declared_action` | **pass** — 1 test, 0 failed; this is the test the hosted `verify` lane caught failing on the stale count |
 | `cargo test -p codegg --lib plugin_catalogue` | **pass** — 5 tests, 0 failed (the TUI's five arms) |
 | `cargo test -p codegg --lib daemon_commands::tests` | **pass** — 18 tests, 0 failed |
 | `python3 scripts/check_frontend_action_set.py` | **pass** — "frontend-action set: clean" |
