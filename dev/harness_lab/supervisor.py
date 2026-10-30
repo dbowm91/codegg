@@ -739,9 +739,12 @@ def _workspace_snapshot_digest(workspace: Path) -> tuple[str, dict[str, str]]:
         if not path.is_file():
             continue
         relative_path = path.relative_to(workspace)
-        # Product-owned context artifacts and the debug log are observer
-        # bookkeeping, not candidate-visible workspace state.
-        if relative_path.parts[0] == ".codegg" or relative_path.as_posix() == "codegg_debug.log":
+        # Product-owned context artifacts, the private Cargo target directory,
+        # and the debug log are observer/build bookkeeping, not candidate
+        # source state. Cargo output can exceed the snapshot cap without
+        # changing any file the trial is measuring.
+        if (relative_path.parts[0] in {".codegg", ".cargo-target", "target"}
+                or relative_path.as_posix() == "codegg_debug.log"):
             continue
         files += 1
         if files > 10000:

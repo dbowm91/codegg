@@ -92,6 +92,85 @@ os.replace = pausing_replace
 state.record("iteration_started", {"iteration": 1, "candidate": "one"})
 """
 
+_CAMPAIGN_PHASE_CRASH_CHILD = r"""
+import json
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from dev.harness_lab import budget, improve
+
+phase = sys.argv[2]
+repository, suite, ledger_root, candidate_root, target_root, checkpoint_path, proposal_log = map(
+    Path, sys.argv[3:-1])
+marker_path = Path(sys.argv[-1])
+
+
+def park():
+    marker_path.write_text(phase, encoding="utf-8")
+    while True:
+        time.sleep(0.05)
+
+
+def propose(worktree, _prompt, _allowed, _timeout, _executable=None, _model=None, spend_guard=None):
+    with proposal_log.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({"provider_requests": 0}) + "\n")
+    if phase == "proposal_request":
+        park()
+    source = worktree / "src" / "lib.rs"
+    source.write_text("pub fn contract() -> bool { true }\n", encoding="utf-8")
+    (worktree / "CHANGELOG.harness.md").write_text(
+        "## Root cause\nfixture\n\n## Contracts\nfixture\n\n"
+        "## Validation\nfixture\n\n## Accepted risks\nnone\n", encoding="utf-8")
+    paths = improve.changed_paths(worktree)
+    return {"changed_paths": paths, "patch_sha256": improve.candidate_patch_sha256(worktree, paths),
+            "proposer": {"provider_requests": 0}, "proposer_model": None,
+            "candidate_worktree": str(worktree), "baseline_revision": "unused"}
+
+
+def qualify(worktree, _suite, _ledger_root, *, candidate, checkpoint=None, resume=False, **_kwargs):
+    if not resume:
+        checkpoint.transition("BUILDING", {"fault_phase": phase})
+        if phase == "candidate_build":
+            park()
+        checkpoint.transition("QUALIFYING", {"fault_phase": phase})
+        if phase == "independent_verifier":
+            park()
+        checkpoint.transition("EVALUATING", {"fault_phase": phase})
+        if phase == "acp_evaluation":
+            park()
+        checkpoint.transition("COMPARING", {"fault_phase": phase})
+    checkpoint.transition("REJECTED", {"fault_phase": "reconciled"})
+    return {"accepted": False, "status": "REJECTED", "candidate": candidate,
+            "patch_sha256": improve.candidate_patch_sha256(worktree)}
+
+
+original_transition = improve.Checkpoint.transition
+def transition_with_crash(checkpoint, state, evidence):
+    original_transition(checkpoint, state, evidence)
+    if phase == "patch_capture" and state == "PATCHED":
+        park()
+improve.Checkpoint.transition = transition_with_crash
+
+original_record = improve.OptimizationCheckpoint.record
+def record_with_crash(checkpoint, kind, data):
+    original_record(checkpoint, kind, data)
+    if phase == "score_publication" and kind == "iteration_finished":
+        park()
+improve.OptimizationCheckpoint.record = record_with_crash
+
+improve.opencode_propose = propose
+improve.qualify_candidate = qualify
+improve.run_optimizer(
+    repository, suite, ledger_root, baseline_candidate="baseline",
+    candidate_root=candidate_root, target_root=target_root,
+    checkpoint_path=checkpoint_path, allowed_prefixes=("src/",),
+    prompt="offline SIGKILL phase matrix", max_iterations=1,
+    max_wallclock=60.0, timeout=10.0,
+    budget_policy=budget.BudgetPolicy(max_provider_requests=1))
+"""
+
 _LEDGER_CRASH_CHILD = """
 import os
 import sys
@@ -333,6 +412,79 @@ class CrashRecoveryTests(unittest.TestCase):
     def _events(path: Path) -> list[dict]:
         return [json.loads(line) for line in path.with_suffix(".jsonl").read_text(encoding="utf-8").splitlines()
                 if line.strip()]
+
+    def test_campaign_controller_sigkill_recovers_each_durable_phase_once(self) -> None:
+        """SIGKILL the real optimizer at each phase boundary and resume by identity."""
+        phases = {
+            "proposal_request": "PROPOSING",
+            "patch_capture": "PATCHED",
+            "candidate_build": "BUILDING",
+            "independent_verifier": "QUALIFYING",
+            "acp_evaluation": "EVALUATING",
+            "score_publication": "REJECTED",
+        }
+        fixture = OptimizerCampaignSequenceTests()
+        for phase, expected_child_state in phases.items():
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repository, suite, ledger_root, _baseline_revision = fixture._campaign_fixture(root)
+                candidate_root = root / "candidates"
+                target_root = root / "targets"
+                checkpoint_path = root / "optimizer.json"
+                proposal_log = root / "proposals.jsonl"
+                arguments = [phase, str(repository), str(suite), str(ledger_root),
+                             str(candidate_root), str(target_root), str(checkpoint_path),
+                             str(proposal_log)]
+                process = self._spawn_failpoint_child(root, _CAMPAIGN_PHASE_CRASH_CHILD, arguments)
+                self._kill_and_reap(process, signal.SIGKILL)
+                self.assertEqual(process.returncode, -signal.SIGKILL)
+                proposal_rows = [json.loads(line) for line in proposal_log.read_text(
+                    encoding="utf-8").splitlines() if line.strip()]
+                self.assertEqual(proposal_rows, [{"provider_requests": 0}])
+
+                events = self._events(checkpoint_path)
+                self.assertEqual(len([event for event in events
+                                      if event["kind"] == "iteration_started"]), 1)
+                child_path = Path(events[1]["data"]["candidate_checkpoint"])
+                child_events = self._events(child_path)
+                self.assertEqual(child_events[-1]["state"], expected_child_state)
+
+                def no_second_proposal(*_args, **_kwargs):
+                    self.fail("resume attempted a duplicate proposal/admission")
+
+                def finish_qualification(worktree, _suite, _ledger, *, candidate,
+                                         checkpoint=None, resume=False, **_kwargs):
+                    self.assertEqual(resume, checkpoint.state != "PATCHED")
+                    checkpoint.transition("REJECTED", {"fault_phase": "resumed"})
+                    return {"accepted": False, "status": "REJECTED", "candidate": candidate,
+                            "patch_sha256": improve.candidate_patch_sha256(worktree)}
+
+                common = dict(
+                    baseline_candidate="baseline", candidate_root=candidate_root,
+                    target_root=target_root, checkpoint_path=checkpoint_path,
+                    allowed_prefixes=("src/",), prompt="offline SIGKILL phase matrix",
+                    max_iterations=1, max_wallclock=60.0, timeout=10.0,
+                    budget_policy=budget.BudgetPolicy(max_provider_requests=1),
+                    resume=True)
+                with (unittest.mock.patch.object(improve, "opencode_propose", side_effect=no_second_proposal),
+                      unittest.mock.patch.object(improve, "qualify_candidate",
+                                                 side_effect=finish_qualification)):
+                    if phase == "proposal_request":
+                        with self.assertRaisesRegex(RuntimeError, "no committed patch receipt"):
+                            improve.run_optimizer(repository, suite, ledger_root, **common)
+                    else:
+                        receipt = improve.run_optimizer(repository, suite, ledger_root, **common)
+                        self.assertEqual(receipt["status"], "NO_IMPROVEMENT")
+
+                final_events = self._events(checkpoint_path)
+                self.assertEqual(len([event for event in final_events
+                                      if event["kind"] == "iteration_finished"]),
+                                 int(phase != "proposal_request"))
+                self.assertEqual(len([event for event in final_events
+                                      if event["kind"] == "run_finished"]),
+                                 int(phase != "proposal_request"))
+                self.assertEqual(len([json.loads(line) for line in proposal_log.read_text(
+                    encoding="utf-8").splitlines() if line.strip()]), 1)
 
     def test_sigkill_between_checkpoint_append_and_pointer_is_recorded(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -1196,6 +1348,125 @@ class OptimizerCampaignSequenceTests(unittest.TestCase):
                                 "--force", str(worktree)], check=True)
             subprocess.run(["git", "-C", str(repository), "worktree", "prune"], check=True)
 
+    def test_campaign_fault_matrix_recovers_or_refuses_without_duplicate_proposal(self) -> None:
+        """Inject each optimizer side-effect boundary through the real controller.
+
+        Proposal, patch commit, build, independent-verifier, ACP-evaluation,
+        and score-publication faults all use the production campaign
+        checkpoint/worktree state machine. A resumed phase may continue only
+        from its durable state; an uncommitted proposal refuses without a
+        second external admission.
+        """
+        phases = ("proposal_request", "patch_capture", "candidate_build",
+                  "independent_verifier", "acp_evaluation", "score_publication")
+        for phase in phases:
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repository, suite, ledger_root, baseline_revision = self._campaign_fixture(root)
+                candidate_root = root / "candidates"
+                target_root = root / "targets"
+                checkpoint_path = root / "optimizer.json"
+                proposal_calls = []
+                qualification_calls = []
+
+                def propose(worktree: Path, _prompt: str, _allowed: tuple[str, ...],
+                            _timeout: float, _executable: str | None = None,
+                            _model: str | None = None, spend_guard=None) -> dict:
+                    proposal_calls.append({"provider_requests": 0, "spend_guard": spend_guard})
+                    if phase == "proposal_request":
+                        raise RuntimeError("injected proposal transport interruption")
+                    source = worktree / "src" / "lib.rs"
+                    source.write_text("pub fn contract() -> bool { true }\n", encoding="utf-8")
+                    (worktree / "CHANGELOG.harness.md").write_text(
+                        "## Root cause\nfixture\n\n## Contracts\nfixture\n\n"
+                        "## Validation\nfixture\n\n## Accepted risks\nnone\n",
+                        encoding="utf-8")
+                    paths = improve.changed_paths(worktree)
+                    digest = candidate_patch_sha256(worktree, paths)
+                    return {"changed_paths": paths, "patch_sha256": digest,
+                            "proposer": {"provider_requests": 0}, "proposer_model": None,
+                            "candidate_worktree": str(worktree),
+                            "baseline_revision": baseline_revision}
+
+                def qualify(_worktree: Path, _suite: Path, _candidate_ledger: Path,
+                            *, candidate: str, checkpoint=None, resume: bool = False,
+                            **_kwargs) -> dict:
+                    qualification_calls.append({"resume": resume, "state": checkpoint.state})
+                    if not resume:
+                        checkpoint.transition("BUILDING", {"fault_matrix_phase": phase})
+                        if phase == "candidate_build":
+                            raise RuntimeError("injected build interruption")
+                        checkpoint.transition("QUALIFYING", {"fault_matrix_phase": phase})
+                        if phase == "independent_verifier":
+                            raise RuntimeError("injected verifier interruption")
+                        checkpoint.transition("EVALUATING", {"fault_matrix_phase": phase})
+                        if phase == "acp_evaluation":
+                            raise RuntimeError("injected ACP evaluation interruption")
+                        checkpoint.transition("COMPARING", {"fault_matrix_phase": phase})
+                    checkpoint.transition("REJECTED", {"fault_matrix_phase": "reconciled"})
+                    return {"accepted": False, "status": "REJECTED", "candidate": candidate,
+                            "patch_sha256": candidate_patch_sha256(_worktree)}
+
+                transition = improve.Checkpoint.transition
+                record = improve.OptimizationCheckpoint.record
+                injected = {"fired": False}
+
+                def transition_with_patch_fault(checkpoint, state, evidence):
+                    transition(checkpoint, state, evidence)
+                    if phase == "patch_capture" and state == "PATCHED" and not injected["fired"]:
+                        injected["fired"] = True
+                        raise RuntimeError("injected post-patch checkpoint interruption")
+
+                def record_with_publication_fault(checkpoint, kind, data):
+                    record(checkpoint, kind, data)
+                    if phase == "score_publication" and kind == "iteration_finished" and not injected["fired"]:
+                        injected["fired"] = True
+                        raise RuntimeError("injected post-publication interruption")
+
+                common = dict(
+                    baseline_candidate="baseline", candidate_root=candidate_root,
+                    target_root=target_root, checkpoint_path=checkpoint_path,
+                    allowed_prefixes=("src/",), prompt="offline campaign fault matrix",
+                    max_iterations=1, max_wallclock=60.0, timeout=10.0,
+                    budget_policy=budget.BudgetPolicy(max_provider_requests=1),
+                )
+                with (unittest.mock.patch.object(improve, "opencode_propose", side_effect=propose),
+                      unittest.mock.patch.object(improve, "qualify_candidate", side_effect=qualify),
+                      unittest.mock.patch.object(improve.Checkpoint, "transition",
+                                                 new=transition_with_patch_fault),
+                      unittest.mock.patch.object(improve.OptimizationCheckpoint, "record",
+                                                 new=record_with_publication_fault)):
+                    with self.assertRaisesRegex(RuntimeError, "injected"):
+                        improve.run_optimizer(repository, suite, ledger_root, **common)
+                    first_events, _torn = improve._read_event_log(checkpoint_path.with_suffix(".jsonl"))
+                    self.assertEqual(len([event for event in first_events
+                                          if event["kind"] == "iteration_started"]), 1)
+                    self.assertEqual(len([event for event in first_events
+                                          if event["kind"] == "iteration_interrupted"]), 1)
+
+                    if phase == "proposal_request":
+                        # A request with no committed patch is ambiguous and
+                        # must not be replayed by resume.
+                        with self.assertRaisesRegex(RuntimeError, "no committed patch receipt"):
+                            improve.run_optimizer(repository, suite, ledger_root, resume=True, **common)
+                        self.assertEqual(len(proposal_calls), 1)
+                    else:
+                        receipt = improve.run_optimizer(repository, suite, ledger_root,
+                                                        resume=True, **common)
+                        self.assertEqual(receipt["status"], "NO_IMPROVEMENT")
+                        self.assertEqual(len(proposal_calls), 1)
+                        self.assertEqual(len([event for event in
+                                              improve._read_event_log(checkpoint_path.with_suffix(".jsonl"))[0]
+                                              if event["kind"] == "iteration_finished"]), 1)
+                        self.assertTrue(qualification_calls)
+
+                self.assertEqual(injected["fired"], phase in {"patch_capture", "score_publication"})
+                self.assertTrue(all(call["provider_requests"] == 0 for call in proposal_calls))
+                for worktree in candidate_root.iterdir():
+                    subprocess.run(["git", "-C", str(repository), "worktree", "remove",
+                                    "--force", str(worktree)], check=True)
+                subprocess.run(["git", "-C", str(repository), "worktree", "prune"], check=True)
+
 
 class CampaignResourceContentionTests(unittest.TestCase):
     def test_parallel_offline_cargo_builds_use_disjoint_capped_targets(self) -> None:
@@ -1251,6 +1522,113 @@ class CampaignResourceContentionTests(unittest.TestCase):
                 self.assertTrue(all((target / "debug").is_dir() for target in target_roots))
                 rounds.append(round(time.monotonic() - started, 3))
             self.assertEqual(len(rounds), 2)
+
+    def test_optimizer_progresses_under_repeated_parallel_private_cargo_contention(self) -> None:
+        """Run the real optimizer controller while bounded Cargo work is active."""
+        cargo = shutil.which("cargo")
+        if cargo is None:
+            self.skipTest("Cargo is unavailable")
+        with tempfile.TemporaryDirectory(prefix="harness-s005-optimizer-pressure-") as temporary:
+            root = Path(temporary)
+            stable_outcomes = []
+            stable_patch_digests = []
+            for repetition in range(2):
+                round_root = root / f"round-{repetition}"
+                round_root.mkdir()
+                package = round_root / "subject"
+                (package / "src").mkdir(parents=True)
+                (package / "Cargo.toml").write_text(
+                    '[package]\nname = "s005-optimizer-pressure"\nversion = "0.1.0"\n'
+                    'edition = "2021"\n[lib]\npath = "src/lib.rs"\n', encoding="utf-8")
+                source = "\n".join(
+                    f"pub fn generated_{index}() -> usize {{ {index} }}"
+                    for index in range(20000)) + "\n"
+                (package / "src/lib.rs").write_text(source, encoding="utf-8")
+                campaign_root = round_root / "campaign"
+                campaign_root.mkdir()
+                fixture = OptimizerCampaignSequenceTests()
+                repository, suite, ledger_root, baseline_revision = fixture._campaign_fixture(campaign_root)
+                targets = [round_root / "target-a", round_root / "target-b"]
+                processes = []
+                for target in targets:
+                    child_env = os.environ.copy()
+                    child_env.update({"CARGO_TARGET_DIR": str(target), "CARGO_BUILD_JOBS": "1",
+                                      "CARGO_NET_OFFLINE": "true"})
+                    processes.append(subprocess.Popen(
+                        [cargo, "check", "--offline", "--manifest-path", str(package / "Cargo.toml")],
+                        cwd=round_root, env=child_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE))
+                proposal_observations = []
+                patch_digests = []
+
+                def propose(worktree: Path, _prompt: str, _allowed: tuple[str, ...],
+                            _timeout: float, _executable: str | None = None,
+                            _model: str | None = None, spend_guard=None) -> dict:
+                    active = [process.pid for process in processes if process.poll() is None]
+                    self.assertEqual(len(active), 2,
+                                     "optimizer proposal must overlap both bounded Cargo checks")
+                    proposal_observations.append({"active_cargo_pids": active,
+                                                  "provider_requests": 0})
+                    source_path = worktree / "src" / "lib.rs"
+                    source_path.write_text("pub fn contract() -> bool { true }\n", encoding="utf-8")
+                    (worktree / "CHANGELOG.harness.md").write_text(
+                        "## Root cause\npressure fixture\n\n## Contracts\nfixed\n\n"
+                        "## Validation\npaired fixture\n\n## Accepted risks\nnone\n",
+                        encoding="utf-8")
+                    paths = improve.changed_paths(worktree)
+                    digest = candidate_patch_sha256(worktree, paths)
+                    patch_digests.append(digest)
+                    return {"changed_paths": paths, "patch_sha256": digest,
+                            "proposer": {"provider_requests": 0}, "proposer_model": None,
+                            "candidate_worktree": str(worktree),
+                            "baseline_revision": baseline_revision}
+
+                def qualify(worktree: Path, _suite: Path, _candidate_ledger: Path,
+                            *, candidate: str, checkpoint=None, **_kwargs) -> dict:
+                    for state in ("BUILDING", "QUALIFYING", "EVALUATING", "COMPARING", "ACCEPTED"):
+                        checkpoint.transition(state, {"offline_contention_round": repetition})
+                    return {"accepted": True, "status": "ACCEPTED", "candidate": candidate,
+                            "patch_sha256": candidate_patch_sha256(worktree)}
+
+                try:
+                    with (unittest.mock.patch.object(improve, "opencode_propose", side_effect=propose),
+                          unittest.mock.patch.object(improve, "qualify_candidate", side_effect=qualify)):
+                        receipt = improve.run_optimizer(
+                            repository, suite, ledger_root, baseline_candidate="baseline",
+                            candidate_root=campaign_root / "candidates",
+                            target_root=campaign_root / "targets",
+                            checkpoint_path=campaign_root / "optimizer.json",
+                            allowed_prefixes=("src/",), prompt="bounded offline contention",
+                            max_iterations=1, max_wallclock=60.0, timeout=30.0,
+                            budget_policy=budget.BudgetPolicy(max_provider_requests=1))
+                    outputs = []
+                    for process in processes:
+                        stdout, stderr = process.communicate(timeout=60)
+                        outputs.append((process.returncode, stdout, stderr))
+                    self.assertTrue(all(code == 0 for code, _stdout, _stderr in outputs),
+                                    "bounded Cargo check failed: " + " | ".join(
+                                        stderr.decode(errors="replace")[-2048:]
+                                        for code, _stdout, stderr in outputs if code != 0))
+                    self.assertTrue(all((target / "debug").is_dir() for target in targets))
+                    self.assertEqual(receipt["status"], "ACCEPTED")
+                    self.assertEqual(len(receipt["iterations"]), 1)
+                    self.assertEqual(len(proposal_observations), 1)
+                    self.assertEqual(proposal_observations[0]["provider_requests"], 0)
+                    stable_outcomes.append((receipt["status"], len(receipt["iterations"])))
+                    stable_patch_digests.extend(patch_digests)
+                finally:
+                    for process in processes:
+                        if process.poll() is None:
+                            process.terminate()
+                    for process in processes:
+                        try:
+                            process.communicate(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.communicate(timeout=3)
+
+            self.assertEqual(stable_outcomes, [("ACCEPTED", 1), ("ACCEPTED", 1)])
+            self.assertEqual(len(stable_patch_digests), 2)
+            self.assertEqual(stable_patch_digests[0], stable_patch_digests[1])
 
 
 class CompileCorrectionMechanicsTests(unittest.TestCase):

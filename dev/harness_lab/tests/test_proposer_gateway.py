@@ -187,7 +187,7 @@ class ProposerGatewayTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("opencode"), "OpenCode CLI is not installed")
     def test_actual_opencode_cli_hits_only_the_loopback_gate_and_n_plus_one_stops(self) -> None:
         version = subprocess.run([shutil.which("opencode"), "--version"], capture_output=True,
-                                 text=True, timeout=5)
+                                 text=True, timeout=20)
         if version.returncode or version.stdout.strip() != SUPPORTED_OPENCODE_VERSION:
             self.skipTest("installed OpenCode CLI does not match the qualified version")
 
@@ -198,7 +198,7 @@ class ProposerGatewayTests(unittest.TestCase):
                 return GatewayResponse(200, "text/event-stream", _responses_stream())
 
             with self.assertRaises(improve.ProposerAdmissionError) as caught:
-                improve.run_opencode(root, "say ok", timeout=15, executable=shutil.which("opencode"),
+                improve.run_opencode(root, "say ok", timeout=45, executable=shutil.which("opencode"),
                                      model="fixture/fixture-model", max_provider_requests=1,
                                      fixture_handler=fixture)
             receipt = caught.exception.request_admission

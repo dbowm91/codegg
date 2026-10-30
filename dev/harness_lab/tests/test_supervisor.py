@@ -21,6 +21,7 @@ from dev.harness_lab.supervisor import (
     stop_lane_daemon,
     _bounded_managed_test_log_tail,
     _project_job_observation,
+    _workspace_snapshot_digest,
     run_exec_trial,
 )
 
@@ -109,7 +110,9 @@ class SubjectEnvironmentAndCrashCleanupTests(unittest.TestCase):
         if not binary.is_file():
             self.skipTest("set CODEGG_H006_CODEGG_BINARY to an available CodeGG binary")
         repo_root = Path(__file__).resolve().parents[3]
-        default_before = _default_daemon_fingerprint(binary, 3.0)
+        # Keep daemon discovery bounded while allowing a cold native binary
+        # enough startup time on slower hosts.
+        default_before = _default_daemon_fingerprint(binary, 10.0)
         with tempfile.TemporaryDirectory(prefix="hcc-", dir="/tmp") as temporary:
             root = Path(temporary)
             lane_root = root / "lane"
@@ -167,7 +170,7 @@ while True:
                 with self.assertRaises(HarnessError):
                     _live_daemon_id(spec, 3.0)
                 self.assertIsNone(sentinel.poll(), "unrelated sentinel process was stopped")
-                self.assertEqual(_default_daemon_fingerprint(binary, 3.0), default_before)
+                self.assertEqual(_default_daemon_fingerprint(binary, 10.0), default_before)
             finally:
                 if controller_process.poll() is None:
                     controller_process.kill()
@@ -422,6 +425,38 @@ class JobObservationProjectionTests(unittest.TestCase):
         projected = _project_job_observation(
             "test", None, "background test submitted as job job_abc-123; terminal notification follows")
         self.assertEqual(projected, {"action": "submit", "job_id": "job_abc-123", "status": None})
+
+
+class WorkspaceSnapshotTests(unittest.TestCase):
+    def test_private_cargo_target_is_excluded_from_candidate_revision_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            source = workspace / "src" / "lib.rs"
+            source.parent.mkdir()
+            source.write_text("pub fn stable() -> bool { true }\n", encoding="utf-8")
+            cargo_artifact = workspace / ".cargo-target" / "debug" / "deps" / "large.rlib"
+            cargo_artifact.parent.mkdir(parents=True)
+            with cargo_artifact.open("wb") as artifact:
+                artifact.truncate(64 * 1024 * 1024 + 1)
+            conventional_target = workspace / "target" / "debug" / "deps" / "large.rlib"
+            conventional_target.parent.mkdir(parents=True)
+            conventional_target.write_bytes(b"x")
+
+            digest, files = _workspace_snapshot_digest(workspace)
+
+        expected_source_digest = hashlib.sha256(
+            b"pub fn stable() -> bool { true }\n").hexdigest()
+        self.assertEqual(files, {"src/lib.rs": expected_source_digest})
+        self.assertEqual(len(digest), 64)
+
+    def test_candidate_visible_tree_remains_subject_to_the_byte_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            oversized = workspace / "candidate-visible.bin"
+            with oversized.open("wb") as artifact:
+                artifact.truncate(64 * 1024 * 1024 + 1)
+            with self.assertRaisesRegex(HarnessError, "revision byte bound"):
+                _workspace_snapshot_digest(workspace)
 
 
 class ManagedTestDiagnosticsTests(unittest.TestCase):

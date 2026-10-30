@@ -1618,8 +1618,11 @@ def run_optimizer(repository: Path, suite: Path, ledger_root: Path, *, baseline_
               "proposer_model": model}
     if resume:
         try:
-            stored_inputs = json.loads(checkpoint_path.read_text(encoding="utf-8"))["data"]["inputs"]
-        except (OSError, KeyError, json.JSONDecodeError) as error:
+            stored_events, _torn_tail = _read_event_log(checkpoint_path.with_suffix(".jsonl"))
+            if not stored_events or stored_events[0].get("kind") != "run_started":
+                raise ValueError("optimization checkpoint has no immutable run-start record")
+            stored_inputs = stored_events[0]["data"]["inputs"]
+        except (OSError, KeyError, ValueError, json.JSONDecodeError) as error:
             raise ValueError("optimization checkpoint does not contain resumable immutable inputs") from error
         refuse_changed_proposer_model(stored_inputs, inputs)
         if any(stored_inputs.get(key) != value for key, value in inputs.items()):
