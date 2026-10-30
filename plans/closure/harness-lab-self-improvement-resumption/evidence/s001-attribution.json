@@ -1,6 +1,6 @@
 {
   "attempt_count": 7,
-  "baseline_source_sha": "99cecc050ed1ae418af62d2d10e6d34d791513e1",
+  "baseline_source_sha": "d7f1f528df622e8e9bfe4a2d17e2f22ce90d93f5",
   "candidate_fix_queue": [],
   "case_identity": {
     "fixture_root": "dev/harness_lab/fixtures/build_provenance_catalog/fixture",
@@ -25,7 +25,7 @@
     "separately_named_event_ledgers": 0
   },
   "disposition": "no_reproducible_codegg_defect; proceed to S002 offline instrumentation qualification",
-  "input_manifest_sha256": "04ca7ac6f77608dd9e3b9f32509b3efc5e9bc42152c59ee2ce88038b2a236dbc",
+  "input_manifest_sha256": "d1f9ac4df8e8564044999c5976813ea325fe1e68c4aafdf9d895ef54d77802c8",
   "report_schema": "h007-attribution-v1",
   "schema_version": 1,
   "summary": {

@@ -17,7 +17,7 @@
   "current_red_reproduction": null,
   "current_red_reproduction_reason": "S001 reproduced no current CodeGG defect; no failing-first native ACP red test exists.",
   "disposition": "no_reproducible_defect",
-  "dossier_id": "h007-intake-035dc6cb81de34c7",
+  "dossier_id": "h007-intake-9b3ddb668677c723",
   "evidence_completeness": {
     "companion_ledgers_used": false,
     "complete_event_trajectory_available": false,
@@ -25,7 +25,7 @@
     "unknown_is_not_false": true
   },
   "evidence_identity": {
-    "baseline_source_sha": "99cecc050ed1ae418af62d2d10e6d34d791513e1",
+    "baseline_source_sha": "d7f1f528df622e8e9bfe4a2d17e2f22ce90d93f5",
     "case_identity": {
       "fixture_root": "dev/harness_lab/fixtures/build_provenance_catalog/fixture",
       "manifest": "dev/harness_lab/fixtures/agent_autonomy_h007/cases.jsonl",
@@ -35,8 +35,8 @@
       "verifier": "dev/autonomy_fixtures/build-provenance-catalog/verifier/test_catalog_contract.py",
       "verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c"
     },
-    "input_manifest_sha256": "04ca7ac6f77608dd9e3b9f32509b3efc5e9bc42152c59ee2ce88038b2a236dbc",
-    "report_sha256": "0e1a73e13ff88c0846edd1597025f31e2125c60a57513d4a7b6295d29097ba7d"
+    "input_manifest_sha256": "d1f9ac4df8e8564044999c5976813ea325fe1e68c4aafdf9d895ef54d77802c8",
+    "report_sha256": "401b686b89db51ec76da53071319f72a6b30e3b2db30e2397e172be0a2eff11b"
   },
   "historical_reference": {
     "class": "historical_fixture",

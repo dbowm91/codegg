@@ -2,7 +2,7 @@
 
 Status: **closed as `no_reproducible_defect`; no live campaign was run**.
 
-S001's frozen attribution covers the seven H007 receipts and established no reproducible current CodeGG daemon, scheduler, ACP, provider or tool defect. S004's dossier `h007-intake-035dc6cb81de34c7` independently maps all seven observations to ineligible dispositions. It records no current red reproduction, no candidate allow-prefixes and no campaign eligibility. Historical C003 remains historical evidence and was not promoted into the current cohort.
+S001's frozen attribution covers the seven H007 receipts and established no reproducible current CodeGG daemon, scheduler, ACP, provider or tool defect. S004's dossier `h007-intake-9b3ddb668677c723` independently maps all seven observations to ineligible dispositions. It records no current red reproduction, no candidate allow-prefixes and no campaign eligibility. Historical C003 remains historical evidence and was not promoted into the current cohort.
 
 The no-defect branch allowed by S003 was taken before proposal or subject admission. There is no preregistered live experiment manifest because there was no eligible defect to bind to one; provider calls, proposer calls, candidate patches, measured campaign spend and campaign trial pairs are all zero. Historical H007 authorizations remain consumed and unchanged. USD for this S003 disposition is `unknown` because no provider billing query was made; no S003 spend occurred.
 
