@@ -13,6 +13,13 @@ from dev.harness_lab import __main__ as harness_cli
 
 
 class CurrentDefectIntakeTests(unittest.TestCase):
+    def test_controller_owned_h007_holdouts_exist_in_the_checked_in_fixture(self):
+        root = Path(__file__).resolve().parents[3]
+        self.assertGreater(len(intake.HOLDOUT_PATHS), 1)
+        for relative in intake.HOLDOUT_PATHS:
+            with self.subTest(path=relative.as_posix()):
+                self.assertTrue((root / relative).is_file())
+
     def test_production_shaped_synthetic_red_is_never_eligible(self):
         dossier = intake.build_synthetic_receipt(
             defect_id="fixture-write-contract", source_sha256="a" * 64,
