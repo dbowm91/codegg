@@ -41,6 +41,17 @@
   --surface-status-ok-fg: #8de2bb;
   --surface-status-bad-bg: #48252b;
   --surface-status-bad-fg: #ffabb4;
+  /* The terminal's eight standard colours. The bounded VT renderer maps the
+   * SGR colour parameters onto these, so the palette is a token like every
+   * other colour in this file. */
+  --terminal-black: #3b4252;
+  --terminal-red: #e06c75;
+  --terminal-green: #98c379;
+  --terminal-yellow: #e5c07b;
+  --terminal-blue: #61afef;
+  --terminal-magenta: #c678dd;
+  --terminal-cyan: #56b6c2;
+  --terminal-white: #abb2bf;
   /* The one selection surface. Every selectable surface uses it, so the
    * app never hardcodes a selection colour of its own. */
   --surface-selection-bg: #26456f;
@@ -502,3 +513,52 @@ pre {
 .editor-footer h3 { margin: 0 0 6px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--surface-muted); }
 .editor-footer ul { list-style: none; margin: 0; padding: 0; max-height: 140px; overflow-y: auto; }
 .editor-footer li { display: flex; gap: 8px; font-size: 12px; }
+
+/* The terminal panel. The bounded renderer draws a fixed-cell grid, so the
+ * font metrics are the cell metrics: 8px wide, 17px high. The panel measures
+ * its own output surface with them. */
+.terminal-panel { display: flex; flex-direction: column; gap: 8px; height: 100%; min-height: 0; }
+.terminal-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.terminal-handle { font-family: ui-monospace, monospace; font-size: 12px; color: var(--surface-muted-strong); }
+.terminal-picker { font-size: 12px; }
+.terminal-busy { font-size: 11px; text-transform: uppercase; color: var(--surface-muted); }
+.terminal-output {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: auto;
+  border: 1px solid var(--surface-border);
+  border-radius: 8px;
+  padding: 8px;
+  background: var(--surface-bg);
+  font-family: ui-monospace, monospace;
+  font-size: 13.3333px;
+  line-height: 17px;
+  white-space: pre;
+}
+.terminal-line { min-height: 17px; }
+.terminal-scrollback { color: var(--surface-muted); }
+.terminal-notices { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.terminal-notice, .terminal-unsupported, .terminal-dropped { color: var(--surface-status-ok-fg); }
+.terminal-error { color: var(--surface-status-bad-fg); }
+.terminal-input { min-height: 17px; border: 1px solid var(--surface-border); border-radius: 8px; }
+.terminal-input:focus { outline: 2px solid var(--surface-accent); outline-offset: -2px; }
+
+/* The bounded renderer's class set: the eight standard colours and bold. */
+.term-bold { font-weight: 700; }
+.term-fg-black { color: var(--terminal-black); }
+.term-fg-red { color: var(--terminal-red); }
+.term-fg-green { color: var(--terminal-green); }
+.term-fg-yellow { color: var(--terminal-yellow); }
+.term-fg-blue { color: var(--terminal-blue); }
+.term-fg-magenta { color: var(--terminal-magenta); }
+.term-fg-cyan { color: var(--terminal-cyan); }
+.term-fg-white { color: var(--terminal-white); }
+.term-bg-black { background-color: var(--terminal-black); }
+.term-bg-red { background-color: var(--terminal-red); }
+.term-bg-green { background-color: var(--terminal-green); }
+.term-bg-yellow { background-color: var(--terminal-yellow); }
+.term-bg-blue { background-color: var(--terminal-blue); }
+.term-bg-magenta { background-color: var(--terminal-magenta); }
+.term-bg-cyan { background-color: var(--terminal-cyan); }
+.term-bg-white { background-color: var(--terminal-white); }

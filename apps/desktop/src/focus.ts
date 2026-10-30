@@ -57,6 +57,13 @@ export interface RegionDefinition {
  * slot is hidden, and a region that is not in the DOM is not a focus
  * target — `mod+3` then moves nothing, which is why the side panel has
  * its own toggle.
+ *
+ * The terminal comes last: it is a **panel** inside the side panel rather
+ * than a region of the frame, so it does not take a place in the reading
+ * order, and it keeps the frame's own chords where they were. It is a
+ * region all the same, so the focus can move into it, the focus indicator
+ * can mark it, and the elements under it belong to it rather than to the
+ * side panel around it.
  */
 export const REGIONS: readonly RegionDefinition[] = [
   { id: 'catalog', testId: 'catalog-region', label: 'Catalog', fallbackId: 'composer' },
@@ -64,6 +71,7 @@ export const REGIONS: readonly RegionDefinition[] = [
   { id: 'sidePanel', testId: 'side-panel-frame', label: 'Side panel', fallbackId: 'composer' },
   { id: 'composer', testId: 'composer-region', label: 'Composer', fallbackId: 'composer' },
   { id: 'status', testId: 'status-row', label: 'Status', fallbackId: 'composer' },
+  { id: 'terminal', testId: 'terminal-panel', label: 'Terminal', fallbackId: 'composer' },
 ];
 
 /** Every region's identity, in focus order. */
@@ -111,13 +119,31 @@ export function regionContainer(root: ParentNode, regionId: string): HTMLElement
  *
  * The regions are disjoint, so the nearest container wins; an element
  * outside every region (the page chrome) belongs to none.
+ *
+ * The terminal is a panel *inside* the side panel, and it is declared last:
+ * the nearest container is the rule, so an element inside the terminal
+ * belongs to the terminal rather than to the side panel around it. The
+ * side panel's own controls still belong to the side panel.
  */
 export function regionOfElement(element: Element | null): RegionDefinition | undefined {
   if (!element) return undefined;
+  let nearest: RegionDefinition | undefined;
+  let nearestDepth = Number.POSITIVE_INFINITY;
   for (const region of REGIONS) {
-    if (element.closest(`[data-testid="${region.testId}"]`)) return region;
+    const container = element.closest(`[data-testid="${region.testId}"]`);
+    if (!container) continue;
+    let depth = 0;
+    let node: Element | null = element;
+    while (node && node !== container) {
+      depth += 1;
+      node = node.parentElement;
+    }
+    if (depth < nearestDepth) {
+      nearest = region;
+      nearestDepth = depth;
+    }
   }
-  return undefined;
+  return nearest;
 }
 
 /** The focusable controls of a container, in document order. */

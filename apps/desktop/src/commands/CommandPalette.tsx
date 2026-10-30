@@ -38,9 +38,15 @@ export interface CommandPaletteProps {
    *
    * The form comes with the command because the daemon publishes the
    * declared action's wire name on the form: the renderer dispatches by
-   * the daemon's own answer, never by the command's spelling.
+   * the daemon's own answer, never by the command's spelling. The
+   * argument comes with them because an action that names something — a
+   * handle, a path — has to receive what the user typed.
    */
-  onFrontendEffect?: (command: CommandDescriptorView, form: CommandFormView) => void;
+  onFrontendEffect?: (
+    command: CommandDescriptorView,
+    form: CommandFormView,
+    argument: string,
+  ) => void;
   /** A daemon-effect execution the daemon answered. */
   onDaemonResult?: (result: CommandExecuteView) => void;
 }
@@ -187,7 +193,7 @@ export function CommandPalette({
       if (!shape) return;
       if (shape.kind === 'frontend_effect') {
         // A frontend effect never reaches the daemon: the frontend owns it.
-        onFrontendEffect?.(command, shape);
+        onFrontendEffect?.(command, shape, argument);
         onClose();
         return;
       }

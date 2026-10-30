@@ -159,6 +159,18 @@ export function regionScope(regionId: string): Scope {
  */
 export const EDITOR_SCOPE: Scope = regionScope('editor');
 
+/**
+ * The scope the terminal's own chords belong to.
+ *
+ * The terminal is a frontend-local surface, so its bindings are **actions**
+ * like any other, and they live in this table with the rest of the catalog.
+ * The scope is the terminal's input surface, so a terminal chord reaches
+ * the terminal only while the terminal has the focus, and it never shadows
+ * a global chord. A chord that must not be swallowed by typing is captured,
+ * exactly as the editor's own chords are.
+ */
+export const TERMINAL_SCOPE: Scope = regionScope('terminal');
+
 /** The key a scope is stored under. */
 export function scopeKey(scope: Scope): string {
   if (scope.kind === 'region') return `region:${scope.region ?? ''}`;
@@ -543,6 +555,33 @@ export const ACTION_DECLARATIONS: readonly ActionDeclaration[] = [
     affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
     captured: true,
   },
+  {
+    id: 'terminal.focus',
+    label: 'Focus the terminal',
+    description: 'Show the terminal panel and move the focus into it.',
+    defaultBindings: [{ chord: 'mod+6', scope: GLOBAL_SCOPE }],
+    overrideScope: GLOBAL_SCOPE,
+    affordance: { class: 'region', testIdPrefixes: ['terminal-panel'] },
+    captured: true,
+  },
+  {
+    id: 'terminal.send',
+    label: 'Send a newline to the terminal',
+    description: 'Send the Enter key to the attached terminal.',
+    defaultBindings: [{ chord: 'enter', scope: TERMINAL_SCOPE }],
+    overrideScope: TERMINAL_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['terminal-input'] },
+    captured: true,
+  },
+  {
+    id: 'terminal.backspace',
+    label: 'Delete the last character',
+    description: 'Send the Backspace key to the attached terminal.',
+    defaultBindings: [{ chord: 'backspace', scope: TERMINAL_SCOPE }],
+    overrideScope: TERMINAL_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['terminal-input'] },
+    captured: true,
+  },
 ];
 
 /**
@@ -567,12 +606,24 @@ export const EDITOR_INSERT_AFFORDANCE: Affordance = {
 };
 
 /**
+ * The terminal's printable insert is **not** a chord either, for the same
+ * reason the editor's is not: a printable character is the whole class of
+ * characters a keyboard can produce, so it is the input surface's own
+ * affordance rather than a declared action.
+ */
+export const TERMINAL_INSERT_AFFORDANCE: Affordance = {
+  class: 'editing',
+  testIdPrefixes: ['terminal-input'],
+};
+
+/**
  * The region-focus actions.
  *
- * The family is one action per **declared** region: the desktop declares
- * five, so there are five actions and five chords. The action's affordance
- * is the region's own container, which is also the mouse route: a click
- * on the region focuses it.
+ * The family is one action per **frame** region: the frame declares five,
+ * so there are five actions and five chords. The action's affordance is
+ * the region's own container, which is also the mouse route: a click on
+ * the region focuses it. The terminal is a panel rather than a frame
+ * region, so it has an action of its own (`terminal.focus`).
  */
 const REGION_FOCUS_ACTIONS: readonly ActionDeclaration[] = [
   {

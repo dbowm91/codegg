@@ -42,6 +42,12 @@ vi.mock('./bridge', () => ({
     skillCatalogue: vi.fn(),
     documentDiagnosticsSubscribe: vi.fn(() => Promise.resolve('diagnostics-test')),
     documentDiagnosticsUnsubscribe: vi.fn(),
+    terminalList: vi.fn(),
+    terminalAttach: vi.fn(),
+    terminalResume: vi.fn(),
+    terminalInput: vi.fn(),
+    terminalResize: vi.fn(),
+    terminalDetach: vi.fn(),
     subscribeProjection: vi.fn(),
     subscribe: vi.fn(),
     disconnect: vi.fn(),
@@ -154,6 +160,23 @@ async function renderRouted() {
 
 beforeEach(() => {
   window.localStorage.clear();
+  vi.mocked(bridge.terminalList).mockResolvedValue({ processes: [], truncated: false });
+  vi.mocked(bridge.terminalAttach).mockResolvedValue({
+    attachmentId: 'a-1',
+    handle: 'h-1',
+    chunk: { handle: 'h-1', fromSeq: 0, nextSeq: 0, gap: false, dataB64: '' },
+    resyncReason: null,
+  });
+  vi.mocked(bridge.terminalResume).mockResolvedValue({
+    handle: 'h-1',
+    fromSeq: 0,
+    nextSeq: 0,
+    gap: false,
+    dataB64: '',
+  });
+  vi.mocked(bridge.terminalInput).mockResolvedValue({ attachmentId: 'a-1', bytesAccepted: 0 });
+  vi.mocked(bridge.terminalResize).mockResolvedValue({ attachmentId: 'a-1', cols: 80, rows: 24 });
+  vi.mocked(bridge.terminalDetach).mockResolvedValue({ attachmentId: 'a-1' });
   vi.mocked(bridge.snapshot).mockResolvedValue(connected(1));
   vi.mocked(bridge.connect).mockResolvedValue(connected(1));
   vi.mocked(bridge.projects).mockResolvedValue([
@@ -207,35 +230,30 @@ afterEach(() => {
 });
 
 describe('the desktop input model', () => {
-  // The timeout is explicit because this test is the only one that walks every
-  // declared action and clicks every affordance it finds. Each click is an
-  // `await act(...)` flush, so the cost is proportional to the catalog, not to
-  // one action — and vitest's 5s default is too tight for it on a loaded
-  // machine, where it timed out at 5140ms. A per-test budget keeps the
-  // default tight for every other test instead of loosening it globally.
-  it('every_declared_action_is_reachable_by_chord_and_by_mouse', async () => {
-    await renderRouted();
-    // A draft, so the composer's own affordance is live.
+  /**
+   * Check the mouse route of the actions that are live with a docked panel.
+   *
+   * A docked panel owns the affordances of the actions scoped to it, and
+   * the frame's own affordances are live with whichever panel is up. The
+   * frame holds one docked panel at a time, so each panel is checked while
+   * it is up.
+   */
+  async function checkMouseRoute(panel: 'editor' | 'terminal', includeFrame: boolean): Promise<void> {
     await act(async () => {
-      fireEvent.change(screen.getByTestId('prompt-input'), { target: { value: 'a draft' } });
+      fireEvent.click(screen.getByTestId(`panel-tab-${panel}`));
     });
-    // An overlay is open, so the overlay family's affordance has a member.
-    await pressKey('k', MOD);
-    expect(screen.getByTestId('keybindings-panel')).toBeInTheDocument();
-
-    // The editor is a docked panel, so its affordances are live only while
-    // it is docked. Dock it, the way the overlay is opened above.
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('panel-tab-editor'));
-    });
-    expect(screen.getByTestId('editor-viewport')).toBeInTheDocument();
-
-    const map = buildEffectiveMap(ALL_ACTION_DECLARATIONS, {});
     for (const declaration of ALL_ACTION_DECLARATIONS) {
-      // The chord route: the action holds at least one chord.
-      const bindings = map.bindings.get(declaration.id) ?? [];
-      expect(bindings.length, declaration.id).toBeGreaterThan(0);
-
+      // The affordance decides which panel owns the action: the editor's
+      // actions live in the editor, the terminal's in the terminal, and the
+      // frame's in the frame itself.
+      const owner = declaration.affordance.testIdPrefixes.some((prefix) =>
+        prefix.startsWith('terminal-'),
+      )
+        ? 'terminal'
+        : declaration.affordance.testIdPrefixes.some((prefix) => prefix.startsWith('editor-'))
+          ? 'editor'
+          : 'frame';
+      if (owner !== panel && !(owner === 'frame' && includeFrame)) continue;
       // The mouse route: the declared affordance exists, is visible and is
       // activatable.
       const elements = declaration.affordance.testIdPrefixes.flatMap((prefix) =>
@@ -266,6 +284,37 @@ describe('the desktop input model', () => {
         }
       }
     }
+  }
+
+  // The timeout is explicit because this test is the only one that walks every
+  // declared action and clicks every affordance it finds. Each click is an
+  // `await act(...)` flush, so the cost is proportional to the catalog, not to
+  // one action — and vitest's 5s default is too tight for it on a loaded
+  // machine, where it timed out at 5140ms. A per-test budget keeps the
+  // default tight for every other test instead of loosening it globally.
+  it('every_declared_action_is_reachable_by_chord_and_by_mouse', async () => {
+    await renderRouted();
+    // A draft, so the composer's own affordance is live.
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('prompt-input'), { target: { value: 'a draft' } });
+    });
+    // An overlay is open, so the overlay family's affordance has a member.
+    await pressKey('k', MOD);
+    expect(screen.getByTestId('keybindings-panel')).toBeInTheDocument();
+
+    const map = buildEffectiveMap(ALL_ACTION_DECLARATIONS, {});
+    // The chord route: every declared action holds at least one chord.
+    for (const declaration of ALL_ACTION_DECLARATIONS) {
+      const bindings = map.bindings.get(declaration.id) ?? [];
+      expect(bindings.length, declaration.id).toBeGreaterThan(0);
+    }
+
+    // The mouse route: the declared affordance exists, is visible and is
+    // activatable. A docked panel's affordances are live only while that
+    // panel is docked, and the frame holds one docked panel at a time, so
+    // each panel is checked while it is up.
+    await checkMouseRoute('editor', true);
+    await checkMouseRoute('terminal', false);
   }, 20_000);
 
   it('every_chord_reaches_exactly_one_action', () => {

@@ -5,6 +5,7 @@ import { PanelControls, SidePanelFrame } from './SidePanelFrame';
 import { dock, initialPanelHostState } from '../panels/host';
 import type { PanelProps } from '../panels/registry';
 import { emptyEditorPanelProps } from '../editor/fixtures';
+import { emptyTerminalPanelProps } from '../terminal/contract';
 
 const panelProps: PanelProps = {
   projection: null,
@@ -12,6 +13,7 @@ const panelProps: PanelProps = {
   todoBusy: false,
   todoError: null,
   editor: emptyEditorPanelProps(),
+  terminal: emptyTerminalPanelProps(),
 };
 
 describe('the desktop side-panel frame', () => {
