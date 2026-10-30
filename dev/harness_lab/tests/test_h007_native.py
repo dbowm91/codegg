@@ -95,10 +95,25 @@ class H007NativeJobSequenceTest(unittest.TestCase):
                 agent_steps=24, expected_file="CONTINUATION.md", expected_text="next_phase: none",
                 expected_exists=True, expected_tool_failures=2,
                 workspace_snapshot=clean_snapshot,
-                rustc_executable=pathlib.Path(rustc))
+                rustc_executable=pathlib.Path(rustc),
+                source_root=(pathlib.Path(os.environ["CODEGG_H007_SOURCE_ROOT"])
+                             if os.environ.get("CODEGG_H007_SOURCE_ROOT") else None),
+                causal_trace_output=(pathlib.Path(os.environ["CODEGG_S012_TRACE_OUTPUT"])
+                                     if os.environ.get("CODEGG_S012_TRACE_OUTPUT") else None))
 
         self.assertTrue(trial["tool_receipt_created"])
         self.assertEqual(trial["event_gap_count"], 0)
+        self.assertEqual(trial["causal_trace"]["schema"], "harness_causal_trace_v1")
+        self.assertEqual(trial["causal_trace"]["state"], "complete")
+        self.assertTrue(trial["causal_trace"]["daemon_generation"])
+        self.assertGreater(trial["causal_trace"]["event_count"], 0)
+        trace_output = os.environ.get("CODEGG_S012_TRACE_OUTPUT")
+        if trace_output:
+            from dev.harness_lab import causal_trace
+            rows = causal_trace.read_trace(pathlib.Path(trace_output))
+            self.assertTrue(rows)
+            self.assertTrue(all(row["daemon_generation"] == trial["causal_trace"]["daemon_generation"]
+                                for row in rows))
         calls = trial["tool_calls"]
         jobs = [(index, call.get("tool"), call.get("job", {}))
                 for index, call in enumerate(calls) if isinstance(call.get("job"), dict)]
@@ -122,6 +137,26 @@ class H007NativeJobSequenceTest(unittest.TestCase):
         self.assertGreaterEqual(sum(any(success > failed for success in successful_indices)
                                     for failed in failed_indices), 2)
         self.assertEqual(trial["source_sha256"].__len__(), 64)
+        receipt_output = os.environ.get("CODEGG_S012_RECEIPT_OUTPUT")
+        if trace_output and receipt_output:
+            receipt = {
+                "task_id": trial["task_id"],
+                "source_revision": trial["ledger_manifest"]["subject"]["revision"],
+                "binary_sha256": trial["source_sha256"],
+                "causal_trace": {
+                    "schema": trial["causal_trace"]["schema"],
+                    "state": trial["causal_trace"]["state"],
+                    "daemon_generation": trial["causal_trace"]["daemon_generation"],
+                    "sha256": trial["causal_trace"]["sha256"],
+                },
+                "task_outcome": "passed",
+                "independent_verifier": {"kind": "h007_native_test", "tests_run": 1,
+                                         "exit_code": 0},
+            }
+            receipt_path = pathlib.Path(receipt_output)
+            receipt_path.parent.mkdir(parents=True, exist_ok=True)
+            with receipt_path.open("x", encoding="utf-8") as destination:
+                destination.write(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
 
 
 if __name__ == "__main__":

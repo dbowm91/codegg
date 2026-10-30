@@ -139,9 +139,9 @@ S010, S011 and S012 are dependency-ready **offline** plans and may execute in pa
 
 | Milestone | Primary class | Status | Evidence to close |
 |---|---|---|---|
-| **S010 — Integrated native offline optimizer** | invariant | **ready (offline)** | Two complete actual `run_optimizer` campaigns with real native candidate build/ACP, independently frozen verifier and holdouts, rejected no-op and accepted **synthetic** correction, real interruption/restart, bounded Cargo overlap and prolonged resource pressure, no provider |
-| **S011 — Current real-defect intake authority** | infrastructure | **ready (offline)** | Controller-owned current-source failing-first reproductions on separate lanes, content-addressed independent verifier/holdout, real-defect eligibility separated from live approval, synthetic/H007/historical refusal |
-| **S012 — Redacted causal trace** | infrastructure | **ready (offline)** | Bounded per-event correlation and attribution evidence on real native loopback ACP; typed unknown/timeout/repair/verification distinctions; no invented old events |
+| **S010 — Integrated native offline optimizer** | invariant | **active (offline)** | Two complete actual `run_optimizer` campaigns with real native candidate build/ACP, independently frozen verifier and holdouts, rejected no-op and accepted **synthetic** correction, real interruption/restart, bounded Cargo overlap and prolonged resource pressure, no provider |
+| **S011 — Current real-defect intake authority** | infrastructure | **active (offline)** | Controller-owned current-source failing-first reproductions on separate lanes, content-addressed independent verifier/holdout, real-defect eligibility separated from live approval, synthetic/H007/historical refusal |
+| **S012 — Redacted causal trace** | infrastructure | **active (offline)** | Bounded per-event correlation and attribution evidence on real native loopback ACP; typed unknown/timeout/repair/verification distinctions; no invented old events |
 | **S013 — First authorized causal campaign** | capability | **blocked** | One independently reproduced eligible current CodeGG defect and fresh operator-approved bounded external-proposer/subject live experiment, with truthful accepted/rejected/inconclusive outcome and human review packet |
 | **S014 — Independent live repeatability** | capability | **blocked** | Two **new** accepted, distinct real current-defect campaigns plus correctly rejected/no-defect control; complete receipts and manual review; limited `stable_live_evidenced` label only if actually met |
 

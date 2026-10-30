@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement S012 — Causal Trace Sufficiency and Failure Attribution
 
-Status: **ready (offline)**. Primary class: **infrastructure**. Hard dependency: S001 evidence-limited attribution closure and H007 observation contract. Interface dependencies: S010 integrated run IDs and S011 dossier input; coordinate field names before final integration. Not a prerequisite to repeat H007 live runs.
+Status: **active (offline)**. Primary class: **infrastructure**. Hard dependency: S001 evidence-limited attribution closure and H007 observation contract. Interface dependencies: S010 integrated run IDs and S011 dossier input; coordinate field names before final integration. Not a prerequisite to repeat H007 live runs.
 
 Authority: `plans/000-long-term-specification.md` §§23–24, 26–29; `plans/001-terminology-and-domain-model.md`; `plans/003-planning-process.md`; accepted `plans/adrs/ADR-0040-evidence-based-agent-recovery-termination.md`; `plans/subsystems/harness-lab-self-improvement-resumption-roadmap.md`. Existing S001–S009 closure records are historical evidence, not re-opened milestones.
 

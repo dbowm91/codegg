@@ -879,7 +879,9 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                    agent_steps: int | None = None,
                    workspace_snapshot: Path | None = None,
                    external_verifier: Path | None = None,
-                   rustc_executable: Path | None = None) -> dict[str, Any]:
+                   rustc_executable: Path | None = None,
+                   source_root: Path | None = None,
+                   causal_trace_output: Path | None = None) -> dict[str, Any]:
     """Run one native ACP turn against a local deterministic OpenAI wire fixture."""
     from .provider_fixture import FixtureProvider
     import shlex
@@ -934,7 +936,8 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                                    require_context_text=context_text,
                                    fail_after_tools=fail_after_tools,
                                    fault_kind=fault_kind).start()
-        spec = SubjectSpec.create("tool-trial", binary, workspace, root, Path.cwd())
+        spec = SubjectSpec.create("tool-trial", binary, workspace, root,
+                                  source_root or Path.cwd())
         env = spec.environment()
         if rustc_executable is not None:
             rustc_path = rustc_executable.resolve(strict=True)
@@ -963,9 +966,15 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps(config), encoding="utf-8")
         client = AcpClient(binary, env, workspace, timeout, profile)
+        from . import causal_trace
+        causal_recorder = causal_trace.Recorder(
+            root / "artifacts" / "causal-trace.jsonl", run_id=uuid.uuid4().hex,
+            case_id=task_id, source_sha256=spec.revision,
+            binary_sha256=spec.binary_sha256)
         completed_call_revisions: dict[str, str | None] = {}
 
         def observe_tool_completion(notification: dict[str, Any]) -> None:
+            causal_recorder.observe(notification)
             params = notification.get("params", {})
             update = params.get("update", {}) if isinstance(params, dict) else {}
             if isinstance(update, dict) and update.get("sessionUpdate") == "tool_call_update":
@@ -982,6 +991,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             session_id = opened.get("sessionId")
             if not isinstance(session_id, str):
                 raise HarnessError("ACP fixture did not create a session")
+            causal_recorder.bind_daemon_generation(_metadata(spec, timeout).get("generation"))
             receipt = opened.get("codeggPolicy")
             if not isinstance(receipt, dict) or receipt.get("effective", {}).get("sandbox") != profile.replace("-", "_"):
                 raise HarnessError("native fixture policy receipt did not match the requested profile")
@@ -1021,6 +1031,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             # prompt response. Wait for terminals corresponding to the tool
             # outputs already present in the fixture provider's final history.
             _drain_tool_notifications(client, provider, timeout=min(10.0, timeout / 6))
+            causal_receipt = causal_recorder.finish()
             updates = [item for item in client.notifications if item.get("method") == "session/update"]
             tool_updates = [
                 {**item.get("params", {}).get("update", {}),
@@ -1097,9 +1108,15 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                            and bool(provider.request_summaries)
                            and provider.request_summaries[-1].get("toolless_final")
                            and len(finishes) < len(tool_sequence))
+            # A completed tool call that failed is still an observed task
+            # outcome. When failure was not expected, classify it through
+            # the verifier (or the explicit failed-turn status) below; do not
+            # turn it into an infrastructure error merely because it missed
+            # the fixture's expected failure count. Infrastructure means the
+            # native observation was incomplete, not that the agent's work
+            # failed.
             if not deny_bash and (not starts or (len(finishes) < len(tool_sequence)
-                                                 and not bounded_stall and not budget_stop)
-                                  or not failure_count_matched):
+                                                 and not bounded_stall and not budget_stop)):
                 raise HarnessError(f"native broker did not complete the deterministic tool call; stop_reason={result.get('stopReason')!r}; started={len(starts)} finished={len(finishes)} failures={failures}; tool_updates={tool_updates[-6:]!r}; receipt_exists={exists}")
             observed_terminal = result.get("stopReason")
             accepted_stops = {"cancelled", "canceled"} if expected_terminal == "cancelled" else {"end_turn"}
@@ -1158,6 +1175,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                 "hard_budget_stop": budget_stop,
                 "event_gap_count": event_gap_count,
                 "event_observation_state": "measured_no_gap",
+                "causal_trace": causal_receipt,
                 "workspace_revision_sha256": workspace_revision_after,
                 "permission_request_notifications": 0,
                 "workspace": str(workspace),
@@ -1192,6 +1210,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                 )
             return result
         except (HarnessError, OSError, subprocess.TimeoutExpired) as error:
+            causal_receipt = causal_recorder.finish()
             client.close()
             log = spec.root / "acp.stderr"
             tail = log.read_text(encoding="utf-8", errors="replace")[-8192:] if log.exists() else ""
@@ -1214,6 +1233,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                         item.get("params", {}).get("update", {}).get("status") == "failed"
                         for item in client.notifications),
                     "failure_type": type(error).__name__,
+                    "causal_trace": causal_receipt,
                 }
                 if isinstance(error, HarnessTurnFailure):
                     # The native adapter projects a redacted category and the
@@ -1256,6 +1276,17 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             provider.close()
             if _owned_daemon_pids(spec):
                 raise HarnessError("verified subject daemon remains after cleanup")
+            if causal_trace_output is not None:
+                trace_path = root / "artifacts" / "causal-trace.jsonl"
+                if not trace_path.is_file():
+                    raise HarnessError("native run did not produce its requested causal trace")
+                destination = causal_trace_output.expanduser()
+                if destination.exists() or destination.is_symlink():
+                    raise HarnessError("refusing to overwrite an existing causal trace artifact")
+                if destination.resolve().is_relative_to(root.resolve()):
+                    raise HarnessError("causal trace artifact must be outside the disposable lane")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(trace_path, destination)
             shutil.rmtree(root, ignore_errors=True)
 
 

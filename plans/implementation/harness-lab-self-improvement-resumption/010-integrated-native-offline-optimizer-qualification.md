@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement S010 — Integrated Native Offline Optimizer Qualification
 
-Status: **ready (offline implementation only)**. Primary class: **invariant**. Hard dependencies: S002, S005, S007 and S008 closure evidence; interface dependency: S009 synthetic intake and S004 negative disposition. No live-provider authorization needed.
+Status: **active (offline implementation only)**. Primary class: **invariant**. Hard dependencies: S002, S005, S007 and S008 closure evidence; interface dependency: S009 synthetic intake and S004 negative disposition. No live-provider authorization needed.
 
 Authority: `plans/000-long-term-specification.md` §§23–24, 26–29; `plans/001-terminology-and-domain-model.md`; `plans/003-planning-process.md`; accepted `plans/adrs/ADR-0040-evidence-based-agent-recovery-termination.md`; `plans/subsystems/harness-lab-self-improvement-resumption-roadmap.md`. Existing S001–S009 closure records are historical evidence, not re-opened milestones.
 

@@ -1,0 +1,415 @@
+{
+  "campaigns": [
+    {
+      "baseline_binary_sha256": "a3f30bce79877d038664ebf005ed868cb0053600c83282bbc44d82d1d178e3f1",
+      "baseline_causal_trace": {
+        "bytes": 1836,
+        "dropped_events": 0,
+        "event_count": 3,
+        "schema": "harness_causal_trace_v1",
+        "sha256": "24f6d996d92f6e90606251ffba3a015447a23227744b7e0d216ebb9f486d50d0",
+        "state": "complete"
+      },
+      "baseline_revision": "a8ea35e9ddd054aca4b7d91ed2840906dc0deefc",
+      "baseline_run_id": "dad5e303-2b59-4203-bb25-ddf8dd081755",
+      "baseline_terminal": "assertion_failed",
+      "campaign": 1,
+      "candidate_binary_sha256": "a0f3449a582c8d9cb6da3f4477bb3f60ca44784d5c791364ad4c306f88abc3c8",
+      "candidate_sha256": "eecef663bd69048ca830e803fcbf6fcce97d6aca0a519dd93fa2c884d99de894",
+      "checkpoint_run_id": "89fd48e308864cc396bf4abcd123c8ed",
+      "corrective_patch_sha256": "eecef663bd69048ca830e803fcbf6fcce97d6aca0a519dd93fa2c884d99de894",
+      "corrective_trials": [
+        {
+          "binary_sha256": "a0f3449a582c8d9cb6da3f4477bb3f60ca44784d5c791364ad4c306f88abc3c8",
+          "candidate": "89fd48e308864cc396bf4abcd123c8ed-i01",
+          "repeat": 0,
+          "run_id": "700b5c37-7b9a-438e-9c58-322ee1335b52",
+          "task_id": "s010-native-write-contract",
+          "terminal": "passed",
+          "verifier_status": "passed"
+        },
+        {
+          "binary_sha256": "a0f3449a582c8d9cb6da3f4477bb3f60ca44784d5c791364ad4c306f88abc3c8",
+          "candidate": "89fd48e308864cc396bf4abcd123c8ed-i01",
+          "repeat": 0,
+          "run_id": "7bcc57ae-d647-4fbf-96cd-efe234dc9fd5",
+          "task_id": "s010-protected-verifier-control",
+          "terminal": "assertion_failed",
+          "verifier_status": "assertion_failed"
+        }
+      ],
+      "noop_binary_sha256": "de47f2a2a3df8fe6663ab7d3a7ea7014421f34d2fc0b8d7c6e139c776d245fe5",
+      "noop_patch_sha256": "cc0c3ba60719f300c3551fe9ea584e073bb2f787ecaf658c7451ac5e8faac3ec",
+      "noop_status": "NO_IMPROVEMENT",
+      "noop_trials": [
+        {
+          "binary_sha256": "de47f2a2a3df8fe6663ab7d3a7ea7014421f34d2fc0b8d7c6e139c776d245fe5",
+          "candidate": "13f1360af71f436aaf046e3c06d06970-i01",
+          "repeat": 0,
+          "run_id": "151b294b-2740-424a-818f-9187f9fd5083",
+          "task_id": "s010-native-write-contract",
+          "terminal": "assertion_failed",
+          "verifier_status": "assertion_failed"
+        },
+        {
+          "binary_sha256": "de47f2a2a3df8fe6663ab7d3a7ea7014421f34d2fc0b8d7c6e139c776d245fe5",
+          "candidate": "13f1360af71f436aaf046e3c06d06970-i01",
+          "repeat": 0,
+          "run_id": "6348c3ba-1f46-4216-983a-8eb1ff27cf9b",
+          "task_id": "s010-protected-verifier-control",
+          "terminal": "assertion_failed",
+          "verifier_status": "assertion_failed"
+        }
+      ],
+      "paired_comparison": {
+        "cost_usd": null,
+        "denominator": 2,
+        "improvements": [
+          {
+            "expected_terminal": "passed",
+            "left_matched": false,
+            "left_terminal": "assertion_failed",
+            "repeat": 0,
+            "right_matched": true,
+            "right_terminal": "passed",
+            "task_id": "s010-native-write-contract"
+          }
+        ],
+        "interrupted_trials": {
+          "left": [],
+          "right": []
+        },
+        "left": "baseline",
+        "left_passed": 0,
+        "measured_token_usage": {
+          "left": {
+            "cached_tokens": 6,
+            "input_tokens": 34,
+            "measured_runs": 2,
+            "output_tokens": 18,
+            "reasoning_tokens": 4
+          },
+          "right": {
+            "cached_tokens": 6,
+            "input_tokens": 34,
+            "measured_runs": 2,
+            "output_tokens": 18,
+            "reasoning_tokens": 4
+          }
+        },
+        "paired_task_ids": [
+          "s010-native-write-contract",
+          "s010-protected-verifier-control"
+        ],
+        "paired_trials": [
+          {
+            "repeat": 0,
+            "task_id": "s010-native-write-contract"
+          },
+          {
+            "repeat": 0,
+            "task_id": "s010-protected-verifier-control"
+          }
+        ],
+        "regressions": [],
+        "right": "89fd48e308864cc396bf4abcd123c8ed-i01",
+        "right_passed": 1,
+        "subject_identity": {
+          "left": {
+            "agent": [
+              "\"build\""
+            ],
+            "model": [
+              "\"openai/harness-fixture\""
+            ],
+            "policy": [
+              "{\"effective\":{\"approvalMode\":\"yolo\",\"revision\":\"1\",\"sandbox\":\"workspace_write\"},\"requested\":{\"approvalMode\":\"yolo\",\"sandbox\":\"workspace_write\"}}"
+            ],
+            "revision": "a8ea35e9ddd054aca4b7d91ed2840906dc0deefc",
+            "subject binary fingerprint": "a3f30bce79877d038664ebf005ed868cb0053600c83282bbc44d82d1d178e3f1",
+            "suite digest": "d3c52c828542a651e0a391601f569b643968bacd5325fb6413993fcbd3577ea0",
+            "tool surface digest": [
+              "\"765e78501541a69ba93bf82cc2c98a877efc7b575e69b5d22b8197dcb2c39993\""
+            ]
+          },
+          "right": {
+            "agent": [
+              "\"build\""
+            ],
+            "model": [
+              "\"openai/harness-fixture\""
+            ],
+            "policy": [
+              "{\"effective\":{\"approvalMode\":\"yolo\",\"revision\":\"1\",\"sandbox\":\"workspace_write\"},\"requested\":{\"approvalMode\":\"yolo\",\"sandbox\":\"workspace_write\"}}"
+            ],
+            "revision": "a8ea35e9ddd054aca4b7d91ed2840906dc0deefc",
+            "subject binary fingerprint": "a0f3449a582c8d9cb6da3f4477bb3f60ca44784d5c791364ad4c306f88abc3c8",
+            "suite digest": "d3c52c828542a651e0a391601f569b643968bacd5325fb6413993fcbd3577ea0",
+            "tool surface digest": [
+              "\"765e78501541a69ba93bf82cc2c98a877efc7b575e69b5d22b8197dcb2c39993\""
+            ]
+          }
+        },
+        "terminal_pairs": [
+          {
+            "expected_terminal": "passed",
+            "left_matched": false,
+            "left_terminal": "assertion_failed",
+            "repeat": 0,
+            "right_matched": true,
+            "right_terminal": "passed",
+            "task_id": "s010-native-write-contract"
+          },
+          {
+            "expected_terminal": "assertion_failed",
+            "left_matched": true,
+            "left_terminal": "assertion_failed",
+            "repeat": 0,
+            "right_matched": true,
+            "right_terminal": "assertion_failed",
+            "task_id": "s010-protected-verifier-control"
+          }
+        ],
+        "tokens": null,
+        "unmet_expectations": [
+          {
+            "expected_terminal": "passed",
+            "left_terminal": "assertion_failed",
+            "repeat": 0,
+            "right_terminal": "passed",
+            "task_id": "s010-native-write-contract"
+          }
+        ],
+        "unpaired_left": [],
+        "unpaired_right": []
+      },
+      "provider_requests": 0,
+      "status": "ACCEPTED"
+    },
+    {
+      "baseline_binary_sha256": "a3f30bce79877d038664ebf005ed868cb0053600c83282bbc44d82d1d178e3f1",
+      "baseline_causal_trace": {
+        "bytes": 1836,
+        "dropped_events": 0,
+        "event_count": 3,
+        "schema": "harness_causal_trace_v1",
+        "sha256": "bf0a8def84f218018f5e4b2e86627a50412e43398d8d63707aa1e30f43e21e91",
+        "state": "complete"
+      },
+      "baseline_revision": "a8ea35e9ddd054aca4b7d91ed2840906dc0deefc",
+      "baseline_run_id": "d0baa850-af8a-4d59-8676-931629b20166",
+      "baseline_terminal": "assertion_failed",
+      "campaign": 2,
+      "candidate_binary_sha256": "a0f3449a582c8d9cb6da3f4477bb3f60ca44784d5c791364ad4c306f88abc3c8",
+      "candidate_sha256": "eecef663bd69048ca830e803fcbf6fcce97d6aca0a519dd93fa2c884d99de894",
+      "checkpoint_run_id": "148416a508dd48a2884f11a2cb82439a",
+      "corrective_patch_sha256": "eecef663bd69048ca830e803fcbf6fcce97d6aca0a519dd93fa2c884d99de894",
+      "corrective_trials": [
+        {
+          "binary_sha256": "a0f3449a582c8d9cb6da3f4477bb3f60ca44784d5c791364ad4c306f88abc3c8",
+          "candidate": "148416a508dd48a2884f11a2cb82439a-i01",
+          "repeat": 0,
+          "run_id": "33a010fe-2e5d-475e-a9f2-d8173d5e619a",
+          "task_id": "s010-native-write-contract",
+          "terminal": "passed",
+          "verifier_status": "passed"
+        },
+        {
+          "binary_sha256": "a0f3449a582c8d9cb6da3f4477bb3f60ca44784d5c791364ad4c306f88abc3c8",
+          "candidate": "148416a508dd48a2884f11a2cb82439a-i01",
+          "repeat": 0,
+          "run_id": "4d8db5fb-e600-40a2-8208-d7a583125ad7",
+          "task_id": "s010-protected-verifier-control",
+          "terminal": "assertion_failed",
+          "verifier_status": "assertion_failed"
+        }
+      ],
+      "noop_binary_sha256": "de47f2a2a3df8fe6663ab7d3a7ea7014421f34d2fc0b8d7c6e139c776d245fe5",
+      "noop_patch_sha256": "cc0c3ba60719f300c3551fe9ea584e073bb2f787ecaf658c7451ac5e8faac3ec",
+      "noop_status": "NO_IMPROVEMENT",
+      "noop_trials": [
+        {
+          "binary_sha256": "de47f2a2a3df8fe6663ab7d3a7ea7014421f34d2fc0b8d7c6e139c776d245fe5",
+          "candidate": "4e0395ac1e5943dbbe072db02cb18445-i01",
+          "repeat": 0,
+          "run_id": "b7c1e31c-219c-408f-aa5d-664630b64f80",
+          "task_id": "s010-native-write-contract",
+          "terminal": "assertion_failed",
+          "verifier_status": "assertion_failed"
+        },
+        {
+          "binary_sha256": "de47f2a2a3df8fe6663ab7d3a7ea7014421f34d2fc0b8d7c6e139c776d245fe5",
+          "candidate": "4e0395ac1e5943dbbe072db02cb18445-i01",
+          "repeat": 0,
+          "run_id": "c6683d91-a814-4e44-9dcc-395a0efa02a6",
+          "task_id": "s010-protected-verifier-control",
+          "terminal": "assertion_failed",
+          "verifier_status": "assertion_failed"
+        }
+      ],
+      "paired_comparison": {
+        "cost_usd": null,
+        "denominator": 2,
+        "improvements": [
+          {
+            "expected_terminal": "passed",
+            "left_matched": false,
+            "left_terminal": "assertion_failed",
+            "repeat": 0,
+            "right_matched": true,
+            "right_terminal": "passed",
+            "task_id": "s010-native-write-contract"
+          }
+        ],
+        "interrupted_trials": {
+          "left": [],
+          "right": []
+        },
+        "left": "baseline",
+        "left_passed": 0,
+        "measured_token_usage": {
+          "left": {
+            "cached_tokens": 6,
+            "input_tokens": 34,
+            "measured_runs": 2,
+            "output_tokens": 18,
+            "reasoning_tokens": 4
+          },
+          "right": {
+            "cached_tokens": 6,
+            "input_tokens": 34,
+            "measured_runs": 2,
+            "output_tokens": 18,
+            "reasoning_tokens": 4
+          }
+        },
+        "paired_task_ids": [
+          "s010-native-write-contract",
+          "s010-protected-verifier-control"
+        ],
+        "paired_trials": [
+          {
+            "repeat": 0,
+            "task_id": "s010-native-write-contract"
+          },
+          {
+            "repeat": 0,
+            "task_id": "s010-protected-verifier-control"
+          }
+        ],
+        "regressions": [],
+        "right": "148416a508dd48a2884f11a2cb82439a-i01",
+        "right_passed": 1,
+        "subject_identity": {
+          "left": {
+            "agent": [
+              "\"build\""
+            ],
+            "model": [
+              "\"openai/harness-fixture\""
+            ],
+            "policy": [
+              "{\"effective\":{\"approvalMode\":\"yolo\",\"revision\":\"1\",\"sandbox\":\"workspace_write\"},\"requested\":{\"approvalMode\":\"yolo\",\"sandbox\":\"workspace_write\"}}"
+            ],
+            "revision": "a8ea35e9ddd054aca4b7d91ed2840906dc0deefc",
+            "subject binary fingerprint": "a3f30bce79877d038664ebf005ed868cb0053600c83282bbc44d82d1d178e3f1",
+            "suite digest": "d3c52c828542a651e0a391601f569b643968bacd5325fb6413993fcbd3577ea0",
+            "tool surface digest": [
+              "\"765e78501541a69ba93bf82cc2c98a877efc7b575e69b5d22b8197dcb2c39993\""
+            ]
+          },
+          "right": {
+            "agent": [
+              "\"build\""
+            ],
+            "model": [
+              "\"openai/harness-fixture\""
+            ],
+            "policy": [
+              "{\"effective\":{\"approvalMode\":\"yolo\",\"revision\":\"1\",\"sandbox\":\"workspace_write\"},\"requested\":{\"approvalMode\":\"yolo\",\"sandbox\":\"workspace_write\"}}"
+            ],
+            "revision": "a8ea35e9ddd054aca4b7d91ed2840906dc0deefc",
+            "subject binary fingerprint": "a0f3449a582c8d9cb6da3f4477bb3f60ca44784d5c791364ad4c306f88abc3c8",
+            "suite digest": "d3c52c828542a651e0a391601f569b643968bacd5325fb6413993fcbd3577ea0",
+            "tool surface digest": [
+              "\"765e78501541a69ba93bf82cc2c98a877efc7b575e69b5d22b8197dcb2c39993\""
+            ]
+          }
+        },
+        "terminal_pairs": [
+          {
+            "expected_terminal": "passed",
+            "left_matched": false,
+            "left_terminal": "assertion_failed",
+            "repeat": 0,
+            "right_matched": true,
+            "right_terminal": "passed",
+            "task_id": "s010-native-write-contract"
+          },
+          {
+            "expected_terminal": "assertion_failed",
+            "left_matched": true,
+            "left_terminal": "assertion_failed",
+            "repeat": 0,
+            "right_matched": true,
+            "right_terminal": "assertion_failed",
+            "task_id": "s010-protected-verifier-control"
+          }
+        ],
+        "tokens": null,
+        "unmet_expectations": [
+          {
+            "expected_terminal": "passed",
+            "left_terminal": "assertion_failed",
+            "repeat": 0,
+            "right_terminal": "passed",
+            "task_id": "s010-native-write-contract"
+          }
+        ],
+        "unpaired_left": [],
+        "unpaired_right": []
+      },
+      "provider_requests": 0,
+      "status": "ACCEPTED"
+    }
+  ],
+  "controller_revision": "49297b22c3610fc6d5b8349c0932fd9c678258db",
+  "controller_revision_note": "Implementation changes were in the measured worktree; final evidence commit SHA is recorded in 010-status.md.",
+  "crash_recovery_evidence": {
+    "generic_optimizer_phase_sigkill_matrix": "existing tests cover six durable phases with resume/refusal and no duplicate proposal",
+    "native_trial_composition": "not exercised; this remains the sole missing strict S010 acceptance gate"
+  },
+  "finished_unix_seconds": 1793401156.812408,
+  "host": {
+    "execution_architecture": "arm64",
+    "platform_machine": "arm64",
+    "rust_host": "aarch64-apple-darwin",
+    "rustc": "1.98.1-aarch64-apple-darwin"
+  },
+  "integrated_sigkill_restart": "not_qualified",
+  "live_provider_calls": 0,
+  "native_corrective_candidates_accepted": 2,
+  "native_loopback_trials": 8,
+  "native_noop_candidates_rejected": 2,
+  "prolonged_resource_pressure": "completed",
+  "provider_requests": 0,
+  "qualification_command": "CODEGG_S010_NATIVE_INTEGRATION=1 python3 -m unittest dev.harness_lab.tests.test_improve.S010IntegratedNativeOptimizerTests.test_two_private_native_campaigns_reject_noop_and_accept_seeded_correction -v",
+  "qualification_elapsed_seconds": 1488.285,
+  "resource_pressure": {
+    "all_checks_succeeded": true,
+    "checks_completed": 348,
+    "concurrent_checks_per_round": 2,
+    "cpu_rss_scope": "cargo_controller_process_cpu_rss_and_host_free_disk; rustc child metrics not separately attributed",
+    "disk_floor_bytes": 16106127360,
+    "duration_seconds": 180.29,
+    "evidence": "evidence/s010-resource-pressure.json",
+    "minimum_observed_free_bytes": 35401793536,
+    "overlapped_optimizer_phase": "corrective_candidate_build",
+    "provider_requests": 0,
+    "rounds": 174
+  },
+  "schema": "s010_integrated_offline_v1",
+  "source_revision": "a8ea35e9ddd054aca4b7d91ed2840906dc0deefc",
+  "started_unix_seconds": 1793399670.5171452,
+  "suite_sha256": "d3c52c828542a651e0a391601f569b643968bacd5325fb6413993fcbd3577ea0"
+}
