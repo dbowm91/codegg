@@ -1,0 +1,179 @@
+{
+  "schema_version": 1,
+  "source_revision": "5bf63e271e396d28daee2e2cea766f1bc32bad73",
+  "resulting_main_ci_run": 41003530150,
+  "resulting_main_desktop_e2e_run": 41003529978,
+  "integrated_codegg_binary_sha256": "2e381609e7517ada5a09fa3ef9daa5d781798ae4ba5c2cfa4baf293ef6e40d7f",
+  "native_fixture_test_binary_sha256": "2e381609e7517ada5a09fa3ef9daa5d781798ae4ba5c2cfa4baf293ef6e40d7f",
+  "native_fixture_test_binary_source_revision": "d64bd207333fb1a5fec4f85c0b3514e7b16f83ce",
+  "native_build_environment": {
+    "hardware_arch": "arm64 Apple silicon (hw.machine=arm64)",
+    "shell_arch": "x86_64 under Rosetta (sysctl.proc_translated=1)",
+    "rust_target": "aarch64-apple-darwin",
+    "rust_toolchain": "1.98.1-aarch64-apple-darwin",
+    "pkg_config": "/opt/local/bin/pkg-config",
+    "pkg_config_libdir": "/opt/local/lib/pkgconfig"
+  },
+  "focused_offline_repetitions": {
+    "command": "python3 -m unittest dev.harness_lab.tests.test_improve dev.harness_lab.tests.test_supervisor dev.harness_lab.tests.test_budget dev.harness_lab.tests.test_proposer_gateway dev.harness_lab.tests.test_defect_intake dev.harness_lab.tests.test_autonomy_run dev.harness_lab.tests.test_sustained dev.harness_lab.tests.test_h007_native -q",
+    "runs": 2,
+    "tests_per_run": 190,
+    "skips_per_run": 1,
+    "result": "both passed"
+  },
+  "native_quick_verification": {
+    "command": "scripts/verify.sh quick",
+    "harness_lab_tests": 451,
+    "skipped": 2,
+    "guards": 84,
+    "workspace_check": "cargo check --workspace --all-targets --locked passed",
+    "result": "passed"
+  },
+  "native_fixture_product_source_delta_from_s005_baseline": "none under src/, crates/, Cargo.toml",
+  "scenarios": [
+    {
+      "id": "S005-F01",
+      "boundary": "provider policy admission and request N+1",
+      "evidence": [
+        "dev.harness_lab.tests.test_budget.BudgetAdmissionTests",
+        "codegg_providers::opencode_go::capture_tests::provider_request_cap_refuses_before_transport_and_writes_complete_receipt"
+      ],
+      "expected": "refuse before unadmitted transport",
+      "observed": "two requests admitted at limit 2; request 3 refused pretransport with receipt",
+      "result": "pass"
+    },
+    {
+      "id": "S005-F02",
+      "boundary": "external proposer request N/N+1 at HTTP boundary",
+      "evidence": [
+        "dev.harness_lab.tests.test_proposer_gateway.ProposerGatewayTests.test_actual_opencode_cli_hits_only_the_loopback_gate_and_n_plus_one_stops",
+        "dev.harness_lab.tests.test_proposer_gateway.ProposerGatewayTests.test_request_ceiling_is_atomic_under_concurrent_requests",
+        "dev.harness_lab.tests.test_improve.OptimizerCampaignSequenceTests.test_proposer_n_plus_one_receipt_is_persisted_without_iteration_retry"
+      ],
+      "expected": "request N is admitted; request N+1 is refused before fixture/upstream forwarding and retained in the campaign receipt",
+      "observed": "real OpenCode CLI emitted multiple provider HTTP requests; exactly one request was fixture-forwarded, N+1 received 429, and the sanitized receipt was persisted without retry",
+      "provider_requests": 0,
+      "result": "pass_offline_fixture_only"
+    },
+    {
+      "id": "S005-F03",
+      "boundary": "candidate patch scope and resume identity",
+      "evidence": [
+        "dev.harness_lab.tests.test_improve.ImproveTests.test_opencode_json_event_parser_and_scope_gate",
+        "dev.harness_lab.tests.test_improve.ImproveTests.test_optimization_checkpoint_is_hash_linked_and_resume_validates_inputs",
+        "dev.harness_lab.tests.test_improve.ImproveTests.test_resume_with_a_stale_binary_fingerprint_is_refused"
+      ],
+      "expected": "reject out-of-scope or changed-identity resume",
+      "observed": "scope and stale identity refusals asserted",
+      "result": "pass"
+    },
+    {
+      "id": "S005-F04",
+      "boundary": "candidate build correction and retry limit",
+      "evidence": [
+        "dev.harness_lab.tests.test_improve.CompileCorrectionMechanicsTests.test_a_compile_failure_is_corrected_once_and_the_build_is_rerun",
+        "dev.harness_lab.tests.test_improve.CompileCorrectionMechanicsTests.test_the_compile_correction_retry_is_bounded"
+      ],
+      "expected": "correct only within the declared retry ceiling",
+      "observed": "bounded retry counts and build rerun asserted",
+      "result": "pass"
+    },
+    {
+      "id": "S005-F05",
+      "boundary": "independent verifier and candidate score integrity",
+      "evidence": [
+        "dev.harness_lab.tests.test_improve.ScoreContractTests",
+        "dev.harness_lab.tests.test_ledger.LedgerCompareTests",
+        "dev.harness_lab.tests.test_autonomy_cases"
+      ],
+      "expected": "reject incomplete, relabeled, or control-regressing results",
+      "observed": "negative controls, partial pairings, independent fixture outcomes, and score decisions covered",
+      "result": "pass"
+    },
+    {
+      "id": "S005-F06",
+      "boundary": "candidate sequence and deterministic replay",
+      "evidence": "dev.harness_lab.tests.test_improve.OptimizerCampaignSequenceTests.test_two_candidates_reject_noop_then_accept_scored_correction_repeatably",
+      "repetitions": 2,
+      "expected": ["rejected no-op", "accepted correctness fix"],
+      "observed": ["rejected no-op", "accepted correctness fix"],
+      "patch_digests_stable_across_repetition": true,
+      "provider_requests": 0,
+      "result": "pass; synthetic proposer/qualification boundary, production score contract and optimizer/checkpoint/worktree code"
+    },
+    {
+      "id": "S005-F07",
+      "boundary": "SIGKILL across checkpoint and ledger append boundaries",
+      "evidence": [
+        "dev.harness_lab.tests.test_improve.CrashRecoveryTests.test_sigkill_between_checkpoint_append_and_pointer_is_recorded",
+        "dev.harness_lab.tests.test_improve.CrashRecoveryTests.test_sigkill_during_ledger_write_leaves_no_duplicate_trial_rows",
+        "dev.harness_lab.tests.test_improve.CrashRecoveryTests.test_resumed_run_does_not_append_a_second_row_for_a_recorded_pair"
+      ],
+      "expected": "record interrupted_unknown and do not duplicate a scored pair",
+      "observed": "crash recovery state and exactly-once row assertions pass",
+      "result": "pass"
+    },
+    {
+      "id": "S005-F08",
+      "boundary": "timeout, cleanup, cancellation, disk state and private subject isolation",
+      "evidence": [
+        "dev.harness_lab.tests.test_supervisor.ExecTrialTests.test_the_lane_is_removed_after_a_successful_trial",
+        "dev.harness_lab.tests.test_supervisor.ExecTrialTests.test_the_lane_is_removed_after_a_failed_trial",
+        "dev.harness_lab.tests.test_supervisor.ExecTrialTests.test_a_child_that_never_exits_is_bounded_by_the_timeout",
+        "dev.harness_lab.tests.test_autonomy_run.DiskFloorWatcherTests.test_a_breached_floor_cancels_before_the_prompt",
+        "dev.harness_lab.tests.test_autonomy_run.DiskFloorWatcherTests.test_unreadable_disk_state_cancels_fail_closed",
+        "dev.harness_lab.tests.test_sustained.SustainedLaneIsolationTests.test_a_cancelled_lane_does_not_stop_the_next_lane",
+        "plans/closure/harness-lab-self-improvement-resumption/evidence/s002-offline-qualification.json#/two_subject_smoke"
+      ],
+      "expected": "bounded terminal and cleanup; no cross-subject teardown",
+      "observed": "local subprocess tests pass; exact-main smoke stopped subject 1 while subject 2 completed session creation",
+      "result": "pass for covered cases"
+    },
+    {
+      "id": "S005-F09",
+      "boundary": "controller SIGKILL and private subject daemon reconciliation",
+      "evidence": "dev.harness_lab.tests.test_supervisor.SubjectEnvironmentAndCrashCleanupTests.test_controller_sigkill_reconciles_only_its_private_subject_daemon",
+      "expected": "after parent death, the exact private daemon is gone or stopped by verified lane identity; default daemon and unrelated sentinel survive",
+      "observed": "controller was SIGKILLed after a real ACP session; the private daemon was absent or safely stopped through exact lane identity; sentinel remained live and default daemon identity was unchanged",
+      "result": "pass"
+    },
+    {
+      "id": "S005-F10",
+      "boundary": "parallel Cargo CPU/target contention and repeat recovery",
+      "evidence": [
+        "dev.harness_lab.tests.test_improve.CampaignResourceContentionTests.test_parallel_offline_cargo_builds_use_disjoint_capped_targets",
+        "dev.harness_lab.tests.test_improve.CampaignResourceContentionTests.test_optimizer_progresses_under_repeated_parallel_private_cargo_contention"
+      ],
+      "expected": "two parallel offline Cargo checks with one worker each use disjoint private target roots; the real optimizer admits and records its candidate while both checks remain active; the sequence repeats without leakage",
+      "observed": "both Cargo checks were observed active at each optimizer proposal boundary in two bounded rounds; both checks then passed and temporary targets were removed",
+      "provider_requests": 0,
+      "result": "pass_bounded_contention"
+    },
+    {
+      "id": "S005-F11",
+      "boundary": "campaign transition and side-effect fault mapping",
+      "evidence": [
+        "dev.harness_lab.tests.test_improve.CrashRecoveryTests.test_campaign_controller_sigkill_recovers_each_durable_phase_once",
+        "dev.harness_lab.tests.test_improve.OptimizerCampaignSequenceTests.test_campaign_fault_matrix_recovers_or_refuses_without_duplicate_proposal",
+        "dev.harness_lab.tests.test_improve.CrashRecoveryTests.test_sigkill_between_checkpoint_append_and_pointer_is_recorded",
+        "dev.harness_lab.tests.test_improve.CrashRecoveryTests.test_sigkill_during_ledger_write_leaves_no_duplicate_trial_rows",
+        "dev.harness_lab.tests.test_improve.CrashRecoveryTests.test_resumed_run_does_not_append_a_second_row_for_a_recorded_pair",
+        "dev.harness_lab.tests.test_supervisor.SubjectEnvironmentAndCrashCleanupTests.test_controller_sigkill_reconciles_only_its_private_subject_daemon",
+        "dev.harness_lab.tests.test_supervisor.ExecTrialTests",
+        "dev.harness_lab.tests.test_autonomy_run.DiskFloorWatcherTests"
+      ],
+      "expected": "proposal admission, patch capture, build, independent verifier, ACP evaluation, score publication, checkpoint pointer, ledger append, cancellation, private-daemon cleanup and resource-floor failures each map to a named injected refusal/recovery with no duplicate admission or scored row",
+      "observed": "SIGKILL was injected at six persisted optimizer phases and recovered from durable phase state without a second proposal; exception injection covered the same six phases; checkpoint-pointer and ledger-append SIGKILLs retained exactly-once assertions; parent-death cleanup preserved the default daemon and unrelated sentinel",
+      "result": "pass_for_named_offline_boundaries"
+    }
+  ],
+  "limits": [
+    "No real external proposer HTTP request was made; the live route remains unavailable until a separate authorization and exact endpoint check.",
+    "The candidate controller sequence uses a synthetic proposer and qualification boundary; native CodeGG ACP/job qualification is exercised separately and is not claimed as an optimizer-integrated paired campaign.",
+    "Cargo contention is bounded to two capped checks in two rounds; it proves optimizer progress during active work but is not a prolonged saturation campaign.",
+    "SIGKILL phase recovery uses durable phase boundaries and an injected qualification callback; it does not kill the controller inside every Rust build or native ACP subprocess instruction window.",
+    "No provider-backed campaign or stable-live claim is implied."
+  ],
+  "live_provider_calls": 0,
+  "billed_usd": "unknown"
+}

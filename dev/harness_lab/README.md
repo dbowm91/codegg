@@ -3,6 +3,66 @@
 This Python package is development-only. It is not registered as a production
 CodeGG tool, ACP method, or shipped Rust command.
 
+## Offline H007 attribution
+
+The seven H007 receipts are immutable historical evidence. Reproduce their
+bounded attribution report with:
+
+```bash
+python3 -m dev.harness_lab.h007_attribution \
+  --output plans/closure/harness-lab-self-improvement-resumption/evidence/s001-attribution.json
+python3 -m unittest dev.harness_lab.tests.test_h007_attribution -v
+```
+
+The report verifies each receipt digest and pins the baseline source, case
+manifest, metadata, frozen starter files and independent verifier. It records
+the two provider timeouts as route-boundary observations with unresolved
+transport cause, distinguishes verifier setup errors from failed completed
+tests, and reports the H007-2 reason contradiction without rewriting its
+receipt. The only available evidence is the seven sanitized receipts; private
+transcripts and command indexes were inventoried by filename only and are not
+inputs. A zero event-gap count describes only each receipt's observed window.
+The report establishes no reproducible CodeGG defect and feeds the offline
+instrument qualification in S002.
+
+## Evidence-based defect intake
+
+Use the S001 report as the only input to the current H007 intake decision:
+
+```bash
+python3 -m dev.harness_lab.defect_intake \
+  --report plans/closure/harness-lab-self-improvement-resumption/evidence/s001-attribution.json \
+  --output plans/closure/harness-lab-self-improvement-resumption/evidence/s004-h007-intake.json
+python3 -m unittest dev.harness_lab.tests.test_defect_intake -v
+```
+
+The content-addressed `defect_dossier_v1` refuses stale S001 inputs, malformed
+trial sets and repository symlink escapes. It classifies route timeouts,
+fixture/verifier setup errors and task failures separately, marks every H007
+item ineligible for a CodeGG patch, and carries the historical C003 correction
+only as a historical reference. The intake cannot authorize a proposal or
+provider campaign; a genuine current harness defect still needs a failing-first
+native reproduction, independent expected behavior and a separately frozen
+holdout/control set.
+
+To exercise the generic positive intake mechanics, create a synthetic-only
+`defect_reproduction_manifest_v1` and pass its repository-relative path using
+`--generic-manifest`. The independent verifier and holdout receipts must bind
+the source/test digests, and two distinct private lanes must record the same
+red signature. The resulting `generic_defect_dossier_v1` is always marked
+`synthetic_fixture` and `campaign_eligible: false`; it cannot promote a real
+defect or change the H007 denominator.
+
+## External proposer request admission
+
+The OpenCode CLI is routed through a private loopback gateway for provider
+traffic. Its cap counts HTTP requests inside a CLI run, admits request N and
+refuses N+1 before upstream forwarding. The child gets a temporary pinned
+provider config with plugins and non-read/edit tools denied. A successful
+fixture run proves only the offline gate: it does not enable a live route or
+replace fresh operator authorization. On a refusal, the bounded credential-
+free request receipt is included in the campaign checkpoint or CLI error.
+
 ## Local two-subject lifecycle smoke
 
 Build the candidate and run the smoke from a clean CodeGG checkout:

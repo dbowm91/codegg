@@ -1,0 +1,447 @@
+{
+  "attempt_count": 7,
+  "baseline_source_sha": "d7f1f528df622e8e9bfe4a2d17e2f22ce90d93f5",
+  "candidate_fix_queue": [],
+  "case_identity": {
+    "fixture_root": "dev/harness_lab/fixtures/build_provenance_catalog/fixture",
+    "manifest": "dev/harness_lab/fixtures/agent_autonomy_h007/cases.jsonl",
+    "manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+    "metadata": "dev/harness_lab/fixtures/build_provenance_catalog.case.json",
+    "metadata_sha256": "08b51eaf8c61373ddf492a5594e84991cac9b1e2dabb03388662286e454f24bd",
+    "verifier": "dev/autonomy_fixtures/build-provenance-catalog/verifier/test_catalog_contract.py",
+    "verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c"
+  },
+  "causal_limit": "A zero-gap summary describes only the recorded observation window. No full redacted event ledger was committed; no root cause is inferred from end_turn, missing job calls, or a verifier setup error.",
+  "companion_inventory": {
+    "committed_sanitized_receipts": 7,
+    "inventory_date": "2026-10-30",
+    "limitation": "Private transcripts and command-bearing indexes were inventoried by filename only and not read or committed. The report uses the seven committed sanitized receipts only; complete event pairing remains the bounded projection those receipts record.",
+    "local_private_lanes": 7,
+    "private_daemon_or_acp_logs": 14,
+    "private_sidecars_used_for_attribution": false,
+    "private_tool_run_indexes": 13,
+    "private_transcript_json": 7,
+    "provider_admission_ledgers": 7,
+    "separately_named_event_ledgers": 0
+  },
+  "disposition": "no_reproducible_codegg_defect; proceed to S002 offline instrumentation qualification",
+  "input_manifest_sha256": "d1f9ac4df8e8564044999c5976813ea325fe1e68c4aafdf9d895ef54d77802c8",
+  "report_schema": "h007-attribution-v1",
+  "schema_version": 1,
+  "summary": {
+    "event_gap_counts": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "maximum_active_work_span_ms": 673772,
+    "provider_boundary_timeouts": 2,
+    "qualified_job_lifecycles": 2,
+    "repair_cycles_recorded": [
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+    ],
+    "task_outcomes": {
+      "failed": 5,
+      "inconclusive": 2,
+      "passed": 0
+    },
+    "verified_codegg_defects": 0
+  },
+  "trials": [
+    {
+      "binary_sha256": "80292d55a3ba9ba2291e2daffa67d083a450b9a4ebaeaf578ff882dda15bc04c",
+      "case_identity_state": "explicit_in_receipt",
+      "cause_assertion": {
+        "assertion": null,
+        "established": false,
+        "evidence_pointers": [
+          "receipt#/terminal_failure",
+          "receipt#/independent_verifier",
+          "receipt#/event_capture"
+        ]
+      },
+      "classification": "provider_boundary_timeout",
+      "codegg_defect_reproduced": false,
+      "evidence_state": "observed",
+      "implementation_revision": "96b70206e40019e337772fbdd495ecaa35e91412",
+      "next_action": "No CodeGG patch: carry the evidence-qualified disposition into S002.",
+      "observed_outcome": {
+        "active_work_span_ms": 301922,
+        "continuation_confirmed": false,
+        "event_capture": {
+          "dropped": 0,
+          "gap_count": 0,
+          "state": "observed_complete",
+          "tool_started": 25,
+          "tool_terminal": 25
+        },
+        "horizon_outcome": "not_qualified",
+        "horizon_reason": "measurement_incomplete",
+        "job_lifecycle": {
+          "productive_overlap": false,
+          "same_id_running_and_terminal_observed": false,
+          "status_observation_count": 0,
+          "submit_count": 0
+        },
+        "provider_requests": 19,
+        "repair_cycles": 0,
+        "task_outcome": "inconclusive",
+        "terminal": "failed",
+        "verifier": {
+          "exit_code": 1,
+          "failure_summary": "(errors=1)",
+          "state": "tests_failed",
+          "tests_run": null
+        }
+      },
+      "operator_note": null,
+      "reason_evidence_state": "observed",
+      "receipt_path": "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt.json",
+      "receipt_sha256": "8d4fe4da943265b3af18312ee8e778f6d1cadb80370f13f4d870e6edeaf16a79",
+      "recorded_horizon_reason_consistent": true,
+      "suspected_owner": "provider route",
+      "symptom": "Typed provider timeout observed; underlying transport cause is unresolved.",
+      "trial_id": "H007-1"
+    },
+    {
+      "binary_sha256": "80292d55a3ba9ba2291e2daffa67d083a450b9a4ebaeaf578ff882dda15bc04c",
+      "case_identity_state": "explicit_in_receipt",
+      "cause_assertion": {
+        "assertion": null,
+        "established": false,
+        "evidence_pointers": [
+          "receipt#/terminal_failure",
+          "receipt#/independent_verifier",
+          "receipt#/event_capture"
+        ]
+      },
+      "classification": "task_or_qualification_failure",
+      "codegg_defect_reproduced": false,
+      "evidence_state": "contradicted",
+      "implementation_revision": "647ac905c5bc6d5c11093c03292372017eb26640",
+      "next_action": "No CodeGG patch: carry the evidence-qualified disposition into S002.",
+      "observed_outcome": {
+        "active_work_span_ms": 307886,
+        "continuation_confirmed": true,
+        "event_capture": {
+          "dropped": 0,
+          "gap_count": 0,
+          "state": "observed_complete",
+          "tool_started": 48,
+          "tool_terminal": 48
+        },
+        "horizon_outcome": "not_qualified",
+        "horizon_reason": "continuation_missing",
+        "job_lifecycle": {
+          "productive_overlap": true,
+          "same_id_running_and_terminal_observed": true,
+          "status_observation_count": 3,
+          "submit_count": 2
+        },
+        "provider_requests": 35,
+        "repair_cycles": 1,
+        "task_outcome": "failed",
+        "terminal": "completed",
+        "verifier": {
+          "exit_code": 1,
+          "failure_summary": "(failures=1)",
+          "state": "tests_failed",
+          "tests_run": 5
+        }
+      },
+      "operator_note": "Historical receipt reason conflicts with its own clarification: continuation_missing vs repair_cycles_insufficient.",
+      "reason_evidence_state": "contradicted",
+      "receipt_path": "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-2.json",
+      "receipt_sha256": "23a8f883c4c9845c2fa8e1784938bfc144e9c6fc429dc50faf708adaf8f35555",
+      "recorded_horizon_reason_consistent": false,
+      "suspected_owner": "agent-task",
+      "symptom": "The recorded task or qualification criteria failed; model intent is not inferred.",
+      "trial_id": "H007-2"
+    },
+    {
+      "binary_sha256": "80292d55a3ba9ba2291e2daffa67d083a450b9a4ebaeaf578ff882dda15bc04c",
+      "case_identity_state": "shared_pinned_case_identity; receipt_fields_unavailable",
+      "cause_assertion": {
+        "assertion": null,
+        "established": false,
+        "evidence_pointers": [
+          "receipt#/terminal_failure",
+          "receipt#/independent_verifier",
+          "receipt#/event_capture"
+        ]
+      },
+      "classification": "provider_boundary_timeout",
+      "codegg_defect_reproduced": false,
+      "evidence_state": "observed",
+      "implementation_revision": "d2ae03c201b575dadef0bf9d9506dc084d93eed7",
+      "next_action": "No CodeGG patch: carry the evidence-qualified disposition into S002.",
+      "observed_outcome": {
+        "active_work_span_ms": 190891,
+        "continuation_confirmed": false,
+        "event_capture": {
+          "dropped": 0,
+          "gap_count": 0,
+          "state": "observed_complete",
+          "tool_started": 15,
+          "tool_terminal": 15
+        },
+        "horizon_outcome": "not_qualified",
+        "horizon_reason": "measurement_incomplete",
+        "job_lifecycle": {
+          "productive_overlap": false,
+          "same_id_running_and_terminal_observed": false,
+          "status_observation_count": 0,
+          "submit_count": 1
+        },
+        "provider_requests": 8,
+        "repair_cycles": 0,
+        "task_outcome": "inconclusive",
+        "terminal": "failed",
+        "verifier": {
+          "exit_code": 1,
+          "failure_summary": "(errors=1)",
+          "state": "error_before_tests_completed",
+          "tests_run": 0
+        }
+      },
+      "operator_note": "The closure records a typed provider timeout; the sanitized receipt omits the terminal_failure detail.",
+      "reason_evidence_state": "observed",
+      "receipt_path": "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-3.json",
+      "receipt_sha256": "710c350b0c45df91ca97d6d6c1b306644c2dce9bb7d7cb11a87f9540bdc609bc",
+      "recorded_horizon_reason_consistent": true,
+      "suspected_owner": "provider route",
+      "symptom": "Typed provider timeout observed; underlying transport cause is unresolved.",
+      "trial_id": "H007-3"
+    },
+    {
+      "binary_sha256": "80292d55a3ba9ba2291e2daffa67d083a450b9a4ebaeaf578ff882dda15bc04c",
+      "case_identity_state": "shared_pinned_case_identity; receipt_fields_unavailable",
+      "cause_assertion": {
+        "assertion": null,
+        "established": false,
+        "evidence_pointers": [
+          "receipt#/terminal_failure",
+          "receipt#/independent_verifier",
+          "receipt#/event_capture"
+        ]
+      },
+      "classification": "candidate_or_verifier_setup_failure",
+      "codegg_defect_reproduced": false,
+      "evidence_state": "observed",
+      "implementation_revision": "d2ae03c201b575dadef0bf9d9506dc084d93eed7",
+      "next_action": "No CodeGG patch: carry the evidence-qualified disposition into S002.",
+      "observed_outcome": {
+        "active_work_span_ms": 673772,
+        "continuation_confirmed": false,
+        "event_capture": {
+          "dropped": 0,
+          "gap_count": 0,
+          "state": "observed_complete",
+          "tool_started": 25,
+          "tool_terminal": 25
+        },
+        "horizon_outcome": "not_qualified",
+        "horizon_reason": "job_lifecycle_missing",
+        "job_lifecycle": {
+          "productive_overlap": false,
+          "same_id_running_and_terminal_observed": false,
+          "status_observation_count": 0,
+          "submit_count": 0
+        },
+        "provider_requests": 17,
+        "repair_cycles": 0,
+        "task_outcome": "failed",
+        "terminal": "completed",
+        "verifier": {
+          "exit_code": 1,
+          "failure_summary": "(errors=1)",
+          "state": "error_before_tests_completed",
+          "tests_run": 0
+        }
+      },
+      "operator_note": "The disposable fixture catalog-index tests panicked on missing map keys; verifier setup stopped before contract tests ran.",
+      "reason_evidence_state": "observed",
+      "receipt_path": "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-4.json",
+      "receipt_sha256": "a892a3eb6f9e26c3ea514233717b0ff2d21dc54deaa2dfc4e9ab9ff7e25087f1",
+      "recorded_horizon_reason_consistent": true,
+      "suspected_owner": "fixture",
+      "symptom": "Verifier setup ended before contract tests completed.",
+      "trial_id": "H007-4"
+    },
+    {
+      "binary_sha256": "80292d55a3ba9ba2291e2daffa67d083a450b9a4ebaeaf578ff882dda15bc04c",
+      "case_identity_state": "shared_pinned_case_identity; receipt_fields_unavailable",
+      "cause_assertion": {
+        "assertion": null,
+        "established": false,
+        "evidence_pointers": [
+          "receipt#/terminal_failure",
+          "receipt#/independent_verifier",
+          "receipt#/event_capture"
+        ]
+      },
+      "classification": "task_or_qualification_failure",
+      "codegg_defect_reproduced": false,
+      "evidence_state": "observed",
+      "implementation_revision": "d2ae03c201b575dadef0bf9d9506dc084d93eed7",
+      "next_action": "No CodeGG patch: carry the evidence-qualified disposition into S002.",
+      "observed_outcome": {
+        "active_work_span_ms": 110660,
+        "continuation_confirmed": true,
+        "event_capture": {
+          "dropped": 0,
+          "gap_count": 0,
+          "state": "observed_complete",
+          "tool_started": 35,
+          "tool_terminal": 35
+        },
+        "horizon_outcome": "not_qualified",
+        "horizon_reason": "job_lifecycle_missing",
+        "job_lifecycle": {
+          "productive_overlap": false,
+          "same_id_running_and_terminal_observed": false,
+          "status_observation_count": 2,
+          "submit_count": 2
+        },
+        "provider_requests": 27,
+        "repair_cycles": 0,
+        "task_outcome": "failed",
+        "terminal": "completed",
+        "verifier": {
+          "exit_code": 1,
+          "failure_summary": "(failures=1)",
+          "state": "tests_failed",
+          "tests_run": 5
+        }
+      },
+      "operator_note": null,
+      "reason_evidence_state": "observed",
+      "receipt_path": "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-5.json",
+      "receipt_sha256": "436a66ecc6d18272c1b5951aa44c223102301b5d3e7ed87ce1993896bf6a2b1d",
+      "recorded_horizon_reason_consistent": true,
+      "suspected_owner": "agent-task",
+      "symptom": "The recorded task or qualification criteria failed; model intent is not inferred.",
+      "trial_id": "H007-5"
+    },
+    {
+      "binary_sha256": "80292d55a3ba9ba2291e2daffa67d083a450b9a4ebaeaf578ff882dda15bc04c",
+      "case_identity_state": "shared_pinned_case_identity; receipt_fields_unavailable",
+      "cause_assertion": {
+        "assertion": null,
+        "established": false,
+        "evidence_pointers": [
+          "receipt#/terminal_failure",
+          "receipt#/independent_verifier",
+          "receipt#/event_capture"
+        ]
+      },
+      "classification": "candidate_or_verifier_setup_failure",
+      "codegg_defect_reproduced": false,
+      "evidence_state": "observed",
+      "implementation_revision": "d2ae03c201b575dadef0bf9d9506dc084d93eed7",
+      "next_action": "No CodeGG patch: carry the evidence-qualified disposition into S002.",
+      "observed_outcome": {
+        "active_work_span_ms": 581715,
+        "continuation_confirmed": true,
+        "event_capture": {
+          "dropped": 0,
+          "gap_count": 0,
+          "state": "observed_complete",
+          "tool_started": 29,
+          "tool_terminal": 29
+        },
+        "horizon_outcome": "not_qualified",
+        "horizon_reason": "job_lifecycle_missing",
+        "job_lifecycle": {
+          "productive_overlap": false,
+          "same_id_running_and_terminal_observed": false,
+          "status_observation_count": 2,
+          "submit_count": 6
+        },
+        "provider_requests": 21,
+        "repair_cycles": 0,
+        "task_outcome": "failed",
+        "terminal": "completed",
+        "verifier": {
+          "exit_code": 1,
+          "failure_summary": "(errors=1)",
+          "state": "error_before_tests_completed",
+          "tests_run": 0
+        }
+      },
+      "operator_note": "The disposable fixture catalog-query lineage provenance assertion failed; verifier setup stopped before contract tests ran.",
+      "reason_evidence_state": "observed",
+      "receipt_path": "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-6.json",
+      "receipt_sha256": "8e8283983ec5717c0bc315e3b5aa2b23a522b44802944d0cca84c766a3e5da27",
+      "recorded_horizon_reason_consistent": true,
+      "suspected_owner": "fixture",
+      "symptom": "Verifier setup ended before contract tests completed.",
+      "trial_id": "H007-6"
+    },
+    {
+      "binary_sha256": "80292d55a3ba9ba2291e2daffa67d083a450b9a4ebaeaf578ff882dda15bc04c",
+      "case_identity_state": "shared_pinned_case_identity; receipt_fields_unavailable",
+      "cause_assertion": {
+        "assertion": null,
+        "established": false,
+        "evidence_pointers": [
+          "receipt#/terminal_failure",
+          "receipt#/independent_verifier",
+          "receipt#/event_capture"
+        ]
+      },
+      "classification": "task_or_qualification_failure",
+      "codegg_defect_reproduced": false,
+      "evidence_state": "observed",
+      "implementation_revision": "d2ae03c201b575dadef0bf9d9506dc084d93eed7",
+      "next_action": "No CodeGG patch: carry the evidence-qualified disposition into S002.",
+      "observed_outcome": {
+        "active_work_span_ms": 234717,
+        "continuation_confirmed": true,
+        "event_capture": {
+          "dropped": 0,
+          "gap_count": 0,
+          "state": "observed_complete",
+          "tool_started": 53,
+          "tool_terminal": 53
+        },
+        "horizon_outcome": "not_qualified",
+        "horizon_reason": "repair_cycles_insufficient",
+        "job_lifecycle": {
+          "productive_overlap": true,
+          "same_id_running_and_terminal_observed": true,
+          "status_observation_count": 3,
+          "submit_count": 3
+        },
+        "provider_requests": 40,
+        "repair_cycles": 1,
+        "task_outcome": "failed",
+        "terminal": "completed",
+        "verifier": {
+          "exit_code": 1,
+          "failure_summary": "(failures=1)",
+          "state": "tests_failed",
+          "tests_run": 5
+        }
+      },
+      "operator_note": null,
+      "reason_evidence_state": "observed",
+      "receipt_path": "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-7.json",
+      "receipt_sha256": "a6170b34e1bc16a3637a6c74b1aba068f0c58d2c2b3eca0314bd5c4e93606c8f",
+      "recorded_horizon_reason_consistent": true,
+      "suspected_owner": "agent-task",
+      "symptom": "The recorded task or qualification criteria failed; model intent is not inferred.",
+      "trial_id": "H007-7"
+    }
+  ]
+}

@@ -283,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
                 result = improve.manual_dry_run(args.checkpoint, args.max_iterations, args.max_candidate_retries)
             elif args.proposer == "opencode" and args.worktree and args.prompt and args.allow_prefix:
                 result = improve.opencode_propose(args.worktree, args.prompt, tuple(args.allow_prefix),
-                                                 args.timeout, model=args.model)
+                                                 args.timeout, model=args.model, spend_guard=spend_guard)
             else:
                 raise HarnessError("manual mode requires --dry-run; OpenCode mode requires --worktree, --prompt, and at least one --allow-prefix")
             print(json.dumps(result, sort_keys=True))
@@ -460,7 +460,7 @@ def main(argv: list[str] | None = None) -> int:
                     if not args.prompt or len(args.prompt.encode()) > 8192:
                         raise HarnessError("OpenCode qualification requires a non-empty prompt of at most 8 KiB")
                     proposal = improve.opencode_propose(worktree, args.prompt, tuple(args.allow_prefix),
-                                                       args.timeout, model=args.model)
+                                                       args.timeout, model=args.model, spend_guard=spend_guard)
                     paths = proposal["changed_paths"]
                     patch_digest = proposal["patch_sha256"]
                 else:
@@ -721,13 +721,19 @@ def main(argv: list[str] | None = None) -> int:
                         break
             else:
                 result = run_tool_trial(binary, args.profile, args.timeout, args.deny_bash,
-                                        args.ledger, args.candidate, args.task_id, args.group_id)
+                                        args.ledger, args.candidate, args.task_id, args.group_id,
+                                        expected_tool_failures=1 if args.deny_bash else 0)
         else:
-            result = run_tool_trial(binary, args.profile, args.timeout, args.deny_bash)
+            result = run_tool_trial(binary, args.profile, args.timeout, args.deny_bash,
+                                    expected_tool_failures=1 if args.deny_bash else 0)
         print(json.dumps(result, sort_keys=True))
         return 0 if result.get("ok", True) else 2
     except (HarnessError, ValueError, RuntimeError, TimeoutError, OSError) as error:
-        print(json.dumps({"ok": False, "error": str(error)}, sort_keys=True), file=sys.stderr)
+        failure = {"ok": False, "error": str(error)}
+        request_admission = getattr(error, "request_admission", None)
+        if isinstance(request_admission, dict):
+            failure["request_admission"] = request_admission
+        print(json.dumps(failure, sort_keys=True), file=sys.stderr)
         return 2
 
 

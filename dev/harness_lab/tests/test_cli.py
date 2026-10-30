@@ -50,3 +50,17 @@ class AutonomyCompareCliTests(unittest.TestCase):
                 "ok": True, "output": str(output_path),
                 "decision": "NO_GO", "objective": "no gains",
             })
+
+
+class ToolTrialCliTests(unittest.TestCase):
+    def test_explicit_deny_expects_one_refused_tool_call(self) -> None:
+        binary = pathlib.Path("/fixture/codegg")
+        with (mock.patch.object(harness_cli, "_binary", return_value=binary),
+              mock.patch.object(harness_cli, "run_tool_trial", return_value={"ok": True}) as run):
+            status = harness_cli.main([
+                "tool-trial", "--profile", "workspace-write", "--deny-bash",
+                "--binary", str(binary),
+            ])
+
+        self.assertEqual(status, 0)
+        self.assertEqual(run.call_args.kwargs["expected_tool_failures"], 1)
