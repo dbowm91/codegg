@@ -7,7 +7,11 @@ import { resolve } from 'node:path';
 // The sources, one pair per Rust/TypeScript surface the desktop bridge
 // exposes. The editor's view structs live beside the bridge's rather than
 // inside it, and the editor's contract is a separate TypeScript file; they
-// are still the same contract, and this guard holds them in one map.
+// are still the same contract, and this guard holds them in one map. The
+// terminal's view structs are the same shape: a host module of their own
+// (`src-tauri/src/terminal.rs`) and a contract of their own
+// (`src/terminal/contract.ts`), because the terminal's DTOs are not bridge
+// DTOs.
 const sources = {
   bridge: {
     rust: readFileSync(resolve('src-tauri/src/bridge.rs'), 'utf8'),
@@ -16,6 +20,10 @@ const sources = {
   editor: {
     rust: readFileSync(resolve('src-tauri/src/document.rs'), 'utf8'),
     ts: readFileSync(resolve('src/editor/contract.ts'), 'utf8'),
+  },
+  terminal: {
+    rust: readFileSync(resolve('src-tauri/src/terminal.rs'), 'utf8'),
+    ts: readFileSync(resolve('src/terminal/contract.ts'), 'utf8'),
   },
 };
 const expected = {
@@ -86,6 +94,16 @@ const expected = {
   EditorCompletionView: { source: 'editor', fields: ['status', 'message', 'candidates', 'truncated'] },
   EditorLocationView: { source: 'editor', fields: ['relative_path', 'line', 'character'] },
   EditorNavigationView: { source: 'editor', fields: ['status', 'message', 'locations', 'truncated'] },
+  // M007-J: the terminal's view structs. They live in the terminal's own
+  // Rust module and its own TypeScript contract, and they are guarded by
+  // the same map as the bridge's types so there is one contract to drift.
+  TerminalProcessView: { source: 'terminal', fields: ['handle', 'workspace_id', 'command', 'state', 'cols', 'rows', 'next_seq', 'retained_bytes', 'total_bytes', 'truncated', 'exit_code', 'exit_signal'] },
+  TerminalListView: { source: 'terminal', fields: ['processes', 'truncated'] },
+  TerminalChunkView: { source: 'terminal', fields: ['handle', 'from_seq', 'next_seq', 'gap', 'data_b64'] },
+  TerminalAttachView: { source: 'terminal', fields: ['attachment_id', 'handle', 'chunk', 'resync_reason'] },
+  TerminalInputView: { source: 'terminal', fields: ['attachment_id', 'bytes_accepted'] },
+  TerminalResizeView: { source: 'terminal', fields: ['attachment_id', 'cols', 'rows'] },
+  TerminalDetachView: { source: 'terminal', fields: ['attachment_id'] },
 };
 for (const [name, entry] of Object.entries(expected)) {
   const source = sources[entry.source];

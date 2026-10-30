@@ -27,6 +27,7 @@
 // reads the daemon again.
 
 import type { SessionPresentationView, SkillCatalogueView } from '../bridge-types';
+import type { TerminalProcessView } from '../terminal/contract';
 
 /** What the desktop shows for one declared frontend action. */
 export interface FrontendActionAnswer {
@@ -50,6 +51,23 @@ export interface FrontendActionContext {
   catalogue: SkillCatalogueView | null;
   /** The catalogue read's failure, when the read failed. */
   catalogueError: string | null;
+  /**
+   * The action's typed argument, or null when the form carries none.
+   *
+   * An action that names something — a handle, a path — receives it here, so
+   * the desktop answers the action the user asked for rather than a
+   * generalisation of it.
+   */
+  argument: string | null;
+  /** The interactive processes the daemon published for the workspace. */
+  terminals: TerminalProcessView[];
+  /**
+   * Focus a named terminal handle in the desktop's terminal panel.
+   *
+   * It answers whether the focus moved: an action that cannot focus what it
+   * was asked to focus says so instead of claiming it did.
+   */
+  focusTerminal: (handle: string) => boolean;
 }
 
 /**
@@ -60,13 +78,13 @@ export interface FrontendActionContext {
  * data the daemon publishes to the renderer, so the message does not read as
  * a temporary refusal.
  *
- * The desktop carries every other declared action: the daemon publishes
- * the session's selected model, its shell command runs and its tool
- * contracts, and the desktop renders what it published.
+ * The desktop carries every declared action: the daemon publishes the
+ * session's selected model, its shell command runs and its tool contracts,
+ * and the desktop renders what it published. The terminal is carried too:
+ * the daemon publishes the workspace's interactive processes, and the
+ * desktop focuses the handle the action names.
  */
-export const UNCARRIED_ACTIONS: Readonly<Record<string, string | undefined>> = {
-  show_terminal: 'the desktop has no terminal surface to focus',
-};
+export const UNCARRIED_ACTIONS: Readonly<Record<string, string | undefined>> = {};
 
 /**
  * The desktop's report of the skills the daemon discovered for the project.
@@ -170,6 +188,33 @@ function shellRunsReport(context: FrontendActionContext): string {
 }
 
 /**
+ * The desktop's answer to the terminal action.
+ *
+ * The action names a handle, and the desktop focuses **that** handle: it
+ * never focuses an arbitrary terminal. A handle the daemon did not publish
+ * is refused with the reason, so the message says what is missing rather
+ * than showing the wrong terminal.
+ */
+function terminalReport(context: FrontendActionContext): FrontendActionAnswer {
+  const handle = (context.argument ?? '').trim();
+  if (!handle) {
+    return { performed: false, message: '', reason: 'the terminal action needs a handle' };
+  }
+  const known = context.terminals.some((process) => process.handle === handle);
+  if (!known) {
+    return {
+      performed: false,
+      message: '',
+      reason: `the daemon published no terminal with the handle ${handle}`,
+    };
+  }
+  if (!context.focusTerminal(handle)) {
+    return { performed: false, message: '', reason: 'the desktop could not focus that terminal' };
+  }
+  return { performed: true, message: `terminal ${handle} is focused`, reason: null };
+}
+
+/**
  * Answer one declared frontend action.
  *
  * The action's wire name is the daemon's, so an action the desktop does not
@@ -191,6 +236,8 @@ export function answerFrontendAction(
       return { performed: true, message: toolContractsReport(context), reason: null };
     case 'show_shell_runs':
       return { performed: true, message: shellRunsReport(context), reason: null };
+    case 'show_terminal':
+      return terminalReport(context);
     default:
       return {
         performed: false,

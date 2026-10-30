@@ -50,6 +50,12 @@ vi.mock('./bridge', () => ({
     documentNavigate: vi.fn(),
     commandCatalog: vi.fn(),
     commandExecute: vi.fn(),
+    terminalList: vi.fn(),
+    terminalAttach: vi.fn(),
+    terminalResume: vi.fn(),
+    terminalInput: vi.fn(),
+    terminalResize: vi.fn(),
+    terminalDetach: vi.fn(),
     subscribeProjection: vi.fn(),
     subscribe: vi.fn(),
     disconnect: vi.fn(),
@@ -269,8 +275,8 @@ const catalog = (): CommandCatalogView => ({
         {
           form: '',
           kind: 'frontend_effect',
-          argumentHint: '',
-          argumentRequired: false,
+          argumentHint: '<handle>',
+          argumentRequired: true,
           daemonServed: true,
           action: 'show_terminal',
         },
@@ -299,6 +305,41 @@ const catalog = (): CommandCatalogView => ({
 });
 
 beforeEach(() => {
+  vi.mocked(bridge.terminalList).mockResolvedValue({
+    processes: [
+      {
+        handle: 'h-1',
+        workspaceId: 'w0',
+        command: 'bash',
+        state: 'running',
+        cols: 80,
+        rows: 24,
+        nextSeq: 0,
+        retainedBytes: 0,
+        totalBytes: 0,
+        truncated: false,
+        exitCode: null,
+        exitSignal: null,
+      },
+    ],
+    truncated: false,
+  });
+  vi.mocked(bridge.terminalAttach).mockResolvedValue({
+    attachmentId: 'a-1',
+    handle: 'h-1',
+    chunk: { handle: 'h-1', fromSeq: 0, nextSeq: 0, gap: false, dataB64: '' },
+    resyncReason: null,
+  });
+  vi.mocked(bridge.terminalResume).mockResolvedValue({
+    handle: 'h-1',
+    fromSeq: 0,
+    nextSeq: 0,
+    gap: false,
+    dataB64: '',
+  });
+  vi.mocked(bridge.terminalInput).mockResolvedValue({ attachmentId: 'a-1', bytesAccepted: 0 });
+  vi.mocked(bridge.terminalResize).mockResolvedValue({ attachmentId: 'a-1', cols: 80, rows: 24 });
+  vi.mocked(bridge.terminalDetach).mockResolvedValue({ attachmentId: 'a-1' });
   vi.mocked(bridge.snapshot).mockResolvedValue(connected(1));
   vi.mocked(bridge.connect).mockResolvedValue(connected(1));
   vi.mocked(bridge.projects).mockResolvedValue([
@@ -397,6 +438,9 @@ async function selectRoute(): Promise<void> {
     fireEvent.click(screen.getByTestId('session-open-s-1'));
   });
   await waitFor(() => expect(screen.getByTestId('projection-state')).toBeInTheDocument());
+  // The terminal's process list is read for the route, so the action can
+  // resolve the handle it names.
+  await waitFor(() => expect(bridge.terminalList).toHaveBeenCalled());
 }
 
 describe('the desktop frontend-action dispatch', () => {
@@ -456,14 +500,36 @@ describe('the desktop frontend-action dispatch', () => {
     expect(bridge.commandExecute).not.toHaveBeenCalled();
   });
 
-  it('says which data the desktop is missing for an action it cannot carry', async () => {
+  it('says which handle the terminal action is missing', async () => {
     render(<App />);
     await selectRoute();
     await runFromPalette('/fixture-terminal');
     await waitFor(() =>
       expect(
         screen.getByText(
-          '/fixture-terminal is a frontend effect; the desktop does not implement it yet — the desktop has no terminal surface to focus',
+          '/fixture-terminal is a frontend effect; the desktop does not implement it yet — the terminal action needs a handle',
+        ),
+      ).toBeInTheDocument(),
+    );
+    expect(bridge.commandExecute).not.toHaveBeenCalled();
+  });
+
+  it('performs the terminal action and focuses the handle it names', async () => {
+    render(<App />);
+    await selectRoute();
+    await runFromPalette('/fixture-terminal h-1');
+    await waitFor(() => expect(screen.getByText('terminal h-1 is focused')).toBeInTheDocument());
+    expect(bridge.commandExecute).not.toHaveBeenCalled();
+  });
+
+  it('refuses a terminal handle the daemon did not publish', async () => {
+    render(<App />);
+    await selectRoute();
+    await runFromPalette('/fixture-terminal h-missing');
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          '/fixture-terminal is a frontend effect; the desktop does not implement it yet — the daemon published no terminal with the handle h-missing',
         ),
       ).toBeInTheDocument(),
     );

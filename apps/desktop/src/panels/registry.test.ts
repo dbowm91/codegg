@@ -5,6 +5,7 @@ import { PANEL_IDS, PANEL_REGISTRY } from './registry';
 import type { PanelId, PanelProps } from './registry';
 import type { SessionPresentationView } from '../bridge-types';
 import { emptyEditorPanelProps } from '../editor/fixtures';
+import { emptyTerminalPanelProps } from '../terminal/contract';
 
 const turn = {
   turnId: 'turn-1',
@@ -63,6 +64,7 @@ const props: PanelProps = {
   todoBusy: false,
   todoError: null,
   editor: emptyEditorPanelProps(),
+  terminal: emptyTerminalPanelProps(),
 };
 
 const surfaces: Record<PanelId, string> = {
@@ -71,11 +73,12 @@ const surfaces: Record<PanelId, string> = {
   activity: 'activity-surface',
   session: 'session-panel-surface',
   editor: 'editor-surface',
+  terminal: 'terminal-panel',
 };
 
 describe('the desktop panel registry', () => {
-  it('registers the five panels the desktop has content for', () => {
-    expect(PANEL_IDS).toEqual(['tasks', 'subagents', 'activity', 'session', 'editor']);
+  it('registers the six panels the desktop has content for', () => {
+    expect(PANEL_IDS).toEqual(['tasks', 'subagents', 'activity', 'session', 'editor', 'terminal']);
   });
 
   it('gives every panel a label of its own', () => {

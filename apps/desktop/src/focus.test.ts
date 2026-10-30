@@ -53,8 +53,16 @@ afterEach(() => {
 
 describe('the region registry', () => {
   it('names_the_frame_regions_in_focus_order', () => {
-    expect(REGION_IDS).toEqual(['catalog', 'chat', 'sidePanel', 'composer', 'status']);
+    expect(REGION_IDS).toEqual([
+      'catalog',
+      'chat',
+      'sidePanel',
+      'composer',
+      'status',
+      'terminal',
+    ]);
     expect(regionById('chat')?.testId).toBe('chat-region');
+    expect(regionById('terminal')?.testId).toBe('terminal-panel');
     expect(regionById('nope')).toBeUndefined();
     expect(FALLBACK_REGION_ID).toBe('composer');
   });

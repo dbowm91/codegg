@@ -31,6 +31,12 @@ vi.mock('../bridge', () => ({
     skillCatalogue: vi.fn(),
     documentDiagnosticsSubscribe: vi.fn(() => Promise.resolve('diagnostics-test')),
     documentDiagnosticsUnsubscribe: vi.fn(),
+    terminalList: vi.fn(),
+    terminalAttach: vi.fn(),
+    terminalResume: vi.fn(),
+    terminalInput: vi.fn(),
+    terminalResize: vi.fn(),
+    terminalDetach: vi.fn(),
     subscribeProjection: vi.fn(),
     subscribe: vi.fn(),
     disconnect: vi.fn(),
@@ -170,6 +176,23 @@ async function attachSession() {
 }
 
 beforeEach(() => {
+  vi.mocked(bridge.terminalList).mockResolvedValue({ processes: [], truncated: false });
+  vi.mocked(bridge.terminalAttach).mockResolvedValue({
+    attachmentId: 'a-1',
+    handle: 'h-1',
+    chunk: { handle: 'h-1', fromSeq: 0, nextSeq: 0, gap: false, dataB64: '' },
+    resyncReason: null,
+  });
+  vi.mocked(bridge.terminalResume).mockResolvedValue({
+    handle: 'h-1',
+    fromSeq: 0,
+    nextSeq: 0,
+    gap: false,
+    dataB64: '',
+  });
+  vi.mocked(bridge.terminalInput).mockResolvedValue({ attachmentId: 'a-1', bytesAccepted: 0 });
+  vi.mocked(bridge.terminalResize).mockResolvedValue({ attachmentId: 'a-1', cols: 80, rows: 24 });
+  vi.mocked(bridge.terminalDetach).mockResolvedValue({ attachmentId: 'a-1' });
   vi.mocked(bridge.snapshot).mockResolvedValue(connected(1));
   vi.mocked(bridge.connect).mockResolvedValue(connected(1));
   vi.mocked(bridge.projects).mockResolvedValue([

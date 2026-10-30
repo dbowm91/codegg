@@ -164,7 +164,7 @@ were never active on main and must not be reused for Windows references.
 - ADR-0031 — **accepted** authenticated idle continuation and delegated turn admission (current-main decision).
 - ADR-0032 — **accepted** daemon-owned agent workstream coordination and explicit shared-checkout mutation; production shared writes remain gated on M005.
 - ADR-0033 — **accepted** directory-tied project identity and client working directory.
-- ADR-0034 — **proposed** editor syntax-tree dependency (current-main decision).
+- ADR-0034 — **accepted** editor syntax-tree dependency (current-main decision; Option B accepted 2026-10-28). See `ADR-0034-editor-syntax-tree-dependency.md`.
 - ADR-0035 through ADR-0041 — current-main accepted decisions; see their individual records.
 - ADR-0042 — **accepted** composer normal-mode key ownership (current-main decision).
 - ADR-0043 — **accepted** session-owned subagent lifecycle projection (current-main decision; Option A accepted 2026-10-19).
@@ -179,6 +179,8 @@ were never active on main and must not be reused for Windows references.
 - ADR-0052 — **accepted** cross-frontend command execution ownership (option B, accepted 2026-10-24): the daemon owns the command catalog and executes daemon-effect commands under `command.execute`, each frontend dispatches frontend-effect commands from a bounded declared set, command identity is shared while display names may differ, and a daemon-effect command is audited as a canonical `Run`. Its acceptance carried the canonical amendments the ADR made contingent on it — the cross-frontend `Command` definition in `plans/001-terminology-and-domain-model.md`, the desktop-frontend clause in `plans/000-long-term-specification.md` §4.4, the command-catalog clause in §24, invariant 24, and the desktop consumer named in Phase 5 of `plans/002-long-term-roadmap.md`. See `ADR-0052-cross-frontend-command-execution-ownership.md`.
 - ADR-0055 — **accepted** Option A (user acceptance, 2026-10-27): persistent session-relative working directory stays inside the immutable session workspace root; cross-root changes use authorized session launch/fork/switch flows. W004 remains blocked until W002 strictly closes. See `ADR-0055-session-relative-working-directory-authority.md`.
 - ADR-0056 — **accepted Option B (2026-10-28)**: typed daemon-owned LSP operations and low-frequency command dispatch, narrow `lsp.control` authorization, ephemeral session-bound previews, and standalone TUI compatibility. See `ADR-0056-daemon-lsp-command-and-runtime-control-surface.md`.
+- ADR-0057 — **proposed (2026-10-29)**, **not accepted**, and it grants no capability: the daemon-owned plugin catalogue and the plugin registry's ownership. It states the options and recommends one; the owner accepts it. M007-G's plan `021` is blocked on that acceptance. See `ADR-0057-daemon-plugin-catalogue-ownership.md`.
+- ADR-0058 — **proposed (2026-10-29)**, **not accepted**, and it grants no capability: durable workflow ownership for the skill-promotion and human-shell ask workflows, and whether the diff view is reclassified or moved. It states the options and recommends one; the owner accepts it. M007-I's plan `022` is blocked on that acceptance. See `ADR-0058-durable-workflow-ownership.md`.
 - New handoffs C041–C048 are registered in the Windows subsystem roadmap and active planning registry. Do not mark them implemented from the presence of documents.
 ## ADR-0032 workstream coordination reservation (2026-10-15)
 

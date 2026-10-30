@@ -21,7 +21,7 @@ The controls this guard enforces:
 
 - **G1 — the recorded bridge baseline still matches the bridge.** The
   desktop's `invoke` targets are a **recorded** set, held in this file: the
-  25 targets `apps/desktop/src/bridge.ts` names and the 25 commands the
+  50 targets `apps/desktop/src/bridge.ts` names and the 50 commands the
   host's `generate_handler!` table registers. If either side grows a
   target, the guard fails until the recorded set here is deliberately
   edited. A baseline measured from the tree at run time is a baseline that
@@ -101,12 +101,12 @@ PANEL_LAYER_DIRS = (
 BRIDGE_MODULE = Path("apps/desktop/src/bridge.ts")
 HOST_COMMAND_TABLE = Path("apps/desktop/src-tauri/src/lib.rs")
 
-# The recorded bridge baseline: the desktop's 44 `invoke` targets, which are
-# the same 44 commands the host registers. The set is recorded **here**
+# The recorded bridge baseline: the desktop's 50 `invoke` targets, which are
+# the same 50 commands the host registers. The set is recorded **here**
 # rather than measured from the tree at run time, because a baseline that is
 # measured is a baseline that grows by itself.
 #
-# The set is the union of three deliberate additions, each named in the
+# The set is the union of five deliberate additions, each named in the
 # change that added it:
 #
 # * M007-D adds `desktop_command_catalog` and `desktop_command_execute`: the
@@ -121,9 +121,13 @@ HOST_COMMAND_TABLE = Path("apps/desktop/src-tauri/src/lib.rs")
 #   stream lifecycle, kept as two named read/cleanup commands.
 # * M007-F adds the named LSP preview and checked-apply commands for the
 #   desktop editor's review surface.
+# * M007-J adds the six `desktop_terminal_*` commands: the terminal's
+#   bounded operations over the daemon's interactive-process service — list,
+#   attach, resume, input, resize and detach. Each is a named operation
+#   over one daemon request, never a generic request passthrough.
 #
-# The baseline was re-measured once all four additions were present: 44
-# targets, and the same 44 the host's `generate_handler!` table registers.
+# The baseline was re-measured once all five additions were present: 50
+# targets, and the same 50 the host's `generate_handler!` table registers.
 # The sets are disjoint and the union is what the guard holds.
 RECORDED_BRIDGE_TARGETS = frozenset(
     {
@@ -168,6 +172,12 @@ RECORDED_BRIDGE_TARGETS = frozenset(
         "desktop_session_open",
         "desktop_skill_catalogue",
         "desktop_subscribe_events",
+        "desktop_terminal_attach",
+        "desktop_terminal_detach",
+        "desktop_terminal_input",
+        "desktop_terminal_list",
+        "desktop_terminal_resize",
+        "desktop_terminal_resume",
         "desktop_todo_refresh",
         "desktop_unsubscribe_events",
         "desktop_workspace_select",

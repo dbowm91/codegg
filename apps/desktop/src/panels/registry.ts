@@ -2,11 +2,13 @@ import { createElement } from 'react';
 import type { ReactElement } from 'react';
 import type { ControllerSummaryView, SessionPresentationView } from '../bridge-types';
 import type { EditorPanelProps } from '../editor/contract';
+import type { TerminalPanelProps } from '../terminal/contract';
 import { ActivityPanel } from './ActivityPanel';
 import { EditorPanel } from './EditorPanel';
 import { SessionPanel } from './SessionPanel';
 import { SubagentPanel } from './SubagentPanel';
 import { TaskPanel } from './TaskPanel';
+import { TerminalPanel } from './TerminalPanel';
 
 // The side-panel registry: the desktop's panel catalogue.
 //
@@ -26,7 +28,7 @@ import { TaskPanel } from './TaskPanel';
 
 export type PanelPlacement = 'right' | 'left' | 'bottom';
 
-export type PanelId = 'tasks' | 'subagents' | 'activity' | 'session' | 'editor';
+export type PanelId = 'tasks' | 'subagents' | 'activity' | 'session' | 'editor' | 'terminal';
 
 export interface PanelProps {
   /** The session's presentation view, or null when nothing is attached. */
@@ -46,6 +48,13 @@ export interface PanelProps {
    * it and fetches nothing itself.
    */
   editor: EditorPanelProps;
+  /**
+   * The terminal's state and intents.
+   *
+   * The terminal is a panel like any other: it renders what the session gave
+   * it and fetches nothing itself.
+   */
+  terminal: TerminalPanelProps;
 }
 
 export type PanelRenderer = (props: PanelProps) => ReactElement | null;
@@ -113,6 +122,11 @@ export const PANEL_REGISTRY: Record<PanelId, PanelDefinition> = {
     id: 'editor',
     label: 'Editor',
     render: (props) => createElement(EditorPanel, { editor: props.editor }),
+  },
+  terminal: {
+    id: 'terminal',
+    label: 'Terminal',
+    render: (props) => createElement(TerminalPanel, { terminal: props.terminal }),
   },
 };
 

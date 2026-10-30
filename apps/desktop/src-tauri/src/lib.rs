@@ -5,6 +5,7 @@ mod lifecycle;
 mod projection;
 mod prompt;
 mod route;
+pub mod terminal;
 mod todos;
 
 // The host's view API is public so a cross-frontend test can compare what
@@ -47,6 +48,10 @@ use std::{
     time::Duration,
 };
 use tauri::{ipc::Channel, AppHandle, Manager, State};
+use terminal::{
+    TerminalAttachView, TerminalChunkView, TerminalDetachView, TerminalInputData,
+    TerminalInputView, TerminalListView, TerminalResizeView,
+};
 use tokio::sync::{Mutex, Notify};
 
 const MAX_PROJECTS: usize = 50;
@@ -1126,6 +1131,81 @@ async fn desktop_projection_subscribe(
         .await
 }
 
+// ── The terminal surface (M007-J) ────────────────────────────────────────
+//
+// Six named, bounded operations over the daemon's interactive-process
+// service. Each names one operation and returns one bounded view; none of
+// them is a generic request passthrough
+// (`scripts/check-desktop-boundary.sh:23-26`).
+//
+// The terminal is scoped by the daemon's connection, not by the desktop's
+// project route: the daemon resolves an attachment to a process
+// server-side and derives ownership from the transport connection's client
+// id, so an ordinary route switch does not invalidate an open attachment.
+// These commands therefore carry no route generation; the connection is
+// the fence, and `HostState::route_request` is that fence. The module
+// documentation in `terminal.rs` states the same rule.
+
+/// List the daemon's interactive processes.
+#[tauri::command]
+async fn desktop_terminal_list(
+    state: State<'_, Arc<HostState>>,
+) -> Result<TerminalListView, String> {
+    state.route_terminal_list().await
+}
+
+/// Attach to one handle and read its first bounded chunk.
+#[tauri::command]
+async fn desktop_terminal_attach(
+    state: State<'_, Arc<HostState>>,
+    handle: String,
+) -> Result<TerminalAttachView, String> {
+    state.route_terminal_attach(handle).await
+}
+
+/// Resume a bounded read of a process's output from a cursor.
+#[tauri::command]
+async fn desktop_terminal_resume(
+    state: State<'_, Arc<HostState>>,
+    attachment_id: String,
+    from_seq: u64,
+) -> Result<TerminalChunkView, String> {
+    state.route_terminal_resume(attachment_id, from_seq).await
+}
+
+/// Write the user's keystrokes to an attachment.
+///
+/// The caller sends the bytes — raw or already base64-encoded — and the
+/// host is what guarantees the daemon receives valid base64.
+#[tauri::command]
+async fn desktop_terminal_input(
+    state: State<'_, Arc<HostState>>,
+    attachment_id: String,
+    data_b64: TerminalInputData,
+) -> Result<TerminalInputView, String> {
+    state.route_terminal_input(attachment_id, data_b64).await
+}
+
+/// Resize an attachment's process.
+#[tauri::command]
+async fn desktop_terminal_resize(
+    state: State<'_, Arc<HostState>>,
+    attachment_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<TerminalResizeView, String> {
+    state.route_terminal_resize(attachment_id, cols, rows).await
+}
+
+/// Release an attachment. The process itself is unaffected.
+#[tauri::command]
+async fn desktop_terminal_detach(
+    state: State<'_, Arc<HostState>>,
+    attachment_id: String,
+) -> Result<TerminalDetachView, String> {
+    state.route_terminal_detach(attachment_id).await
+}
+
 pub fn run() {
     let state = Arc::new(HostState::default());
     // Native window/app teardown (Finding E): main-window close/destroy and
@@ -1195,7 +1275,13 @@ pub fn run() {
             desktop_document_completion,
             desktop_document_navigate,
             desktop_document_preview,
-            desktop_document_preview_apply
+            desktop_document_preview_apply,
+            desktop_terminal_list,
+            desktop_terminal_attach,
+            desktop_terminal_resume,
+            desktop_terminal_input,
+            desktop_terminal_resize,
+            desktop_terminal_detach
         ])
         .on_window_event(move |_window, event| match event {
             tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {

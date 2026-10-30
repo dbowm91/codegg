@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { answerFrontendAction, UNCARRIED_ACTIONS } from './frontendActions';
 import type { FrontendActionContext } from './frontendActions';
 import type { SessionPresentationView, SkillCatalogueView } from '../bridge-types';
+import type { TerminalProcessView } from '../terminal/contract';
 
 const presentation = (
   overrides: Partial<SessionPresentationView> = {},
@@ -53,6 +54,25 @@ const context = (overrides: Partial<FrontendActionContext> = {}): FrontendAction
   presentation: null,
   catalogue: null,
   catalogueError: null,
+  argument: null,
+  terminals: [],
+  focusTerminal: () => true,
+  ...overrides,
+});
+
+const terminalProcess = (overrides: Partial<TerminalProcessView> = {}): TerminalProcessView => ({
+  handle: 'h-1',
+  workspaceId: 'w-0',
+  command: 'bash',
+  state: 'running',
+  cols: 80,
+  rows: 24,
+  nextSeq: 0,
+  retainedBytes: 0,
+  totalBytes: 0,
+  truncated: false,
+  exitCode: null,
+  exitSignal: null,
   ...overrides,
 });
 
@@ -277,16 +297,40 @@ describe('the desktop frontend actions', () => {
     expect(answer.message).toBe('shell runs: none published');
   });
 
-  it('carries the actions the daemon publishes and leaves only the terminal uncarried', () => {
+  it('carries every action the daemon publishes, the terminal included', () => {
     expect(UNCARRIED_ACTIONS.show_tool_contracts).toBeUndefined();
     expect(UNCARRIED_ACTIONS.show_shell_runs).toBeUndefined();
-    expect(UNCARRIED_ACTIONS.show_terminal).toBe('the desktop has no terminal surface to focus');
+    // The terminal is carried now: the desktop focuses the handle the
+    // action names, so there is nothing left uncarried.
+    expect(UNCARRIED_ACTIONS.show_terminal).toBeUndefined();
+    expect(Object.keys(UNCARRIED_ACTIONS)).toHaveLength(0);
   });
 
-  it('refuses an action the desktop does not carry, and says what it is missing', () => {
+  it('focuses the handle the terminal action names', () => {
+    const focusTerminal = vi.fn(() => true);
+    const answer = answerFrontendAction(
+      'show_terminal',
+      context({ argument: 'h-1', terminals: [terminalProcess()], focusTerminal }),
+    );
+    expect(answer.performed).toBe(true);
+    expect(focusTerminal).toHaveBeenCalledWith('h-1');
+  });
+
+  it('refuses a terminal handle the daemon did not publish, and names it', () => {
+    const focusTerminal = vi.fn(() => true);
+    const answer = answerFrontendAction(
+      'show_terminal',
+      context({ argument: 'h-missing', terminals: [terminalProcess()], focusTerminal }),
+    );
+    expect(answer.performed).toBe(false);
+    expect(answer.reason).toContain('h-missing');
+    expect(focusTerminal).not.toHaveBeenCalled();
+  });
+
+  it('refuses the terminal action when it names no handle', () => {
     const answer = answerFrontendAction('show_terminal', context());
     expect(answer.performed).toBe(false);
-    expect(answer.reason).toBe('the desktop has no terminal surface to focus');
+    expect(answer.reason).toBe('the terminal action needs a handle');
   });
 
   it('refuses an action the desktop does not know, without inventing a reason', () => {

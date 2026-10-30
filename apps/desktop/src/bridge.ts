@@ -31,6 +31,14 @@ import type {
   EditorTreeView,
   EditorViewportView,
 } from './editor/contract';
+import type {
+  TerminalAttachView,
+  TerminalChunkView,
+  TerminalDetachView,
+  TerminalInputView,
+  TerminalListView,
+  TerminalResizeView,
+} from './terminal/contract';
 
 export const bridge = {
   connect: () => invoke<ConnectionSnapshot>('desktop_connect'),
@@ -141,6 +149,34 @@ export const bridge = {
     }),
   documentPreviewApply: (candidate: LspPreviewCandidate, routeGeneration: number) =>
     invoke<string>('desktop_document_preview_apply', { candidate, routeGeneration }),
+
+  // The terminal. The host owns the byte arithmetic: the renderer names a
+  // handle, a cursor and a cell size, and the host answers with the bytes
+  // it retained and the cursor to resume from.
+  //
+  // The route generation rides along for the same reason every other
+  // wrapper carries one. The host's terminal commands are scoped by the
+  // **connection** rather than by the route (`src-tauri/src/terminal.rs`),
+  // so they do not read it: the terminal survives an ordinary route
+  // switch, and only a reconnect orphans its attachment.
+  terminalList: (routeGeneration: number) =>
+    invoke<TerminalListView>('desktop_terminal_list', { routeGeneration }),
+  terminalAttach: (handle: string, routeGeneration: number) =>
+    invoke<TerminalAttachView>('desktop_terminal_attach', { handle, routeGeneration }),
+  terminalResume: (attachmentId: string, fromSeq: number, routeGeneration: number) =>
+    invoke<TerminalChunkView>('desktop_terminal_resume', { attachmentId, fromSeq, routeGeneration }),
+  terminalInput: (attachmentId: string, dataB64: string, routeGeneration: number) =>
+    invoke<TerminalInputView>('desktop_terminal_input', { attachmentId, dataB64, routeGeneration }),
+  terminalResize: (attachmentId: string, cols: number, rows: number, routeGeneration: number) =>
+    invoke<TerminalResizeView>('desktop_terminal_resize', {
+      attachmentId,
+      cols,
+      rows,
+      routeGeneration,
+    }),
+  terminalDetach: (attachmentId: string, routeGeneration: number) =>
+    invoke<TerminalDetachView>('desktop_terminal_detach', { attachmentId, routeGeneration }),
+
   disconnect: () => invoke<void>('desktop_disconnect'),
   unsubscribe: (subscriptionId: string) =>
     invoke<void>('desktop_unsubscribe_events', { subscriptionId }),

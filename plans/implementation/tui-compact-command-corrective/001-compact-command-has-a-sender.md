@@ -59,7 +59,7 @@ Make `/compact` **truthful**, and give the command a sender.
 
 ### The defect, exactly
 
-`src/tui/app/mod.rs:5958`:
+`src/tui/app/mod.rs:5989`:
 
 ```rust
 B::Compact => {
@@ -76,10 +76,10 @@ is a message with no sender: it narrates an effect that never happened.
 
 - Compaction is **automatic and policy-driven**: `src/agent/policy.rs:16`
   carries `compaction_threshold`; `src/context/compaction.rs:23` is the
-  `ContextTracker`; `src/agent/loop.rs:913` sets the tracker's threshold, and
-  the daemon applies the policy in `src/agent/context_runtime.rs:827`
-  (`compact_if_needed`) — the threshold is read at `:836` and the compaction
-  decision is made at `:858`.
+  `ContextTracker`; `src/agent/loop.rs:1145` sets the tracker's threshold, and
+  the daemon applies the policy in `src/agent/context_runtime.rs:865`
+  (`compact_if_needed`) — the threshold is read at `:874` and the compaction
+  decision is made at `:896`.
 - The daemon reports each compaction back as `AppEvent::CompactionTriggered`,
   and the TUI already renders and counts it
   (`src/tui/runtime/app_events.rs:531`).
@@ -135,6 +135,18 @@ is a correct command.
 - **No change to the `Command` catalog's shape.** `/compact` is a TUI-local
   builtin today; whether it becomes a catalog entry is ADR-0052's business
   and belongs to M007-D, not here.
+
+  > **Reconciled 2026-10-29.** The premise of this bullet has moved:
+  > `/compact` **is** a catalog entry since M007-D landed
+  > (`crates/codegg-core/src/command_catalog.rs:586`, with
+  > `capability: Some(CommandCapability::CommandExecute)` at `:594`). The
+  > bullet's **conclusion** still holds — this corrective does not change the
+  > catalog — but the catalog's ownership of `/compact` is settled, and the
+  > question "whether it becomes a catalog entry" is no longer open. The
+  > milestone that owns the **daemon-side** compaction surface is M007-H
+  > (the daemon's missing command surfaces), whose plan is the place this
+  > decision now lands; M007-H is where this corrective's stop condition 1
+  > below would be discharged, and it must not be discharged twice.
 - **No broad sweep.** The change touches the TUI's command dispatch arm and
   whatever the chosen shape needs.
 

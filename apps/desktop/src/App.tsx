@@ -3,6 +3,7 @@ import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { ArtifactExcerptView, ControllerSummaryView } from './bridge-types';
 import { bridge } from './bridge';
 import { useEditorSession } from './editor/session';
+import { useTerminalSession } from './terminal/session';
 import { GitPanel } from './panels/GitPanel';
 import { KeybindingsPanel } from './panels/KeybindingsPanel';
 import { SkillsPanel } from './panels/SkillsPanel';
@@ -201,6 +202,15 @@ export function App() {
     routeGeneration: currentToken?.routeGeneration ?? null,
     connectionGeneration: connection.state === 'connected' ? connection.connectionGeneration : null,
     sessionId: currentToken?.sessionId ?? null,
+    enabled: Boolean(currentToken?.workspaceId),
+    effectiveMap,
+  });
+  // The terminal. The session owns the attachment, the resume cadence and
+  // the bounded grid; the panel layer only renders what the session gives
+  // it.
+  const terminal = useTerminalSession({
+    routeGeneration: currentToken?.routeGeneration ?? null,
+    connectionGeneration: connection.state === 'connected' ? connection.connectionGeneration : null,
     enabled: Boolean(currentToken?.workspaceId),
     effectiveMap,
   });
@@ -784,6 +794,30 @@ export function App() {
     if (focusRegion(document, regionId)) setFocusedRegion(regionId);
   };
 
+  // The terminal panel is docked or re-pointed: move the focus into it. The
+  // panel is not in the DOM on the render that docked it, so the focus waits
+  // for the next one.
+  const [terminalFocusRequest, setTerminalFocusRequest] = useState(0);
+  useEffect(() => {
+    if (terminalFocusRequest === 0) return;
+    focusRegionById('terminal');
+  }, [terminalFocusRequest]);
+
+  // The desktop's answer to the terminal action: dock the terminal panel,
+  // attach to the handle the action named, and move the focus into it. The
+  // action never focuses an arbitrary terminal.
+  const focusTerminalHandle = useCallback(
+    (handle: string) => {
+      const wanted = handle.trim();
+      if (!wanted) return false;
+      dockPanel('terminal', 'bottom');
+      terminal.onShow(wanted);
+      setTerminalFocusRequest((previous) => previous + 1);
+      return true;
+    },
+    [dockPanel, terminal.onShow],
+  );
+
   const focusFirstWithPrefix = (prefix: string) => {
     const element = firstByTestIdPrefix(document, prefix);
     if (!element) return;
@@ -828,7 +862,7 @@ export function App() {
     if (restore && restore.isConnected) restore.focus();
   };
 
-  const runAction = (actionId: string) => {
+  const runAction = (actionId: string, argument: string | null = null) => {
     switch (actionId) {
       case 'prompt.submit':
         void submitPrompt();
@@ -856,6 +890,18 @@ export function App() {
         return;
       case 'sidepanel.focus':
         focusRegionById('sidePanel');
+        return;
+      case 'show_terminal':
+        // The daemon's terminal action reaches the composition root here.
+        // The handle it names arrives with the action; without one the
+        // terminal the session is already showing is re-focused.
+        focusTerminalHandle(argument ?? terminal.handle ?? '');
+        return;
+      case 'terminal.focus':
+        // The terminal is a panel: showing it means docking it, and the
+        // focus moves into it once it is mounted.
+        dockPanel('terminal', 'bottom');
+        setTerminalFocusRequest((previous) => previous + 1);
         return;
       case 'prompt.planMode.toggle':
         setPlanMode((value) => !value);
@@ -1258,6 +1304,7 @@ export function App() {
                 ? () => void refreshTodos(currentToken.routeGeneration, projection.sessionId)
                 : undefined,
             editor,
+            terminal,
           }}
           frameRef={frameRef}
           onResize={resizePanel}
@@ -1284,7 +1331,7 @@ export function App() {
           open={paletteOpen}
           routeGeneration={currentToken?.routeGeneration}
           onClose={() => setPaletteOpen(false)}
-          onFrontendEffect={(command, form) => {
+          onFrontendEffect={(command, form, argument) => {
             // M007-017: a frontend effect is dispatched by the action the
             // daemon's catalog published on the form, never by the command's
             // spelling. An action the desktop does not know is reported
@@ -1300,6 +1347,9 @@ export function App() {
               presentation: projection,
               catalogue: skills,
               catalogueError: skillsError,
+              argument,
+              terminals: terminal.processes,
+              focusTerminal: focusTerminalHandle,
             });
             if (answer.performed) {
               setPaletteNotice(answer.message);
