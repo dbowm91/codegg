@@ -16,8 +16,16 @@ from typing import Any
 SCHEMA = "current_codegg_defect_dossier_v1"
 TEST_ID = "h007-native-job-sequence"
 TEST_PATH = Path("dev/harness_lab/tests/test_h007_native.py")
-HOLDOUT_PATHS = (Path("dev/harness_lab/fixtures/build_provenance_catalog.case.json"),
-                 Path("dev/harness_lab/fixtures/build_provenance_catalog/fixture/verifier/verify.py"))
+HOLDOUT_PATHS = (
+    Path("dev/harness_lab/fixtures/agent_autonomy_h007/cases.jsonl"),
+    Path("dev/harness_lab/fixtures/build_provenance_catalog/fixture/Cargo.toml"),
+    Path("dev/harness_lab/fixtures/build_provenance_catalog/fixture/Cargo.lock"),
+    Path("dev/harness_lab/fixtures/build_provenance_catalog/reference/catalog-format/src/lib.rs"),
+    Path("dev/harness_lab/fixtures/build_provenance_catalog/reference/catalog-store/src/lib.rs"),
+    Path("dev/harness_lab/fixtures/build_provenance_catalog/reference/catalog-index/src/lib.rs"),
+    Path("dev/harness_lab/fixtures/build_provenance_catalog/reference/catalog-query/src/lib.rs"),
+    Path("dev/harness_lab/fixtures/build_provenance_catalog/reference/catalog-cli/src/main.rs"),
+)
 _ASSERTION = re.compile(r"AssertionError:\s*(.{1,256})")
 BUILD_TIMEOUT_SECONDS = 1800
 
