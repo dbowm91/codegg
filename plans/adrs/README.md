@@ -181,6 +181,7 @@ were never active on main and must not be reused for Windows references.
 - ADR-0056 — **accepted Option B (2026-10-28)**: typed daemon-owned LSP operations and low-frequency command dispatch, narrow `lsp.control` authorization, ephemeral session-bound previews, and standalone TUI compatibility. See `ADR-0056-daemon-lsp-command-and-runtime-control-surface.md`.
 - ADR-0057 — **accepted Option A (2026-10-30)**: the daemon's plugin registry becomes the single authority for the catalogue; the three read-only `/plugin-*` forms are declared `FrontendEffect` actions fed by the catalogue published on the canonical session projection, and the four mutating forms are daemon effects with canonical `Run`s under a narrow `plugin.manage` capability. See `ADR-0057-daemon-plugin-catalogue-ownership.md`.
 - ADR-0058 — **accepted Option B (2026-10-30)**: all three subsystem moves go to daemon-owned owners — the git-review diff view, the skill-promotion workflow and the human-shell ask workflow. See `ADR-0058-durable-workflow-ownership.md`.
+- ADR-0059 — **accepted Option B (2026-10-30)**: the research runtime moves into the daemon, which gains the research request surface and becomes the single owner of the `[search].backend` network policy; the TUI's research arms become daemon requests. See `ADR-0059-research-runtime-ownership.md`.
 - New handoffs C041–C048 are registered in the Windows subsystem roadmap and active planning registry. Do not mark them implemented from the presence of documents.
 ## ADR-0032 workstream coordination reservation (2026-10-15)
 

@@ -2,18 +2,17 @@
 
 Status: ready for handoff
 
-Repository baseline: `4aea3df5e` — the merged desktop GUI parity line through
+Repository baseline: `d4c7cf2d7` — the merged desktop GUI parity line through
 **M007-E**, M007-D and its corrective pass (**plan 017**), the projection
-milestone (**plan 018**), and the reconciliation pass that closed M007-F under
-accepted ADR-0056. The working tree additionally carries **uncommitted** work:
-plan 019 (M007-J, the desktop terminal surface) as a new untracked file, edits
-to `plans/adrs/README.md`, `plans/registry.md`,
-`scripts/check_desktop_panel_authority.py`, `apps/desktop/scripts/check-bindings.mjs`
-and `apps/desktop/src-tauri/src/lib.rs`, the new
-`apps/desktop/src-tauri/src/terminal.rs` and `apps/desktop/src/terminal/`, and
-the reconciled TUI compact corrective. **None of those touches a file this
-milestone changes**, so the anchors below are stable against the tree as it
-stands; a rebase that moves them must re-derive them.
+milestone (**plan 018**), the reconciliation pass that closed M007-F under
+accepted ADR-0056, the landed M007-J terminal surface (**plan 019**), and the
+owner's acceptance of ADR-0057 and ADR-0058. **All eight owner decisions in
+§5.3 were answered on 2026-10-30** and are recorded as `**Resolution:**` lines
+in that section; each work package that depended on one has been rewritten
+against the resolved shape. The one remaining external gate is **ADR-0059's
+implementation** (`plans/adrs/ADR-0059-research-runtime-ownership.md`), for the
+research item only. Every `path:line` anchor below was re-verified against this
+baseline; a rebase that moves them must re-derive them.
 
 Source roadmap:
 
@@ -49,10 +48,12 @@ Planning basis:
 
 Applicable ADRs:
 
-- **No ADR is created by this plan, and none is planned.** The roadmap row says
-  so. One item does not survive that claim — **`/research`** (§3.4, D5) — and
-  this plan makes it a **stop condition** (§15, stop condition 2) rather than
-  creating an ADR here.
+- **One ADR is created by this milestone's decision record, not by this plan:
+  ADR-0059** (`plans/adrs/ADR-0059-research-runtime-ownership.md`), *accepted
+  — Option B (the runtime moves to the daemon), 2026-10-30*. It decides the
+  research runtime's ownership (§3.4, D5). This plan **defers** the
+  `/research` item to that ADR's implementation and does not implement the
+  research move itself.
 - This milestone is bound by **ADR-0045** (command syntax and execution
   authority), **ADR-0052** (cross-frontend command execution ownership),
   **ADR-0053** (the daemon's published projection surfaces), **ADR-0056** (the
@@ -83,20 +84,24 @@ Long-term requirements:
 
 ## 1. Objective
 
-The daemon gains the **thirteen command forms** it does not yet serve, so that
-a frontend asking for one of them receives the daemon's authoritative answer
-instead of a local approximation.
+The daemon gains the **command forms** it does not yet serve, so that a frontend
+asking for one of them receives the daemon's authoritative answer instead of a
+local approximation. **Two of the thirteen do not land as a new daemon
+surface**: `/research` is deferred to ADR-0059's implementation (D5), and
+`/compact` stays frontend-owned under the registered compact corrective with a
+truthful report (D1) — the milestone's only share of it is the catalog's kind
+correction.
 
 The thirteen forms are the ones the generated inventory names as M007-H's
-surface. The generator names twelve of them explicitly, one per `_missing(...)`
-entry — the first is `_missing("/compact", "M007-H — the daemon's missing
+surface. The generator names them explicitly, one per `_missing(...)` entry —
+the first is `_missing("/compact", "M007-H — the daemon's missing
 command surfaces", …)` and the last is `_missing("/logs", "M007-H — the
 daemon's missing command surfaces", …)` in
-`plans/implementation/desktop-frontend-ide-foundation/artifacts/generate_m007d_command_classification.py` (`:1272` and `:1327` as of this baseline); the thirteenth,
-`/security-review-show`, is named in the generator's `ARM_VERDICTS` table by
-the `_arm("/security-review-show", "not mechanical", …)` entry in the same
-file — *"the arm shows the TUI's cached review result, and the daemon has no
-request that reads one — the same missing surface as `/security-review`
+`plans/implementation/desktop-frontend-ide-foundation/artifacts/generate_m007d_command_classification.py` (`:1410` and `:1473` against this baseline); the thirteenth,
+`/security-review-show`, is the `_missing("/security-review-show", "M007-H —
+the daemon's missing command surfaces", …)` entry in the same file
+(`:1450`) — *"the arm shows the TUI's cached review result, and the daemon has
+no request that reads one — the same missing surface as `/security-review`
 (M007-H)"*. **That is the source of
 the thirteen; the number is not hand-written in this plan.**
 
@@ -131,17 +136,19 @@ roadmap row's figure is correct.
 
 The milestone's deliverable is the **daemon's command surface**, not a
 redesign of the TUI. It is complete when each of the thirteen forms has a
-daemon route that answers with authoritative data, and when the TUI's local
-approximation for that form is either gone or honest about what it does.
+route that answers with authoritative data — the daemon's where the daemon owns
+the effect, and the frontend's own honest answer where D1 and D6 left the form
+frontend-owned — and when the TUI's local approximation for that form is either
+gone or honest about what it does.
 
 ## 2. Why this milestone is ready
 
 - **The catalog side is done.** Every one of the thirteen forms is already in
   the daemon's catalog with a `DaemonEffect` kind and
   `capability: Some(CommandCapability::CommandExecute)`
-  (`crates/codegg-core/src/command_catalog.rs:595`, `:985`, `:1093`, `:1471`,
-  `:1525`, `:1561`, `:1579`, `:1687`, `:1831`, `:2227`, `:2245`, `:2263`,
-  `:2335`). Nothing about their *identity* changes; this milestone changes
+  (`crates/codegg-core/src/command_catalog.rs:594`, `:984`, `:1092`, `:1470`,
+  `:1524`, `:1560`, `:1578`, `:1686`, `:1830`, `:2226`, `:2244`, `:2262`,
+  `:2334`). Nothing about their *identity* changes; this milestone changes
   who serves them.
 - **The daemon's executor is ready.** `build_inner_request`
   (`src/core/daemon_commands.rs:185`) is the table-driven dispatch from a
@@ -205,7 +212,7 @@ is the `B::…` arm in `src/tui/app/mod.rs` that implements the form today.
   (`src/core/daemon_family.rs:89`).
 - **`/subagent-send`** → `CoreRequest::TurnSteer`. The arm
   (`src/tui/app/mod.rs:5711`) only arms a badge
-  (`src/tui/commands/subagent_steer.rs:119`, `:161-175`); the request leaves
+  (`src/tui/commands/subagent_steer.rs:119`, `:96-98`); the request leaves
   later, on the user's next message (`src/tui/app/prompt_turn.rs:112` →
   `src/tui/commands/subagent_steer.rs:255-262`). Daemon side: `src/core/daemon_turns.rs:1584`;
   family `Turns` (`src/core/daemon_family.rs:189`). The request carries the
@@ -286,20 +293,25 @@ These are carried into the plan because the plan's shape depends on them.
    `[search].backend` network policy. A daemon that owns the research *turn*
    while the frontend owns the research *runtime* splits one workflow across
    two owners, which is a new ownership boundary of exactly the kind ADR-0052
-   does not cover. This is D5 and stop condition 2.
-4. **The generated artifact's `requests` column under-reports `/open` and
-   `/review-change`,** because the generator's resolver indexes only the TUI
-   tree (`TUI_DIR = "src/tui"` and the
-   resolver's `rglob("*.rs")` walk in `plans/implementation/desktop-frontend-ide-foundation/artifacts/generate_m007d_command_classification.py`) and cannot follow a
-   call into `crates/codegg-client/`. The generator's verdicts are unaffected;
-   the column is the defect, and it is being corrected in parallel. This plan
-   does not edit the artifact or the generator.
+   does not cover. This is D5, resolved on 2026-10-30: the runtime moves into
+   the daemon, and the decision is recorded in
+   `plans/adrs/ADR-0059-research-runtime-ownership.md`. This milestone defers
+   the item to that ADR's implementation (§14, stop condition 1).
+4. **The generated artifact's `requests` column under-reported `/open` and
+   `/review-change`; that defect is corrected.** The generator's resolver used
+   to index only the TUI tree (`TUI_DIR = "src/tui"` and the resolver's
+   `rglob("*.rs")` walk in `plans/implementation/desktop-frontend-ide-foundation/artifacts/generate_m007d_command_classification.py`)
+   and so could not follow a call into `crates/codegg-client/`. **The parallel
+   correction has landed** (`SOURCE_TREES = ("src/tui", "crates/codegg-client/src")`),
+   and `/open` now correctly reports `DocumentOpen` and `/review-change`
+   correctly reports `LspPreviewApply`. This plan does not edit the artifact or
+   the generator.
 
-   **The generator's own line numbers are moving** while that correction
-   lands. The citations to `plans/implementation/desktop-frontend-ide-foundation/artifacts/generate_m007d_command_classification.py` in this
+   **The generator's own line numbers are moving** as it is corrected. The
+   citations to `plans/implementation/desktop-frontend-ide-foundation/artifacts/generate_m007d_command_classification.py` in this
    plan therefore name each row by its **literal source text** — the
    `_missing("/compact", …)` and `_missing("/logs", …)` entries, the
-   `_arm("/security-review-show", …)` entry, the `TUI_DIR` constant, the
+   `_missing("/security-review-show", …)` entry, the `TUI_DIR` constant, the
    resolver's `rglob("*.rs")` walk, the `aliases = re.findall(…)` line and the
    *mechanical* definition — rather than by a line number alone. A line number
    for that file is a fact about one commit; the literal is the durable
@@ -330,7 +342,7 @@ These are carried into the plan because the plan's shape depends on them.
 - **I1 — The catalog's command identities do not change.** No command id,
   name, alias, description, domain, kind, capability or argument form is
   edited by this milestone. The only catalog change this milestone may make
-  is a **kind correction** under D6/D7, and that changes a *kind*, not an
+  is a **kind correction** under D1/D6, and that changes a *kind*, not an
   identity.
 - **I2 — A daemon effect is executed by the daemon.** A form the daemon
   serves runs as a daemon effect, audited as a canonical `Run`
@@ -348,7 +360,9 @@ These are carried into the plan because the plan's shape depends on them.
   authority is refused before its first effect.
 - **I5 — A daemon-disclosed log is bounded and daemon-owned.** The log tail is
   the daemon's own file; a daemon-side log request returns a bounded tail and
-  never an unbounded read.
+  never an unbounded read. Under D6 the daemon discloses **no** log contents
+  to a frontend at all, so this invariant has nothing to bound on the
+  `/logs` path.
 - **I6 — The daemon's automatic compaction trigger stays the only authority
   that decides *when* compaction fires.** `compact_if_needed`
   (`src/agent/context_runtime.rs:865`), the threshold
@@ -375,13 +389,16 @@ These are carried into the plan because the plan's shape depends on them.
 ### 5.1 In scope
 
 - The **thirteen** catalog forms listed in §1, in the daemon's effect table,
-  in the daemon's handlers, and in the TUI's routing.
+  in the daemon's handlers, and in the TUI's routing — except `/research`,
+  which is deferred to ADR-0059's implementation (D5).
 - The **new `CoreRequest` variants** the forms that have no request need, in
   `crates/codegg-protocol/src/core.rs`, with their daemon handlers, their
   `DaemonRequestFamily` routing (`src/core/daemon_family.rs`), their
-  authorization and their audit.
-- The **new writer-disposition manifest row** the git revert needs, and the
-  `CheckoutWriterSink` variant the C004 gate needs — both conditional on D2.
+  authorization and their audit. Under D1, D3, D4 and D6 no variant is needed
+  for `/compact`, `/plan`, `/tests` or `/logs`.
+- The **new writer-disposition manifest row** the git revert needs — one row,
+  `fenced-native` under the C003 writer fence (D2). **No** `CheckoutWriterSink`
+  variant is added.
 - The TUI's local arms for the thirteen forms: replaced by a `send_command`
   call where the daemon serves the form, and made **honest** where the form
   stays local.
@@ -391,13 +408,13 @@ These are carried into the plan because the plan's shape depends on them.
 
 ### 5.2 Explicitly out of scope
 
-- **The TUI's terminal** (plan 019 / M007-J), the **desktop GUI**, and every
+- The TUI's terminal (plan 019 / M007-J), the **desktop GUI**, and every
   already-closed milestone. The desktop's action table is not touched; the
   desktop's parity with these thirteen forms is a later milestone's business,
   and the artifact's inventory — not this plan — is what tells it what
   changed.
 - **The catalog's command identities** (I1), and the catalog's `CommandKind`
-  of any form except under D6/D7.
+  of any form except under D1/D6.
 - **Any frontend's authority** (I8).
 - **The M007-F LSP forms** (`/lsp-*`), M007-G's plugin forms and M007-I's
   three subsystem moves. They are named in the generator's follow-up table and
@@ -409,16 +426,45 @@ These are carried into the plan because the plan's shape depends on them.
 - **Editing `scripts/check_writer_disposition.py`** (I9).
 - **Editing the generated artifact or its generator by hand.** Both are
   regenerated or left alone.
-- **Creating an ADR** — including for `/research`, whose ADR question is a
-  stop condition (D5, stop condition 2), not this plan's output.
+- **The research runtime move itself.** ADR-0059
+  (`plans/adrs/ADR-0059-research-runtime-ownership.md`) decides it; this
+  milestone **defers** the `/research` item to that ADR's implementation and
+  adds no research request of its own.
 
-### 5.3 Decision points pending owner answer
+### 5.3 Decision points — resolved
 
-Eight decisions are pending. **Each work package that depends on one says so
-at its own point, and is written so it can be executed once the decision
-lands.** No work package below silently picks one.
+Eight decisions were put to the project maintainer and **answered on
+2026-10-30**. Each subsection below now carries a `**Resolution:**` line
+stating the owner's choice, the date and the reason, and the **Consequence**
+line under it states the shape the milestone now takes. **Every work package
+that depended on a decision has been rewritten against the resolved shape**, so
+no package below waits on an answer any more. The options are retained
+unchanged as the record of what was asked; the resolution, not the
+recommendation, is what the milestone implements.
+
+**The option letters below are this section's own** — they are the letters the
+question was asked with. Where the owner's ballot labelled the same choice
+with a different letter, each `**Resolution:**` line states **both**: the
+owner's label and the letter this section uses, so a reader holding either
+record can follow the mapping.
+
+**The one remaining external gate is ADR-0059's implementation**
+(`plans/adrs/ADR-0059-research-runtime-ownership.md`), for the research item
+only (D5). Every other decision is settled, and no other item in this
+milestone waits on anything outside it.
 
 #### D1 — Does M007-H add a `CoreRequest` compaction variant?
+
+**Resolution:** **Exclude — the owner's Option A, which is this plan's Option B
+("no variant").** `/compact` does **not** get a new `CoreRequest` variant in
+M007-H; compaction stays automatic daemon policy, and the TUI's `/compact`
+command stays owned by the registered TUI compact command corrective
+(`plans/implementation/tui-compact-command-corrective/001-compact-command-has-a-sender.md`).
+**Resolved by the project maintainer on 2026-10-30.** The reason: the catalog
+form `/compact` is corrected to a `FrontendEffect` with a declared action, and
+the TUI's truthful report (the corrective's **Shape B**) is that corrective's
+work, not M007-H's — so M007-H adds no daemon surface for compaction and does
+**not** discharge the corrective's stop condition 1.
 
 *Statement:* whether `/compact` gets a daemon request at all, and therefore
 whether this milestone discharges the compact corrective's stop condition 1.
@@ -443,15 +489,26 @@ policy is not a command the daemon is missing — it is a command the frontend
 should not have. Option B remains the honest floor, and it is what the
 milestone falls back to if the owner declines A.
 
-**Consequence.** Option A/C: work package **B1** adds the variant, the daemon
-handler and the authority; work package **F** is discharged here and the
-corrective's stop condition 1 is closed by this milestone's closure record.
-Option B: work package **B1** is dropped, work package **F** becomes the
-corrective's own deliverable, and the milestone's compaction item closes with
-**no daemon surface** — which is a scope reduction the roadmap row must then
-record.
+**Consequence (resolved).** Work package **B1** is dropped, work package **E**
+carries the milestone's only share — the catalog kind correction — and the
+corrective's stop condition 1 is **not** discharged by this milestone. The
+milestone's compaction item closes with **no daemon surface**, which is a scope
+reduction the roadmap row must then record.
 
 #### D2 — Which writer path does a daemon-executed `/revert` take?
+
+**Resolution:** **The daemon executes it, fenced — the owner's Option A, which is
+this plan's Option B ("a new daemon handler issuing the typed `GitOperation`
+directly", under the C003 fence).** A new daemon path issues
+`codegg_git::GitOperation::Checkout { target: Some("HEAD"), paths }` under
+the **C003 writer fence** (the same fence the model's typed git tool takes at
+`src/tool/git.rs:570-601`), with a new `docs/writer-disposition.toml` root
+recording it (`scope = "checkout-writer"`, `disposition = "fenced-native"`,
+`mediation = "writer-fence"`). **No new `CheckoutWriterSink` variant is added**,
+so no root claims a sink marker. **Resolved by the project maintainer on
+2026-10-30.** The reason: the C003 fence already refuses a checkout the run
+does not own before its first effect, so the daemon path needs the fence and a
+manifest root and nothing else.
 
 *Statement:* which authority governs the checkout mutation a daemon-side
 `/revert` performs, and therefore what the manifest must say.
@@ -491,13 +548,21 @@ reserved, and who may write it?" from durable state
 (`architecture/writer_permit.md:356-374`) and records a durable
 `checkout_writer_refusal` (`crates/codegg-core/src/audit.rs:175`).
 
-**Consequence.** Option C: work package **C** adds the sink variant, the
-gate call, the manifest root and the refusal audit. Options A/B: work package
-**C** adds the manifest root only, and the milestone's closure record must
-state which authority governs the write and why the actor attribution
-resolves.
+**Consequence (resolved).** Work package **C** adds the manifest root only —
+one row, `fenced-native` under the C003 writer fence — and the sink enum is
+untouched, so no root claims a sink marker. The closure record must state
+which authority governs the write (the C003 writer fence) and why the actor
+attribution resolves.
 
 #### D3 — Is `/plan` the agent's plan or the todo list?
+
+**Resolution:** **Wire the daemon's state in — the owner's Option A, which is
+this plan's Option B ("the daemon publishes the plan as a projection").** `/plan`
+means **the agent's plan**, not the todo list. The daemon publishes it and the
+TUI reads the daemon's published plan. **Resolved by the project maintainer on
+2026-10-30.** The reason: the daemon already owns the plan, so the TUI's
+permanent emptiness is a consumption defect (§3.3 defect 3) and not a missing
+protocol capability.
 
 *Statement:* what the plan list is, and therefore whether the daemon's answer
 is a new read request or a projection of something it already publishes.
@@ -506,7 +571,7 @@ is a new read request or a projection of something it already publishes.
   and returns it. **Cost:** a new `CoreRequest` variant in the `Goals` family
   and a new handler.
 - **Option B — the daemon publishes the plan as a projection.** The plan is
-  already a session event (`crates/codegg-core/src/session/events.rs:92`,
+  already a session event (`crates/codegg-core/src/session/events.rs:108`,
   `PlanUpdatedEvent`), so the daemon's published projection surfaces
   (ADR-0053) may already carry it and the TUI simply does not consume it.
   **Cost:** a TUI-side consumption change and possibly no protocol change at
@@ -528,12 +593,20 @@ request would paper over a projection that is already broken. The implementer
 must establish whether the daemon's published projection already carries
 `PlanUpdatedEvent` before choosing; if it does not, Option A follows.
 
-**Consequence.** Option B: work package **D3** is a TUI consumption change
-and the daemon's side may be empty. Option A: work package **B2** adds the
-variant. Option C: work package **A** adds an effect-table row and §12
-records the meaning change.
+**Consequence (resolved).** Work package **D3** is a TUI consumption change:
+the daemon publishes the plan and the TUI reads it. Work package **B2** adds
+nothing. The meaning of `/plan` is unchanged — it is the **agent's plan**, not
+the todo list — so §12 records no meaning change.
 
 #### D4 — What is the authoritative test state?
+
+**Resolution:** **The daemon's state is authoritative and is published — the
+owner's Option A, which is this plan's Option B ("a projection").** The daemon
+publishes the session's test state and the TUI reads
+it, instead of the permanently-`Unknown` local field. **Resolved by the project
+maintainer on 2026-10-30.** The reason: the daemon owns the test runner, so
+its state is the authoritative answer and the TUI's permanently-`Unknown` field
+is the defect (§3.3 defect 3).
 
 *Statement:* what `/tests` reports, and where that state lives.
 
@@ -557,12 +630,23 @@ structural reason as D3: the derived state exists
 so the fix is consumption, not invention. Option C is the fallback if the
 owner wants `/tests` to be a job listing rather than a test-suite state.
 
-**Consequence.** Option B: work package **D3** covers it with D3's. Option A:
-work package **B2** adds the variant. Option C: work package **A** adds an
-effect-table row.
+**Consequence (resolved).** Work package **D3** covers it with D3's: the
+daemon publishes the session's test state and the TUI reads it. Work package
+**B2** adds nothing. `/tests` reports the session's test state, not the job
+list, so §12 records no meaning change.
 
 #### D5 — Does the research runtime move into the daemon, or does the daemon
 gain a request the TUI still runs?
+
+**Resolution:** **The research runtime moves into the daemon — the owner's Option
+B, which is this plan's Option A ("the runtime moves into the daemon") and
+ADR-0059's Option B.** This
+is the one item where the roadmap's "**No ADR**" premise does not survive, so
+the decision is recorded in a new ADR: `plans/adrs/ADR-0059-research-runtime-ownership.md`
+(**accepted — Option B (the runtime moves to the daemon), 2026-10-30**). **Resolved
+by the project maintainer on 2026-10-30.** The reason: the network policy is a
+security surface and the search backend setting is a configuration surface, and
+neither may have two owners.
 
 *Statement:* who owns the research workflow's runtime — and, with it, whether
 this milestone needs an ADR.
@@ -587,22 +671,31 @@ this milestone needs an ADR.
 
 **Recommended: Option A**, because it is the only one in which the daemon's
 answer is authoritative end to end and the TUI holds no durable research
-state — which is what §4's long-term requirement asks for. The
-recommendation is stated plainly **and** the milestone does not act on it:
-Option A carries an ADR, the roadmap row says "No ADR", and this plan does
-not create an ADR (§5.2). **D5 is therefore a stop condition** (§15, stop
-condition 2): if the owner chooses A or B, the milestone cannot proceed on
-this item without the ADR first.
+state — which is what §4's long-term requirement asks for. **The owner chose
+Option A** (2026-10-30), so here the recommendation and the resolution agree.
+Option A carries an ADR, the roadmap row's "No ADR" claim does not survive it
+(§3.4 item 3), and the decision is recorded in
+`plans/adrs/ADR-0059-research-runtime-ownership.md` (accepted 2026-10-30). This
+milestone **defers** the item to that ADR's implementation (§5.2) rather than
+implementing the research move — see §14, stop condition 1.
 
-**Consequence.** Option A: work package **B3** is blocked on an ADR; the
-milestone's `/research` item is deferred. Option B: work package **B3** adds a
-request and keeps the TUI's runtime, and the ADR question is narrowed but not
-closed — the item is still deferred pending the ADR's scope. Option C: work
-package **B3** adds a thin request, and the ADR question is narrowed to the
-network-policy boundary.
+**Consequence (resolved).** Work package **B3** is **deferred**: the milestone's
+`/research` item is not implemented here and no research request is added. The
+decision is recorded in `plans/adrs/ADR-0059-research-runtime-ownership.md`,
+and that ADR's implementation is the milestone's only remaining external
+gate (§5.3). The roadmap row's "No ADR" claim is corrected by that record,
+not by this plan.
 
 #### D6 — Is the log tail a daemon request, or a permanently frontend-owned
 read?
+
+**Resolution:** **Permanently frontend-local — the owner's Option B, which is
+this plan's Option B ("a kind correction").** `/logs` is corrected
+to a `FrontendEffect` with a declared action; the daemon grows **no** log
+family and discloses no log contents to a frontend. **Resolved by the project
+maintainer on 2026-10-30.** The reason: a log file is the daemon's diagnostic
+output rather than durable state, so a bounded local tail read is not reaching
+a daemon-owned effect.
 
 *Statement:* whether `/logs` becomes a daemon request or a kind correction.
 
@@ -626,12 +719,21 @@ becomes a **queryable** surface (a filter over a session's own log, say),
 which is not this milestone. If the owner chooses Option A, this milestone
 must not also choose Option B: the two are mutually exclusive.
 
-**Consequence.** Option B: work package **D6** is a catalog kind correction
+**Consequence (resolved).** Work package **D6** is a catalog kind correction
 plus a declared action, and the generator's `_missing("/logs", …)` entry in
 `plans/implementation/desktop-frontend-ide-foundation/artifacts/generate_m007d_command_classification.py` is retired by
-the generator's own re-run. Option A: work package **B4** adds the variant.
+the generator's own re-run. Work package **B4** adds nothing: the daemon grows
+**no** log family and discloses no log contents to a frontend.
 
 #### D7 — Is the security-review workflow one item or three?
+
+**Resolution:** **One item, three surfaces — the owner's Option A, which is this
+plan's Option A ("one item, three forms, designed together").** The workflow is
+designed as one unit with three surfaces (run, show, cancel) — a daemon-side
+run produces a result the daemon can read back and cancel. **Resolved by the
+project maintainer on 2026-10-30.** The reason: the three forms are one
+workflow's start, read and cancel, and a daemon that can start a run nobody
+can read is not a workflow.
 
 *Statement:* whether the three security-review forms are designed and landed
 together, and whether the daemon owns the run.
@@ -655,12 +757,18 @@ the same thing as cancelling a daemon turn, and the TUI's current show
 (`src/tui/app/mod.rs:538`). Landing `/security-review` alone would leave two
 forms reading and cancelling a frontend-local artefact of a daemon-owned run.
 
-**Consequence.** Option A: work package **B5** adds the start, the read and
+**Consequence (resolved).** Work package **B5** adds the start, the read and
 the cancel variants together, and the milestone's item count stays eleven.
-Option B: the three forms become three work packages, each blocked on the
-preceding one, and the milestone's item count rises.
 
 #### D8 — Is a served form's TUI arm removed, or kept as a fallback?
+
+**Resolution:** **Remove it — the owner's Option A, which is this plan's Option A
+("the arm is removed").** When a form becomes daemon-served, the
+TUI's bespoke arm is removed and the TUI issues the daemon request, exactly as
+M007-D migrated the 39 commands it took over. No fallback arm is kept.
+**Resolved by the project maintainer on 2026-10-30.** The reason: a fallback
+that reports "unknown (no tests run yet)" or "Compaction triggered" is not a
+fallback but a lie that survives the daemon being unavailable.
 
 *Statement:* what the TUI does with a local arm whose form the daemon now
 serves.
@@ -681,11 +789,10 @@ unavailable. The existing migrated commands already follow Option A — their
 dispatcher arms call into a module that calls `send_command`
 (`src/tui/runtime/command_dispatch.rs:3057`).
 
-**Consequence.** Option A: work package **D** removes the local effect from
-each of the thirteen arms and replaces it with the daemon call. Option B: every
-arm keeps a second implementation, and §13's acceptance criteria need a
-"the fallback is honest" clause — which this plan does not write, because the
-recommendation is Option A.
+**Consequence (resolved).** Work package **D** removes the local effect from
+each of the thirteen arms and replaces it with the daemon call. No fallback
+arm is kept, so §13's acceptance criteria need no "the fallback is honest"
+clause.
 
 ## 6. Required production changes
 
@@ -698,7 +805,7 @@ Three mechanisms exist.
   request the daemon already serves. Expressible **only** when the inner
   request's fields are the scope's plus at most one argument — the
   generator's *mechanical* definition
-  (`plans/implementation/desktop-frontend-ide-foundation/artifacts/generate_m007d_command_classification.py:1335-1339`).
+  (`plans/implementation/desktop-frontend-ide-foundation/artifacts/generate_m007d_command_classification.py:1487-1491`).
 - **M2 — a new `CoreRequest` variant.** A new variant in
   `crates/codegg-protocol/src/core.rs`, its `DaemonRequestFamily` routing
   (`src/core/daemon_family.rs`), its daemon handler, its authorization and
@@ -707,24 +814,28 @@ Three mechanisms exist.
 - **M3 — a kind correction.** The form's kind becomes `FrontendEffect` and a
   declared `FrontendAction` serves it
   (`crates/codegg-core/src/frontend_action.rs`), with a non-mutating
-  disposition. Available **only** to `/logs` (D6) and, at the owner's
-  discretion, `/security-review-show` (D7).
+  disposition. Available to `/compact` (D1) and `/logs` (D6) — the two forms
+  whose owner decisions left them frontend-owned.
 
-| form | mechanism | the daemon request it reaches | authority | writer disposition | invariant it must not break | pending |
+| form | mechanism | the daemon request it reaches | authority | writer disposition | invariant it must not break | resolved by |
 |---|---|---|---|---|---|---|
 | `/open` | **M1** | `DocumentOpen` (`crates/codegg-protocol/src/core.rs:2543`; `Documents`, `src/core/daemon_family.rs:89`) | daemon | none — `DocumentOpen` is not a `CheckoutWriterSink` | the open takes a writer *lease* and writes nothing | — |
 | `/subagent-send` | **M1** | `TurnSteer` (`crates/codegg-protocol/src/core.rs:3016`; `Turns`, `src/core/daemon_family.rs:189`) | daemon | none | ADR-0041 Indirect: the frontend steers the **parent** turn; the addressee badge stays frontend-local | — |
-| `/security-review-cancel` | **M1**, once the daemon owns the run | `TurnCancel` (`crates/codegg-protocol/src/core.rs:3012`; `Turns`, `src/core/daemon_family.rs:188`) | daemon | none | the cancel resolves the run's turn id daemon-side; cancelling a TUI task is not cancelling a turn | D7 |
+| `/security-review-cancel` | **M1**, once the daemon owns the run | `TurnCancel` (`crates/codegg-protocol/src/core.rs:3012`; `Turns`, `src/core/daemon_family.rs:188`) | daemon | none | the cancel resolves the run's turn id daemon-side; cancelling a TUI task is not cancelling a turn | D7 — **Option A** |
 | `/shell-rerun` | **M2** for the run-history read, **M1** for the re-run | new read (`HumanShell`); `HumanShellRunCreate` (`crates/codegg-protocol/src/core.rs:3660`) | daemon | none new — the create is governed by `module.shell_runtime` (`docs/writer-disposition.toml:915`) | the rerun's source of truth becomes the daemon's run store, not the TUI's `ShellOutputStore` (`src/tui/app/mod.rs:539`) | — |
-| `/compact` | **M2** | new compaction request | daemon | none | I6: the automatic trigger stays the only authority that decides *when* | **D1** |
-| `/revert` | **M2** | new git-write request (`Git` family) | daemon | **YES** — a new manifest root, and (under D2-C) a new `CheckoutWriterSink` | I4: the write is fenced or gated; the TUI's unfenced subprocess is gone | **D2** |
-| `/plan` | **M2** or a projection fix | new plan read, or a consumed projection (`Goals`) | daemon | none | the daemon's plan is the authority; the TUI's local checklist is not | **D3** |
-| `/tests` | **M2** or a projection fix | new test-state read, or a consumed projection (`Jobs`) | daemon | none | the daemon's job state is the authority | **D4** |
-| `/research` | **M2** (or a subsystem move) | new research request | daemon | a possible edit to `module.research_store` (`docs/writer-disposition.toml:702`) | one workflow, one owner | **D5** — **stop condition 2** |
-| `/logs` | **M2** or **M3** | new log-tail request, or a declared frontend action | daemon, or the frontend by kind correction | none (read-only) | I5 | **D6** |
+| `/compact` | **M3** — a kind correction, no daemon request | none — the daemon has no compaction request | frontend-local, by the registered compact corrective | none | I6: the automatic trigger stays the only authority that decides *when* | D1 — **Option B** (exclude) |
+| `/revert` | **M2** | new git-write request (`Git` family) | daemon | **YES** — one new manifest root, `fenced-native` under the C003 writer fence; **no** new `CheckoutWriterSink` | I4: the write is fenced; the TUI's unfenced subprocess is gone | D2 — **Option B** (fenced) |
+| `/plan` | a consumed projection (`Goals`) | the daemon's published plan | daemon | none | the daemon's plan is the authority; the TUI's local checklist is not | D3 — **Option B** |
+| `/tests` | a consumed projection (`Jobs`) | the daemon's published test state | daemon | none | the daemon's job state is the authority | D4 — **Option B** |
+| `/research` | **deferred to ADR-0059's implementation** | none in this milestone | — | a possible edit to `module.research_store` (`docs/writer-disposition.toml:702`) | one workflow, one owner | D5 — **Option A**, deferred |
+| `/logs` | **M3** — a kind correction | none — the daemon grows no log family | frontend-local | none (read-only) | I5 | D6 — **Option B** |
 | `/review-change` | **M2** for the preview read, **M1** for the apply | new preview-read request; `LspPreviewApply` (`crates/codegg-protocol/src/core.rs:3539`; `Goals`, `src/core/daemon_family.rs:289`) | daemon | none new — the apply is already declared (`docs/writer-disposition.toml:400`, `:407`) | I7: the daemon's LSP instance is authoritative; the apply stays the canonical checked apply | — |
-| `/security-review` | **M2** | new review-start request (a turn) | daemon | none — the report is in memory; the only `std::fs::write` in the workflow is a test fixture (`src/security/workflow/report.rs:1573`, inside the `#[cfg(test)]` module at `:1531`) | I7 | **D7** |
-| `/security-review-show` | **M2** | new review-read request | daemon | none | the daemon owns the result it produced | **D7** |
+| `/security-review` | **M2** | new review-start request (a turn) | daemon | none — the report is in memory; the only `std::fs::write` in the workflow is a test fixture (`src/security/workflow/report.rs:1573`, inside the `#[cfg(test)]` module at `:1531`) | I7 | D7 — **Option A** |
+| `/security-review-show` | **M2** | new review-read request | daemon | none | the daemon owns the result it produced | D7 — **Option A** |
+
+*The option letters in the **resolved by** column are **§5.3's own** letters.
+Where the owner's ballot used a different letter for the same choice, §5.3's
+`**Resolution:**` line states both.*
 
 ### 6.2 The writer-disposition entry the git revert needs
 
@@ -768,9 +879,11 @@ The vocabulary the guard enforces, in full:
   one** manifest root (`:714-737`). A new sink variant with no claiming root
   fails, and a root claiming a marker no sink declares fails.
 
-Under D2 Option C the manifest grows by **one root row** and the sink enum
-grows by **one variant**. Under D2 Options A/B the manifest grows by one root
-row and the sink enum is untouched.
+Under D2's **resolved Option B** the manifest grows by **one root row** and the
+sink enum is **untouched** — the row is `fenced-native` under `writer-fence`, so
+it declares no `mediation_site` and no `mediation_markers`. Option C, which was
+**not** chosen, would have added one sink variant and one marker claim on top
+of the same root row.
 
 ### 6.3 The TUI's arms
 
@@ -791,9 +904,9 @@ daemon's answer:
 
 ## 7. Ordered work packages
 
-Work packages are ordered by dependency, not by the roadmap's item order. A
-package whose decision has not landed is written so it can be executed once
-the decision lands, and it says which decision it waits on.
+Work packages are ordered by dependency, not by the roadmap's item order. The
+eight owner decisions have landed (§5.3), so **no package below waits on an
+answer**; each one names the resolution it now implements.
 
 ### Work package A — The effect-table rows for the forms that need no new
 request
@@ -814,36 +927,43 @@ the **parent** turn's id, which the frontend already knows
 stays frontend-local: ADR-0041 *Indirect* is a decision about **who steers**,
 not about where the selection happens.
 
-**Depends on:** D8 (the arm is removed rather than kept as a fallback).
+**Depends on:** D8, resolved as **Option A** — the arm is removed rather than
+kept as a fallback, so this package replaces the local arm with the daemon
+call.
 
 ### Work package B — The new `CoreRequest` variants
 
-**B1 — the compaction variant.** Depends on **D1**. If D1 Option A or C, add
-the variant to `crates/codegg-protocol/src/core.rs`, route it to the `Turns`
-or `Sessions` family (`src/core/daemon_family.rs`), and implement the handler
-so it asks the daemon's own compaction path to compact now — reusing
-`compact_context` (`src/context/compaction.rs:950`) through
-`compact_if_needed`'s machinery (`src/agent/context_runtime.rs:865`) rather
-than a second compaction implementation. The handler must not touch the
-threshold (I6) and must publish the same `AppEvent::CompactionTriggered`
-the automatic path publishes (`src/agent/context_runtime.rs:1645`).
+**B1 — the compaction variant: dropped.** D1 resolved as **Option B** (the
+owner's Option A — exclude), so M007-H adds **no** compaction `CoreRequest`
+variant, no compaction handler and no compaction authority. Compaction stays
+automatic daemon policy (I6), and work package **E** carries what remains.
 
-**B2 — the plan and test-state reads.** Depends on **D3** and **D4**. If
-either resolves to Option B (a projection), this package adds **nothing** and
-the work lands in package D3. If either resolves to Option A, add the variant
-and its handler.
+**B2 — the plan and test-state reads: dropped.** D3 and D4 both resolved as
+**publish the daemon's state and read it** (this plan's Option B, "the daemon
+publishes it as a projection"), so this package adds **nothing** and the work
+lands in package **D3**. Neither form needs a new `CoreRequest` variant: the
+daemon already holds both pieces of state, and the defect is that the TUI never
+reads them (§3.3 defect 3).
 
-**B3 — the research request.** Depends on **D5**, which is a **stop
-condition**. If the owner selects an option that needs an ADR, this package
-does not run until the ADR exists (§15, stop condition 2).
+**B3 — the research request: deferred, not implemented here.** D5 resolved as
+**Option A — the research runtime moves into the daemon** (the owner's Option
+B; ADR-0059's Option B), recorded in
+`plans/adrs/ADR-0059-research-runtime-ownership.md` (**accepted 2026-10-30**).
+**This milestone does not implement the research move and adds no research
+request**: the item is deferred to ADR-0059's implementation, which is the
+milestone's only remaining external gate (§5.3).
 
-**B4 — the log-tail request.** Depends on **D6**, and only if D6 is Option A.
+**B4 — the log-tail request: dropped.** D6 resolved as **Option B**
+(permanently frontend-local), so `/logs` is corrected to a `FrontendEffect`
+with a declared action (package **D6**) and the daemon grows **no** log
+family.
 
-**B5 — the security-review trio.** Depends on **D7**. If Option A, add three
-variants together: the start (a turn), the read, and the cancel. The cancel
-routes to `CoreRequest::TurnCancel` (M1) once the daemon owns the run; the
-read returns the daemon's own result. The workflow must run against the
-daemon's LSP instance, not a frontend one (I7).
+**B5 — the security-review trio.** D7 resolved as **Option A** (one item, three
+surfaces), so the three variants land **together**: the start (a turn), the
+read, and the cancel. The cancel routes to `CoreRequest::TurnCancel` (M1) once
+the daemon owns the run; the read returns the daemon's own result, so a
+daemon-side run produces a result the daemon can read back and cancel. The
+workflow must run against the daemon's LSP instance, not a frontend one (I7).
 
 **B6 — the preview read for `/review-change`.** The apply is
 `CoreRequest::LspPreviewApply` (`crates/codegg-protocol/src/core.rs:3539`), already declared
@@ -860,15 +980,29 @@ does not read the TUI's `ShellOutputStore`
 
 ### Work package C — The git revert's authority and manifest
 
-Depends on **D2**. Under Option C: add `CheckoutWriterSink::GitRevert` to
-`src/core/checkout_mediation.rs:41-70` with its `as_str` name
-(`src/core/checkout_mediation.rs:75`), call the C004 gate in `src/core/daemon.rs` at
-the same place the existing sinks are gated, and add the manifest root of
-§6.2 with `mediation_markers = "CheckoutWriterSink::GitRevert"`.
+D2 resolved as **Option B — the daemon executes it, fenced** (the owner's
+Option A). A new daemon path issues
+`codegg_git::GitOperation::Checkout { target: Some("HEAD"), paths }`
+(`crates/codegg-git/src/operation.rs:94`, rendering at
+`crates/codegg-git/src/render.rs:220-243`) under the **C003 writer fence** —
+the same fence the model's typed git tool takes
+(`src/tool/git.rs:570-601`, `acquire_writer_permit` at
+`src/tool/writer_fence.rs:280`) — and the manifest grows the root of §6.2 with
+`scope = "checkout-writer"`, `disposition = "fenced-native"`,
+`mediation = "writer-fence"`.
+
+**No `CheckoutWriterSink` variant is added, so no root claims a sink marker.**
+The `mediation_site` and `mediation_markers` fields the guard requires under
+`checkout-gate` (`:678-692`, `:687-691`) are **not** declared: the guard
+rejects a root that declares a mediation site under a non-`checkout-gate`
+mediation (`:705-711`), and `checkout-writer` with `fenced-native` requires
+`writer-fence` (`:674-677`). The manifest therefore grows by **one root row
+and nothing else**, and the sink enum is untouched.
 
 **The guard's two-sided check is the reason this package is not optional:**
 `scripts/check_writer_disposition.py:714-737` fails both when a declared sink
-has no claiming root and when a claimed marker names no declared sink.
+has no claiming root and when a claimed marker names no declared sink. Adding
+no sink and claiming no marker keeps both directions satisfied.
 
 The TUI's unfenced subprocess (`src/tui/app/mod.rs:11433-11440`) is **deleted**
 in the same change. Leaving it would leave two write paths, one of which no
@@ -878,10 +1012,13 @@ guard can see — the exact defect §3.3 records.
 
 **D3 — the projection consumption.** `TuiSessionState::from_events`
 (`crates/codegg-core/src/session/state.rs:146`) has no production caller
-(§3.3 defect 3). Under D3/D4 Option B, the TUI consumes the daemon's
-published session events so `session_state_derived.plan` and
-`session_state_derived.test_state` carry the daemon's answers. This is the
-change that makes `/plan` and `/tests` stop reporting empty state.
+(§3.3 defect 3). D3 and D4 both resolved as **publish the daemon's state and
+read it**, so the TUI consumes the daemon's published session events and
+`session_state_derived.plan` and `session_state_derived.test_state` carry the
+daemon's answers. This is the change that makes `/plan` and `/tests` stop
+reporting empty state. `/plan` means **the agent's plan**, not the todo list,
+and `/tests` reports the session's test state — the daemon's state is
+authoritative and is published.
 
 **D4 — the dead arms.** `/review-change` and `/security-review` are dead
 because `app.lsp_tool` is never installed (§3.3 defect 1). The daemon-side
@@ -889,24 +1026,32 @@ move (B5, B6) removes the dependency on the TUI's copy entirely; the TUI's
 `lsp_tool` field (`src/tui/app/mod.rs:512`) becomes unused for these two
 forms and is removed if nothing else uses it.
 
-**D6 — the kind correction.** Under D6 Option B, change `/logs`'s kind to
-`FrontendEffect` in the catalog and declare the frontend action
-(`crates/codegg-core/src/frontend_action.rs`). This is the **only** catalog
-change this milestone may make (I1).
+**D6 — the kind correction.** D6 resolved as **Option B (permanently
+frontend-local)**, so `/logs`'s kind changes to `FrontendEffect` in the
+catalog and the frontend action is declared
+(`crates/codegg-core/src/frontend_action.rs`). This is a **kind correction**,
+which is the only kind of catalog change this milestone may make (I1). The
+daemon grows **no** log family and discloses no log contents to a frontend.
 
 ### Work package E — The compaction overlap with the corrective
 
-Depends on **D1**. Under Option A/C, this milestone discharges the
-corrective's stop condition 1 and the corrective's own delivery is Shape B
-or a no-op; the closure record must say which, and must not let the
-corrective's shape be implemented twice. Under Option B, the corrective's
-Shape B is this milestone's deliverable for `/compact` and the milestone's
-compaction item closes with no daemon surface.
+D1 resolved as **Option B** (exclude), so M007-H adds **no** compaction
+request and **does not discharge the compact corrective's stop condition 1**
+(§5.3, D1). Compaction stays automatic daemon policy, and the TUI's
+`/compact` command stays owned by the registered TUI compact command
+corrective (`plans/implementation/tui-compact-command-corrective/001-compact-command-has-a-sender.md`).
+
+**The corrective's own delivery is Shape B** — the command reports the truth
+about what compaction is — and that is the corrective's work, not M007-H's.
+M007-H's only share is the **catalog** side the corrective does not touch:
+`/compact`'s form is corrected to a `FrontendEffect` with a declared action,
+which is a **kind correction** and so within I1. The corrective's non-goal that
+it makes no catalog change stands; this milestone owns the catalog.
 
 **The corrective's non-goals are carried forward unchanged** (its §3): no
 change to the daemon's compaction policy, threshold or tracker; no change to
 the TUI's rendering of `AppEvent::CompactionTriggered`; no change to the
-catalog's shape.
+catalog's shape *by the corrective*.
 
 ### Work package F — The generated artifact and the guards
 
@@ -921,7 +1066,7 @@ touches directly: `check_command_catalog_ownership.py` (the catalog's
 identities did not change and the daemon's effect table names only daemon
 effects), `check_frontend_action_set.py` (a kind correction is closed over the
 declared actions), and `check_writer_disposition.py` (the new manifest root
-and, under D2-C, the new sink).
+for the fenced daemon revert).
 
 ## 8. Failure, cancellation, restart, contention semantics
 
@@ -930,13 +1075,14 @@ and, under D2-C, the new sink).
   (`no_session`, `argument_unreadable`, `not_daemon_effect`,
   `src/core/daemon_commands.rs:51`).
 - **A served form's TUI arm renders the daemon's refusal.** Under D8
-  Option A there is no local fallback (§5.3, D8).
+  (resolved as Option A) there is no local fallback (§5.3, D8).
 - **Cancellation.** A cancelled `/security-review` cancels the daemon's turn
   through `CoreRequest::TurnCancel`, and the daemon's turn-cancellation path
   is the one that already exists (`src/core/daemon_turns.rs`) — not a TUI task
-  cancellation (`src/tui/app/mod.rs:2933-2945`). A cancelled compaction
-  reports the daemon's `Cancelled` outcome from the typed
-  `ContextCompactionResult` (`src/context/compaction.rs:950`).
+  cancellation (`src/tui/app/mod.rs:2933-2945`). Compaction is not
+  user-requestable in this milestone (D1), so there is no user-initiated
+  compaction cancellation to report; the automatic path's own outcome is
+  unchanged.
 - **Restart.** The daemon's session and run state are durable; a restarted
   daemon re-derives the compaction count from the session's state, not from
   the TUI's in-memory counter (`src/tui/runtime/app_events.rs:531`), so the
@@ -944,14 +1090,15 @@ and, under D2-C, the new sink).
   tally. A restarted daemon's outstanding security-review run is either
   resumed or reported gone; the frontend reports what the daemon says.
 - **Contention.** A `/revert` that finds the checkout reserved by a live
-  agent-run group is **refused before its first effect** by the C004 gate,
-  with the typed `CheckoutConflict` and a recovery path
-  (`architecture/writer_permit.md:356-358`, `:382-392`), and the refusal is
-  recorded as a durable `checkout_writer_refusal`
-  (`crates/codegg-core/src/audit.rs:175`). No index, worktree or ref changes.
-- **A log tail is bounded.** Whatever D6 selects, the tail the daemon serves
-  is bounded and reads its own file — never the frontend's arbitrary read of
-  an unbounded file (I5).
+  agent-run group is **refused before its first effect** by the **C003 writer
+  fence** — the same fence the model's typed git tool takes
+  (`src/tool/git.rs:570-601`) — and the refusal is the fence's own typed
+  refusal (`WriterFenceError`, `src/tool/writer_fence.rs:120-138`), not a
+  silent no-op. No index, worktree or ref changes.
+- **A log tail is bounded.** Under D6 the log tail is permanently
+  frontend-local: the daemon discloses no log contents to a frontend, and the
+  frontend's read of the daemon's own file stays the bounded read it already
+  is (`src/tui/app/modal.rs:127-130`).
 
 ## 9. Compatibility and migration
 
@@ -971,7 +1118,7 @@ drift"* note in `plans/implementation/desktop-frontend-ide-foundation/artifacts/
   computed from the catalog's own classification and the daemon's own effect
   table (`src/tui/command_route.rs:138-163`), so a form the daemon serves is
   served for every frontend at once. A frontend that keeps a local arm for a
-  served form would be a second implementation — D8 Option A removes it.
+  served form would be a second implementation — D8 (Option A) removes it.
 - **The desktop is not migrated by this milestone.** It gains nothing and
   loses nothing; the desktop's action table and parity are a later
   milestone's business (§5.2).
@@ -995,20 +1142,22 @@ comment that is not run is not evidence.
   and `tests/tui_render/tui_logs_window.inc` for the two arms whose behaviour
   changes shape.
 - **The git revert.** A member under `tests/command_git/` that drives the
-  daemon's revert and asserts: the write is refused when the checkout is
-  reserved (no index, worktree or ref change), the refusal is the typed
-  `CheckoutConflict`, and the write succeeds on an ordinary checkout.
+  daemon's revert and asserts: the write is refused before its first effect
+  when the checkout is reserved (no index, worktree or ref change), the
+  refusal is the writer fence's typed refusal, and the write succeeds on an
+  ordinary checkout.
 - **The writer disposition.** `python3 scripts/check_writer_disposition.py`
   and `python3 scripts/check_writer_disposition.py --self-test` (§11). The
   self-test must still fail on an injected defect after the manifest grows.
-- **The kind correction** (D6 Option B): a member proving the action set stays
-  closed and that `/logs`'s corrected kind is served by the declared action.
-- **The projection consumption** (D3/D4 Option B): a member proving
+- **The kind corrections** (D1, D6): a member proving the action set stays
+  closed, that `/logs`'s corrected kind is served by the declared action, and
+  that `/compact`'s corrected kind is served by the declared action.
+- **The projection consumption** (D3, D4): a member proving
   `session_state_derived.plan` and `.test_state` carry the daemon's answer
   and no longer the local default.
 - **The compaction overlap**: a member proving the automatic trigger is
-  unchanged (I6) — the threshold still fires the daemon's own compaction and
-  a requested compaction does not alter the threshold.
+  unchanged (I6) — the threshold still fires the daemon's own compaction — and
+  that M007-H adds no user-requested compaction path.
 
 ## 11. Required verification commands
 
@@ -1069,43 +1218,51 @@ The scope widens to the whole workspace; that is expected and is not a defect.
   (`architecture/command.md:33`, repeated at `:683`) names
   `build_inner_request()` as `:189` and `serves_form()` as `:638`; both
   anchors are stale against this baseline (`:185` and `:778`). This milestone
-  corrects them and adds the thirteen forms to the catalog's served surface.
+  corrects them and adds the forms it serves to the catalog's served surface.
 - `architecture/writer_permit.md` — the mediated-sink inventory
-  (`:394-397`) and the sink count change under D2 Option C, and the new
-  sink's entry in the C004 section.
+  (`:394-397`) is **unchanged** under D2: no sink is added, so the count and
+  the inventory stand. The C003 section records that the daemon's git revert
+  is a fenced writer.
 - `architecture/context-compaction-ownership.md` and `architecture/compaction.md`
-  — the production-path inventory gains the requested-compaction row under
-  D1 Option A/C.
+  — the production-path inventory gains **no** requested-compaction row: under
+  D1 M007-H adds no user-requested compaction path.
 - `architecture/git.md` — the daemon's git surface gains the revert write
   under D2.
 - `architecture/command_routing.md` — the served/unserved form list.
 - `plans/subsystems/desktop-frontend-ide-foundation-roadmap.md:569` — the
   M007-H row is updated when the milestone closes, **not** before; the row
   records the decisions, and this plan does not edit it.
-- `docs/writer-disposition.toml` — the new root row (and, under D2-C, the
-  marker claim).
-- The **compact corrective**'s closure record, once D1 lands — noting which
-  shape was implemented and that the stop condition was discharged **here**.
+- `docs/writer-disposition.toml` — the new root row for the fenced daemon
+  revert. **No** marker claim: no sink is added.
+- The **compact corrective**'s closure record — noting that the corrective's
+  **Shape B** is its own deliverable and that its stop condition 1 was **not**
+  discharged by this milestone (D1).
 
 ## 13. Acceptance criteria
 
 Each criterion names a checkable property. A criterion satisfied by a
 comment is not satisfied.
 
-1. `serves_form` is true for all thirteen `(command_id, form)` pairs, and
-   false for every other unserved form — no form's route changes silently.
-2. Each of the thirteen forms has exactly one daemon route, and the daemon
+1. `serves_form` is true for every form the daemon serves, and false for
+   every other unserved form — no form's route changes silently. The forms
+   D1 and D6 left frontend-owned are served by their declared frontend
+   action, not by the daemon; the forms D3 and D4 resolved to are served by
+   the daemon's published projection, not by a declared action; and
+   `/research` is not served at all (deferred to ADR-0059).
+2. Each form the daemon serves has exactly one daemon route, and the daemon
    builds the inner request itself (I3): no frontend supplies one.
 3. Every new `CoreRequest` variant has a `DaemonRequestFamily` routing, a
    daemon handler, an authorization decision and an audit mapping.
-4. The TUI's local effect for each of the thirteen forms is gone (D8
-   Option A), and no TUI arm for a served form remains reachable.
+4. The TUI's local effect for each form the daemon serves is gone (D8,
+   Option A), and no TUI arm for a served form remains reachable. The forms
+   that stay frontend-owned carry a declared, non-mutating action.
 5. `git status --porcelain` shows no `src/tui/**` file that mutates a
    checkout: the raw `git checkout` subprocess at
    `src/tui/app/mod.rs:11433-11440` is deleted.
 6. The git revert's write is refused **before its first effect** when the
    checkout is reserved by a live agent-run group, and the refusal is the
-   typed `CheckoutConflict` with a durable `checkout_writer_refusal`.
+   **C003 writer fence's** typed refusal — not a silent no-op, and not an
+   unmediated write.
 7. `docs/writer-disposition.toml` contains the new root, and
    `python3 scripts/check_writer_disposition.py` is green with its
    `--self-test` still failing on an injected defect.
@@ -1118,7 +1275,8 @@ comment is not satisfied.
 10. The daemon's automatic compaction trigger is unchanged: the same
     threshold (`src/agent/policy.rs:16`), the same decision
     (`src/agent/context_runtime.rs:896-904`), the same
-    `AppEvent::CompactionTriggered` (`src/agent/context_runtime.rs:1645`).
+    `AppEvent::CompactionTriggered` (`src/agent/context_runtime.rs:1645`) — and
+    M007-H adds **no** user-requested compaction path (D1).
 11. The generated artifact is regenerated by its own generator and its §1
     counts are derived from its §3 rows; no count in the artifact or in any
     prose about it is hand-written.
@@ -1126,34 +1284,41 @@ comment is not satisfied.
     reason — in particular the `scheduler_jobs` family, which is excluded
     outright under M008 §16 and must be reported as **not run**, with the
     reason.
+13. The `/research` form is **not** served by this milestone and **no**
+    research request was added: the item is deferred to ADR-0059's
+    implementation, and the closure record says so.
 
 ## 14. Stop conditions
 
-1. **A decision lands that changes a work package's shape** (D1–D8): the
-   affected package is rewritten before it is executed, not patched while it
-   runs.
-2. **D5 selects an option that needs an ADR.** The `/research` item is
-   deferred; this milestone does not create the ADR, and the roadmap row's
-   "No ADR" claim is corrected in the milestone's closure record rather than
-   in the plan.
-3. **The writer-disposition guard cannot be satisfied by a manifest row.**
+1. **The research item's ADR implementation is not in place.** D5 is resolved:
+   the research runtime moves into the daemon (ADR-0059, accepted 2026-10-30).
+   **This milestone does not implement the research move** — it **defers** the
+   `/research` item to ADR-0059's implementation, which is a separate task.
+   If the implementation of this milestone cannot proceed for any other form
+   without that move, the work on the remaining forms stops and reports, and
+   the `/research` item stays deferred; it is never implemented here on the
+   side.
+2. **The writer-disposition guard cannot be satisfied by a manifest row.**
    The work stops; the guard is **not** edited (I9).
-4. **A new `CheckoutWriterSink` variant is added without a claiming root,**
+3. **A new `CheckoutWriterSink` variant is added without a claiming root,**
    or a root claims a marker no sink declares. The guard fails on both
    directions (`scripts/check_writer_disposition.py:714-737`); the work stops
-   until both halves agree.
-5. **The compact corrective's stop condition 1 is discharged twice** — once
+   until both halves agree. Under D2 the manifest grows **one row** and the
+   sink enum is **untouched**, so neither direction can fail.
+4. **The compact corrective's stop condition 1 is discharged twice** — once
    here and once in the corrective. The work stops until one of them owns it.
-6. **The generator's parallel correction has not landed** when the artifact is
+   Under D1 this milestone does **not** discharge it at all: the corrective
+   owns it, and this milestone's only share is the catalog kind correction.
+5. **The generator's parallel correction is not landed** when the artifact is
    regenerated. The regeneration waits; the artifact is never hand-edited.
-7. **A form's identity, kind or capability would have to change** outside
-   D6/D7 (I1). The work stops; a catalog change beyond a kind correction is
+6. **A form's identity, kind or capability would have to change** outside
+   D1/D6 (I1). The work stops; a catalog change beyond a kind correction is
    a different milestone.
 
 ## 15. Closure evidence required
 
 - The **implementation commit**, and the baseline it was taken against.
-- A **requirement-to-evidence matrix** over §13's twelve criteria, each row
+- A **requirement-to-evidence matrix** over §13's thirteen criteria, each row
   naming a `path:line` anchor or a named test.
 - **Every §11 command**, with its outcome: passed, failed, or **not run with
   the reason**. The `scheduler_jobs` family is reported as not run, with
@@ -1162,11 +1327,13 @@ comment is not satisfied.
   `check_writer_disposition.py`'s "N declared roots, N writer tools, N writer
   modules" line before and after the manifest grows.
 - The **writer-disposition manifest's before and after**: the added root in
-  full, and the sink enum's before and after under D2 Option C.
+  full, and the sink enum's before and after — **unchanged** under D2, since
+  no sink is added.
 - The **generated artifact's regenerated §1 table**, with the note that every
   count in it is derived from the §3 rows by the generator.
-- The **known limitations, stated as limitations** — in particular: any form
-  that remains frontend-owned under D6/D7, and the fact that the desktop was
+- The **known limitations, stated as limitations** — in particular: the forms
+  that remain frontend-owned under D1/D6, the fact that `/research` is
+  deferred to ADR-0059's implementation, and the fact that the desktop was
   not migrated.
 - **Unresolved findings by severity.**
 - A **recommendation**: closed, conditionally closed, corrective pass
@@ -1178,17 +1345,23 @@ comment is not satisfied.
   confirmed defects in §3.3. Every anchor in this plan was re-verified
   against the tree at the baseline in the header; one correction to the
   earlier survey is recorded in §3.4.
-- **The eight decisions in §5.3 are the gate.** Six of them
-  (D1, D2, D3, D4, D6, D7) change the shape of a work package; two (D5, D8)
-  change whether a milestone proceeds at all. Each carries a recommendation
-  and its reason, and each names the work package that waits on it. **A
-  recommendation is a recommendation, not a decision.** The implementer must
-  not treat §5.3 as an answer.
-- **The one item that may need an ADR is `/research`** (D5), and the
-  roadmap row's "No ADR" claim does not survive it (§3.4). This plan makes
-  that a stop condition rather than creating the ADR.
+- **The eight decisions in §5.3 have landed.** All eight were answered by the
+  project maintainer on **2026-10-30**, and each subsection carries a
+  `**Resolution:**` line with the choice, the date and the reason. Six of them
+  (D1, D2, D3, D4, D6, D7) changed the shape of a work package; D8 settled
+  whether a served form keeps a fallback arm, and D5 settled whether the
+  milestone can proceed on the research item at all. **The implementer executes
+  the resolutions, not the recommendations** — the options and the
+  recommendations are retained as the record of what was asked, and each
+  resolution names the option letter **in §5.3's own lettering** alongside the
+  owner's own label.
+- **The one item that needed an ADR is `/research`** (D5), and the roadmap
+  row's "No ADR" claim does not survive it (§3.4). The decision is recorded
+  in `plans/adrs/ADR-0059-research-runtime-ownership.md` (**accepted — Option
+  B, 2026-10-30**), and this milestone **defers** the item to that ADR's
+  implementation rather than implementing the research move.
 - **The generated artifact is not this plan's to edit.** Its counts move when
   the code moves; the generator moves them.
 - **The compact corrective owns the TUI's compaction truthfulness.** This
-  milestone owns the question of whether the daemon gains a compaction
-  request. The two must not both implement it.
+  milestone does **not** discharge the corrective's stop condition 1 (D1); the
+  two must not both implement it.
