@@ -292,7 +292,7 @@ separate trust class, and the desktop does not expose it.
 The **169** is the length of the TUI's cached built-in rows. It is a count
 of the *cache*, and it is deliberately **not** the count of commands the
 product has: the daemon's catalog is the definition, and it carries **161**
-commands over **167** argument forms — 129 daemon-effect forms and 38
+commands over **167** argument forms — 126 daemon-effect forms and 41
 frontend-effect forms. The two numbers answer different questions and both
 are guarded.
 
@@ -684,5 +684,5 @@ Re-verified 2026-10-25 against `crates/codegg-core/src/command_catalog.rs`
 `src/tui/command.rs`: the cached built-in rows still number **169** and
 `BuiltinSlashAction` still has **161** variants, byte-identical to
 `origin/main` (`cb4ceed9d`). The daemon's catalog carries **161** commands
-over **167** argument forms — 129 daemon-effect forms and 38 frontend-effect
+over **167** argument forms — 126 daemon-effect forms and 41 frontend-effect
 forms.
