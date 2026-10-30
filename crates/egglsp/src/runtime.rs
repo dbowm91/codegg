@@ -201,9 +201,29 @@ pub fn spawn_process_runtime(
     server_id: String,
     root: PathBuf,
     generation: u64,
+    child: Child,
+    stderr: tokio::process::ChildStderr,
+    status_task: Option<tokio::task::JoinHandle<Result<(), String>>>,
+) -> (LspProcessRuntime, tokio::task::JoinHandle<()>) {
+    spawn_process_runtime_with_permit(
+        server_id,
+        root,
+        generation,
+        child,
+        stderr,
+        status_task,
+        None,
+    )
+}
+
+pub fn spawn_process_runtime_with_permit(
+    server_id: String,
+    root: PathBuf,
+    generation: u64,
     mut child: Child,
     stderr: tokio::process::ChildStderr,
     status_task: Option<tokio::task::JoinHandle<Result<(), String>>>,
+    live_process_permit: Option<crate::launch::LspLiveProcessPermit>,
 ) -> (LspProcessRuntime, tokio::task::JoinHandle<()>) {
     let (intent_tx, intent_rx) = watch::channel(LspProcessIntent::Running);
     let (exit_tx, exit_rx) = watch::channel::<Option<LspProcessExitEvent>>(None);
@@ -250,7 +270,7 @@ pub fn spawn_process_runtime(
     let stderr_buffer_for_owner = stderr_buffer.clone();
     let join = tokio::spawn(async move {
         let mut intent_rx = intent_rx;
-        let (status, signal, intent) = {
+        let (status, signal, intent, reaped) = {
             let exit_status = tokio::select! {
                 kill = kill_rx.recv() => {
                     match kill {
@@ -278,6 +298,7 @@ pub fn spawn_process_runtime(
             };
             let _ = intent_rx.borrow_and_update();
             let final_intent = *intent_rx.borrow();
+            let reaped = exit_status.is_ok();
             let (code, sig) = match exit_status {
                 Ok(s) => {
                     #[cfg(unix)]
@@ -299,8 +320,16 @@ pub fn spawn_process_runtime(
                     (None, None)
                 }
             };
-            (code, sig, final_intent)
+            (code, sig, final_intent, reaped)
         };
+
+        if let Some(permit) = live_process_permit {
+            if reaped {
+                permit.release_after_reap();
+            } else {
+                permit.quarantine();
+            }
+        }
 
         if let Some(mut status_task) = status_task {
             match tokio::time::timeout(std::time::Duration::from_secs(2), &mut status_task).await {

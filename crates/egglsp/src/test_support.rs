@@ -146,6 +146,11 @@ enum Action {
         #[serde(default)]
         data: Option<serde_json::Value>,
     },
+    /// Hold a captured response in flight while a test exercises a real
+    /// process restart or transport teardown.
+    Delay {
+        millis: u64,
+    },
     CloseStdout,
     #[serde(alias = "ExitNow")]
     Exit {
@@ -1161,6 +1166,9 @@ fn execute_actions(
 ) -> ActionControl {
     for action in actions {
         match action {
+            Action::Delay { millis } => {
+                thread::sleep(Duration::from_millis(*millis));
+            }
             Action::RespondResult { result } => {
                 let msg = JsonRpcMessage {
                     jsonrpc: Some("2.0".to_string()),

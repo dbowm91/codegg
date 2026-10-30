@@ -479,6 +479,43 @@ fn hung_scenario(name: &str, root_uri: &str) -> serde_json::Value {
     })
 }
 
+fn delayed_semantic_response_scenario(
+    name: &str,
+    root_uri: &str,
+    source_uri: &str,
+    delay_millis: u64,
+) -> serde_json::Value {
+    json!({
+        "name": name,
+        "steps": [
+            init_capture_step(root_uri),
+            {"type": "ExpectNotification", "method": "initialized", "then": []},
+            {
+                "type": "ExpectNotification",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "type": "ObjectContains",
+                    "value": {"textDocument": {"uri": source_uri}}
+                },
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/hover",
+                "then": [
+                    {"type": "Delay", "millis": delay_millis},
+                    {
+                        "type": "RespondResult",
+                        "result": {"contents": {"kind": "markdown", "value": "stale generation"}}
+                    }
+                ]
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    })
+}
+
 /// Wait until `cond` returns `true`, polling with `poll`. Panics
 /// with `msg` on timeout.
 async fn wait_for<F>(label: &str, timeout: Duration, mut cond: F)
@@ -495,6 +532,120 @@ where
         }
         sleep(Duration::from_millis(20)).await;
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_server_restart_discards_an_inflight_old_generation_response() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let root = tempdir.path().to_path_buf();
+    let source_path = root.join("src/lib.rs");
+    let scenario_path = root.join("scenario.json");
+    let transcript_path = root.join("transcript.jsonl");
+    let start_counter_path = root.join("start_counter.log");
+    std::fs::create_dir_all(root.join("src")).expect("create source tree");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"restart-stale-response\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write manifest");
+    std::fs::write(&source_path, SOURCE_TEXT).expect("write source");
+    let root_uri = path_to_uri(&root);
+    let source_uri = path_to_uri(&source_path);
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_vec(&delayed_semantic_response_scenario(
+            "old-generation-delayed-hover",
+            &root_uri,
+            &source_uri,
+            30_000,
+        ))
+        .expect("serialize delayed scenario"),
+    )
+    .expect("write scenario");
+    let service = LspService::new_arc(make_service_config(
+        &scenario_path,
+        &transcript_path,
+        &start_counter_path,
+    ));
+    let (key, _) = service
+        .get_or_create_client_for_file(&source_path)
+        .await
+        .expect("initialize old-generation process");
+    service
+        .open_file(&source_path, SOURCE_TEXT)
+        .await
+        .expect("open source on old generation");
+    let descriptor = service.descriptor_for_key(&key).await.expect("descriptor");
+    service
+        .set_descriptor_for_key(
+            &key,
+            LspClientDescriptor {
+                restart_policy: short_restart_policy(),
+                ..descriptor
+            },
+        )
+        .await;
+    let old_generation = service.generation_for_key(&key).await;
+    assert_eq!(old_generation, 1);
+
+    let request_service = Arc::clone(&service);
+    let request_key = key.clone();
+    let request_uri = source_uri.clone();
+    let old_response = tokio::spawn(async move {
+        request_service
+            .send_request(
+                &request_key,
+                "textDocument/hover",
+                json!({"textDocument": {"uri": request_uri}, "position": {"line": 0, "character": 8}}),
+            )
+            .await
+    });
+    wait_for("old hover received", Duration::from_secs(5), || async {
+        std::fs::read_to_string(&transcript_path)
+            .is_ok_and(|transcript| transcript.contains("textDocument/hover"))
+    })
+    .await;
+
+    let replacement = successful_scenario(
+        "replacement-generation-hover",
+        &root_uri,
+        &source_uri,
+        Some("textDocument/hover"),
+    );
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_vec(&replacement).expect("serialize replacement scenario"),
+    )
+    .expect("write replacement scenario");
+    tokio::time::timeout(Duration::from_secs(15), service.manual_restart_client(&key))
+        .await
+        .expect("restart completes within bound")
+        .expect("replacement generation initializes");
+    let new_generation = service.generation_for_key(&key).await;
+    assert_eq!(new_generation, old_generation + 1);
+
+    let old_response = tokio::time::timeout(Duration::from_secs(5), old_response)
+        .await
+        .expect("old response settles after process replacement")
+        .expect("old request task completes");
+    assert!(
+        matches!(
+            old_response,
+            Err(LspError::RequestFailed(_) | LspError::ServerRestarted { .. })
+        ),
+        "the terminated generation must not return old hover content; got {old_response:?}"
+    );
+
+    let fresh = service
+        .send_request(
+            &key,
+            "textDocument/hover",
+            json!({"textDocument": {"uri": source_uri}, "position": {"line": 0, "character": 8}}),
+        )
+        .await
+        .expect("replacement-generation hover succeeds");
+    assert_eq!(fresh["contents"]["value"], "**fn** harness_marker()");
+    service.shutdown_all().await;
 }
 
 // ── Test 1: Unexpected exit with restart disabled → Failed ─────────

@@ -928,6 +928,7 @@ pub struct LspService {
     /// A constrained service must receive its daemon-owned launcher here;
     /// it cannot switch launch authority per request.
     process_launcher: Arc<dyn LspProcessLauncher>,
+    live_process_budget: Option<Arc<super::launch::LspLiveProcessBudget>>,
     /// Test-only factory for injecting fake client initialization.
     #[cfg(test)]
     test_init_fn: Option<std::sync::Arc<TestInitFn>>,
@@ -1068,6 +1069,7 @@ impl LspService {
             lifecycle_tx,
             config,
             process_launcher: Arc::new(DirectLspProcessLauncher),
+            live_process_budget: None,
             #[cfg(test)]
             test_init_fn: None,
             #[cfg(test)]
@@ -1108,6 +1110,29 @@ impl LspService {
         config: LspConfig,
         process_launcher: Arc<dyn LspProcessLauncher>,
     ) -> Arc<Self> {
+        Self::new_arc_with_launcher_and_live_process_budget(config, process_launcher, None)
+    }
+
+    pub fn new_arc_with_launcher_and_live_process_budget(
+        config: LspConfig,
+        process_launcher: Arc<dyn LspProcessLauncher>,
+        live_process_budget: Option<Arc<super::launch::LspLiveProcessBudget>>,
+    ) -> Arc<Self> {
+        let process_launcher: Arc<dyn LspProcessLauncher> = match live_process_budget.as_ref() {
+            Some(budget) => Arc::new(super::launch::BudgetedLspProcessLauncher::new(
+                process_launcher,
+                Arc::clone(budget),
+            )),
+            None => process_launcher,
+        };
+        Self::new_arc_with_process_authority(config, process_launcher, live_process_budget)
+    }
+
+    pub fn new_arc_with_process_authority(
+        config: LspConfig,
+        process_launcher: Arc<dyn LspProcessLauncher>,
+        live_process_budget: Option<Arc<super::launch::LspLiveProcessBudget>>,
+    ) -> Arc<Self> {
         let (lifecycle_tx, _rx) = watch::channel(INITIAL_LIFECYCLE_STATE);
         let (exit_tx, exit_rx) = tokio::sync::mpsc::channel(64);
         let exit_rx = Arc::new(Mutex::new(Some(exit_rx)));
@@ -1130,6 +1155,7 @@ impl LspService {
             lifecycle_tx,
             config,
             process_launcher,
+            live_process_budget,
             #[cfg(test)]
             test_init_fn: None,
             #[cfg(test)]
@@ -1139,6 +1165,10 @@ impl LspService {
             restart_tasks: Arc::new(Mutex::new(HashMap::new())),
             restart_owner_counter: AtomicU64::new(1),
         })
+    }
+
+    pub fn live_process_budget(&self) -> Option<Arc<super::launch::LspLiveProcessBudget>> {
+        self.live_process_budget.clone()
     }
 
     /// Start the process exit event receiver task exactly once.
@@ -1222,6 +1252,7 @@ impl LspService {
             lifecycle_tx: watch::channel(INITIAL_LIFECYCLE_STATE).0,
             config,
             process_launcher: Arc::new(DirectLspProcessLauncher),
+            live_process_budget: None,
             test_init_fn: Some(std::sync::Arc::new(Box::new(factory))),
             test_hooks: None,
             test_force_stuck_after_inner: std::sync::Arc::new(AtomicBool::new(false)),
@@ -1259,6 +1290,7 @@ impl LspService {
             lifecycle_tx: watch::channel(INITIAL_LIFECYCLE_STATE).0,
             config,
             process_launcher: Arc::new(DirectLspProcessLauncher),
+            live_process_budget: None,
             test_init_fn: Some(std::sync::Arc::new(Box::new(factory))),
             test_hooks: Some(test_hooks),
             test_force_stuck_after_inner: std::sync::Arc::new(AtomicBool::new(false)),
@@ -2402,15 +2434,37 @@ impl LspService {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, LspError> {
-        let client = {
+        let (client, generation) = {
             let clients = self.clients.read().await;
-            clients
+            let client = clients
                 .get(key)
                 .cloned()
-                .ok_or_else(|| LspError::NotInitialized(format!("client '{}' not found", key)))?
+                .ok_or_else(|| LspError::NotInitialized(format!("client '{}' not found", key)))?;
+            (client, self.generation_for_key(key).await)
         };
-        // Read lock released before await.
-        client.send_request(method, params).await
+        // Fence responses after client replacement or generation advance.
+        let result = client.send_request(method, params).await;
+        let current_generation = self.generation_for_key(key).await;
+        let current_client = self.lookup_client(key).await;
+        let restarting = matches!(
+            self.operational_state_for_key(key).await,
+            Some(LspOperationalState::Restarting { .. } | LspOperationalState::Initializing)
+        );
+        if current_generation != generation
+            || restarting
+            || current_client
+                .as_ref()
+                .is_some_and(|current| !Arc::ptr_eq(current, &client))
+        {
+            return Err(LspError::ServerRestarted {
+                server_id: key
+                    .rsplit_once(':')
+                    .map_or_else(|| key.to_owned(), |(_, id)| id.to_owned()),
+                old_generation: generation,
+                new_generation: (current_generation != generation).then_some(current_generation),
+            });
+        }
+        result
     }
 
     pub async fn client_keys(&self) -> Vec<String> {
@@ -3853,6 +3907,8 @@ async fn spawn_process_monitor(
         }
     };
 
+    let live_process_permit = client.live_process_permit.lock().await.take();
+
     let status_task = client.status_task.lock().await.take();
 
     // Take the stderr handle from the client so the runtime can own
@@ -3863,13 +3919,14 @@ async fn spawn_process_monitor(
     let stderr = client.take_stderr().await;
 
     let (runtime, _join) = match stderr {
-        Some(stderr_handle) => super::runtime::spawn_process_runtime(
+        Some(stderr_handle) => super::runtime::spawn_process_runtime_with_permit(
             server_id.clone(),
             root.clone(),
             generation,
             child,
             stderr_handle,
             status_task,
+            live_process_permit,
         ),
         None => {
             // No stderr handle available; spawn the runtime with a
@@ -3886,16 +3943,27 @@ async fn spawn_process_monitor(
                         error = %e,
                         "failed to open dummy stderr; abandoning monitor"
                     );
+                    let mut child = child;
+                    let _ = child.start_kill();
+                    let reaped = child.wait().await.is_ok();
+                    if let Some(permit) = live_process_permit {
+                        if reaped {
+                            permit.release_after_reap();
+                        } else {
+                            permit.quarantine();
+                        }
+                    }
                     return;
                 }
             };
-            super::runtime::spawn_process_runtime(
+            super::runtime::spawn_process_runtime_with_permit(
                 server_id.clone(),
                 root.clone(),
                 generation,
                 child,
                 dummy_stderr,
                 status_task,
+                live_process_permit,
             )
         }
     };

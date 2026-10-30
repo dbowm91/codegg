@@ -48,6 +48,17 @@ servers are never evicted. Service instances remain separated by canonical
 worktree root and execution profile; configuration fingerprints are not
 merged across service instances.
 
+`lsp_process_admission.max_live_servers` optionally sets a daemon-wide count
+budget shared by FullHost and constrained LSP service scopes. It defaults to
+`null` (unbounded, preserving existing behavior); zero is invalid. Each child
+consumes one permit from spawn admission until the daemon's process owner
+successfully reaps it. Initialization failure, cancellation after spawn,
+crashes, restarts with overlapping generations, and shutdown use the same
+lifetime rule. If the limit is full, a new launch fails immediately with a
+typed `LiveProcessBudgetExhausted` refusal. The budget never retires or evicts
+an attached editor server; capacity becomes available only after a child exits
+and is reaped. The count is a process limit, not an RSS, CPU, or disk bound.
+
 `LspReadOperation::SelectionRange` is the daemon-backed structural selection
 primitive. It is warm-only, takes one authorized workspace-relative document
 and cursor, caps its encoded response at 64 KiB and its parent chain at 32

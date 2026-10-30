@@ -98,14 +98,30 @@ pub fn configured_service(
     config: &crate::config::schema::Config,
 ) -> Result<Arc<LspService>, egglsp::error::LspError> {
     let lsp = config_lsp_to_egglsp(config.lsp.clone().unwrap_or_default());
-    match config.lsp_process_admission.as_ref() {
-        Some(admission) => LspService::new_arc_with_start_admission(
-            lsp,
+    let admission = config.lsp_process_admission.as_ref();
+    let budget = admission
+        .and_then(|admission| admission.max_live_servers)
+        .map(egglsp::launch::LspLiveProcessBudget::new)
+        .transpose()?
+        .map(Arc::new);
+    let mut launcher: Arc<dyn egglsp::launch::LspProcessLauncher> =
+        Arc::new(egglsp::launch::DirectLspProcessLauncher);
+    if let Some(budget) = budget.as_ref() {
+        launcher = Arc::new(egglsp::launch::BudgetedLspProcessLauncher::new(
+            launcher,
+            Arc::clone(budget),
+        ));
+    }
+    if let Some(admission) = admission {
+        launcher = Arc::new(egglsp::launch::BoundedStartLspProcessLauncher::new(
+            launcher,
             admission.max_concurrent_starts,
             admission.max_admitted_starts,
-        ),
-        None => Ok(LspService::new_arc(lsp)),
+        )?);
     }
+    Ok(LspService::new_arc_with_process_authority(
+        lsp, launcher, budget,
+    ))
 }
 
 pub struct Lsp {
@@ -196,6 +212,7 @@ mod tests {
         bounded.lsp_process_admission = Some(crate::config::schema::LspProcessAdmissionConfig {
             max_concurrent_starts: 3,
             max_admitted_starts: 2,
+            max_live_servers: None,
         });
         assert!(configured_service(&bounded).is_err());
     }

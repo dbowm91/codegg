@@ -279,6 +279,9 @@ impl From<egglsp::LspError> for LspError {
             egglsp::LspError::ServerNotFound(s) => LspError::ServerNotFound(s),
             egglsp::LspError::DownloadFailed(s) => LspError::DownloadFailed(s),
             egglsp::LspError::LaunchFailed(s) => LspError::LaunchFailed(s),
+            egglsp::LspError::LiveProcessBudgetExhausted { limit } => {
+                LspError::LiveProcessBudgetExhausted { limit }
+            }
             egglsp::LspError::NotInitialized(s) => LspError::NotInitialized(s),
             egglsp::LspError::RequestFailed(s) => LspError::RequestFailed(s),
             egglsp::LspError::RequestTimeout(s) => LspError::RequestTimeout(s),
@@ -344,6 +347,9 @@ pub enum LspError {
 
     #[error("server launch failed: {0}")]
     LaunchFailed(String),
+
+    #[error("live LSP process budget exhausted (limit={limit})")]
+    LiveProcessBudgetExhausted { limit: usize },
 
     #[error("client not initialized: {0}")]
     NotInitialized(String),

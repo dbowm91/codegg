@@ -48,6 +48,27 @@ impl ServiceHarness {
     where
         F: FnOnce(&str, &str) -> serde_json::Value,
     {
+        Self::start_with_process_policy(build_scenario, launcher, None)
+    }
+
+    fn start_with_live_budget<F>(
+        build_scenario: F,
+        budget: Arc<egglsp::launch::LspLiveProcessBudget>,
+    ) -> Result<Self, LspError>
+    where
+        F: FnOnce(&str, &str) -> serde_json::Value,
+    {
+        Self::start_with_process_policy(build_scenario, None, Some(budget))
+    }
+
+    fn start_with_process_policy<F>(
+        build_scenario: F,
+        launcher: Option<Arc<dyn LspProcessLauncher>>,
+        budget: Option<Arc<egglsp::launch::LspLiveProcessBudget>>,
+    ) -> Result<Self, LspError>
+    where
+        F: FnOnce(&str, &str) -> serde_json::Value,
+    {
         let tempdir = tempfile::tempdir()?;
         let root = tempdir.path().to_path_buf();
         let source_path = root.join("src/lib.rs");
@@ -77,9 +98,21 @@ edition = "2021"
         std::fs::write(&scenario_path, serde_json::to_string_pretty(&scenario)?)?;
 
         let config = make_service_config(&scenario_path, &transcript_path);
-        let service = match launcher {
-            Some(launcher) => LspService::new_arc_with_launcher(config, launcher),
-            None => LspService::new_arc(config),
+        let service = match (launcher, budget) {
+            (Some(launcher), Some(budget)) => {
+                LspService::new_arc_with_launcher_and_live_process_budget(
+                    config,
+                    launcher,
+                    Some(budget),
+                )
+            }
+            (Some(launcher), None) => LspService::new_arc_with_launcher(config, launcher),
+            (None, Some(budget)) => LspService::new_arc_with_launcher_and_live_process_budget(
+                config,
+                Arc::new(DirectLspProcessLauncher),
+                Some(budget),
+            ),
+            (None, None) => LspService::new_arc(config),
         };
 
         Ok(Self {
@@ -763,6 +796,60 @@ async fn shutdown_during_delayed_init_cancels_waiters() {
 }
 
 #[tokio::test]
+async fn cancellation_after_child_start_reaps_child_and_releases_live_budget() {
+    let budget = Arc::new(egglsp::launch::LspLiveProcessBudget::new(1).expect("live budget"));
+    let harness = ServiceHarness::start_with_live_budget(
+        |root_uri, _source_uri| {
+            json!({
+                "name": "live-budget-cancel-after-spawn",
+                "steps": [
+                    {
+                        "type": "ExpectRequest",
+                        "method": "initialize",
+                        "id": {"type": "Number"},
+                        "params": init_params_root_only(root_uri),
+                        "then": []
+                    },
+                    {"type": "Delay", "millis": 5000}
+                ],
+                "exit": {"type": "ExitCode", "code": 0},
+                "strict": true
+            })
+        },
+        budget.clone(),
+    )
+    .expect("service harness");
+
+    let init_task = {
+        let service = harness.service.clone();
+        let source = harness.source_path.clone();
+        tokio::spawn(async move { service.get_or_create_client_for_file(&source).await })
+    };
+    wait_for_transcript_contains(
+        &harness,
+        "\"method\":\"initialize\"",
+        Duration::from_secs(3),
+    )
+    .await;
+    assert_eq!(budget.live_processes(), 1, "spawned child owns one permit");
+
+    harness.service.shutdown_all().await;
+    let init_result = tokio::time::timeout(Duration::from_secs(5), init_task)
+        .await
+        .expect("cancelled initialization waiter completes")
+        .expect("initialization waiter did not panic");
+    expect_init_cancelled(&harness, "shutdown after child spawn", init_result).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while budget.live_processes() != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("cancelled initialization child was reaped and released its permit");
+    assert!(harness.service.client_keys().await.is_empty());
+}
+
+#[tokio::test]
 async fn shutdown_with_inflight_request_completes_bounded() {
     let harness = ServiceHarness::start(|root_uri, source_uri| {
         json!({
@@ -874,4 +961,66 @@ async fn shutdown_with_inflight_request_completes_bounded() {
         restart_attempt,
     )
     .await;
+}
+
+#[tokio::test]
+async fn daemon_shutdown_releases_live_process_budget_after_child_reap() {
+    let budget = Arc::new(egglsp::launch::LspLiveProcessBudget::new(1).expect("live budget"));
+    let harness = ServiceHarness::start_with_live_budget(
+        |root_uri, source_uri| {
+            json!({
+                "name": "live-budget-daemon-shutdown",
+                "steps": [
+                    {
+                        "type": "ExpectRequest",
+                        "method": "initialize",
+                        "id": {"type": "Number"},
+                        "params": init_params_root_only(root_uri),
+                        "then": [{"type": "RespondResult", "result": init_result_capabilities()}]
+                    },
+                    {"type": "ExpectNotification", "method": "initialized", "then": []},
+                    {
+                        "type": "ExpectNotification",
+                        "method": "textDocument/didOpen",
+                        "params": {"type": "ObjectContains", "value": {"textDocument": {"uri": source_uri}}},
+                        "then": []
+                    },
+                    {
+                        "type": "ExpectRequest",
+                        "method": "shutdown",
+                        "id": {"type": "Number"},
+                        "then": [{"type": "RespondResult", "result": null}]
+                    },
+                    {"type": "ExpectNotification", "method": "exit", "then": []}
+                ],
+                "exit": {"type": "ExitCode", "code": 0},
+                "strict": true
+            })
+        },
+        budget.clone(),
+    )
+    .expect("service harness");
+    expect_ok(
+        &harness,
+        "initialize budgeted LSP",
+        harness
+            .service
+            .get_or_create_client_for_file(&harness.source_path)
+            .await,
+    )
+    .await;
+    expect_ok(
+        &harness,
+        "open budgeted document",
+        harness
+            .service
+            .open_file(&harness.source_path, INITIAL_SOURCE_TEXT)
+            .await,
+    )
+    .await;
+    assert_eq!(budget.live_processes(), 1);
+
+    harness.service.shutdown_all().await;
+    assert_eq!(budget.live_processes(), 0);
+    assert!(harness.service.client_keys().await.is_empty());
 }

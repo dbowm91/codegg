@@ -40,6 +40,24 @@ async function connectionGeneration(): Promise<number> {
   return Number.parseInt(await $('[data-testid="connection-generation"]').getText(), 10);
 }
 
+async function focusVisibleWindow(): Promise<void> {
+  await browser.execute(async () => {
+    const internals = (window as unknown as { __TAURI_INTERNALS__?: {
+      invoke(command: string, args: Record<string, unknown>): Promise<unknown>;
+    } }).__TAURI_INTERNALS__;
+    if (!internals) throw new Error('Tauri invoke bridge is unavailable');
+    await internals.invoke('plugin:window|show', { label: 'main' });
+    await internals.invoke('plugin:window|set_focus', { label: 'main' });
+  });
+  await browser.waitUntil(
+    async () =>
+      await browser.execute(
+        () => document.visibilityState === 'visible' && document.hasFocus(),
+      ),
+    { timeout: 10_000, timeoutMsg: 'native E2E window did not become visible and focused' },
+  );
+}
+
 async function clickProjectByName(displayName: string): Promise<void> {
   const items = await $$('[data-testid="project-item"]');
   for (const item of items) {
@@ -98,31 +116,86 @@ async function measureKeyToPaint(samples = 31): Promise<number[]> {
   for (let sample = 0; sample < samples; sample += 1) {
     const before = Number.parseInt((await caret.getAttribute('data-column')) ?? '0', 10);
     const delta = direction === 'ArrowRight' ? 1 : -1;
-    const started = performance.now();
-    await browser.keys(direction);
-    await browser.waitUntil(
-      async () =>
-        Number.parseInt((await caret.getAttribute('data-column')) ?? '0', 10) === before + delta,
-      { timeout: 15_000, timeoutMsg: 'local cursor movement did not reach the rendered viewport' },
-    );
-    await browser.execute(
-      () =>
-        new Promise<void>((resolve) => {
-          let frames = 0;
-          const fallback = window.setTimeout(resolve, 250);
-          const afterFrame = () => {
-            frames += 1;
-            if (frames === 2) {
-              window.clearTimeout(fallback);
-              resolve();
-            } else {
-              requestAnimationFrame(afterFrame);
+    await browser.execute((rawKey: unknown, rawExpectedColumn: unknown) => {
+      const key = String(rawKey);
+      const expectedColumn = Number(rawExpectedColumn);
+      const targetWindow = window as unknown as {
+        __codeggKeyToPaint?: Promise<number>;
+      };
+      const target = document.querySelector<HTMLElement>('[data-testid="editor-caret"]');
+      if (!target) throw new Error('editor caret was not rendered before the key sample');
+      targetWindow.__codeggKeyToPaint = new Promise<number>((resolve, reject) => {
+        let observer: MutationObserver | undefined;
+        let frame = 0;
+        let timeout = 0;
+        let frameCount = 0;
+        const cleanup = () => {
+          observer?.disconnect();
+          window.cancelAnimationFrame(frame);
+          window.clearTimeout(timeout);
+          document.removeEventListener('keydown', onKeyDown, true);
+        };
+        const onKeyDown = (event: KeyboardEvent) => {
+          if (event.key !== key) return;
+          window.clearTimeout(timeout);
+          const started = performance.now();
+          const checkPaint = () => {
+            frameCount += 1;
+            const current = document.querySelector<HTMLElement>('[data-testid="editor-caret"]');
+            if (Number(current?.dataset.column) === expectedColumn) {
+              // The first frame sees the DOM update; the second confirms it
+              // crossed a paint boundary. A timeout is a failed sample, never
+              // a substitute duration that can dominate the reported latency.
+              requestAnimationFrame(() => {
+                cleanup();
+                resolve(performance.now() - started);
+              });
+              return;
             }
           };
-          requestAnimationFrame(afterFrame);
-        }),
-    );
-    durations.push(performance.now() - started);
+          observer = new MutationObserver(() => {
+            const current = document.querySelector<HTMLElement>('[data-testid="editor-caret"]');
+            if (Number(current?.dataset.column) !== expectedColumn) return;
+            observer?.disconnect();
+            frame = requestAnimationFrame(checkPaint);
+          });
+          observer.observe(document.body, {
+            attributes: true,
+            attributeFilter: ['data-column'],
+            childList: true,
+            subtree: true,
+          });
+          timeout = window.setTimeout(() => {
+            cleanup();
+            const current = document.querySelector<HTMLElement>('[data-testid="editor-caret"]');
+            const editorError = document.querySelector<HTMLElement>('[data-testid="editor-error"]');
+            reject(
+              new Error(
+                `caret did not paint column ${expectedColumn} within 5 seconds (current ${current?.dataset.column ?? 'missing'}; frames ${frameCount}; visibility ${document.visibilityState}; focused ${document.hasFocus()}; editor error ${editorError?.innerText ?? 'none'})`,
+              ),
+            );
+          }, 5_000);
+        };
+        document.addEventListener('keydown', onKeyDown, true);
+        timeout = window.setTimeout(() => {
+          cleanup();
+          reject(new Error(`did not receive ${key} for key-to-paint sample`));
+        }, 5_000);
+      });
+    }, direction, before + delta);
+    await browser.keys(direction);
+    const duration = await browser.execute(async () => {
+      const targetWindow = window as unknown as {
+        __codeggKeyToPaint?: Promise<number>;
+      };
+      if (!targetWindow.__codeggKeyToPaint) {
+        throw new Error('key-to-paint sample was not armed');
+      }
+      const result = await targetWindow.__codeggKeyToPaint;
+      delete targetWindow.__codeggKeyToPaint;
+      return result;
+    });
+    durations.push(Number(duration));
     direction = direction === 'ArrowRight' ? 'ArrowLeft' : 'ArrowRight';
   }
   return durations.sort((left, right) => left - right);
@@ -300,6 +373,10 @@ describe('M004 built-app session vertical slice (route, projection, control, pro
 
     const viewport = $('[data-testid="editor-viewport"]');
     await viewport.click();
+    await focusVisibleWindow();
+    await browser.execute(() => {
+      document.querySelector<HTMLElement>('[data-testid="editor-viewport"]')?.focus();
+    });
     const durations = await measureKeyToPaint();
     const measurements = {
       status: await $('[data-testid="editor-diagnostics-status"]').getAttribute('data-status'),
@@ -330,6 +407,7 @@ describe('M004 built-app session vertical slice (route, projection, control, pro
 
   it('measures visible cold request and key-to-paint under CPU load', async () => {
     await $('[data-testid="editor-viewport"]').click();
+    await focusVisibleWindow();
     await browser.keys('Home');
     const coldRequest = await measureNavigationRequests();
     expect(coldRequest.status).toBe('no_warm_server');
@@ -337,6 +415,7 @@ describe('M004 built-app session vertical slice (route, projection, control, pro
     let coldLoaded: number[];
     let coldRequestLoaded: Awaited<ReturnType<typeof measureNavigationRequests>>;
     try {
+      await focusVisibleWindow();
       coldLoaded = await measureKeyToPaint();
       coldRequestLoaded = await measureNavigationRequests();
     } finally {
@@ -464,6 +543,10 @@ describe('M004 built-app session vertical slice (route, projection, control, pro
   it('renderer reload re-drives the route without duplicating sessions', async () => {
     await browser.refresh();
     await waitConnected();
+    await browser.waitUntil(
+      async () => (await $('[data-testid="daemon-identity"]').getText()) === daemonId,
+      { timeout: 30_000, timeoutMsg: 'renderer reload did not restore daemon identity' },
+    );
     expect(await $('[data-testid="daemon-identity"]').getText()).toBe(daemonId);
     await clickProjectByName(probeProject);
     await $('[data-testid="workspace-list"]').waitForExist({ timeout: 60_000 });
