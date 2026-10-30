@@ -30,18 +30,19 @@ use codegg_client::{DriverSnapshotView, DriverState};
 use codegg_protocol::projection::dto::{
     AgentRunGroupSummaryProjection, AgentRunSummary, AgentTreeNodeProjection,
     ConvergenceSummaryProjection, MessageProjection, MessageRole, PermissionProjection,
-    PermissionStatus, QuestionProjection, RunProjection, ShellRunProjection,
-    ToolArgumentProjection, ToolContractProjection, ToolOutputProjection, ToolProgramSummary,
-    ToolProjection, TurnProjection, VisibilityClass, WorktreeSummaryProjection,
+    PermissionStatus, PluginCatalogueEntryProjection, QuestionProjection, RunProjection,
+    ShellRunProjection, ToolArgumentProjection, ToolContractProjection, ToolOutputProjection,
+    ToolProgramSummary, ToolProjection, TurnProjection, VisibilityClass, WorktreeSummaryProjection,
 };
 use codegg_protocol::projection::snapshot::SessionProjectionSnapshot;
 use serde::Serialize;
 
 use super::bridge::{
     AgentRunView, ArtifactHandleView, ConvergenceView, CursorDiagnosticView, JobSummaryView,
-    MessageView, PendingPermissionView, PendingQuestionView, RunGroupView, RunSummaryView,
-    SessionPresentationView, ShellRunView, SubagentSummaryView, ToolContractView, ToolProgramView,
-    ToolSummaryView, TranscriptMessageView, TurnSummaryView, WorktreeView,
+    MessageView, PendingPermissionView, PendingQuestionView, PluginCatalogueEntryView,
+    RunGroupView, RunSummaryView, SessionPresentationView, ShellRunView, SubagentSummaryView,
+    ToolContractView, ToolProgramView, ToolSummaryView, TranscriptMessageView, TurnSummaryView,
+    WorktreeView,
 };
 
 /// Renderer cap on visible messages from the current/most-recent turn.
@@ -100,6 +101,10 @@ pub const MAX_VISIBLE_SHELL_RUNS: usize = 16;
 /// `MAX_PROJECTION_TOOL_CONTRACTS` = 64
 /// (crates/codegg-protocol/src/projection/limits.rs:57).
 pub const MAX_VISIBLE_TOOL_CONTRACTS: usize = 32;
+/// Renderer cap on published plugin catalogue entries. Daemon cap:
+/// `MAX_PROJECTION_PLUGIN_CATALOGUE` = 64
+/// (crates/codegg-protocol/src/projection/limits.rs).
+pub const MAX_VISIBLE_PLUGIN_CATALOGUE: usize = 32;
 /// Renderer cap on surfaced artifact handles.
 pub const MAX_ARTIFACT_HANDLES: usize = 16;
 /// Renderer cap on pending permission/question summaries per view.
@@ -455,6 +460,22 @@ fn tool_contract_view(contract: &ToolContractProjection) -> ToolContractView {
     }
 }
 
+/// One published plugin, as the renderer shows it.
+fn plugin_catalogue_entry_view(entry: &PluginCatalogueEntryProjection) -> PluginCatalogueEntryView {
+    PluginCatalogueEntryView {
+        plugin_id: entry.plugin_id.clone(),
+        name: entry.name.clone(),
+        version: entry.version.clone(),
+        enabled: entry.enabled,
+        trust: entry.trust.clone(),
+        runtime_kind: entry.runtime_kind.clone(),
+        command_count: entry.command_count,
+        hook_count: entry.hook_count,
+        diagnostic_count: entry.diagnostic_count,
+        has_error: entry.has_error,
+    }
+}
+
 /// One transcript message, tagged with the turn that owns it.
 fn transcript_message_view(
     turn: &TurnProjection,
@@ -751,6 +772,13 @@ pub fn present_snapshot(
             .take(MAX_VISIBLE_TOOL_CONTRACTS)
             .map(tool_contract_view)
             .collect(),
+        // The plugin catalogue keeps the order the daemon published it in.
+        plugin_catalogue: snapshot
+            .plugin_catalogue
+            .iter()
+            .take(MAX_VISIBLE_PLUGIN_CATALOGUE)
+            .map(plugin_catalogue_entry_view)
+            .collect(),
         recent_turns: snapshot
             .recent_turns
             .iter()
@@ -817,6 +845,7 @@ pub fn present_driver(view: &DriverSnapshotView) -> SessionPresentationView {
             convergences: Vec::new(),
             shell_runs: Vec::new(),
             tool_contracts: Vec::new(),
+            plugin_catalogue: Vec::new(),
             recent_turns: Vec::new(),
             todos: None,
             pending_permissions: Vec::new(),
@@ -1580,6 +1609,7 @@ mod tests {
             "convergences": [],
             "shellRuns": [],
             "toolContracts": [],
+            "pluginCatalogue": [],
             "recentTurns": [],
             "todos": null,
             "pendingPermissions": [
@@ -1935,6 +1965,38 @@ mod tests {
         assert_eq!(presented.convergences.len(), 1);
         assert_eq!(presented.convergences[0].convergence_id, "conv-1");
         assert_eq!(presented.convergences[0].remaining_cycles, 2);
+    }
+
+    /// M007-G (ADR-0057): the daemon's published plugin catalogue reaches
+    /// the desktop's presentation view, so the desktop's three read-only
+    /// plugin forms render what the daemon published.
+    #[test]
+    fn the_published_plugin_catalogue_reaches_the_presentation_view() {
+        let mut snapshot = base_snapshot();
+        snapshot
+            .plugin_catalogue
+            .push_back(PluginCatalogueEntryProjection {
+                plugin_id: "plugin:alpha".into(),
+                name: "alpha".into(),
+                version: "1.2.3".into(),
+                enabled: true,
+                trust: "builtin".into(),
+                runtime_kind: "builtin".into(),
+                command_count: 2,
+                hook_count: 1,
+                diagnostic_count: 0,
+                has_error: false,
+                source_path: None,
+            });
+
+        let presented = present_snapshot(&snapshot, DriverState::Attached, None, None, true);
+
+        assert_eq!(presented.plugin_catalogue.len(), 1);
+        assert_eq!(presented.plugin_catalogue[0].plugin_id, "plugin:alpha");
+        assert_eq!(presented.plugin_catalogue[0].version, "1.2.3");
+        assert!(presented.plugin_catalogue[0].enabled);
+        assert_eq!(presented.plugin_catalogue[0].command_count, 2);
+        assert_eq!(presented.plugin_catalogue[0].hook_count, 1);
     }
 
     #[test]

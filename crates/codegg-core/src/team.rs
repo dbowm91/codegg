@@ -9,23 +9,18 @@
 //! ## Design notes
 //!
 //! - Paths never define identity. Every API takes typed [`PrincipalId`] and
-//!   [`ProjectId`]; filesystem locators are rejected by the identity lexical
-//!   contract before they can become owned values.
+//!   [`ProjectId`]; filesystem locators are rejected before they can become
+//!   owned values.
 //! - [`PrincipalKind::LocalOwner`] is an explicit principal composition, not
 //!   an authorization bypass. Personal-local daemons resolve the OS owner to
-//!   the deterministic [`LOCAL_OWNER_PRINCIPAL_ID`] record via
-//!   [`TeamStore::ensure_local_owner`]; authorization still receives an
-//!   explicit principal.
+//!   the deterministic [`LOCAL_OWNER_PRINCIPAL_ID`] record; authorization
+//!   still receives an explicit principal.
 //! - Roles expand to capabilities centrally through
 //!   [`ProjectRole::capabilities`]. Callers never supply authority: unknown
-//!   role or capability input fails closed.
-//! - Membership rows are never physically deleted. Revocation sets
-//!   [`MembershipState::Revoked`] with a revision bump, and every mutation
-//!   requires the current revision so a stale writer cannot silently restore
-//!   revoked authority.
-//! - Records contain no credential secret, token, or key material. The
-//!   `no_secret_material` test asserts the serialized shape stays free of
-//!   secret-bearing field names.
+//!   role or capability input fails closed. Membership rows are never
+//!   physically deleted: revocation sets [`MembershipState::Revoked`] with
+//!   a revision bump, and every mutation requires the current revision.
+//! - Records contain no credential secret, token, or key material.
 //!
 //! ## Transport contract (M002, implemented in `crate::transport_auth`)
 //!
@@ -229,6 +224,7 @@ impl ProjectRole {
                 Capability::ProjectConfigure,
                 Capability::AuditRead,
                 Capability::LspControl,
+                Capability::PluginManage,
             ]),
             Self::Owner => CapabilitySet::from_caps(Capability::ALL),
         }
@@ -291,11 +287,17 @@ pub enum Capability {
     NodeTarget,
     #[serde(rename = "lsp.control")]
     LspControl,
+    /// M007-G (ADR-0057): the narrow authority to change a plugin's
+    /// activation state, install a plugin, or remove one. It is minted
+    /// separately from `command.execute`: a role that may run commands is
+    /// not thereby allowed to install code.
+    #[serde(rename = "plugin.manage")]
+    PluginManage,
 }
 
 impl Capability {
     /// Every capability in canonical order.
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::ProjectRead,
         Self::ProjectObserve,
         Self::ProjectChat,
@@ -318,6 +320,7 @@ impl Capability {
         Self::AuditRead,
         Self::NodeTarget,
         Self::LspControl,
+        Self::PluginManage,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -344,6 +347,7 @@ impl Capability {
             Self::AuditRead => "audit.read",
             Self::NodeTarget => "node.target",
             Self::LspControl => "lsp.control",
+            Self::PluginManage => "plugin.manage",
         }
     }
 
@@ -372,6 +376,7 @@ impl Capability {
             "audit.read" => Self::AuditRead,
             "node.target" => Self::NodeTarget,
             "lsp.control" => Self::LspControl,
+            "plugin.manage" => Self::PluginManage,
             _ => return Err(TeamError::UnknownCapability(value.to_owned())),
         })
     }
@@ -1126,7 +1131,7 @@ mod tests {
         let matrix = role_capability_matrix();
         assert_eq!(matrix.len(), 4);
         let sizes: Vec<usize> = matrix.iter().map(|(_, set)| set.len()).collect();
-        assert_eq!(sizes, vec![6, 14, 20, 22]);
+        assert_eq!(sizes, vec![6, 14, 21, 23]);
         for window in matrix.windows(2) {
             let (_, lower) = &window[0];
             let (_, upper) = &window[1];
@@ -1145,16 +1150,19 @@ mod tests {
         assert!(!contributor.has(Capability::ProjectConfigure));
         assert!(!contributor.has(Capability::MemberManage));
         assert!(!contributor.has(Capability::LspControl));
+        assert!(!contributor.has(Capability::PluginManage));
         let maintainer = ProjectRole::Maintainer.capabilities();
         assert!(maintainer.has(Capability::ProjectConfigure));
         assert!(maintainer.has(Capability::AuditRead));
         assert!(maintainer.has(Capability::LspControl));
+        assert!(maintainer.has(Capability::PluginManage));
         assert!(!maintainer.has(Capability::MemberManage));
         assert!(!maintainer.has(Capability::NodeTarget));
         let owner = ProjectRole::Owner.capabilities();
         assert_eq!(owner.len(), Capability::ALL.len());
         assert!(owner.has(Capability::MemberManage));
         assert!(owner.has(Capability::NodeTarget));
+        assert!(owner.has(Capability::PluginManage));
         // Full executable matrix has one row per role x capability.
         assert_eq!(role_capability_rows().len(), 4 * Capability::ALL.len());
         // Capability sets dedup and sort deterministically.

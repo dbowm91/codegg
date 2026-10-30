@@ -7,8 +7,7 @@
 //! All string fields honour [`crate::projection::limits::MAX_PROJECTION_STRING_BYTES`].
 //! Collections honour the per-collection caps declared in
 //! [`crate::projection::limits`]. When the reducer or an adapter
-//! receives a payload that exceeds the cap, it MUST truncate or
-//! replace the field with a handle variant instead of panicking.
+//! receives a payload that exceeds the cap, it MUST truncate.
 
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -462,13 +461,11 @@ pub struct AgentTreeNodeProjection {
     /// `Sally` or `Sally-2`.
     ///
     /// Additive and defaulted so snapshots recorded before this field existed
-    /// still decode; such nodes simply have no display name and fall back to
-    /// the agent type.
+    /// still decode; such nodes simply fall back to the agent type.
     ///
-    /// The name is carried **in the event** and copied here verbatim. It is
-    /// never re-drawn by the reducer: a re-drawn random value would make
-    /// replay non-deterministic, and the live view and the durable record would
-    /// disagree about what a given subagent was called.
+    /// The name is carried **in the event** and copied here verbatim: it is
+    /// never re-drawn by the reducer, because a re-drawn random value would
+    /// make replay non-deterministic.
     #[serde(default)]
     pub display_name: Option<String>,
     /// The leased pool entry's character description, e.g. "Generalist who
@@ -476,9 +473,7 @@ pub struct AgentTreeNodeProjection {
     ///
     /// Additive and defaulted for the same reason as `display_name`, and
     /// carried by the same contract: drawn from the pool entry at spawn, put
-    /// in the event, copied here verbatim. The reducer has no pool, so it
-    /// cannot re-draw this — and a re-drawn value would make replay
-    /// non-deterministic in exactly the way `display_name` already was.
+    /// in the event, copied here verbatim.
     #[serde(default)]
     pub profile: Option<String>,
     /// The leased pool entry's candid operational guidance.
@@ -700,15 +695,13 @@ impl AgentRunTranscriptProjection {
 
 /// The state of a delegated run's recorded transcript for one bounded read.
 ///
-/// Three states, and they are three different facts:
-///
-/// - **Absent** — the store holds no recorded rows for this run. This is
-///   what an old run recorded before the transcript store existed looks
-///   like, and it is *not* a claim that the child did nothing.
-/// - **Present** — the page carries recorded rows.
-/// - **RecordingStopped** — the page carries recorded rows *and* the run's
-///   own recording stopped at the store's per-run bound, so the recorded
-///   transcript is itself incomplete and will never grow.
+/// Three states, and they are three different facts: **Absent** — the store
+/// holds no recorded rows for this run, which is what an old run recorded
+/// before the transcript store existed looks like, and is *not* a claim that
+/// the child did nothing; **Present** — the page carries recorded rows; and
+/// **RecordingStopped** — the page carries recorded rows *and* the run's own
+/// recording stopped at the store's per-run bound, so the recorded
+/// transcript is itself incomplete and will never grow.
 ///
 /// "Absent" is never a rendering of "unauthorized": an unauthorized read
 /// does not produce a page at all (see
@@ -728,15 +721,13 @@ pub enum AgentRunTranscriptPageStatus {
 
 /// The store's own record of a run's transcript, independent of the page.
 ///
-/// This is deliberately **not** the same fact as `has_more`:
-///
-/// - `has_more` says the *store* holds rows beyond this page, so another
-///   read can move the cursor.
-/// - `recording_stopped` says the run's own recording ended at the store's
-///   per-run bound, so the rows that were never written will never arrive.
-///
-/// A full last page therefore does not look like exhausted history: it
-/// reports `has_more = false` *and* `recording_stopped = true`.
+/// This is deliberately **not** the same fact as `has_more`: `has_more`
+/// says the *store* holds rows beyond this page, so another read can move
+/// the cursor, while `recording_stopped` says the run's own recording
+/// ended at the store's per-run bound, so the rows that were never written
+/// will never arrive. A full last page therefore does not look like
+/// exhausted history: it reports `has_more = false` *and*
+/// `recording_stopped = true`.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentRunTranscriptSourceState {
     /// The run's recording stopped at the store's per-run bound. The
@@ -751,13 +742,11 @@ pub struct AgentRunTranscriptSourceState {
 ///
 /// The page is the *tail* read: it is addressed by a durable cursor
 /// (`from_ordinal`) and it answers with the authoritative cursor to pass
-/// back (`next_ordinal`), so a client can walk past the initial preview
-/// without re-fetching the whole session.
+/// back (`next_ordinal`), so a client can walk past the initial preview.
 ///
 /// The page carries redacted bodies only. Redaction happens at the store's
 /// write boundary, and the byte ceiling here is applied *after* that
-/// redaction and *before* serialization, so a page can never widen what
-/// the store already withheld.
+/// redaction and *before* serialization.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentRunTranscriptPageDto {
     /// The run this page belongs to.
@@ -843,12 +832,9 @@ pub struct AgentRunTranscriptWatermarkProjection {
 ///
 /// This is derived from the authoritative run, worktree, result, and group
 /// stores. It carries no prompt, mailbox body, hidden reasoning,
-/// credentials, or raw logs.
-///
-/// It does carry the run's **recorded transcript** — the child's own
-/// conversation, as the durable store recorded it. The transcript is
-/// redacted at write and bounded on the type, and it is the one part of
-/// this summary that is a *body* rather than a summary of one.
+/// credentials, or raw logs. It does carry the run's **recorded
+/// transcript**, which is the one part of this summary that is a *body*
+/// rather than a summary of one.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentRunSummary {
     pub run_id: String,
@@ -887,8 +873,7 @@ pub struct AgentRunSummary {
     /// than the transcript milestone, or a summary built for a lifecycle
     /// event rather than read at a boundary. It is distinct from
     /// [`AgentRunTranscriptProjection::Absent`], which says the run has no
-    /// recorded transcript. A client that sees `None` degrades to the run
-    /// inspector; a client that sees `Absent` says so.
+    /// recorded transcript.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript: Option<AgentRunTranscriptProjection>,
 }
@@ -1214,6 +1199,51 @@ impl ToolContractProjection {
             truncate_str(&self.idempotency, MAX_PROJECTION_STRING_BYTES).into_owned();
         self.implementation_id =
             truncate_str(&self.implementation_id, MAX_PROJECTION_STRING_BYTES).into_owned();
+    }
+}
+
+/// Bounded projection of one plugin in the daemon's published catalogue.
+///
+/// M007-G (ADR-0057): the daemon's registry is the single authority for
+/// the catalogue, and a frontend renders what the daemon published.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct PluginCatalogueEntryProjection {
+    /// The plugin's stable id.
+    pub plugin_id: String,
+    /// The plugin's declared name.
+    pub name: String,
+    /// The plugin's declared version.
+    pub version: String,
+    /// Whether the plugin is enabled for the published scope.
+    pub enabled: bool,
+    /// The plugin's trust class.
+    pub trust: String,
+    /// The plugin's runtime kind.
+    pub runtime_kind: String,
+    /// How many commands the plugin contributes.
+    pub command_count: usize,
+    /// How many hooks the plugin contributes.
+    pub hook_count: usize,
+    /// How many diagnostics the plugin's package carries.
+    pub diagnostic_count: usize,
+    /// Whether the plugin carries an error-level diagnostic.
+    pub has_error: bool,
+    /// Where the plugin was loaded from, when it came from the filesystem.
+    #[serde(default)]
+    pub source_path: Option<String>,
+}
+
+impl PluginCatalogueEntryProjection {
+    pub fn normalise(&mut self) {
+        self.plugin_id = truncate_str(&self.plugin_id, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.name = truncate_str(&self.name, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.version = truncate_str(&self.version, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.trust = truncate_str(&self.trust, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.runtime_kind =
+            truncate_str(&self.runtime_kind, MAX_PROJECTION_STRING_BYTES).into_owned();
+        if let Some(source) = self.source_path.as_mut() {
+            *source = truncate_str(source, MAX_PROJECTION_STRING_BYTES).into_owned();
+        }
     }
 }
 

@@ -86,18 +86,13 @@ impl OperationDescriptor {
 /// Classification rationale (see `architecture/authorization.md` for the
 /// full matrix):
 ///
-/// - Reads require the narrowest observe/read capability; mutations
-///   require the corresponding create/modify/execute capability.
-/// - Turn/agent/model/provider-selection writes require `agent.invoke`;
-///   delegation and test-recovery inspection require `agent.delegate`.
-/// - Project lifecycle and sharing require `project.configure`; audit and
-///   recovery surfaces require `audit.read`.
-/// - Caller-scoped or unguessable-ID operations (memory namespaces,
-///   permission/question responses, tasks, notifications, snapshots of
-///   daemon-global state) are global: they carry no project-keyed data.
-/// - Filesystem-locator, credential-adjacent, and cross-project operations
-///   without a project locator are opaque and fail closed for team
-///   principals.
+/// - Reads require the narrowest observe/read capability; mutations need the
+///   matching create/modify/execute capability, and delegation needs `agent.delegate`.
+/// - Project lifecycle and sharing require `project.configure`; audit
+///   surfaces require `audit.read`.
+/// - Caller-scoped or unguessable-ID operations are global: they carry no
+///   project-keyed data. Filesystem-locator, credential-adjacent, and
+///   cross-project operations without a project locator are opaque.
 pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> OperationDescriptor {
     use codegg_protocol::core::CoreRequest as R;
     match request {
@@ -360,8 +355,7 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
         // only `session.observe` is refused the body.
         //
         // The exact-owner check (this run belongs to *this* session) is a
-        // second, handler-level gate: the descriptor cannot express it,
-        // because the run id is the thing being claimed, not the scope.
+        // second, handler-level gate: the descriptor cannot express it.
         R::AgentRunTranscriptRead { .. } => OperationDescriptor::new(
             "agent_run_transcript_read",
             ScopeKind::ViaSession,
@@ -1026,6 +1020,13 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             "lsp_workflow_execute",
             ScopeKind::ViaSession,
             Some(Capability::FileRead),
+        ),
+        // M007-G (ADR-0057): the narrow `plugin.manage` capability is the
+        // whole gate, and it is not inferred from `command.execute`.
+        R::PluginManage { .. } => OperationDescriptor::new(
+            "plugin_manage",
+            ScopeKind::ViaSession,
+            Some(Capability::PluginManage),
         ),
         // M006-B: the diagnostics *stream* needs `file.read`, not the
         // `project.observe` the generic `ProjectionSubscribe` uses. See ADR-0012
@@ -2164,6 +2165,15 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
                 failure_text: None,
             },
         },
+        // M007-G (ADR-0057): one representative request covers the
+        // plugin operation in the matrix.
+        R::PluginManage {
+            request: codegg_protocol::plugin_catalogue::PluginManageRequestDto {
+                session_id: String::new(),
+                action: codegg_protocol::plugin_catalogue::PluginManageActionDto::Enable,
+                target: String::new(),
+            },
+        },
         R::LspDiagnosticsSubscribe {
             request: dummy_lsp_diagnostics_subscribe(),
         },
@@ -2904,6 +2914,49 @@ mod tests {
         assert_eq!(descriptor.operation, "skill_catalogue_list");
         assert_eq!(descriptor.scope_kind, ScopeKind::DirectProject);
         assert_eq!(descriptor.capability_name(), "project.read");
+    }
+
+    /// M007-G (ADR-0057): the mutating plugin forms ask for the narrow
+    /// `plugin.manage` capability, not `command.execute`.
+    #[test]
+    fn plugin_management_requires_the_narrow_plugin_manage_capability() {
+        let descriptor = operation_descriptor(&CoreRequest::PluginManage {
+            request: codegg_protocol::plugin_catalogue::PluginManageRequestDto {
+                session_id: "session-1".to_owned(),
+                action: codegg_protocol::plugin_catalogue::PluginManageActionDto::Install,
+                target: "/tmp/plugin".to_owned(),
+            },
+        });
+        assert_eq!(descriptor.operation, "plugin_manage");
+        assert_eq!(descriptor.scope_kind, ScopeKind::ViaSession);
+        assert_eq!(descriptor.capability_name(), "plugin.manage");
+
+        use crate::team::{Capability, ProjectRole};
+        assert!(
+            ProjectRole::Maintainer
+                .capabilities()
+                .has(Capability::PluginManage),
+            "a Maintainer may manage plugins"
+        );
+        assert!(
+            ProjectRole::Owner
+                .capabilities()
+                .has(Capability::PluginManage),
+            "an Owner may manage plugins"
+        );
+        for role in [ProjectRole::Viewer, ProjectRole::Contributor] {
+            assert!(
+                !role.capabilities().has(Capability::PluginManage),
+                "{} must not manage plugins",
+                role.as_str()
+            );
+        }
+        assert!(
+            ProjectRole::Contributor
+                .capabilities()
+                .has(Capability::CommandExecute),
+            "a Contributor may run commands and still may not manage plugins"
+        );
     }
 
     #[test]

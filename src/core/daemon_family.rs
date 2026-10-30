@@ -3,11 +3,9 @@
 //! `CoreDaemon` remains the single daemon composition/lifecycle authority.
 //! [`DaemonRequestFamily::of`] is the only request-to-owner routing table:
 //! the thin dispatcher in `super::daemon` routes each envelope to exactly
-//! one family handler operating on the same daemon-owned state. Chat,
-//! team, interactive-process, and work-order requests are classified here
-//! for documentation but are served before the router by their existing
-//! boxed/spawned paths, preserving their stack/cancellation semantics
-//! exactly.
+//! one family handler on the same daemon-owned state. Chat, team,
+//! interactive-process, and work-order requests are classified here for
+//! documentation but are served before the router.
 //!
 //! | Family | Owner module | Responsibility |
 //! |---|---|---|---|
@@ -17,20 +15,20 @@
 //! | `turns` | `daemon_turns.rs` | turn submit/cancel/steer, agent/model selection writes, permission/question responses, and transport lifecycle |
 //! | `jobs` | `daemon_jobs.rs` | durable jobs, schedules, run records, tool-program inspection, and legacy task shims over the scheduler/job stores |
 //! | `projects` | `daemon_projects.rs` | project catalog, workspace registry/services, managed worktrees, and daemon/workspace snapshots |
-//! | `goals` | `daemon_goals.rs` | session goals, todos, edit checkpoints, and LSP preview apply over daemon-owned domain stores |
-//! | `projection` | `daemon_projection.rs` | projection replay subscribe/resume/ack/snapshot/artifacts plus ephemeral presence leases |
-//! | `ops` | `daemon_ops.rs` | audit query/export, memory, and notification routing over daemon-owned stores |
+//! | `goals` | `daemon_goals.rs` | session goals, todos, and edit checkpoints over daemon-owned stores |
+//! | `projection` | `daemon_projection.rs` | projection replay plus ephemeral presence leases |
+//! | `ops` | `daemon_ops.rs` | audit, memory, and notification routing over daemon-owned stores |
 //! | `chat` | `daemon.rs::handle_chat_request` (pre-router, boxed) | durable project chat channels/messages/actions |
 //! | `team` | `daemon_team.rs::handle_team_request` (pre-router, boxed) | canonical project membership + LocalOwner principal/device-token administration |
 //! | `interactive` | `daemon.rs::run_interactive_request` (pre-router, spawned task) | bounded attach/resume over the scheduler admission controller |
 //! | `work_orders` | `daemon_work_orders.rs::handle_work_order_request` (pre-router, boxed) | durable project work orders/occurrences/lanes (M001: no execution) |
-//! | `documents` | `daemon_documents.rs::handle_document_request` | ephemeral editor documents, writer leases, snapshots, and changes |
-//! | `project_init` | `daemon_project_init.rs::handle_project_init_request` | bounded project instruction draft and guarded root publication |
-//! | `lsp` | `daemon_lsp.rs::handle_lsp_request` | M006-B: bounded LSP reads and the authoritative diagnostics pull over the daemon-owned `LspService` |
-//! | `scratch` | `daemon_scratch.rs::handle_scratch_request` | M006: the read-only scratch usage census over the daemon-owned disposable cache |
-//! | `git` | `daemon_reads.rs::handle_git_request` | Phase 3: read-only git facts (status, diff summary, branch list) for a project's bound repository |
-//! | `skills` | `daemon_reads.rs::handle_skill_catalogue_request` | Phase 3: the skill catalogue a project can discover |
-//! | `commands` | `daemon_commands.rs::handle_command_request` | M007-D: the daemon-owned command catalog and the daemon-effect command executor |
+//! | `documents` | `daemon_documents.rs::handle_document_request` | ephemeral editor documents, writer leases, and changes |
+//! | `project_init` | `daemon_project_init.rs::handle_project_init_request` | bounded project instruction draft and root publication |
+//! | `lsp` | `daemon_lsp.rs::handle_lsp_request` | M006-B: bounded LSP reads and the authoritative diagnostics pull |
+//! | `scratch` | `daemon_scratch.rs::handle_scratch_request` | M006: the read-only scratch usage census |
+//! | `git` | `daemon_reads.rs::handle_git_request` | Phase 3: read-only git facts for a project's bound repository |
+//! | `skills` | `daemon_reads.rs::handle_skill_catalogue_request` | Phase 3: the skill catalogue a project discovers |
+//! | `commands` | `daemon_commands.rs::handle_command_request` | M007-D: the daemon-owned catalog and the daemon-effect executor |
 
 use crate::protocol::core::CoreRequest;
 
@@ -66,18 +64,15 @@ pub enum DaemonRequestFamily {
     /// discover.
     Skills,
     /// M007-D. The daemon owns the command catalog and executes the
-    /// daemon-effect command forms under `command.execute`, auditing each
-    /// one as a canonical `Run` (ADR-0052).
+    /// daemon-effect command forms under `command.execute` (ADR-0052).
     Commands,
+    /// M007-G (ADR-0057). The four mutating plugin forms and the
+    /// daemon's plugin registry, which is the single authority for the
+    /// plugin catalogue.
+    Plugins,
     /// M002. The durable delegated-run surface: the session-scoped
-    /// transcript page read.
-    ///
-    /// It is its own family because its authority is the **run's own
-    /// durable ownership**, not the session's: the handler must resolve
-    /// which session owns the run before it reads a row. Routing it to
-    /// `Sessions` would file it under a surface whose gate is the
-    /// session, and the run-ownership gate would read as an extra check
-    /// rather than the point.
+    /// transcript page read. Its authority is the **run's own durable
+    /// ownership**, not the session's.
     AgentRuns,
 }
 
@@ -127,6 +122,10 @@ impl DaemonRequestFamily {
             CoreRequest::CommandCatalog { .. } | CoreRequest::CommandExecute { .. } => {
                 Self::Commands
             }
+            // M007-G: the four mutating plugin forms. The daemon owns the
+            // effect and the registry; the read-only plugin forms are
+            // frontend effects and never reach the daemon.
+            CoreRequest::PluginManage { .. } => Self::Plugins,
             CoreRequest::AssetRefresh { .. } => Self::Assets,
             CoreRequest::AssetRefreshCapabilities => Self::Assets,
             CoreRequest::AssetRefreshStatus { .. } => Self::Assets,
@@ -420,6 +419,7 @@ impl DaemonRequestFamily {
             Self::Git => "src/core/daemon_reads.rs::handle_git_request",
             Self::Skills => "src/core/daemon_reads.rs::handle_skill_catalogue_request",
             Self::Commands => "src/core/daemon_commands.rs::handle_command_request",
+            Self::Plugins => "src/core/daemon_plugins.rs::handle_plugin_request",
         }
     }
 }

@@ -31,6 +31,7 @@ const presentation = (
     convergences: [],
     shellRuns: [],
     toolContracts: [],
+    pluginCatalogue: [],
     recentTurns: [],
     todos: null,
     pendingPermissions: [],
@@ -295,6 +296,128 @@ describe('the desktop frontend actions', () => {
     );
     expect(answer.performed).toBe(true);
     expect(answer.message).toBe('shell runs: none published');
+  });
+
+  it('reports the plugin catalogue the daemon published', () => {
+    const answer = answerFrontendAction(
+      'show_plugins',
+      context({
+        presentation: presentation({
+          pluginCatalogue: [
+            {
+              pluginId: 'plugin:alpha',
+              name: 'alpha',
+              version: '1.2.3',
+              enabled: true,
+              trust: 'builtin',
+              runtimeKind: 'builtin',
+              commandCount: 2,
+              hookCount: 1,
+              diagnosticCount: 0,
+              hasError: false,
+            },
+            {
+              pluginId: 'plugin:beta',
+              name: 'beta',
+              version: '0.1.0',
+              enabled: false,
+              trust: 'builtin',
+              runtimeKind: 'builtin',
+              commandCount: 0,
+              hookCount: 0,
+              diagnosticCount: 0,
+              hasError: false,
+            },
+          ],
+        }),
+      }),
+    );
+    expect(answer.performed).toBe(true);
+    expect(answer.message).toBe(
+      'plugins: 2 published (plugin:alpha 1.2.3 enabled, plugin:beta 0.1.0 disabled)',
+    );
+  });
+
+  it('says there are no plugins when the daemon published none', () => {
+    const answer = answerFrontendAction(
+      'show_plugins',
+      context({ presentation: presentation() }),
+    );
+    expect(answer.performed).toBe(true);
+    expect(answer.message).toBe('plugins: none published');
+  });
+
+  it('reports the plugin the info action names', () => {
+    const answer = answerFrontendAction(
+      'show_plugin_info',
+      context({
+        argument: 'plugin:alpha',
+        presentation: presentation({
+          pluginCatalogue: [
+            {
+              pluginId: 'plugin:alpha',
+              name: 'alpha',
+              version: '1.2.3',
+              enabled: true,
+              trust: 'builtin',
+              runtimeKind: 'builtin',
+              commandCount: 2,
+              hookCount: 1,
+              diagnosticCount: 0,
+              hasError: false,
+            },
+          ],
+        }),
+      }),
+    );
+    expect(answer.performed).toBe(true);
+    expect(answer.message).toBe(
+      'plugin:alpha 1.2.3 enabled runtime=builtin trust=builtin commands=2 hooks=1 diagnostics=0',
+    );
+  });
+
+  it('refuses the plugin info action for a plugin the daemon did not publish', () => {
+    const answer = answerFrontendAction(
+      'show_plugin_info',
+      context({ argument: 'plugin:absent', presentation: presentation() }),
+    );
+    expect(answer.performed).toBe(false);
+    expect(answer.reason).toBe('the daemon published no plugin named plugin:absent');
+  });
+
+  it('reports the published plugin diagnostics', () => {
+    const answer = answerFrontendAction(
+      'show_plugin_doctor',
+      context({
+        presentation: presentation({
+          pluginCatalogue: [
+            {
+              pluginId: 'plugin:alpha',
+              name: 'alpha',
+              version: '1.2.3',
+              enabled: true,
+              trust: 'builtin',
+              runtimeKind: 'builtin',
+              commandCount: 2,
+              hookCount: 1,
+              diagnosticCount: 3,
+              hasError: true,
+            },
+          ],
+        }),
+      }),
+    );
+    expect(answer.performed).toBe(true);
+    expect(answer.message).toBe(
+      'plugin diagnostics: 1 published ' +
+        '(plugin:alpha diagnostics=3 error-level diagnostic present)',
+    );
+  });
+
+  it('carries the plugin actions the daemon publishes', () => {
+    expect(UNCARRIED_ACTIONS.show_plugins).toBeUndefined();
+    expect(UNCARRIED_ACTIONS.show_plugin_info).toBeUndefined();
+    expect(UNCARRIED_ACTIONS.show_plugin_doctor).toBeUndefined();
   });
 
   it('carries every action the daemon publishes, the terminal included', () => {

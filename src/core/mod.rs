@@ -24,6 +24,7 @@ pub mod daemon_jobs;
 pub mod daemon_lsp;
 pub mod daemon_lsp_completion;
 pub mod daemon_ops;
+pub mod daemon_plugins;
 pub mod daemon_project_init;
 pub mod daemon_projection;
 pub mod daemon_projects;

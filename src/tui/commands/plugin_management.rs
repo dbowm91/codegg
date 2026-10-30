@@ -14,6 +14,10 @@ use crate::tui::task_lifecycle::TuiTaskKind;
 
 /// List all registered plugins (builtins + installed).
 pub(crate) fn show_plugins(app: &mut App) {
+    if crate::tui::commands::plugin_catalogue::daemon_owns_plugins(app) {
+        crate::tui::commands::plugin_catalogue::show_published_plugins(app);
+        return;
+    }
     let Some(mgr) = app.plugin_manager.clone() else {
         app.messages_state
             .toasts
@@ -54,6 +58,10 @@ pub(crate) fn show_plugins(app: &mut App) {
 
 /// Show detailed info for a single plugin.
 pub(crate) fn show_plugin_info(app: &mut App, query: &str) {
+    if crate::tui::commands::plugin_catalogue::daemon_owns_plugins(app) {
+        crate::tui::commands::plugin_catalogue::show_published_plugin_info(app, query);
+        return;
+    }
     let query = query.to_string();
     let Some(mgr) = app.plugin_manager.clone() else {
         app.messages_state
@@ -90,6 +98,10 @@ pub(crate) fn show_plugin_info(app: &mut App, query: &str) {
 
 /// Enable a plugin by selector.
 pub(crate) fn enable_plugin(app: &mut App, query: &str) {
+    if crate::tui::commands::plugin_catalogue::daemon_owns_plugins(app) {
+        crate::tui::commands::plugin_catalogue::request_plugin_manage(app, "plugin_enable", query);
+        return;
+    }
     let query = query.to_string();
     let Some(mgr) = app.plugin_manager.clone() else {
         app.messages_state
@@ -120,6 +132,10 @@ pub(crate) fn enable_plugin(app: &mut App, query: &str) {
 
 /// Disable a plugin by selector.
 pub(crate) fn disable_plugin(app: &mut App, query: &str) {
+    if crate::tui::commands::plugin_catalogue::daemon_owns_plugins(app) {
+        crate::tui::commands::plugin_catalogue::request_plugin_manage(app, "plugin_disable", query);
+        return;
+    }
     let query = query.to_string();
     let Some(mgr) = app.plugin_manager.clone() else {
         app.messages_state
@@ -150,9 +166,13 @@ pub(crate) fn disable_plugin(app: &mut App, query: &str) {
 
 /// Run plugin diagnostics.
 ///
-/// When `query` is `None`, diagnostics run for all registered plugins.
-/// When `Some(name)`, diagnostics run for the matching plugin only.
+/// When `query` is `None`, diagnostics run for all registered plugins; when
+/// `Some(name)`, for the matching plugin only.
 pub(crate) fn doctor_plugin(app: &mut App, query: Option<&str>) {
+    if crate::tui::commands::plugin_catalogue::daemon_owns_plugins(app) {
+        crate::tui::commands::plugin_catalogue::show_published_plugin_doctor(app, query);
+        return;
+    }
     let query = query.map(|s| s.to_string());
     let Some(mgr) = app.plugin_manager.clone() else {
         app.messages_state
@@ -206,9 +226,13 @@ pub(crate) fn doctor_plugin(app: &mut App, query: Option<&str>) {
 
 /// Remove (uninstall) an installed plugin.
 ///
-/// Unregisters from the live registry and removes the filesystem
-/// directory if it is under the canonical plugins directory.
+/// Unregisters from the live registry and removes the filesystem directory
+/// if it is under the canonical plugins directory.
 pub(crate) fn remove_plugin(app: &mut App, query: &str) {
+    if crate::tui::commands::plugin_catalogue::daemon_owns_plugins(app) {
+        crate::tui::commands::plugin_catalogue::request_plugin_manage(app, "plugin_remove", query);
+        return;
+    }
     let query = query.to_string();
     let Some(mgr) = app.plugin_manager.clone() else {
         app.messages_state
@@ -248,10 +272,16 @@ pub(crate) fn remove_plugin(app: &mut App, query: &str) {
 
 /// Install a plugin from a local filesystem path.
 ///
-/// The source directory must contain a `manifest.toml`. The plugin is
-/// copied into the canonical plugins directory and registered in the
-/// live registry.
+/// The source directory must contain a `manifest.toml`.
 pub(crate) fn install_plugin(app: &mut App, source_path: &str) {
+    if crate::tui::commands::plugin_catalogue::daemon_owns_plugins(app) {
+        crate::tui::commands::plugin_catalogue::request_plugin_manage(
+            app,
+            "plugin_install",
+            source_path,
+        );
+        return;
+    }
     let source_path = source_path.to_string();
     let Some(mgr) = app.plugin_manager.clone() else {
         app.messages_state
@@ -393,12 +423,8 @@ pub(crate) fn apply_plugin_doctor_finished(
 
 /// Apply the result of a plugin remove operation.
 ///
-/// The TUI message distinguishes between four scenarios:
-/// - files removed: "Plugin '<id>' unregistered and removed from <path>."
-/// - no source path: "Plugin '<id>' unregistered. No install path was recorded,
-///   so no files were removed."
-/// - delete failed: "Plugin '<id>' unregistered, but failed to remove files: <error>."
-/// - hard error: "Remove failed: <error>."
+/// The TUI message distinguishes four scenarios: files removed, no source
+/// path, delete failed, and a hard error.
 pub(crate) fn apply_plugin_remove_finished(
     app: &mut App,
     plugin_id: String,
@@ -522,7 +548,7 @@ mod tests {
     /// Helper: create an App with a non-None plugin_manager for testing.
     async fn app_with_manager() -> App {
         let mut app = make_test_app();
-        app.plugin_manager = Some(make_test_manager().await);
+        app.plugin_manager = Some(std::sync::Arc::new(make_test_manager().await));
         app
     }
 

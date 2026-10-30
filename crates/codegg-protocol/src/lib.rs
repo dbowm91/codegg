@@ -35,6 +35,7 @@ pub mod human_shell;
 pub mod interactive_process;
 pub mod lsp;
 pub mod plugin;
+pub mod plugin_catalogue;
 pub mod projection;
 pub mod provider;
 pub mod runtime_assets;

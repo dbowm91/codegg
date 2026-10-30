@@ -56,6 +56,9 @@ pub const MAX_PROJECTION_SHELL_RUNS: usize = 32;
 /// Maximum number of tool contract projections retained per session.
 pub const MAX_PROJECTION_TOOL_CONTRACTS: usize = 64;
 
+/// Maximum number of plugin catalogue entries retained per session.
+pub const MAX_PROJECTION_PLUGIN_CATALOGUE: usize = 64;
+
 /// Maximum number of call entries returned in a single
 /// [`crate::projection::dto::ToolProgramCallPage`].
 pub const MAX_PROJECTION_CALL_PAGE_SIZE: usize = 32;
@@ -87,13 +90,12 @@ pub const MAX_PROJECTION_DISPLAY_NAME_BYTES: usize = 32;
 /// Maximum byte length of any one subagent descriptor (`profile` or
 /// `usefulness`) in the projection.
 ///
-/// **Not** [`MAX_PROJECTION_STRING_BYTES`]: that bound is for an arbitrary
-/// producer's field, and a node already carries up to 4 KB of `description`,
-/// so reusing it would leave the per-descriptor bound unenforced.
+/// **Not** [`MAX_PROJECTION_STRING_BYTES`]: a node already carries up to
+/// 4 KB of `description`, so reusing it would leave the per-descriptor
+/// bound unenforced.
 ///
-/// Sized above the curated pool's own maximum: measured over all 46 entries at
-/// `e8a6b5ca2` the longest `profile` is 223 bytes, so 256 leaves authoring
-/// headroom while still truncating a runaway producer.
+/// Sized above the curated pool's own maximum: the longest `profile` is
+/// 223 bytes, so 256 leaves authoring headroom.
 pub const MAX_PROJECTION_DESCRIPTOR_BYTES: usize = 256;
 
 /// Total descriptor bytes one turn's agent tree may carry, across every node.
@@ -105,8 +107,7 @@ pub const MAX_PROJECTION_DESCRIPTOR_BYTES: usize = 256;
 /// The *real* figure is well under it — the pool's worst single node carries
 /// 291 B, so a full tree of the largest entries grows a snapshot by 4,656 B —
 /// but a bound that is only as large as today's data is a bound that is
-/// violated by the first longer entry someone authors. A test asserts the
-/// measured worst case still fits.
+/// violated by the first longer entry someone authors.
 pub const MAX_PROJECTION_SUBAGENT_DESCRIPTOR_BYTES: usize =
     MAX_PROJECTION_SUBAGENTS * MAX_PROJECTION_DESCRIPTOR_BYTES * 2;
 
@@ -128,8 +129,7 @@ pub const MAX_PROJECTION_WORKTREES: usize = 32;
 /// stops, never as a silently shortened one.
 ///
 /// Sized so that a session snapshot holding the maximum number of durable
-/// runs ([`MAX_PROJECTION_AGENT_RUNS`]) still carries a bounded transcript
-/// total: 64 runs x 8 KiB = 512 KiB.
+/// runs still carries a bounded transcript total: 64 runs x 8 KiB = 512 KiB.
 pub const MAX_PROJECTION_TRANSCRIPT_BYTES: usize = 8 * 1024;
 
 /// Maximum rows one delegated run's transcript payload may carry.

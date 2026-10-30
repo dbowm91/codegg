@@ -341,10 +341,8 @@ impl CoreDaemon {
     /// local-user capability shape for callers without a target project
     /// (legacy artifact paths, diagnostics). Session observation MUST use
     /// [`Self::canonical_observe_access_for_project`], which derives
-    /// capabilities from the canonical team membership (`session.observe`
-    /// / `project.observe`) and bounds the resolver to the target
-    /// project. New code MUST NOT rely on the allow-all resolver here
-    /// for cross-session visibility.
+    /// capabilities from the canonical team membership and bounds the
+    /// resolver to the target project.
     pub fn projection_access_for_client(
         &self,
         client_id: &str,
@@ -661,10 +659,9 @@ impl CoreDaemon {
     ///
     /// Cross-instance/restart dedupe: before publishing, check the
     /// persisted log for an existing hint with the same notice id. A
-    /// second daemon over the same pool (stale `flock`, divergent
-    /// `CODEGG_DAEMON_HOME`, pool-less construction) may forward the
-    /// same terminal; the check absorbs the common case and the
-    /// identical-id duplicate is benign in the residual race.
+    /// second daemon over the same pool may forward the same terminal;
+    /// the check absorbs the common case and the identical-id duplicate
+    /// is benign in the residual race.
     ///
     /// C005 (ADR-0031): after the hint publishes, evaluate one delegated
     /// wake per notice through the attached daemon, if any. The wake runs
@@ -998,9 +995,7 @@ impl CoreDaemon {
     ///
     /// A launch that places the session in an **existing** managed
     /// checkout allocates nothing, so it does not ask for
-    /// `worktree.create`; the checkout it names is already owned by the
-    /// project, and the service refuses a checkout belonging to another
-    /// project.
+    /// `worktree.create`.
     async fn authorize_launch_checkout(
         &self,
         authority: &codegg_core::transport_auth::RequestAuthorityContext,
@@ -3719,19 +3714,21 @@ impl CoreDaemon {
             // read from a team principal failed closed with
             // `authorization_scope_required` — before the request ever reached
             // the warm-client resolver. The whole M006-B editor read surface
-            // was unreachable from a socket-connected client, which is a team
-            // principal, and the failure was indistinguishable from "you may
-            // not read this". It was invisible because M006-B's own tests
-            // called the daemon as LocalOwner, which bypasses scope
-            // resolution entirely.
+            // was unreachable from a socket-connected client, and the failure
+            // was indistinguishable from "you may not read this". It was
+            // invisible because M006-B's own tests called the daemon as
+            // LocalOwner, which bypasses scope resolution entirely.
             //
             // Deliberately *not* widened beyond `ViaSession`: the project is
-            // still resolved server-side from the session row, so a caller
-            // cannot name a project it has no claim on.
+            // resolved server-side from the session row.
             CoreRequest::LspReadGet { request } => Some(request.session_id.as_str()),
             CoreRequest::LspWorkflowExecute { request } => Some(request.session_id.as_str()),
             CoreRequest::LspServerStatusGet { request } => Some(request.session_id.as_str()),
             CoreRequest::LspControl { request } => Some(request.session_id.as_str()),
+            // M007-G (ADR-0057): the four mutating plugin forms resolve
+            // their project through the session exactly like the LSP
+            // controls above.
+            CoreRequest::PluginManage { request } => Some(request.session_id.as_str()),
             // M003: the completion read resolves its session exactly like the
             // preview-apply write, so a team principal with `file.read` on
             // the session's project passes and one without is denied — never
@@ -4768,6 +4765,11 @@ impl CoreDaemon {
                     authz_decision,
                 ))
                 .await
+            }
+            // M007-G (ADR-0057): the four mutating plugin forms. The
+            // daemon owns the plugin registry and the effect.
+            super::daemon_family::DaemonRequestFamily::Plugins => {
+                Box::pin(self.handle_plugin_request(payload)).await
             }
             // M002: the durable delegated-run surface. The handler's
             // authority is the run's own durable ownership: it re-resolves

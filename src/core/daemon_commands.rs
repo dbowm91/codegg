@@ -1,28 +1,18 @@
 //! M007-D: the `commands` request family for `CoreDaemon`.
 //!
-//! ADR-0052 (accepted 2026-10-24) moved command ownership into the daemon.
-//! This module is the daemon side of that decision:
+//! ADR-0052 (accepted 2026-10-24) moved command ownership into the daemon:
+//! [`CoreRequest::CommandCatalog`] serves the daemon's catalog, the single
+//! definition of what commands exist, and
+//! [`CoreRequest::CommandExecute`] executes one **daemon-effect** form
+//! under the capability the catalog entry names, audited as a canonical
+//! `Run`. A refusal is typed and produces **no** `Run`; each code is a
+//! `REFUSAL_*` constant.
 //!
-//! * [`CoreRequest::CommandCatalog`] serves the daemon's own catalog — the
-//!   single definition of what commands exist. No frontend compiles a second
-//!   list.
-//! * [`CoreRequest::CommandExecute`] executes one **daemon-effect** form.
-//!   The daemon authorizes it under the capability the catalog entry names
-//!   (`command.execute`), audits it as a canonical `Run`, and returns a
-//!   bounded structured result.
-//!
-//! ## What is refused, and why
-//!
-//! A refusal is typed and produces **no** `Run`. Each code is a
-//! `REFUSAL_*` constant below, and the constant carries what it means.
-//!
-//! ## The inner request is authorized on its own terms
-//!
-//! A command's effect is served by the daemon's existing handler for the
-//! equivalent request. That inner request is authorized **again**, on its
-//! own operation and capability, rather than inheriting the command's
-//! decision: `command.execute` is the authority to *run* a command, never a
-//! widening of what the command may touch.
+//! A command's effect is served by the daemon's handler for the equivalent
+//! request. That inner request is authorized **again**, on its own
+//! operation and capability, rather than inheriting the command's decision:
+//! `command.execute` is the authority to *run* a command, never a widening
+//! of what it may touch.
 
 use crate::error::AppError;
 use crate::protocol::core::{
@@ -179,9 +169,6 @@ pub enum CommandEffect {
 /// Each row names the daemon request that serves the form, built from the
 /// scope and the argument. A form with no row is refused with
 /// `command_not_served`: the daemon does not guess what a command means.
-///
-/// The rows are built from JSON, and a row that names a shape the protocol
-/// does not have fails *closed*.
 pub fn build_inner_request(
     command_id: &str,
     form: &str,
@@ -217,9 +204,8 @@ pub fn build_inner_request(
         // the TUI asks for it with `session_id: None`; a session-scoped
         // read answers a different question, so passing the scope's
         // session here would show the user a different policy than the
-        // one they saw before the migration.
-        //
-        // `approval` and `reasoning` carry no session at all.
+        // one they saw before the migration. `approval` and `reasoning`
+        // carry no session at all.
         ("policy", "") => json!({
             "type": "execution_policy_get",
             "session_id": null,
@@ -256,12 +242,11 @@ pub fn build_inner_request(
         //
         // M007-D, decision shape two: the session a share, an unshare or
         // an export acts on is the one the **caller** named, not the one
-        // the scope happens to carry. The scope's session is the attached
-        // session, and the share surface can name another one, so the
-        // session id travels as the argument — the same place the turn id
-        // travels for `stop`. A call that names no session is refused
-        // with `no_session`: the daemon serves the form, it just cannot
-        // guess which session the caller meant.
+        // the scope happens to carry, so the session id travels as the
+        // argument — the same place the turn id travels for `stop`. A call
+        // that names no session is refused with `no_session`: the daemon
+        // serves the form, it just cannot guess which session the caller
+        // meant.
         ("share", "") => {
             if first.is_empty() {
                 return Some(CommandEffect::NeedsSession);
@@ -585,8 +570,7 @@ pub fn build_inner_request(
         //
         // The listing carries no bound of its own: the daemon's own
         // default is the bound the caller asked for, and a bound written
-        // into the row would silently change how many terminals the
-        // listing shows.
+        // into the row would silently change how many terminals it shows.
         //
         // M007-017: `terminal_show` is a frontend effect now.
         ("terminal_list", "") => json!({
@@ -760,21 +744,77 @@ pub fn build_inner_request(
             json!({ "type": "lsp_workflow_execute", "request": request })
         }
 
+        // ── M007-G (ADR-0057): the plugin family ──
+        //
+        // The three read-only plugin forms are frontend effects over the
+        // daemon's published catalogue, so they have no row here. The four
+        // mutating forms are daemon effects, each acting on a session:
+        // the `plugin.manage` grant is checked against that session's
+        // project.
+        ("plugin_enable", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            if first.is_empty() {
+                return Some(CommandEffect::UnreadableArgument);
+            }
+            plugin_manage_shape(session_id, "enable", first)
+        }
+        ("plugin_disable", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            if first.is_empty() {
+                return Some(CommandEffect::UnreadableArgument);
+            }
+            plugin_manage_shape(session_id, "disable", first)
+        }
+        ("plugin_remove", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            if first.is_empty() {
+                return Some(CommandEffect::UnreadableArgument);
+            }
+            plugin_manage_shape(session_id, "remove", first)
+        }
+        // The install target is a **path**, and a path may contain
+        // spaces, so the whole trimmed argument is the target here rather
+        // than the argument's first token.
+        ("plugin_install", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            let target = argument.trim();
+            if target.is_empty() {
+                return Some(CommandEffect::UnreadableArgument);
+            }
+            plugin_manage_shape(session_id, "install", target)
+        }
+
         _ => return None,
     };
     json_request(shape).map(|request| CommandEffect::Ready(Box::new(request)))
 }
 
+/// The effect shape of one mutating plugin form.
+fn plugin_manage_shape(session_id: &str, action: &str, target: &str) -> serde_json::Value {
+    json!({
+        "type": "plugin_manage",
+        "request": {
+            "session_id": session_id,
+            "action": action,
+            "target": target,
+        }
+    })
+}
+
 /// Whether the daemon serves this command's effect.
 ///
-/// The check is independent of the caller's scope **and of the caller's
-/// argument**: it asks whether the effect table has a row for the form at
-/// all. A row whose effect needs a session still counts as served — the
-/// daemon refuses *that* call, with `no_session`, rather than pretending
-/// the form is unknown. So does a row whose argument the caller got
-/// wrong: the daemon refuses *that* call, with `argument_unreadable`.
-///
-/// Serve-ability is a property of the **form**, not of one call's argument.
+/// The check asks whether the effect table has a row for the form at all,
+/// independently of the caller's scope and argument. A row whose effect
+/// needs a session still counts as served — the daemon refuses *that*
+/// call, with `no_session` or `argument_unreadable`.
 pub fn serves_form(command_id: &str, form: &str) -> bool {
     let ctx = CommandContext {
         project_id: "probe",
@@ -1364,6 +1404,22 @@ fn render_lines(value: Option<&serde_json::Value>, kind: &str) -> Vec<String> {
                 .collect();
         }
     }
+    if kind == "plugin_manage_result" {
+        if let Some(result) = object.get("result").and_then(serde_json::Value::as_object) {
+            let plugin_id = result
+                .get("plugin_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let message = result
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("the plugin request completed");
+            if !plugin_id.is_empty() {
+                return vec![format!("{plugin_id}: {message}")];
+            }
+            return vec![message.to_string()];
+        }
+    }
     if kind == "lsp_control_result" {
         if let Some(result) = object.get("result").and_then(serde_json::Value::as_object) {
             let server_id = result
@@ -1513,6 +1569,11 @@ mod tests {
         ("lsp_interface", "", "src/lib.rs:Thing"),
         ("lsp_cross_repair", "", "src/lib.rs tests/foo.rs"),
         ("lsp_call_neighbors", "", "src/lib.rs:1:1 incoming"),
+        // M007-G (ADR-0057): the four mutating plugin forms.
+        ("plugin_enable", "", "probe-plugin"),
+        ("plugin_disable", "", "probe-plugin"),
+        ("plugin_remove", "", "probe-plugin"),
+        ("plugin_install", "", "/tmp/probe-plugin"),
     ];
 
     fn daemon_effect_forms() -> Vec<(&'static str, &'static str)> {
@@ -1559,6 +1620,79 @@ mod tests {
         );
     }
 
+    /// M007-G (ADR-0057): the seven plugin forms split across the daemon's
+    /// two surfaces exactly as the accepted ADR says they do.
+    ///
+    /// The three read-only forms are frontend effects over the daemon's
+    /// published catalogue and have no effect-table row. The four mutating
+    /// forms each build a `PluginManage` request that carries the action
+    /// and the target, and each refuses a call that names no session.
+    #[test]
+    fn the_plugin_forms_split_between_the_daemons_two_surfaces() {
+        for command_id in ["plugins", "plugin_info", "plugin_doctor"] {
+            assert!(
+                !serves_form(command_id, ""),
+                "{command_id} is a read-only plugin form and the daemon must not serve it"
+            );
+            let ctx = CommandContext {
+                project_id: "project",
+                workspace_id: "workspace",
+                session_id: Some("session"),
+                argument: "",
+                authority: None,
+            };
+            assert!(
+                build_inner_request(command_id, "", &ctx).is_none(),
+                "{command_id} must have no effect-table row"
+            );
+        }
+
+        let expected = [
+            ("plugin_enable", "enable", "probe-plugin"),
+            ("plugin_disable", "disable", "probe-plugin"),
+            ("plugin_remove", "remove", "probe-plugin"),
+            ("plugin_install", "install", "/tmp/probe-plugin"),
+        ];
+        for (command_id, action, target) in expected {
+            let ctx = CommandContext {
+                project_id: "project",
+                workspace_id: "workspace",
+                session_id: Some("session-1"),
+                argument: target,
+                authority: None,
+            };
+            let effect = build_inner_request(command_id, "", &ctx)
+                .unwrap_or_else(|| panic!("{command_id} must have a row"));
+            let CommandEffect::Ready(inner) = effect else {
+                panic!("{command_id} must build a request");
+            };
+            let CoreRequest::PluginManage { request } = *inner else {
+                panic!("{command_id} must build a plugin management request");
+            };
+            assert_eq!(
+                request.action.as_str(),
+                action,
+                "{command_id} must name its own action"
+            );
+            assert_eq!(request.target, target);
+            assert_eq!(request.session_id, "session-1");
+
+            let without_session = CommandContext {
+                project_id: "project",
+                workspace_id: "workspace",
+                session_id: None,
+                argument: target,
+                authority: None,
+            };
+            let refused = build_inner_request(command_id, "", &without_session)
+                .unwrap_or_else(|| panic!("{command_id} must have a row"));
+            assert!(
+                matches!(refused, CommandEffect::NeedsSession),
+                "{command_id} must refuse a call that names no session"
+            );
+        }
+    }
+
     /// Every row builds a request the protocol actually has.
     ///
     /// The table's rows are built from JSON so that a wrong shape fails
@@ -1568,10 +1702,7 @@ mod tests {
     ///
     /// Each row is probed with the argument **it declares**, so a row that
     /// reads more than an identifier is proved with an argument that
-    /// carries what it reads. The requirement is declared in the table
-    /// rather than left implicit in one global probe, because a global
-    /// probe would let a row's requirement drift without the test
-    /// noticing.
+    /// carries what it reads.
     #[test]
     fn every_row_builds() {
         for (command_id, form, argument) in EFFECT_TABLE {
@@ -1949,14 +2080,11 @@ mod tests {
     /// M007-D, decision shape one. The effective runtime policy is a
     /// **global** reading: the TUI asks for it with no session, and a
     /// session-scoped read answers a different question. So the `policy`
-    /// row names no session even when the scope carries one — otherwise
-    /// the migration would show the user a different policy than the one
-    /// they saw before.
+    /// row names no session even when the scope carries one.
     ///
     /// `approval` and `reasoning` are unit variants: their requests carry
     /// no session field at all, so the scope's session cannot change what
-    /// they answer. The test pins that too, because a future change that
-    /// gave one of them a session field would otherwise pass unnoticed.
+    /// they answer.
     #[test]
     fn the_policy_rows_name_no_session() {
         let ctx = CommandContext {

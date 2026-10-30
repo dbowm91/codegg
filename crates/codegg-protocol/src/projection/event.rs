@@ -160,9 +160,8 @@ pub enum ProjectionEvent {
     ///
     /// The payload is the **complete** current set for that file, never a
     /// delta, and it carries the same `sequence` and `digest` the
-    /// authoritative `LspDiagnosticsGet` returns. That is what makes a
-    /// dropped envelope recoverable: a client that sees a `sequence` gap
-    /// re-pulls rather than rendering a partial set.
+    /// authoritative `LspDiagnosticsGet` returns, so a client that sees a
+    /// `sequence` gap re-pulls rather than rendering a partial set.
     LspDiagnosticsUpdated {
         file: crate::lsp::LspDiagnosticsProjectionDto,
     },
@@ -277,12 +276,10 @@ pub enum ProjectionEvent {
     /// **Body-free.** It carries the run id, the committed high-water
     /// ordinal, and whether the run's own recording stopped at the store's
     /// per-run bound. It never carries transcript text: the reducer marks
-    /// the run's transcript dirty and a reader fetches the redacted page
-    /// through the authorized page request.
+    /// the run's transcript dirty and a reader fetches the redacted page.
     ///
     /// The ordinal is the store's own committed ordinal for the **run**, so
-    /// it is monotonic per run even when two children write concurrently or
-    /// a continuation appends to the same run id.
+    /// it is monotonic per run.
     AgentRunTranscriptAdvanced {
         run_id: String,
         /// The run's committed high-water ordinal.
@@ -411,6 +408,13 @@ pub enum ProjectionEvent {
     /// The session's tool contracts changed.
     ToolContractsUpdated {
         contracts: Vec<crate::projection::dto::ToolContractProjection>,
+        at: i64,
+    },
+    /// The session's plugin catalogue changed.
+    ///
+    /// M007-G (ADR-0057): the daemon's plugin registry is the authority.
+    PluginCatalogueUpdated {
+        entries: Vec<crate::projection::dto::PluginCatalogueEntryProjection>,
         at: i64,
     },
     /// Projection diagnostic — used by adapters and reducers to

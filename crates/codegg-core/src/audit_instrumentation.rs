@@ -719,6 +719,8 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("document_create", "file_mutate"),
     ("document_delete", "file_mutate"),
     ("project_init_publish", "file_mutate"),
+    // M007-G (ADR-0057): the mutating plugin forms are file mutations.
+    ("plugin_manage", "file_mutate"),
     ("managed_worktree_cleanup", "worktree_lifecycle"),
     ("managed_worktree_archive", "worktree_lifecycle"),
     ("job_submit", "job_submit"),

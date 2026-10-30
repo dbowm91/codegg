@@ -240,18 +240,10 @@ macro_rules! debug_log {
 /// Main application state for the TUI.
 ///
 /// The `App` struct is organized into several state domains:
-///
-/// - `ui_state`: Theme, layout, dialogs, routes
-/// - `session_state`: Session management and history
-/// - `prompt_state`: Prompt input and completions
-/// - `messages_state`: Message history and display
-/// - `dialog_state`: Dialog visibility and data
-/// - `agent_state`: Agent and model configuration
-///
-/// Additionally:
-/// - `sidebar` and `status_bar`: UI widgets
-/// - `session_store` and `message_store`: Database access
-/// - Areas for mouse event handling
+/// `ui_state` (theme, layout, dialogs, routes), `session_state`,
+/// `prompt_state`, `messages_state`, `dialog_state`, `agent_state`, plus
+/// the `sidebar` and `status_bar` widgets and the session and message
+/// stores.
 ///
 /// # Event Handling
 ///
@@ -600,7 +592,7 @@ pub struct App {
     /// Canonical plugin management API. Wraps a `PluginService` with
     /// builtins registered. Initialized at startup; `None` only in
     /// minimal test fixtures that don't need plugin management.
-    pub plugin_manager: Option<crate::plugin::management::PluginManager>,
+    pub plugin_manager: Option<std::sync::Arc<crate::plugin::management::PluginManager>>,
     pub render_panic_injection: RenderPanicInjection,
     /// Monotonic sequence number for remote TUI snapshots. Each
     /// `next_remote_snapshot` call increments this and includes the
@@ -1895,20 +1887,25 @@ impl App {
 
     /// Initialize the plugin manager with builtins registered.
     ///
-    /// Should be called once at startup after the App is constructed.
-    /// Safe to call multiple times — subsequent calls are no-ops.
+    /// M007-G (ADR-0057): a daemon is the single authority for the plugin
+    /// catalogue, so the TUI builds no manager of its own while a daemon is
+    /// attached. Should be called once at startup after the App is
+    /// constructed. Safe to call multiple times — later calls are no-ops.
     pub async fn init_plugin_manager(&mut self) {
         if self.plugin_manager.is_some() {
             return;
         }
-        if let Some(service) = crate::plugin::create_default_plugin_service().await {
-            self.plugin_manager = Some(crate::plugin::management::PluginManager::new(service));
+        if self.core_client.is_some() {
+            return;
+        }
+        if let Some(registry) = crate::core::daemon_plugins::process_registry().await {
+            self.plugin_manager = Some(registry.manager().clone());
         }
     }
 
     /// Access the plugin manager, if initialized.
     pub fn plugin_manager(&self) -> Option<&crate::plugin::management::PluginManager> {
-        self.plugin_manager.as_ref()
+        self.plugin_manager.as_deref()
     }
 
     pub fn set_remote_event_rx(&mut self, rx: mpsc::Receiver<serde_json::Value>) {

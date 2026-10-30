@@ -15,6 +15,7 @@ pub(super) mod manifest_restore;
 pub(super) mod memory;
 pub(super) mod observe;
 pub(super) mod panels;
+pub(super) mod plugin_catalogue;
 pub(super) mod plugin_management;
 pub(super) mod plugins;
 /// M007 runtime-policy commands. Public so the binary startup path can

@@ -1,13 +1,10 @@
 //! M007-D: the declared frontend-action set.
 //!
-//! ADR-0052 (accepted 2026-10-24) gives the frontend one bounded set of
-//! actions it may dispatch locally. Every **frontend-effect** form resolves
-//! to exactly one declared action, and every action to at least one form.
+//! ADR-0052 (accepted 2026-10-24) gives the frontend one bounded set of actions it
+//! may dispatch locally; every **frontend-effect** form resolves to exactly one.
 //!
 //! A frontend that dispatches an action outside this set is a defect:
 //! `scripts/check_frontend_action_set.py` proves the set is closed.
-//!
-//! The set is plain data with no frontend type in it.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,8 +14,7 @@ use crate::command_catalog::{the_catalog, CommandKind};
 ///
 /// Every action in this set is **non-mutating** with respect to
 /// daemon-owned state. The one that launches something is marked
-/// [`FrontendActionDisposition::ProcessLaunching`], and it launches a
-/// frontend-local process (the user's own editor).
+/// [`FrontendActionDisposition::ProcessLaunching`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrontendActionDisposition {
@@ -70,6 +66,9 @@ pub enum FrontendAction {
     ShowWorktrees,
     ShowShellRuns,
     ShowTerminal,
+    ShowPlugins,
+    ShowPluginInfo,
+    ShowPluginDoctor,
 }
 
 impl FrontendAction {
@@ -111,6 +110,9 @@ impl FrontendAction {
             Self::ShowWorktrees => "show_worktrees",
             Self::ShowShellRuns => "show_shell_runs",
             Self::ShowTerminal => "show_terminal",
+            Self::ShowPlugins => "show_plugins",
+            Self::ShowPluginInfo => "show_plugin_info",
+            Self::ShowPluginDoctor => "show_plugin_doctor",
         }
     }
 
@@ -151,6 +153,9 @@ impl FrontendAction {
         FrontendAction::ShowWorktrees,
         FrontendAction::ShowShellRuns,
         FrontendAction::ShowTerminal,
+        FrontendAction::ShowPlugins,
+        FrontendAction::ShowPluginInfo,
+        FrontendAction::ShowPluginDoctor,
     ];
 }
 
@@ -352,6 +357,23 @@ static THE_FRONTEND_ACTION_SET: &[FrontendActionDeclaration] = &[
         disposition: FrontendActionDisposition::NonMutating,
         forms: &[("terminal_show", "")],
     },
+    // M007-G (ADR-0057): the three read-only plugin forms each read the
+    // daemon's published catalogue, and each gets its own action.
+    FrontendActionDeclaration {
+        action: FrontendAction::ShowPlugins,
+        disposition: FrontendActionDisposition::NonMutating,
+        forms: &[("plugins", "")],
+    },
+    FrontendActionDeclaration {
+        action: FrontendAction::ShowPluginInfo,
+        disposition: FrontendActionDisposition::NonMutating,
+        forms: &[("plugin_info", "")],
+    },
+    FrontendActionDeclaration {
+        action: FrontendAction::ShowPluginDoctor,
+        disposition: FrontendActionDisposition::NonMutating,
+        forms: &[("plugin_doctor", "")],
+    },
 ];
 
 /// The declared frontend-action set.
@@ -453,6 +475,40 @@ mod tests {
                 ),
                 "{} must carry a non-mutating disposition",
                 declaration.action.as_str()
+            );
+        }
+    }
+
+    /// M007-G (ADR-0057): the three read-only plugin forms each resolve to
+    /// their own declared, non-mutating action.
+    #[test]
+    fn the_three_read_only_plugin_forms_are_declared_non_mutating() {
+        let expected = [
+            ("plugins", FrontendAction::ShowPlugins),
+            ("plugin_info", FrontendAction::ShowPluginInfo),
+            ("plugin_doctor", FrontendAction::ShowPluginDoctor),
+        ];
+        for (command_id, action) in expected {
+            assert_eq!(
+                action_for_form(command_id, ""),
+                Some(action),
+                "{command_id} must resolve to {}",
+                action.as_str()
+            );
+            let declaration = find_declaration(action)
+                .unwrap_or_else(|| panic!("{} must be declared", action.as_str()));
+            assert!(
+                matches!(
+                    declaration.disposition,
+                    FrontendActionDisposition::NonMutating
+                ),
+                "{} must be non-mutating",
+                action.as_str()
+            );
+            assert!(
+                declaration.forms.contains(&(command_id, "")),
+                "{} must serve {command_id}",
+                action.as_str()
             );
         }
     }

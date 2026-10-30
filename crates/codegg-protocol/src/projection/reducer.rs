@@ -1,37 +1,30 @@
 //! Deterministic canonical reducer for session projection snapshots.
 //!
-//! The reducer is pure: it never performs I/O, network, filesystem, or
-//! provider calls. It applies an ordered stream of projection events
-//! on top of a snapshot and yields an [`ApplyOutcome`] for each
-//! input.
+//! The reducer is pure: it performs no I/O, network, filesystem, or
+//! provider calls. It applies an ordered stream of projection events on top
+//! of a snapshot and yields an [`ApplyOutcome`] for each input.
 //!
 //! ## Determinism
 //!
 //! Two compliant reducers given the same initial snapshot and the same
 //! ordered event stream MUST produce equivalent serialized snapshots.
-//! The reducer is therefore a function `(snapshot, event) -> snapshot`
-//! parameterised only by the explicit configuration passed to
-//! [`ProjectionReducer::new`].
 //!
 //! ## Idempotence
 //!
-//! The reducer deduplicates events by `event_seq`. Re-applying an
-//! event whose `event_seq` is at or below the snapshot's current
-//! `event_seq` returns [`ApplyOutcome::Duplicate`] and leaves state
-//! unchanged.
+//! The reducer deduplicates events by `event_seq`. Re-applying an event
+//! at or below the snapshot's current `event_seq` returns
+//! [`ApplyOutcome::Duplicate`] and leaves state unchanged.
 //!
 //! ## Scope safety
 //!
 //! Events whose [`ProjectionEnvelope::session_id`] does not match the
-//! snapshot's `primary_session_id` (and the snapshot is not a
-//! multi-session scope) are rejected with
+//! snapshot's `primary_session_id` are rejected with
 //! [`ApplyOutcome::ScopeMismatch`].
 //!
 //! ## Lifecycle safety
 //!
-//! Out-of-order or impossible transitions do not panic. They produce
-//! a [`ProjectionDiagnostic`] entry and return
-//! [`ApplyOutcome::Reconciled`].
+//! Out-of-order or impossible transitions do not panic. They produce a
+//! [`ProjectionDiagnostic`] entry and return [`ApplyOutcome::Reconciled`].
 
 use serde::{Deserialize, Serialize};
 
@@ -1215,6 +1208,10 @@ impl ProjectionReducer {
                 snapshot.set_tool_contracts(contracts.clone());
                 ApplyOutcome::Applied
             }
+            ProjectionEvent::PluginCatalogueUpdated { entries, at: _ } => {
+                snapshot.set_plugin_catalogue(entries.clone());
+                ApplyOutcome::Applied
+            }
             ProjectionEvent::Diagnostic { code, message } => {
                 let mut diag = ProjectionDiagnostic::new(
                     clip_str(code, MAX_PROJECTION_STRING_BYTES),
@@ -1621,7 +1618,9 @@ mod tests {
         MessageProjection, MessageRole, PermissionProjection, ToolArgumentProjection,
         TurnProjection, VisibilityClass,
     };
-    use crate::projection::limits::{MAX_PROJECTION_SHELL_RUNS, MAX_PROJECTION_TOOL_CONTRACTS};
+    use crate::projection::limits::{
+        MAX_PROJECTION_PLUGIN_CATALOGUE, MAX_PROJECTION_SHELL_RUNS, MAX_PROJECTION_TOOL_CONTRACTS,
+    };
     use crate::projection::snapshot::SessionProjectionSnapshot;
 
     #[test]
@@ -2505,6 +2504,92 @@ mod tests {
         }
 
         assert_eq!(snap.shell_runs.len(), MAX_PROJECTION_SHELL_RUNS);
+    }
+
+    /// M007-G (ADR-0057): the catalogue reaches the session projection.
+    #[test]
+    fn the_plugin_catalogue_reaches_the_session_projection() {
+        let mut snap = SessionProjectionSnapshot::empty("s", "p", "w");
+        let reducer = ProjectionReducer::default();
+
+        let entries: Vec<crate::projection::dto::PluginCatalogueEntryProjection> = (0
+            ..(MAX_PROJECTION_PLUGIN_CATALOGUE + 3))
+            .map(
+                |index| crate::projection::dto::PluginCatalogueEntryProjection {
+                    plugin_id: format!("plugin:{index}"),
+                    name: format!("plugin-{index}"),
+                    version: "1.0.0".into(),
+                    enabled: index % 2 == 0,
+                    trust: "builtin".into(),
+                    runtime_kind: "builtin".into(),
+                    command_count: index,
+                    hook_count: 0,
+                    diagnostic_count: 0,
+                    has_error: false,
+                    source_path: None,
+                },
+            )
+            .collect();
+        reducer.apply(
+            &mut snap,
+            ReducerEventInput::session(
+                1,
+                0,
+                "s",
+                None,
+                ProjectionEvent::PluginCatalogueUpdated {
+                    entries: entries.clone(),
+                    at: 0,
+                },
+            ),
+        );
+
+        assert_eq!(snap.plugin_catalogue.len(), MAX_PROJECTION_PLUGIN_CATALOGUE);
+        assert_eq!(
+            snap.plugin_catalogue
+                .front()
+                .map(|entry| entry.plugin_id.as_str()),
+            Some("plugin:0"),
+            "the published catalogue must be the session's"
+        );
+
+        reducer.apply(
+            &mut snap,
+            ReducerEventInput::session(
+                2,
+                0,
+                "s",
+                None,
+                ProjectionEvent::PluginCatalogueUpdated {
+                    entries: vec![crate::projection::dto::PluginCatalogueEntryProjection {
+                        plugin_id: "plugin:only".into(),
+                        name: "only".into(),
+                        version: "2.0.0".into(),
+                        enabled: true,
+                        trust: "builtin".into(),
+                        runtime_kind: "builtin".into(),
+                        command_count: 1,
+                        hook_count: 0,
+                        diagnostic_count: 0,
+                        has_error: false,
+                        source_path: None,
+                    }],
+                    at: 0,
+                },
+            ),
+        );
+
+        assert_eq!(
+            snap.plugin_catalogue.len(),
+            1,
+            "the catalogue replaces the collection rather than growing it"
+        );
+        assert_eq!(
+            snap.plugin_catalogue
+                .front()
+                .map(|entry| entry.plugin_id.as_str()),
+            Some("plugin:only")
+        );
     }
 
     #[test]

@@ -116,6 +116,7 @@ const presentation = (sessionId: string) => ({
   convergences: [],
   shellRuns: [],
   toolContracts: [],
+  pluginCatalogue: [],
   recentTurns: [],
   todos: null,
   pendingPermissions: [],

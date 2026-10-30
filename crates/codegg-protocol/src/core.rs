@@ -1972,6 +1972,10 @@ pub enum CoreResponse {
     LspControlResult {
         result: crate::lsp::LspControlResultDto,
     },
+    /// M007-G (ADR-0057): the outcome of one mutating plugin form.
+    PluginManageResult {
+        result: crate::plugin_catalogue::PluginManageResultDto,
+    },
     LspWorkflowResult {
         result: crate::lsp::LspWorkflowResultDto,
     },
@@ -2245,8 +2249,7 @@ pub enum CoreResponse {
     },
     // ── Execution Reliability M003: Approval / Sandbox / Effective Policy ──
     /// Daemon-owned principal preference (approval + sandbox + revision).
-    /// The principal comes from transport authority; the payload carries
-    /// no identity field.
+    /// The principal comes from transport authority.
     ApprovalPreference {
         preference: RuntimePreferenceDto,
     },
@@ -2546,8 +2549,7 @@ pub enum CoreRequest {
         relative_path: String,
         /// Which authority root confines this document. Defaults to
         /// `Workspace`; `GlobalAgent` reaches the user-level agent root under
-        /// a stricter filename rule and is skipped by every workspace-only
-        /// path such as LSP synchronization.
+        /// a stricter filename rule and is skipped by workspace-only paths.
         #[serde(default)]
         scope: document::DocumentScope,
     },
@@ -2572,8 +2574,7 @@ pub enum CoreRequest {
     ///
     /// Used to drop a user-authored agent config, including the override
     /// file that suppresses a built-in agent. Applies the same containment
-    /// rules as `DocumentCreate`; a missing target is reported as success so
-    /// the operation is idempotent.
+    /// rules as `DocumentCreate`; a missing target is reported as success.
     DocumentDelete {
         project_id: String,
         workspace_id: String,
@@ -3569,6 +3570,14 @@ pub enum CoreRequest {
     LspControl {
         request: crate::lsp::LspControlRequestDto,
     },
+    /// M007-G (ADR-0057): the four mutating plugin forms.
+    ///
+    /// `enable`, `disable`, `remove`, and `install` change a plugin's
+    /// activation state or the plugin directory, so the daemon owns them
+    /// and authorizes them with the narrow `plugin.manage` capability.
+    PluginManage {
+        request: crate::plugin_catalogue::PluginManageRequestDto,
+    },
     LspWorkflowExecute {
         request: crate::lsp::LspWorkflowRequestDto,
     },
@@ -3805,13 +3814,12 @@ pub enum CoreRequest {
     // Every action operation below is project-scoped and requires
     // `project.chat` on the owning project (same gate as M001 chat).
     // The daemon additionally checks the ordinary semantic capability
-    // for the action kind before creating anything:
-    // `agent.delegate` for agent_task/review_request, `job.submit`
-    // for job_submit, `session.read` for job_reference. Channel-scoped
-    // requests carry only the channel locator; the owning project
-    // resolves server-side. Principals come from transport authority.
-    // Free text is never parsed: only this explicit typed operation
-    // can create work.
+    // for the action kind before creating anything: `agent.delegate` for
+    // agent_task/review_request, `job.submit` for job_submit, `session.read`
+    // for job_reference. Channel-scoped requests carry only the channel
+    // locator; the owning project resolves server-side. Principals come
+    // from transport authority. Free text is never parsed: only this
+    // explicit typed operation can create work.
     /// Submit one structured chat action linked to a message.
     /// `idempotency_key` scopes retry convergence to
     /// `(channel_id, key)`: a duplicate key returns the original action
@@ -3983,8 +3991,7 @@ pub enum CoreRequest {
     // `SessionControlRelease` lets the controller release an active
     // lease (terminal completion auto-releases). `SessionControlTakeover`
     // is an explicit Maintainer/Owner recovery with a bounded reason.
-    // Principals come from transport authority, never from the payload
-    // except the explicit recipient of a transfer.
+    // Principals come from transport authority, never from the payload.
     /// Inspect the current controller lease and bounded requests.
     SessionControlGet {
         session_id: String,
@@ -4119,8 +4126,7 @@ pub enum CoreRequest {
     // Every operation is project-scoped from its first version.
     // `project_id` requests carry the scope directly; ID-only requests
     // carry an opaque locator whose owning project the daemon resolves
-    // server-side before capability evaluation. Principals come from
-    // transport authority, never from the payload.
+    // server-side before capability evaluation.
     /// Query daemon work-order capabilities and bounds.
     WorkOrderCapabilities,
     /// Create one durable waiting work order (idempotent under
@@ -4250,11 +4256,10 @@ pub enum CoreRequest {
 ///
 /// `Off` explicitly disables thinking for this turn. It is distinct from the
 /// *absent* override, which means "inherit the daemon's resolved selection".
-///
-/// The effort label is **open and provider-scoped** (ADR-0049). It is not a
-/// level on a fixed enum: an arbitrary vendor label is carried verbatim, and
-/// the known convenience labels in [`KNOWN_REASONING_EFFORT_LABELS`] are a
-/// convenience set for the fallback ordering only.
+/// The effort label is **open and provider-scoped** (ADR-0049): it is not a
+/// level on a fixed enum, so an arbitrary vendor label is carried verbatim,
+/// and [`KNOWN_REASONING_EFFORT_LABELS`] is a convenience set for the
+/// fallback ordering only.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum ReasoningOverride {
@@ -4777,6 +4782,14 @@ pub enum CoreEvent {
         session_id: String,
         contracts: Vec<crate::projection::dto::ToolContractProjection>,
     },
+    /// The session's plugin catalogue changed.
+    ///
+    /// M007-G (ADR-0057): the daemon's plugin registry is the single
+    /// authority for the catalogue, and publishes the summary here.
+    PluginCatalogueUpdated {
+        session_id: String,
+        entries: Vec<crate::projection::dto::PluginCatalogueEntryProjection>,
+    },
     FileChanged {
         path: String,
         action: String,
@@ -4871,15 +4884,13 @@ pub enum CoreEvent {
     /// This is a **body-free advisory**. It carries the run id, the
     /// committed high-water ordinal, and whether the run's own recording
     /// stopped at the store's per-run bound. It carries no text, no tool
-    /// arguments, no provider reasoning, and no credentials — the transcript
-    /// itself is read through the authorized
+    /// arguments, no provider reasoning, and no credentials — the
+    /// transcript itself is read through the authorized
     /// [`CoreRequest::AgentRunTranscriptRead`] page.
     ///
     /// It is published only **after** the corresponding store append
     /// commits, so a hint can never claim a row the store does not hold.
-    /// The ordinal is per **run**, not per child task: a continuation on
-    /// the same run id advances the same watermark rather than starting a
-    /// new one.
+    /// The ordinal is per **run**, not per child task.
     AgentRunTranscriptAdvanced {
         session_id: String,
         run_id: String,
@@ -4897,11 +4908,10 @@ pub enum CoreEvent {
     ///
     /// Carries the **complete** current set for that file, never a delta, plus
     /// the monotonic `sequence` a client compares against the authoritative
-    /// `LspDiagnosticsGet` to detect a missed envelope.
-    ///
-    /// `session_id` is carried because `EventLog` scopes envelopes by
-    /// session; the payload itself is project-scoped and must be routed on
-    /// the `Project` stream, never the session one.
+    /// `LspDiagnosticsGet` to detect a missed envelope. `session_id` is
+    /// carried because `EventLog` scopes envelopes by session; the payload
+    /// itself is project-scoped and must be routed on the `Project` stream,
+    /// never the session one.
     LspDiagnosticsUpdated {
         session_id: String,
         project_id: String,

@@ -27,6 +27,7 @@ const projection = (overrides: Partial<SessionPresentationView> = {}): SessionPr
   convergences: [],
   shellRuns: [],
   toolContracts: [],
+  pluginCatalogue: [],
   recentTurns: [],
   todos: null,
   pendingPermissions: [],

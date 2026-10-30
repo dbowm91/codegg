@@ -361,6 +361,7 @@ describe('session route flow', () => {
     convergences: [],
     shellRuns: [],
     toolContracts: [],
+    pluginCatalogue: [],
     recentTurns: [],
     todos: null,
     pendingPermissions: [],
