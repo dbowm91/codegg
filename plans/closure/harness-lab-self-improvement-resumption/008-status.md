@@ -1,26 +1,26 @@
 # Harness Lab Self-Improvement S008 — Closure
 
-Status: **closed conditionally — deterministic offline corrective matrix repeated successfully; `stable_offline` not established**.
+Status: **closed conditionally — the offline fault matrix is complete and repeated; `stable_offline` is not established**.
 
-## Fault matrix exercised
+## Fault matrix and exact local verification
 
-The full machine-readable map is [`evidence/s005-offline-fault-matrix.json`](evidence/s005-offline-fault-matrix.json). The affected offline set was run twice from fresh temporary roots:
+The machine-readable map is [`evidence/s005-offline-fault-matrix.json`](evidence/s005-offline-fault-matrix.json). Implementation and tests are at `5bf63e271e396d28daee2e2cea766f1bc32bad73`.
 
-- `python3 -m unittest dev.harness_lab.tests.test_improve dev.harness_lab.tests.test_supervisor dev.harness_lab.tests.test_budget dev.harness_lab.tests.test_proposer_gateway dev.harness_lab.tests.test_defect_intake dev.harness_lab.tests.test_autonomy_run -q`: **162 passed, 1 optional skip** in each run.
-- Native exact-ID background-job observation: **passed** using the prebuilt subject binary SHA-256 `80292d55a3ba9ba2291e2daffa67d083a450b9a4ebaeaf578ff882dda15bc04c`, from source revision `ab22d66f28681321b8d2b46001ed6698764c9484`. There is no product-source diff under `src/`, `crates/` or `Cargo.toml` between that revision and S008's source baseline `e8dbb8af3793acf46741eae89b3c5509fc952e47`.
-- Controller parent-death recovery: a real ACP controller was SIGKILLed after private daemon/session creation. The exact lane identity was reconciled; no lane daemon remained, the unrelated sentinel survived, and the default daemon fingerprint was unchanged.
-- Cargo contention: two offline `cargo check` processes ran concurrently with one Cargo worker each and disjoint private target directories in two rounds. Both succeeded; temporary target directories were removed.
-- Existing checkpoint and ledger SIGKILL tests proved pointer/append reconciliation and exactly-once pair rows. The new proposer N+1 fault test proved the sanitized admission receipt is retained in the campaign checkpoint without publishing an iteration or retrying it.
-- The actual OpenCode CLI test observed multiple provider HTTP requests, admitted/forwarded one under ceiling 1, refused N+1 before forwarding, stopped the CLI and returned the bounded receipt. No live provider request occurred.
+- The affected offline set passed twice from fresh temporary roots: `python3 -m unittest dev.harness_lab.tests.test_improve dev.harness_lab.tests.test_supervisor dev.harness_lab.tests.test_budget dev.harness_lab.tests.test_proposer_gateway dev.harness_lab.tests.test_defect_intake dev.harness_lab.tests.test_autonomy_run dev.harness_lab.tests.test_sustained dev.harness_lab.tests.test_h007_native -q` — **190 tests, one optional skip, per run**.
+- Native `scripts/verify.sh quick` passed: **451 Harness Lab tests, two optional skips**, all 84 guards, and `cargo check --workspace --all-targets --locked`.
+- Native CodeGG binary: Mach-O arm64, SHA-256 `2e381609e7517ada5a09fa3ef9daa5d781798ae4ba5c2cfa4baf293ef6e40d7f`, built from Rust product source at `d64bd207333fb1a5fec4f85c0b3514e7b16f83ce`. Shell initially reports x86_64 under Rosetta (`sysctl.proc_translated=1`); the successful build and tests explicitly ran arm64 with Rust 1.98.1 and MacPorts arm64 `pkg-config` paths.
+- Native H007 exact-ID Rust job sequence passed: dependent format/store/index/query/CLI repairs, two repair cycles, exact submitted job ID observed running then completed, useful work while that job ran, zero event gaps, and the independent verifier passed.
+- S005's separate native private-daemon parent-death test passed: controller SIGKILL after ACP session creation, exact lane cleanup/reconciliation, unrelated sentinel survived, and default daemon fingerprint remained unchanged.
+- The actual OpenCode 1.19.3 CLI used an isolated loopback fixture. Its request ceiling was one; request N+1 was refused before fixture forwarding. No live provider request occurred.
 
-## Campaign transition inventory
+## Campaign phase faults and resource contention
 
-Admission and request refusal map to budget and gateway tests. Proposal and patch capture map to route, scope and N+1 checkpoint tests. Build correction maps to bounded retry tests. Independent verifier and score falsifiers map to the score-contract suite. ACP/timeout/cancellation map to supervisor and sustained-lane tests. Ledger and checkpoint publication map to the existing SIGKILL/exactly-once tests. Cleanup maps to successful/failed lane removal plus the new parent-death test.
+`CrashRecoveryTests.test_campaign_controller_sigkill_recovers_each_durable_phase_once` SIGKILLs the optimizer at six durable phases: proposal request, patch capture, candidate build, independent verifier, ACP evaluation, and score publication. Resume/refusal uses the persisted phase; a second proposal/admission is rejected by the test, and exactly one iteration remains recorded. `OptimizerCampaignSequenceTests.test_campaign_fault_matrix_recovers_or_refuses_without_duplicate_proposal` injects an ordinary failure at each of those same boundaries and checks recovery/refusal without duplicate proposal. Existing checkpoint-pointer and ledger-append SIGKILL tests retain their no-duplicate-row assertions.
 
-The injection coverage is boundary-specific, not a SIGKILL at every individual phase: process death is directly injected at checkpoint-pointer and ledger-append boundaries and at the ACP controller/daemon boundary. Build, verifier, ACP evaluation, publication and ordinary cleanup faults have deterministic failure/cancellation tests, but no separate process kill is inserted after each one.
+`CampaignResourceContentionTests.test_optimizer_progresses_under_repeated_parallel_private_cargo_contention` runs the real optimizer while two offline Cargo checks with one worker each remain active in disjoint private target roots. The scenario repeats twice; both builds and the controller complete and their temporary targets are removed. This is a bounded overlap qualification, not a prolonged saturation run.
 
 ## Verdict and limits
 
-`stable_offline` remains **not established**. The repeated test set covers deterministic controller outcomes, the newly closed HTTP admission path, bounded Cargo contention and exact private-subject cleanup. It is not a prolonged optimizer-under-saturation campaign, and it does not inject process death at every side-effect boundary. The native job test used an already-built binary with the exact S005 product source; a local rebuild in this x86_64 shell could not link because available MacPorts libraries were arm64. That generated 9.4 GiB target tree was removed; filesystem free space returned to 75 GiB.
+The named offline fault matrix is complete. `stable_offline` remains **not established** because the repeated optimizer sequence uses a synthetic proposer and qualification callback; native CodeGG ACP/job qualification is exercised separately rather than as an optimizer-integrated paired campaign. The bounded Cargo overlap is not a prolonged optimizer stress campaign. No candidate was launched because S004 found no independently eligible current defect. No real model or provider was used; live provider calls are zero and billed USD is `unknown`.
 
-No real model or provider was used, no new campaign was started, H007's consumed authorizations remain consumed, and USD is `unknown`. Hosted exact-head CI is pending. A future qualification that needs `stable_offline` must close the remaining phase-by-phase crash/sustained-optimizer stress evidence without broadening daemon or ACP architecture absent a reproduced defect.
+Hosted exact-head CI for `5bf63e2` is pending. S006 remains `stable_live_not_established`; H007's consumed authorizations remain consumed. No wider daemon, scheduler, ACP or provider redesign is supported by this evidence.

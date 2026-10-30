@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement S008 — Complete Offline Campaign Fault Qualification
 
-Status: **closed conditionally — offline fault matrix requalified; `stable_offline` not established**
+Status: **closed conditionally — named offline fault matrix complete and repeated; `stable_offline` not established**
 
 Repository baseline: `e8dbb8af3793acf46741eae89b3c5509fc952e47` (PR #219)
 
@@ -15,11 +15,11 @@ Complete S005's missing campaign-level fault qualification using deterministic c
 
 ## 2. Why this corrective is ready
 
-S005's current closure explicitly leaves daemon-crash cleanup, sustained resource contention, and exhaustive post-admission/proposer/build/verifier/publication/cleanup transition injection unproven. S007 owns the external HTTP request gate. S008 may test it with fixtures and must not make live calls.
+S005's initial closure left daemon-crash cleanup, optimizer progress during active builds, and phase-specific fault injection open. S007 owns the external HTTP request gate. S008 tests it with fixtures and makes no live calls.
 
 ## 3. Current implementation evidence
 
-`dev/harness_lab/improve.py` has hash-linked optimization checkpoints, cumulative budget restore and ledger validation. Existing tests inject selected SIGKILL boundaries, candidate build retries, evaluator failures, disk-floor cancellation and private subject cleanup. They do not inject each campaign transition and do not prove cleanup/reconciliation after the controller process itself is killed while private subjects exist.
+`dev/harness_lab/improve.py` has hash-linked optimization checkpoints, cumulative budget restore and ledger validation. The S008 tests now inject SIGKILL at six durable optimizer phases, exercise exception recovery/refusal at the same phases, and prove private subject cleanup after controller death. The qualification callback is synthetic in the repeated optimizer sequence; native subject qualification is exercised separately.
 
 ## 4. Invariants that must not regress
 
@@ -55,6 +55,8 @@ Derive transition and side-effect boundaries from the actual `run_optimizer` / `
 
 Acceptance evidence: matrix rows map each boundary to a named injected test, expected terminal, duplicate-effect assertion and cleanup assertion; no unlisted production transition remains.
 
+**Complete:** the S005 matrix maps the six optimizer phases, checkpoint-pointer and ledger-append boundaries, cancellation, resource floors and private-subject cleanup to named injected tests. The six phase test asserts one iteration and no second proposal/admission. SIGKILL is not injected inside a Rust compiler or native ACP subprocess instruction window.
+
 ### B — Prove parent-death cleanup
 
 Run deterministic owned child processes/private subject daemons, kill the controller at named persisted points, resume/reconcile, and verify only exact owned resources are stopped or removed. Confirm default daemon identity and unrelated sentinel processes survive.
@@ -66,6 +68,8 @@ Acceptance evidence: repeatable crash/restart receipt, no orphan, no duplicate r
 Use deterministic competing builds/jobs with per-subject Cargo targets and capped workers. Inject resource/disk pressure and cancellation at admission/build/verification boundaries; verify fail-closed stop and subsequent clean retry only where retry is explicitly authorized by the controller.
 
 Acceptance evidence: fixed run count, peak/free-disk observations, active process inventory, typed terminals, and successful clean recovery without changing candidate evidence.
+
+**Complete:** two one-worker offline Cargo checks remained active at the real optimizer's proposal boundary in each of two rounds, using disjoint private target roots. The builds, optimizer and cleanup passed. Existing disk-floor and unreadable-state tests passed. The run is bounded, not a prolonged saturation test.
 
 ### D — Integrate request gate and close S005
 

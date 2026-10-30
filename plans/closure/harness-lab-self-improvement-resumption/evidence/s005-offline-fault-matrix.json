@@ -1,11 +1,34 @@
 {
   "schema_version": 1,
-  "source_revision": "58f4c5ec9a273b246e3303b0cb5fd615d0157ae1",
+  "source_revision": "5bf63e271e396d28daee2e2cea766f1bc32bad73",
   "resulting_main_ci_run": 41003530150,
   "resulting_main_desktop_e2e_run": 41003529978,
-  "integrated_codegg_binary_sha256": "62ecc84113b2399352ead4faea6a2cb7641c0b98f505cb36d2a2f1960d99cb94",
-  "native_fixture_test_binary_sha256": "80292d55a3ba9ba2291e2daffa67d083a450b9a4ebaeaf578ff882dda15bc04c",
-  "native_fixture_test_binary_source_revision": "ab22d66f28681321b8d2b46001ed6698764c9484",
+  "integrated_codegg_binary_sha256": "2e381609e7517ada5a09fa3ef9daa5d781798ae4ba5c2cfa4baf293ef6e40d7f",
+  "native_fixture_test_binary_sha256": "2e381609e7517ada5a09fa3ef9daa5d781798ae4ba5c2cfa4baf293ef6e40d7f",
+  "native_fixture_test_binary_source_revision": "d64bd207333fb1a5fec4f85c0b3514e7b16f83ce",
+  "native_build_environment": {
+    "hardware_arch": "arm64 Apple silicon (hw.machine=arm64)",
+    "shell_arch": "x86_64 under Rosetta (sysctl.proc_translated=1)",
+    "rust_target": "aarch64-apple-darwin",
+    "rust_toolchain": "1.98.1-aarch64-apple-darwin",
+    "pkg_config": "/opt/local/bin/pkg-config",
+    "pkg_config_libdir": "/opt/local/lib/pkgconfig"
+  },
+  "focused_offline_repetitions": {
+    "command": "python3 -m unittest dev.harness_lab.tests.test_improve dev.harness_lab.tests.test_supervisor dev.harness_lab.tests.test_budget dev.harness_lab.tests.test_proposer_gateway dev.harness_lab.tests.test_defect_intake dev.harness_lab.tests.test_autonomy_run dev.harness_lab.tests.test_sustained dev.harness_lab.tests.test_h007_native -q",
+    "runs": 2,
+    "tests_per_run": 190,
+    "skips_per_run": 1,
+    "result": "both passed"
+  },
+  "native_quick_verification": {
+    "command": "scripts/verify.sh quick",
+    "harness_lab_tests": 451,
+    "skipped": 2,
+    "guards": 84,
+    "workspace_check": "cargo check --workspace --all-targets --locked passed",
+    "result": "passed"
+  },
   "native_fixture_product_source_delta_from_s005_baseline": "none under src/, crates/, Cargo.toml",
   "scenarios": [
     {
@@ -117,9 +140,12 @@
     {
       "id": "S005-F10",
       "boundary": "parallel Cargo CPU/target contention and repeat recovery",
-      "evidence": "dev.harness_lab.tests.test_improve.CampaignResourceContentionTests.test_parallel_offline_cargo_builds_use_disjoint_capped_targets",
-      "expected": "two parallel offline Cargo checks with one worker each use disjoint private target roots and complete twice without leakage",
-      "observed": "both concurrent checks passed in each of two bounded rounds; temporary target roots were isolated and removed",
+      "evidence": [
+        "dev.harness_lab.tests.test_improve.CampaignResourceContentionTests.test_parallel_offline_cargo_builds_use_disjoint_capped_targets",
+        "dev.harness_lab.tests.test_improve.CampaignResourceContentionTests.test_optimizer_progresses_under_repeated_parallel_private_cargo_contention"
+      ],
+      "expected": "two parallel offline Cargo checks with one worker each use disjoint private target roots; the real optimizer admits and records its candidate while both checks remain active; the sequence repeats without leakage",
+      "observed": "both Cargo checks were observed active at each optimizer proposal boundary in two bounded rounds; both checks then passed and temporary targets were removed",
       "provider_requests": 0,
       "result": "pass_bounded_contention"
     },
@@ -127,23 +153,25 @@
       "id": "S005-F11",
       "boundary": "campaign transition and side-effect fault mapping",
       "evidence": [
-        "dev.harness_lab.tests.test_improve.OptimizerCampaignSequenceTests",
-        "dev.harness_lab.tests.test_improve.CrashRecoveryTests",
-        "dev.harness_lab.tests.test_improve.CompileCorrectionMechanicsTests",
-        "dev.harness_lab.tests.test_improve.ScoreContractTests",
+        "dev.harness_lab.tests.test_improve.CrashRecoveryTests.test_campaign_controller_sigkill_recovers_each_durable_phase_once",
+        "dev.harness_lab.tests.test_improve.OptimizerCampaignSequenceTests.test_campaign_fault_matrix_recovers_or_refuses_without_duplicate_proposal",
+        "dev.harness_lab.tests.test_improve.CrashRecoveryTests.test_sigkill_between_checkpoint_append_and_pointer_is_recorded",
+        "dev.harness_lab.tests.test_improve.CrashRecoveryTests.test_sigkill_during_ledger_write_leaves_no_duplicate_trial_rows",
+        "dev.harness_lab.tests.test_improve.CrashRecoveryTests.test_resumed_run_does_not_append_a_second_row_for_a_recorded_pair",
+        "dev.harness_lab.tests.test_supervisor.SubjectEnvironmentAndCrashCleanupTests.test_controller_sigkill_reconciles_only_its_private_subject_daemon",
         "dev.harness_lab.tests.test_supervisor.ExecTrialTests",
         "dev.harness_lab.tests.test_autonomy_run.DiskFloorWatcherTests"
       ],
-      "expected": "admission, proposal, patch scope, build correction, verifier/scoring, ACP evaluation, ledger/checkpoint publication, cancellation and cleanup each map to a named deterministic refusal or recovery test",
-      "observed": "source-derived transition inventory is mapped to existing and new deterministic tests; SIGKILL injection is proven at checkpoint-pointer and ledger-append boundaries, not at every individual phase",
-      "result": "mapped_with_boundary_specific_injection"
+      "expected": "proposal admission, patch capture, build, independent verifier, ACP evaluation, score publication, checkpoint pointer, ledger append, cancellation, private-daemon cleanup and resource-floor failures each map to a named injected refusal/recovery with no duplicate admission or scored row",
+      "observed": "SIGKILL was injected at six persisted optimizer phases and recovered from durable phase state without a second proposal; exception injection covered the same six phases; checkpoint-pointer and ledger-append SIGKILLs retained exactly-once assertions; parent-death cleanup preserved the default daemon and unrelated sentinel",
+      "result": "pass_for_named_offline_boundaries"
     }
   ],
   "limits": [
     "No real external proposer HTTP request was made; the live route remains unavailable until a separate authorization and exact endpoint check.",
-    "The two-candidate sequence uses a synthetic proposer and synthetic qualification boundary; it qualifies orchestration and the production scorer, not a real candidate build or ACP pair.",
-    "The Cargo contention case is bounded and synthetic; it is not a long-duration stress or full optimizer-under-saturation campaign.",
-    "Campaign SIGKILL injection is covered at checkpoint pointer and ledger append boundaries, not after every individual build, verifier, ACP and cleanup transition.",
+    "The candidate controller sequence uses a synthetic proposer and qualification boundary; native CodeGG ACP/job qualification is exercised separately and is not claimed as an optimizer-integrated paired campaign.",
+    "Cargo contention is bounded to two capped checks in two rounds; it proves optimizer progress during active work but is not a prolonged saturation campaign.",
+    "SIGKILL phase recovery uses durable phase boundaries and an injected qualification callback; it does not kill the controller inside every Rust build or native ACP subprocess instruction window.",
     "No provider-backed campaign or stable-live claim is implied."
   ],
   "live_provider_calls": 0,

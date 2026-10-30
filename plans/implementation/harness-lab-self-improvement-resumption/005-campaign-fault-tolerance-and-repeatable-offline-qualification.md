@@ -1,8 +1,8 @@
 # Harness Lab Self-Improvement S005 — Campaign Fault Tolerance and Repeatable Offline Qualification
 
-Status: **conditionally closed — deterministic two-candidate controller sequence and component fault paths pass; `stable_offline` not established**. See `plans/closure/harness-lab-self-improvement-resumption/005-status.md` for uncovered resource/daemon-crash cases and the live proposer blocker.
+Status: **closed conditionally — the named offline fault matrix is complete and repeated; `stable_offline` not established**. See `plans/closure/harness-lab-self-improvement-resumption/005-status.md` for the precise remaining optimizer-to-native-subject and prolonged-saturation gaps.
 
-Baseline: `main@99cecc050ed1ae418af62d2d10e6d34d791513e1` (2026-10-30); pin a newer exact main before work.
+Baseline: `main@99cecc050ed1ae418af62d2d10e6d34d791513e1` (2026-10-30); offline corrective source `5bf63e271e396d28daee2e2cea766f1bc32bad73`.
 Source roadmap: `plans/subsystems/harness-lab-self-improvement-resumption-roadmap.md`, S005.
 Primary class: **invariant**. Hard dependency: S002 current-main acceptance and restart qualification. Interface dependencies: S003 campaign manifest/receipt contract, S004 dossier schema. S003's live authorization/positive outcome is **not** a prerequisite to run this offline milestone.
 
