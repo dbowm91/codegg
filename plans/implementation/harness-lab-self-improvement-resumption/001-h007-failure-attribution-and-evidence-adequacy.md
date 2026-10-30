@@ -2,7 +2,7 @@
 
 Status: **ready** for offline handoff. No provider-backed execution authorized.
 
-Repository baseline: `main@4aea3df5e93c60aa85f55e805f2a8e9e947ab083` and PR #217 head `ab22d66f28681321b8d2b46001ed6698764c9484`; verify newer refs. H007 source is on `plans/h007-workload-calibration-20261029`, not yet main.
+Repository baseline: `main@99cecc050ed1ae418af62d2d10e6d34d791513e1` (H007 PR #217 merged); verify newer refs and exact-mainline CI before integration.
 
 Source roadmap: `plans/subsystems/harness-lab-self-improvement-resumption-roadmap.md`, S001.
 Predecessor: `plans/implementation/harness-lab-mainline-qualification/007-deep-workload-and-separate-horizon-measures.md`; original receipts at `plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt*.json`; closure `plans/closure/harness-lab-mainline-qualification/007-status.md`.
@@ -15,11 +15,11 @@ Turn H007's seven immutable live receipts and any independently available, appro
 
 ## 2. Dependency readiness
 
-M001–M005, C001–C007, D001–D003 and H001–H006 are closed at their documented scopes; H007 has frozen summary evidence for all seven authorized runs on the open PR branch. S001 can work offline against that pinned branch without H007 having merged. Require a **frozen source SHA** and exact receipt content digests before interpretation. Integration of H007's implementation to main is *S002's* hard dependency, not S001's.
+M001–M005, C001–C007, D001–D003 and H001–H006 are closed at their documented scopes; H007 has frozen summary evidence for all seven authorized runs on merged main. S001 can work offline against that pinned source. Require a **frozen source SHA** and exact receipt content digests before interpretation. S002 must separately establish exact-resulting-mainline verification; no additional H007 live attempt is required.
 
 ## 3. Current implementation evidence
 
-- `dev/harness_lab/autonomy_run.py` owns trial observation and H007 task/horizon result projection; `dev/harness_lab/h007_results.py` separates those outcomes on PR #217; existing `ledger.py`, `scoring.py`, `autonomy.py`, and `event_observation.py` supply relevant event and immutable result contracts.
+- `dev/harness_lab/autonomy_run.py` owns trial observation and H007 task/horizon result projection; `dev/harness_lab/h007_results.py` separates those outcomes on merged main; existing `ledger.py`, `scoring.py`, `autonomy.py`, and `event_observation.py` supply relevant event and immutable result contracts.
 - Receipt 7 reports `task_outcome=failed`, `horizon_reason=repair_cycles_insufficient`, `repair_cycles=1`, exact-ID running/completed and 53/53 tool terminals; it does **not** establish why the second repair was omitted. Receipt 4 has `independent_verifier.tests_run=0` with an error, not a completed failed verifier. Receipts 1 and 3 have typed `provider_timeout` and cannot be scored as solved task failures. Every H007 receipt reports zero ACP event gaps; this is bounded observation, not proof of zero underlying error probability.
 - The closure's seven-run table is the authoritative historical result. Some H007 plan/registry lines still report the earlier two-run state. Do not rewrite frozen receipts to tidy statuses.
 - The H007 prompt combines many independent requirements (two explicit repair checks, job overlap, continuation, five crates) and a 30-minute horizon. Failure to obey the prompt is not by itself a defect in CodeGG tool disclosure, ACP or the scheduler.
@@ -98,7 +98,7 @@ Stop if receipt authenticity cannot be established, verification requires alteri
 
 ## 15. Closure evidence
 
-Create `plans/closure/harness-lab-self-improvement-resumption/001-status.md` with baseline and input digests, run-by-run diagnosis + evidence pointers, schema/guard tests, actually executed verification, null/unknown limitations, defects routed (or explicit none), severity, privacy and follow-up disposition. Do not mark S002 ready until both S001 closure and PR #217 mainline integration are verified.
+Create `plans/closure/harness-lab-self-improvement-resumption/001-status.md` with baseline and input digests, run-by-run diagnosis + evidence pointers, schema/guard tests, actually executed verification, null/unknown limitations, defects routed (or explicit none), severity, privacy and follow-up disposition. Do not mark S002 ready until S001 closes and actual mainline source/CI evidence is checked; PR #217 has already merged.
 
 ## 16. Handoff
 
