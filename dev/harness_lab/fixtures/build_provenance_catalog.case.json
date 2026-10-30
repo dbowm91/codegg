@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "case_id": "build-provenance-catalog",
+  "result_schema_version": 1,
+  "minimum_active_duration_ms": 1800000,
+  "maximum_activity_gap_ms": 300000,
+  "maximum_wallclock_seconds": 3600,
+  "minimum_free_disk_bytes": 10737418240,
+  "request_cap_must_be_explicit": true,
+  "cost_when_unreported": "unknown",
+  "live_authorization": null,
+  "phases": [
+    "versioned_records",
+    "durable_import",
+    "dependency_index",
+    "provenance_queries",
+    "cli_export"
+  ],
+  "corpus": {
+    "records": 96,
+    "snapshots": 3,
+    "files": 4,
+    "bytes": 3924,
+    "external_dependencies": [],
+    "index_validation_records": 250000,
+    "index_validation_cpu_seconds": 3.29,
+    "index_validation_max_rss_bytes": 316874752
+  },
+  "frozen_sha256": {
+    "README.md": "b0eab185a19216c3088f5acf26dfd62e7fb554e0a605c56a1f507a27108424ba",
+    "contract.json": "5ec391dd8ed9b113c01e0390150c6557782280f03e5d28ef502205a959b565e9",
+    "Cargo.toml": "aa9333158c7a6793c1ce224fe2dabdc420601328d7e1f3ce1fa985637840e987",
+    "Cargo.lock": "05747296932e4da46f6689e77f6b7f5496139f7d10593a5d3f187c2f6f4fc178",
+    "catalog-format/Cargo.toml": "fa1e202b08a9068258f4bf1b6e1af87ab273ace323a374f11107215fe1ec0253",
+    "catalog-store/Cargo.toml": "e7a848700ba824fb4b58a8c36d316c287795cb267cc4a209e5fbd705d757da1f",
+    "catalog-index/Cargo.toml": "01aa84d5935cfd7a6915303ea5824552fc74e115c6152be5eff10e4376dd9f61",
+    "catalog-query/Cargo.toml": "cd10b6f55e46bb588759cda309a932e128c1f8c1398ebf2e5f7ad3ccd52097be",
+    "catalog-cli/Cargo.toml": "441dfdcee44300a52f66e7c6e6da7f6a0aea1655b63a0ae6c2ae95500c47d128",
+    "catalog-index/tests/corpus.rs": "8f04099a5154062a97ab684296f058d060266f13f340b0092e42c8b5c06ad1a8",
+    "corpus/invalid-checksum.records": "abc2f73fca248eaf6508879e8ecbbd755ba7142ac27d1824c293831edbca7375",
+    "corpus/snapshot-0.records": "9ce5f186b6ea9f9cec815b9fab9296f1e5f197ec705d39af4eb62a4dc8ac77a9",
+    "corpus/snapshot-1.records": "7c82f8a8b25c2ee9f6b4ee96f0fdb5f6eb018a338faa5fa6dff7dadac9b830bd",
+    "corpus/snapshot-2.records": "3cddeff930866251f51bab16791a323bb92b649053debb2cf868afaa166f6bef"
+  },
+  "manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c"
+}

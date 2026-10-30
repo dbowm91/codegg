@@ -1,0 +1,3 @@
+[workspace]
+members = ["catalog-format", "catalog-store", "catalog-index", "catalog-query", "catalog-cli"]
+resolver = "2"

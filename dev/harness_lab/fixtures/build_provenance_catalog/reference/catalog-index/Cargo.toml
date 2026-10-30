@@ -1,0 +1,6 @@
+[package]
+name = "catalog-index"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+catalog-format = { path = "../catalog-format" }

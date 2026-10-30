@@ -1,0 +1,9 @@
+[package]
+name = "catalog-cli"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+catalog-format = { path = "../catalog-format" }
+catalog-store = { path = "../catalog-store" }
+catalog-index = { path = "../catalog-index" }
+catalog-query = { path = "../catalog-query" }

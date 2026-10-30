@@ -1,0 +1,120 @@
+{
+  "active_work_span_ms": 234717,
+  "activity_stall_triggered": false,
+  "authorization": {
+    "billed_usd_when_unavailable": "unknown",
+    "cancellation_conditions": [
+      "user request",
+      "provider request cap",
+      "60-minute wall-clock cap",
+      "free disk below 10 GiB",
+      "300 seconds without ACP tool activity",
+      "unverifiable request accounting",
+      "lost or mismatched exact-ID job observation"
+    ],
+    "consumed": true,
+    "fresh_user_authorized_attempt": true,
+    "max_provider_requests": 60,
+    "max_wallclock_seconds": 3600,
+    "minimum_free_disk_bytes": 10737418240,
+    "route": "opencode_go/muse-spark-1.3-contributor",
+    "stall_cancel_seconds": 300
+  },
+  "billed_usd": "unknown",
+  "binary_sha256": "80292d55a3ba9ba2291e2daffa67d083a450b9a4ebaeaf578ff882dda15bc04c",
+  "case_id": "build-provenance-catalog",
+  "continuation_confirmed": true,
+  "daemon_stop_error": null,
+  "disk_floor": {
+    "lowest_observed_free_bytes": 133534744576,
+    "minimum_free_bytes": 10737418240,
+    "triggered": false
+  },
+  "duration_ms": 241789,
+  "event_capture": {
+    "dropped": 0,
+    "gap_count": 0,
+    "state": "observed_complete",
+    "tool_started": 53,
+    "tool_terminal": 53
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "repair_cycles_insufficient",
+  "implementation_revision": "d2ae03c201b575dadef0bf9d9506dc084d93eed7",
+  "independent_verifier": {
+    "exit_code": 1,
+    "failure_summary": "(failures=1)",
+    "ran": true,
+    "tests_run": 5
+  },
+  "job_lifecycle": {
+    "observations": [
+      {
+        "action": "submit",
+        "job_id": "f32c0157-c3c1-4ac1-89cb-8450f0be686a",
+        "projected_status": null,
+        "tool_terminal": "completed"
+      },
+      {
+        "action": "status",
+        "job_id": "f32c0157-c3c1-4ac1-89cb-8450f0be686a",
+        "projected_status": "failed",
+        "tool_terminal": "failed"
+      },
+      {
+        "action": "output",
+        "job_id": "f32c0157-c3c1-4ac1-89cb-8450f0be686a",
+        "projected_status": "failed",
+        "tool_terminal": "failed"
+      },
+      {
+        "action": "submit",
+        "job_id": "1074091a-a6e6-4dfb-a638-f55b566d97d6",
+        "projected_status": null,
+        "tool_terminal": "completed"
+      },
+      {
+        "action": "status",
+        "job_id": "1074091a-a6e6-4dfb-a638-f55b566d97d6",
+        "projected_status": "running",
+        "tool_terminal": "completed"
+      },
+      {
+        "action": "status",
+        "job_id": "1074091a-a6e6-4dfb-a638-f55b566d97d6",
+        "projected_status": "completed",
+        "tool_terminal": "completed"
+      },
+      {
+        "action": "output",
+        "job_id": "1074091a-a6e6-4dfb-a638-f55b566d97d6",
+        "projected_status": "completed",
+        "tool_terminal": "completed"
+      },
+      {
+        "action": "submit",
+        "job_id": "bea33f0f-46f7-4016-8ca5-3d196068a710",
+        "projected_status": null,
+        "tool_terminal": "completed"
+      }
+    ],
+    "productive_work_during_job": true,
+    "same_id_running_and_terminal_observed": true
+  },
+  "maximum_activity_gap_limit_ms": 300000,
+  "maximum_activity_gap_ms": 40203,
+  "minimum_active_duration_ms": 1800000,
+  "minimum_repair_cycles": 2,
+  "preflight_refusals": [],
+  "provider_allowance_is_cash_charge": false,
+  "provider_allowance_value": 0.015184,
+  "provider_request_count_source": "codegg_provider_boundary_receipt",
+  "provider_requests": 40,
+  "repair_cycles": 1,
+  "retry_number": 7,
+  "run_date": "2026-10-29",
+  "schema_version": 1,
+  "stop_reason": "end_turn",
+  "task_outcome": "failed",
+  "terminal": "completed"
+}
