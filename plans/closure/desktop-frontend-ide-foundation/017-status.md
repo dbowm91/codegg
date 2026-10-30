@@ -519,6 +519,25 @@ Plan 017 §7's acceptance criteria.
 - **M007-H — the daemon's missing command surfaces.** Recorded; no ADR
   needed.
 - **M007-I — the three subsystem moves.** Recorded; ADR required.
+
+  > **Reconciled 2026-10-29.** The count in that line was **three**; the
+  > milestone's own scope is now **two**. The generated classification had
+  > attributed **37** daemon requests to `/diff`, but its resolver produced
+  > that number by following a call into `App::process_msg` — a `match` over
+  > the whole `TuiMsg` enum — and unioning every arm's requests into the
+  > caller's set, so `/diff` inherited requests it never issued. The
+  > resolver now counts **constructions** and keeps a dispatch site's arms
+  > apart, and `/diff` measures as issuing **no** daemon request at all: it
+  > is a single synchronous local effect, and not a subsystem move. The
+  > artifact's M007-I row accordingly reads "the **2** subsystem moves", and
+  > the roadmap's row has been corrected to match. This does not reopen this
+  > closure: the milestone's own counts — **167** argument forms, **129**
+  > daemon-effect forms, **38** frontend-effect forms, **46** served forms
+  > and the TUI's **40** — are unchanged by the correction, because the
+  > correction changed which *requests* a form is credited with, not which
+  > forms exist or which the daemon serves. ADR-0058 remains reserved and
+  > unwritten, and it decides the two genuine workflows' ownership and
+  > whether `/diff` moves at all.
 - **The two owner-directed corrective milestones** — the scratch cache-root
   contract and the TUI `/compact` sender — are registered and ready, and
   are not this milestone's work.
