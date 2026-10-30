@@ -1001,6 +1001,7 @@ impl CoreDaemon {
                     session_tool_contracts: Arc::clone(&self.session_tool_contracts),
                     turn_id: turn_id.clone(),
                     lsp_service: self.deps.lsp_service.clone(),
+                    lsp_process_budget: self.deps.lsp_process_budget.clone(),
                     document_service: Some(self.documents.clone()),
                     lsp_context_input: None,
                     plugin_service,

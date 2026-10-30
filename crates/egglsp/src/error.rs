@@ -14,6 +14,9 @@ pub enum LspError {
     #[error("server launch failed: {0}")]
     LaunchFailed(String),
 
+    #[error("live LSP process budget exhausted (limit={limit})")]
+    LiveProcessBudgetExhausted { limit: usize },
+
     #[error("client not initialized: {0}")]
     NotInitialized(String),
 
@@ -127,6 +130,7 @@ pub enum SharedInitErrorKind {
     Timeout,
     Cancelled,
     Protocol,
+    LiveProcessBudgetExhausted { limit: usize },
     Other,
 }
 
@@ -161,6 +165,10 @@ impl From<&LspError> for SharedInitError {
                 kind: SharedInitErrorKind::Protocol,
                 message: msg.clone(),
             },
+            LspError::LiveProcessBudgetExhausted { limit } => Self {
+                kind: SharedInitErrorKind::LiveProcessBudgetExhausted { limit: *limit },
+                message: format!("live LSP process budget exhausted (limit={limit})"),
+            },
             _ => Self {
                 kind: SharedInitErrorKind::Other,
                 message: format!("{e}"),
@@ -179,6 +187,9 @@ impl SharedInitError {
             SharedInitErrorKind::Timeout => LspError::RequestTimeout(self.message),
             SharedInitErrorKind::Cancelled => LspError::InitializationCancelled(self.message),
             SharedInitErrorKind::Protocol => LspError::Protocol(self.message),
+            SharedInitErrorKind::LiveProcessBudgetExhausted { limit } => {
+                LspError::LiveProcessBudgetExhausted { limit }
+            }
             SharedInitErrorKind::Other => LspError::InitializationCancelled(self.message),
         }
     }
@@ -201,6 +212,21 @@ mod tests {
         assert!(!LspError::Protocol("test".into()).is_retryable());
         assert!(!LspError::WriterClosed("test".into()).is_retryable());
         assert!(!LspError::InitializationCancelled("test".into()).is_retryable());
+        assert!(!LspError::LiveProcessBudgetExhausted { limit: 4 }.is_retryable());
+    }
+
+    #[test]
+    fn live_process_budget_refusal_survives_shared_init_fanout() {
+        let error = LspError::LiveProcessBudgetExhausted { limit: 4 };
+        let shared = SharedInitError::from(&error);
+        assert_eq!(
+            shared.kind,
+            SharedInitErrorKind::LiveProcessBudgetExhausted { limit: 4 }
+        );
+        assert!(matches!(
+            shared.into_lsp_error(),
+            LspError::LiveProcessBudgetExhausted { limit: 4 }
+        ));
     }
 
     #[test]

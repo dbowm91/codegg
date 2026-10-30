@@ -15,6 +15,7 @@ use std::process::Stdio;
 use async_trait::async_trait;
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::Command;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
 use crate::error::LspError;
@@ -77,17 +78,190 @@ pub struct LspProcess {
     /// Private helper status monitor retained by contained launchers until
     /// the authoritative process runtime has reaped the child.
     pub status_task: Option<tokio::task::JoinHandle<Result<(), String>>>,
+    pub live_process_permit: Option<LspLiveProcessPermit>,
 }
 
-/// Process owner used by an `LspService` for every initial launch and restart.
-///
-/// Embedders can provide a daemon-owned launcher that applies execution policy
-/// while preserving the LSP's supervised stdin/stdout/stderr pipes. The
-/// default implementation retains egglsp's historical direct-spawn behavior.
+#[derive(Debug, Clone)]
+pub struct LspLiveProcessBudget {
+    permits: std::sync::Arc<tokio::sync::Semaphore>,
+    limit: usize,
+}
+
+impl LspLiveProcessBudget {
+    pub fn new(limit: usize) -> Result<Self, LspError> {
+        if limit == 0 {
+            return Err(LspError::InvalidConfig(
+                "max_live_servers must be greater than zero".into(),
+            ));
+        }
+        Ok(Self {
+            permits: std::sync::Arc::new(tokio::sync::Semaphore::new(limit)),
+            limit,
+        })
+    }
+
+    pub fn limit(&self) -> usize {
+        self.limit
+    }
+
+    pub fn live_processes(&self) -> usize {
+        self.limit - self.permits.available_permits()
+    }
+
+    fn try_acquire(&self) -> Result<tokio::sync::OwnedSemaphorePermit, LspError> {
+        self.permits
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| LspError::LiveProcessBudgetExhausted { limit: self.limit })
+    }
+}
+
+#[derive(Debug)]
+pub struct LspLiveProcessPermit {
+    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl LspLiveProcessPermit {
+    fn new(permit: tokio::sync::OwnedSemaphorePermit) -> Self {
+        Self {
+            _permit: Some(permit),
+        }
+    }
+
+    pub(crate) fn release_after_reap(mut self) {
+        drop(self._permit.take());
+    }
+
+    pub(crate) fn quarantine(mut self) {
+        if let Some(permit) = self._permit.take() {
+            std::mem::forget(permit);
+        }
+    }
+}
+
+impl Drop for LspLiveProcessPermit {
+    fn drop(&mut self) {
+        if let Some(permit) = self._permit.take() {
+            std::mem::forget(permit);
+        }
+    }
+}
+
+pub struct BudgetedLspProcessLauncher {
+    inner: std::sync::Arc<dyn LspProcessLauncher>,
+    budget: std::sync::Arc<LspLiveProcessBudget>,
+}
+
+impl BudgetedLspProcessLauncher {
+    pub fn new(
+        inner: std::sync::Arc<dyn LspProcessLauncher>,
+        budget: std::sync::Arc<LspLiveProcessBudget>,
+    ) -> Self {
+        Self { inner, budget }
+    }
+}
+
+#[async_trait]
+impl LspProcessLauncher for BudgetedLspProcessLauncher {
+    async fn launch(&self, spec: &LspLaunchSpec, root: &Path) -> Result<LspProcess, LspError> {
+        let (mut result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let inner = self.inner.clone();
+        let budget = self.budget.clone();
+        let spec = spec.clone();
+        let root = root.to_path_buf();
+
+        tokio::spawn(async move {
+            let admission = match budget.try_acquire() {
+                Ok(admission) => admission,
+                Err(error) => {
+                    let _ = result_tx.send(Err(error));
+                    return;
+                }
+            };
+            let cancellation = CancellationToken::new();
+            let launch = inner.launch_cancellable(&spec, &root, cancellation.clone());
+            tokio::pin!(launch);
+            let launch_result = tokio::select! {
+                result = &mut launch => result,
+                _ = result_tx.closed() => {
+                    cancellation.cancel();
+                    launch.await
+                }
+            };
+            let mut process = match launch_result {
+                Ok(process) => process,
+                Err(error) => {
+                    let _ = result_tx.send(Err(error));
+                    return;
+                }
+            };
+            let permit = LspLiveProcessPermit::new(admission);
+            process.live_process_permit = Some(permit);
+            if process.stdin.is_none() || process.stdout.is_none() || process.stderr.is_none() {
+                let _ = result_tx.send(Err(LspError::LaunchFailed(
+                    "LSP launcher returned an incomplete process pipe set".into(),
+                )));
+                reap_unclaimed_process(process).await;
+                return;
+            }
+            if let Err(Ok(process)) = result_tx.send(Ok(process)) {
+                reap_unclaimed_process(process).await;
+            }
+        });
+
+        result_rx.await.unwrap_or_else(|_| {
+            Err(LspError::InitializationCancelled(
+                "LSP process launch owner stopped before handoff".into(),
+            ))
+        })
+    }
+}
+
+pub(crate) async fn reap_unclaimed_process(mut process: LspProcess) {
+    let permit = process.live_process_permit.take();
+    drop(process.stdin.take());
+    drop(process.stdout.take());
+    drop(process.stderr.take());
+    let _ = process.child.start_kill();
+    let reaped = process.child.wait().await.is_ok();
+    if let Some(mut status_task) = process.status_task.take() {
+        if tokio::time::timeout(std::time::Duration::from_secs(2), &mut status_task)
+            .await
+            .is_err()
+        {
+            status_task.abort();
+        }
+    }
+    if let Some(permit) = permit {
+        if reaped {
+            permit.release_after_reap();
+        } else {
+            permit.quarantine();
+        }
+    }
+}
+
+/// Per-service launch/restart owner; implementations must reap on cancellation.
 #[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait LspProcessLauncher: Send + Sync {
     async fn launch(&self, spec: &LspLaunchSpec, root: &Path) -> Result<LspProcess, LspError>;
+
+    /// Cooperative cancellation; post-spawn waits must kill and reap.
+    async fn launch_cancellable(
+        &self,
+        spec: &LspLaunchSpec,
+        root: &Path,
+        cancellation: CancellationToken,
+    ) -> Result<LspProcess, LspError> {
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Err(LspError::InitializationCancelled(
+                "LSP process launch was cancelled".into(),
+            )),
+            result = self.launch(spec, root) => result,
+        }
+    }
 }
 
 pub struct BoundedStartLspProcessLauncher {
@@ -229,6 +403,7 @@ async fn spawn_server_impl(
         stderr: Some(stderr_reader),
         child,
         status_task: None,
+        live_process_permit: None,
     })
 }
 
@@ -284,6 +459,45 @@ pub async fn terminate(process: &mut LspProcess) {
 mod admission_tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn sleep_spec(command: &str) -> LspLaunchSpec {
+        LspLaunchSpec::new(
+            "test-lsp",
+            command,
+            vec!["-c".into(), "sleep 60".into()],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    async fn into_runtime(
+        mut process: LspProcess,
+        generation: u64,
+    ) -> crate::runtime::LspProcessRuntime {
+        let stderr = process.stderr.take().expect("captured stderr").into_inner();
+        let permit = process.live_process_permit.take();
+        drop(process.stdin.take());
+        drop(process.stdout.take());
+        let (runtime, _join) = crate::runtime::spawn_process_runtime_with_permit(
+            "test-lsp".into(),
+            std::env::current_dir().expect("current test directory"),
+            generation,
+            process.child,
+            stderr,
+            process.status_task,
+            permit,
+        );
+        runtime
+    }
+
+    async fn stop(runtime: &crate::runtime::LspProcessRuntime) {
+        runtime.request_force_kill();
+        tokio::time::timeout(std::time::Duration::from_secs(5), runtime.wait_for_exit())
+            .await
+            .expect("child reaped within bound")
+            .expect("exit event published");
+    }
 
     struct WaitingLauncher {
         starts: AtomicUsize,
@@ -347,5 +561,144 @@ mod admission_tests {
             std::sync::Arc::new(DirectLspProcessLauncher);
         assert!(BoundedStartLspProcessLauncher::new(inner.clone(), 0, 1).is_err());
         assert!(BoundedStartLspProcessLauncher::new(inner, 2, 1).is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn daemon_live_budget_competes_across_fullhost_and_constrained_launchers() {
+        let budget = std::sync::Arc::new(LspLiveProcessBudget::new(1).expect("budget"));
+        let fullhost: std::sync::Arc<dyn LspProcessLauncher> =
+            std::sync::Arc::new(BudgetedLspProcessLauncher::new(
+                std::sync::Arc::new(DirectLspProcessLauncher),
+                budget.clone(),
+            ));
+        let constrained: std::sync::Arc<dyn LspProcessLauncher> =
+            std::sync::Arc::new(BudgetedLspProcessLauncher::new(
+                std::sync::Arc::new(DirectLspProcessLauncher),
+                budget.clone(),
+            ));
+        let root = std::env::current_dir().expect("current test directory");
+        let spec = sleep_spec("/bin/sh");
+        let (fullhost_result, constrained_result) = tokio::join!(
+            fullhost.launch(&spec, &root),
+            constrained.launch(&spec, &root),
+        );
+        let (process, rejected) = match (fullhost_result, constrained_result) {
+            (Ok(process), Err(error)) | (Err(error), Ok(process)) => (process, error),
+            (Ok(left), Ok(right)) => {
+                let left = into_runtime(left, 1).await;
+                let right = into_runtime(right, 2).await;
+                stop(&left).await;
+                stop(&right).await;
+                panic!("both scopes exceeded one live-server permit");
+            }
+            (Err(left), Err(right)) => panic!("both launchers refused: {left:?}; {right:?}"),
+        };
+        assert!(matches!(
+            rejected,
+            LspError::LiveProcessBudgetExhausted { limit: 1 }
+        ));
+        assert_eq!(budget.live_processes(), 1);
+        let runtime = into_runtime(process, 1).await;
+        stop(&runtime).await;
+        assert_eq!(budget.live_processes(), 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn overlapping_restart_generations_each_consume_and_release_a_permit() {
+        let budget = std::sync::Arc::new(LspLiveProcessBudget::new(2).expect("budget"));
+        let launcher = BudgetedLspProcessLauncher::new(
+            std::sync::Arc::new(DirectLspProcessLauncher),
+            budget.clone(),
+        );
+        let root = std::env::current_dir().expect("current test directory");
+        let spec = sleep_spec("/bin/sh");
+        let old = into_runtime(launcher.launch(&spec, &root).await.expect("old child"), 1).await;
+        let new = into_runtime(
+            launcher.launch(&spec, &root).await.expect("restart child"),
+            2,
+        )
+        .await;
+        assert_eq!(budget.live_processes(), 2);
+        assert!(matches!(
+            launcher.launch(&spec, &root).await,
+            Err(LspError::LiveProcessBudgetExhausted { limit: 2 })
+        ));
+
+        stop(&old).await;
+        assert_eq!(budget.live_processes(), 1);
+        stop(&new).await;
+        assert_eq!(budget.live_processes(), 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn crashed_child_releases_its_permit_only_after_wait_reaps_it() {
+        let budget = std::sync::Arc::new(LspLiveProcessBudget::new(1).expect("budget"));
+        let launcher = BudgetedLspProcessLauncher::new(
+            std::sync::Arc::new(DirectLspProcessLauncher),
+            budget.clone(),
+        );
+        let root = std::env::current_dir().expect("current test directory");
+        let spec = LspLaunchSpec::new(
+            "test-lsp",
+            "/bin/sh",
+            vec!["-c".into(), "exit 17".into()],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let runtime = into_runtime(launcher.launch(&spec, &root).await.expect("child"), 1).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), runtime.wait_for_exit())
+            .await
+            .expect("crash reaped within bound")
+            .expect("exit event published");
+        assert_eq!(budget.live_processes(), 0);
+    }
+
+    struct CancelledLaunch {
+        entered: tokio::sync::Notify,
+    }
+
+    #[async_trait]
+    impl LspProcessLauncher for CancelledLaunch {
+        async fn launch(
+            &self,
+            _spec: &LspLaunchSpec,
+            _root: &Path,
+        ) -> Result<LspProcess, LspError> {
+            self.entered.notify_one();
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_start_releases_admission_when_no_child_was_returned() {
+        let budget = std::sync::Arc::new(LspLiveProcessBudget::new(1).expect("budget"));
+        let inner = std::sync::Arc::new(CancelledLaunch {
+            entered: tokio::sync::Notify::new(),
+        });
+        let launcher = std::sync::Arc::new(BudgetedLspProcessLauncher::new(
+            inner.clone(),
+            budget.clone(),
+        ));
+        let root = std::env::current_dir().expect("current test directory");
+        let spec = LspLaunchSpec::default_for_test();
+        let task = {
+            let launcher = launcher.clone();
+            tokio::spawn(async move { launcher.launch(&spec, &root).await })
+        };
+        inner.entered.notified().await;
+        assert_eq!(budget.live_processes(), 1);
+        task.abort();
+        let _ = task.await;
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while budget.live_processes() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled launch relinquishes its unused permit");
     }
 }

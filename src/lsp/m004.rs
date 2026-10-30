@@ -74,11 +74,29 @@ impl M004LspServiceScope {
     }
 
     #[cfg(target_os = "linux")]
+    #[cfg(test)]
     pub(crate) fn new_with_network_intent(
         profile: SandboxProfile,
         network_intent: codegg_core::approval::NetworkIntent,
         workspace_root: PathBuf,
         config: egglsp::config::LspConfig,
+    ) -> Result<Arc<Self>, String> {
+        Self::new_with_network_intent_and_live_process_budget(
+            profile,
+            network_intent,
+            workspace_root,
+            config,
+            None,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn new_with_network_intent_and_live_process_budget(
+        profile: SandboxProfile,
+        network_intent: codegg_core::approval::NetworkIntent,
+        workspace_root: PathBuf,
+        config: egglsp::config::LspConfig,
+        live_process_budget: Option<Arc<egglsp::launch::LspLiveProcessBudget>>,
     ) -> Result<Arc<Self>, String> {
         if !profile.requires_filesystem_containment() {
             return Err("M004 LSP scope requires a constrained profile".into());
@@ -96,7 +114,11 @@ impl M004LspServiceScope {
             workspace_root: workspace_root.clone(),
             shutdown: shutdown.clone(),
         });
-        let service = egglsp::service::LspService::new_arc_with_launcher(config, launcher);
+        let service = egglsp::service::LspService::new_arc_with_launcher_and_live_process_budget(
+            config,
+            launcher,
+            live_process_budget,
+        );
         register_scope(&service, profile, workspace_root);
         Ok(Arc::new(Self { service, shutdown }))
     }
@@ -310,13 +332,20 @@ while True:
     async fn scope_identity_binds_exact_profile_and_workspace() {
         let temp = TempDir::new().unwrap();
         let root = temp.path().canonicalize().unwrap();
-        let scope = M004LspServiceScope::new(
+        let live_budget = Arc::new(egglsp::launch::LspLiveProcessBudget::new(2).unwrap());
+        let scope = M004LspServiceScope::new_with_network_intent_and_live_process_budget(
             SandboxProfile::WorkspaceWrite,
+            codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             root.clone(),
             LspConfig::default(),
+            Some(live_budget.clone()),
         )
         .unwrap();
         let service = scope.service();
+        assert!(Arc::ptr_eq(
+            &service.live_process_budget().expect("shared live budget"),
+            &live_budget
+        ));
         assert!(service_is_scoped_for(
             &service,
             SandboxProfile::WorkspaceWrite,
@@ -372,6 +401,16 @@ impl egglsp::launch::LspProcessLauncher for M004LspProcessLauncher {
         launch: &egglsp::launch::LspLaunchSpec,
         root: &Path,
     ) -> Result<egglsp::launch::LspProcess, egglsp::error::LspError> {
+        self.launch_cancellable(launch, root, self.shutdown.child_token())
+            .await
+    }
+
+    async fn launch_cancellable(
+        &self,
+        launch: &egglsp::launch::LspLaunchSpec,
+        root: &Path,
+        cancellation: CancellationToken,
+    ) -> Result<egglsp::launch::LspProcess, egglsp::error::LspError> {
         let canonical_root = root.canonicalize().map_err(|error| {
             egglsp::error::LspError::LaunchFailed(format!(
                 "M004 LSP root cannot be canonicalized: {error}"
@@ -417,7 +456,6 @@ impl egglsp::launch::LspProcessLauncher for M004LspProcessLauncher {
             .sandbox_interactive_entries(&ProcessProvenance::default())
             .map_err(|error| egglsp::error::LspError::LaunchFailed(error.to_string()))?;
 
-        let cancellation = self.shutdown.child_token();
         let live = crate::managed_process::spawn_sandboxed_interactive_child(
             sandbox,
             &self.workspace_root,
@@ -429,15 +467,16 @@ impl egglsp::launch::LspProcessLauncher for M004LspProcessLauncher {
         .await
         .map_err(|error| egglsp::error::LspError::LaunchFailed(error.to_string()))?;
         let mut child = live.child;
-        let stdin = child.stdin.take().ok_or_else(|| {
-            egglsp::error::LspError::LaunchFailed("M004 LSP stdin was not captured".into())
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            egglsp::error::LspError::LaunchFailed("M004 LSP stdout was not captured".into())
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| {
-            egglsp::error::LspError::LaunchFailed("M004 LSP stderr was not captured".into())
-        })?;
+        let (stdin, stdout, stderr) =
+            (child.stdin.take(), child.stdout.take(), child.stderr.take());
+        let (Some(stdin), Some(stdout), Some(stderr)) = (stdin, stdout, stderr) else {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), live.status_task).await;
+            return Err(egglsp::error::LspError::LaunchFailed(
+                "M004 LSP launcher returned an incomplete process pipe set".into(),
+            ));
+        };
 
         Ok(egglsp::launch::LspProcess {
             stdin: Some(stdin),
@@ -445,6 +484,7 @@ impl egglsp::launch::LspProcessLauncher for M004LspProcessLauncher {
             stderr: Some(tokio::io::BufReader::new(stderr)),
             child,
             status_task: Some(live.status_task),
+            live_process_permit: None,
         })
     }
 }
