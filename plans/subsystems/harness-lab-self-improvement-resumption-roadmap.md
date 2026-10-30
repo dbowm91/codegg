@@ -35,27 +35,25 @@ The desired deliverable is an operator-controlled local assess → diagnosis →
 ## 4. Dependency graph and classifications
 
 ```text
-Existing M/C/D + H001–H007 mainline evidence
-                   |
-                   v
-S001 [infrastructure] seven-run causal attribution — ready offline
-      |                         |
-      v                         v
-S002 [invariant]           S004 [infrastructure]
-mainline optimizer         recurring defect dossier intake
-requalification            (S001 hard; S002 interface)
-      |                         |
-      +----------+--------------+
+Existing M/C/D and H001–H007 evidence
+                 |
                  v
-       S003 [capability]                  S005 [invariant]
-       first real bounded campaign        campaign fault/restart matrix
-       (S002 hard, live auth)             (S002 hard, offline; S003 interface)
-                 |                         |
-                 +------------+------------+
-                              v
-                 S006 [capability] distinct genuine
-                 campaigns + manual promotion evidence
-                 (S003/S004/S005 hard, live auth)
+S001 — H007 attribution (offline; ready)
+     |                            |
+     v                            v
+S002 — current-main optimize       S004 — defect intake
+qualification (offline)            (S001 hard; S002 interface)
+     |             |
+     |             +----------> S005 — campaign fault matrix
+     v                          (S002 hard; S003/S004 interface)
+S003 — first causal campaign           |
+(S002 hard; live approval)             |
+     |                                 |
+     +----------------+----------------+
+                      |
+                      v
+S006 — distinct real campaigns, repeatability and human review
+(S003 + S004 + S005 hard; fresh live approval)
 ```
 
 H007's 30-minute sustained live success is **not** a self-improvement dependency. S001 can work against the merged seven-run receipt corpus now. S002 must confirm resulting-mainline verification and close S001, not await another H007 trial. S004 is independently executable after S001, consuming S002's manifest interface when available. S005 is offline and may follow S002 independently of S003's provider authorization. S006 requires the completed causal campaign, intake and fault-tolerance contracts. Live execution at either S003 or S006 requires separately approved operator/provider authority; none is implied.
