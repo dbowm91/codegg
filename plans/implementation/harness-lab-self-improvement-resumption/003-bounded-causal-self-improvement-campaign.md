@@ -2,7 +2,7 @@
 
 Status: **blocked** — S002 strict closure and a separately approved live provider/proposer budget are required. This plan authorizes **zero** live calls.
 
-Repository baseline: `main@4aea3df5e93c60aa85f55e805f2a8e9e947ab083` plus H007 PR #217 head `ab22d66f28681321b8d2b46001ed6698764c9484`; re-pin merged main and controller implementation at handoff.
+Repository baseline: `main@99cecc050ed1ae418af62d2d10e6d34d791513e1` (PR #217 merged); re-pin actual main and controller implementation at handoff.
 Source roadmap: `plans/subsystems/harness-lab-self-improvement-resumption-roadmap.md`, S003.
 Long-term: `plans/000-long-term-specification.md` §§23–24, 26–29; `plans/001-terminology-and-domain-model.md`; `plans/003-planning-process.md`. Accepted ADR: `plans/adrs/ADR-0040-evidence-based-agent-recovery-termination.md`. Primary class: **capability**.
 
@@ -14,7 +14,7 @@ Demonstrate a **repeatable, bounded, independent assess → propose → build �
 
 ## 2. Hard and operational prerequisites
 
-**Hard:** S001 diagnosis closed; S002 current-main optimizer, controlled replay, negative-control acceptance and restart gates strictly closed; PR #217 integrated and exact-mainline qualified; a specific baseline test/hidden holdout is frozen with a legitimate reproducible CodeGG failure (for an *accepted improvement* claim only). If no real defect exists, the campaign may prove no-defect refusal using no live calls, but it cannot claim a real accepted improvement.
+**Hard:** S001 diagnosis closed; S002 current-main optimizer, controlled replay, negative-control acceptance and restart gates strictly closed; PR #217 integrated, with resulting-mainline CI confirmed by S002 closure; a specific baseline test/hidden holdout is frozen with a legitimate reproducible CodeGG failure (for an *accepted improvement* claim only). If no real defect exists, the campaign may prove no-defect refusal using no live calls, but it cannot claim a real accepted improvement.
 
 **Operational:** before *each* provider-backed attempt the operator explicitly approves (a) CodeGG subject route `opencode_go/<model>`, (b) optional OpenCode CLI proposer route and controlled credentials, (c) exact provider request caps for each actor, (d) cumulative wall-clock and process cancellation limits, (e) disk free floor and Cargo contention limits, (f) dollar spend cap if genuinely enforceable or cash cost `unknown`, (g) iteration/retry ceiling, and (h) stop behavior for unknown request accounting and provider timeouts. Historic H004–H007 authorizations are consumed; this document is not one. The external OpenCode CLI proposer cannot borrow the native CodeGG subject's request cap.
 
