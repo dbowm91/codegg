@@ -12,6 +12,7 @@ import unittest.mock
 from pathlib import Path
 
 from dev.harness_lab import budget
+from dev.harness_lab import ledger
 from dev.harness_lab import improve
 from dev.harness_lab import scoring
 from dev.harness_lab.proposer_gateway import GatewayResponse
@@ -1468,6 +1469,286 @@ class OptimizerCampaignSequenceTests(unittest.TestCase):
                 subprocess.run(["git", "-C", str(repository), "worktree", "prune"], check=True)
 
 
+@unittest.skipUnless(os.environ.get("CODEGG_S010_NATIVE_INTEGRATION") == "1",
+                     "S010 end-to-end native optimizer qualification is an explicit offline campaign")
+class S010IntegratedNativeOptimizerTests(unittest.TestCase):
+    """Run two real optimizer campaigns through native build, ACP and verifier gates."""
+
+    def test_two_private_native_campaigns_reject_noop_and_accept_seeded_correction(self):
+        from dev.harness_lab.supervisor import run_tool_trial
+
+        started_at = time.time()
+        cargo = shutil.which("cargo")
+        self.assertIsNotNone(cargo)
+        fault = (
+            '        if std::env::var_os("CODEGG_HARNESS_S010_SEEDED_WRITE_FAULT").is_some()\n'
+            '            && content == "s010-native-write-ok"\n'
+            '        {\n'
+            '            return Err(ToolError::Execution("seeded offline test fault".into()));\n'
+            '        }\n'
+        )
+        source_path = Path("src/tool/write.rs")
+        suite_case = {"schema_version": 1, "task_id": "s010-native-write-contract",
+                      "group_id": "s010-native-offline", "profile": "workspace-write",
+                      "content": "s010-native-write-ok", "expected_file": "tool-receipt.txt",
+                      "expected_text": "s010-native-write-ok", "expected_terminal": "passed"}
+        control_case = {"schema_version": 1, "task_id": "s010-protected-verifier-control",
+                        "group_id": "s010-native-offline", "profile": "workspace-write",
+                        "content": "s010-control-written", "expected_file": "control.txt",
+                        "expected_text": "deliberately-not-the-written-control-value",
+                        "expected_terminal": "assertion_failed"}
+        suite_cases = [suite_case, control_case]
+        evidence_runs = []
+        with tempfile.TemporaryDirectory(prefix="harness-s010-native-paired-") as temporary:
+            root = Path(temporary)
+            persistent_targets = os.environ.get("CODEGG_S010_TARGET_ROOT")
+            target_root = (Path(persistent_targets).expanduser().resolve()
+                           if persistent_targets else root / "targets")
+            if target_root.is_relative_to(REPO_ROOT.resolve()):
+                self.fail("S010 build targets must remain outside the source checkout")
+            target_root.mkdir(parents=True, exist_ok=True)
+            for campaign_index in range(2):
+                campaign = root / f"campaign-{campaign_index + 1}"
+                campaign.mkdir()
+                repository = campaign / "repository"
+                subprocess.run(["git", "clone", "--quiet", "--shared", str(REPO_ROOT),
+                                str(repository)], check=True, timeout=60)
+                subprocess.run(["git", "-C", str(repository), "config", "user.name", "Harness S010"], check=True)
+                subprocess.run(["git", "-C", str(repository), "config", "user.email",
+                                "harness-s010@example.invalid"], check=True)
+                source = repository / source_path
+                clean_source = source.read_text(encoding="utf-8")
+                insertion = '        let allowed_root = self.allowed_root.clone();\n'
+                self.assertEqual(clean_source.count(insertion), 1)
+                seeded_source = clean_source.replace(insertion, fault + insertion, 1)
+                source.write_text(seeded_source, encoding="utf-8")
+                subprocess.run(["git", "-C", str(repository), "add", str(source_path)], check=True)
+                commit_env = os.environ.copy()
+                commit_env.update({"GIT_AUTHOR_DATE": "2026-10-30T00:00:00Z",
+                                   "GIT_COMMITTER_DATE": "2026-10-30T00:00:00Z"})
+                subprocess.run(["git", "-C", str(repository), "commit", "-qm",
+                                "private synthetic S010 write regression"],
+                               env=commit_env, check=True)
+                suite = campaign / "suite.jsonl"
+                suite.write_text("".join(json.dumps(case, sort_keys=True) + "\n"
+                                                 for case in suite_cases), encoding="utf-8")
+                suite_sha = hashlib.sha256(suite.read_bytes()).hexdigest()
+                ledger_root = campaign / "ledger"
+                baseline_target = target_root / f"campaign-{campaign_index + 1}" / "baseline"
+                baseline_target.mkdir(parents=True, exist_ok=True)
+                if campaign_index == 1:
+                    prior_baseline = target_root / "campaign-1" / "baseline"
+                    if prior_baseline.is_dir():
+                        shutil.copytree(prior_baseline, baseline_target, dirs_exist_ok=True)
+                build_env = os.environ.copy()
+                build_env.update({"CARGO_TARGET_DIR": str(baseline_target),
+                                  "CARGO_BUILD_JOBS": "2", "CARGO_NET_OFFLINE": "true",
+                                  "CARGO_PROFILE_DEV_DEBUG": "0",
+                                  "CODEGG_HARNESS_S010_SEEDED_WRITE_FAULT": "1"})
+                rust_toolchain = Path(shutil.which("rustc")).resolve().parent.parent
+                llvm_library_dir = rust_toolchain / "lib"
+                build_env["DYLD_LIBRARY_PATH"] = os.pathsep.join(
+                    item for item in (str(llvm_library_dir), os.environ.get("DYLD_LIBRARY_PATH", ""))
+                    if item)
+                for key in ("OPENCODE_GO_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+                    build_env.pop(key, None)
+                built = subprocess.run([cargo, "build", "--locked", "--bin", "codegg",
+                                        "--bin", "codegg-sandbox-helper"], cwd=repository,
+                                       env=build_env, capture_output=True, text=True,
+                                       timeout=1800, check=False)
+                self.assertEqual(built.returncode, 0, built.stderr[-4000:])
+                binary = baseline_target / "debug" / "codegg"
+                self.assertTrue(binary.is_file())
+                expected_sha = ledger.canonical_digest(suite_case)
+                with unittest.mock.patch.dict(os.environ, build_env, clear=False):
+                    baseline = run_tool_trial(
+                        binary, "workspace-write", timeout=120, ledger_root=ledger_root,
+                        candidate="baseline", task_id=suite_case["task_id"],
+                        group_id=suite_case["group_id"], suite_sha256=suite_sha,
+                        case_sha256=expected_sha, content=suite_case["content"],
+                        expected_text=suite_case["expected_text"],
+                        expected_file=suite_case["expected_file"],
+                        source_root=repository)
+                self.assertEqual(baseline["ledger_manifest"]["terminal"], "assertion_failed")
+                self.assertEqual(baseline["causal_trace"]["state"], "complete")
+                self.assertGreater(baseline["causal_trace"]["event_count"], 0)
+                control_expected_sha = ledger.canonical_digest(control_case)
+                control_baseline = run_tool_trial(
+                    binary, "workspace-write", timeout=120, ledger_root=ledger_root,
+                    candidate="baseline", task_id=control_case["task_id"],
+                    group_id=control_case["group_id"], suite_sha256=suite_sha,
+                    case_sha256=control_expected_sha, content=control_case["content"],
+                    expected_text=control_case["expected_text"], expected_file=control_case["expected_file"],
+                    expected_terminal="assertion_failed", source_root=repository)
+                self.assertEqual(control_baseline["ledger_manifest"]["terminal"], "assertion_failed")
+                self.assertTrue(control_baseline["tool_receipt_created"])
+                proposals = []
+                candidate_cargo_bin = campaign / "cargo-bin"
+                candidate_cargo_bin.mkdir()
+                cargo_wrapper = candidate_cargo_bin / "cargo"
+                cargo_wrapper.write_text(
+                    "#!" + sys.executable + "\n"
+                    "import os, pathlib, shutil, subprocess, sys\n"
+                    "source = pathlib.Path(os.environ.get('CODEGG_S010_CACHE_SOURCE', "
+                    + repr(str(baseline_target)) + "))\n"
+                    "target = pathlib.Path(os.environ['CARGO_TARGET_DIR'])\n"
+                    "marker = target / '.s010_seeded_cache'\n"
+                    "if not marker.exists():\n"
+                    "    shutil.copytree(source, target, dirs_exist_ok=True)\n"
+                    "    marker.touch()\n"
+                    f"os.execv({str(Path(cargo).resolve())!r}, [{str(Path(cargo).resolve())!r}, *sys.argv[1:]])\n",
+                    encoding="utf-8")
+                cargo_wrapper.chmod(0o700)
+
+                def proposal_for(mode):
+                    def propose(worktree, _prompt, allowed, _timeout, _executable=None,
+                                _model=None, spend_guard=None):
+                        self.assertIsNotNone(spend_guard)
+                        if mode == "corrective":
+                            target = worktree / source_path
+                            current = target.read_text(encoding="utf-8")
+                            self.assertEqual(current.count(fault), 1)
+                            target.write_text(current.replace(fault, "", 1), encoding="utf-8")
+                        (worktree / "CHANGELOG.harness.md").write_text(
+                            "## Root cause\nprivate seeded write fault\n\n"
+                            "## Contracts\nnative writes must produce the requested file\n\n"
+                            "## Validation\npaired native ACP and independent file verifier\n\n"
+                            "## Accepted risks\nsynthetic fixture only\n", encoding="utf-8")
+                        paths = improve.changed_paths(worktree)
+                        improve.check_scope(paths, allowed + ("CHANGELOG.harness.md",))
+                        digest = improve.candidate_patch_sha256(worktree, paths)
+                        proposals.append({"mode": mode, "provider_requests": 0,
+                                          "patch_sha256": digest})
+                        return {"changed_paths": paths, "patch_sha256": digest,
+                                "proposer": {"provider_requests": 0, "usage": "not_reported"},
+                                "proposer_model": None, "candidate_worktree": str(worktree),
+                                "baseline_revision": "private-seeded"}
+                    return propose
+
+                def run_arm(mode):
+                    checkpoint = campaign / f"optimizer-{mode}.json"
+                    candidate_env = dict(build_env)
+                    candidate_env["PATH"] = str(candidate_cargo_bin) + os.pathsep + candidate_env["PATH"]
+                    old_cache = target_root / f"campaign-{campaign_index + 1}" / f"candidate-targets-{mode}"
+                    reusable = next((path for path in sorted(old_cache.glob("*"))
+                                     if (path / "debug" / "codegg").is_file()), None)
+                    if reusable is None and campaign_index == 1:
+                        prior_campaign_cache = target_root / "campaign-1" / f"candidate-targets-{mode}"
+                        reusable = next((path for path in sorted(prior_campaign_cache.glob("*"))
+                                         if (path / "debug" / "codegg").is_file()), None)
+                    if reusable is not None:
+                        candidate_env["CODEGG_S010_CACHE_SOURCE"] = str(reusable)
+                    # Each real native ACP trial is also the independent
+                    # behavioral verifier for the candidate. Keep the
+                    # candidate's native build gate, while avoiding a second
+                    # expensive compile of CodeGG's full integration-test
+                    # family for each private arm/campaign. The focused gate
+                    # itself is separately covered by
+                    # CompileCorrectionMechanicsTests.
+                    candidate_gates = (improve.CANDIDATE_GATE_SEQUENCE[0],
+                                       improve.CANDIDATE_GATE_SEQUENCE[1],
+                                       improve.CANDIDATE_GATE_SEQUENCE[0])
+                    with unittest.mock.patch.object(improve, "CANDIDATE_GATE_SEQUENCE",
+                                                    candidate_gates), \
+                         unittest.mock.patch.object(improve, "opencode_propose",
+                                                    side_effect=proposal_for(mode)), \
+                         unittest.mock.patch.dict(os.environ, candidate_env, clear=False):
+                        return improve.run_optimizer(
+                            repository, suite, ledger_root, baseline_candidate="baseline",
+                            candidate_root=campaign / f"candidate-worktrees-{mode}",
+                            target_root=target_root / f"campaign-{campaign_index + 1}" / f"candidate-targets-{mode}",
+                            checkpoint_path=checkpoint, allowed_prefixes=("src/",),
+                            prompt=("Keep the seeded behavior unchanged." if mode == "noop" else
+                                    "Repair the seeded native write contract."),
+                            max_iterations=1, max_wallclock=3600, timeout=1800,
+                            budget_policy=budget.BudgetPolicy(max_provider_requests=1))
+
+                # The no-op is a real built candidate and native ACP trial. It
+                # must be rejected by the score contract before the corrective
+                # arm is run through the same unmocked qualification path.
+                proposal_offset = len(proposals)
+                noop = run_arm("noop")
+                self.assertEqual(noop["status"], "NO_IMPROVEMENT")
+                self.assertFalse(noop["iterations"][0]["result"]["accepted"])
+                self.assertEqual(noop["iterations"][0]["result"]["reason"],
+                                 improve.SCORE_REASON_NO_IMPROVEMENT)
+                result = run_arm("corrective")
+                self.assertEqual(result["status"], "ACCEPTED")
+                self.assertEqual([row["mode"] for row in proposals], ["noop", "corrective"])
+                iteration = result["iterations"][0]["result"]
+                noop_candidate = noop["iterations"][0]["candidate"]
+                correction_candidate = result["iterations"][0]["candidate"]
+
+                def trial_receipts(candidate):
+                    return [{"run_id": row["run_id"], "candidate": row["candidate"],
+                             "task_id": row["task_id"], "repeat": row["repeat"],
+                             "terminal": row["terminal"],
+                             "verifier_status": row["verifier"].get("status"),
+                             "binary_sha256": row["receipt"].get("source_sha256")}
+                            for row in ledger.load_runs(ledger_root)
+                            if row.get("candidate") == candidate]
+
+                noop_trials = {row["task_id"]: row for row in trial_receipts(noop_candidate)}
+                correction_trials = {row["task_id"]: row for row in trial_receipts(correction_candidate)}
+                self.assertEqual(set(noop_trials), {case["task_id"] for case in suite_cases})
+                self.assertEqual(noop_trials[suite_case["task_id"]]["verifier_status"], "assertion_failed")
+                self.assertEqual(noop_trials[control_case["task_id"]]["verifier_status"], "assertion_failed")
+                self.assertEqual(set(correction_trials), {case["task_id"] for case in suite_cases})
+                self.assertEqual(correction_trials[suite_case["task_id"]]["verifier_status"], "passed")
+                self.assertEqual(correction_trials[control_case["task_id"]]["verifier_status"],
+                                 "assertion_failed")
+                self.assertTrue(iteration["baseline_manifests_unchanged"])
+                self.assertTrue(iteration["accepted"])
+                self.assertEqual(iteration["correctness_improvements"],
+                                 [(suite_case["task_id"], 0)])
+                self.assertEqual(iteration["paired_comparison"]["denominator"], 2)
+                self.assertEqual(iteration["budget_guard"]["provider_requests"], 0)
+                events, _torn = improve._read_event_log(
+                    (campaign / "optimizer-corrective.json").with_suffix(".jsonl"))
+                trace_summary = {key: baseline["causal_trace"][key]
+                                 for key in ("schema", "state", "event_count", "bytes", "dropped_events", "sha256")}
+                evidence_runs.append({"campaign": campaign_index + 1,
+                                      "baseline_revision": baseline["ledger_manifest"]["subject"]["revision"],
+                                      "baseline_run_id": baseline["ledger_manifest"]["run_id"],
+                                      "baseline_binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+                                      "candidate_binary_sha256": iteration["binary_sha256"],
+                                      "candidate_sha256": iteration["patch_sha256"],
+                                      "noop_patch_sha256": proposals[proposal_offset]["patch_sha256"],
+                                      "corrective_patch_sha256": proposals[proposal_offset + 1]["patch_sha256"],
+                                      "noop_status": noop["status"],
+                                      "noop_binary_sha256": noop["iterations"][0]["result"]["binary_sha256"],
+                                      "status": result["status"],
+                                      "baseline_terminal": baseline["ledger_manifest"]["terminal"],
+                                      "baseline_causal_trace": trace_summary,
+                                      "paired_comparison": iteration["paired_comparison"],
+                                      "noop_trials": list(noop_trials.values()),
+                                      "corrective_trials": list(correction_trials.values()),
+                                      "provider_requests": 0,
+                                      "checkpoint_run_id": events[0]["data"]["run_id"]})
+            self.assertEqual(len({row["baseline_revision"] for row in evidence_runs}), 1)
+            self.assertEqual(len({row["candidate_sha256"] for row in evidence_runs}), 1)
+            self.assertTrue(all(row["status"] == "ACCEPTED" for row in evidence_runs))
+            output = os.environ.get("CODEGG_S010_RECEIPT_PATH")
+            if output:
+                receipt = {"schema": "s010_integrated_offline_v1",
+                           "started_unix_seconds": started_at,
+                           "finished_unix_seconds": time.time(),
+                           "source_revision": evidence_runs[0]["baseline_revision"],
+                           "suite_sha256": suite_sha,
+                           "campaigns": evidence_runs,
+                           "native_loopback_trials": 8,
+                           "native_noop_candidates_rejected": 2,
+                           "native_corrective_candidates_accepted": 2,
+                           "provider_requests": 0,
+                           "live_provider_calls": 0,
+                           "prolonged_resource_pressure": "not_run",
+                           "integrated_sigkill_restart": "not_run"}
+                receipt_path = Path(output)
+                receipt_path.parent.mkdir(parents=True, exist_ok=True)
+                receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+                                        encoding="utf-8")
+
+
 class CampaignResourceContentionTests(unittest.TestCase):
     def test_parallel_offline_cargo_builds_use_disjoint_capped_targets(self) -> None:
         cargo = shutil.which("cargo")
@@ -1648,7 +1929,10 @@ class CompileCorrectionMechanicsTests(unittest.TestCase):
         verbs = [argv[1] for argv in CANDIDATE_GATE_SEQUENCE]
         self.assertEqual(verbs, ["fmt", "build", "test"])
         self.assertEqual(CANDIDATE_GATE_SEQUENCE[1][:2], ("cargo", "build"))
-        self.assertEqual(CANDIDATE_GATE_SEQUENCE[2][:2], ("cargo", "test"))
+        self.assertEqual(CANDIDATE_GATE_SEQUENCE[2],
+                         ("cargo", "test", "-p", "codegg", "--test", "ide_protocols",
+                          "--", "acp_stdio", "--test-threads=1"))
+        self.assertTrue((REPO_ROOT / "tests" / "ide_protocols" / "acp_stdio.inc").is_file())
 
     def _worktree(self, root: Path) -> Path:
         worktree = root / "candidate"

@@ -45,6 +45,30 @@ provider campaign; a genuine current harness defect still needs a failing-first
 native reproduction, independent expected behavior and a separately frozen
 holdout/control set.
 
+## Bounded causal traces
+
+New native ACP runs write `causal-trace.jsonl` under the run's private lane.
+The append-only v1 projection binds source and binary digests, sequence and
+hash-chain identity, and run-local pseudonyms for exact tool-call and job IDs.
+It stores tool names, typed terminals, bounded job statuses, event gaps and
+controller markers; it does not store prompts, arguments, tool output or
+credentials. The trace is capped at 10,000 events and 1 MiB. A cap hit, event
+gap, missing terminal or absent historical trace stays incomplete and cannot
+be reported as a reproduced CodeGG defect.
+
+Read a fresh trace with its typed run receipt using:
+
+```bash
+python3 -m dev.harness_lab attribution --trace /private/lane/causal-trace.jsonl \
+  --receipt /private/lane/run-receipt.json
+```
+
+Attribution is deterministic and evidence-limited. Provider timeout, verifier
+setup error and task failure remain separate; an observed tool failure only
+suggests a product owner conditionally and still requires a trusted
+failing-first reproduction. Historical H005–H007 receipts are not rewritten
+or backfilled.
+
 To exercise the generic positive intake mechanics, create a synthetic-only
 `defect_reproduction_manifest_v1` and pass its repository-relative path using
 `--generic-manifest`. The independent verifier and holdout receipts must bind
@@ -52,6 +76,31 @@ the source/test digests, and two distinct private lanes must record the same
 red signature. The resulting `generic_defect_dossier_v1` is always marked
 `synthetic_fixture` and `campaign_eligible: false`; it cannot promote a real
 defect or change the H007 denominator.
+
+Trusted current-source intake builds the clean checkout and its sandbox helper
+into a private Cargo target, then runs the controller-owned H007 native
+sequence test twice with fresh private lanes. It stores only typed outcomes
+and digests, not test output or credentials:
+
+```bash
+python3 -m dev.harness_lab intake reproduce --repository . \
+  --defect-id <short-description> --output /private/current-defect.json
+python3 -m dev.harness_lab intake validate --repository . \
+  --dossier /private/current-defect.json
+python3 -m dev.harness_lab intake report --dossier /private/current-defect.json
+```
+
+For a controlled offline run that needs to reuse an operator-owned Cargo cache,
+`CODEGG_HARNESS_INTAKE_TARGET_DIR` may point to a private directory outside the
+checkout. The intake refuses symlink target directories and paths inside the
+source checkout. Without it, the build target is temporary and removed after
+reproduction.
+
+`validate` rebuilds and repeats the trusted reproduction. `report` is a
+display-only view and never accepts a dossier's own eligibility claim.
+Synthetic and historical evidence remains ineligible, and even an eligible
+current defect has `live_authorized: false`. No current real defect is asserted
+by this offline implementation.
 
 ## External proposer request admission
 
