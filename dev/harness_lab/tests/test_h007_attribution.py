@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,6 +16,19 @@ MANIFEST = ROOT / attribution.DEFAULT_MANIFEST
 
 
 class H007AttributionTests(unittest.TestCase):
+    def test_shallow_checkout_uses_digest_checked_frozen_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            frozen = root / "fixture.json"
+            frozen.write_bytes(b'{"frozen":true}\n')
+            with mock.patch.object(
+                attribution.subprocess, "run", return_value=mock.Mock(returncode=128),
+            ):
+                self.assertEqual(
+                    attribution._source_blob(root, "a" * 40, "fixture.json"),
+                    b'{"frozen":true}\n',
+                )
+
     def test_frozen_report_is_deterministic_and_has_seven_unique_receipts(self) -> None:
         first = attribution.build_report(ROOT, attribution.DEFAULT_MANIFEST)
         second = attribution.build_report(ROOT, attribution.DEFAULT_MANIFEST)

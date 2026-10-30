@@ -55,6 +55,14 @@ def _source_blob(repo_root: Path, revision: str, relative: str) -> bytes:
     rel = _relative_path(relative)
     if not re.fullmatch(r"[0-9a-f]{40,64}", revision):
         raise AttributionInputError("baseline source revision is not a full object ID")
+    commit = subprocess.run(
+        ["git", "cat-file", "-e", f"{revision}^{{commit}}"], cwd=repo_root,
+        stdin=subprocess.DEVNULL, capture_output=True, check=False, timeout=15,
+    )
+    if commit.returncode:
+        # Hosted CI uses a shallow checkout. The frozen inputs also live in the
+        # checked-out tree and are verified against their recorded digests below.
+        return _repo_bytes(repo_root, rel)
     result = subprocess.run(
         ["git", "cat-file", "blob", f"{revision}:{rel}"], cwd=repo_root,
         stdin=subprocess.DEVNULL, capture_output=True, check=False, timeout=15,
