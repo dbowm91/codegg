@@ -1,6 +1,6 @@
 # Harness Lab — Autonomous Self-Improvement Resumption Roadmap
 
-Status: **implementation plans S001–S006 have closure records**. S001/S002/S004 closed; S003 closed as `no_reproducible_defect`; S005 component fault paths closed conditionally without claiming campaign-level `stable_offline`; S006 closed as `stable_live_not_established`. No provider-backed campaign was authorized or run.
+Status: **S001–S009 have closure records; S005/S008 remain conditional**. S001/S002/S004/S007/S009 closed; S003 closed as `no_reproducible_defect`; S005/S008 remain conditional without claiming `stable_offline`; S006 is `stable_live_not_established`. No provider-backed campaign was authorized or run for S007–S009.
 
 Reviewed baseline: `main@99cecc050ed1ae418af62d2d10e6d34d791513e1` (2026-10-30), merge commit for H007 PR #217. All seven H007 receipts are on main. Recheck source and exact resulting-mainline CI at implementation; PR #219 is the active planning handoff, not implementation evidence.
 
@@ -54,6 +54,11 @@ S003 — first causal campaign           |
                       v
 S006 — distinct real campaigns, repeatability and human review
 (S003 + S004 + S005 hard; fresh live approval)
+
+Corrective work (all offline):
+S007 — external proposer HTTP admission (S002 hard)
+S008 — complete S005 fault matrix (S005 + S007 hard)
+S009 — generic positive intake (S004 interface; independent of live defects)
 ```
 
 H007's 30-minute sustained live success is **not** a self-improvement dependency. S001 can work against the merged seven-run receipt corpus now. S002 must confirm resulting-mainline verification and close S001, not await another H007 trial. S004 is independently executable after S001, consuming S002's manifest interface when available. S005 is offline and may follow S002 independently of S003's provider authorization. S006 requires the completed causal campaign, intake and fault-tolerance contracts. Live execution at either S003 or S006 requires separately approved operator/provider authority; none is implied.
@@ -64,8 +69,11 @@ H007's 30-minute sustained live success is **not** a self-improvement dependency
 | **S002 — Mainline optimizer and candidate-gate requalification** | invariant | **closed for offline qualification; live proposer blocked** | Isolated subjects, native allow/deny tool path, request N/N+1 subject cap, offline checkpoint/score tests, exact-main CI and quick verification |
 | **S003 — Bounded causal self-improvement campaign** | capability | **closed: `no_reproducible_defect`** | Frozen H007 evidence and S004 dossier refused eligibility; zero live calls; no positive improvement claimed |
 | **S004 — Reproducible defect intake and campaign eligibility** | infrastructure | **closed; no eligible current dossier** | Deterministic, digest-bound H007 intake and truthful ineligibility result |
-| **S005 — Campaign fault tolerance and repeatable offline qualification** | invariant | **conditional closure; `stable_offline` not established** | Repeated synthetic two-candidate optimizer/scorer sequence and component fault tests pass; daemon-crash cleanup, saturation and exhaustive transition injection remain uncovered |
+| **S005 — Campaign fault tolerance and repeatable offline qualification** | invariant | **conditional closure; `stable_offline` not established** | Subject/provider admission, deterministic controller and cleanup tests pass; full transition-by-transition process-kill injection and sustained optimizer saturation remain uncovered |
 | **S006 — Real campaign repeatability and stable operator handoff** | capability | **closed conditionally: `stable_live_not_established`** | Zero of two required new independent accepted campaigns; no defect or fresh approval; historical C003 excluded |
+| **S007 — Hard external proposer request admission** | invariant | **closed** | Actual OpenCode CLI request N+1 refused pretransport through a controlled loopback HTTP gateway; no live calls; live route still needs fresh authorization |
+| **S008 — Complete offline campaign fault qualification** | invariant | **closed conditionally; `stable_offline` not established** | Two repeated 162-test focused runs, real private-daemon parent-death cleanup and bounded parallel Cargo checks passed; phase-by-phase process death and sustained optimizer stress remain open |
+| **S009 — Positive generic defect intake** | infrastructure | **closed** | Generic positive synthetic dossier path and CLI pass; synthetic evidence is always campaign-ineligible and H007 remains ineligible |
 
 Implementation plans: `plans/implementation/harness-lab-self-improvement-resumption/001-*.md` through `006-*.md`; use exact filenames in the registry and closure records `plans/closure/harness-lab-self-improvement-resumption/NNN-status.md`.
 
@@ -82,6 +90,8 @@ Implementation plans: `plans/implementation/harness-lab-self-improvement-resumpt
 **After S005:** repeated deterministic offline campaigns, crashes and policy/budget/ownership failures result in typed, safe terminals with unchanged score/authorization denominators, no duplicate effects and verifiable private-root cleanup. A green fake provider does not establish live reliability.
 
 **After S006:** claim `stable_offline` only with S004/S005 proof; claim limited `stable_live_evidenced` only after two *new*, independent genuine current-CodeGG fixes pass held-out verification and negative controls plus a rejected/no-defect control. If authorization or genuine defects are absent, record `stable_live_not_established` without inventing evidence, ranking models or lowering thresholds.
+
+S007–S009 are corrective follow-ups to the named S002/S004/S005 gaps. S007 and S008 qualify only against offline HTTP fixtures and deterministic subjects. S009 proves the generic positive intake mechanics using synthetic test evidence; it does not add a real defect to the S006 denominator. S006's next genuine improvement campaign remains gated on a new, independently reproduced current CodeGG harness defect and fresh campaign authorization.
 
 ## 6. Cross-cutting failure, migration and safety
 

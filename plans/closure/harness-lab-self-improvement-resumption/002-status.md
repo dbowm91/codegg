@@ -22,6 +22,6 @@ Status: **closed for credential-free current-main qualification; live proposer a
 
 ## Live boundary and limits
 
-No authenticated provider or proposer call occurred. USD is `unknown`; there was no spend. The subject-side CodeGG provider cap is pretransport-enforced. The external OpenCode CLI proposer reserves at most one controller unit per CLI invocation while the CLI may issue multiple provider HTTP requests internally; its usage events arrive after requests. Therefore a hard provider-request N+1 refusal for the proposer is not proven, and live proposer execution is **blocked**. This milestone does not qualify the external proposer or an autonomous accepted improvement.
+No authenticated provider or proposer call occurred. USD is `unknown`; there was no spend. The subject-side CodeGG provider cap is pretransport-enforced. At this S002 source revision, external proposer request-level admission was not proven and live proposer execution remained **blocked**. Follow-up S007 separately qualifies the actual OpenCode CLI request N/N+1 boundary with a loopback HTTP fixture; this does not rewrite S002's source revision or make a live provider route available. S002 itself does not qualify an autonomous accepted improvement.
 
 Evidence is machine-readable in [`evidence/s002-offline-qualification.json`](evidence/s002-offline-qualification.json). The two local fixture edits in the original worktree were preserved and excluded from the clean-worktree packaged-fixture comparison.

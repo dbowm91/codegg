@@ -4,6 +4,9 @@
   "resulting_main_ci_run": 41003530150,
   "resulting_main_desktop_e2e_run": 41003529978,
   "integrated_codegg_binary_sha256": "62ecc84113b2399352ead4faea6a2cb7641c0b98f505cb36d2a2f1960d99cb94",
+  "native_fixture_test_binary_sha256": "80292d55a3ba9ba2291e2daffa67d083a450b9a4ebaeaf578ff882dda15bc04c",
+  "native_fixture_test_binary_source_revision": "ab22d66f28681321b8d2b46001ed6698764c9484",
+  "native_fixture_product_source_delta_from_s005_baseline": "none under src/, crates/, Cargo.toml",
   "scenarios": [
     {
       "id": "S005-F01",
@@ -18,11 +21,16 @@
     },
     {
       "id": "S005-F02",
-      "boundary": "uncertain external proposer accounting",
-      "evidence": "plans/closure/harness-lab-self-improvement-resumption/evidence/s002-offline-qualification.json#/external_opencode_proposer",
-      "expected": "do not report internal CLI request count as hard capped",
-      "observed": "request-level pretransport cap unavailable",
-      "result": "live_blocked"
+      "boundary": "external proposer request N/N+1 at HTTP boundary",
+      "evidence": [
+        "dev.harness_lab.tests.test_proposer_gateway.ProposerGatewayTests.test_actual_opencode_cli_hits_only_the_loopback_gate_and_n_plus_one_stops",
+        "dev.harness_lab.tests.test_proposer_gateway.ProposerGatewayTests.test_request_ceiling_is_atomic_under_concurrent_requests",
+        "dev.harness_lab.tests.test_improve.OptimizerCampaignSequenceTests.test_proposer_n_plus_one_receipt_is_persisted_without_iteration_retry"
+      ],
+      "expected": "request N is admitted; request N+1 is refused before fixture/upstream forwarding and retained in the campaign receipt",
+      "observed": "real OpenCode CLI emitted multiple provider HTTP requests; exactly one request was fixture-forwarded, N+1 received 429, and the sanitized receipt was persisted without retry",
+      "provider_requests": 0,
+      "result": "pass_offline_fixture_only"
     },
     {
       "id": "S005-F03",
@@ -97,12 +105,45 @@
       "expected": "bounded terminal and cleanup; no cross-subject teardown",
       "observed": "local subprocess tests pass; exact-main smoke stopped subject 1 while subject 2 completed session creation",
       "result": "pass for covered cases"
+    },
+    {
+      "id": "S005-F09",
+      "boundary": "controller SIGKILL and private subject daemon reconciliation",
+      "evidence": "dev.harness_lab.tests.test_supervisor.SubjectEnvironmentAndCrashCleanupTests.test_controller_sigkill_reconciles_only_its_private_subject_daemon",
+      "expected": "after parent death, the exact private daemon is gone or stopped by verified lane identity; default daemon and unrelated sentinel survive",
+      "observed": "controller was SIGKILLed after a real ACP session; the private daemon was absent or safely stopped through exact lane identity; sentinel remained live and default daemon identity was unchanged",
+      "result": "pass"
+    },
+    {
+      "id": "S005-F10",
+      "boundary": "parallel Cargo CPU/target contention and repeat recovery",
+      "evidence": "dev.harness_lab.tests.test_improve.CampaignResourceContentionTests.test_parallel_offline_cargo_builds_use_disjoint_capped_targets",
+      "expected": "two parallel offline Cargo checks with one worker each use disjoint private target roots and complete twice without leakage",
+      "observed": "both concurrent checks passed in each of two bounded rounds; temporary target roots were isolated and removed",
+      "provider_requests": 0,
+      "result": "pass_bounded_contention"
+    },
+    {
+      "id": "S005-F11",
+      "boundary": "campaign transition and side-effect fault mapping",
+      "evidence": [
+        "dev.harness_lab.tests.test_improve.OptimizerCampaignSequenceTests",
+        "dev.harness_lab.tests.test_improve.CrashRecoveryTests",
+        "dev.harness_lab.tests.test_improve.CompileCorrectionMechanicsTests",
+        "dev.harness_lab.tests.test_improve.ScoreContractTests",
+        "dev.harness_lab.tests.test_supervisor.ExecTrialTests",
+        "dev.harness_lab.tests.test_autonomy_run.DiskFloorWatcherTests"
+      ],
+      "expected": "admission, proposal, patch scope, build correction, verifier/scoring, ACP evaluation, ledger/checkpoint publication, cancellation and cleanup each map to a named deterministic refusal or recovery test",
+      "observed": "source-derived transition inventory is mapped to existing and new deterministic tests; SIGKILL injection is proven at checkpoint-pointer and ledger-append boundaries, not at every individual phase",
+      "result": "mapped_with_boundary_specific_injection"
     }
   ],
   "limits": [
-    "No real external proposer HTTP request was made; internal CLI N+1 is unproved and live proposer use remains blocked.",
+    "No real external proposer HTTP request was made; the live route remains unavailable until a separate authorization and exact endpoint check.",
     "The two-candidate sequence uses a synthetic proposer and synthetic qualification boundary; it qualifies orchestration and the production scorer, not a real candidate build or ACP pair.",
-    "No sustained CPU/Cargo-target saturation experiment or daemon-crash orphan cleanup trial was run.",
+    "The Cargo contention case is bounded and synthetic; it is not a long-duration stress or full optimizer-under-saturation campaign.",
+    "Campaign SIGKILL injection is covered at checkpoint pointer and ledger append boundaries, not after every individual build, verifier, ACP and cleanup transition.",
     "No provider-backed campaign or stable-live claim is implied."
   ],
   "live_provider_calls": 0,

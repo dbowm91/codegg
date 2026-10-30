@@ -263,6 +263,16 @@ class SpendGuard:
         if self.exhausted_cap is None:
             self.exhausted_cap = self._crossed_cap()
 
+    def settle_request_admission(self) -> None:
+        """Commit the most recent pretransport request reservation.
+
+        The request count was already charged by :meth:`admit`. This method
+        clears its provisional marker without treating an absent per-request
+        token/cost observation as a completed zero-usage trial.
+        """
+        if self._outstanding:
+            self._outstanding = 0
+
     def _crossed_cap(self) -> Optional[str]:
         limit = self.policy.token_limit
         if limit is not None and self.total_tokens >= limit:

@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -13,6 +14,7 @@ from pathlib import Path
 from dev.harness_lab import budget
 from dev.harness_lab import improve
 from dev.harness_lab import scoring
+from dev.harness_lab.proposer_gateway import GatewayResponse
 from dev.harness_lab.improve import (_build_with_compile_correction,
                                      authorize_binary_fingerprint, authorize_build_transition, Budget,
                                      CANDIDATE_GATE_SEQUENCE, candidate_patch_sha256, check_scope,
@@ -211,7 +213,9 @@ class ImproveTests(unittest.TestCase):
             fake.write_text("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 1.19.3; else echo '{\"type\":\"text\",\"part\":{\"text\":\"fixture\"}}'; fi\n", encoding="utf-8")
             fake.chmod(0o755)
             _warm_executable(fake)
-            result = run_opencode(root, "inspect", executable=str(fake))
+            result = run_opencode(root, "inspect", executable=str(fake), model="opencode-go/fixture",
+                                  max_provider_requests=1,
+                                  fixture_handler=lambda *_: GatewayResponse(200, "application/json", b"{}"))
             self.assertEqual(result["version"], "1.19.3")
             self.assertEqual(result["event_count"], 1)
             slow = root / "opencode-slow"
@@ -219,7 +223,9 @@ class ImproveTests(unittest.TestCase):
             slow.chmod(0o755)
             _warm_executable(slow)
             with self.assertRaises(TimeoutError):
-                run_opencode(root, "inspect", timeout=0.1, executable=str(slow))
+                run_opencode(root, "inspect", timeout=0.1, executable=str(slow), model="opencode-go/fixture",
+                             max_provider_requests=1,
+                             fixture_handler=lambda *_: GatewayResponse(200, "application/json", b"{}"))
 
     def test_an_unsupported_opencode_version_is_a_named_refusal(self) -> None:
         """An unsupported version is a distinct refusal, not a transport fault."""
@@ -230,7 +236,9 @@ class ImproveTests(unittest.TestCase):
             stale.chmod(0o755)
             _warm_executable(stale)
             with self.assertRaises(RuntimeError) as caught:
-                run_opencode(root, "inspect", executable=str(stale))
+                run_opencode(root, "inspect", executable=str(stale), model="opencode-go/fixture",
+                             max_provider_requests=1,
+                             fixture_handler=lambda *_: GatewayResponse(200, "application/json", b"{}"))
             message = str(caught.exception)
             self.assertIn("OpenCode version preflight failed", message)
             self.assertIn(SUPPORTED_OPENCODE_VERSION, message)
@@ -712,6 +720,7 @@ _FAKE_OPENCODE_TEMPLATE = r"""#!/bin/sh
 for arg in "$@"; do printf '%s\n' "$arg" >> "__LOG__"; done
 printf -- '---\n' >> "__LOG__"
 if [ "$1" = "--version" ]; then echo 1.19.3; exit 0; fi
+python3 -c 'import json,os,urllib.request; c=json.loads(os.environ["OPENCODE_CONFIG_CONTENT"]); p=next(iter(c["provider"].values())); u=p["options"]["baseURL"].rstrip("/")+"/responses"; r=urllib.request.Request(u,data=b"{}",headers={"Content-Type":"application/json"}); urllib.request.urlopen(r,timeout=5).read()'
 printf '%s\n' '{"type":"text","part":{"text":"proposal"}}'
 __USAGE__
 """
@@ -762,28 +771,26 @@ class ProposerRouteAndBudgetTests(unittest.TestCase):
         """
         return [argv for argv in cls._invocations(log) if argv[:1] == ["run"]]
 
-    def test_an_unpinned_proposer_emits_no_model_flag(self) -> None:
+    def test_an_unpinned_proposer_is_refused_before_cli_invocation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             executable, log = self._fake_opencode(root)
-            receipt = run_opencode(root, "inspect", executable=executable)
-            proposals = self._proposals(log)
-            self.assertEqual(len(proposals), 1)
-            # An unpinned run keeps the pre-pinning argv byte for byte.
-            self.assertEqual(proposals[0], ["run", "--auto", "--format", "json",
-                                            "--dir", str(root), "inspect"])
-            self.assertNotIn("--model", proposals[0])
-            # The receipt records that no route was pinned.
-            self.assertIsNone(receipt["model"])
+            with self.assertRaisesRegex(ValueError, "explicitly pinned"):
+                run_opencode(root, "inspect", executable=executable,
+                             max_provider_requests=1,
+                             fixture_handler=lambda *_: GatewayResponse(200, "application/json", b"{}"))
+            self.assertEqual(self._proposals(log), [])
 
     def test_a_pinned_proposer_names_the_route_between_dir_and_the_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             executable, log = self._fake_opencode(root)
-            receipt = run_opencode(root, "inspect", executable=executable, model=self.ROUTE)
+            receipt = run_opencode(root, "inspect", executable=executable, model=self.ROUTE,
+                                   max_provider_requests=1,
+                                   fixture_handler=lambda *_: GatewayResponse(200, "application/json", b"{}"))
             proposals = self._proposals(log)
             self.assertEqual(len(proposals), 1)
-            self.assertEqual(proposals[0], ["run", "--auto", "--format", "json", "--dir", str(root),
+            self.assertEqual(proposals[0], ["run", "--auto", "--pure", "--format", "json", "--dir", str(root),
                                             "--model", self.ROUTE, "inspect"])
             # The receipt attributes the proposal to the route.
             self.assertEqual(receipt["model"], self.ROUTE)
@@ -821,7 +828,9 @@ class ProposerRouteAndBudgetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             executable, _log = self._fake_opencode(root)
-            receipt = run_opencode(root, "inspect", executable=executable)
+            receipt = run_opencode(root, "inspect", executable=executable, model=self.ROUTE,
+                                   max_provider_requests=1,
+                                   fixture_handler=lambda *_: GatewayResponse(200, "application/json", b"{}"))
             self.assertIsNone(receipt["proposer_usage_reason"])
             self.assertEqual(receipt["proposer_usage"]["tokens"]["total"], 7792)
             self.assertEqual(receipt["proposer_usage"]["tokens"]["cache_read"], 0)
@@ -838,7 +847,9 @@ class ProposerRouteAndBudgetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             executable, _log = self._fake_opencode(root, usage=False)
-            receipt = run_opencode(root, "inspect", executable=executable)
+            receipt = run_opencode(root, "inspect", executable=executable, model=self.ROUTE,
+                                   max_provider_requests=1,
+                                   fixture_handler=lambda *_: GatewayResponse(200, "application/json", b"{}"))
             self.assertIsNone(receipt["proposer_usage"])
             self.assertEqual(receipt["proposer_usage_reason"], "not_reported_by_the_cli")
 
@@ -891,29 +902,28 @@ class ProposerRouteAndBudgetTests(unittest.TestCase):
             self.assertEqual(budget.admit_budget(policy).status, budget.STATUS_ADMITTED)
             guard = budget.SpendGuard(policy)
             receipt = guarded_propose(guard, worktree=root, prompt="inspect", timeout=30.0,
-                                      model=None, executable=executable)
+                                      model=self.ROUTE, executable=executable,
+                                      fixture_handler=lambda *_: GatewayResponse(200, "application/json", b"{}"))
             self.assertEqual(receipt["proposer_usage"]["tokens"]["total"], 7792)
             self.assertEqual(len(self._proposals(log)), 1)
             # The second proposal is refused before the CLI is invoked.
             with self.assertRaises(budget.BudgetExhausted):
                 guarded_propose(guard, worktree=root, prompt="inspect", timeout=30.0,
-                                model=None, executable=executable)
+                                model=self.ROUTE, executable=executable)
             self.assertEqual(len(self._proposals(log)), 1)
             # The observed spend is auditable.
             self.assertEqual(guard.as_dict()["provider_requests"], 1)
             self.assertEqual(guard.as_dict()["total_tokens"], 7792)
             self.assertEqual(guard.as_dict()["cost_usd"], 0.0007815)
 
-    def test_no_budget_policy_preserves_todays_behaviour(self) -> None:
+    def test_no_budget_policy_refuses_external_proposer_before_launch(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             executable, log = self._fake_opencode(root)
-            receipt = guarded_propose(None, worktree=root, prompt="inspect", timeout=30.0,
-                                      model=None, executable=executable)
-            # No guard and no admission: the receipt carries no budget fields.
-            self.assertNotIn("budget_guard", receipt)
-            self.assertEqual(self._proposals(log)[0],
-                             ["run", "--auto", "--format", "json", "--dir", str(root), "inspect"])
+            with self.assertRaisesRegex(RuntimeError, "admitted request budget"):
+                guarded_propose(None, worktree=root, prompt="inspect", timeout=30.0,
+                                model=self.ROUTE, executable=executable)
+            self.assertEqual(self._proposals(log), [])
             # A qualification without a policy is refused on its own terms,
             # never by a budget admission it never asked for.
             paths = self._qualification_inputs(root)
@@ -1068,7 +1078,7 @@ class OptimizerCampaignSequenceTests(unittest.TestCase):
 
                 def propose(worktree: Path, prompt: str, allowed_prefixes: tuple[str, ...],
                             timeout: float, executable: str | None = None,
-                            model: str | None = None) -> dict:
+                            model: str | None = None, spend_guard=None) -> dict:
                     iteration = len(proposals) + 1
                     source = worktree / "src" / "lib.rs"
                     source.write_text(f"pub fn contract() -> bool {{ {str(iteration == 2).lower()} }}\n",
@@ -1107,12 +1117,14 @@ class OptimizerCampaignSequenceTests(unittest.TestCase):
                 run_root.mkdir()
                 with (unittest.mock.patch.object(improve, "opencode_propose", side_effect=propose),
                       unittest.mock.patch.object(improve, "qualify_candidate", side_effect=qualify)):
+                    offline_policy = budget.BudgetPolicy(max_provider_requests=1)
                     receipt = improve.run_optimizer(
                         repository, suite, ledger_root, baseline_candidate="baseline",
                         candidate_root=candidate_root, target_root=target_root,
                         checkpoint_path=checkpoint_path,
                         allowed_prefixes=("src/",), prompt="synthetic fixed campaign",
-                        max_iterations=2, max_wallclock=120.0, timeout=30.0)
+                        max_iterations=2, max_wallclock=120.0, timeout=30.0,
+                        budget_policy=offline_policy)
 
                 # The actual optimizer persisted both sequential iterations;
                 # the production score contract rejected the no-op and accepted
@@ -1141,6 +1153,104 @@ class OptimizerCampaignSequenceTests(unittest.TestCase):
             baseline_rows = [row for row in ledger.load_runs(ledger_root)
                              if row["candidate"] == "baseline"]
             self.assertEqual(len(baseline_rows), 1)
+
+    def test_proposer_n_plus_one_receipt_is_persisted_without_iteration_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repository, suite, ledger_root, _revision = self._campaign_fixture(root)
+            candidate_root = root / "candidates"
+            target_root = root / "targets"
+            checkpoint_path = root / "optimizer.json"
+            refusal_receipt = {
+                "schema": "proposer_http_admission_v1", "request_ceiling": 1,
+                "observed_requests": 2, "admitted_requests": 1,
+                "refused_requests": 1, "forwarded_requests": 1,
+                "requests": [
+                    {"sequence": 1, "admitted": True, "forwarded": True, "status": 200},
+                    {"sequence": 2, "admitted": False, "forwarded": False, "status": 429},
+                ],
+            }
+            with unittest.mock.patch.object(
+                improve, "opencode_propose",
+                side_effect=improve.ProposerAdmissionError("request cap reached", refusal_receipt),
+            ):
+                with self.assertRaisesRegex(improve.ProposerAdmissionError, "cap reached"):
+                    improve.run_optimizer(
+                        repository, suite, ledger_root, baseline_candidate="baseline",
+                        candidate_root=candidate_root, target_root=target_root,
+                        checkpoint_path=checkpoint_path, allowed_prefixes=("src/",),
+                        prompt="offline fault injection", max_iterations=1,
+                        max_wallclock=30.0, timeout=10.0, model="opencode-go/fixture",
+                        budget_policy=budget.BudgetPolicy(max_provider_requests=1),
+                    )
+            events, _torn = improve._read_event_log(checkpoint_path.with_suffix(".jsonl"))
+            interrupted = [event["data"] for event in events
+                           if event["kind"] == "iteration_interrupted"]
+            finished = [event for event in events if event["kind"] == "iteration_finished"]
+            self.assertEqual(len(interrupted), 1)
+            self.assertEqual(interrupted[0]["proposer_request_admission"], refusal_receipt)
+            self.assertEqual(finished, [])
+            self.assertEqual(len([event for event in events if event["kind"] == "iteration_started"]), 1)
+            for worktree in candidate_root.iterdir():
+                subprocess.run(["git", "-C", str(repository), "worktree", "remove",
+                                "--force", str(worktree)], check=True)
+            subprocess.run(["git", "-C", str(repository), "worktree", "prune"], check=True)
+
+
+class CampaignResourceContentionTests(unittest.TestCase):
+    def test_parallel_offline_cargo_builds_use_disjoint_capped_targets(self) -> None:
+        cargo = shutil.which("cargo")
+        if cargo is None:
+            self.skipTest("Cargo is unavailable")
+        with tempfile.TemporaryDirectory(prefix="harness-s005-contention-") as temporary:
+            root = Path(temporary)
+            package = root / "subject"
+            (package / "src").mkdir(parents=True)
+            (package / "Cargo.toml").write_text(
+                '[package]\nname = "s005-contention-subject"\nversion = "0.1.0"\n'
+                'edition = "2021"\n[lib]\npath = "src/lib.rs"\n', encoding="utf-8")
+            source = "\n".join(f"pub fn generated_{index}() -> usize {{ {index} }}"
+                                 for index in range(256)) + "\n"
+            (package / "src/lib.rs").write_text(source, encoding="utf-8")
+            target_roots = [root / "target-a", root / "target-b"]
+            envs = []
+            for target in target_roots:
+                child_env = os.environ.copy()
+                child_env["CARGO_TARGET_DIR"] = str(target)
+                child_env["CARGO_BUILD_JOBS"] = "1"
+                child_env["CARGO_NET_OFFLINE"] = "true"
+                envs.append(child_env)
+            rounds = []
+            for _round in range(2):
+                started = time.monotonic()
+                processes = [subprocess.Popen(
+                    [cargo, "check", "--offline", "--manifest-path", str(package / "Cargo.toml")],
+                    cwd=root, env=child_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                ) for child_env in envs]
+                outputs = []
+                try:
+                    for process in processes:
+                        stdout, stderr = process.communicate(timeout=60)
+                        outputs.append((process.returncode, stdout, stderr))
+                except subprocess.TimeoutExpired:
+                    for process in processes:
+                        if process.poll() is None:
+                            process.terminate()
+                    for process in processes:
+                        try:
+                            process.communicate(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.communicate(timeout=2)
+                    self.fail("parallel Cargo checks exceeded the 60 second bound")
+                self.assertTrue(all(code == 0 for code, _stdout, _stderr in outputs),
+                                "parallel isolated Cargo checks failed: " +
+                                " | ".join(stderr.decode(errors="replace")[-2048:]
+                                           for code, _stdout, stderr in outputs if code != 0))
+                self.assertNotEqual(target_roots[0], target_roots[1])
+                self.assertTrue(all((target / "debug").is_dir() for target in target_roots))
+                rounds.append(round(time.monotonic() - started, 3))
+            self.assertEqual(len(rounds), 2)
 
 
 class CompileCorrectionMechanicsTests(unittest.TestCase):

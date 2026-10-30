@@ -45,6 +45,24 @@ provider campaign; a genuine current harness defect still needs a failing-first
 native reproduction, independent expected behavior and a separately frozen
 holdout/control set.
 
+To exercise the generic positive intake mechanics, create a synthetic-only
+`defect_reproduction_manifest_v1` and pass its repository-relative path using
+`--generic-manifest`. The independent verifier and holdout receipts must bind
+the source/test digests, and two distinct private lanes must record the same
+red signature. The resulting `generic_defect_dossier_v1` is always marked
+`synthetic_fixture` and `campaign_eligible: false`; it cannot promote a real
+defect or change the H007 denominator.
+
+## External proposer request admission
+
+The OpenCode CLI is routed through a private loopback gateway for provider
+traffic. Its cap counts HTTP requests inside a CLI run, admits request N and
+refuses N+1 before upstream forwarding. The child gets a temporary pinned
+provider config with plugins and non-read/edit tools denied. A successful
+fixture run proves only the offline gate: it does not enable a live route or
+replace fresh operator authorization. On a refusal, the bounded credential-
+free request receipt is included in the campaign checkpoint or CLI error.
+
 ## Local two-subject lifecycle smoke
 
 Build the candidate and run the smoke from a clean CodeGG checkout:

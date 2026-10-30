@@ -30,14 +30,31 @@ import shutil
 import signal
 import statistics
 import subprocess
+import tempfile
 import threading
 import time
 from typing import Any
 
-from . import budget
+from . import budget, proposer_gateway
 
 
 STATES = {"BASELINED", "DIAGNOSED", "PROPOSING", "PATCHED", "BUILDING", "QUALIFYING", "EVALUATING", "COMPARING", "ACCEPTED", "REJECTED", "BLOCKED", "INTERRUPTED_UNKNOWN"}
+
+
+class ProposerAdmissionError(RuntimeError):
+    """External proposal failure retaining its credential-free HTTP receipt."""
+
+    def __init__(self, message: str, receipt: dict[str, Any]):
+        super().__init__(message)
+        self.request_admission = receipt
+
+
+class ProposerAdmissionTimeout(TimeoutError):
+    """Proposer timeout that retains the consumed HTTP admission receipt."""
+
+    def __init__(self, message: str, receipt: dict[str, Any]):
+        super().__init__(message)
+        self.request_admission = receipt
 #: The OpenCode CLI version whose `run --auto --format json` surface this
 #: adapter supports. Verified against the installed 1.19.3 `opencode run
 #: --help`: `run [message..]`, `--auto` (auto-approve permissions that are not
@@ -413,10 +430,30 @@ def parse_opencode_events(stdout: str) -> dict[str, Any]:
 
 
 def run_opencode(worktree: Path, prompt: str, timeout: float = 300.0, executable: str | None = None,
-                 model: str | None = None) -> dict[str, Any]:
+                 model: str | None = None, *, max_provider_requests: int | None = None,
+                 upstream_base_url: str | None = None,
+                 fixture_handler: proposer_gateway.FixtureHandler | None = None,
+                 spend_guard: "budget.SpendGuard | None" = None) -> dict[str, Any]:
     # The route is validated before anything else, so a malformed id is
     # refused whether or not a CLI is installed.
     model = validate_proposer_model(model)
+    if model is None:
+        raise ValueError("external OpenCode proposals require an explicitly pinned provider/model route")
+    if spend_guard is not None:
+        policy_limit = spend_guard.policy.max_provider_requests
+        if policy_limit is None:
+            raise RuntimeError("external proposer request admission requires a hard max_provider_requests cap")
+        max_provider_requests = policy_limit - spend_guard.provider_requests
+        if max_provider_requests < 1:
+            spend_guard.admit(projected_provider_requests=1)
+    if upstream_base_url is None and fixture_handler is None:
+        upstream_base_url = os.environ.get("CODEGG_HARNESS_OPENCODE_GO_BASE_URL")
+    if max_provider_requests is None:
+        raise RuntimeError("external proposer request admission requires a positive request ceiling")
+    if fixture_handler is None and upstream_base_url is None:
+        raise RuntimeError("external proposer is blocked until a request-gated OpenCode Go upstream is configured")
+    if upstream_base_url is not None and model.split("/", 1)[0] != "opencode-go":
+        raise RuntimeError("live external proposer traffic is restricted to the pinned opencode-go provider")
     binary = executable or shutil.which("opencode")
     if not binary:
         raise FileNotFoundError("opencode executable is unavailable; manual proposer remains available")
@@ -428,73 +465,102 @@ def run_opencode(worktree: Path, prompt: str, timeout: float = 300.0, executable
         raise RuntimeError(
             f"OpenCode version preflight failed: expected {SUPPORTED_OPENCODE_VERSION}, "
             f"observed {observed or 'unknown'} from {binary}")
-    env = os.environ.copy()
-    env.pop("CODEGG_DAEMON_HOME", None)
-    # An unpinned run keeps the CLI's own default route and emits no
-    # ``--model`` flag at all; a pinned run names the approved route
-    # explicitly, between ``--dir`` and the prompt.
-    argv = [binary, "run", "--auto", "--format", "json", "--dir", str(worktree)]
-    if model is not None:
-        argv.extend(["--model", model])
-    argv.append(prompt)
-    process = subprocess.Popen(argv,
-                               cwd=worktree, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               start_new_session=(os.name == "posix"))
-    outputs: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
-    overflow: set[str] = set()
+    with tempfile.TemporaryDirectory(prefix="codegg-proposer-config-") as config_root:
+        config_dir = Path(config_root) / "config"
+        config_dir.mkdir()
+        env = os.environ.copy()
+        env.pop("CODEGG_DAEMON_HOME", None)
+        env.pop("OPENCODE_CONFIG", None)
+        env.pop("OPENCODE_CONFIG_DIR", None)
+        env["OPENCODE_CONFIG_DIR"] = str(config_dir)
+        argv = [binary, "run", "--auto", "--pure", "--format", "json", "--dir", str(worktree),
+                "--model", model, prompt]
+        outputs: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
+        overflow: set[str] = set()
 
-    def drain(name: str, stream: Any, limit: int) -> None:
-        while chunk := stream.read(8192):
-            remaining = limit - len(outputs[name])
-            if remaining > 0:
-                outputs[name].extend(chunk[:remaining])
-            if len(chunk) > remaining:
-                overflow.add(name)
+        def drain(name: str, stream: Any, limit: int) -> None:
+            while chunk := stream.read(8192):
+                remaining = limit - len(outputs[name])
+                if remaining > 0:
+                    outputs[name].extend(chunk[:remaining])
+                if len(chunk) > remaining:
+                    overflow.add(name)
 
-    assert process.stdout is not None and process.stderr is not None
-    readers = [threading.Thread(target=drain, args=("stdout", process.stdout, 4 * 1024 * 1024), daemon=True),
-               threading.Thread(target=drain, args=("stderr", process.stderr, 64 * 1024), daemon=True)]
-    for reader in readers:
-        reader.start()
-    try:
-        process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        if os.name == "posix":
-            os.killpg(process.pid, signal.SIGTERM)
-        else:
-            process.terminate()
-        try:
-            process.wait(timeout=0.25)
-        except subprocess.TimeoutExpired:
-            if os.name == "posix":
-                os.killpg(process.pid, signal.SIGKILL)
-            process.kill()
-            process.wait()
-        for reader in readers:
-            reader.join(timeout=2)
-        process.stdout.close()
-        process.stderr.close()
-        raise TimeoutError("OpenCode proposer exceeded its wallclock budget")
-    for reader in readers:
-        reader.join(timeout=2)
-    if any(reader.is_alive() for reader in readers):
-        process.stdout.close()
-        process.stderr.close()
-        raise RuntimeError("OpenCode output pipes did not close after process exit")
-    process.stdout.close()
-    process.stderr.close()
-    if overflow:
-        raise ValueError("OpenCode output exceeded bounded capture limits")
-    if process.returncode != 0:
-        raise RuntimeError(f"OpenCode proposal failed with exit {process.returncode}; stderr bytes={len(outputs['stderr'])} (content redacted)")
-    parsed = parse_opencode_events(outputs["stdout"].decode(errors="replace"))
-    return {"version": version.stdout.strip(), "event_count": parsed["event_count"], "event_types": parsed["types"],
-            "text_sha256": __import__("hashlib").sha256(parsed["text"].encode()).hexdigest(), "returncode": process.returncode,
-            # The route the proposal is attributed to. ``None`` means the CLI's
-            # own unpinned default was used.
-            "model": model,
-            "proposer_usage": parsed["usage"],
-            "proposer_usage_reason": parsed["usage_reason"]}
+        with proposer_gateway.ProposerRequestGateway(
+            max_provider_requests, fixture_handler=fixture_handler,
+            upstream_base_url=upstream_base_url, timeout=timeout,
+            admit_request=(spend_guard.admit if spend_guard is not None else None),
+            observe_request=(spend_guard.settle_request_admission if spend_guard is not None else None),
+        ) as gateway:
+            env["OPENCODE_CONFIG_CONTENT"] = proposer_gateway.opencode_inline_config(
+                model, gateway.base_url, fixture_api_key=fixture_handler is not None)
+            process = subprocess.Popen(argv, cwd=worktree, env=env, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, start_new_session=(os.name == "posix"))
+            assert process.stdout is not None and process.stderr is not None
+            readers = [threading.Thread(target=drain, args=("stdout", process.stdout, 4 * 1024 * 1024), daemon=True),
+                       threading.Thread(target=drain, args=("stderr", process.stderr, 64 * 1024), daemon=True)]
+            for reader in readers:
+                reader.start()
+            deadline = time.monotonic() + timeout
+            terminal_reason: str | None = None
+            while process.poll() is None:
+                if gateway.refusal_event.is_set():
+                    terminal_reason = "request_admission_refused"
+                    break
+                if time.monotonic() >= deadline:
+                    terminal_reason = "wallclock_timeout"
+                    break
+                time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+            if terminal_reason is not None:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGTERM)
+                else:
+                    process.terminate()
+                try:
+                    process.wait(timeout=0.25)
+                except subprocess.TimeoutExpired:
+                    if os.name == "posix":
+                        os.killpg(process.pid, signal.SIGKILL)
+                    process.kill()
+                    process.wait()
+                for reader in readers:
+                    reader.join(timeout=2)
+                process.stdout.close()
+                process.stderr.close()
+                failed_receipt = gateway.receipt()
+                if terminal_reason == "request_admission_refused":
+                    raise ProposerAdmissionError(
+                        "OpenCode proposer stopped after request admission refusal", failed_receipt)
+                raise ProposerAdmissionTimeout("OpenCode proposer exceeded its wallclock budget",
+                                               failed_receipt)
+            for reader in readers:
+                reader.join(timeout=2)
+            if any(reader.is_alive() for reader in readers):
+                process.stdout.close()
+                process.stderr.close()
+                raise ProposerAdmissionError("OpenCode output pipes did not close after process exit",
+                                             gateway.receipt())
+            process.stdout.close()
+            process.stderr.close()
+            gateway_receipt = gateway.receipt()
+        if overflow:
+            raise ProposerAdmissionError("OpenCode output exceeded bounded capture limits",
+                                         gateway_receipt)
+        if process.returncode != 0:
+            raise ProposerAdmissionError(
+                f"OpenCode proposal failed with exit {process.returncode}; "
+                f"admitted_http_requests={gateway_receipt['admitted_requests']}; "
+                f"refused_http_requests={gateway_receipt['refused_requests']}; "
+                f"stderr bytes={len(outputs['stderr'])} (content redacted)", gateway_receipt)
+        parsed = parse_opencode_events(outputs["stdout"].decode(errors="replace"))
+        receipt = {"version": version.stdout.strip(), "event_count": parsed["event_count"],
+                   "event_types": parsed["types"],
+                   "text_sha256": __import__("hashlib").sha256(parsed["text"].encode()).hexdigest(),
+                   "returncode": process.returncode, "model": model,
+                   "proposer_usage": parsed["usage"],
+                   "proposer_usage_reason": parsed["usage_reason"],
+                   "request_admission": gateway_receipt}
+        return receipt
 
 
 def changed_paths(worktree: Path) -> list[str]:
@@ -686,7 +752,9 @@ def observe_proposer_usage(guard: "budget.SpendGuard", receipt: dict[str, Any]) 
     """
     usage = receipt.get("proposer_usage") or {}
     tokens = usage.get("tokens") or {}
-    observed: dict[str, Any] = {"provider_requests": 1}
+    # HTTP request admission already charged each pretransport attempt through
+    # the loopback gateway; this observation adds only post-response usage.
+    observed: dict[str, Any] = {"provider_requests": 0}
 
     def figure(value: Any) -> int | float | None:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -707,28 +775,28 @@ def observe_proposer_usage(guard: "budget.SpendGuard", receipt: dict[str, Any]) 
 
 
 def guarded_propose(guard: "budget.SpendGuard | None", *, worktree: Path, prompt: str, timeout: float,
-                    model: str | None, executable: str | None = None) -> dict[str, Any]:
-    """Run one OpenCode proposer invocation under an optional spend guard.
-
-    The guard reserves one provider request *before* the invocation, so a
-    run that would cross ``max_provider_requests`` never starts the call.
-    The reservation is then replaced by the usage the CLI reported.
+                    model: str | None, executable: str | None = None,
+                    fixture_handler: proposer_gateway.FixtureHandler | None = None) -> dict[str, Any]:
+    """Run one OpenCode invocation with every provider HTTP request gated.
 
     Only the OpenCode proposer call is charged to this guard. The ACP trial
     suite that :func:`qualify_candidate` runs uses a local deterministic
     fixture provider rather than a real provider, so its trials are never
     counted as provider requests here.
     """
-    if guard is not None:
-        guard.admit(projected_provider_requests=1)
-    receipt = run_opencode(worktree, prompt, timeout, executable, model)
-    if guard is not None:
-        observe_proposer_usage(guard, receipt)
+    if guard is None:
+        raise RuntimeError("external proposer requires an admitted request budget")
+    receipt = run_opencode(worktree, prompt, timeout, executable, model,
+                           fixture_handler=fixture_handler, spend_guard=guard)
+    observe_proposer_usage(guard, receipt)
     return receipt
 
 
 def opencode_propose(worktree: Path, prompt: str, allowed_prefixes: tuple[str, ...], timeout: float = 300.0,
-                     executable: str | None = None, model: str | None = None) -> dict[str, Any]:
+                     executable: str | None = None, model: str | None = None,
+                     spend_guard: "budget.SpendGuard | None" = None) -> dict[str, Any]:
+    if spend_guard is None:
+        raise RuntimeError("external proposer requires an admitted request budget")
     worktree = worktree.expanduser().resolve(strict=True)
     model = validate_proposer_model(model)
     top = subprocess.run(["git", "-C", str(worktree), "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=5)
@@ -742,7 +810,8 @@ def opencode_propose(worktree: Path, prompt: str, allowed_prefixes: tuple[str, .
     baseline = subprocess.run(["git", "-C", str(worktree), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5)
     if baseline.returncode:
         raise ValueError("candidate baseline revision unavailable")
-    proposer = run_opencode(worktree, prompt, timeout, executable, model)
+    proposer = run_opencode(worktree, prompt, timeout, executable, model, spend_guard=spend_guard)
+    observe_proposer_usage(spend_guard, proposer)
     paths = changed_paths(worktree)
     check_scope(paths, allowed_prefixes)
     if not paths:
@@ -1607,15 +1676,11 @@ def run_optimizer(repository: Path, suite: Path, ledger_root: Path, *, baseline_
                         {"status": prior.get("status"), "accepted": prior.get("accepted"),
                          "correctness_improvements": prior.get("correctness_improvements"),
                          "paired_comparison": prior.get("paired_comparison")}, sort_keys=True)[:4096]
-                if guard is not None:
-                    # The request is reserved before the proposer is started, so
-                    # a run that would cross the declared request cap never
-                    # begins the call.
-                    guard.admit(projected_provider_requests=1)
+                if guard is None:
+                    raise RuntimeError("external proposer requires an admitted request budget")
                 proposal = opencode_propose(worktree, iteration_prompt, allowed_prefixes,
-                                            min(timeout, remaining), proposer_executable, model)
-                if guard is not None:
-                    observe_proposer_usage(guard, proposal["proposer"])
+                                            min(timeout, remaining), proposer_executable, model,
+                                            spend_guard=guard)
                 child.transition("PATCHED", {"changed_paths": proposal["changed_paths"],
                                               "patch_sha256": proposal["patch_sha256"],
                                               "proposer_receipt": proposal["proposer"]})
@@ -1643,6 +1708,9 @@ def run_optimizer(repository: Path, suite: Path, ledger_root: Path, *, baseline_
         except (ValueError, RuntimeError, TimeoutError, OSError) as error:
             interruption = {"iteration": iteration, "candidate": candidate,
                             "failure_class": type(error).__name__}
+            request_admission = getattr(error, "request_admission", None)
+            if isinstance(request_admission, dict):
+                interruption["proposer_request_admission"] = request_admission
             if isinstance(error, CheckpointInterrupted):
                 # The interruption was already reconciled to a recorded
                 # interrupted_unknown outcome inside the checkpoint that owns

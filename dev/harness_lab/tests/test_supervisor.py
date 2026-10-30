@@ -11,7 +11,14 @@ import time
 import unittest
 
 from dev.harness_lab.supervisor import (
+    AcpClient,
     SubjectSpec,
+    _assert_daemon_identity,
+    _default_daemon_fingerprint,
+    _live_daemon_id,
+    _owned_daemon_pids,
+    HarnessError,
+    stop_lane_daemon,
     _bounded_managed_test_log_tail,
     _project_job_observation,
     run_exec_trial,
@@ -92,6 +99,82 @@ class SubjectEnvironmentTests(unittest.TestCase):
             self.assertNotIn("CODEGG_CORE_ENDPOINT", env)
             self.assertNotIn("OPENAI_API_KEY", env)
             self.assertTrue((root / "lane" / "config").is_dir())
+
+
+class SubjectEnvironmentAndCrashCleanupTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "private daemon crash recovery uses POSIX process ownership")
+    def test_controller_sigkill_reconciles_only_its_private_subject_daemon(self) -> None:
+        configured = os.environ.get("CODEGG_H006_CODEGG_BINARY")
+        binary = Path(configured) if configured else Path(__file__).resolve().parents[2] / "target" / "debug" / "codegg"
+        if not binary.is_file():
+            self.skipTest("set CODEGG_H006_CODEGG_BINARY to an available CodeGG binary")
+        repo_root = Path(__file__).resolve().parents[3]
+        default_before = _default_daemon_fingerprint(binary, 3.0)
+        with tempfile.TemporaryDirectory(prefix="hcc-", dir="/tmp") as temporary:
+            root = Path(temporary)
+            lane_root = root / "lane"
+            workspace = root / "workspace"
+            lane_root.mkdir()
+            workspace.mkdir()
+            ready = root / "controller-ready.json"
+            controller = root / "controller.py"
+            controller.write_text(r"""
+import json, sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from dev.harness_lab.supervisor import AcpClient, SubjectSpec, _assert_daemon_identity
+binary, workspace, lane_root, ready = map(Path, sys.argv[2:])
+spec = SubjectSpec.create("crash-subject", binary, workspace, lane_root, Path(sys.argv[1]))
+client = AcpClient(binary, spec.environment(), workspace, 30.0)
+client.request("initialize", {"protocolVersion": 1, "clientInfo": {"name": "crash-fixture", "version": "1"}})
+session = client.request("session/new", {"cwd": str(workspace), "title": "parent-death-fixture"})
+identity = _assert_daemon_identity(spec, 10.0, client.process.pid)
+ready.write_text(json.dumps({"identity": identity, "session_id": session["sessionId"]}), encoding="utf-8")
+while True:
+    time.sleep(0.05)
+""", encoding="utf-8")
+            controller_process = subprocess.Popen(
+                [sys.executable, str(controller), str(repo_root), str(binary), str(workspace), str(lane_root), str(ready)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            sentinel = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+            try:
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline and not ready.exists():
+                    if controller_process.poll() is not None:
+                        stdout, stderr = controller_process.communicate(timeout=1)
+                        daemon_log = lane_root / "daemon" / "daemon.log"
+                        log_tail = daemon_log.read_bytes()[-2048:] if daemon_log.exists() else b""
+                        self.fail(f"private subject controller failed: {stderr[-2048:]!r}; "
+                                  f"daemon log: {log_tail!r}")
+                    time.sleep(0.05)
+                self.assertTrue(ready.is_file(), "controller never published exact private daemon identity")
+                identity = json.loads(ready.read_text(encoding="utf-8"))["identity"]
+                self.assertEqual(identity["lane_id"], "crash-subject")
+                self.assertEqual(identity["binary_sha256"], hashlib.sha256(binary.read_bytes()).hexdigest())
+                controller_process.kill()
+                controller_process.wait(timeout=3)
+                controller_process.communicate(timeout=1)
+                spec = SubjectSpec.create("crash-subject", binary, workspace, lane_root, repo_root)
+                remaining_owned = _owned_daemon_pids(spec)
+                try:
+                    live_daemon_id = _live_daemon_id(spec, 3.0)
+                except HarnessError:
+                    live_daemon_id = None
+                if identity["pid"] in remaining_owned or live_daemon_id is not None:
+                    stop_lane_daemon(spec, timeout=10)
+                self.assertEqual(_owned_daemon_pids(spec), [])
+                with self.assertRaises(HarnessError):
+                    _live_daemon_id(spec, 3.0)
+                self.assertIsNone(sentinel.poll(), "unrelated sentinel process was stopped")
+                self.assertEqual(_default_daemon_fingerprint(binary, 3.0), default_before)
+            finally:
+                if controller_process.poll() is None:
+                    controller_process.kill()
+                    controller_process.wait(timeout=3)
+                if sentinel.poll() is None:
+                    sentinel.terminate()
+                    sentinel.wait(timeout=3)
 
     def test_provider_request_limit_is_forwarded_with_attempt_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

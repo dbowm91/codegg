@@ -164,14 +164,131 @@ def build_dossier(repo_root: Path, report_path: Path = DEFAULT_REPORT) -> dict[s
     }
 
 
+def build_generic_dossier(repo_root: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+    """Validate a positive generic reproduction without promoting test data.
+
+    The first generic intake accepts only explicit synthetic fixtures. This
+    exercises stable identity, source ownership, independent verification and
+    repeated-red requirements while making campaign eligibility impossible.
+    A current CodeGG defect needs a separately reviewed schema/authority path.
+    """
+    root = repo_root.resolve(strict=True)
+    required = {
+        "schema", "evidence_kind", "defect_id", "owner", "source_revision",
+        "source_path", "source_sha256", "test_path", "test_result_path", "verifier_path",
+        "holdout_path", "candidate_scope", "failure_signature", "reproductions",
+    }
+    if not isinstance(manifest, dict) or set(manifest) != required:
+        raise IntakeError("generic reproduction manifest has missing or unknown fields")
+    if manifest.get("schema") != "defect_reproduction_manifest_v1":
+        raise IntakeError("unsupported generic reproduction manifest")
+    if manifest.get("evidence_kind") != "synthetic_fixture":
+        raise IntakeError("this generic intake path accepts synthetic fixtures only")
+    if manifest.get("owner") != "codegg_harness":
+        raise IntakeError("generic reproduction owner must be codegg_harness")
+    defect_id = manifest.get("defect_id")
+    signature = manifest.get("failure_signature")
+    revision = manifest.get("source_revision")
+    if not isinstance(defect_id, str) or not defect_id or len(defect_id) > 128:
+        raise IntakeError("generic defect id is invalid")
+    if not isinstance(signature, str) or not signature or len(signature) > 256:
+        raise IntakeError("generic failure signature is invalid")
+    if not isinstance(revision, str) or len(revision) != 40 or any(c not in "0123456789abcdef" for c in revision):
+        raise IntakeError("generic source revision must be a full lowercase Git SHA")
+
+    artifact_fields = ("source_path", "test_path", "test_result_path", "verifier_path", "holdout_path")
+    artifact_hashes: dict[str, str] = {}
+    for field in artifact_fields:
+        path = manifest.get(field)
+        if not isinstance(path, str):
+            raise IntakeError(f"generic {field} must be a repository-relative path")
+        artifact_hashes[field] = _sha256(_repo_read(root, path))
+    if manifest.get("source_sha256") != artifact_hashes["source_path"]:
+        raise IntakeError("generic source digest does not match the pinned source artifact")
+    if len(set(artifact_hashes.values())) < len(artifact_hashes):
+        raise IntakeError("generic source, test, result, verifier and holdout artifacts must be distinct")
+    test_result = _load_object(_repo_read(root, manifest["test_result_path"]), manifest["test_result_path"])
+    verifier = _load_object(_repo_read(root, manifest["verifier_path"]), manifest["verifier_path"])
+    holdout = _load_object(_repo_read(root, manifest["holdout_path"]), manifest["holdout_path"])
+    if test_result != {
+        "schema": "red_test_result_v1", "test_sha256": artifact_hashes["test_path"],
+        "failure_signature": signature, "terminal": "red",
+    }:
+        raise IntakeError("generic red-test receipt does not bind the test and failure signature")
+    if verifier != {
+        "schema": "independent_verifier_result_v1", "verifier_owner": "independent",
+        "source_sha256": artifact_hashes["source_path"], "test_sha256": artifact_hashes["test_path"],
+        "holdout_sha256": artifact_hashes["holdout_path"], "verdict": "red_confirmed",
+    }:
+        raise IntakeError("generic independent verifier receipt is invalid")
+    if holdout != {"schema": "protected_holdout_v1", "mutable_by_candidate": False}:
+        raise IntakeError("generic holdout is not explicitly protected")
+
+    scope = manifest.get("candidate_scope")
+    if not isinstance(scope, list) or not scope or any(not isinstance(item, str) for item in scope):
+        raise IntakeError("generic candidate scope must be a non-empty list")
+    forbidden = ("dev/harness_lab/", "plans/closure/", "plans/implementation/", "plans/registry.md")
+    normalized_scope = sorted(set(scope))
+    for item in normalized_scope:
+        parts = PurePosixPath(item).parts
+        if not parts or "/".join(parts) + "/" != item or item.startswith("/") or ".." in parts \
+                or item.startswith(forbidden):
+            raise IntakeError("generic candidate scope is not a permitted normalized source prefix")
+
+    reproductions = manifest.get("reproductions")
+    if not isinstance(reproductions, list) or len(reproductions) < 2:
+        raise IntakeError("generic intake requires at least two independent red reproductions")
+    lanes: set[str] = set()
+    rows = []
+    for row in reproductions:
+        if not isinstance(row, dict) or set(row) != {"lane_id", "failure_signature", "terminal"}:
+            raise IntakeError("generic reproduction row is malformed")
+        lane_id = row.get("lane_id")
+        if not isinstance(lane_id, str) or not lane_id or lane_id in lanes:
+            raise IntakeError("generic reproduction lane ids must be distinct")
+        lanes.add(lane_id)
+        if row.get("failure_signature") != signature or row.get("terminal") != "red":
+            raise IntakeError("generic reproduction rows do not share the independently checked red result")
+        rows.append({"lane_id": lane_id, "failure_signature": signature, "terminal": "red"})
+
+    identity = {
+        "schema": manifest["schema"], "evidence_kind": manifest["evidence_kind"],
+        "defect_id": defect_id, "owner": manifest["owner"], "source_revision": revision,
+        "artifact_sha256": artifact_hashes, "candidate_scope": normalized_scope,
+        "failure_signature": signature, "reproductions": rows,
+    }
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    return {
+        "schema_version": 1,
+        "schema": "generic_defect_dossier_v1",
+        "dossier_id": f"synthetic-intake-{_sha256(canonical)[:16]}",
+        "evidence_kind": "synthetic_fixture",
+        "disposition": "synthetic_reproduction_validated",
+        "reproduction_validated": True,
+        "campaign_eligible": False,
+        "stable_identity_sha256": _sha256(canonical),
+        "source_revision": revision,
+        "artifact_sha256": artifact_hashes,
+        "candidate_scope": normalized_scope,
+        "reproductions": rows,
+        "promotion_reason": "Synthetic intake mechanics are positive; synthetic evidence cannot establish a current CodeGG defect.",
+    }
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
+    parser.add_argument("--generic-manifest", type=Path,
+                        help="validate an explicitly synthetic defect reproduction manifest")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        dossier = build_dossier(args.repo_root, args.report)
+        if args.generic_manifest is None:
+            dossier = build_dossier(args.repo_root, args.report)
+        else:
+            manifest_path = args.generic_manifest.as_posix()
+            manifest = _load_object(_repo_read(args.repo_root.resolve(strict=True), manifest_path),
+                                   manifest_path)
+            dossier = build_generic_dossier(args.repo_root, manifest)
     except (IntakeError, h007_attribution.AttributionInputError, OSError) as exc:
         print(f"defect intake refused: {exc}", file=sys.stderr)
         return 2

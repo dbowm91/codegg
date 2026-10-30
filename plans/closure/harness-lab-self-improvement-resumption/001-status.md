@@ -7,8 +7,8 @@ Pinned H007 source: \`origin/main@99cecc050ed1ae418af62d2d10e6d34d791513e1\`; ho
 
 ## Frozen inputs
 
-- Input manifest SHA-256: \`04ca7ac6f77608dd9e3b9f32509b3efc5e9bc42152c59ee2ce88038b2a236dbc\`
-- Attribution report SHA-256: \`0e1a73e13ff88c0846edd1597025f31e2125c60a57513d4a7b6295d29097ba7d\`
+- Input manifest SHA-256: \`d1f9ac4df8e8564044999c5976813ea325fe1e68c4aafdf9d895ef54d77802c8\`
+- Attribution report SHA-256: \`401b686b89db51ec76da53071319f72a6b30e3b2db30e2397e172be0a2eff11b\`
 - The manifest pins all seven committed sanitized H007 receipt digests and the baseline case manifest, metadata, frozen starter files and hidden verifier.
 - Companion inventory: 7 private lanes, 7 transcript JSON files, 7 provider admission ledgers, 13 run indexes, 14 daemon/ACP logs and 0 separately named event ledgers. Private sidecars were inventoried by filename only; none were read or used.
 
