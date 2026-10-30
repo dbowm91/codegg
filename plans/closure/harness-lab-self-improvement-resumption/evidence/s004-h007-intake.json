@@ -1,0 +1,226 @@
+{
+  "alternatives_and_falsifiers": [
+    "Provider timeout: reproduce at provider boundary with known transport outcome before assigning a CodeGG owner.",
+    "Fixture/verifier setup error: validate the fixture independently before scoring candidate behavior.",
+    "Task or horizon miss: require a failing-first native CodeGG behavior and an independent expected result."
+  ],
+  "campaign_eligible": false,
+  "candidate_allow_prefixes": [],
+  "candidate_identity_requirements": [
+    "baseline source SHA",
+    "binary SHA-256",
+    "case and hidden-verifier digests",
+    "route",
+    "policy",
+    "independent red-test and holdout digests"
+  ],
+  "current_red_reproduction": null,
+  "current_red_reproduction_reason": "S001 reproduced no current CodeGG defect; no failing-first native ACP red test exists.",
+  "disposition": "no_reproducible_defect",
+  "dossier_id": "h007-intake-035dc6cb81de34c7",
+  "evidence_completeness": {
+    "companion_ledgers_used": false,
+    "complete_event_trajectory_available": false,
+    "sanitized_receipts": 7,
+    "unknown_is_not_false": true
+  },
+  "evidence_identity": {
+    "baseline_source_sha": "99cecc050ed1ae418af62d2d10e6d34d791513e1",
+    "case_identity": {
+      "fixture_root": "dev/harness_lab/fixtures/build_provenance_catalog/fixture",
+      "manifest": "dev/harness_lab/fixtures/agent_autonomy_h007/cases.jsonl",
+      "manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+      "metadata": "dev/harness_lab/fixtures/build_provenance_catalog.case.json",
+      "metadata_sha256": "08b51eaf8c61373ddf492a5594e84991cac9b1e2dabb03388662286e454f24bd",
+      "verifier": "dev/autonomy_fixtures/build-provenance-catalog/verifier/test_catalog_contract.py",
+      "verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c"
+    },
+    "input_manifest_sha256": "04ca7ac6f77608dd9e3b9f32509b3efc5e9bc42152c59ee2ce88038b2a236dbc",
+    "report_sha256": "0e1a73e13ff88c0846edd1597025f31e2125c60a57513d4a7b6295d29097ba7d"
+  },
+  "historical_reference": {
+    "class": "historical_fixture",
+    "sha256": "6c8eba5bd58b1915dfb08c2ba8e66231eade4f0cfe5dfddb48a713e9857c5bd0",
+    "source": "plans/closure/harness-lab-post-pilot-corrective/003-status.md",
+    "status": "historical accepted correction; not current eligibility evidence"
+  },
+  "items": [
+    {
+      "campaign_eligible": false,
+      "cause_assertion": {
+        "assertion": null,
+        "established": false,
+        "evidence_pointers": [
+          "receipt#/terminal_failure",
+          "receipt#/independent_verifier",
+          "receipt#/event_capture"
+        ]
+      },
+      "disposition": "route_failure",
+      "evidence_id": "H007-1",
+      "evidence_pointers": [
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt.json#/task_outcome",
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt.json#/horizon_outcome",
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt.json#/independent_verifier",
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt.json#/event_capture"
+      ],
+      "reason": "Provider-boundary timeout is observed; underlying cause and task result are unresolved.",
+      "receipt_sha256": "8d4fe4da943265b3af18312ee8e778f6d1cadb80370f13f4d870e6edeaf16a79",
+      "suspected_owner": "provider route",
+      "symptom": "Typed provider timeout observed; underlying transport cause is unresolved."
+    },
+    {
+      "campaign_eligible": false,
+      "cause_assertion": {
+        "assertion": null,
+        "established": false,
+        "evidence_pointers": [
+          "receipt#/terminal_failure",
+          "receipt#/independent_verifier",
+          "receipt#/event_capture"
+        ]
+      },
+      "disposition": "observed_failure",
+      "evidence_id": "H007-2",
+      "evidence_pointers": [
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-2.json#/task_outcome",
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-2.json#/horizon_outcome",
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-2.json#/independent_verifier",
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-2.json#/event_capture"
+      ],
+      "reason": "Task or horizon criteria failed without an independently reproduced CodeGG cause.",
+      "receipt_sha256": "23a8f883c4c9845c2fa8e1784938bfc144e9c6fc429dc50faf708adaf8f35555",
+      "suspected_owner": "agent-task",
+      "symptom": "The recorded task or qualification criteria failed; model intent is not inferred."
+    },
+    {
+      "campaign_eligible": false,
+      "cause_assertion": {
+        "assertion": null,
+        "established": false,
+        "evidence_pointers": [
+          "receipt#/terminal_failure",
+          "receipt#/independent_verifier",
+          "receipt#/event_capture"
+        ]
+      },
+      "disposition": "route_failure",
+      "evidence_id": "H007-3",
+      "evidence_pointers": [
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-3.json#/task_outcome",
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-3.json#/horizon_outcome",
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-3.json#/independent_verifier",
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-3.json#/event_capture"
+      ],
+      "reason": "Provider-boundary timeout is observed; underlying cause and task result are unresolved.",
+      "receipt_sha256": "710c350b0c45df91ca97d6d6c1b306644c2dce9bb7d7cb11a87f9540bdc609bc",
+      "suspected_owner": "provider route",
+      "symptom": "Typed provider timeout observed; underlying transport cause is unresolved."
+    },
+    {
+      "campaign_eligible": false,
+      "cause_assertion": {
+        "assertion": null,
+        "established": false,
+        "evidence_pointers": [
+          "receipt#/terminal_failure",
+          "receipt#/independent_verifier",
+          "receipt#/event_capture"
+        ]
+      },
+      "disposition": "fixture_or_evaluator_issue",
+      "evidence_id": "H007-4",
+      "evidence_pointers": [
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-4.json#/task_outcome",
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-4.json#/horizon_outcome",
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-4.json#/independent_verifier",
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-4.json#/event_capture"
+      ],
+      "reason": "Verifier setup ended before contract tests ran; this is not a completed verifier failure.",
+      "receipt_sha256": "a892a3eb6f9e26c3ea514233717b0ff2d21dc54deaa2dfc4e9ab9ff7e25087f1",
+      "suspected_owner": "fixture",
+      "symptom": "Verifier setup ended before contract tests completed."
+    },
+    {
+      "campaign_eligible": false,
+      "cause_assertion": {
+        "assertion": null,
+        "established": false,
+        "evidence_pointers": [
+          "receipt#/terminal_failure",
+          "receipt#/independent_verifier",
+          "receipt#/event_capture"
+        ]
+      },
+      "disposition": "observed_failure",
+      "evidence_id": "H007-5",
+      "evidence_pointers": [
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-5.json#/task_outcome",
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-5.json#/horizon_outcome",
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-5.json#/independent_verifier",
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-5.json#/event_capture"
+      ],
+      "reason": "Task or horizon criteria failed without an independently reproduced CodeGG cause.",
+      "receipt_sha256": "436a66ecc6d18272c1b5951aa44c223102301b5d3e7ed87ce1993896bf6a2b1d",
+      "suspected_owner": "agent-task",
+      "symptom": "The recorded task or qualification criteria failed; model intent is not inferred."
+    },
+    {
+      "campaign_eligible": false,
+      "cause_assertion": {
+        "assertion": null,
+        "established": false,
+        "evidence_pointers": [
+          "receipt#/terminal_failure",
+          "receipt#/independent_verifier",
+          "receipt#/event_capture"
+        ]
+      },
+      "disposition": "fixture_or_evaluator_issue",
+      "evidence_id": "H007-6",
+      "evidence_pointers": [
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-6.json#/task_outcome",
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-6.json#/horizon_outcome",
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-6.json#/independent_verifier",
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-6.json#/event_capture"
+      ],
+      "reason": "Verifier setup ended before contract tests ran; this is not a completed verifier failure.",
+      "receipt_sha256": "8e8283983ec5717c0bc315e3b5aa2b23a522b44802944d0cca84c766a3e5da27",
+      "suspected_owner": "fixture",
+      "symptom": "Verifier setup ended before contract tests completed."
+    },
+    {
+      "campaign_eligible": false,
+      "cause_assertion": {
+        "assertion": null,
+        "established": false,
+        "evidence_pointers": [
+          "receipt#/terminal_failure",
+          "receipt#/independent_verifier",
+          "receipt#/event_capture"
+        ]
+      },
+      "disposition": "observed_failure",
+      "evidence_id": "H007-7",
+      "evidence_pointers": [
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-7.json#/task_outcome",
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-7.json#/horizon_outcome",
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-7.json#/independent_verifier",
+        "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-7.json#/event_capture"
+      ],
+      "reason": "Task or horizon criteria failed without an independently reproduced CodeGG cause.",
+      "receipt_sha256": "a6170b34e1bc16a3637a6c74b1aba068f0c58d2c2b3eca0314bd5c4e93606c8f",
+      "suspected_owner": "agent-task",
+      "symptom": "The recorded task or qualification criteria failed; model intent is not inferred."
+    }
+  ],
+  "next_action": "Do not propose or launch a provider-backed campaign. Keep S003 at no_reproducible_defect until a distinct current CodeGG red reproduction is supplied.",
+  "protected_controls": [
+    "H007 provider timeouts remain route failures",
+    "H007 verifier setup errors remain unmeasured",
+    "task failure alone does not establish a CodeGG defect",
+    "candidate cannot change verifier, holdout, controller, budget, or evidence"
+  ],
+  "schema": "defect_dossier_v1",
+  "schema_version": 1
+}

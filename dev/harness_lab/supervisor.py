@@ -1078,7 +1078,14 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             if deny_bash:
                 denial = any("den" in str(item.get("rawOutput", "")).lower() or "permission" in str(item.get("rawOutput", "")).lower() for item in finishes)
                 if observed_exists or not starts or not denial or failures != expected_tool_failures:
-                    raise HarnessError("explicit bash deny did not block the native tool call")
+                    statuses = [item.get("status") for item in finishes]
+                    raise HarnessError(
+                        "explicit bash deny evidence was incomplete: "
+                        f"artifact_exists={observed_exists} starts={len(starts)} "
+                        f"finishes={len(finishes)} denial_text_observed={denial} "
+                        f"failed_terminals={failures} expected_failed_terminals={expected_tool_failures} "
+                        f"statuses={statuses!r}"
+                    )
             failure_count_matched = (failures >= expected_tool_failures if expected_terminal == "execution_failed"
                                      else failures == expected_tool_failures)
             bounded_stall = (expected_terminal == "execution_failed" and failure_count_matched

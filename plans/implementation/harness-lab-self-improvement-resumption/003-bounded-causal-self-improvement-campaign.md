@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement S003 — Bounded Causal Self-Improvement Campaign
 
-Status: **blocked** — S002 strict closure and a separately approved live provider/proposer budget are required. This plan authorizes **zero** live calls.
+Status: **closed as `no_reproducible_defect`; zero live calls**. No eligible current CodeGG defect exists in the frozen H007 evidence. See `plans/closure/harness-lab-self-improvement-resumption/003-status.md`.
 
 Repository baseline: `main@99cecc050ed1ae418af62d2d10e6d34d791513e1` (PR #217 merged); re-pin actual main and controller implementation at handoff.
 Source roadmap: `plans/subsystems/harness-lab-self-improvement-resumption-roadmap.md`, S003.

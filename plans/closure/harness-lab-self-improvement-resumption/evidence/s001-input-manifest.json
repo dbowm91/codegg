@@ -1,0 +1,95 @@
+{
+  "baseline_source_sha": "99cecc050ed1ae418af62d2d10e6d34d791513e1",
+  "case_id": "build-provenance-catalog",
+  "case_identity": {
+    "fixture_files": {
+      "Cargo.lock": "05747296932e4da46f6689e77f6b7f5496139f7d10593a5d3f187c2f6f4fc178",
+      "Cargo.toml": "aa9333158c7a6793c1ce224fe2dabdc420601328d7e1f3ce1fa985637840e987",
+      "README.md": "b0eab185a19216c3088f5acf26dfd62e7fb554e0a605c56a1f507a27108424ba",
+      "catalog-cli/Cargo.toml": "441dfdcee44300a52f66e7c6e6da7f6a0aea1655b63a0ae6c2ae95500c47d128",
+      "catalog-format/Cargo.toml": "fa1e202b08a9068258f4bf1b6e1af87ab273ace323a374f11107215fe1ec0253",
+      "catalog-index/Cargo.toml": "01aa84d5935cfd7a6915303ea5824552fc74e115c6152be5eff10e4376dd9f61",
+      "catalog-index/tests/corpus.rs": "8f04099a5154062a97ab684296f058d060266f13f340b0092e42c8b5c06ad1a8",
+      "catalog-query/Cargo.toml": "cd10b6f55e46bb588759cda309a932e128c1f8c1398ebf2e5f7ad3ccd52097be",
+      "catalog-store/Cargo.toml": "e7a848700ba824fb4b58a8c36d316c287795cb267cc4a209e5fbd705d757da1f",
+      "contract.json": "5ec391dd8ed9b113c01e0390150c6557782280f03e5d28ef502205a959b565e9",
+      "corpus/invalid-checksum.records": "abc2f73fca248eaf6508879e8ecbbd755ba7142ac27d1824c293831edbca7375",
+      "corpus/snapshot-0.records": "9ce5f186b6ea9f9cec815b9fab9296f1e5f197ec705d39af4eb62a4dc8ac77a9",
+      "corpus/snapshot-1.records": "7c82f8a8b25c2ee9f6b4ee96f0fdb5f6eb018a338faa5fa6dff7dadac9b830bd",
+      "corpus/snapshot-2.records": "3cddeff930866251f51bab16791a323bb92b649053debb2cf868afaa166f6bef"
+    },
+    "fixture_root": "dev/harness_lab/fixtures/build_provenance_catalog/fixture",
+    "manifest_path": "dev/harness_lab/fixtures/agent_autonomy_h007/cases.jsonl",
+    "manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+    "metadata_path": "dev/harness_lab/fixtures/build_provenance_catalog.case.json",
+    "metadata_sha256": "08b51eaf8c61373ddf492a5594e84991cac9b1e2dabb03388662286e454f24bd",
+    "verifier_path": "dev/autonomy_fixtures/build-provenance-catalog/verifier/test_catalog_contract.py",
+    "verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c"
+  },
+  "companion_inventory": {
+    "committed_sanitized_receipts": 7,
+    "inventory_date": "2026-10-30",
+    "limitation": "Private transcripts and command-bearing indexes were inventoried by filename only and not read or committed. The report uses the seven committed sanitized receipts only; complete event pairing remains the bounded projection those receipts record.",
+    "local_private_lanes": 7,
+    "private_daemon_or_acp_logs": 14,
+    "private_sidecars_used_for_attribution": false,
+    "private_tool_run_indexes": 13,
+    "private_transcript_json": 7,
+    "provider_admission_ledgers": 7,
+    "separately_named_event_ledgers": 0
+  },
+  "operator_findings": {
+    "H007-3": {
+      "typed_provider_timeout": true,
+      "suspected_owner": "provider route",
+      "summary": "The closure records a typed provider timeout; the sanitized receipt omits the terminal_failure detail."
+    },
+    "H007-4": {
+      "suspected_owner": "fixture",
+      "summary": "The disposable fixture catalog-index tests panicked on missing map keys; verifier setup stopped before contract tests ran."
+    },
+    "H007-6": {
+      "suspected_owner": "fixture",
+      "summary": "The disposable fixture catalog-query lineage provenance assertion failed; verifier setup stopped before contract tests ran."
+    }
+  },
+  "receipts": [
+    {
+      "path": "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt.json",
+      "sha256": "8d4fe4da943265b3af18312ee8e778f6d1cadb80370f13f4d870e6edeaf16a79",
+      "trial_id": "H007-1"
+    },
+    {
+      "path": "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-2.json",
+      "sha256": "23a8f883c4c9845c2fa8e1784938bfc144e9c6fc429dc50faf708adaf8f35555",
+      "trial_id": "H007-2"
+    },
+    {
+      "path": "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-3.json",
+      "sha256": "710c350b0c45df91ca97d6d6c1b306644c2dce9bb7d7cb11a87f9540bdc609bc",
+      "trial_id": "H007-3"
+    },
+    {
+      "path": "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-4.json",
+      "sha256": "a892a3eb6f9e26c3ea514233717b0ff2d21dc54deaa2dfc4e9ab9ff7e25087f1",
+      "trial_id": "H007-4"
+    },
+    {
+      "path": "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-5.json",
+      "sha256": "436a66ecc6d18272c1b5951aa44c223102301b5d3e7ed87ce1993896bf6a2b1d",
+      "trial_id": "H007-5"
+    },
+    {
+      "path": "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-6.json",
+      "sha256": "8e8283983ec5717c0bc315e3b5aa2b23a522b44802944d0cca84c766a3e5da27",
+      "trial_id": "H007-6"
+    },
+    {
+      "path": "plans/closure/harness-lab-mainline-qualification/evidence/007-live-attempt-7.json",
+      "sha256": "a6170b34e1bc16a3637a6c74b1aba068f0c58d2c2b3eca0314bd5c4e93606c8f",
+      "trial_id": "H007-7"
+    }
+  ],
+  "report_schema": "h007-attribution-v1",
+  "schema_version": 1
+}

@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement S001 — H007 Failure Attribution and Evidence Adequacy
 
-Status: **ready** for offline handoff. No provider-backed execution authorized.
+Status: **closed** offline; no reproducible current CodeGG defect. No provider-backed execution authorized.
 
 Repository baseline: `main@99cecc050ed1ae418af62d2d10e6d34d791513e1` (H007 PR #217 merged); verify newer refs and exact-mainline CI before integration.
 

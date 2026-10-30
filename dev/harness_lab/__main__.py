@@ -721,9 +721,11 @@ def main(argv: list[str] | None = None) -> int:
                         break
             else:
                 result = run_tool_trial(binary, args.profile, args.timeout, args.deny_bash,
-                                        args.ledger, args.candidate, args.task_id, args.group_id)
+                                        args.ledger, args.candidate, args.task_id, args.group_id,
+                                        expected_tool_failures=1 if args.deny_bash else 0)
         else:
-            result = run_tool_trial(binary, args.profile, args.timeout, args.deny_bash)
+            result = run_tool_trial(binary, args.profile, args.timeout, args.deny_bash,
+                                    expected_tool_failures=1 if args.deny_bash else 0)
         print(json.dumps(result, sort_keys=True))
         return 0 if result.get("ok", True) else 2
     except (HarnessError, ValueError, RuntimeError, TimeoutError, OSError) as error:

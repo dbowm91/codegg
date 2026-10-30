@@ -1009,6 +1009,140 @@ class ProposerRouteAndBudgetTests(unittest.TestCase):
             self.assertNotIn("budget_guard", result)
 
 
+class OptimizerCampaignSequenceTests(unittest.TestCase):
+    """Exercise real optimizer/checkpoint/worktree sequencing with synthetic actors.
+
+    The fake proposer and qualification boundary make no provider or ACP claim;
+    qualification decisions still come from the production score contract. The
+    exact-main native ACP boundary is exercised separately by S002 evidence.
+    """
+
+    def _campaign_fixture(self, root: Path) -> tuple[Path, Path, Path, str]:
+        repository = root / "repository"
+        repository.mkdir()
+        subprocess.run(["git", "init", "-q", str(repository)], check=True)
+        subprocess.run(["git", "-C", str(repository), "config", "user.email",
+                        "harness@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(repository), "config", "user.name",
+                        "Harness Test"], check=True)
+        (repository / "src").mkdir()
+        (repository / "src" / "lib.rs").write_text("pub fn contract() -> bool { false }\n",
+                                                      encoding="utf-8")
+        subprocess.run(["git", "-C", str(repository), "add", "src/lib.rs"], check=True)
+        subprocess.run(["git", "-C", str(repository), "commit", "-qm", "frozen baseline"],
+                       check=True)
+        revision = subprocess.check_output(
+            ["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
+
+        suite = root / "suite.jsonl"
+        suite.write_text(json.dumps({"schema_version": 1, "task_id": "task-defect",
+                                     "group_id": GROUP_ID}) + "\n", encoding="utf-8")
+        ledger_root = root / "ledger"
+        workspace = root / "baseline-workspace"
+        workspace.mkdir()
+        (workspace / "receipt.txt").write_text("baseline", encoding="utf-8")
+        from dev.harness_lab import ledger as ledger_module
+        ledger_module.record(
+            ledger_root, {"daemon": {"revision": revision}, "wall_time_ms": 100},
+            task_id="task-pass", group_id=GROUP_ID, candidate="baseline",
+            workspace=workspace, expected_file="receipt.txt", expected_text="baseline",
+            suite_sha256=hashlib.sha256(suite.read_bytes()).hexdigest(), case_sha256="frozen-case")
+        return repository, suite, ledger_root, revision
+
+    def test_two_candidates_reject_noop_then_accept_scored_correction_repeatably(self) -> None:
+        from dev.harness_lab import ledger
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repository, suite, ledger_root, baseline_revision = self._campaign_fixture(root)
+            repeated_decisions = []
+            repeated_patch_digests = []
+
+            for repetition in range(2):
+                run_root = root / f"repetition-{repetition}"
+                candidate_root = run_root / "candidates"
+                target_root = run_root / "targets"
+                checkpoint_path = run_root / "optimizer.json"
+                proposals = []
+                scored = []
+
+                def propose(worktree: Path, prompt: str, allowed_prefixes: tuple[str, ...],
+                            timeout: float, executable: str | None = None,
+                            model: str | None = None) -> dict:
+                    iteration = len(proposals) + 1
+                    source = worktree / "src" / "lib.rs"
+                    source.write_text(f"pub fn contract() -> bool {{ {str(iteration == 2).lower()} }}\n",
+                                      encoding="utf-8")
+                    (worktree / "CHANGELOG.harness.md").write_text(
+                        "## Root cause\nsynthetic\n\n## Contracts\nsynthetic\n\n"
+                        "## Validation\nsynthetic\n\n## Accepted risks\nnone\n",
+                        encoding="utf-8")
+                    paths = improve.changed_paths(worktree)
+                    improve.check_scope(paths, allowed_prefixes + ("CHANGELOG.harness.md",))
+                    digest = candidate_patch_sha256(worktree, paths)
+                    proposals.append({"iteration": iteration, "patch_sha256": digest,
+                                      "provider_requests": 0})
+                    return {"changed_paths": paths, "patch_sha256": digest,
+                            "proposer": {"provider_requests": 0}, "proposer_model": None,
+                            "candidate_worktree": str(worktree),
+                            "baseline_revision": baseline_revision}
+
+                def qualify(worktree: Path, suite_path: Path, candidate_ledger: Path,
+                            *, candidate: str, **kwargs) -> dict:
+                    candidate_rows = _baseline_rows(candidate)
+                    if (worktree / "src" / "lib.rs").read_text(encoding="utf-8").find("true") >= 0:
+                        candidate_rows[("task-defect", 0)] = _trial_row(
+                            candidate, "task-defect", 0, "passed", 100)
+                    comparison = score_candidate_trials(SCORING_CASES, _baseline_rows(),
+                                                       candidate_rows)
+                    outcome = comparison["outcome"]
+                    digest = candidate_patch_sha256(worktree)
+                    receipt = {"accepted": outcome.decision == scoring.DECISION_ACCEPTED,
+                               "decision": outcome.decision, "objective": outcome.objective,
+                               "evidence_pairs": comparison["evidence_pairs"],
+                               "patch_sha256": digest, "provider_requests": 0}
+                    scored.append(receipt)
+                    return receipt
+
+                run_root.mkdir()
+                with (unittest.mock.patch.object(improve, "opencode_propose", side_effect=propose),
+                      unittest.mock.patch.object(improve, "qualify_candidate", side_effect=qualify)):
+                    receipt = improve.run_optimizer(
+                        repository, suite, ledger_root, baseline_candidate="baseline",
+                        candidate_root=candidate_root, target_root=target_root,
+                        checkpoint_path=checkpoint_path,
+                        allowed_prefixes=("src/",), prompt="synthetic fixed campaign",
+                        max_iterations=2, max_wallclock=120.0, timeout=30.0)
+
+                # The actual optimizer persisted both sequential iterations;
+                # the production score contract rejected the no-op and accepted
+                # only the second candidate's correctness result.
+                self.assertEqual(receipt["status"], "ACCEPTED")
+                self.assertEqual([row["decision"] for row in scored],
+                                 [scoring.DECISION_REJECTED, scoring.DECISION_ACCEPTED])
+                self.assertEqual([row["objective"] for row in scored],
+                                 [scoring.OBJECTIVE_NONE, scoring.OBJECTIVE_CORRECTNESS_FIX])
+                self.assertEqual(len(receipt["iterations"]), 2)
+                self.assertTrue(all(row["provider_requests"] == 0 for row in proposals + scored))
+                self.assertEqual(len({row["patch_sha256"] for row in proposals}), 2)
+                repeated_decisions.append([(row["decision"], row["objective"],
+                                            row["evidence_pairs"]) for row in scored])
+                repeated_patch_digests.append([row["patch_sha256"] for row in proposals])
+
+                # The real candidate worktrees belong to this fixture and are
+                # removed only after the complete receipt has been inspected.
+                for worktree in candidate_root.iterdir():
+                    subprocess.run(["git", "-C", str(repository), "worktree", "remove",
+                                    "--force", str(worktree)], check=True)
+                subprocess.run(["git", "-C", str(repository), "worktree", "prune"], check=True)
+
+            self.assertEqual(repeated_decisions[0], repeated_decisions[1])
+            self.assertEqual(repeated_patch_digests[0], repeated_patch_digests[1])
+            baseline_rows = [row for row in ledger.load_runs(ledger_root)
+                             if row["candidate"] == "baseline"]
+            self.assertEqual(len(baseline_rows), 1)
+
+
 class CompileCorrectionMechanicsTests(unittest.TestCase):
     """C003 work package C: the bounded compile-correction mechanic.
 

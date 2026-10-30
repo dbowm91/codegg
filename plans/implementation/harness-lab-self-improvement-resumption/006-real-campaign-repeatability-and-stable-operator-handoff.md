@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement S006 — Real Campaign Repeatability and Stable Operator Handoff
 
-Status: **blocked** — S003, S004 and S005 strict closures required; additional provider-backed campaigns need separately approved subject/proposer authority. This plan itself authorizes **no model calls or code promotion**.
+Status: **closed conditionally — `stable_live_not_established`**. No eligible defect, fresh live authorization, or complete S005 campaign-level fault matrix is available. See `plans/closure/harness-lab-self-improvement-resumption/006-status.md`.
 
 Baseline reviewed: `main@99cecc050ed1ae418af62d2d10e6d34d791513e1` (2026-10-30); re-pin integrated main at implementation.
 Source roadmap: `plans/subsystems/harness-lab-self-improvement-resumption-roadmap.md`, S006.

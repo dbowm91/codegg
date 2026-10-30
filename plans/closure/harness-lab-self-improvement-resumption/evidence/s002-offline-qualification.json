@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "source_revision": "58f4c5ec9a273b246e3303b0cb5fd615d0157ae1",
+  "resulting_main_revision": "58f4c5ec9a273b246e3303b0cb5fd615d0157ae1",
+  "resulting_main_ci": {
+    "workflow": "CI",
+    "run_id": 41003530150,
+    "conclusion": "success",
+    "url": "https://github.com/dbowm91/codegg/actions/runs/41003530150"
+  },
+  "resulting_main_desktop_e2e": {
+    "workflow": "Desktop E2E",
+    "run_id": 41003529978,
+    "conclusion": "success",
+    "url": "https://github.com/dbowm91/codegg/actions/runs/41003529978"
+  },
+  "binary": {
+    "target": "aarch64-apple-darwin",
+    "toolchain": "1.89-aarch64-apple-darwin",
+    "codegg_sha256": "62ecc84113b2399352ead4faea6a2cb7641c0b98f505cb36d2a2f1960d99cb94",
+    "doctor_ok": true
+  },
+  "two_subject_smoke": {
+    "ok": true,
+    "subject_count": 2,
+    "source_revision": "58f4c5ec9a273b246e3303b0cb5fd615d0157ae1",
+    "binary_sha256": "62ecc84113b2399352ead4faea6a2cb7641c0b98f505cb36d2a2f1960d99cb94",
+    "daemon_identities_distinct": true,
+    "generations_distinct": true,
+    "mutable_roots_distinct": true,
+    "stopped_subject": "subject-1",
+    "surviving_subject_created_session": true,
+    "provider_calls": 0
+  },
+  "native_tool_path": {
+    "ok": true,
+    "source_revision": "58f4c5ec9a273b246e3303b0cb5fd615d0157ae1",
+    "binary_sha256": "62ecc84113b2399352ead4faea6a2cb7641c0b98f505cb36d2a2f1960d99cb94",
+    "fixture": "loopback-only OpenAI-compatible provider",
+    "selected_tool": "write",
+    "completed_tool_calls": 1,
+    "event_gaps": 0,
+    "permission_requests": 0,
+    "workspace_write_verified": true,
+    "upstream_provider_calls": 0
+  },
+  "native_deny_path": {
+    "ok": true,
+    "source_revision": "58f4c5ec9a273b246e3303b0cb5fd615d0157ae1",
+    "binary_sha256": "62ecc84113b2399352ead4faea6a2cb7641c0b98f505cb36d2a2f1960d99cb94",
+    "deny_bash": true,
+    "fixture": "loopback-only OpenAI-compatible provider",
+    "tool_started": 1,
+    "tool_finished": 1,
+    "tool_status": "failed",
+    "tool_failures": 1,
+    "tool_receipt_created": false,
+    "workspace_revision_changed_paths": [],
+    "event_gaps": 0,
+    "upstream_provider_calls": 0,
+    "cli_expected_tool_failures": 1,
+    "cli_regression_test": "dev.harness_lab.tests.test_cli.ToolTrialCliTests.test_explicit_deny_expects_one_refused_tool_call"
+  },
+  "subject_request_cap": {
+    "test": "codegg_providers::opencode_go::capture_tests::provider_request_cap_refuses_before_transport_and_writes_complete_receipt",
+    "limit": 2,
+    "transport_requests_observed": 2,
+    "request_3_refused_before_transport": true,
+    "complete_receipt_asserted": true
+  },
+  "external_opencode_proposer": {
+    "fake_cli_invocation_budget_tested": true,
+    "hard_internal_http_request_cap_proven": false,
+    "reason": "The controller reserves one request per OpenCode CLI invocation; the CLI can issue multiple provider requests internally. Its JSON usage events are post-request observations, not a pretransport admission seam.",
+    "live_proposer_status": "blocked"
+  },
+  "harness_lab_tests": {
+    "command": "python3 -m unittest discover -s dev/harness_lab/tests",
+    "passed": 430,
+    "failed": 0,
+    "skipped": 1,
+    "total": 431,
+    "skipped_test": "test_real_headless_binary_never_passes_without_the_artifact"
+  },
+  "live_provider_calls": 0,
+  "billed_usd": "unknown",
+  "quick_verification": {
+    "command": "scripts/verify.sh quick",
+    "result": "passed",
+    "guard_set": "complete quick guard set",
+    "cargo_check": "cargo check --workspace --all-targets --locked passed"
+  },
+  "verification_binary_identity": {
+    "source_revision": "58f4c5ec9a273b246e3303b0cb5fd615d0157ae1",
+    "codegg_sha256": "62ecc84113b2399352ead4faea6a2cb7641c0b98f505cb36d2a2f1960d99cb94"
+  }
+}

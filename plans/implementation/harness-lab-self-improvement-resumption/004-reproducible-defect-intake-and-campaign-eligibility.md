@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement S004 — Reproducible Defect Intake and Campaign Eligibility
 
-Status: **blocked on S001 closure**; the intake/reporting contract can be drafted against S001's frozen schema. Offline only, no provider calls authorized.
+Status: **closed — deterministic intake capability implemented; current H007 dossier is ineligible**. See `plans/closure/harness-lab-self-improvement-resumption/004-status.md`.
 
 Reviewed baseline: `main@99cecc050ed1ae418af62d2d10e6d34d791513e1` (H007 PR #217 merged 2026-10-30); reconcile newer main at implementation.
 Source roadmap: `plans/subsystems/harness-lab-self-improvement-resumption-roadmap.md`, S004.

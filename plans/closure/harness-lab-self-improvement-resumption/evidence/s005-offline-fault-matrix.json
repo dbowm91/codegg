@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "source_revision": "58f4c5ec9a273b246e3303b0cb5fd615d0157ae1",
+  "resulting_main_ci_run": 41003530150,
+  "resulting_main_desktop_e2e_run": 41003529978,
+  "integrated_codegg_binary_sha256": "62ecc84113b2399352ead4faea6a2cb7641c0b98f505cb36d2a2f1960d99cb94",
+  "scenarios": [
+    {
+      "id": "S005-F01",
+      "boundary": "provider policy admission and request N+1",
+      "evidence": [
+        "dev.harness_lab.tests.test_budget.BudgetAdmissionTests",
+        "codegg_providers::opencode_go::capture_tests::provider_request_cap_refuses_before_transport_and_writes_complete_receipt"
+      ],
+      "expected": "refuse before unadmitted transport",
+      "observed": "two requests admitted at limit 2; request 3 refused pretransport with receipt",
+      "result": "pass"
+    },
+    {
+      "id": "S005-F02",
+      "boundary": "uncertain external proposer accounting",
+      "evidence": "plans/closure/harness-lab-self-improvement-resumption/evidence/s002-offline-qualification.json#/external_opencode_proposer",
+      "expected": "do not report internal CLI request count as hard capped",
+      "observed": "request-level pretransport cap unavailable",
+      "result": "live_blocked"
+    },
+    {
+      "id": "S005-F03",
+      "boundary": "candidate patch scope and resume identity",
+      "evidence": [
+        "dev.harness_lab.tests.test_improve.ImproveTests.test_opencode_json_event_parser_and_scope_gate",
+        "dev.harness_lab.tests.test_improve.ImproveTests.test_optimization_checkpoint_is_hash_linked_and_resume_validates_inputs",
+        "dev.harness_lab.tests.test_improve.ImproveTests.test_resume_with_a_stale_binary_fingerprint_is_refused"
+      ],
+      "expected": "reject out-of-scope or changed-identity resume",
+      "observed": "scope and stale identity refusals asserted",
+      "result": "pass"
+    },
+    {
+      "id": "S005-F04",
+      "boundary": "candidate build correction and retry limit",
+      "evidence": [
+        "dev.harness_lab.tests.test_improve.CompileCorrectionMechanicsTests.test_a_compile_failure_is_corrected_once_and_the_build_is_rerun",
+        "dev.harness_lab.tests.test_improve.CompileCorrectionMechanicsTests.test_the_compile_correction_retry_is_bounded"
+      ],
+      "expected": "correct only within the declared retry ceiling",
+      "observed": "bounded retry counts and build rerun asserted",
+      "result": "pass"
+    },
+    {
+      "id": "S005-F05",
+      "boundary": "independent verifier and candidate score integrity",
+      "evidence": [
+        "dev.harness_lab.tests.test_improve.ScoreContractTests",
+        "dev.harness_lab.tests.test_ledger.LedgerCompareTests",
+        "dev.harness_lab.tests.test_autonomy_cases"
+      ],
+      "expected": "reject incomplete, relabeled, or control-regressing results",
+      "observed": "negative controls, partial pairings, independent fixture outcomes, and score decisions covered",
+      "result": "pass"
+    },
+    {
+      "id": "S005-F06",
+      "boundary": "candidate sequence and deterministic replay",
+      "evidence": "dev.harness_lab.tests.test_improve.OptimizerCampaignSequenceTests.test_two_candidates_reject_noop_then_accept_scored_correction_repeatably",
+      "repetitions": 2,
+      "expected": ["rejected no-op", "accepted correctness fix"],
+      "observed": ["rejected no-op", "accepted correctness fix"],
+      "patch_digests_stable_across_repetition": true,
+      "provider_requests": 0,
+      "result": "pass; synthetic proposer/qualification boundary, production score contract and optimizer/checkpoint/worktree code"
+    },
+    {
+      "id": "S005-F07",
+      "boundary": "SIGKILL across checkpoint and ledger append boundaries",
+      "evidence": [
+        "dev.harness_lab.tests.test_improve.CrashRecoveryTests.test_sigkill_between_checkpoint_append_and_pointer_is_recorded",
+        "dev.harness_lab.tests.test_improve.CrashRecoveryTests.test_sigkill_during_ledger_write_leaves_no_duplicate_trial_rows",
+        "dev.harness_lab.tests.test_improve.CrashRecoveryTests.test_resumed_run_does_not_append_a_second_row_for_a_recorded_pair"
+      ],
+      "expected": "record interrupted_unknown and do not duplicate a scored pair",
+      "observed": "crash recovery state and exactly-once row assertions pass",
+      "result": "pass"
+    },
+    {
+      "id": "S005-F08",
+      "boundary": "timeout, cleanup, cancellation, disk state and private subject isolation",
+      "evidence": [
+        "dev.harness_lab.tests.test_supervisor.ExecTrialTests.test_the_lane_is_removed_after_a_successful_trial",
+        "dev.harness_lab.tests.test_supervisor.ExecTrialTests.test_the_lane_is_removed_after_a_failed_trial",
+        "dev.harness_lab.tests.test_supervisor.ExecTrialTests.test_a_child_that_never_exits_is_bounded_by_the_timeout",
+        "dev.harness_lab.tests.test_autonomy_run.DiskFloorWatcherTests.test_a_breached_floor_cancels_before_the_prompt",
+        "dev.harness_lab.tests.test_autonomy_run.DiskFloorWatcherTests.test_unreadable_disk_state_cancels_fail_closed",
+        "dev.harness_lab.tests.test_sustained.SustainedLaneIsolationTests.test_a_cancelled_lane_does_not_stop_the_next_lane",
+        "plans/closure/harness-lab-self-improvement-resumption/evidence/s002-offline-qualification.json#/two_subject_smoke"
+      ],
+      "expected": "bounded terminal and cleanup; no cross-subject teardown",
+      "observed": "local subprocess tests pass; exact-main smoke stopped subject 1 while subject 2 completed session creation",
+      "result": "pass for covered cases"
+    }
+  ],
+  "limits": [
+    "No real external proposer HTTP request was made; internal CLI N+1 is unproved and live proposer use remains blocked.",
+    "The two-candidate sequence uses a synthetic proposer and synthetic qualification boundary; it qualifies orchestration and the production scorer, not a real candidate build or ACP pair.",
+    "No sustained CPU/Cargo-target saturation experiment or daemon-crash orphan cleanup trial was run.",
+    "No provider-backed campaign or stable-live claim is implied."
+  ],
+  "live_provider_calls": 0,
+  "billed_usd": "unknown"
+}

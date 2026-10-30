@@ -1,6 +1,6 @@
 # Harness Lab — Autonomous Self-Improvement Resumption Roadmap
 
-Status: **active planning**; S001 ready offline; S002 blocked on S001 closure and exact-mainline verification; S003 blocked on S002 closure and fresh authorization; S004 blocked on S001 closure; S005 blocked on S002 closure; S006 blocked on S003/S004/S005 closures and new authorization. No provider-backed campaign is authorized by this plan.
+Status: **implementation plans S001–S006 have closure records**. S001/S002/S004 closed; S003 closed as `no_reproducible_defect`; S005 component fault paths closed conditionally without claiming campaign-level `stable_offline`; S006 closed as `stable_live_not_established`. No provider-backed campaign was authorized or run.
 
 Reviewed baseline: `main@99cecc050ed1ae418af62d2d10e6d34d791513e1` (2026-10-30), merge commit for H007 PR #217. All seven H007 receipts are on main. Recheck source and exact resulting-mainline CI at implementation; PR #219 is the active planning handoff, not implementation evidence.
 
@@ -60,12 +60,12 @@ H007's 30-minute sustained live success is **not** a self-improvement dependency
 
 | Milestone | Class | Status | Principal acceptance |
 |---|---|---|---|
-| **S001 — Trial attribution and evidence sufficiency** | infrastructure | **ready** (offline) | Every H007 run classified with pinned evidence, uncertainty, owner routing, true repro or explicit none |
-| **S002 — Mainline optimizer and candidate-gate requalification** | invariant | **blocked** (S001 closure + resulting-mainline evidence) | Two isolated subjects, correct positive/negative score, SIGKILL/resume, separate subject/proposer budget admission |
-| **S003 — Bounded causal self-improvement campaign** | capability | **blocked** (S002 closure; live operational approval) | One preregistered real harness defect campaign or truthful rejected/no-defect/unknown result, no auto-merge |
-| **S004 — Reproducible defect intake and campaign eligibility** | infrastructure | **blocked** (S001 closure; S002 interface) | Reusable immutable defect dossier with reproducible CodeGG-owned red behavior; H007 model/route failures ineligible |
-| **S005 — Campaign fault tolerance and repeatable offline qualification** | invariant | **blocked** (S002 closure; S003/S004 interfaces) | Multi-iteration deterministic campaign and full transition-failure matrix, no duplicate admission/score, safe cleanup |
-| **S006 — Real campaign repeatability and stable operator handoff** | capability | **blocked** (S003/S004/S005 strict closure; fresh live approval) | Two distinct, genuine accepted fixes on current CodeGG defects plus rejection/no-defect control to support a limited live stability claim; otherwise conditional/not established |
+| **S001 — Trial attribution and evidence sufficiency** | infrastructure | **closed** | Seven H007 receipts classified with pinned evidence, uncertainty and no unsupported CodeGG defect attribution |
+| **S002 — Mainline optimizer and candidate-gate requalification** | invariant | **closed for offline qualification; live proposer blocked** | Isolated subjects, native allow/deny tool path, request N/N+1 subject cap, offline checkpoint/score tests, exact-main CI and quick verification |
+| **S003 — Bounded causal self-improvement campaign** | capability | **closed: `no_reproducible_defect`** | Frozen H007 evidence and S004 dossier refused eligibility; zero live calls; no positive improvement claimed |
+| **S004 — Reproducible defect intake and campaign eligibility** | infrastructure | **closed; no eligible current dossier** | Deterministic, digest-bound H007 intake and truthful ineligibility result |
+| **S005 — Campaign fault tolerance and repeatable offline qualification** | invariant | **conditional closure; `stable_offline` not established** | Repeated synthetic two-candidate optimizer/scorer sequence and component fault tests pass; daemon-crash cleanup, saturation and exhaustive transition injection remain uncovered |
+| **S006 — Real campaign repeatability and stable operator handoff** | capability | **closed conditionally: `stable_live_not_established`** | Zero of two required new independent accepted campaigns; no defect or fresh approval; historical C003 excluded |
 
 Implementation plans: `plans/implementation/harness-lab-self-improvement-resumption/001-*.md` through `006-*.md`; use exact filenames in the registry and closure records `plans/closure/harness-lab-self-improvement-resumption/NNN-status.md`.
 

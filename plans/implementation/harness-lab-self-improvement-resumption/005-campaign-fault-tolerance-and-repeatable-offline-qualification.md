@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement S005 — Campaign Fault Tolerance and Repeatable Offline Qualification
 
-Status: **blocked on S002 strict closure**. Offline qualification only; no proposer/provider requests authorized.
+Status: **conditionally closed — deterministic two-candidate controller sequence and component fault paths pass; `stable_offline` not established**. See `plans/closure/harness-lab-self-improvement-resumption/005-status.md` for uncovered resource/daemon-crash cases and the live proposer blocker.
 
 Baseline: `main@99cecc050ed1ae418af62d2d10e6d34d791513e1` (2026-10-30); pin a newer exact main before work.
 Source roadmap: `plans/subsystems/harness-lab-self-improvement-resumption-roadmap.md`, S005.

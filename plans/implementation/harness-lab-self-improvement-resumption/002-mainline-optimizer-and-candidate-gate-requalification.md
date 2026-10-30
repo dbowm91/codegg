@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement S002 — Mainline Optimizer and Candidate-Gate Requalification
 
-Status: **blocked** until S001 closes and H007's resulting-mainline CI/source is qualified. PR #217 is merged. Offline plan ready; no provider-backed calls authorized.
+Status: **closed for offline qualification; live external proposer remains blocked**. See `plans/closure/harness-lab-self-improvement-resumption/002-status.md`.
 
 Repository baseline: `main@99cecc050ed1ae418af62d2d10e6d34d791513e1` (PR #217 merge). Re-read exact main and hosted CI before execution.
 Source roadmap: `plans/subsystems/harness-lab-self-improvement-resumption-roadmap.md`, S002.
