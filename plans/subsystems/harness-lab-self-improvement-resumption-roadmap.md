@@ -1,8 +1,8 @@
 # Harness Lab — Autonomous Self-Improvement Resumption Roadmap
 
-Status: **active planning**; S001 ready for offline handoff; S002 blocked on S001 closure and H007 mainline integration; S003 blocked on S002 closure and fresh explicit provider authorization. No self-improvement campaign is authorized by this plan.
+Status: **active planning**; S001 ready offline; S002 blocked on S001 closure and exact-mainline verification; S003 blocked on S002 closure and fresh authorization; S004 blocked on S001 closure; S005 blocked on S002 closure; S006 blocked on S003/S004/S005 closures and new authorization. No provider-backed campaign is authorized by this plan.
 
-Reviewed baseline: `main@4aea3df5e93c60aa85f55e805f2a8e9e947ab083` (2026-10-29) and open PR #217 branch `plans/h007-workload-calibration-20261029@ab22d66f28681321b8d2b46001ed6698764c9484` (2026-10-29). Recheck live refs at implementation. The S001 evidence corpus is already on the PR branch; later code qualification requires a reconciled mainline.
+Reviewed baseline: `main@99cecc050ed1ae418af62d2d10e6d34d791513e1` (2026-10-30), merge commit for H007 PR #217. All seven H007 receipts are on main. Recheck source and exact resulting-mainline CI at implementation; PR #219 is the active planning handoff, not implementation evidence.
 
 Long-term references: `plans/000-long-term-specification.md` §§23–24, 26–29; `plans/001-terminology-and-domain-model.md`; `plans/002-long-term-roadmap.md`; `plans/003-planning-process.md`. Related accepted decision: `plans/adrs/ADR-0040-evidence-based-agent-recovery-termination.md` (Option B). Source predecessor: `plans/subsystems/harness-lab-roadmap.md`, `plans/subsystems/harness-lab-post-pilot-corrective-addendum.md`, `plans/subsystems/harness-lab-continuation-corrective-addendum.md`, `plans/subsystems/harness-lab-mainline-and-long-horizon-qualification-addendum.md`.
 
@@ -18,8 +18,8 @@ The desired deliverable is an operator-controlled local assess → diagnosis →
 
 - PR #141 merged the two-lane ACP evaluation/ledger/optimization foundation; M005 closed the bounded optimize/checkpoint/restore controller. C003 accepted a genuine headless workspace-binding correction from an authenticated OpenCode proposal: 13/13 paired cases, one correctness improvement, zero regressions, negative controls held. D001 subsequently qualified the headless binding in production. These are **one successful demonstration**, not a repeatability estimate.
 - H006's latest live result solved its task and hidden verifier, completed two repair cycles and observed one native job ID running/completed, but lasted only 10m43s. The 30-minute endurance requirement remained unmet; no job/ACP malfunction was demonstrated.
-- H007's seven live attempts on the PR #217 branch consumed three explicit authorizations. Two had typed `provider_timeout` outcomes; others failed implementation/verifier/repair or job-overlap requirements. No run achieved 30 minutes; all observed ACP tool starts matched terminals with zero recorded gaps. The sanitized summary receipts do **not** supply a complete causal model of why an agent stopped after a partial repair. Treat route quality, prompt/fixture design, and harness defects as distinct hypotheses.
-- The H007 branch also separates `task_outcome` and `horizon_outcome`. Fast correctness must stay a task pass even if a long-horizon observation is unavailable. PR #217 remains open at review. Its description and some source registry/roadmap summaries lag the seven-attempt closure; do not mistake passing branch CI for merged production.
+- H007's seven frozen live attempts (now merged through PR #217) consumed three explicit authorizations. Two had typed `provider_timeout` outcomes; others failed implementation/verifier/repair or job-overlap requirements. No run achieved 30 minutes; all observed ACP tool starts matched terminals with zero recorded gaps. The sanitized summary receipts do **not** supply a complete causal model of why an agent stopped after a partial repair. Treat route quality, prompt/fixture design, and harness defects as distinct hypotheses.
+- H007's merged implementation separates `task_outcome` and `horizon_outcome`: a fast correct result is a task pass even when a long-horizon observation is unavailable. PR #217 merged as `99cecc050e`; its description remains an earlier planning-only snapshot, while the seven-run closure is authoritative. Branch CI success is not a substitute for checking resulting-mainline CI.
 - H007's 30-minute duration qualification is **not** a hard prerequisite for a normal-duration paired self-improvement trial. An independently managed endurance track can continue later with genuinely dependent work, never sleeps or fabricated prolonged activity.
 
 ## 3. Invariants and non-goals
@@ -35,30 +35,41 @@ The desired deliverable is an operator-controlled local assess → diagnosis →
 ## 4. Dependency graph and classifications
 
 ```text
-Existing M/C/D closure + H001–H006 implementation/evidence
-             |
-             +-- H007 PR #217: offline/deeper fixture + seven live receipts
-             |             | (mainline merge needed for S002 integration)
-             v             v
-S001 [infrastructure] Offline H007 failure attribution + evidence adequacy
-             |
-             +---------> S002 [invariant] Requalify existing optimize/acceptance
-                                on reconciled main (offline; no provider calls)
-                                       |
-                                       v
-                         S003 [capability] Bounded genuine self-improvement
-                         campaign (live only under fresh operator authorization)
+Existing M/C/D + H001–H007 mainline evidence
+                   |
+                   v
+S001 [infrastructure] seven-run causal attribution — ready offline
+      |                         |
+      v                         v
+S002 [invariant]           S004 [infrastructure]
+mainline optimizer         recurring defect dossier intake
+requalification            (S001 hard; S002 interface)
+      |                         |
+      +----------+--------------+
+                 v
+       S003 [capability]                  S005 [invariant]
+       first real bounded campaign        campaign fault/restart matrix
+       (S002 hard, live auth)             (S002 hard, offline; S003 interface)
+                 |                         |
+                 +------------+------------+
+                              v
+                 S006 [capability] distinct genuine
+                 campaigns + manual promotion evidence
+                 (S003/S004/S005 hard, live auth)
 ```
 
-H007 *sustained live success* is **not** a dependency. S001's evidence corpus is readable on the PR branch now; if a source receipt/trace is absent, classify it unmeasured and close with a specific evidence limitation rather than guessing. S002 has a **hard** mainline integration and S001 closure dependency. S003 has a **hard** S002 closure dependency, plus an **operational** live-provider permission/budget gate.
+H007's 30-minute sustained live success is **not** a self-improvement dependency. S001 can work against the merged seven-run receipt corpus now. S002 must confirm resulting-mainline verification and close S001, not await another H007 trial. S004 is independently executable after S001, consuming S002's manifest interface when available. S005 is offline and may follow S002 independently of S003's provider authorization. S006 requires the completed causal campaign, intake and fault-tolerance contracts. Live execution at either S003 or S006 requires separately approved operator/provider authority; none is implied.
 
-| Milestone | Class | Status | Primary acceptance |
+| Milestone | Class | Status | Principal acceptance |
 |---|---|---|---|
-| **S001 — Trial attribution and evidence sufficiency** | infrastructure | **ready** (offline) | Versioned read-only classification of all seven H007 receipts, three-way observed/unobservable/contradicted outcomes, unambiguous ownership routing, and at least one genuinely reproducible *harness* defect or an explicit no-defect disposition |
-| **S002 — Mainline optimizer and candidate-gate requalification** | invariant | **blocked** (S001 closure + PR #217 mainline integration) | Native two-lane deterministic evaluate → bounded proposer seam → isolated build/qualify → correct accept/reject, SIGKILL/resume and no-regression proofs on exact mainline |
-| **S003 — Controlled repeated self-improvement campaign** | capability | **blocked** (S002 closure; live operational approval) | Pre-registered genuine failing behavior, bounded independent proposals and holdout/paired trials, measured improvement or honest rejected/no-defect outcome; never automatic merge |
+| **S001 — Trial attribution and evidence sufficiency** | infrastructure | **ready** (offline) | Every H007 run classified with pinned evidence, uncertainty, owner routing, true repro or explicit none |
+| **S002 — Mainline optimizer and candidate-gate requalification** | invariant | **blocked** (S001 closure + resulting-mainline evidence) | Two isolated subjects, correct positive/negative score, SIGKILL/resume, separate subject/proposer budget admission |
+| **S003 — Bounded causal self-improvement campaign** | capability | **blocked** (S002 closure; live operational approval) | One preregistered real harness defect campaign or truthful rejected/no-defect/unknown result, no auto-merge |
+| **S004 — Reproducible defect intake and campaign eligibility** | infrastructure | **blocked** (S001 closure; S002 interface) | Reusable immutable defect dossier with reproducible CodeGG-owned red behavior; H007 model/route failures ineligible |
+| **S005 — Campaign fault tolerance and repeatable offline qualification** | invariant | **blocked** (S002 closure; S003/S004 interfaces) | Multi-iteration deterministic campaign and full transition-failure matrix, no duplicate admission/score, safe cleanup |
+| **S006 — Real campaign repeatability and stable operator handoff** | capability | **blocked** (S003/S004/S005 strict closure; fresh live approval) | Two distinct, genuine accepted fixes on current CodeGG defects plus rejection/no-defect control to support a limited live stability claim; otherwise conditional/not established |
 
-Source plans: `plans/implementation/harness-lab-self-improvement-resumption/{001,002,003}-*.md`.
+Implementation plans: `plans/implementation/harness-lab-self-improvement-resumption/001-*.md` through `006-*.md`; use exact filenames in the registry and closure records `plans/closure/harness-lab-self-improvement-resumption/NNN-status.md`.
 
 ## 5. Exit criteria by stage
 
@@ -68,6 +79,12 @@ Source plans: `plans/implementation/harness-lab-self-improvement-resumption/{001
 
 **After S003:** at least one whole bounded assess/propose/qualify/accept-or-reject **campaign** has an auditable report. This is an operational capability even if no candidate is accepted, provided the objective no-defect/no-improvement result and all stop conditions are honored. Claim repeatability or improvement only to the extent preregistered non-synthetic data support it; separate task quality, reliability, provider timeout, and long-horizon observation in reports.
 
+**After S004:** subsequent campaigns can consume a deterministic frozen defect dossier with an independently reproduced CodeGG harness red case and explicit no-defect/insufficient-evidence rejection; source/user-task/model mistakes cannot become automatic candidate eligibility.
+
+**After S005:** repeated deterministic offline campaigns, crashes and policy/budget/ownership failures result in typed, safe terminals with unchanged score/authorization denominators, no duplicate effects and verifiable private-root cleanup. A green fake provider does not establish live reliability.
+
+**After S006:** claim `stable_offline` only with S004/S005 proof; claim limited `stable_live_evidenced` only after two *new*, independent genuine current-CodeGG fixes pass held-out verification and negative controls plus a rejected/no-defect control. If authorization or genuine defects are absent, record `stable_live_not_established` without inventing evidence, ranking models or lowering thresholds.
+
 ## 6. Cross-cutting failure, migration and safety
 
 Version only genuinely new diagnostic/result schemas; do not mutate H005–H007 original case, receipt, hidden verifier or closure history. Migration reads old records and represents missing fields as unavailable. Freeze candidate scope, verifier and holdout hashes *before* proposal. A measurement-incomplete pair cannot be silently rerun with changed denominator. Resume is bound to source/case/route/policy/budget and original cumulative deadline. Kill abandoned child process groups, stop private daemons, release worktrees/Cargo targets without touching operator artifacts, and preserve a sanitized refusal receipt when any preflight fails.
@@ -76,8 +93,8 @@ Provider budget approvals are non-transferable and **none are granted here**. Th
 
 ## 7. Risks, deferred work and closure
 
-Primary risks: H007's summarized receipts are insufficient for causal attribution; overfitting fixes to one model's prompt style; incomplete baseline/candidate pairing; acceptance driven by timing, relabeled failure or fixture leakage; provider-side timeout obscuring agent outcomes; stale PR #217 status; and developer-machine RAM/disk exhaustion from parallel Rust builds. Preserve per-lane targets and configurable parallelism; no synthetic performance gain through cache ownership differences.
+Primary risks: H007's summarized receipts are insufficient for causal attribution; overfitting fixes to one model's prompt style; incomplete baseline/candidate pairing; acceptance driven by timing, relabeled failure or fixture leakage; provider-side timeout obscuring agent outcomes; causal-evidence scarcity; and developer-machine RAM/disk exhaustion from parallel Rust builds. Preserve per-lane targets and configurable parallelism; no synthetic performance gain through cache ownership differences.
 
-If attribution reveals no reproducible CodeGG defect, S001 does not invent one. S002 can still establish instrument integrity; S003 may close as a correctly refused/no-defect campaign but **cannot** report an accepted real improvement. If extending the runtime, tool policy or provider interface becomes necessary, stop and open a narrow finding in that owning subsystem; do not expand this roadmap speculatively.
+If attribution reveals no reproducible CodeGG defect, S001/S004 do not invent one. S002/S005 can still establish instrument integrity; S003 may close as a correctly refused/no-defect campaign but **cannot** report an accepted real improvement. S006 must keep the live-stability verdict conditional until multiple distinct genuine current fixes are independently evidenced. If extending runtime, tool policy or provider interface becomes necessary, stop and open a narrow finding in that owning subsystem; do not expand this roadmap speculatively.
 
-Closure records belong to `plans/closure/harness-lab-self-improvement-resumption/001-status.md` through `003-status.md`, with implementation SHA, passing/failing tests, immutable evidence IDs, negative cases, explicit budget truth and residual severity. Register each milestone status only after evidence is gathered. No canonical long-term files or accepted ADRs are changed.
+Closure records belong to `plans/closure/harness-lab-self-improvement-resumption/001-status.md` through `006-status.md`, with implementation SHA, passing/failing tests, immutable evidence IDs, negative cases, explicit budget truth and residual severity. Register each milestone status only after evidence is gathered. No canonical long-term files or accepted ADRs are changed.
