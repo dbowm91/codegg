@@ -1,6 +1,8 @@
 # Desktop Frontend and IDE Foundation Milestone 021 — The Daemon's Plugin Catalogue
 
-Status: blocked — gated on ADR-0057, which is proposed and not accepted
+Status: ready for handoff — ADR-0057 accepted on 2026-10-30 (Option A); the
+decision is recorded in §5.3 and the implementation is closed by
+`plans/closure/desktop-frontend-ide-foundation/021-status.md`
 
 Repository baseline: `4db5039a0` — the merge of `origin/main` into
 `feat/auto-20261024-6e9f52e4`, which carries **M007-J closed** (commit
@@ -32,8 +34,9 @@ Planning basis:
 
 Applicable ADRs:
 
-- **ADR-0057 is required and is not yet written.** It is `proposed`. This
-  plan is gated on it and implements nothing until the owner accepts it.
+- **ADR-0057 is required, and was accepted on 2026-10-30 (Option A).** Its
+  `## Decision` section is the authority for the four mechanism decisions
+  §5.3 restates.
 - This milestone is bound by **ADR-0010** (the desktop frontend and shared
   client boundary), **ADR-0052** (cross-frontend command execution
   ownership), **ADR-0053** (the daemon's published projection surfaces) and
@@ -266,13 +269,39 @@ daemon-effect form (`:326-330`).
 - **Changing the plugin manifest, capability or permission model**
   (`crates/codegg-protocol/src/plugin.rs`).
 
-### 5.3 Decision points pending owner answer
+### 5.3 Decision points — resolved by ADR-0057
 
-**Five decisions are pending. Each work package that depends on one says so
-at its own point, and is written so it can be executed once the decision
-lands. No work package below silently picks one.** ADR-0057's `## Decision`
-section is the authoritative statement of what is pending; this section
-records the same list in the plan's own terms.
+**ADR-0057 was accepted on 2026-10-30 (Option A).** Its `## Decision`
+section is the authority; the four mechanism decisions it records are
+restated here in the plan's own terms, and each decision point below now
+names the option that was accepted rather than an open question. **No work
+package below silently picks one:** every work package is written against the
+accepted option, and the closure record
+(`plans/closure/desktop-frontend-ide-foundation/021-status.md`) is the
+evidence that each one landed.
+
+The accepted decision, in the plan's terms:
+
+1. **The registry's lifetime (D1) — Option A.** The daemon's plugin registry
+   is a process-lifetime singleton. The TUI's `PluginManager` is retired in
+   daemon mode; the standalone TUI keeps its own instance.
+2. **The catalogue's channel (D2) — Option A.** The catalogue is published
+   on the **canonical session projection**, the same mechanism ADR-0053
+   decided and plan 018 delivered for the selected model, the shell command
+   runs and the tool contracts. **No new projection surface is minted and
+   ADR-0053 is not amended.**
+3. **The mutating forms' authority (D3) — Option B.** A narrow
+   `plugin.manage` capability, granted to named roles and **not** inferred
+   from `command.execute`, is the direct analogue of ADR-0056's
+   `lsp.control`.
+4. **The activation file's writer (D4) — Option A.** The daemon is the sole
+   writer of the activation file whenever a daemon is present; the
+   standalone TUI remains the sole writer of the same file when there is
+   none.
+5. **The desktop's gain (D5) — Option A.** The desktop's palette gains the
+   forms automatically because it consumes the same catalogue; the
+   read-only forms need the published catalogue to render, which D2
+   provides.
 
 #### D1 — Does the daemon's plugin registry become a process-lifetime singleton?
 
@@ -297,9 +326,8 @@ becomes one instance held by the daemon.
   uninstall, a refresh). **Cost:** an invalidation path is a new event; it
   must be triggered by the daemon's own mutations, or it will drift.
 
-**Recommended: Option A**, with Option C's invalidation folded in — the
-singleton is rebuilt when the daemon's own plugin mutations change it, not on
-a timer.
+**Accepted: Option A.** The singleton is the process's one registry, and the
+daemon's own plugin mutations change it in place rather than rebuilding it.
 
 **Consequence.** Work package **A** (the registry lifetime) is written
 against A. D1 also gates work package **C** (the TUI's second instance) and
@@ -327,11 +355,11 @@ frontend, given that a frontend action produces no `Run` and no
   canonical `Run` per read-only invocation, which ADR-0056's spirit disfavours
   for reads that do not need one.
 
-**Recommended: Option A**, because it is the shape ADR-0053 already
+**Accepted: Option A**, because it is the shape ADR-0053 already
 established for daemon-published state and it keeps a read off the `Run`
-ledger. **Option C is the fallback** if the owner declines to extend
-ADR-0053's surface set, and it is the option that needs no ADR-0053
-decision at all.
+ledger. The catalogue joins the **session** projection the way the selected
+model, the shell runs and the tool contracts joined it; no new surface is
+minted and ADR-0053 is not amended.
 
 **Consequence.** Work package **B** (the publication mechanism) is written
 against A, with C as the documented fallback. D2 gates work package **D**
@@ -356,10 +384,11 @@ correct if it has something to read.
   capability, a role-grant table change, and a policy decision about who may
   install code.
 
-**Recommended: Option B.** The four forms install, remove and enable code
+**Accepted: Option B.** The four forms install, remove and enable code
 that the agent then runs; `command.execute` is too coarse an authority for
 that, and ADR-0056 set the precedent that such controls get their own
-explicitly-granted capability.
+explicitly-granted capability. `plugin.manage` is the twenty-third member of
+the role capability vocabulary, granted to Maintainer and Owner.
 
 **Consequence.** Work package **F** (the daemon requests and their
 authority) is gated on D3. D3 also decides whether the catalogue's
@@ -381,10 +410,9 @@ per-turn service and the TUI's manager.
   lock ordering, stale locks, and a lock that a crashed process leaves
   behind.
 
-**Recommended: Option A**, scoped honestly: the daemon is the sole writer
+**Accepted: Option A**, scoped honestly: the daemon is the sole writer
 when a daemon is running; the standalone TUI keeps its own writer and says
-so. Option C is the only one that preserves the current behaviour exactly,
-and it is the most machinery.
+so.
 
 **Consequence.** Work package **E** is gated on D4, and D4 interacts with
 D1: a daemon singleton (D1 Option A) is what makes A possible.
@@ -400,7 +428,7 @@ D1: a daemon singleton (D1 Option A) is what makes A possible.
 - **Option B — the desktop stays out of it.** The milestone is TUI-only and
   the desktop's plugin surface is a later milestone.
 
-**Recommended: Option A.** The desktop's palette already consumes the same
+**Accepted: Option A.** The desktop's palette already consumes the same
 catalogue (M007-D's record), so Option A costs the desktop nothing beyond
 rendering the published catalogue.
 

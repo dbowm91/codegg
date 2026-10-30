@@ -1034,5 +1034,5 @@ fn a_frontend_effect_is_dispatched_from_the_declared_action() {
             }
         }
     }
-    assert_eq!(checked, 38, "38 forms are frontend effects");
+    assert_eq!(checked, 41, "41 forms are frontend effects");
 }

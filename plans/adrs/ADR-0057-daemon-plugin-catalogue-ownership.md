@@ -1,6 +1,6 @@
 # ADR-0057: Daemon-Owned Plugin Catalogue and Registry Ownership
 
-Status: proposed — not accepted; this record grants no capability
+Status: accepted — Option A (the split) accepted 2026-10-30 by the project maintainer
 
 Date: 2026-10-29
 
@@ -225,53 +225,59 @@ would make the roadmap row's claim of a correction false rather than fix it.
 
 ## Decision
 
-**The decision is pending the project maintainer. This record is `proposed`
-and grants no capability.**
+**The project maintainer accepted Option A (the split) on 2026-10-30.**
 
-This record **recommends Option A (the split)**, for these reasons:
+The daemon's plugin registry becomes the **single authority** for the
+catalogue. The three read-only forms (`/plugins` and its aliases,
+`/plugin-info`, `/plugin-doctor`) become `FrontendEffect` forms with
+declared `FrontendAction`s of the `NonMutating` disposition, fed by the
+daemon's published catalogue. The four mutating forms (`/plugin-enable`,
+`/plugin-disable`, `/plugin-remove`, `/plugin-install`) remain
+`DaemonEffect` forms, served by the daemon under ADR-0052 with a canonical
+`Run` each. This is the only shape that satisfies the closed
+frontend-action vocabulary without widening it: a mutating form cannot be a
+frontend action at all, because `scripts/check_frontend_action_set.py`
+admits only `NonMutating` and `ProcessLaunching`.
 
-- It is the only option that satisfies the closed frontend-action vocabulary
-  (driver 1) without widening it: the three read-only forms fit `NonMutating`
-  exactly, and the four mutating forms are carried as daemon effects with
-  canonical `Run`s under ADR-0052, which is also the disposition the registry
-  already recorded on 2026-10-27 (`plans/registry.md:1165`).
-- It delivers the milestone's stated goal — one authority — while keeping the
-  two writer surfaces on the correct side of the checkout boundary (driver 4).
-- It refuses the alternative that would make a read a durable `Run` (Option B)
-  unless the owner prefers a single ownership path over that cost.
+This record decides the four points it left open when it was proposed, and
+they are recorded here as **this record's mechanism decisions** rather than
+as separate owner questions. Each one follows from the accepted shape and
+from precedent already in the tree.
 
-**What the owner must still decide, and what this record does not decide:**
+1. **How the daemon publishes the catalogue.** On the **canonical session
+   projection** — the same mechanism ADR-0053 decided and plan 018
+   delivered for the session's selected model, its shell command runs and
+   its tool contracts. No new projection surface is minted, and ADR-0053's
+   decided set is not amended: the plugin catalogue joins the session
+   projection the way those three did. A dedicated request is **not** used,
+   because the desktop's action dispatch is synchronous and holds only what
+   the renderer already has.
+2. **The registry's lifetime and the standalone TUI.** The daemon's registry
+   becomes a **process-lifetime singleton** rather than a per-turn
+   construction (`src/core/daemon_turns.rs:909`). The TUI's `PluginManager`
+   (`src/tui/app/mod.rs:1900-1907`) is retired **in daemon mode**, where the
+   daemon's registry is the only instance; the TUI keeps its own instance
+   **only in standalone mode**, where there is no daemon to own it. There is
+   never more than one live instance of the registry in a given process, so
+   the "two authorities can disagree" condition cannot arise.
+3. **The capability that authorises the four mutating forms.** A narrow
+   **`plugin.manage`** capability, granted to named roles and **not**
+   inferred from `command.execute`. This is the direct analogue of the
+   narrow `lsp.control` capability ADR-0056 minted for the LSP controls
+   (`plans/adrs/ADR-0056-daemon-lsp-command-and-runtime-control-surface.md:38-40`),
+   and it exists because the role capability vocabulary has 22 members with
+   no plugin capability (`crates/codegg-core/src/team.rs:249-294`).
+4. **The single writer of the activation file.** The daemon is the **sole
+   writer** whenever a daemon is present, and the TUI's activation writes
+   become daemon requests. In standalone mode the TUI remains the sole
+   writer of the same file, because there is no daemon to take it. The
+   exclusive writer is decided by which mode is running, never by both at
+   once.
 
-1. **How the daemon publishes the plugin catalogue** that the three
-   read-only frontend actions consume — as a new published projection surface
-   (which touches ADR-0053's decided set), as a dedicated request, or not at
-   all. Option B sidesteps this by making all seven daemon effects.
-2. **Whether the daemon's plugin registry becomes a process-lifetime
-   singleton**, and what happens to the TUI's `PluginManager` in standalone
-   (non-daemon) mode, where the TUI must still work.
-3. **Which capability authorises the four mutating forms.** `CommandCapability`
-   has exactly one member, `command.execute`
-   (`crates/codegg-core/src/command_catalog.rs`), and the role capability
-   vocabulary has 22 members with **no** plugin capability
-   (`crates/codegg-core/src/team.rs:249-294`). ADR-0056's precedent for the
-   LSP controls was a narrow, explicitly-granted `lsp.control`
-   (`plans/adrs/ADR-0056-...:38-40`); the analogue would be a narrow
-   `plugin.manage`, granted to named roles and not inferred from
-   `command.execute`. Whether to mint one is the owner's decision.
-4. **Who is the single writer of `plugin-activation.json`** — the daemon
-   becoming the sole writer (so the TUI's activation writes become daemon
-   requests), the file being split into daemon-global and frontend-local
-   scopes, or an inter-process lock being added.
-
-**Nothing is implemented, and no capability, request, projection, catalogue
-change or manifest entry is granted, until the owner accepts this record.**
-Acceptance is recorded in the `Status:` line above, in the manner of
-`plans/adrs/ADR-0056-...:3` (*"Status: accepted — Option B accepted
-2026-10-28 by the project maintainer"*) and ADR-0030's proposed form
-(`plans/adrs/ADR-0030-...:3`: *"Status: proposed — **not authorized for
-implementation or user-facing selection**"*). Until then the M007-G roadmap
-row stands as written: *"not started — ADR-0057 not yet written"*
-(`plans/subsystems/desktop-frontend-ide-foundation-roadmap.md:568`).
+**Consequences for the milestone.** M007-G's implementation plan is
+`plans/implementation/desktop-frontend-ide-foundation/021-the-daemon-s-plugin-catalogue.md`.
+It carries this record's decisions into its work packages, and its status
+moves from `blocked` to `ready for handoff`.
 
 ## Consequences
 

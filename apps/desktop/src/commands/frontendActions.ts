@@ -215,6 +215,79 @@ function terminalReport(context: FrontendActionContext): FrontendActionAnswer {
 }
 
 /**
+ * The desktop's report of the plugin catalogue the daemon published.
+ *
+ * M007-G (ADR-0057): the daemon's plugin registry is the single authority
+ * for the catalogue, and the desktop renders what the daemon published
+ * rather than asking a second authority for it.
+ */
+function pluginCatalogueReport(context: FrontendActionContext): string {
+  const entries = context.presentation?.pluginCatalogue ?? [];
+  if (entries.length === 0) return 'plugins: none published';
+  const limit = 8;
+  const shown = entries.slice(0, limit).map((entry) => {
+    const state = entry.enabled ? 'enabled' : 'disabled';
+    return `${entry.pluginId} ${entry.version} ${state}`;
+  });
+  const rest = entries.length - shown.length;
+  const tail = rest > 0 ? `, +${rest} more` : '';
+  return `plugins: ${entries.length} published (${shown.join(', ')}${tail})`;
+}
+
+/**
+ * The desktop's report of one plugin in the published catalogue.
+ *
+ * The action names the plugin, and the desktop reports **that** plugin: a
+ * name the daemon did not publish is refused with the reason, so the
+ * message says what is missing rather than showing the wrong plugin.
+ */
+function pluginInfoReport(context: FrontendActionContext): FrontendActionAnswer {
+  const selector = (context.argument ?? '').trim();
+  if (!selector) {
+    return { performed: false, message: '', reason: 'the plugin info action needs a plugin' };
+  }
+  const entries = context.presentation?.pluginCatalogue ?? [];
+  const match = entries.find(
+    (entry) => entry.pluginId === selector || entry.name === selector,
+  );
+  if (!match) {
+    return {
+      performed: false,
+      message: '',
+      reason: `the daemon published no plugin named ${selector}`,
+    };
+  }
+  return {
+    performed: true,
+    message:
+      `${match.pluginId} ${match.version} ` +
+      `${match.enabled ? 'enabled' : 'disabled'} runtime=${match.runtimeKind} ` +
+      `trust=${match.trust} commands=${match.commandCount} hooks=${match.hookCount} ` +
+      `diagnostics=${match.diagnosticCount}`,
+    reason: null,
+  };
+}
+
+/**
+ * The desktop's report of the published catalogue's diagnostics.
+ *
+ * The report is the published summary, so it says what the daemon
+ * published rather than running a second diagnosis of its own.
+ */
+function pluginDoctorReport(context: FrontendActionContext): string {
+  const entries = context.presentation?.pluginCatalogue ?? [];
+  if (entries.length === 0) return 'plugin diagnostics: none published';
+  const limit = 8;
+  const shown = entries.slice(0, limit).map((entry) => {
+    const state = entry.hasError ? 'error-level diagnostic present' : 'no error-level diagnostic';
+    return `${entry.pluginId} diagnostics=${entry.diagnosticCount} ${state}`;
+  });
+  const rest = entries.length - shown.length;
+  const tail = rest > 0 ? `, +${rest} more` : '';
+  return `plugin diagnostics: ${entries.length} published (${shown.join(', ')}${tail})`;
+}
+
+/**
  * Answer one declared frontend action.
  *
  * The action's wire name is the daemon's, so an action the desktop does not
@@ -238,6 +311,12 @@ export function answerFrontendAction(
       return { performed: true, message: shellRunsReport(context), reason: null };
     case 'show_terminal':
       return terminalReport(context);
+    case 'show_plugins':
+      return { performed: true, message: pluginCatalogueReport(context), reason: null };
+    case 'show_plugin_info':
+      return pluginInfoReport(context);
+    case 'show_plugin_doctor':
+      return { performed: true, message: pluginDoctorReport(context), reason: null };
     default:
       return {
         performed: false,

@@ -116,10 +116,8 @@ impl CoreDaemon {
     /// extended-thinking selection for one turn.
     ///
     /// Precedence: **explicit turn override ▸ persisted principal
-    /// preference ▸ agent / model-profile default**. The persisted
-    /// preference is consulted only when the turn carries no explicit
-    /// override; the agent-layer precedence
-    /// (`apply_agent_config` → `apply_model_profile_defaults` →
+    /// preference ▸ agent / model-profile default**. The agent-layer
+    /// precedence (`apply_agent_config` → `apply_model_profile_defaults` →
     /// `apply_reasoning_override`) is unchanged.
     ///
     /// The principal comes from transport authority, never from the request
@@ -131,12 +129,10 @@ impl CoreDaemon {
     /// model behaviour with no indication that their stored choice was
     /// gone.
     ///
-    /// `session_id` scopes the report. The notice is session-scoped
-    /// because the daemon's event log only delivers a session-less event to
-    /// a client as a global event, and the WS filter drops a global
-    /// `CoreEvent::Error` (`event_matches_raw_filter` in
-    /// `src/server/ws.rs`). A session-scoped notice is therefore the only
-    /// shape that actually reaches the client that asked for the turn.
+    /// `session_id` scopes the report, because the WS filter drops a
+    /// session-less `CoreEvent::Error` (`event_matches_raw_filter` in
+    /// `src/server/ws.rs`), so a session-scoped notice is the only shape
+    /// that reaches the client that asked for the turn.
     pub(crate) async fn resolve_reasoning_selection(
         &self,
         session_id: &str,
@@ -906,8 +902,13 @@ impl CoreDaemon {
 
                 // Delegate to the injected turn runtime which handles tool
                 // registry, agent loop construction, and background spawning.
-                let plugin_service = match crate::plugin::create_default_plugin_service().await {
-                    Some(service) => match service
+                //
+                // M007-G (ADR-0057): the plugin service is the
+                // **process's one** registry, not a per-turn construction
+                // that could disagree with the daemon's.
+                let plugin_service = match self.plugin_registry().await {
+                    Some(registry) => match registry
+                        .service()
                         .for_workspace(runtime.workspace_id.to_string())
                         .await
                     {
@@ -925,6 +926,13 @@ impl CoreDaemon {
                     },
                     None => None,
                 };
+                // M007-G (ADR-0057): publish the daemon's plugin catalogue
+                // so the frontend's read-only forms render what it holds.
+                self.publish_plugin_catalogue(
+                    session_id.as_str(),
+                    Some(runtime.workspace_id.as_str()),
+                )
+                .await;
                 // Retain the daemon-owned workspace service for the detached
                 // turn. This keeps its canonical lock table alive until the
                 // loop exits, so checkpoint capture and native mutation share
@@ -2536,9 +2544,7 @@ impl CoreDaemon {
     /// each step exists because the one after it cannot undo it:
     ///
     /// 1. **Pre-flight** the entry, so a prompt that could never be settled is
-    ///    never steered into a turn in the first place. This is what stops a
-    ///    `delivering` row from being handed to a turn when it is already
-    ///    running as its own.
+    ///    never steered into a turn in the first place.
     /// 2. **Steer** the active turn, through the same controller predicate
     ///    `TurnSteer` uses and against the `turn_id` the daemon resolves itself,
     ///    so a client cannot steer a turn that has already ended.
@@ -2547,9 +2553,8 @@ impl CoreDaemon {
     ///
     /// Step 3 can still fail after step 2 succeeded: the turn holds the text and
     /// the row did not move. That is reported as `AcceptedNotSettled`, never as
-    /// an error — an error here would tell the user their prompt was rejected
-    /// and invite them to resend a prompt that has already run, which is
-    /// exactly the duplication ADR-0036 forbids.
+    /// an error — an error would invite a resend of a prompt that has already
+    /// run, which is exactly the duplication ADR-0036 forbids.
     async fn handle_user_prompt_queue_send_now(
         &self,
         session_id: &str,

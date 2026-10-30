@@ -248,6 +248,21 @@ export interface ToolContractView {
   effectClass: string;
   idempotency: string;
 }
+// One plugin in the catalogue the daemon published for the session.
+// M007-G (ADR-0057): the daemon's plugin registry is the single
+// authority for the catalogue, and the desktop renders what it published.
+export interface PluginCatalogueEntryView {
+  pluginId: string;
+  name: string;
+  version: string;
+  enabled: boolean;
+  trust: string;
+  runtimeKind: string;
+  commandCount: number;
+  hookCount: number;
+  diagnosticCount: number;
+  hasError: boolean;
+}
 // One todo entry. The content is the entry; the status and priority
 // are its state, and the host applies the TUI's own defaults when the
 // daemon omits one.
@@ -340,6 +355,9 @@ export interface SessionPresentationView {
   // The tool contracts the session's own registry holds, in the order the
   // daemon published them.
   toolContracts: ToolContractView[];
+  // The plugin catalogue the daemon published for the session, in the
+  // order the daemon published it.
+  pluginCatalogue: PluginCatalogueEntryView[];
   recentTurns: TurnSummaryView[];
   // The session's todo list. `null` means *this view carries no todo
   // list*, not "the session has no todos": todos live behind a separate

@@ -6,9 +6,7 @@
 //! project activation leases, read-only health, activation-lease eviction,
 //! per-session runtime-asset refresh, and the workspace/binding resolvers
 //! those paths share with request families. It introduces no new store,
-//! scheduler, state machine, or authority, and preserves exact refresh and
-//! activation semantics (including lease-drop-on-failure and
-//! generation-gated error mapping).
+//! scheduler, state machine, or authority.
 //!
 //! ```text
 //! Refresh paths (all through the daemon-owned AssetRefreshCoordinator):
@@ -18,7 +16,6 @@
 //!       health; lease dropped on refresh/health failure)
 //!   - refresh_runtime_assets (session runtime -> coordinator)
 //!   - project_health (catalog + workspace peek + asset status -> aggregate)
-//!   - evict_project_activation_leases (expiry -> idle -> service eviction)
 //! ```
 //!
 //! Binding resolvers (`resolve_*`, `bind_*`, `workspace_for_*`, `session_dto`,
@@ -100,26 +97,18 @@ impl CoreDaemon {
     /// transcript. The client's session id is a claim that is checked, never
     /// a grant.
     ///
-    /// Three answers, and they are three different facts:
-    ///
-    /// - **Not yours, or not there.** A run the named session does not own
-    ///   and a run id that does not exist get the *same* answer, so a
-    ///   guessed run id reveals neither the run's existence nor its size.
-    /// - **Yours, but nothing recorded.** An owned run with no recorded
-    ///   transcript is a *page* whose status is absent. That is not the
-    ///   refusal above, and the client can tell them apart.
-    /// - **Temporarily unavailable.** A store that cannot be read gets its
-    ///   own answer, because "could not read it" is not "not yours".
+    /// Three answers, and they are three different facts: a run the named
+    /// session does not own and a run id that does not exist get the *same*
+    /// answer, so a guessed run id reveals neither the run's existence nor
+    /// its size; an owned run with no recorded transcript is a *page* whose
+    /// status is absent, which the client can tell apart from the refusal;
+    /// and a store that cannot be read gets its own answer, because "could
+    /// not read it" is not "not yours".
     ///
     /// The read is bounded three ways, independently: the store's own read
     /// limit, the declared page row ceiling, and the declared byte ceiling
-    /// applied to the already-redacted bodies. The page answers with the
-    /// store's authoritative cursor, so a client walks past the initial
-    /// preview without re-fetching the session.
-    ///
-    /// A retired parent turn does not close this door: ownership is
-    /// session-scoped and durable, so a run whose parent turn has ended is
-    /// still readable by the session that owns it.
+    /// applied to the already-redacted bodies. A retired parent turn does
+    /// not close this door: ownership is session-scoped and durable.
     pub(crate) async fn handle_agent_run_request(
         &self,
         request: CoreRequest,
@@ -544,8 +533,14 @@ impl CoreDaemon {
         // Capture the same immutable activation view used for this refresh as
         // explicit context input. The snapshot builder never reads plugin
         // activation storage or mutable plugin state itself.
-        if let Some(plugin_service) = crate::plugin::create_default_plugin_service().await {
-            match plugin_service
+        //
+        // M007-G (ADR-0057): the refresh reads the **process's one**
+        // plugin registry, the same instance the turn path and the
+        // management path use. A second construction here would be a
+        // second authority.
+        if let Some(registry) = self.plugin_registry().await {
+            match registry
+                .service()
                 .for_workspace(context.workspace_id.to_string())
                 .await
             {

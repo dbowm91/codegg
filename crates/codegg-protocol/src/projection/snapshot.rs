@@ -17,9 +17,9 @@ use crate::projection::dto::{
 };
 use crate::projection::limits::{
     MAX_PROJECTION_AGENT_RUNS, MAX_PROJECTION_DIAGNOSTICS, MAX_PROJECTION_JOBS,
-    MAX_PROJECTION_RUNS, MAX_PROJECTION_RUN_GROUPS, MAX_PROJECTION_SESSION_SUBAGENTS,
-    MAX_PROJECTION_SHELL_RUNS, MAX_PROJECTION_TOOL_CONTRACTS, MAX_PROJECTION_TOOL_PROGRAMS,
-    MAX_PROJECTION_TRANSCRIPT_WATERMARKS, MAX_PROJECTION_WORKTREES,
+    MAX_PROJECTION_PLUGIN_CATALOGUE, MAX_PROJECTION_RUNS, MAX_PROJECTION_RUN_GROUPS,
+    MAX_PROJECTION_SESSION_SUBAGENTS, MAX_PROJECTION_SHELL_RUNS, MAX_PROJECTION_TOOL_CONTRACTS,
+    MAX_PROJECTION_TOOL_PROGRAMS, MAX_PROJECTION_TRANSCRIPT_WATERMARKS, MAX_PROJECTION_WORKTREES,
 };
 
 /// Bounded projection of one session plus its surrounding context.
@@ -68,6 +68,11 @@ pub struct SessionProjectionSnapshot {
     /// The tool contracts available to the session.
     #[serde(default)]
     pub tool_contracts: VecDeque<crate::projection::dto::ToolContractProjection>,
+    /// The plugin catalogue the daemon published for the session.
+    ///
+    /// M007-G (ADR-0057): the daemon's plugin registry is the authority.
+    #[serde(default)]
+    pub plugin_catalogue: VecDeque<crate::projection::dto::PluginCatalogueEntryProjection>,
     /// Active and recently observed durable jobs.
     pub jobs: VecDeque<JobProjection>,
     /// Active and recently completed background tool programs.
@@ -88,9 +93,7 @@ pub struct SessionProjectionSnapshot {
     /// transcript-advanced hint said each run's recording had reached.
     ///
     /// Advisory metadata, never a transcript. The reducer does not invent
-    /// transcript entries from it, and the canonical cursor always comes
-    /// from the store. Bounded by
-    /// [`crate::projection::limits::MAX_PROJECTION_TRANSCRIPT_WATERMARKS`].
+    /// transcript entries from it.
     #[serde(default)]
     pub transcript_watermarks: VecDeque<AgentRunTranscriptWatermarkProjection>,
     /// Bounded diagnostic list emitted by the reducer.
@@ -146,6 +149,7 @@ impl SessionProjectionSnapshot {
             runs: VecDeque::new(),
             shell_runs: VecDeque::new(),
             tool_contracts: VecDeque::new(),
+            plugin_catalogue: VecDeque::new(),
             jobs: VecDeque::new(),
             tool_programs: VecDeque::new(),
             agent_runs: VecDeque::new(),
@@ -306,6 +310,18 @@ impl SessionProjectionSnapshot {
         self.tool_contracts = contracts.into();
     }
 
+    /// Replace the session's plugin catalogue, keeping the bound.
+    pub fn set_plugin_catalogue(
+        &mut self,
+        mut entries: Vec<crate::projection::dto::PluginCatalogueEntryProjection>,
+    ) {
+        for entry in entries.iter_mut() {
+            entry.normalise();
+        }
+        entries.truncate(MAX_PROJECTION_PLUGIN_CATALOGUE);
+        self.plugin_catalogue = entries.into();
+    }
+
     /// Upsert a tool program summary, dropping the oldest if the cap
     /// is reached.
     pub fn upsert_tool_program(&mut self, program: ToolProgramSummary) {
@@ -347,9 +363,7 @@ impl SessionProjectionSnapshot {
     ///
     /// The watermark is **monotonic per run**: the canonical storage
     /// ordinal dominates, so a duplicate or out-of-order hint never moves
-    /// it backwards. `recording_stopped` is sticky for the same reason —
-    /// once the store has refused further appends for a run, that fact does
-    /// not become untrue.
+    /// it backwards. `recording_stopped` is sticky for the same reason.
     pub fn upsert_transcript_watermark(
         &mut self,
         watermark: AgentRunTranscriptWatermarkProjection,

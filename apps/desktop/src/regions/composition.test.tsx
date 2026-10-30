@@ -127,6 +127,7 @@ const presentation = (sessionId: string): SessionPresentationView => ({
   convergences: [],
   shellRuns: [],
   toolContracts: [],
+  pluginCatalogue: [],
   recentTurns: [
     {
       turnId: 'turn-0',

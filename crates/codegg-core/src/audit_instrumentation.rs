@@ -655,6 +655,8 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("human_shell_promotion_stage", "prompt_submit"),
     ("human_shell_run_create", "human_shell_run"),
     ("human_shell_run_cancel", "human_shell_run"),
+    // M007-H: the review's start may apply a checked change.
+    ("security_review_start", "file_mutate"),
     // M007: the operator disposition of one of the daemon's own disposable
     // scratch trees.
     ("scratch_reclaim", "scratch_reclaim"),
@@ -719,6 +721,8 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("document_create", "file_mutate"),
     ("document_delete", "file_mutate"),
     ("project_init_publish", "file_mutate"),
+    // M007-G (ADR-0057): the mutating plugin forms are file mutations.
+    ("plugin_manage", "file_mutate"),
     ("managed_worktree_cleanup", "worktree_lifecycle"),
     ("managed_worktree_archive", "worktree_lifecycle"),
     ("job_submit", "job_submit"),
@@ -842,6 +846,11 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "agent_run_transcript_read",
     "human_shell_run_capabilities",
     "human_shell_run_read",
+    // M007-H: three reads that mutate nothing. Denial *is* audited upstream
+    // by `authorize_request`.
+    "human_shell_run_list",
+    "lsp_preview_read",
+    "security_review_read",
     "human_shell_promotions_get",
     // M002a (ADR-0035): a session-scoped read of inert queued-prompt
     // metadata, in the same class as the promotion read above. It carries

@@ -3700,13 +3700,10 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     // same Arc<RwLock<McpService>> rather than spawning a second
     // eggsearch process.
     //
-    // `bootstrap_search_runtime` (rather than the legacy
-    // `bootstrap_search_backend`) also hands back the owned context that
+    // `bootstrap_search_runtime` also hands back the owned context that
     // `/research` needs to derive its network authorization from
     // `[search].backend`. In socket mode the daemon owns the transport, so
-    // the CLI must not spawn a second eggsearch process; a config-only
-    // context still carries the resolved `SearchConfig` and therefore the
-    // correct network decision, just without the eggsearch MCP transport.
+    // the CLI must not spawn a second eggsearch process.
     let search_runtime = if is_socket_mode {
         Some(codegg::search_backend::SearchRuntimeContext::from_config(
             &config.search.clone().unwrap_or_default(),
@@ -3821,7 +3818,6 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     app.set_agents(agents.clone());
     app.agent_state.snapshot = snapshot.clone();
     app.notification_manager = Some(notification_mgr);
-    app.init_plugin_manager().await;
 
     if is_socket_mode {
         // Pull theme from config only (no SQLite-backed preferences in socket mode)
@@ -3953,6 +3949,11 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     // this subscription. Without it the TUI optimistically showed "working"
     // forever, even when the turn had already failed.
     app.attach_core_client(core_client);
+
+    // M007-G (ADR-0057): the daemon is the single authority for the plugin
+    // catalogue, so the TUI builds a plugin manager only when no daemon is
+    // attached. This runs after `attach_core_client` so it sees the daemon.
+    app.init_plugin_manager().await;
 
     // Top-level --approval-mode/--sandbox/--yolo seed the
     // daemon-owned preference once at startup through the single shared

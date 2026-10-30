@@ -43,6 +43,9 @@ pub mod checkout_mediation_authority_c008;
 #[path = "command_catalog_m007d.inc"]
 pub mod command_catalog_m007d;
 
+#[path = "plugin_catalogue_m007g.inc"]
+pub mod plugin_catalogue_m007g;
+
 #[path = "collaboration_m001_chat.inc"]
 pub mod collaboration_m001_chat;
 

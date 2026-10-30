@@ -378,6 +378,24 @@ pub struct ToolContractView {
     pub idempotency: String,
 }
 
+/// One plugin in the catalogue the daemon published for the session.
+///
+/// M007-G (ADR-0057): the daemon's plugin registry is the single
+/// authority for the catalogue, and the desktop renders what it published.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PluginCatalogueEntryView {
+    pub plugin_id: String,
+    pub name: String,
+    pub version: String,
+    pub enabled: bool,
+    pub trust: String,
+    pub runtime_kind: String,
+    pub command_count: usize,
+    pub hook_count: usize,
+    pub diagnostic_count: usize,
+    pub has_error: bool,
+}
+
 /// Pending (or recently resolved) permission. `scope_summary` is a
 /// display-only string derived from the daemon path; it is never sent
 /// back as authority (WP E responds carry the opaque id + choice only).
@@ -858,6 +876,9 @@ pub struct SessionPresentationView {
     /// The tool contracts the session's own registry holds, in the order
     /// the daemon published them.
     pub tool_contracts: Vec<ToolContractView>,
+    /// The plugin catalogue the daemon published for the session, in the
+    /// order the daemon published it.
+    pub plugin_catalogue: Vec<PluginCatalogueEntryView>,
     pub recent_turns: Vec<TurnSummaryView>,
     /// The session's todo list.
     ///

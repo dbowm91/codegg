@@ -467,6 +467,16 @@ pub fn projection_events_from_core(
             };
             Some((session_id.clone(), None, event))
         }
+        CoreEvent::PluginCatalogueUpdated {
+            session_id,
+            entries,
+        } => {
+            let event = ProjectionEvent::PluginCatalogueUpdated {
+                entries: entries.clone(),
+                at: envelope.timestamp_ms,
+            };
+            Some((session_id.clone(), None, event))
+        }
         CoreEvent::JobCreated {
             session_id,
             job_id,

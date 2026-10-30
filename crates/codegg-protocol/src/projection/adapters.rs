@@ -107,6 +107,7 @@ pub fn snapshot_from_snapshot_session(
         runs: Vec::new().into(),
         shell_runs: Vec::new().into(),
         tool_contracts: Vec::new().into(),
+        plugin_catalogue: Vec::new().into(),
         jobs: Vec::new().into(),
         tool_programs: Vec::new().into(),
         agent_runs: Vec::new().into(),

@@ -581,11 +581,11 @@ fifth reconciliations recorded. The full reconciliation is in
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 58 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 61 | `crates/codegg-core/src/bus/events.rs` |
-| `CoreRequest` variants | 271 (245 struct + 26 unit) | `crates/codegg-protocol/src/core.rs` |
-| `CoreResponse` variants | 179 (178 struct + 1 unit) | `crates/codegg-protocol/src/core.rs` |
-| `CoreEvent` variants | 97 | `crates/codegg-protocol/src/core.rs` |
-| `ProjectionEvent` variants | 50 | `crates/codegg-protocol/src/projection/event.rs` |
-| Authorized operations | 265 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) — 271 arms carrying 265 distinct operation names, covering all 271 `CoreRequest` variants; the `representative_requests()` list holds 229 of them |
+| `CoreRequest` variants | 275 (249 struct + 26 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreResponse` variants | 183 (182 struct + 1 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreEvent` variants | 98 | `crates/codegg-protocol/src/core.rs` |
+| `ProjectionEvent` variants | 51 | `crates/codegg-protocol/src/projection/event.rs` |
+| Authorized operations | 270 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) — 276 arms carrying 270 distinct operation names, covering all 275 `CoreRequest` variants; the `representative_requests()` list holds 259 of them |
 | Identity newtypes | 19 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
 | Built-in slash commands | 169 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
@@ -596,9 +596,22 @@ fifth reconciliations recorded. The full reconciliation is in
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 355 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Integration test files | 356 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
 | Guard scripts (all) | 105 | `scripts/check_*` — every guard the repository ships |
 | CI guard scripts | 71 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs guards CI does not |
+
+### Count reconciliation — the daemon's plugin catalogue (2026-10-30)
+
+Six code-count rows moved, each re-measured in this tree with `python3 scripts/measure_overview_counts.py` rather than incremented:
+
+- *`CoreRequest` variants* is **275** (249 struct + 26 unit) — the new `PluginManage` arm, which carries the four mutating plugin forms to the daemon's registry.
+- *`CoreResponse` variants* is **183** (182 struct + 1 unit) — the new `PluginManageResult` arm.
+- *`CoreEvent` variants* is **98** — the new `PluginCatalogueUpdated` arm, which publishes the daemon's plugin catalogue on the session projection.
+- *`ProjectionEvent` variants* is **51** — the new `PluginCatalogueUpdated` projection arm.
+- *Authorized operations* is **270** — the new `plugin_manage` operation, authorized by the narrow `plugin.manage` capability.
+- *Integration test files* is **356** (`tests/*.rs` + `tests/*/*.inc`, with the `tests/common/` helper tree excluded) — by **one**: the new `tests/core_daemon/plugin_catalogue_m007g.inc`. It sits inside the existing `core_daemon` family, so the root package's **test-target** count did **not** move.
+
+Three of those rows were **already stale at the baseline** and are corrected here by measurement rather than by this milestone's work: `CoreRequest` variants was recorded at **271** while the baseline tree measured **274**, `CoreResponse` variants at **179** against a measured **182**, and authorized operations at **265** against a measured **269**. The other three rows matched their recorded figures at the baseline. Every other row was confirmed unchanged by measurement.
 
 ### Count reconciliation — session cwd, repository build admission, and read-only placement (2026-10-28)
 

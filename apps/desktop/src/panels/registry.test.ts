@@ -48,6 +48,7 @@ const projection: SessionPresentationView = {
   convergences: [],
   shellRuns: [],
   toolContracts: [],
+  pluginCatalogue: [],
   recentTurns: [turn],
   todos: null,
   pendingPermissions: [],

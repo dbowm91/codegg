@@ -147,6 +147,7 @@ const presentation = () => ({
       idempotency: 'idempotent',
     },
   ],
+  pluginCatalogue: [],
   recentTurns: [],
   todos: null,
   pendingPermissions: [],

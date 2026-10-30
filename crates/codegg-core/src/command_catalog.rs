@@ -1,20 +1,17 @@
 //! M007-D: the daemon-owned command catalog.
 //!
-//! This module is the single definition of what commands exist. ADR-0052
-//! (accepted 2026-10-24) moved command ownership into the daemon: the
-//! catalog names every command's identity, display name, aliases,
-//! description, domain, kind, required capability and argument shape, and
-//! the daemon executes the daemon-effect forms under `command.execute`.
+//! This module is the single definition of what commands exist. ADR-0052 (accepted 2026-10-24) moved command ownership into the daemon:
+//! the catalog names every command's identity, display name, aliases, description,
+//! domain, kind, required capability and argument shape.
 //!
-//! The catalog is plain data, so `codegg-core` stays UI-free
-//! (`scripts/check-core-boundary.sh`).
+//! The catalog is plain data, so `codegg-core` stays UI-free.
 //!
 //! ## The classification unit is the form
 //!
 //! A command's *form* is one argument shape of that command, and the form
 //! — not the bare command — carries the kind. `/agents` is the confirmed
-//! case: the bare form opens the agent dialog (a frontend effect) while
-//! `show`, `--all`, `diff`, `validate` and `reload` are daemon effects.
+//! case: the bare form opens the agent dialog while `show` and `reload`
+//! are daemon effects.
 //!
 //! ## The rule the classification applies
 //!
@@ -55,9 +52,8 @@ impl CommandKind {
 
 /// The coarse category a command belongs to.
 ///
-/// This is the older three-way classification, kept for compatibility with
-/// the surfaces that still group commands by it. It is presentation
-/// metadata only; it does not decide whether a command may execute.
+/// This is presentation metadata only; it does not decide whether a command
+/// may execute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandCategory {
@@ -68,9 +64,8 @@ pub enum CommandCategory {
 
 /// The capability a daemon-effect form requires.
 ///
-/// `command.execute` is the only capability any daemon-effect form may
-/// name in this milestone: no new capability, scope or policy is invented
-/// here (`plans/000-long-term-specification.md:217`).
+/// `command.execute` is the only capability any daemon-effect form may name
+/// in this milestone (`plans/000-long-term-specification.md:217`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandCapability {
@@ -239,7 +234,9 @@ impl std::error::Error for CatalogBoundError {}
 
 /// The one catalog. Every command the daemon knows about.
 static THE_CATALOG: CommandCatalog = CommandCatalog {
-    version: 2,
+    // M007-G (ADR-0057): version 3 reclassifies the three read-only plugin
+    // forms as frontend effects, so a version 2 client is refused.
+    version: 3,
     commands: &[
         CommandDescriptor {
             command_id: "project_init",
@@ -2636,12 +2633,12 @@ static THE_CATALOG: CommandCatalog = CommandCatalog {
             description: "List installed and built-in plugins",
             category: CommandCategory::System,
             domain: CommandDomain::System,
-            kind: CommandKind::DaemonEffect,
-            capability: Some(CommandCapability::CommandExecute),
+            kind: CommandKind::FrontendEffect,
+            capability: None,
             forms: &[
                 CommandForm {
                     form: "",
-                    kind: CommandKind::DaemonEffect,
+                    kind: CommandKind::FrontendEffect,
                     argument_hint: "",
                     argument_required: false,
                 },
@@ -2654,12 +2651,12 @@ static THE_CATALOG: CommandCatalog = CommandCatalog {
             description: "Show plugin runtime, capabilities, trust, and diagnostics (args: <plugin-id-or-name>)",
             category: CommandCategory::System,
             domain: CommandDomain::System,
-            kind: CommandKind::DaemonEffect,
-            capability: Some(CommandCapability::CommandExecute),
+            kind: CommandKind::FrontendEffect,
+            capability: None,
             forms: &[
                 CommandForm {
                     form: "",
-                    kind: CommandKind::DaemonEffect,
+                    kind: CommandKind::FrontendEffect,
                     argument_hint: "<plugin-id-or-name>",
                     argument_required: true,
                 },
@@ -2708,12 +2705,12 @@ static THE_CATALOG: CommandCatalog = CommandCatalog {
             description: "Diagnose plugin configuration and runtime health (args: [plugin-id-or-name])",
             category: CommandCategory::System,
             domain: CommandDomain::System,
-            kind: CommandKind::DaemonEffect,
-            capability: Some(CommandCapability::CommandExecute),
+            kind: CommandKind::FrontendEffect,
+            capability: None,
             forms: &[
                 CommandForm {
                     form: "",
-                    kind: CommandKind::DaemonEffect,
+                    kind: CommandKind::FrontendEffect,
                     argument_hint: "[plugin-id-or-name]",
                     argument_required: true,
                 },
@@ -3274,4 +3271,79 @@ pub fn check_catalog_bounds(catalog: &CommandCatalog) -> Result<(), CatalogBound
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// M007-G (ADR-0057): the seven plugin forms carry the accepted
+    /// classification — three frontend effects, four daemon effects.
+    #[test]
+    fn the_seven_plugin_forms_carry_their_accepted_classification() {
+        let frontend_effects = ["plugins", "plugin_info", "plugin_doctor"];
+        let daemon_effects = [
+            "plugin_enable",
+            "plugin_disable",
+            "plugin_remove",
+            "plugin_install",
+        ];
+        for command_id in frontend_effects {
+            let command = find_by_command_id(command_id)
+                .unwrap_or_else(|| panic!("{command_id} must be in the catalog"));
+            assert_eq!(
+                command.kind,
+                CommandKind::FrontendEffect,
+                "{command_id} is a read-only plugin form and must be a frontend effect"
+            );
+            assert!(
+                command.capability.is_none(),
+                "{command_id} is a frontend effect and must name no daemon capability"
+            );
+            assert!(
+                !command.forms.is_empty(),
+                "{command_id} must declare at least one form"
+            );
+            for form in command.forms {
+                assert_eq!(
+                    form.kind,
+                    CommandKind::FrontendEffect,
+                    "{command_id}/{} must be a frontend effect",
+                    form.form
+                );
+            }
+        }
+        for command_id in daemon_effects {
+            let command = find_by_command_id(command_id)
+                .unwrap_or_else(|| panic!("{command_id} must be in the catalog"));
+            assert_eq!(
+                command.kind,
+                CommandKind::DaemonEffect,
+                "{command_id} mutates plugin state and must stay a daemon effect"
+            );
+            assert_eq!(
+                command.capability,
+                Some(CommandCapability::CommandExecute),
+                "{command_id} must name the capability the daemon executes it under"
+            );
+            assert!(
+                !command.forms.is_empty(),
+                "{command_id} must declare at least one form"
+            );
+            for form in command.forms {
+                assert_eq!(
+                    form.kind,
+                    CommandKind::DaemonEffect,
+                    "{command_id}/{} must be a daemon effect",
+                    form.form
+                );
+            }
+        }
+    }
+
+    /// M007-G (ADR-0057): the catalog version moved with the reclassification.
+    #[test]
+    fn the_catalog_version_moved_with_the_plugin_reclassification() {
+        assert_eq!(catalog_version(), 3);
+    }
 }

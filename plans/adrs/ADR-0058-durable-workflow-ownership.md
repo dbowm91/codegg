@@ -1,6 +1,6 @@
 # ADR-0058: Durable Workflow Ownership for the Skill-Promotion and Human-Shell Ask Workflows
 
-Status: proposed — not accepted; this record grants no capability
+Status: accepted — Option B (all three moves) accepted 2026-10-30 by the project maintainer
 
 Date: 2026-10-29
 
@@ -302,32 +302,48 @@ workflows stay TUI-local.
 
 ## Decision
 
-**Pending the owner. This record proposes Option A and does not select it.**
+**The project maintainer accepted Option B (all three moves) on 2026-10-30.**
 
-Option A is recommended because it is the only option the measurements
-support: `/diff` issues **no** daemon request, holds no workflow state and
-performs no writer effect, so it is a **reclassification**, not a subsystem
-move (`plans/subsystems/desktop-frontend-ide-foundation-roadmap.md:570`;
-`plans/registry.md:1167`). The two workflows are a different matter — one has
-two writers and no owner, the other reads a store the daemon has demoted —
-and both need a daemon-owned durable workflow owner.
+All three forms move to daemon-owned owners. `/skill-promote` and `/shell-ask`
+move as durable workflows, each with a daemon-owned workflow owner; and the
+git-review diff view moves as well, so that both frontends see the same diff
+and the diff's bytes are read under the daemon's authority rather than the
+frontend's.
 
-**No capability is granted by this record, and nothing may be implemented
-until the owner accepts it.** The decision that is pending is recorded in the
-implementation plan's §5.3 as seven owner decisions (D1–D7), each of which
-names the work packages it gates. The recommended shape, for the owner's
-consideration:
+This record's proposal had recommended Option A, on the measurement that
+`/diff` issues **no** daemon request, holds no workflow state and performs no
+writer effect, and is therefore a *reclassification* rather than a subsystem
+move. That measurement stands — it is recorded in the corrected
+classification, and the generator measures `/diff` as issuing no daemon
+request (`plans/implementation/desktop-frontend-ide-foundation/artifacts/m007-d-command-classification.md`).
+The owner accepted Option B against that recommendation, and **the decision
+is the owner's**: moving the diff view gives both frontends one authority for
+it, at the cost of the daemon performing what is currently a single `git`
+subprocess and a file read.
 
-- **D1** — reclassify `/diff`'s form to `FrontendEffect` (Option A), rather
-  than moving it.
-- **D2–D5** — give the skill-promotion workflow **one** owner (the daemon),
-  key its store on a canonical identity, let the daemon publish to both
-  scopes, and mediate publication through the checkout reservation gate.
-- **D6–D7** — make the ask's stage-and-submit **one** daemon request, and
-  have the ask read the daemon's run bytes.
+The two workflows remain the substantive part of the milestone, and the
+hazards they carry are unchanged by this choice:
 
-Acceptance of this record by the project maintainer is what selects an option;
-this record, in its proposed state, selects none.
+- The skill-promotion workflow's store has **two** writers — the TUI process
+  and a daemon-side model tool — and **no** owner. After this milestone it
+  has **one** owner, and the decision fixes which.
+- The human-shell ask reads a TUI-local store that plan 018 demoted to a
+  projection. After this milestone it reads the daemon's own run bytes.
+
+**The decision this record makes, and the shape it fixes:**
+
+- **D1** — the diff view **moves** to the daemon. Its catalog form becomes a
+  daemon effect, and the daemon owns the `git` reads it performs.
+- **D2–D5** — the skill-promotion workflow gets **one** owner (the daemon),
+  its store is keyed on a canonical identity, the daemon publishes to both
+  scopes, and publication is mediated through the checkout reservation gate.
+- **D6–D7** — the ask's stage-and-submit becomes **one** daemon request, and
+  the ask reads the daemon's run bytes.
+
+M007-I's implementation plan is
+`plans/implementation/desktop-frontend-ide-foundation/022-the-subsystem-moves.md`;
+it carries these decisions into its work packages, and its status moves from
+`blocked` to `ready for handoff`.
 
 ## Consequences
 

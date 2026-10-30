@@ -35,12 +35,12 @@ generate_m007d_command_classification.py --check
 |---|---|
 | commands | 161 |
 | argument forms | 167 |
-| daemon-effect forms | 129 |
-| frontend-effect forms | 38 |
-| daemon-effect forms the daemon's effect table serves | 61 |
+| daemon-effect forms | 126 |
+| frontend-effect forms | 41 |
+| daemon-effect forms the daemon's effect table serves | 65 |
 | daemon-effect forms whose TUI arm issues a daemon request | 25 |
-| daemon-effect forms whose TUI arm issues no daemon request | 43 |
-| frontend-effect forms covered by the declared action set | 38 |
+| daemon-effect forms whose TUI arm issues no daemon request | 36 |
+| frontend-effect forms covered by the declared action set | 41 |
 
 The catalog, the declared frontend-action set and the daemon's effect table
 are three different things and are proved apart by three different tests:
@@ -74,173 +74,173 @@ it issues none.
 
 | command | form | kind | domain | route | arm | requests |
 |---|---|---|---|---|---|---|
-| `/init` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:5701` | `CommandExecute` |
-| `/connect` | `—` | frontend | Provider | frontend → `OpenConnectDialog` | `src/tui/app/mod.rs:5994` | — |
-| `/connections` | `—` | frontend | Provider | frontend → `OpenConnectionSelectionDialog` | `src/tui/app/mod.rs:5998` | — |
-| `/exit` | `—` | frontend | System | frontend → `Quit` | `src/tui/app/mod.rs:5790` | — |
-| `/status` | `—` | frontend | Diagnostics | frontend → `ShowStatus` | `src/tui/app/mod.rs:6002` | — |
-| `/policy` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:6022` | `CommandExecute` |
-| `/approval` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:6037` | `CommandExecute`, `RuntimePolicySet` |
-| `/sandbox` | `—` | daemon | System | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6061` | `CommandExecute`, `RuntimePolicySet` |
-| `/network` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:6087` | `CommandExecute` |
-| `/themes` | `—` | frontend | System | frontend → `SetTheme` | `src/tui/app/mod.rs:6145` | — |
-| `/help` | `—` | frontend | System | frontend → `OpenHelpDialog` | `src/tui/app/mod.rs:5794` | — |
-| `/sessions` | `—` | frontend | Session | frontend → `OpenSessionDialog` | `src/tui/app/mod.rs:6518` | — |
-| `/projects` | `—` | frontend | Project | frontend → `OpenProjectPicker` | `src/tui/app/mod.rs:6521` | `ProjectList` |
-| `/new` | `—` | daemon | Session | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:5982` | `SessionCreate` |
-| `/stop` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6524` | `CommandExecute` |
-| `/start` | `—` | daemon | Session | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6527` | `ChatChannelEnsure`, `ChatEdit`, `ChatHistory`, `ChatSend`, `CommandExecute`, `ProjectionSubscribe`, … (12) |
-| `/share` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6530` | `CommandExecute` |
-| `/unshare` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6556` | `CommandExecute` |
-| `/rename` | `—` | frontend | Session | frontend → `ShowAdvisory` | `src/tui/app/mod.rs:6567` | — |
-| `/compact` | `—` | daemon | Session | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:5989` | — |
-| `/timeline` | `—` | frontend | Session | frontend → `ShowTimeline` | `src/tui/app/mod.rs:6572` | — |
-| `/fork` | `—` | frontend | Session | frontend → `ShowAdvisory` | `src/tui/app/mod.rs:6699` | — |
-| `/undo` | `—` | frontend | Session | frontend → `UndoLocalMessages` | `src/tui/app/mod.rs:6575` | — |
-| `/redo` | `—` | frontend | Session | frontend → `RedoLocalMessages` | `src/tui/app/mod.rs:6582` | — |
-| `/export` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6589` | `CommandExecute` |
-| `/import` | `—` | daemon | Session | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6603` | — |
-| `/timestamps` | `—` | frontend | Session | frontend → `ToggleTimestamps` | `src/tui/app/mod.rs:6610` | — |
-| `/thinking` | `—` | frontend | Session | frontend → `ToggleThinking` | `src/tui/app/mod.rs:6619` | — |
-| `/reasoning` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6633` | `ReasoningPreferenceSet` |
-| `/expand-all` | `—` | frontend | Session | frontend → `ExpandAllDisclosures` | `src/tui/app/mod.rs:6628` | — |
-| `/models-refresh` | `—` | daemon | Provider | daemon → served | `src/tui/app/mod.rs:6689` | `CommandExecute` |
-| `/reload` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:5714` | `CommandExecute` |
-| `/skills` | `—` | frontend | Memory | frontend → `ShowSkills` | `src/tui/app/mod.rs:5720` | — |
-| `/variants` | `—` | frontend | System | frontend → `ShowAdvisory` | `src/tui/app/mod.rs:6692` | — |
-| `/agents` | `—` | frontend | Agent | frontend → `OpenAgentsDialog` | `src/tui/app/mod.rs:5829` | — |
-| `/agents` | `--all` | daemon | Agent | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:5829` | — |
-| `/agents` | `show` | daemon | Agent | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:5829` | — |
-| `/agents` | `diff` | daemon | Agent | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:5829` | — |
-| `/agents` | `validate` | daemon | Agent | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:5829` | — |
-| `/agents` | `reload` | daemon | Agent | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:5829` | — |
-| `/agent` | `—` | daemon | Agent | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:5805` | — |
-| `/workspaces` | `—` | frontend | Project | frontend → `ShowAdvisory` | `src/tui/app/mod.rs:6711` | — |
-| `/tree` | `—` | frontend | Project | frontend → `OpenFileTreeDialog` | `src/tui/app/mod.rs:5801` | — |
-| `/editor` | `—` | frontend | Project | frontend → `OpenExternalEditor` | `src/tui/app/mod.rs:6742` | — |
-| `/open` | `—` | daemon | Project | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6745` | `DocumentOpen`, `DocumentWriterAcquire` |
-| `/context` | `—` | frontend | Session | frontend → `OpenContextDialog` | `src/tui/app/mod.rs:6133` | — |
-| `/cost` | `—` | frontend | Session | frontend → `OpenCostDialog` | `src/tui/app/mod.rs:6137` | — |
-| `/usage` | `—` | frontend | Session | frontend → `OpenUsageDialog` | `src/tui/app/mod.rs:6141` | — |
-| `/stats` | `—` | frontend | Session | frontend → `OpenStatsDialog` | `src/tui/app/mod.rs:6151` | — |
-| `/queue` | `—` | frontend | Session | frontend → `OpenQueueBox` | `src/tui/app/mod.rs:5708` | — |
-| `/subagent-send` | `—` | daemon | Session | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:5711` | — |
-| `/tui` | `—` | frontend | System | frontend → `ToggleFullscreen` | `src/tui/app/mod.rs:6148` | — |
-| `/tts` | `—` | frontend | System | frontend → `ToggleTts` | `src/tui/app/mod.rs:6154` | `NotificationSpeak` |
-| `/loop` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6758` | `ScheduleCreate` |
-| `/tasks` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:6789` | `CommandExecute`, `ScheduleGet`, `WorkOrderLaneList`, `WorkOrderSummary` |
-| `/task` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:6798` | `CommandExecute`, `WorkOrderLaneList`, `WorkOrderSummary` |
-| `/workspace` | `—` | frontend | Project | frontend → `OpenWorkspaceDashboard` | `src/tui/app/mod.rs:6801` | `ChatChannelEnsure`, `ChatHistory`, `CommandExecute`, `WorkspaceDashboard` |
-| `/schedules` | `—` | daemon | Agent | daemon → served | `src/tui/app/mod.rs:6808` | `CommandExecute`, `ScheduleGet` |
-| `/task-del` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:6815` | `CommandExecute` |
-| `/memory` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6831` | `CommandExecute`, `SessionMessagesLoad` |
-| `/memory-search` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6843` | `CommandExecute`, `SessionMessagesLoad` |
-| `/memory-list` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6851` | `CommandExecute`, `SessionMessagesLoad` |
-| `/memory-remember` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6864` | `CommandExecute`, `SessionMessagesLoad` |
-| `/memory-forget` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6872` | `CommandExecute`, `SessionMessagesLoad` |
-| `/memory-consolidate` | `—` | daemon | Memory | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6880` | `SessionMessagesLoad` |
-| `/habits` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6883` | — |
-| `/habit-dismiss` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6893` | — |
-| `/skill-promote` | `—` | daemon | Memory | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6907` | `ChatChannelEnsure`, `ChatEdit`, `ChatHistory`, `ChatSend`, `CommandExecute`, `ProjectionSubscribe`, … (11) |
-| `/skill-proposals` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6969` | — |
-| `/skill-proposal` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7006` | — |
-| `/goal` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:7174` | `CommandExecute`, `GoalCheckpoint`, `GoalClear`, `GoalDone`, `GoalFromFile`, `GoalPause`, … (9) |
-| `/plan` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7316` | — |
-| `/state` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:7430` | — |
-| `/diff` | `—` | daemon | GitReview | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8257` | — |
-| `/tests` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8266` | — |
-| `/test` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8271` | `CommandExecute`, `JobSubmit`, `WorkspaceRegister` |
-| `/revert` | `—` | daemon | GitReview | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8284` | — |
-| `/research` | `—` | daemon | Research | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8415` | — |
-| `/research-runs` | `—` | daemon | Research | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8426` | — |
-| `/research-open` | `—` | daemon | Research | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8430` | — |
-| `/research-show` | `—` | daemon | Research | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8441` | — |
-| `/search` | `—` | daemon | Research | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7480` | — |
-| `/doctor` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7501` | — |
-| `/logs` | `—` | daemon | System | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7514` | — |
-| `/lsp-status` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:7527` | `CommandExecute` |
-| `/nodes` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:7531` | `CommandExecute` |
-| `/lsp-previews` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7538` | — |
-| `/lsp-preview` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7547` | — |
-| `/lsp-preview-clear` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7568` | — |
-| `/lsp-preview-refresh` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7593` | — |
-| `/lsp-preview-apply` | `—` | daemon | Diagnostics | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:7629` | `LspPreviewApply` |
-| `/review-change` | `—` | daemon | GitReview | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:7624` | `LspPreviewApply` |
-| `/lsp-servers` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:7713` | `CommandExecute` |
-| `/lsp-capabilities` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:7717` | `CommandExecute` |
-| `/lsp-errors` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:7730` | `CommandExecute` |
-| `/lsp-root` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:7743` | `CommandExecute` |
-| `/lsp-restart` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:8148` | `CommandExecute` |
-| `/lsp-stop` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:8161` | `CommandExecute` |
-| `/lsp-cache-status` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:8190` | `CommandExecute` |
-| `/lsp-cache-clear` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:8204` | `CommandExecute` |
-| `/lsp-doctor` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7762` | — |
-| `/lsp-context-diagnostics` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:7782` | `CommandExecute` |
-| `/lsp-repair-local` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:7804` | `CommandExecute` |
-| `/lsp-repair-hunk` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7839` | — |
-| `/lsp-review-file` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:7872` | `CommandExecute` |
-| `/lsp-review-diff` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7904` | — |
-| `/lsp-security-review` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7929` | — |
-| `/lsp-impact` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:7961` | `CommandExecute` |
-| `/lsp-test-repair` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:7996` | `CommandExecute` |
-| `/lsp-interface` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:8032` | `CommandExecute` |
-| `/lsp-cross-repair` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:8068` | `CommandExecute` |
-| `/lsp-call-neighbors` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:8105` | `CommandExecute` |
-| `/tool-backends` | `—` | frontend | Provider | frontend → `ShowToolBackends` | `src/tui/app/mod.rs:8236` | — |
-| `/security-review` | `—` | daemon | Agent | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8479` | — |
-| `/security-review-show` | `—` | daemon | Agent | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8554` | — |
-| `/security-review-cancel` | `—` | daemon | Agent | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8564` | — |
-| `/shell-list` | `—` | frontend | Execution | frontend → `ShowShellRuns` | `src/tui/app/mod.rs:8644` | — |
-| `/shell-show` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8676` | — |
-| `/shell-include` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8568` | `HumanShellPromotionStage` |
-| `/shell-rerun` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8612` | — |
-| `/shell-kill` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8628` | `HumanShellRunCancel` |
-| `/shell-ask` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8971` | `HumanShellPromotionStage`, `SessionPromptSubmit` |
-| `/shell-expand` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8692` | — |
-| `/terminal` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8767` | `InteractiveProcessCreate` |
-| `/terminal-clear` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8801` | `InteractiveProcessInput`, `InteractiveProcessResize` |
-| `/terminal-create` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8722` | `InteractiveProcessCreate` |
-| `/terminal-list` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8736` | `CommandExecute` |
-| `/terminal-attach` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8739` | `CommandExecute` |
-| `/terminal-show` | `—` | frontend | Execution | frontend → `ShowTerminal` | `src/tui/app/mod.rs:8752` | — |
-| `/terminal-focus` | `—` | frontend | Execution | frontend → `FocusTerminal` | `src/tui/app/mod.rs:8828` | — |
-| `/terminal-send` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8837` | `InteractiveProcessInput`, `InteractiveProcessResize` |
-| `/terminal-resize` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8854` | `InteractiveProcessResize` |
-| `/terminal-resume` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8880` | `CommandExecute` |
-| `/terminal-detach` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8889` | `InteractiveProcessDetach` |
-| `/terminal-terminate` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8898` | `InteractiveProcessTerminate` |
-| `/terminal-remove` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8907` | `InteractiveProcessRemove` |
-| `/plugins` | `—` | daemon | System | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8719` | — |
-| `/plugin-info` | `—` | daemon | System | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8916` | — |
-| `/plugin-enable` | `—` | daemon | System | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8926` | — |
-| `/plugin-disable` | `—` | daemon | System | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8936` | — |
-| `/plugin-doctor` | `—` | daemon | System | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8946` | — |
-| `/plugin-remove` | `—` | daemon | System | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8951` | — |
-| `/plugin-install` | `—` | daemon | System | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8961` | — |
-| `/collaborators` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6157` | `CommandExecute` |
-| `/collaborators` | `presence` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6157` | `CommandExecute` |
-| `/team` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:6173` | `ChatChannelPolicySet`, `ChatPolicyGet`, `ChatProjectPolicySet`, `CommandExecute`, `TeamMembershipAdd`, `TeamMembershipRevoke`, … (12) |
-| `/control` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6185` | `CommandExecute`, `SessionControlRelease`, `SessionControlRequest`, `SessionControlTakeover`, `SessionControlTransfer` |
-| `/observe` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6198` | `CommandExecute`, `ProjectionResume`, `ProjectionSubscribe` |
-| `/stop-observing` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6228` | `CommandExecute` |
-| `/panels` | `—` | frontend | System | frontend → `OpenPanelManager` | `src/tui/app/mod.rs:6234` | — |
-| `/chat` | `—` | frontend | Collaboration | frontend → `FocusChat` | `src/tui/app/mod.rs:6246` | `ChatChannelEnsure`, `ChatHistory`, `CommandExecute` |
-| `/chat-send` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6258` | `ChatChannelEnsure`, `ChatSend` |
-| `/chat-reply` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6271` | `ChatChannelEnsure`, `ChatSend` |
-| `/chat-history` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6302` | `ChatChannelEnsure`, `ChatHistory`, `CommandExecute` |
-| `/chat-sync` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6322` | `ChatChannelEnsure`, `ChatHistory`, `CommandExecute` |
-| `/chat-read` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6334` | `CommandExecute` |
-| `/chat-edit` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6346` | `ChatEdit` |
-| `/chat-redact` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6376` | `ChatRedact` |
-| `/chat-composing` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6401` | `ChatComposingList`, `ChatComposingSet` |
-| `/chat-action-task` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6424` | `ChatActionSubmit`, `ChatChannelEnsure` |
-| `/chat-action-review` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6460` | `ChatActionSubmit`, `ChatChannelEnsure` |
-| `/chat-action-list` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6495` | `ChatChannelEnsure`, `ChatHistory`, `CommandExecute` |
-| `/edit-undo` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8293` | `CommandExecute`, `EditCheckpointUndo` |
-| `/edit-reapply` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8339` | `CommandExecute`, `EditCheckpointReapply` |
-| `/edit-checkpoints` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8385` | `CommandExecute` |
-| `/tool-contracts` | `—` | frontend | Provider | frontend → `ShowToolContracts` | `src/tui/app/mod.rs:7518` | — |
-| `/worktree` | `—` | frontend | System | frontend → `ShowWorktrees` | `src/tui/app/mod.rs:6716` | `WorktreeList` |
+| `/init` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:5698` | `CommandExecute` |
+| `/connect` | `—` | frontend | Provider | frontend → `OpenConnectDialog` | `src/tui/app/mod.rs:5991` | — |
+| `/connections` | `—` | frontend | Provider | frontend → `OpenConnectionSelectionDialog` | `src/tui/app/mod.rs:5995` | — |
+| `/exit` | `—` | frontend | System | frontend → `Quit` | `src/tui/app/mod.rs:5787` | — |
+| `/status` | `—` | frontend | Diagnostics | frontend → `ShowStatus` | `src/tui/app/mod.rs:5999` | — |
+| `/policy` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:6019` | `CommandExecute` |
+| `/approval` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:6034` | `CommandExecute`, `RuntimePolicySet` |
+| `/sandbox` | `—` | daemon | System | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6058` | `CommandExecute`, `RuntimePolicySet` |
+| `/network` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:6084` | `CommandExecute` |
+| `/themes` | `—` | frontend | System | frontend → `SetTheme` | `src/tui/app/mod.rs:6142` | — |
+| `/help` | `—` | frontend | System | frontend → `OpenHelpDialog` | `src/tui/app/mod.rs:5791` | — |
+| `/sessions` | `—` | frontend | Session | frontend → `OpenSessionDialog` | `src/tui/app/mod.rs:6515` | — |
+| `/projects` | `—` | frontend | Project | frontend → `OpenProjectPicker` | `src/tui/app/mod.rs:6518` | `ProjectList` |
+| `/new` | `—` | daemon | Session | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:5979` | `SessionCreate` |
+| `/stop` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6521` | `CommandExecute` |
+| `/start` | `—` | daemon | Session | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6524` | `ChatChannelEnsure`, `ChatEdit`, `ChatHistory`, `ChatSend`, `CommandExecute`, `ProjectionSubscribe`, … (12) |
+| `/share` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6527` | `CommandExecute` |
+| `/unshare` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6553` | `CommandExecute` |
+| `/rename` | `—` | frontend | Session | frontend → `ShowAdvisory` | `src/tui/app/mod.rs:6564` | — |
+| `/compact` | `—` | daemon | Session | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:5986` | — |
+| `/timeline` | `—` | frontend | Session | frontend → `ShowTimeline` | `src/tui/app/mod.rs:6569` | — |
+| `/fork` | `—` | frontend | Session | frontend → `ShowAdvisory` | `src/tui/app/mod.rs:6696` | — |
+| `/undo` | `—` | frontend | Session | frontend → `UndoLocalMessages` | `src/tui/app/mod.rs:6572` | — |
+| `/redo` | `—` | frontend | Session | frontend → `RedoLocalMessages` | `src/tui/app/mod.rs:6579` | — |
+| `/export` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6586` | `CommandExecute` |
+| `/import` | `—` | daemon | Session | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6600` | — |
+| `/timestamps` | `—` | frontend | Session | frontend → `ToggleTimestamps` | `src/tui/app/mod.rs:6607` | — |
+| `/thinking` | `—` | frontend | Session | frontend → `ToggleThinking` | `src/tui/app/mod.rs:6616` | — |
+| `/reasoning` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6630` | `ReasoningPreferenceSet` |
+| `/expand-all` | `—` | frontend | Session | frontend → `ExpandAllDisclosures` | `src/tui/app/mod.rs:6625` | — |
+| `/models-refresh` | `—` | daemon | Provider | daemon → served | `src/tui/app/mod.rs:6686` | `CommandExecute` |
+| `/reload` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:5711` | `CommandExecute` |
+| `/skills` | `—` | frontend | Memory | frontend → `ShowSkills` | `src/tui/app/mod.rs:5717` | — |
+| `/variants` | `—` | frontend | System | frontend → `ShowAdvisory` | `src/tui/app/mod.rs:6689` | — |
+| `/agents` | `—` | frontend | Agent | frontend → `OpenAgentsDialog` | `src/tui/app/mod.rs:5826` | — |
+| `/agents` | `--all` | daemon | Agent | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:5826` | — |
+| `/agents` | `show` | daemon | Agent | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:5826` | — |
+| `/agents` | `diff` | daemon | Agent | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:5826` | — |
+| `/agents` | `validate` | daemon | Agent | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:5826` | — |
+| `/agents` | `reload` | daemon | Agent | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:5826` | — |
+| `/agent` | `—` | daemon | Agent | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:5802` | — |
+| `/workspaces` | `—` | frontend | Project | frontend → `ShowAdvisory` | `src/tui/app/mod.rs:6708` | — |
+| `/tree` | `—` | frontend | Project | frontend → `OpenFileTreeDialog` | `src/tui/app/mod.rs:5798` | — |
+| `/editor` | `—` | frontend | Project | frontend → `OpenExternalEditor` | `src/tui/app/mod.rs:6739` | — |
+| `/open` | `—` | daemon | Project | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6742` | `DocumentOpen`, `DocumentWriterAcquire` |
+| `/context` | `—` | frontend | Session | frontend → `OpenContextDialog` | `src/tui/app/mod.rs:6130` | — |
+| `/cost` | `—` | frontend | Session | frontend → `OpenCostDialog` | `src/tui/app/mod.rs:6134` | — |
+| `/usage` | `—` | frontend | Session | frontend → `OpenUsageDialog` | `src/tui/app/mod.rs:6138` | — |
+| `/stats` | `—` | frontend | Session | frontend → `OpenStatsDialog` | `src/tui/app/mod.rs:6148` | — |
+| `/queue` | `—` | frontend | Session | frontend → `OpenQueueBox` | `src/tui/app/mod.rs:5705` | — |
+| `/subagent-send` | `—` | daemon | Session | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:5708` | — |
+| `/tui` | `—` | frontend | System | frontend → `ToggleFullscreen` | `src/tui/app/mod.rs:6145` | — |
+| `/tts` | `—` | frontend | System | frontend → `ToggleTts` | `src/tui/app/mod.rs:6151` | `NotificationSpeak` |
+| `/loop` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6755` | `ScheduleCreate` |
+| `/tasks` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:6786` | `CommandExecute`, `ScheduleGet`, `WorkOrderLaneList`, `WorkOrderSummary` |
+| `/task` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:6795` | `CommandExecute`, `WorkOrderLaneList`, `WorkOrderSummary` |
+| `/workspace` | `—` | frontend | Project | frontend → `OpenWorkspaceDashboard` | `src/tui/app/mod.rs:6798` | `ChatChannelEnsure`, `ChatHistory`, `CommandExecute`, `WorkspaceDashboard` |
+| `/schedules` | `—` | daemon | Agent | daemon → served | `src/tui/app/mod.rs:6805` | `CommandExecute`, `ScheduleGet` |
+| `/task-del` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:6812` | `CommandExecute` |
+| `/memory` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6828` | `CommandExecute`, `SessionMessagesLoad` |
+| `/memory-search` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6840` | `CommandExecute`, `SessionMessagesLoad` |
+| `/memory-list` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6848` | `CommandExecute`, `SessionMessagesLoad` |
+| `/memory-remember` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6861` | `CommandExecute`, `SessionMessagesLoad` |
+| `/memory-forget` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6869` | `CommandExecute`, `SessionMessagesLoad` |
+| `/memory-consolidate` | `—` | daemon | Memory | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6877` | `SessionMessagesLoad` |
+| `/habits` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6880` | — |
+| `/habit-dismiss` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6890` | — |
+| `/skill-promote` | `—` | daemon | Memory | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6904` | `ChatChannelEnsure`, `ChatEdit`, `ChatHistory`, `ChatSend`, `CommandExecute`, `ProjectionSubscribe`, … (11) |
+| `/skill-proposals` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6966` | — |
+| `/skill-proposal` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7003` | — |
+| `/goal` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:7171` | `CommandExecute`, `GoalCheckpoint`, `GoalClear`, `GoalDone`, `GoalFromFile`, `GoalPause`, … (9) |
+| `/plan` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7313` | — |
+| `/state` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:7427` | — |
+| `/diff` | `—` | daemon | GitReview | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8254` | — |
+| `/tests` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8263` | — |
+| `/test` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8268` | `CommandExecute`, `JobSubmit`, `WorkspaceRegister` |
+| `/revert` | `—` | daemon | GitReview | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8281` | — |
+| `/research` | `—` | daemon | Research | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8412` | — |
+| `/research-runs` | `—` | daemon | Research | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8423` | — |
+| `/research-open` | `—` | daemon | Research | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8427` | — |
+| `/research-show` | `—` | daemon | Research | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8438` | — |
+| `/search` | `—` | daemon | Research | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7477` | — |
+| `/doctor` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7498` | — |
+| `/logs` | `—` | daemon | System | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7511` | — |
+| `/lsp-status` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:7524` | `CommandExecute` |
+| `/nodes` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:7528` | `CommandExecute` |
+| `/lsp-previews` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7535` | — |
+| `/lsp-preview` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7544` | — |
+| `/lsp-preview-clear` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7565` | — |
+| `/lsp-preview-refresh` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7590` | — |
+| `/lsp-preview-apply` | `—` | daemon | Diagnostics | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:7626` | `LspPreviewApply` |
+| `/review-change` | `—` | daemon | GitReview | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:7621` | `LspPreviewApply` |
+| `/lsp-servers` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:7710` | `CommandExecute` |
+| `/lsp-capabilities` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:7714` | `CommandExecute` |
+| `/lsp-errors` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:7727` | `CommandExecute` |
+| `/lsp-root` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:7740` | `CommandExecute` |
+| `/lsp-restart` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:8145` | `CommandExecute` |
+| `/lsp-stop` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:8158` | `CommandExecute` |
+| `/lsp-cache-status` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:8187` | `CommandExecute` |
+| `/lsp-cache-clear` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:8201` | `CommandExecute` |
+| `/lsp-doctor` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7759` | — |
+| `/lsp-context-diagnostics` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:7779` | `CommandExecute` |
+| `/lsp-repair-local` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:7801` | `CommandExecute` |
+| `/lsp-repair-hunk` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7836` | — |
+| `/lsp-review-file` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:7869` | `CommandExecute` |
+| `/lsp-review-diff` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7901` | — |
+| `/lsp-security-review` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7926` | — |
+| `/lsp-impact` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:7958` | `CommandExecute` |
+| `/lsp-test-repair` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:7993` | `CommandExecute` |
+| `/lsp-interface` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:8029` | `CommandExecute` |
+| `/lsp-cross-repair` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:8065` | `CommandExecute` |
+| `/lsp-call-neighbors` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:8102` | `CommandExecute` |
+| `/tool-backends` | `—` | frontend | Provider | frontend → `ShowToolBackends` | `src/tui/app/mod.rs:8233` | — |
+| `/security-review` | `—` | daemon | Agent | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8476` | — |
+| `/security-review-show` | `—` | daemon | Agent | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8551` | — |
+| `/security-review-cancel` | `—` | daemon | Agent | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8561` | — |
+| `/shell-list` | `—` | frontend | Execution | frontend → `ShowShellRuns` | `src/tui/app/mod.rs:8641` | — |
+| `/shell-show` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8673` | — |
+| `/shell-include` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8565` | `HumanShellPromotionStage` |
+| `/shell-rerun` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8609` | — |
+| `/shell-kill` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8625` | `HumanShellRunCancel` |
+| `/shell-ask` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8968` | `HumanShellPromotionStage`, `SessionPromptSubmit` |
+| `/shell-expand` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8689` | — |
+| `/terminal` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8764` | `InteractiveProcessCreate` |
+| `/terminal-clear` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8798` | `InteractiveProcessInput`, `InteractiveProcessResize` |
+| `/terminal-create` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8719` | `InteractiveProcessCreate` |
+| `/terminal-list` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8733` | `CommandExecute` |
+| `/terminal-attach` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8736` | `CommandExecute` |
+| `/terminal-show` | `—` | frontend | Execution | frontend → `ShowTerminal` | `src/tui/app/mod.rs:8749` | — |
+| `/terminal-focus` | `—` | frontend | Execution | frontend → `FocusTerminal` | `src/tui/app/mod.rs:8825` | — |
+| `/terminal-send` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8834` | `InteractiveProcessInput`, `InteractiveProcessResize` |
+| `/terminal-resize` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8851` | `InteractiveProcessResize` |
+| `/terminal-resume` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8877` | `CommandExecute` |
+| `/terminal-detach` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8886` | `InteractiveProcessDetach` |
+| `/terminal-terminate` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8895` | `InteractiveProcessTerminate` |
+| `/terminal-remove` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8904` | `InteractiveProcessRemove` |
+| `/plugins` | `—` | frontend | System | frontend → `ShowPlugins` | `src/tui/app/mod.rs:8716` | — |
+| `/plugin-info` | `—` | frontend | System | frontend → `ShowPluginInfo` | `src/tui/app/mod.rs:8913` | — |
+| `/plugin-enable` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:8923` | `CommandExecute` |
+| `/plugin-disable` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:8933` | `CommandExecute` |
+| `/plugin-doctor` | `—` | frontend | System | frontend → `ShowPluginDoctor` | `src/tui/app/mod.rs:8943` | — |
+| `/plugin-remove` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:8948` | `CommandExecute` |
+| `/plugin-install` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:8958` | `CommandExecute` |
+| `/collaborators` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6154` | `CommandExecute` |
+| `/collaborators` | `presence` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6154` | `CommandExecute` |
+| `/team` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:6170` | `ChatChannelPolicySet`, `ChatPolicyGet`, `ChatProjectPolicySet`, `CommandExecute`, `TeamMembershipAdd`, `TeamMembershipRevoke`, … (12) |
+| `/control` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6182` | `CommandExecute`, `SessionControlRelease`, `SessionControlRequest`, `SessionControlTakeover`, `SessionControlTransfer` |
+| `/observe` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6195` | `CommandExecute`, `ProjectionResume`, `ProjectionSubscribe` |
+| `/stop-observing` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6225` | `CommandExecute` |
+| `/panels` | `—` | frontend | System | frontend → `OpenPanelManager` | `src/tui/app/mod.rs:6231` | — |
+| `/chat` | `—` | frontend | Collaboration | frontend → `FocusChat` | `src/tui/app/mod.rs:6243` | `ChatChannelEnsure`, `ChatHistory`, `CommandExecute` |
+| `/chat-send` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6255` | `ChatChannelEnsure`, `ChatSend` |
+| `/chat-reply` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6268` | `ChatChannelEnsure`, `ChatSend` |
+| `/chat-history` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6299` | `ChatChannelEnsure`, `ChatHistory`, `CommandExecute` |
+| `/chat-sync` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6319` | `ChatChannelEnsure`, `ChatHistory`, `CommandExecute` |
+| `/chat-read` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6331` | `CommandExecute` |
+| `/chat-edit` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6343` | `ChatEdit` |
+| `/chat-redact` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6373` | `ChatRedact` |
+| `/chat-composing` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6398` | `ChatComposingList`, `ChatComposingSet` |
+| `/chat-action-task` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6421` | `ChatActionSubmit`, `ChatChannelEnsure` |
+| `/chat-action-review` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6457` | `ChatActionSubmit`, `ChatChannelEnsure` |
+| `/chat-action-list` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6492` | `ChatChannelEnsure`, `ChatHistory`, `CommandExecute` |
+| `/edit-undo` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8290` | `CommandExecute`, `EditCheckpointUndo` |
+| `/edit-reapply` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8336` | `CommandExecute`, `EditCheckpointReapply` |
+| `/edit-checkpoints` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8382` | `CommandExecute` |
+| `/tool-contracts` | `—` | frontend | Provider | frontend → `ShowToolContracts` | `src/tui/app/mod.rs:7515` | — |
+| `/worktree` | `—` | frontend | System | frontend → `ShowWorktrees` | `src/tui/app/mod.rs:6713` | `WorktreeList` |
 
 ## 4. The families
 
@@ -260,7 +260,7 @@ already carries, so the coverage list and the catalog cannot drift apart.
 | Provider | 5 | 1 | 4 | 1 | 0 | 0 |
 | Research | 5 | 5 | 0 | 0 | 0 | 5 |
 | Session | 27 | 13 | 14 | 8 | 2 | 3 |
-| System | 24 | 16 | 8 | 7 | 1 | 8 |
+| System | 24 | 13 | 11 | 11 | 1 | 1 |
 
 ## 5. The daemon-effect forms the daemon does not serve
 
@@ -324,13 +324,6 @@ inventory of exactly this set.
 | `/terminal-detach` | `—` | Execution | `InteractiveProcessDetach` |
 | `/terminal-terminate` | `—` | Execution | `InteractiveProcessTerminate` |
 | `/terminal-remove` | `—` | Execution | `InteractiveProcessRemove` |
-| `/plugins` | `—` | System | — |
-| `/plugin-info` | `—` | System | — |
-| `/plugin-enable` | `—` | System | — |
-| `/plugin-disable` | `—` | System | — |
-| `/plugin-doctor` | `—` | System | — |
-| `/plugin-remove` | `—` | System | — |
-| `/plugin-install` | `—` | System | — |
 | `/chat-send` | `—` | Collaboration | `ChatChannelEnsure`, `ChatSend` |
 | `/chat-reply` | `—` | Collaboration | `ChatChannelEnsure`, `ChatSend` |
 | `/chat-edit` | `—` | Collaboration | `ChatEdit` |
@@ -386,6 +379,10 @@ is the identifier, and the remainder is the payload.
 | `/network` | `—` | `network_intent_set` |
 | `/nodes` | `—` | `node_telemetry` |
 | `/observe` | `—` | `projection_subscribe` |
+| `/plugin-disable` | `—` | `—` |
+| `/plugin-enable` | `—` | `—` |
+| `/plugin-install` | `—` | `—` |
+| `/plugin-remove` | `—` | `—` |
 | `/policy` | `—` | `execution_policy_get` |
 | `/init` | `—` | `project_init_draft_get` |
 | `/reasoning` | `—` | `reasoning_preference_get` |
@@ -459,7 +456,7 @@ keeps the formatting.
 | `/test` | Execution | `CoreRequest::CommandExecute` (`test`) |
 | `/unshare` | Session | `CoreRequest::CommandExecute` (`unshare`) |
 
-**39 of the 129 daemon-effect forms are migrated.**
+**39 of the 126 daemon-effect forms are migrated.**
 The rest keep their local arm, and each one is listed above with the route
 it takes. The migration is one site per command: the request construction
 becomes a `CommandExecute` and the response is unwrapped, so the
@@ -495,7 +492,7 @@ binding; it does not make every action id mean the same thing.
 
 | namespace | what an id names | where it lives | who resolves it |
 |---|---|---|---|
-| the declared frontend-effect set | the action that serves a **catalog command form** | `crates/codegg-core/src/frontend_action.rs` — 35 `FrontendAction` variants, keyed by `(command_id, form)` | the palette, through `action_for_form(command_id, form)` |
+| the declared frontend-effect set | the action that serves a **catalog command form** | `crates/codegg-core/src/frontend_action.rs` — 38 `FrontendAction` variants, keyed by `(command_id, form)` | the palette, through `action_for_form(command_id, form)` |
 | the desktop keymap | a **gesture** the desktop dispatches | `apps/desktop/src/keymap.ts` — the editor's 22 `editor.*` ids, the palette's `command.palette.open`, and the rest | the desktop's one dispatch, in `App.tsx` |
 
 **How the palette resolves an action id.** It does not resolve a keymap id.
@@ -542,13 +539,13 @@ of two things:
 The forms whose TUI arm **does** issue a daemon request are classified in
 the second table below, under a different set of verdicts.
 
-**24 are misclassified and 19 are real missing
-capability**, out of 43 daemon-effect forms whose TUI arm issues
+**17 are misclassified and 19 are real missing
+capability**, out of 36 daemon-effect forms whose TUI arm issues
 no daemon request.
 
 The kind correction is **not applied here**: a frontend-effect form needs a
 declared `FrontendAction`, and the declared set's model is a UI action the
-frontend performs. 20 new actions and 24 catalog
+frontend performs. 13 new actions and 17 catalog
 kind changes are their own change, recorded as a follow-up rather than
 smuggled into this milestone.
 
@@ -590,13 +587,6 @@ smuggled into this milestone.
 | `/security-review-show` | Agent | missing capability | the arm shows the TUI's cached review result, and the daemon has no request that reads one — the same missing surface as `/security-review` |
 | `/security-review-cancel` | Agent | missing capability | cancelling a security-review run is a daemon-owned turn cancellation |
 | `/shell-rerun` | Execution | missing capability | re-running a human-shell run is daemon-owned job state |
-| `/plugins` | System | misclassified | the TUI's own `PluginManager` over a plugin service the TUI creates; the daemon has no plugin manager |
-| `/plugin-info` | System | misclassified | the TUI's own `PluginManager` |
-| `/plugin-enable` | System | misclassified | the TUI's own `PluginManager` |
-| `/plugin-disable` | System | misclassified | the TUI's own `PluginManager` |
-| `/plugin-doctor` | System | misclassified | the TUI's own `PluginManager` |
-| `/plugin-remove` | System | misclassified | the TUI's own `PluginManager` |
-| `/plugin-install` | System | misclassified | the TUI's own `PluginManager` |
 
 ### The follow-ups
 
@@ -654,7 +644,7 @@ arm issues a daemon request anyway, are one of four things — the fifth,
 **3 mechanical, 20 not mechanical, 2 subsystem move**, out of 25 daemon-effect forms whose TUI arm issues a
 daemon request but which the daemon does not serve.
 
-The accounting is complete: **129 daemon-effect forms = 61 served + 25 mechanical-unserved + 43 with no daemon request**, and every one of them is named.
+The accounting is complete: **126 daemon-effect forms = 65 served + 25 mechanical-unserved + 36 with no daemon request**, and every one of them is named.
 
 | command | family | verdict | why |
 |---|---|---|---|
