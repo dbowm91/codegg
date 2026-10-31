@@ -66,6 +66,12 @@ Run the current recorded H007 prompt revision against the unchanged five-crate s
 
 If a long run fails, record the failure class from evidence. Start a separate DeepSeek diagnostic run only when it can distinguish model/task behavior from a CodeGG boundary. If a current CodeGG defect is reproduced, write a failing-first regression, implement the narrow correction, run focused verification, commit it, then retry qualification. If no CodeGG defect is reproduced but task instructions or background-work duration prevent measuring an existing criterion, preserve the evidence, make a versioned prompt calibration without changing acceptance, and retry. Runs 1–4 established that provider streaming, ACP event pairing, job execution, and durable job status work; the model submitted the job but ended the turn without a terminal poll, while the short job completed before a source edit. The prompt correction is the current corrective. All long and diagnostic runs consume the same 20-run ceiling.
 
+### Run 5 finding (2026-10-31)
+
+The prompt-calibrated long run used manifest SHA-256 `3bb3bcb6f802fcf317f064101bf116ca3b96111fa8d26984753a157350bb1df2` and exhausted all 60 provider requests after 6.88 minutes. Provider streams reached EOF and all ACP tool starts had terminals; there were no event gaps, stream idle timeouts, or disk-floor events. The model used two read-only subagents but made five job submissions without polling any exact returned ID; the only job status call was the failed fake-ID boundary probe. It did not write the probe report or continuation.
+
+The same live log now provides direct CodeGG defect evidence: repeated `InvalidHistoryOrBudget` errors say compaction output failed tool-call history validation, followed by refusal of provider request 61 at the enforced cap. Run 6 is a focused exact-ID job-surface diagnostic. A deterministic failing-first compaction regression will isolate the compatibility `DropMiddleMessages` path observed in the log. If that path reproduces, apply a narrow pair-preserving fallback and verify it before the next unchanged long qualification. Run 5 did not qualify.
+
 ## 6. Required evidence and verification
 
 - Append-only run authorization ledger; each started run records start/terminal time, route/model, source and binary digests, requests, cap status, USD or unknown, disk start/minimum/end, and outcome.
