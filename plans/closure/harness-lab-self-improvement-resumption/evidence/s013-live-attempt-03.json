@@ -1,0 +1,257 @@
+{
+  "schema": "s013_live_diagnostic_attempt_v1",
+  "attempt": 3,
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "source_revision": "65801db86562847defb89fc09562c0396378611e",
+  "binary_sha256": "3ab836f8ff842e4c915d3d162e6bd3652969a4b494ba41b3f3d4b67b4b3faa58",
+  "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "invocation_manifest": "dev/harness_lab/fixtures/agent_autonomy_s013_live_v3/cases.jsonl",
+  "invocation_manifest_sha256": "f8a8d9196eb3f2220f1dff1acb3672589c04a2a8d26c141061a09effa4a9ca91",
+  "group_id": "s013-live-boundary-probe-attempt-03-20261031",
+  "fixture_metadata_sha256": "08b51eaf8c61373ddf492a5594e84991cac9b1e2dabb03388662286e454f24bd",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "terminal": "failed",
+  "stop_reason": null,
+  "terminal_failure": {
+    "category": "provider_api",
+    "kind": "HarnessTurnFailure",
+    "usage_reason": null
+  },
+  "task_outcome": "inconclusive",
+  "solved": false,
+  "verifier_confirmed": false,
+  "duration_ms": 342995,
+  "active_work_span_ms": 337061,
+  "duration_qualified": false,
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "measurement_incomplete",
+  "horizon_evidence": {
+    "active_work_span_ms": 337155,
+    "continuation_confirmed": true,
+    "exact_job_running_and_terminal": true,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 44756,
+    "measurement_complete": false,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": true,
+    "repair_cycles": 3
+  },
+  "tool_call_count": 69,
+  "provider_request_count": 60,
+  "provider_requests_reserved": 60,
+  "budget": {
+    "cost_source": "opencode_go_allowance_receipt",
+    "cost_usd": 0.029032,
+    "elapsed_seconds": 586.496,
+    "exhausted_cap": null,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "provider_requests": 60,
+    "total_tokens": 0
+  },
+  "event_gap": {
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "event_gaps": [],
+    "event_observation_state": "observed_complete",
+    "tool_started_count": 69,
+    "tool_terminal_count": 69,
+    "tool_unpaired_start_count": 0
+  },
+  "activity_stall": {
+    "cancel_error": null,
+    "stall_limit_seconds": 300,
+    "triggered": false
+  },
+  "disk_floor": {
+    "last_free_bytes": 145944788992,
+    "lowest_observed_free_bytes": 145944788992,
+    "measurement_error": null,
+    "minimum_free_bytes": 10737418240,
+    "triggered": false
+  },
+  "resource_usage": {
+    "cpu_seconds": 31.899,
+    "lane_disk_growth_bytes": 160928069,
+    "peak_rss_bytes": 431947776,
+    "sample_count": 628
+  },
+  "causal_trace": {
+    "bytes": 98572,
+    "daemon_generation": "d5b00b38-80e2-48c0-9291-667352b37807",
+    "dropped_events": 0,
+    "event_count": 160,
+    "path": "/private/tmp/s013live03/case00/private/causal-trace.jsonl",
+    "schema": "harness_causal_trace_v1",
+    "sha256": "c63bb308fdee9c1d549e7839dbb89872a17cbd3edab638049145a34a8c48c2ad",
+    "state": "complete"
+  },
+  "verification": {
+    "command": [
+      "python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "verifier",
+      "-v"
+    ],
+    "cwd": "/private/tmp/s013live03/case00/private",
+    "duration_ms": 240285,
+    "exit_code": 1,
+    "failure_summary": "(errors=1)",
+    "output_tail": "    self._check_timeout(endtime, orig_timeout, stdout, stderr)\n    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py\", line 1267, in _check_timeout\n    raise TimeoutExpired(\n    ...<2 lines>...\n            stderr=b''.join(stderr_seq) if stderr_seq else None)\nsubprocess.TimeoutExpired: Command '['cargo', 'test', '--offline', '--locked', '--workspace']' timed out after 240 seconds\n\n----------------------------------------------------------------------\nRan 0 tests in 240.031s\n\nFAILED (errors=1)",
+    "tests_run": 0,
+    "timed_out": false
+  },
+  "probe_report_created": false,
+  "boundary_probes": null,
+  "helper_created": true,
+  "continuation_file": "completed_phases:\n- none\nnext_phase: versioned_records\njob_id: pending\n",
+  "child_jobs": [
+    {
+      "run_id": "d83f4a3c-8dcd-48e8-b901-846fc1049724",
+      "job_id": "7011af95-055c-41b3-b255-d33ab820777b",
+      "status": "completed"
+    },
+    {
+      "run_id": "93ecdc19-db51-4217-9f6f-b26c867c8421",
+      "job_id": "dfeea03e-67b5-43c2-bc54-55223cf72792",
+      "status": "completed"
+    }
+  ],
+  "job_events": [
+    {
+      "index": 32,
+      "kind": "submission",
+      "job_id": "ee031b70-e25d-4596-8913-ad85148cc211",
+      "action": "submit"
+    },
+    {
+      "index": 33,
+      "kind": "observation",
+      "job_id": "ee031b70-e25d-4596-8913-ad85148cc211",
+      "action": "status",
+      "status": "failed"
+    },
+    {
+      "index": 34,
+      "kind": "observation",
+      "job_id": "ee031b70-e25d-4596-8913-ad85148cc211",
+      "action": "output",
+      "status": "failed"
+    },
+    {
+      "index": 38,
+      "kind": "submission",
+      "job_id": "d2f61be4-5e2e-4679-b0ee-6f662b38c227",
+      "action": "submit"
+    },
+    {
+      "index": 39,
+      "kind": "observation",
+      "job_id": "d2f61be4-5e2e-4679-b0ee-6f662b38c227",
+      "action": "status",
+      "status": "failed"
+    },
+    {
+      "index": 43,
+      "kind": "submission",
+      "job_id": "3e32803a-4532-4a3e-a816-2d3a8d5e4672",
+      "action": "submit"
+    },
+    {
+      "index": 44,
+      "kind": "observation",
+      "job_id": "3e32803a-4532-4a3e-a816-2d3a8d5e4672",
+      "action": "status",
+      "status": "running"
+    },
+    {
+      "index": 46,
+      "kind": "observation",
+      "job_id": "3e32803a-4532-4a3e-a816-2d3a8d5e4672",
+      "action": "status",
+      "status": "completed"
+    },
+    {
+      "index": 49,
+      "kind": "submission",
+      "job_id": "5fc3a141-75f1-4ddd-be85-d92e81123f58",
+      "action": "submit"
+    },
+    {
+      "index": 50,
+      "kind": "observation",
+      "job_id": "5fc3a141-75f1-4ddd-be85-d92e81123f58",
+      "action": "status",
+      "status": "running"
+    },
+    {
+      "index": 51,
+      "kind": "observation",
+      "job_id": "5fc3a141-75f1-4ddd-be85-d92e81123f58",
+      "action": "status",
+      "status": "failed"
+    },
+    {
+      "index": 55,
+      "kind": "submission",
+      "job_id": "58e7dac3-1142-43de-97a2-51a0e0cd8c80",
+      "action": "submit"
+    },
+    {
+      "index": 56,
+      "kind": "observation",
+      "job_id": "58e7dac3-1142-43de-97a2-51a0e0cd8c80",
+      "action": "status",
+      "status": "running"
+    },
+    {
+      "index": 61,
+      "kind": "observation",
+      "job_id": "58e7dac3-1142-43de-97a2-51a0e0cd8c80",
+      "action": "status",
+      "status": "completed"
+    },
+    {
+      "index": 62,
+      "kind": "submission",
+      "job_id": "4303e743-81e5-45cf-9b21-7107930c5976",
+      "action": "submit"
+    },
+    {
+      "index": 63,
+      "kind": "observation",
+      "job_id": "4303e743-81e5-45cf-9b21-7107930c5976",
+      "action": "status",
+      "status": "running"
+    },
+    {
+      "index": 67,
+      "kind": "observation",
+      "job_id": "4303e743-81e5-45cf-9b21-7107930c5976",
+      "action": "status",
+      "status": "running"
+    },
+    {
+      "index": 68,
+      "kind": "observation",
+      "job_id": "4303e743-81e5-45cf-9b21-7107930c5976",
+      "action": "status",
+      "status": "running"
+    }
+  ],
+  "diagnostic_findings": [
+    "Two bounded read-only subagents completed; the helper tool was created and exercised, but the requested probe report was absent at termination, so the probe outcomes are not credited from this attempt.",
+    "Three repair cycles were observed in job events, and the exact catalog-index corpus job 4303e743-81e5-45cf-9b21-7107930c5976 was observed running twice but remained running at daemon teardown.",
+    "The 60th provider request was admitted; the model turn then failed in provider_api before closeout. No 61st request was admitted.",
+    "The independent verifier timed out after 240.285 seconds before running tests because its setup command `cargo test --offline --locked --workspace` exceeded the fixture subprocess timeout.",
+    "Post-campaign inspection found Index::insert_record calls recompute_missing for every record; recompute_missing rescans all existing packages, creating quadratic work for the fixed 250,000-record corpus. A direct post-campaign cargo test remained in that scale test past 60 seconds before it was stopped. This is a model-produced fixture implementation/performance failure; it does not establish a CodeGG runtime defect."
+  ],
+  "notes": [
+    "Free disk never fell below the 10 GiB floor (lowest receipt observation about 135.9 GiB).",
+    "ACP tool event observation was complete with zero gaps.",
+    "No conclusion about unexpected boundary access is supported without the missing report."
+  ]
+}

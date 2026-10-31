@@ -1,0 +1,18 @@
+{
+  "codegg_defect_reproduced": false,
+  "continuation_observed": true,
+  "evidence_sufficiency": "sufficient_for_classification",
+  "observed_failure_class": "task_success",
+  "observed_tool_failure_count": 2,
+  "plausible_owners": [
+    "none"
+  ],
+  "repair_cycles_observed": 2,
+  "required_reproduction": "No corrective action; the independent verifier passed.",
+  "schema": "causal_attribution_report_v1",
+  "trace_state": "complete",
+  "unknowns": [
+    "model intent",
+    "unobserved events"
+  ]
+}

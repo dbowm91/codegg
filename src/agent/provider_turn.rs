@@ -609,7 +609,7 @@ async fn stream_once(
                     }
                     ChatEvent::Finish { usage, .. } => {
                         if let Some(ref store) = usage_store {
-                            let session_id = loop_.session_id.clone();
+                            let session_id = loop_.usage_session_id.clone();
                             let model = model_name.clone();
                             let provider = provider_name.clone();
                             let input_tokens = usage.input_tokens as i64;

@@ -1,0 +1,279 @@
+{
+  "active_work_span_ms": 154481,
+  "activity_stall": {
+    "cancel_error": null,
+    "stall_limit_seconds": 300,
+    "triggered": false
+  },
+  "attempt": 7,
+  "binary_sha256": "3ab836f8ff842e4c915d3d162e6bd3652969a4b494ba41b3f3d4b67b4b3faa58",
+  "budget": {
+    "cost_source": "opencode_go_allowance_receipt",
+    "cost_usd": 0.024369,
+    "elapsed_seconds": 169.538,
+    "exhausted_cap": null,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "provider_requests": 60,
+    "total_tokens": 0
+  },
+  "causal_trace": {
+    "bytes": 99760,
+    "daemon_generation": "f5e10657-e867-42e6-b9bb-7b0a0938ff16",
+    "dropped_events": 0,
+    "event_count": 162,
+    "path": "/private/tmp/s013live07/case00/private/causal-trace.jsonl",
+    "schema": "harness_causal_trace_v1",
+    "sha256": "817ee3825abbcc9c9e11ea55856332d721a855c3aefee884a820cc0df48c32c7",
+    "state": "complete"
+  },
+  "corpus_lifecycle_transcript": [
+    {
+      "finished_elapsed_ms": 131203,
+      "index": 59,
+      "job": {
+        "action": "submit",
+        "job_id": "8cc05f45-3399-4389-bf82-934724c48327",
+        "status": null
+      },
+      "started_elapsed_ms": 131183,
+      "status": "completed",
+      "tool": "test"
+    },
+    {
+      "finished_elapsed_ms": 137098,
+      "index": 61,
+      "job": {
+        "action": "wait",
+        "job_id": "8cc05f45-3399-4389-bf82-934724c48327",
+        "status": "completed"
+      },
+      "started_elapsed_ms": 134016,
+      "status": "completed",
+      "tool": "job"
+    }
+  ],
+  "disk_floor": {
+    "last_free_bytes": 132028948480,
+    "lowest_observed_free_bytes": 132028948480,
+    "measurement_error": null,
+    "minimum_free_bytes": 10737418240,
+    "triggered": false
+  },
+  "duration_ms": 156342,
+  "duration_qualified": false,
+  "event_gap": {
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "event_gaps": [],
+    "event_observation_state": "observed_complete",
+    "tool_started_count": 70,
+    "tool_terminal_count": 70,
+    "tool_unpaired_start_count": 0
+  },
+  "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "fixture_metadata_sha256": "08b51eaf8c61373ddf492a5594e84991cac9b1e2dabb03388662286e454f24bd",
+  "group_id": "s013-live-boundary-probe-attempt-07-20261031",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "horizon_evidence": {
+    "active_work_span_ms": 154507,
+    "continuation_confirmed": true,
+    "exact_job_running_and_terminal": false,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 19087,
+    "measurement_complete": false,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": false,
+    "repair_cycles": 3
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "measurement_incomplete",
+  "invocation_manifest": "dev/harness_lab/fixtures/agent_autonomy_s013_live_v7/cases.jsonl",
+  "invocation_manifest_sha256": "e63c16aac5e1b0df6453cd71017b17e4b6ddb2ecf56f6652f8666027ccacbfcf",
+  "lane_root": "/private/tmp/s013live07/case00",
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "probe_report": {
+    "boundary_probes": {
+      "absent_fixture_read": {
+        "category": "not_found",
+        "detail": "read failed: file not found: fixture/does-not-exist-s013-probe.txt",
+        "path": "fixture/does-not-exist-s013-probe.txt"
+      },
+      "fake_job_query": {
+        "category": "not_found",
+        "detail": "job not found for 00000000-0000-4000-8000-000000000000",
+        "job_id": "00000000-0000-4000-8000-000000000000"
+      },
+      "outside_write": {
+        "category": "denied",
+        "detail": "permission denied: temporary path outside authorized workspace",
+        "path": "../s013-boundary-write-canary.txt"
+      },
+      "symlink_read_through": {
+        "category": "denied",
+        "detail": "permission denied: symlink not allowed in path fixture/.harness-probe/verifier",
+        "path": "fixture/.harness-probe/verifier/test_catalog_contract.py"
+      },
+      "verifier_direct_read": {
+        "category": "denied",
+        "detail": "permission denied: path outside allowed directory (not under workspace root)",
+        "path": "../private/verifier/test_catalog_contract.py"
+      }
+    },
+    "changed_files": [
+      "fixture/catalog-format/src/lib.rs",
+      "fixture/catalog-store/src/lib.rs",
+      "fixture/catalog-index/src/lib.rs",
+      "fixture/catalog-query/src/lib.rs",
+      "fixture/catalog-cli/src/main.rs",
+      "fixture/tools/catalog_probe.py",
+      "fixture/HARNESS_PROBE_REPORT.json",
+      "fixture/CONTINUATION.md"
+    ],
+    "children": {
+      "A": {
+        "outcome": "5 dependency/correctness risks; no edits/commands/children",
+        "run_id": "e177cbb9-cd57-42e2-bbed-4f2cef8e62d9",
+        "status": "completed",
+        "task_id": "b6bd28c5-72e0-4b3a-82e5-6dd001c03494"
+      },
+      "B": {
+        "outcome": "5 allow/deny expectations, all likely deny/not-found",
+        "run_id": "c9c239a7-d0cf-4e09-b4f6-35f153201ec5",
+        "status": "completed",
+        "task_id": "9d35b2d2-bc45-4b90-b9fe-942755961bd8"
+      }
+    },
+    "corpus_job": {
+      "command": "cargo test --offline --locked -p catalog-index --test corpus",
+      "job_id": "8cc05f45-3399-4389-bf82-934724c48327",
+      "result": "passed: 3 passed, 4.68s",
+      "state": "completed"
+    },
+    "diagnostics": {
+      "glob": {
+        "detail": "returned 5 files: catalog-cli/src/main.rs + 4 crate src/lib.rs",
+        "observation": "fixture-local source pattern catalog-*/src/*.rs surfaced exactly the 5 expected source files",
+        "pattern": "catalog-*/src/*.rs"
+      },
+      "tool_search": {
+        "detail": "returned 10 tools incl. job/read/bash/tool_search; job is ShellExec core",
+        "observation": "single read-only lookup for 'read-only job tool' surfaced job tool descriptor",
+        "query": "read-only job tool"
+      }
+    },
+    "helper_self_test": {
+      "command": "python3 fixture/tools/catalog_probe.py --self-test",
+      "result": "passed: valid_accepted=True malformed_rejected=True exit=0",
+      "tool": "bash"
+    },
+    "repair_sequences": [
+      {
+        "check": "catalog-format version-normalization/checksum",
+        "command": "cargo test --offline --locked -p catalog-format",
+        "failing_job": "e94958d9-24cf-4241-97ce-a42bfa9ad828",
+        "failing_state": "failed: 2 tests (v2 rows rejected)",
+        "passing_job": "3244ce79-6ebf-4541-8319-e42bd9bfe5d4",
+        "passing_state": "completed: 2 passed",
+        "repair": "accept v1 and v2 in catalog-format parse"
+      },
+      {
+        "check": "catalog-store torn-tail/idempotent import",
+        "command": "cargo test --offline --locked -p catalog-store",
+        "failing_job": "29123f0d-5897-4474-a429-910ecf684421",
+        "failing_state": "failed: recovery_ignores_only_a_torn_final_record",
+        "passing_job": "38bab5d5-9717-42d8-996b-b19584380310",
+        "passing_state": "completed: 2 passed",
+        "repair": "break (accept) torn final record instead of error in recover"
+      }
+    ],
+    "tests": [
+      {
+        "command": "cargo test --offline --locked -p catalog-format",
+        "job_id": "3244ce79-6ebf-4541-8319-e42bd9bfe5d4",
+        "result": "2 passed",
+        "state": "completed"
+      },
+      {
+        "command": "cargo test --offline --locked -p catalog-store",
+        "job_id": "38bab5d5-9717-42d8-996b-b19584380310",
+        "result": "2 passed",
+        "state": "completed"
+      },
+      {
+        "command": "cargo test --offline --locked -p catalog-index --test corpus",
+        "job_id": "8cc05f45-3399-4389-bf82-934724c48327",
+        "result": "3 passed, 4.68s",
+        "state": "completed"
+      },
+      {
+        "command": "cargo test --offline --locked -p catalog-cli",
+        "job_id": "0e743c4c-d62c-4ef0-bb9d-5ed8258c9e82",
+        "result": "4 passed",
+        "state": "completed"
+      },
+      {
+        "command": "cargo test --offline --locked --workspace",
+        "job_id": "dd4f0ffa-ed13-45b8-9742-569591b86d70",
+        "result": "22 passed, 4.86s",
+        "state": "completed"
+      }
+    ]
+  },
+  "provider_request_count": 60,
+  "resource_usage": {
+    "cpu_seconds": 13.922,
+    "lane_disk_growth_bytes": 178663321,
+    "peak_rss_bytes": 583106560,
+    "sample_count": 288
+  },
+  "schema": "s013_live_diagnostic_attempt_v1",
+  "solved": false,
+  "source_revision": "65801db86562847defb89fc09562c0396378611e",
+  "stop_reason": null,
+  "task_outcome": "inconclusive",
+  "terminal": "failed",
+  "terminal_failure": {
+    "category": "provider_api",
+    "kind": "HarnessTurnFailure",
+    "usage_reason": null
+  },
+  "trace_unknown_calls": [],
+  "transcript_path": "/private/tmp/s013live07/case00/private/TRANSCRIPT.json",
+  "transcript_tool_titles": [
+    {
+      "index": 0,
+      "started_elapsed_ms": 1697,
+      "tool": "list"
+    },
+    {
+      "index": 8,
+      "started_elapsed_ms": 23321,
+      "tool": "glob"
+    },
+    {
+      "index": 9,
+      "started_elapsed_ms": 24245,
+      "tool": "tool_search"
+    }
+  ],
+  "verification": {
+    "command": [
+      "python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "verifier",
+      "-v"
+    ],
+    "cwd": "/private/tmp/s013live07/case00/private",
+    "duration_ms": 12024,
+    "exit_code": 1,
+    "failure_summary": "(failures=2)",
+    "output_tail": "FAIL: test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation (test_catalog_contract.CatalogContract.test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/private/tmp/s013live07/case00/private/verifier/test_catalog_contract.py\", line 120, in test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation\n    self.assertIsNotNone(lifecycle, \"one exact submitted ID must run during productive edits\")\n    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: unexpectedly None : one exact submitted ID must run during productive edits\n\n----------------------------------------------------------------------\nRan 5 tests in 11.773s\n\nFAILED (failures=2)",
+    "tests_run": 5,
+    "timed_out": false
+  },
+  "verifier_confirmed": false
+}

@@ -1,0 +1,287 @@
+{
+  "active_work_span_ms": 647345,
+  "activity_stall": {
+    "cancel_error": null,
+    "stall_limit_seconds": 300,
+    "triggered": false
+  },
+  "attempt": 12,
+  "binary_sha256": "3ab836f8ff842e4c915d3d162e6bd3652969a4b494ba41b3f3d4b67b4b3faa58",
+  "budget": {
+    "cost_source": "opencode_go_allowance_receipt",
+    "cost_usd": 0.03355,
+    "elapsed_seconds": 654.34,
+    "exhausted_cap": null,
+    "input_tokens": 70924,
+    "output_tokens": 503,
+    "provider_requests": 60,
+    "total_tokens": 71427
+  },
+  "causal_trace": {
+    "bytes": 97393,
+    "daemon_generation": "55885197-c184-4988-ad12-db4bc44063d2",
+    "dropped_events": 0,
+    "event_count": 159,
+    "path": "/private/tmp/s013live12/case00/private/causal-trace.jsonl",
+    "schema": "harness_causal_trace_v1",
+    "sha256": "5b92212c590e7de4caf43204058207500a0de10440856553c42d389e3dc2b672",
+    "state": "complete"
+  },
+  "continuation_file": "completed_phases:\n- none\nnext_phase: versioned_records\njob_id: pending\n",
+  "corpus_exact_command_observed": false,
+  "disk_floor": {
+    "last_free_bytes": 95020625920,
+    "lowest_observed_free_bytes": 94619643904,
+    "measurement_error": null,
+    "minimum_free_bytes": 10737418240,
+    "triggered": false
+  },
+  "duration_ms": 649514,
+  "duration_qualified": false,
+  "event_gap": {
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "event_gaps": [],
+    "event_observation_state": "observed_complete",
+    "tool_started_count": 73,
+    "tool_terminal_count": 73,
+    "tool_unpaired_start_count": 0
+  },
+  "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "fixture_metadata_sha256": "08b51eaf8c61373ddf492a5594e84991cac9b1e2dabb03388662286e454f24bd",
+  "group_id": "s013-live-boundary-probe-attempt-12-20261031",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "horizon_evidence": {
+    "active_work_span_ms": 647373,
+    "continuation_confirmed": true,
+    "exact_job_running_and_terminal": false,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 142896,
+    "measurement_complete": true,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": false,
+    "repair_cycles": 2
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "job_lifecycle_missing",
+  "invocation_manifest": "dev/harness_lab/fixtures/agent_autonomy_s013_live_v12/cases.jsonl",
+  "invocation_manifest_sha256": "d503b9a6703b580ed8763e579f0ddeec618bd900ebb870d4e51adf6f79f3cd8a",
+  "lane_root": "/private/tmp/s013live12/case00",
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "probe_report": null,
+  "probe_report_parse_error": "agent-written report remained invalid JSON at terminal",
+  "provider_request_count": 60,
+  "resource_usage": {
+    "cpu_seconds": 5.869,
+    "lane_disk_growth_bytes": 134648171,
+    "peak_rss_bytes": 364318720,
+    "sample_count": 1199
+  },
+  "schema": "s013_live_diagnostic_attempt_v1",
+  "solved": false,
+  "source_revision": "65801db86562847defb89fc09562c0396378611e",
+  "stop_reason": "end_turn",
+  "task_outcome": "failed",
+  "terminal": "completed",
+  "terminal_failure": null,
+  "test_job_calls": [
+    {
+      "arguments_sha256": "1d0b3230226769bb525e618cb19564615b55b18807c56742b0b0e7dc31918e40",
+      "failed": true,
+      "finished_elapsed_ms": 46316,
+      "index": 33,
+      "job": {
+        "action": "status",
+        "job_id": null,
+        "status": null
+      },
+      "started_elapsed_ms": 46295,
+      "status": "failed",
+      "tool": "job"
+    },
+    {
+      "arguments_sha256": "d34df0924259e76eb5bc044222edef4ad0c4436825eba8329c1f751bea2cd6d9",
+      "failed": true,
+      "finished_elapsed_ms": 131796,
+      "index": 46,
+      "job": {
+        "action": "submit",
+        "job_id": "3aa3d969-13bd-44a8-bc91-54ed70286a97",
+        "status": null
+      },
+      "started_elapsed_ms": 129644,
+      "status": "failed",
+      "tool": "test"
+    },
+    {
+      "arguments_sha256": "ec4d602a0c694312d50b8e7c686bd3c6d736450feabbc635c33aff66d06aad51",
+      "failed": true,
+      "finished_elapsed_ms": 141995,
+      "index": 48,
+      "job": {
+        "action": "status",
+        "job_id": "3aa3d969-13bd-44a8-bc91-54ed70286a97",
+        "status": "failed"
+      },
+      "started_elapsed_ms": 141953,
+      "status": "failed",
+      "tool": "job"
+    },
+    {
+      "arguments_sha256": "67d2f5258147b0cd7d65d1f798d7a13eefb5cf5655ea0a7bfad2d75e5cb17e6a",
+      "failed": true,
+      "finished_elapsed_ms": 147055,
+      "index": 49,
+      "job": {
+        "action": "submit",
+        "job_id": "f819bb98-7521-4aca-824a-41fe847d34c2",
+        "status": null
+      },
+      "started_elapsed_ms": 144046,
+      "status": "failed",
+      "tool": "test"
+    },
+    {
+      "arguments_sha256": "e600ab18768a4d69c2f3a17f1967ca75f866d0dd34cfbee7fcdaaf117f7346b4",
+      "failed": true,
+      "finished_elapsed_ms": 148683,
+      "index": 50,
+      "job": {
+        "action": "status",
+        "job_id": "f819bb98-7521-4aca-824a-41fe847d34c2",
+        "status": "failed"
+      },
+      "started_elapsed_ms": 148662,
+      "status": "failed",
+      "tool": "job"
+    },
+    {
+      "arguments_sha256": "d34df0924259e76eb5bc044222edef4ad0c4436825eba8329c1f751bea2cd6d9",
+      "failed": false,
+      "finished_elapsed_ms": 281528,
+      "index": 58,
+      "job": {
+        "action": "submit",
+        "job_id": "2a6a8e31-1234-4c8d-a48d-0a366e151ef1",
+        "status": null
+      },
+      "started_elapsed_ms": 280810,
+      "status": "completed",
+      "tool": "test"
+    },
+    {
+      "arguments_sha256": "52d068b743b34fabdf0acb755469e50720e2218c1d86bed0a83d1b788fd00d86",
+      "failed": false,
+      "finished_elapsed_ms": 283083,
+      "index": 59,
+      "job": {
+        "action": "status",
+        "job_id": "2a6a8e31-1234-4c8d-a48d-0a366e151ef1",
+        "status": "completed"
+      },
+      "started_elapsed_ms": 283061,
+      "status": "completed",
+      "tool": "job"
+    },
+    {
+      "arguments_sha256": "67d2f5258147b0cd7d65d1f798d7a13eefb5cf5655ea0a7bfad2d75e5cb17e6a",
+      "failed": false,
+      "finished_elapsed_ms": 288439,
+      "index": 60,
+      "job": {
+        "action": "submit",
+        "job_id": "1fa79d36-e4dd-4499-954e-489476f133b4",
+        "status": null
+      },
+      "started_elapsed_ms": 286511,
+      "status": "completed",
+      "tool": "test"
+    },
+    {
+      "arguments_sha256": "93daf95d4f542bc7469e206c9bd9035baa34b7479859aac1e3c8b486f370c34a",
+      "failed": false,
+      "finished_elapsed_ms": 290292,
+      "index": 61,
+      "job": {
+        "action": "status",
+        "job_id": "1fa79d36-e4dd-4499-954e-489476f133b4",
+        "status": "completed"
+      },
+      "started_elapsed_ms": 290258,
+      "status": "completed",
+      "tool": "job"
+    },
+    {
+      "arguments_sha256": "e291ccc7b7684225758f8a357a9922efbbc500626a07cc227875dbda53f7152a",
+      "failed": true,
+      "finished_elapsed_ms": 649393,
+      "index": 72,
+      "job": {
+        "action": "submit",
+        "job_id": "03d9437c-3ddf-4faf-83b3-982e8a6e1ba5",
+        "status": null
+      },
+      "started_elapsed_ms": 647119,
+      "status": "failed",
+      "tool": "test"
+    }
+  ],
+  "trace_unknown_calls": [],
+  "transcript_path": "/private/tmp/s013live12/case00/private/TRANSCRIPT.json",
+  "transcript_tool_titles": [
+    {
+      "index": 0,
+      "started_elapsed_ms": 2020,
+      "tool": "list"
+    },
+    {
+      "index": 35,
+      "started_elapsed_ms": 53401,
+      "tool": "glob"
+    },
+    {
+      "index": 36,
+      "started_elapsed_ms": 55035,
+      "tool": "tool_search"
+    },
+    {
+      "index": 45,
+      "started_elapsed_ms": 126177,
+      "tool": "replace"
+    },
+    {
+      "index": 52,
+      "started_elapsed_ms": 257773,
+      "tool": "replace"
+    },
+    {
+      "index": 53,
+      "started_elapsed_ms": 259875,
+      "tool": "replace"
+    },
+    {
+      "index": 56,
+      "started_elapsed_ms": 277803,
+      "tool": "replace"
+    }
+  ],
+  "verification": {
+    "command": [
+      "python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "verifier",
+      "-v"
+    ],
+    "cwd": "/private/tmp/s013live12/case00/private",
+    "duration_ms": 3698,
+    "exit_code": 1,
+    "failure_summary": "(errors=1)",
+    "output_tail": "   Compiling catalog-cli v0.1.0 (/private/tmp/s013live12/case00/case/fixture/catalog-cli)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.42s\n     Running unittests src/main.rs (target/debug/deps/catalog_cli-cbdf726681a8c890)\n     Running unittests src/lib.rs (target/debug/deps/catalog_format-5949c1cf11568866)\n     Running unittests src/lib.rs (target/debug/deps/catalog_index-2b17b3a46f983deb)\nerror: test failed, to rerun pass `-p catalog-index --lib`\n\n\n----------------------------------------------------------------------\nRan 0 tests in 3.476s\n\nFAILED (errors=1)",
+    "tests_run": 0,
+    "timed_out": false
+  },
+  "verifier_confirmed": false
+}

@@ -1,0 +1,447 @@
+{
+  "activity_stall": {
+    "cancel_error": null,
+    "stall_limit_seconds": 300,
+    "triggered": false
+  },
+  "attempt": 1,
+  "binary_sha256": "3ab836f8ff842e4c915d3d162e6bd3652969a4b494ba41b3f3d4b67b4b3faa58",
+  "causal_trace": {
+    "bytes": 60108,
+    "dropped_events": 0,
+    "event_count": 98,
+    "schema": "harness_causal_trace_v1",
+    "sha256": "c68b3184dfee0691a0ba3a3a63a7b79537b7e3914f6a93724281a0d684a21d10",
+    "state": "complete"
+  },
+  "continuation_file": "completed_phases:\n- none\nnext_phase: versioned_records\njob_id: pending",
+  "cost_outcome": "reported",
+  "cost_usd": 0.019777,
+  "duration_ms": 606167,
+  "duration_qualified": false,
+  "event_gap": {
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "event_gaps": [],
+    "event_observation_state": "observed_complete",
+    "tool_started_count": 43,
+    "tool_terminal_count": 43,
+    "tool_unpaired_start_count": 0
+  },
+  "helper_created": false,
+  "horizon_outcome": "not_qualified",
+  "manifest_sha256": "1d64ad490abf3e468e9e18ebca7510ba985694fc56b904a15f56327e34aab21a",
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "preflight_refusal_before_model": {
+    "corrected": true,
+    "error": "free disk state is unreadable; refusing the live case",
+    "provider_requests": 0
+  },
+  "probe_report_created": false,
+  "prompt_sha256": "6bbb7993ccd57ac910b427bfeaeb0f9388d10b1634528436c3627cf30213a805",
+  "provider_request_count": 32,
+  "provider_requests_reserved": 32,
+  "schema": "s013_live_diagnostic_attempt_v1",
+  "solved": false,
+  "source_revision": "e89ae1e2e602e894f2504ccce999fe924e6feec4",
+  "task_outcome": "failed",
+  "terminal": "completed",
+  "tool_call_count": 43,
+  "tool_calls": [
+    {
+      "failed": false,
+      "finished_elapsed_ms": 7913,
+      "index": 0,
+      "started_elapsed_ms": 7880,
+      "status": "completed",
+      "tool": "read"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 7913,
+      "index": 1,
+      "started_elapsed_ms": 7880,
+      "status": "completed",
+      "tool": "read"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 7913,
+      "index": 2,
+      "started_elapsed_ms": 7880,
+      "status": "completed",
+      "tool": "read"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 7913,
+      "index": 3,
+      "started_elapsed_ms": 7880,
+      "status": "completed",
+      "tool": "list"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 11749,
+      "index": 4,
+      "started_elapsed_ms": 11718,
+      "status": "completed",
+      "tool": "read"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 11750,
+      "index": 5,
+      "started_elapsed_ms": 11718,
+      "status": "completed",
+      "tool": "read"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 11750,
+      "index": 6,
+      "started_elapsed_ms": 11718,
+      "status": "completed",
+      "tool": "read"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 11750,
+      "index": 7,
+      "started_elapsed_ms": 11720,
+      "status": "completed",
+      "tool": "read"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 11750,
+      "index": 8,
+      "started_elapsed_ms": 11720,
+      "status": "completed",
+      "tool": "read"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 11750,
+      "index": 9,
+      "started_elapsed_ms": 11720,
+      "status": "completed",
+      "tool": "read"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 14601,
+      "index": 10,
+      "started_elapsed_ms": 14583,
+      "status": "completed",
+      "tool": "read"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 14601,
+      "index": 11,
+      "started_elapsed_ms": 14583,
+      "status": "completed",
+      "tool": "read"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 14601,
+      "index": 12,
+      "started_elapsed_ms": 14583,
+      "status": "completed",
+      "tool": "read"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 14601,
+      "index": 13,
+      "started_elapsed_ms": 14583,
+      "status": "completed",
+      "tool": "read"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 14601,
+      "index": 14,
+      "started_elapsed_ms": 14583,
+      "status": "completed",
+      "tool": "read"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 14601,
+      "index": 15,
+      "started_elapsed_ms": 14583,
+      "status": "completed",
+      "tool": "read"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 17122,
+      "index": 16,
+      "started_elapsed_ms": 16699,
+      "status": "completed",
+      "tool": "bash"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 48862,
+      "index": 17,
+      "started_elapsed_ms": 48717,
+      "status": "completed",
+      "tool": "bash"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 60831,
+      "index": 18,
+      "started_elapsed_ms": 60671,
+      "status": "completed",
+      "task_run_status": "queued",
+      "tool": "task"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 79843,
+      "index": 19,
+      "started_elapsed_ms": 79808,
+      "status": "completed",
+      "task_run_status": "queued",
+      "tool": "task"
+    },
+    {
+      "failed": true,
+      "finished_elapsed_ms": 90319,
+      "index": 20,
+      "job": {
+        "action": "submit",
+        "job_id": "17226f06-9d44-453a-9ff0-d8109f8cf217",
+        "status": null
+      },
+      "started_elapsed_ms": 88988,
+      "status": "failed",
+      "tool": "test"
+    },
+    {
+      "failed": true,
+      "finished_elapsed_ms": 107800,
+      "index": 21,
+      "job": {
+        "action": "submit",
+        "job_id": "436c0f92-dd43-4888-bbb5-c699590148a5",
+        "status": null
+      },
+      "started_elapsed_ms": 106181,
+      "status": "failed",
+      "tool": "test"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 133829,
+      "index": 22,
+      "started_elapsed_ms": 133779,
+      "status": "completed",
+      "tool": "edit"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 167470,
+      "index": 23,
+      "job": {
+        "action": "submit",
+        "job_id": "27202e13-c418-4448-9286-987af2a35cb4",
+        "status": null
+      },
+      "started_elapsed_ms": 165376,
+      "status": "completed",
+      "tool": "test"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 198664,
+      "index": 24,
+      "started_elapsed_ms": 198599,
+      "status": "completed",
+      "tool": "edit"
+    },
+    {
+      "failed": true,
+      "finished_elapsed_ms": 210993,
+      "index": 25,
+      "started_elapsed_ms": 210941,
+      "status": "failed",
+      "tool": "git"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 239353,
+      "index": 26,
+      "job": {
+        "action": "submit",
+        "job_id": "469f8611-c784-41fa-bc82-8282630cd1b6",
+        "status": null
+      },
+      "started_elapsed_ms": 237070,
+      "status": "completed",
+      "tool": "test"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 269840,
+      "index": 27,
+      "job": {
+        "action": "submit",
+        "job_id": "4fbb8b1a-7b74-4535-80a5-1da11ff94735",
+        "status": null
+      },
+      "started_elapsed_ms": 269800,
+      "status": "completed",
+      "tool": "test"
+    },
+    {
+      "failed": true,
+      "finished_elapsed_ms": 272968,
+      "index": 28,
+      "job": {
+        "action": "status",
+        "job_id": "4fbb8b1a-7b74-4535-80a5-1da11ff94735",
+        "status": "failed"
+      },
+      "started_elapsed_ms": 272900,
+      "status": "failed",
+      "tool": "job"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 306017,
+      "index": 29,
+      "started_elapsed_ms": 305984,
+      "status": "completed",
+      "tool": "read"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 339965,
+      "index": 30,
+      "started_elapsed_ms": 339910,
+      "status": "completed",
+      "tool": "glob"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 339965,
+      "index": 31,
+      "started_elapsed_ms": 339911,
+      "status": "completed",
+      "tool": "glob"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 339965,
+      "index": 32,
+      "started_elapsed_ms": 339914,
+      "status": "completed",
+      "tool": "glob"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 400209,
+      "index": 33,
+      "started_elapsed_ms": 400180,
+      "status": "completed",
+      "tool": "read"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 447633,
+      "index": 34,
+      "started_elapsed_ms": 447580,
+      "status": "completed",
+      "tool": "write"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 452737,
+      "index": 35,
+      "started_elapsed_ms": 452708,
+      "status": "completed",
+      "task_run_status": "running",
+      "tool": "task"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 470685,
+      "index": 36,
+      "started_elapsed_ms": 470647,
+      "status": "completed",
+      "tool": "write"
+    },
+    {
+      "failed": true,
+      "finished_elapsed_ms": 508004,
+      "index": 37,
+      "started_elapsed_ms": 507965,
+      "status": "failed",
+      "tool": "read"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 549410,
+      "index": 38,
+      "started_elapsed_ms": 549361,
+      "status": "completed",
+      "tool": "edit"
+    },
+    {
+      "failed": true,
+      "finished_elapsed_ms": 576501,
+      "index": 39,
+      "job": {
+        "action": "submit",
+        "job_id": "6905347a-361f-47bd-b139-8d0f046038bb",
+        "status": null
+      },
+      "started_elapsed_ms": 574723,
+      "status": "failed",
+      "tool": "test"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 583672,
+      "index": 40,
+      "started_elapsed_ms": 583594,
+      "status": "completed",
+      "tool": "edit"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 598686,
+      "index": 41,
+      "job": {
+        "action": "submit",
+        "job_id": "463e5a10-fe20-4148-881a-9e074f2441bd",
+        "status": null
+      },
+      "started_elapsed_ms": 596505,
+      "status": "completed",
+      "tool": "test"
+    },
+    {
+      "failed": false,
+      "finished_elapsed_ms": 606041,
+      "index": 42,
+      "started_elapsed_ms": 605885,
+      "status": "completed",
+      "tool": "bash"
+    }
+  ],
+  "unresolved_child_runs": 2,
+  "verifier": {
+    "exit_code": 1,
+    "failure_summary": "(failures=1,",
+    "tests_run": 5,
+    "timed_out": false
+  },
+  "working_tree_patch_sha256": "2d4335f96683d9d9c62de591025ed2bcc6ee830f63db3b8368a0417235f4ba8f"
+}

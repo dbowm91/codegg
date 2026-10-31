@@ -1,0 +1,45 @@
+{
+  "binary_build_revision": "401447a7d1db52505296e98a4e9929aba66ad7d9",
+  "binary_sha256": "2ebd2f7c984b68130bf05dc7bb3ac8d7602431364c9c62b517c7cece41983ec7",
+  "controller_revision": "9f11fdfdc90b6a775b7f2142897f21558d6d2944",
+  "crash_observation": {
+    "acp_process_joined_optimizer_process_group": true,
+    "ambiguous_trial_rows_before_resume": 0,
+    "candidate_checkpoint_state_after_crash": "EVALUATING",
+    "completed_tool_terminals": [
+      {
+        "status": "completed",
+        "tool_call_id": "call-harness-1"
+      }
+    ],
+    "native_tool_calls": [
+      {
+        "name": "write"
+      }
+    ],
+    "optimizer_exit_signal": "SIGKILL",
+    "private_lane_daemon_processes_found": 1,
+    "private_lane_daemons_reaped": true,
+    "private_lane_process_group_reaped": true,
+    "private_lane_removed": true,
+    "provider_fixture_calls_before_sigkill": 2,
+    "state": "native_tool_completed_provider_response_active"
+  },
+  "host_architecture": "arm64",
+  "host_platform": "darwin",
+  "provider_fixture": "local_openai_compatible_loopback_only",
+  "qualification_result": "no_op_rejected_after_resumed_native_trial",
+  "resume": {
+    "candidate_pair_attempts": 1,
+    "candidate_terminal": "passed",
+    "cost_usd": "not_applicable_no_external_provider_requests",
+    "external_provider_requests": 0,
+    "optimizer_iteration_finished_count": 1,
+    "optimizer_run_finished_count": 1,
+    "optimizer_status": "NO_IMPROVEMENT",
+    "proposal_count_across_crash_and_resume": 1,
+    "proposed_patch_sha256": "250ff0b97ec563b52911769536ad12b4c5fe24b5692a245088e12c8fbd4fe140"
+  },
+  "schema": "s010_native_trial_crash_resume_v1",
+  "subject_revision": "9f11fdfdc90b6a775b7f2142897f21558d6d2944"
+}

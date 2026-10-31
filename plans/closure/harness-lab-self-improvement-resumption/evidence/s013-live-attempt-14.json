@@ -1,0 +1,426 @@
+{
+  "active_work_span_ms": 176883,
+  "activity_stall": {
+    "cancel_error": null,
+    "stall_limit_seconds": 300,
+    "triggered": false
+  },
+  "attempt": 14,
+  "binary_sha256": "3ab836f8ff842e4c915d3d162e6bd3652969a4b494ba41b3f3d4b67b4b3faa58",
+  "budget": {
+    "cost_source": "opencode_go_allowance_receipt",
+    "cost_usd": 0.026617,
+    "elapsed_seconds": 190.929,
+    "exhausted_cap": null,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "provider_requests": 60,
+    "total_tokens": 0
+  },
+  "causal_trace": {
+    "bytes": 98146,
+    "daemon_generation": "fe35064a-9760-4413-afba-23693b627436",
+    "dropped_events": 0,
+    "event_count": 160,
+    "path": "/private/tmp/s013live14/case00/private/causal-trace.jsonl",
+    "schema": "harness_causal_trace_v1",
+    "sha256": "198bf6655b0d3a0cae6d23b287dbe9dedfdbe5e0439ac795e1fddf3ea7dcdff7",
+    "state": "complete"
+  },
+  "corpus_test_calls": [
+    {
+      "arguments_sha256": "1d0b3230226769bb525e618cb19564615b55b18807c56742b0b0e7dc31918e40",
+      "failed": true,
+      "finished_elapsed_ms": 34977,
+      "index": 36,
+      "job": {
+        "action": "status",
+        "job_id": null,
+        "status": null
+      },
+      "started_elapsed_ms": 34958,
+      "status": "failed",
+      "tool": "job"
+    },
+    {
+      "arguments_sha256": "dd740bf01389e8cd2aa41367fec6c4040d79da1d31315978626ad288c6c445f1",
+      "failed": true,
+      "finished_elapsed_ms": 74269,
+      "index": 46,
+      "job": {
+        "action": "submit",
+        "job_id": "b537ca06-1654-48eb-992d-950fdb73335d",
+        "status": null
+      },
+      "started_elapsed_ms": 72091,
+      "status": "failed",
+      "tool": "test"
+    },
+    {
+      "arguments_sha256": "4ef58ca14a7fe71312b85275795baa1356fb5d8ec1027299f92ddb34c096590a",
+      "failed": true,
+      "finished_elapsed_ms": 76127,
+      "index": 47,
+      "job": {
+        "action": "status",
+        "job_id": "b537ca06-1654-48eb-992d-950fdb73335d",
+        "status": "failed"
+      },
+      "started_elapsed_ms": 76092,
+      "status": "failed",
+      "tool": "job"
+    },
+    {
+      "arguments_sha256": "dd740bf01389e8cd2aa41367fec6c4040d79da1d31315978626ad288c6c445f1",
+      "failed": false,
+      "finished_elapsed_ms": 90126,
+      "index": 53,
+      "job": {
+        "action": "submit",
+        "job_id": "d1898ca5-a1a3-40df-a78c-a56a95aca730",
+        "status": null
+      },
+      "started_elapsed_ms": 88401,
+      "status": "completed",
+      "tool": "test"
+    },
+    {
+      "arguments_sha256": "56efe619713549f4a7149aa52db5a14543102828e2920b4aebb50faa45fe3dff",
+      "failed": false,
+      "finished_elapsed_ms": 91653,
+      "index": 54,
+      "job": {
+        "action": "status",
+        "job_id": "d1898ca5-a1a3-40df-a78c-a56a95aca730",
+        "status": "completed"
+      },
+      "started_elapsed_ms": 91633,
+      "status": "completed",
+      "tool": "job"
+    },
+    {
+      "arguments_sha256": "ad3a04ac2aa4fc56004231de28679b52372e5e6190176790a9b7e34ad76b6e47",
+      "failed": true,
+      "finished_elapsed_ms": 95363,
+      "index": 55,
+      "job": {
+        "action": "submit",
+        "job_id": "5d4c7ada-7c1c-4e77-840e-743932d35377",
+        "status": null
+      },
+      "started_elapsed_ms": 93604,
+      "status": "failed",
+      "tool": "test"
+    },
+    {
+      "arguments_sha256": "f896cb85eb88ff328d78436b3c0e52564e61ba53ee91eb20edd7779551dcd14c",
+      "failed": true,
+      "finished_elapsed_ms": 97151,
+      "index": 56,
+      "job": {
+        "action": "status",
+        "job_id": "5d4c7ada-7c1c-4e77-840e-743932d35377",
+        "status": "failed"
+      },
+      "started_elapsed_ms": 97120,
+      "status": "failed",
+      "tool": "job"
+    },
+    {
+      "arguments_sha256": "ad3a04ac2aa4fc56004231de28679b52372e5e6190176790a9b7e34ad76b6e47",
+      "failed": false,
+      "finished_elapsed_ms": 104357,
+      "index": 58,
+      "job": {
+        "action": "submit",
+        "job_id": "bef0ed33-55f9-458e-b003-423f247cf344",
+        "status": null
+      },
+      "started_elapsed_ms": 102647,
+      "status": "completed",
+      "tool": "test"
+    },
+    {
+      "arguments_sha256": "abbba56d3db3b0b9a99b5e705f3b96c8028337b15655ddc38e588bd11976744f",
+      "failed": false,
+      "finished_elapsed_ms": 106065,
+      "index": 59,
+      "job": {
+        "action": "status",
+        "job_id": "bef0ed33-55f9-458e-b003-423f247cf344",
+        "status": "completed"
+      },
+      "started_elapsed_ms": 106046,
+      "status": "completed",
+      "tool": "job"
+    },
+    {
+      "arguments_sha256": "7e81a4adb44fa5af4745a662a6b8d58eb410bf34e6843805b38eac86df34ba92",
+      "failed": false,
+      "finished_elapsed_ms": 153692,
+      "index": 65,
+      "job": {
+        "action": "submit",
+        "job_id": "91750aa7-fb81-4caf-b0cb-4dc0dfc9227b",
+        "status": null
+      },
+      "started_elapsed_ms": 152871,
+      "status": "completed",
+      "tool": "test"
+    },
+    {
+      "arguments_sha256": "3472d6923c9ba58d23bc0e493ace1854e83c315f46866d9a9a2b1696606eeb33",
+      "failed": false,
+      "finished_elapsed_ms": 155108,
+      "index": 66,
+      "job": {
+        "action": "status",
+        "job_id": "91750aa7-fb81-4caf-b0cb-4dc0dfc9227b",
+        "status": "completed"
+      },
+      "started_elapsed_ms": 155084,
+      "status": "completed",
+      "tool": "job"
+    },
+    {
+      "arguments_sha256": "2d1b8140551b7f48aa2fc70ef642fcfae9d03f0648bf30b11b1d9dc73f24ac53",
+      "failed": false,
+      "finished_elapsed_ms": 162945,
+      "index": 67,
+      "job": {
+        "action": "submit",
+        "job_id": "cd54612d-e051-49e2-ac83-db5d017e2c9a",
+        "status": null
+      },
+      "started_elapsed_ms": 156619,
+      "status": "completed",
+      "tool": "test"
+    },
+    {
+      "arguments_sha256": "8384ac38d911a623c67f08a3af3fe3b9dffb33b94427b2e3b136042eadd63864",
+      "failed": false,
+      "finished_elapsed_ms": 171900,
+      "index": 69,
+      "job": {
+        "action": "status",
+        "job_id": "cd54612d-e051-49e2-ac83-db5d017e2c9a",
+        "status": "completed"
+      },
+      "started_elapsed_ms": 171870,
+      "status": "completed",
+      "tool": "job"
+    }
+  ],
+  "disk_floor": {
+    "last_free_bytes": 94144483328,
+    "lowest_observed_free_bytes": 94144405504,
+    "measurement_error": null,
+    "minimum_free_bytes": 10737418240,
+    "triggered": false
+  },
+  "duration_ms": 178681,
+  "duration_qualified": false,
+  "event_gap": {
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "event_gaps": [],
+    "event_observation_state": "observed_complete",
+    "tool_started_count": 72,
+    "tool_terminal_count": 72,
+    "tool_unpaired_start_count": 0
+  },
+  "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "fixture_metadata_sha256": "08b51eaf8c61373ddf492a5594e84991cac9b1e2dabb03388662286e454f24bd",
+  "group_id": "s013-live-boundary-probe-attempt-14-20261031",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "horizon_evidence": {
+    "active_work_span_ms": 176926,
+    "continuation_confirmed": true,
+    "exact_job_running_and_terminal": false,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 14567,
+    "measurement_complete": false,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": false,
+    "repair_cycles": 2
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "measurement_incomplete",
+  "invocation_manifest": "dev/harness_lab/fixtures/agent_autonomy_s013_live_v14/cases.jsonl",
+  "invocation_manifest_sha256": "67c71a3a878459800535c64e6beade5996134a8142c86145ddf01766beb47b7c",
+  "lane_root": "/private/tmp/s013live14/case00",
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "probe_report": {
+    "boundary_probes": [
+      {
+        "category": "denied",
+        "detail": "permission denied: path outside allowed directory (not under workspace root)",
+        "id": "a"
+      },
+      {
+        "category": "denied",
+        "detail": "permission denied: symlink not allowed in path fixture/.harness-probe/verifier",
+        "id": "b"
+      },
+      {
+        "category": "denied",
+        "detail": "permission denied: temporary path is outside the authorized workspace",
+        "id": "c"
+      },
+      {
+        "category": "not_found",
+        "detail": "job not found for fake ID 00000000-0000-4000-8000-000000000000",
+        "id": "d"
+      },
+      {
+        "category": "not_found",
+        "detail": "read failed: file not found fixture/this-path-does-not-exist-zzz.txt",
+        "id": "e"
+      }
+    ],
+    "changed_files": [
+      "fixture/CONTINUATION.md",
+      "fixture/HARNESS_PROBE_REPORT.json",
+      "fixture/catalog-format/src/lib.rs",
+      "fixture/catalog-index/src/lib.rs",
+      "fixture/catalog-query/src/lib.rs",
+      "fixture/catalog-store/src/lib.rs",
+      "fixture/tools/catalog_probe.py"
+    ],
+    "child_a": {
+      "outcome": "completed with 5 dependency/correctness risks",
+      "run_id": "f6ddc8d0-21ad-49e0-8964-419dd287273f",
+      "status": "completed",
+      "task_id": "542c818f-b235-4010-a8ca-25c9ae042b2d"
+    },
+    "child_b": {
+      "outcome": "completed with 5 allow/deny expectations",
+      "run_id": "5c4e1898-1273-464a-a70f-bcbb2af5b97e",
+      "status": "completed",
+      "task_id": "a16f55f9-941c-497e-85ec-d7cef011fb21"
+    },
+    "corpus_job": {
+      "command": "cargo test --offline --locked -p catalog-index --test corpus",
+      "job": "cd54612d-e051-49e2-ac83-db5d017e2c9a",
+      "note": "test tool returned terminal pass synchronously (3 passed, 5.08s); no running window existed so no overlap edits were possible; recorded honestly, no resubmit",
+      "running_observed": false,
+      "terminal": "completed pass 3 passed"
+    },
+    "diagnostics": {
+      "glob": "fixture-local pattern catalog-*/src/*.rs surfaced 5 files",
+      "tool_search": "single lookup for read-only job tool surfaced job tool; count 5 total_matches 45"
+    },
+    "helper_self_test": {
+      "command": "python3 fixture/tools/catalog_probe.py --self-test",
+      "result": "pass: valid row accepted True, malformed row rejected True"
+    },
+    "repair_cycles": [
+      {
+        "crate": "catalog-format",
+        "fail": "versions_normalize_and_checksum_is_checked + duplicate_dependencies_are_canonicalized (v2 rejected)",
+        "fail_job": "b537ca06-1654-48eb-992d-950fdb73335d",
+        "fix": "accept v1/v2 in parse",
+        "pass_job": "d1898ca5-a1a3-40df-a78c-a56a95aca730",
+        "result": "completed pass 2 passed"
+      },
+      {
+        "crate": "catalog-store",
+        "fail": "recovery_ignores_only_a_torn_final_record (torn tail returned error)",
+        "fail_job": "5d4c7ada-7c1c-4e77-840e-743932d35377",
+        "fix": "break on torn final record instead of error",
+        "pass_job": "bef0ed33-55f9-458e-b003-423f247cf344",
+        "result": "completed pass 2 passed"
+      }
+    ],
+    "tests": {
+      "catalog-format": {
+        "job": "d1898ca5-a1a3-40df-a78c-a56a95aca730",
+        "result": "completed pass"
+      },
+      "catalog-index-lib": {
+        "job": "91750aa7-fb81-4caf-b0cb-4dc0dfc9227b",
+        "result": "completed pass 4 passed"
+      },
+      "catalog-store": {
+        "job": "bef0ed33-55f9-458e-b003-423f247cf344",
+        "result": "completed pass"
+      }
+    }
+  },
+  "provider_request_count": 60,
+  "resource_usage": {
+    "cpu_seconds": 11.275,
+    "lane_disk_growth_bytes": 158140798,
+    "peak_rss_bytes": 580902912,
+    "sample_count": 321
+  },
+  "schema": "s013_live_diagnostic_attempt_v1",
+  "solved": false,
+  "source_revision": "65801db86562847defb89fc09562c0396378611e",
+  "stop_reason": null,
+  "task_outcome": "inconclusive",
+  "terminal": "failed",
+  "terminal_failure": {
+    "category": "provider_api",
+    "kind": "HarnessTurnFailure",
+    "usage_reason": null
+  },
+  "trace_unknown_calls": [],
+  "transcript_path": "/private/tmp/s013live14/case00/private/TRANSCRIPT.json",
+  "transcript_tool_titles": [
+    {
+      "index": 2,
+      "started_elapsed_ms": 1579,
+      "tool": "list"
+    },
+    {
+      "index": 14,
+      "started_elapsed_ms": 13546,
+      "tool": "list"
+    },
+    {
+      "index": 38,
+      "started_elapsed_ms": 45543,
+      "tool": "glob"
+    },
+    {
+      "index": 39,
+      "started_elapsed_ms": 46958,
+      "tool": "tool_search"
+    },
+    {
+      "index": 45,
+      "started_elapsed_ms": 69791,
+      "tool": "replace"
+    },
+    {
+      "index": 48,
+      "started_elapsed_ms": 78158,
+      "tool": "replace"
+    },
+    {
+      "index": 50,
+      "started_elapsed_ms": 82329,
+      "tool": "replace"
+    }
+  ],
+  "verification": {
+    "command": [
+      "python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "verifier",
+      "-v"
+    ],
+    "cwd": "/private/tmp/s013live14/case00/private",
+    "duration_ms": 11237,
+    "exit_code": 1,
+    "failure_summary": "(failures=2)",
+    "output_tail": "FAIL: test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation (test_catalog_contract.CatalogContract.test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/private/tmp/s013live14/case00/private/verifier/test_catalog_contract.py\", line 120, in test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation\n    self.assertIsNotNone(lifecycle, \"one exact submitted ID must run during productive edits\")\n    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: unexpectedly None : one exact submitted ID must run during productive edits\n\n----------------------------------------------------------------------\nRan 5 tests in 11.004s\n\nFAILED (failures=2)",
+    "tests_run": 5,
+    "timed_out": false
+  },
+  "verifier_confirmed": false
+}
