@@ -96,7 +96,7 @@ described in §10.1 and is the owner's decision.
 
 ### 3.3 Nothing else moved
 
-The change is two production lines and one arm:
+The change is one function and one arm:
 
 - `src/tui/commands/tasks.rs` — `handle_compact_session` rewritten; the now
   unused `SessionStatus` import dropped.
@@ -113,7 +113,7 @@ Not touched: `crates/codegg-core/src/command_catalog.rs`,
 | Surface | Path | Disposition |
 |---|---|---|
 | the TUI's palette | `/compact` → `BuiltinSlashAction::Compact` (`src/tui/command.rs:628`) → `B::Compact` (`src/tui/app/mod.rs:6046`) | **corrected** — it reaches the handler |
-| the catalog's declared action | `compact` → `FrontendAction::CompactSession` (`crates/codegg-core/src/frontend_action.rs:393`) → `TuiCommand::CompactSession` → `handle_compact_session` | **corrected** — it now reaches the same handler, and it already did |
+| the catalog's declared action | `compact` → `FrontendAction::CompactSession` (`crates/codegg-core/src/frontend_action.rs:393`) → `TuiCommand::CompactSession` → `handle_compact_session` | **corrected** — it already reached the handler, and it now produces the same truthful outcome |
 | the desktop | the catalog's form → `apps/desktop/src/commands/frontendActions.ts:320` — the action is **not** among the nine the desktop carries, so it falls to the default arm | **not a false-reporting surface** — it reports "`/compact` is a frontend effect; the desktop does not implement it yet" (`apps/desktop/src/App.tsx:1510`). Recorded in §10.3 |
 
 The TUI's two surfaces are pinned to agree by
@@ -165,8 +165,9 @@ registry's builtin mapping, and that both paths produce the same message.
 
 ### 4.4 The daemon's automatic compaction still fires
 
-The daemon's own compaction family is untouched and green:
-`tests/agent_loop/compaction.inc` — `test_compaction_trigger_under_threshold`,
+The daemon's own compaction family is untouched and green — **73 members of
+`tests/agent_loop/compaction.inc` match `compact` and all pass**, including:
+`test_compaction_trigger_under_threshold`,
 `test_compaction_trigger_over_threshold`, `test_auto_compact_prunes_long_outputs`,
 `test_auto_compact_no_prune_no_compact`, `test_auto_compact_with_prune`,
 `test_auto_compact_async_fallback_when_no_provider`,
