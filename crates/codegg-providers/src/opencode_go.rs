@@ -26,7 +26,47 @@ use async_trait::async_trait;
 use eggpool_wire::profile::WireSurface;
 use futures_util::{stream, StreamExt};
 use http::header::{HeaderName, HeaderValue};
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
+
+/// Body-free SSE framing counters used to distinguish active incomplete frames
+/// from completed frames that produce no canonical ChatEvent. Payload bytes
+/// are never retained by this observer.
+#[derive(Default)]
+struct SseFrameProgress {
+    completed_frames: u64,
+    current_frame_bytes: u64,
+    last_frame_bytes: u64,
+    largest_frame_bytes: u64,
+    tail: VecDeque<u8>,
+}
+
+impl SseFrameProgress {
+    fn observe(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.current_frame_bytes = self.current_frame_bytes.saturating_add(1);
+            if self.tail.len() == 4 {
+                self.tail.pop_front();
+            }
+            self.tail.push_back(*byte);
+            let delimited = self.tail.iter().rev().take(2).copied().eq([b'\n', b'\n'])
+                || self
+                    .tail
+                    .iter()
+                    .rev()
+                    .take(4)
+                    .copied()
+                    .eq([b'\n', b'\r', b'\n', b'\r']);
+            if delimited {
+                self.completed_frames = self.completed_frames.saturating_add(1);
+                self.last_frame_bytes = self.current_frame_bytes;
+                self.largest_frame_bytes = self.largest_frame_bytes.max(self.current_frame_bytes);
+                self.current_frame_bytes = 0;
+                self.tail.clear();
+            }
+        }
+    }
+}
 
 /// Transport-owned deadline applied identically on every surface.
 ///
@@ -426,15 +466,30 @@ impl Provider for OpenCodeGoProvider {
                 0u64,
                 body_started,
                 provider_span_id,
+                SseFrameProgress::default(),
             ),
-            |(mut body, started, mut chunk_count, mut byte_count, mut last_log, span_id)| async move {
+            |(
+                mut body,
+                started,
+                mut chunk_count,
+                mut byte_count,
+                mut last_log,
+                span_id,
+                mut sse_progress,
+            )| async move {
                 match body.next().await {
                     Some(Ok(chunk)) => {
                         chunk_count = chunk_count.saturating_add(1);
                         byte_count = byte_count.saturating_add(chunk.len() as u64);
+                        let completed_frames_before = sse_progress.completed_frames;
+                        sse_progress.observe(&chunk);
+                        let frame_sample_ready = sse_progress.completed_frames
+                            > completed_frames_before
+                            && sse_progress.completed_frames.is_power_of_two();
                         let now = Instant::now();
                         if chunk_count == 1
                             || chunk_count % 1024 == 0
+                            || frame_sample_ready
                             || now.duration_since(last_log) >= Duration::from_secs(1)
                         {
                             tracing::debug!(
@@ -442,6 +497,10 @@ impl Provider for OpenCodeGoProvider {
                                 chunk_index = chunk_count,
                                 chunk_bytes = chunk.len(),
                                 total_body_bytes = byte_count,
+                                completed_sse_frames = sse_progress.completed_frames,
+                                incomplete_sse_frame_bytes = sse_progress.current_frame_bytes,
+                                last_sse_frame_bytes = sse_progress.last_frame_bytes,
+                                largest_sse_frame_bytes = sse_progress.largest_frame_bytes,
                                 elapsed_ms = started.elapsed().as_millis() as u64,
                                 "opencode_go_response_body_progress"
                             );
@@ -449,7 +508,15 @@ impl Provider for OpenCodeGoProvider {
                         }
                         Some((
                             Ok(chunk),
-                            (body, started, chunk_count, byte_count, last_log, span_id),
+                            (
+                                body,
+                                started,
+                                chunk_count,
+                                byte_count,
+                                last_log,
+                                span_id,
+                                sse_progress,
+                            ),
                         ))
                     }
                     Some(Err(error)) => {
@@ -463,7 +530,15 @@ impl Provider for OpenCodeGoProvider {
                         );
                         Some((
                             Err(ProviderError::from(error)),
-                            (body, started, chunk_count, byte_count, last_log, span_id),
+                            (
+                                body,
+                                started,
+                                chunk_count,
+                                byte_count,
+                                last_log,
+                                span_id,
+                                sse_progress,
+                            ),
                         ))
                     }
                     None => {
@@ -861,9 +936,34 @@ mod capture_tests {
             .collect();
         assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(logs.contains("provider_span_id=Some("));
+        assert!(logs.contains("completed_sse_frames=2"), "logs: {logs}");
+        assert!(
+            logs.contains("incomplete_sse_frame_bytes=0"),
+            "logs: {logs}"
+        );
         assert!(!logs.contains("PRIVATE_PROMPT_MARKER"));
         assert!(!logs.contains("sk-test-secret-value"));
         assert!(!logs.contains("content\\\":\\\"ok"));
+        assert!(!logs.contains("response.output_text.delta"));
+    }
+
+    #[test]
+    fn sse_frame_progress_counts_split_delimiters_without_retaining_payload() {
+        let mut progress = SseFrameProgress::default();
+        progress.observe(b"data: PRIVATE_SSE_MARKER\r\n");
+        progress.observe(b"\r\n");
+        assert_eq!(progress.completed_frames, 1);
+        assert_eq!(progress.current_frame_bytes, 0);
+        let first_frame_bytes = b"data: PRIVATE_SSE_MARKER\r\n\r\n".len() as u64;
+        assert_eq!(progress.last_frame_bytes, first_frame_bytes);
+        assert_eq!(progress.largest_frame_bytes, first_frame_bytes);
+        assert!(progress.tail.is_empty());
+
+        progress.observe(b"data: [DONE]\n\n");
+        assert_eq!(progress.completed_frames, 2);
+        assert_eq!(progress.current_frame_bytes, 0);
+        assert_eq!(progress.largest_frame_bytes, first_frame_bytes);
+        assert!(progress.tail.is_empty());
     }
 
     const RESPONSES_SSE: &str = concat!(
