@@ -1031,7 +1031,6 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             # prompt response. Wait for terminals corresponding to the tool
             # outputs already present in the fixture provider's final history.
             _drain_tool_notifications(client, provider, timeout=min(10.0, timeout / 6))
-            causal_receipt = causal_recorder.finish()
             updates = [item for item in client.notifications if item.get("method") == "session/update"]
             tool_updates = [
                 {**item.get("params", {}).get("update", {}),
@@ -1124,6 +1123,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                 raise HarnessError(f"fixture turn ended with unexpected stop reason {observed_terminal!r}")
             verification = None
             if external_verifier is not None:
+                causal_recorder.record("verifier_started")
                 verifier_path = external_verifier.resolve(strict=True)
                 if verifier_path.is_relative_to(workspace.resolve()):
                     raise HarnessError("external verifier must remain outside the agent workspace")
@@ -1134,12 +1134,30 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                 verification = {"returncode": verified.returncode,
                                 "stdout": verified.stdout[-4096:],
                                 "stderr": verified.stderr[-4096:]}
+                causal_recorder.record("verifier_terminal",
+                                       detail="passed" if verified.returncode == 0 else "failed")
                 if verified.returncode:
                     raise HarnessError(f"hidden verifier failed: {verified.stdout[-1000:]} {verified.stderr[-1000:]}")
             context_recovered = any(item.get("context_read_used") and item.get("context_recovered")
                                     for item in provider.request_summaries)
             if context_text is not None and not context_recovered:
                 raise HarnessError("fixture did not recover projected output through context_read")
+            failed_tool_indexes = [index for index, call in enumerate(observed_tool_calls)
+                                   if call.get("status") == "failed"]
+            successful_test_indexes = [index for index, call in enumerate(observed_tool_calls)
+                                       if call.get("tool") == "test"
+                                       and call.get("status") == "completed"]
+            repair_cycles = [index for index in failed_tool_indexes
+                             if any(success > index for success in successful_test_indexes)]
+            for _cycle in repair_cycles:
+                causal_recorder.record("repair_cycle", detail="failed")
+                causal_recorder.record("repair_cycle", detail="passed")
+            if (task_id == "h007-dependent-rust-and-exact-job"
+                    and expected_file == "CONTINUATION.md" and exists
+                    and expected_text is not None and target.read_text(encoding="utf-8") == expected_text):
+                causal_recorder.record("continuation", detail="passed")
+                causal_recorder.record("checkpoint", detail="passed")
+            causal_receipt = causal_recorder.finish()
             result = {
                 "ok": True,
                 "task_id": task_id,

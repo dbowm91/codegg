@@ -129,6 +129,24 @@ class CausalTraceTests(unittest.TestCase):
         missing = causal_trace.attribution_report([], {})
         self.assertEqual(missing["observed_failure_class"], "observation_incomplete")
 
+    def test_verified_success_preserves_repaired_tool_failures_without_blame(self):
+        trace = [
+            {"event_type": "tool_terminal", "status": "failed"},
+            {"event_type": "repair_cycle", "detail": "failed"},
+            {"event_type": "repair_cycle", "detail": "passed"},
+            {"event_type": "continuation"},
+            {"event_type": "trace_terminal", "state": "complete"},
+        ]
+        report = causal_trace.attribution_report(trace, {
+            "task_outcome": "passed",
+            "independent_verifier": {"tests_run": 1, "exit_code": 0},
+        })
+        self.assertEqual(report["observed_failure_class"], "task_success")
+        self.assertEqual(report["observed_tool_failure_count"], 1)
+        self.assertEqual(report["repair_cycles_observed"], 1)
+        self.assertTrue(report["continuation_observed"])
+        self.assertEqual(report["plausible_owners"], ["none"])
+
     def test_tampered_trace_is_refused(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "trace.jsonl"

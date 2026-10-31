@@ -98,7 +98,7 @@ class Recorder:
                detail: str | None = None) -> None:
         """Record a bounded controller observation, never raw exception text."""
         if event_type not in {"cancel_requested", "provider_timeout", "verifier_started",
-                              "verifier_terminal", "continuation", "checkpoint"}:
+                              "verifier_terminal", "continuation", "checkpoint", "repair_cycle"}:
             raise ValueError("unsupported causal event type")
         row: dict[str, Any] = {"elapsed_ms": elapsed_ms if isinstance(elapsed_ms, int) and elapsed_ms >= 0 else None}
         if detail in {"user", "disk_floor", "activity_stall", "budget", "controller", "passed", "failed", "unknown"}:
@@ -170,6 +170,10 @@ def attribution_report(trace_rows: list[dict[str, Any]], receipt: Mapping[str, A
     elif trace_state != "complete":
         failure_class, owner, sufficient = "observation_incomplete", "harness_observation", False
         reproduction = "Repeat with a complete bounded trace and reconciled tool/job terminals."
+    elif (receipt.get("task_outcome") == "passed" and verifier.get("tests_run", 0) > 0
+          and verifier.get("exit_code") == 0):
+        failure_class, owner, sufficient = "task_success", "none", True
+        reproduction = "No corrective action; the independent verifier passed."
     elif any(row.get("event_type") == "tool_terminal" and row.get("status") == "failed"
              for row in trace_rows):
         failure_class, owner, sufficient = "tool_execution_failure_observed", "tool_owner_unresolved", False
@@ -181,7 +185,15 @@ def attribution_report(trace_rows: list[dict[str, Any]], receipt: Mapping[str, A
             "evidence_sufficiency": "sufficient_for_classification" if sufficient else "incomplete",
             "plausible_owners": [owner], "unknowns": ["model intent", "unobserved events"],
             "required_reproduction": reproduction, "trace_state": trace_state,
-            "codegg_defect_reproduced": False}
+            "codegg_defect_reproduced": False,
+            "observed_tool_failure_count": sum(
+                row.get("event_type") == "tool_terminal" and row.get("status") == "failed"
+                for row in trace_rows),
+            "repair_cycles_observed": sum(
+                row.get("event_type") == "repair_cycle" and row.get("detail") == "passed"
+                for row in trace_rows),
+            "continuation_observed": any(row.get("event_type") == "continuation"
+                                         for row in trace_rows)}
 
 
 def read_trace(path: Path) -> list[dict[str, Any]]:
