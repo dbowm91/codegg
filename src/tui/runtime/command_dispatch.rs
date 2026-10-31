@@ -1173,6 +1173,12 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         } => {
             apply_goal_operation_finished(app, session_id, op, response, error);
         }
+        TuiCommand::ChangeReviewOpened { response, error } => {
+            crate::tui::commands::change_review::apply_opened(app, response, error);
+        }
+        TuiCommand::RevertFinished { response, error } => {
+            crate::tui::commands::revert::apply_revert_finished(app, response, error);
+        }
         TuiCommand::SessionStateRefreshed {
             todos,
             active_goal,

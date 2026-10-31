@@ -1707,6 +1707,9 @@ impl CoreDaemon {
             // name their project directly, exactly as the listing above
             // does. Their `DirectProject` scope resolves through this arm.
             CoreRequest::GitRead { request } => Some(request.project_id.as_str()),
+            // M007-H (work package C): the revert names its project
+            // directly, exactly as the read above does.
+            CoreRequest::GitRevert { request } => Some(request.project_id.as_str()),
             CoreRequest::SkillCatalogueList { request } => Some(request.project_id.as_str()),
             // M007-D: the command catalog read and the daemon-effect command
             // executor both name their project directly, exactly as the
@@ -4759,8 +4762,14 @@ impl CoreDaemon {
             // Phase 3: read-only project-scoped fact reads. The git read is
             // served by the read-only git fact layer and the catalogue by the
             // canonical skill registry; neither mutates anything.
+            //
+            // M007-H (work package C): the family also owns the daemon's
+            // own `/revert`, the one git write the daemon performs.
             super::daemon_family::DaemonRequestFamily::Git => {
-                Box::pin(self.handle_git_request(payload)).await
+                Box::pin(super::daemon_git::handle_git_family_request(
+                    self, payload, &authority,
+                ))
+                .await
             }
             super::daemon_family::DaemonRequestFamily::Skills => {
                 Box::pin(self.handle_skill_catalogue_request(payload)).await

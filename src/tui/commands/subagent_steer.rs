@@ -2,8 +2,12 @@
 //!
 //! # What this sends, and to whom
 //!
-//! One request: [`CoreRequest::TurnSteer`] carrying the **parent session's**
-//! `turn_id` — never a subagent's `task_id` and never its `run_id`.
+//! One request: the daemon's `subagent_send` command, which builds the
+//! [`crate::protocol::core::CoreRequest::TurnSteer`] carrying the **parent
+//! session's** `turn_id` — never a subagent's `task_id` and never its
+//! `run_id`. M007-H moved the
+//! request behind the daemon's command executor, so the frontend names the
+//! command and the text and the daemon resolves the turn.
 //! `TurnSteer` is keyed on a *session turn* (`daemon_turns.rs`: the runtime is
 //! looked up by `session_id` and the handle's `turn_id` must equal the one
 //! sent), so naming a subagent's daemon-local `u64` `task_id` here would be a
@@ -23,12 +27,12 @@
 //! export, which is the kind of divergence the projection rules exist to
 //! prevent. The record is the toast, and it says only what was accepted.
 
-use crate::protocol::core::CoreRequest;
 use crate::protocol::core::CoreResponse;
 use crate::tui::app::state::AsyncUiRequestState;
 use crate::tui::app::state::SubagentAddressee;
 use crate::tui::app::{App, TuiCommand};
 use crate::tui::async_cmd::spawn_registered_tui_task;
+use crate::tui::commands::queue::TURN_ID_MISMATCH_CODE;
 use crate::tui::commands::queue::{
     apply_refusal, send_now_outcome_message, RefusalOutcome, SteerConsequence,
 };
@@ -210,24 +214,6 @@ pub fn start_subagent_reply(app: &mut App, body: String) {
             .warning("No subagent is addressed, so that starts a normal turn instead.");
         return;
     };
-    let Some(session_id) = app.active_session_id().map(str::to_owned) else {
-        app.messages_state
-            .toasts
-            .warning("No session is bound, so there is nothing to steer.");
-        return;
-    };
-    // Read the turn id *now*, at send time, not at arm time. A turn that ended
-    // and was replaced between arming and Enter is the ordinary case, not a
-    // race worth guarding: reading it fresh means the steer names whatever is
-    // genuinely running, and only a turn that ends in the window between this
-    // read and the daemon's own check can still come back `turn_id_mismatch`.
-    let Some(turn_id) = app.session_state.active_turn_id.clone() else {
-        app.messages_state.toasts.warning(
-            "Nothing is running to steer — a reply to a subagent needs the turn that owns \
-             it.",
-        );
-        return;
-    };
     let Some(core_client) = app.core_client.clone() else {
         app.messages_state
             .toasts
@@ -245,6 +231,11 @@ pub fn start_subagent_reply(app: &mut App, body: String) {
 
     let request_id = app.prompt_state.subagent_steer_request.begin();
     let text = addressee.addressed_text(&body);
+    // M007-H: the daemon owns the steer. The scope names the attached
+    // session, and the daemon resolves the turn it steers — the frontend
+    // reads no turn id of its own, so a turn that ended between the arm and
+    // the Enter is the daemon's answer to give, not the TUI's guess.
+    let scope = crate::tui::command_route::scope_for(app);
     let tx = app.tui_cmd_tx.clone();
     spawn_registered_tui_task(
         tx,
@@ -252,15 +243,15 @@ pub fn start_subagent_reply(app: &mut App, body: String) {
         TuiTaskKind::Command,
         "turn_steer_subagent_reply",
         async move {
-            let request = crate::core::new_request(
-                format!("turn-steer-subagent-{}", uuid::Uuid::new_v4()),
-                CoreRequest::TurnSteer {
-                    session_id: session_id.clone(),
-                    turn_id: turn_id.clone(),
-                    text,
-                },
-            );
-            let (code, error) = steer_answer(core_client.request(request).await, &turn_id);
+            let answer = crate::tui::command_route::send_command(
+                &core_client,
+                scope,
+                "subagent_send",
+                "",
+                &text,
+            )
+            .await;
+            let (code, error) = steer_answer(answer);
             Some(TuiCommand::SubagentSteerFinished {
                 request_id,
                 addressee: addressee.label().to_string(),
@@ -357,20 +348,27 @@ fn steer_outcome_message(addressee: &str, code: Option<&str>, error: Option<&str
 /// user never typed.
 fn steer_answer(
     answer: Result<CoreResponse, crate::error::AppError>,
-    requested_turn_id: &str,
 ) -> (Option<String>, Option<String>) {
     match answer {
         Ok(CoreResponse::Ack) => (None, None),
         Ok(CoreResponse::Error { code, message }) => {
             // `turn_id_mismatch` is the only code whose daemon prose carries
             // both ids. Replace it with a placeholder-free variant so a
-            // transport-level echo can never reach a toast.
-            let message = if message.contains(requested_turn_id) {
+            // transport-level echo can never reach a toast. The code is the
+            // discriminator, not the prose: the frontend names no turn id of
+            // its own — the daemon resolved it.
+            let message = if code == TURN_ID_MISMATCH_CODE {
                 "The turn changed before the reply reached it.".to_string()
             } else {
                 message
             };
             (Some(code), Some(message))
+        }
+        // The daemon refused the command before its effect ran, so there is
+        // no inner response to unwrap. The refusal is the daemon's answer
+        // and is rendered as it arrives.
+        Ok(CoreResponse::CommandExecute { result }) => {
+            (Some("refused".to_string()), Some(result.summary))
         }
         Ok(_) => (
             None,
@@ -575,14 +573,11 @@ mod tests {
     /// frontend must not echo an identifier the user never typed into a toast.
     #[test]
     fn subagent_steer_a_refusal_prose_quoting_the_turn_id_is_replaced() {
-        let (code, error) = steer_answer(
-            Ok(CoreResponse::Error {
-                code: TURN_ID_MISMATCH_CODE.to_string(),
-                message: "Requested turn_id 'turn-9' does not match active turn_id 'turn-8'"
-                    .to_string(),
-            }),
-            "turn-9",
-        );
+        let (code, error) = steer_answer(Ok(CoreResponse::Error {
+            code: TURN_ID_MISMATCH_CODE.to_string(),
+            message: "Requested turn_id 'turn-9' does not match active turn_id 'turn-8'"
+                .to_string(),
+        }));
         assert_eq!(code.as_deref(), Some(TURN_ID_MISMATCH_CODE));
         let error = error.expect("carries a message");
         assert!(
@@ -594,7 +589,7 @@ mod tests {
     /// The ack path must not invent a refusal.
     #[test]
     fn subagent_steer_an_ack_is_accepted_with_no_code() {
-        let (code, error) = steer_answer(Ok(CoreResponse::Ack), "turn-9");
+        let (code, error) = steer_answer(Ok(CoreResponse::Ack));
         assert!(code.is_none());
         assert!(error.is_none());
     }

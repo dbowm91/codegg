@@ -657,6 +657,9 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("human_shell_run_cancel", "human_shell_run"),
     // M007-H: the review's start may apply a checked change.
     ("security_review_start", "file_mutate"),
+    // M007-H (work package C): the daemon's own `/revert` restores paths in
+    // a checkout, so it is a shared-state mutation and is recorded.
+    ("git_revert", "file_mutate"),
     // M007: the operator disposition of one of the daemon's own disposable
     // scratch trees.
     ("scratch_reclaim", "scratch_reclaim"),

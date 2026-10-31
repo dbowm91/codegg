@@ -628,6 +628,26 @@ pub fn build_inner_request(
                 }
             })
         }
+        // M007-H (work package C): `/revert` restores paths in the
+        // project's checkout. The daemon owns the write: it resolves the
+        // checkout from its own durable binding, contains every path inside
+        // it, and takes the checkout's writer permit before the first
+        // effect. The argument is the repository-relative path.
+        ("revert", "") => {
+            let path = argument.trim();
+            if path.is_empty() {
+                return Some(CommandEffect::UnreadableArgument);
+            }
+            json!({
+                "type": "git_revert",
+                "request": {
+                    "project_id": project_id,
+                    "workspace_id": workspace_id,
+                    "session_id": session,
+                    "paths": [path],
+                }
+            })
+        }
 
         // ── the human shell ──
         //
@@ -1675,6 +1695,8 @@ mod tests {
         ("security_review_show", "", ""),
         ("security_review_cancel", "", ""),
         ("shell_rerun", "", "run-1"),
+        // M007-H (work package C): the daemon's own `/revert`.
+        ("revert", "", "src/lib.rs"),
         ("shell_show", "", "probe"),
         ("shell_expand", "", "probe"),
         ("shell_kill", "", "probe"),

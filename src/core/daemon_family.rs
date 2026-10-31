@@ -116,7 +116,11 @@ impl DaemonRequestFamily {
             // Phase 3: the read-only project-scoped fact reads. Both are
             // reads: the git facts come from the read-only git fact layer,
             // the catalogue from the canonical skill registry.
-            CoreRequest::GitRead { .. } => Self::Git,
+            //
+            // M007-H (work package C): the daemon's own `/revert` joins the
+            // git family. It is the one *write* the family owns, and it is
+            // fenced by the C003 checkout writer fence.
+            CoreRequest::GitRead { .. } | CoreRequest::GitRevert { .. } => Self::Git,
             CoreRequest::SkillCatalogueList { .. } => Self::Skills,
             // M007-D: the daemon-owned command catalog and the daemon-effect
             // command executor. Both are project-scoped: the scope names the
@@ -423,7 +427,7 @@ impl DaemonRequestFamily {
             }
             Self::Lsp => "src/core/daemon_lsp.rs::handle_lsp_request",
             Self::Scratch => "src/core/daemon_scratch.rs::handle_scratch_request",
-            Self::Git => "src/core/daemon_reads.rs::handle_git_request",
+            Self::Git => "src/core/daemon_git.rs::handle_git_family_request",
             Self::Skills => "src/core/daemon_reads.rs::handle_skill_catalogue_request",
             Self::Commands => "src/core/daemon_commands.rs::handle_command_request",
             Self::Plugins => "src/core/daemon_plugins.rs::handle_plugin_request",

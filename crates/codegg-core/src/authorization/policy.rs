@@ -132,6 +132,15 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::GitRead),
         ),
+        // M007-H (work package C): the daemon's own `/revert` restores paths
+        // in a checkout, so it asks for the write capability and not the
+        // read one. The scope is the project whose checkout is written, the
+        // same `DirectProject` the git read resolves through.
+        R::GitRevert { .. } => OperationDescriptor::new(
+            "git_revert",
+            ScopeKind::DirectProject,
+            Some(Capability::GitWrite),
+        ),
         // Phase 3: the skill catalogue discloses a project's discoverable
         // skill metadata — names and descriptions, never bodies and never
         // paths. It is project-scoped inert metadata, so it takes the

@@ -71,6 +71,41 @@ pub enum GitReadResultDto {
     Branches(GitBranchListDto),
 }
 
+/// The daemon's git revert request (M007-H, work package C).
+///
+/// The daemon resolves the checkout from its own durable project binding,
+/// so this request carries identifiers and repository-relative paths — never
+/// a filesystem path a caller could point at an unrelated tree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitRevertRequestDto {
+    /// The project whose bound checkout is reverted.
+    pub project_id: String,
+    /// The workspace whose checkout is reverted.
+    pub workspace_id: String,
+    /// The session the revert was invoked from, when one is attached.
+    ///
+    /// The session is what the daemon resolves the acting turn and the
+    /// checkout's writer attribution from. It is never a path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// The repository-relative paths restored from `HEAD`.
+    pub paths: Vec<String>,
+}
+
+/// The result of a git revert.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitRevertResultDto {
+    /// The project whose checkout was reverted.
+    pub project_id: String,
+    /// The workspace whose checkout was reverted.
+    pub workspace_id: String,
+    /// The repository-relative paths the revert restored.
+    pub paths: Vec<String>,
+    /// The typed outcome of the underlying mutation: `completed`, `no-op`,
+    /// `fast-forward`, `conflict` or `rejected`.
+    pub outcome: String,
+}
+
 /// The status of one repository.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitRepoStatusDto {

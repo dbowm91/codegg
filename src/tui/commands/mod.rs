@@ -38,6 +38,7 @@ pub mod queue;
 /// name its payload types) stay well-formed.
 pub mod reasoning;
 pub(super) mod research;
+pub(super) mod revert;
 pub(super) mod run_rerun;
 pub(super) mod security;
 pub(super) mod session_selection;

@@ -900,6 +900,23 @@ pub enum TuiCommand {
         response: Option<CoreResponse>,
         error: Option<String>,
     },
+    /// Completion: the daemon's preview read for `/review-change` finished.
+    ///
+    /// M007-H (D4): the candidate comes from the daemon's preview store,
+    /// so the TUI reads the daemon's answer and never a local copy.
+    ChangeReviewOpened {
+        response: Option<CoreResponse>,
+        error: Option<String>,
+    },
+    /// Completion: the daemon's `/revert` finished.
+    ///
+    /// M007-H (work package C): the response is the daemon's own answer —
+    /// its typed refusal included. The TUI renders it and never restores a
+    /// file itself.
+    RevertFinished {
+        response: Option<CoreResponse>,
+        error: Option<String>,
+    },
     /// Completion: session state (todos + active goal) refreshed.
     SessionStateRefreshed {
         /// `Some` when the core produced an authoritative todo list. `None`

@@ -133,7 +133,7 @@ impl CoreDaemon {
     /// fallback. Either way the root comes from the daemon's durable
     /// bindings; nothing in the request can influence the answer — the
     /// request carries a project identity, not a path.
-    async fn resolve_project_repository_root(
+    pub(crate) async fn resolve_project_repository_root(
         &self,
         project_id: &str,
     ) -> Result<PathBuf, &'static str> {

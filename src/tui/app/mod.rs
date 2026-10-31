@@ -2483,6 +2483,56 @@ impl App {
                 self.set_todos(entries);
                 true
             }
+            // M007-H (D3): the daemon publishes the supervised test run, so
+            // the derived state carries the run the daemon actually
+            // performed. Nothing filled this before, so `/tests` reported
+            // "unknown (no tests run yet)" about a run the daemon had
+            // already finished.
+            E::TestRunStarted {
+                session_id,
+                command,
+                ..
+            } => {
+                if let Some(active_id) = self.session_state.session.as_ref().map(|s| &s.id) {
+                    if active_id != &session_id {
+                        return false;
+                    }
+                }
+                self.session_state_derived.test_state =
+                    crate::session::state::TestState::Running { command };
+                true
+            }
+            E::TestRunCompleted {
+                session_id,
+                status,
+                summary,
+                ..
+            } => {
+                if let Some(active_id) = self.session_state.session.as_ref().map(|s| &s.id) {
+                    if active_id != &session_id {
+                        return false;
+                    }
+                }
+                // The completion names the outcome, not the command; the
+                // command is the one the start event carried.
+                let command = match &self.session_state_derived.test_state {
+                    crate::session::state::TestState::Running { command } => command.clone(),
+                    _ => String::new(),
+                };
+                self.session_state_derived.test_state = if status == "passed" {
+                    crate::session::state::TestState::Passed {
+                        command,
+                        duration_ms: None,
+                    }
+                } else {
+                    crate::session::state::TestState::Failed {
+                        command,
+                        duration_ms: None,
+                        summary,
+                    }
+                };
+                true
+            }
             E::PermissionPending { id, tool, path, .. } => {
                 // The turn is blocked on a human, not on the model. Saying so
                 // is the difference between "it is stuck" and "it is waiting on
@@ -6743,13 +6793,17 @@ impl App {
                 // M006-A: `/open <workspace-relative path>`. With no
                 // argument the composer keeps the key so the user can
                 // type the path after the command.
+                //
+                // M007-H (work package A): the daemon owns the open, so the
+                // TUI sends the `open_document` command and attaches the
+                // response. It issues no open request of its own.
                 let path = argument;
                 if path.is_empty() {
                     self.messages_state
                         .toasts
                         .info("Usage: /open <workspace-relative path> (e.g. /open src/lib.rs)");
                 } else {
-                    crate::tui::commands::editor::open_editor(self, path);
+                    crate::tui::commands::editor::open_editor_via_command(self, path);
                 }
             }
             B::Loop => {
@@ -7621,7 +7675,10 @@ impl App {
             B::Review => {
                 self.ui_state.command_mode = false;
                 let id = argument.to_string();
-                crate::tui::commands::change_review::open(self, &id);
+                // M007-H (D4): the daemon owns the preview store, so the
+                // candidate is read from it. The TUI's own `LspTool` copy is
+                // never installed, so the old arm could not work.
+                crate::tui::commands::change_review::open_via_daemon(self, &id);
             }
             B::LspPreviewApply => {
                 self.ui_state.command_mode = false;
@@ -8284,7 +8341,9 @@ impl App {
                 if path_arg.is_empty() {
                     self.messages_state.toasts.warning("Usage: /revert <path>");
                 } else {
-                    self.handle_revert_command(path_arg);
+                    // M007-H (work package C): the daemon owns the write.
+                    // The TUI no longer spawns `git` for this.
+                    crate::tui::commands::revert::start_revert(self, path_arg.to_string());
                 }
             }
             B::EditUndo => {
@@ -11413,48 +11472,6 @@ impl App {
                 self.messages_state
                     .toasts
                     .warning("Usage: /tests [last|failed]");
-            }
-        }
-    }
-
-    fn handle_revert_command(&mut self, path: &str) {
-        let project_dir = self.active_workspace_root().unwrap_or_default();
-        let git_root = match crate::worktree::find_git_root(&project_dir) {
-            Some(r) => r,
-            None => {
-                self.messages_state.toasts.error("Not in a git repository");
-                return;
-            }
-        };
-
-        let checkout_argv: Vec<String> = vec![
-            "git".into(),
-            "checkout".into(),
-            "HEAD".into(),
-            "--".into(),
-            path.to_string(),
-        ];
-        let output = crate::git_mutations::GitEnvPolicy::default()
-            .apply_sync(&checkout_argv, &git_root)
-            .map_err(|outcome| std::io::Error::other(outcome.to_string()))
-            .and_then(|mut command| command.output());
-
-        match output {
-            Ok(o) if o.status.success() => {
-                self.messages_state
-                    .toasts
-                    .success(&format!("Reverted: {}", path));
-            }
-            Ok(o) => {
-                let stderr = String::from_utf8_lossy(&o.stderr).to_string();
-                self.messages_state
-                    .toasts
-                    .error(&format!("git checkout failed: {}", stderr));
-            }
-            Err(e) => {
-                self.messages_state
-                    .toasts
-                    .error(&format!("Failed to run git: {}", e));
             }
         }
     }

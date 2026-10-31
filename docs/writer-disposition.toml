@@ -412,6 +412,19 @@ kind = "module"
 note = "Daemon-owned application of reviewed LSP workspace edits. The broker path is fenced by C003; the human change-review path (CoreRequest::LspPreviewApply) is mediated by the C004 checkout reservation gate, which refuses before the first write."
 
 [[root]]
+id = "module.daemon_git_revert"
+path = "src/core/daemon_git.rs"
+surface = "daemon"
+scope = "checkout-writer"
+disposition = "fenced-native"
+mediation = "writer-fence"
+owner = "DaemonGitRevert"
+locator = "workspace-root"
+lifetime = "request-scoped"
+kind = "module"
+note = "M007-H work package C: the daemon's own `/revert` (CoreRequest::GitRevert). It restores repository-relative paths from HEAD through the typed GitOperation::Checkout, so the frontend never spawns git. The checkout comes from the daemon's durable binding, every path is contained inside it by the typed RepoPath, and the write is taken under the C003 checkout writer fence: the acting session's own run resolves the scope, and a shared checkout's writer permit is held across the effect. The actor is the transport-bound principal of the request that reached the daemon, never a synthesized one."
+
+[[root]]
 id = "module.server_file_route"
 path = "src/server/routes/file.rs"
 surface = "http"

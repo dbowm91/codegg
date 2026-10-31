@@ -275,6 +275,147 @@ pub(crate) fn open_editor_in(app: &mut App, raw_path: &str, scope: DocumentScope
     }
 }
 
+/// Open one workspace-relative document in the editor, through the daemon.
+///
+/// M007-H (work package A): the daemon owns the open, so the TUI sends the
+/// `open_document` command and attaches the response. The scope comes from
+/// the attached session's canonical binding — the daemon learns the project
+/// and the workspace from that binding and never from the frontend's guess.
+/// A form the daemon refuses renders the daemon's typed refusal.
+pub(crate) fn open_editor_via_command(app: &mut App, raw_path: &str) {
+    app.cancel_lsp_diagnostics_stream();
+    let path = match normalize_relative_path(raw_path) {
+        Ok(path) => path,
+        Err(error) => {
+            app.messages_state
+                .toasts
+                .warning(&format!("Cannot open document: {error}"));
+            return;
+        }
+    };
+    // A second open of the same document is rejected by the daemon with
+    // `AlreadyOpen`; a switch closes the previous attachment first so one
+    // controller never owns two.
+    if app.editor_state.is_open()
+        && app.editor_state.path.as_deref() == Some(path.as_str())
+        && app.editor_state.scope == DocumentScope::Workspace
+    {
+        app.messages_state
+            .toasts
+            .info("Document is already open in the editor");
+        enter_editor_normal(app);
+        return;
+    }
+    let scope = crate::tui::command_route::scope_for(app);
+    if scope.project_id.is_empty() || scope.workspace_id.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Cannot open document: the attached session has no bound project/workspace.");
+        return;
+    }
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state
+            .toasts
+            .warning("Cannot open document: daemon unavailable — check /doctor");
+        return;
+    };
+
+    // Switching documents abandons the previous attachment and its undo
+    // history, and invalidates any in-flight completion for it.
+    if app.editor_state.is_open() {
+        app.editor_state.detach();
+    }
+    app.editor_state.generation = app.editor_state.generation.wrapping_add(1);
+    let generation = app.editor_state.generation;
+    let request_id = app.editor_state.request.begin();
+    app.editor_state.operation = Some(EditorOperation::Open);
+    app.editor_state.status = EditorStatus::Opening;
+    app.editor_state.clear_notice();
+    app.editor_state.path = Some(path.clone());
+    app.editor_state.scope = DocumentScope::Workspace;
+
+    let wants_writer = true;
+    app.editor_state.wants_writer = wants_writer;
+
+    let session = TuiDocumentSession::new(core_client.clone());
+    app.editor_state.session = Some(session);
+    // Opening a file lands in **Normal**, matching `/terminal`'s viewing mode
+    // and every other reader surface: the Helix verbs own the keyboard and
+    // the bottom input box still takes typing.
+    enter_editor_normal(app);
+    if !matches!(
+        app.ui_state.routes.current(),
+        crate::tui::route::Route::Editor
+    ) {
+        app.ui_state
+            .routes
+            .navigate_to(crate::tui::route::Route::Editor);
+    }
+
+    let controller = app
+        .editor_state
+        .session
+        .as_ref()
+        .expect("session was just installed")
+        .controller();
+    let tx = app.tui_cmd_tx.clone();
+    let tab_id = app.active_tab_id().map(|tab_id| tab_id.to_string());
+    let project_id = scope.project_id.clone();
+    let workspace_id = scope.workspace_id.clone();
+    let task_id = spawn_scoped_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Editor,
+        "editor_document_open",
+        tab_id,
+        None,
+        None,
+        async move {
+            let response = crate::tui::command_route::send_command(
+                &core_client,
+                scope,
+                "open_document",
+                "",
+                &path,
+            )
+            .await;
+            let result = match response {
+                Ok(response) => controller
+                    .attach_opened(
+                        project_id,
+                        workspace_id,
+                        path,
+                        wants_writer,
+                        DocumentScope::Workspace,
+                        response,
+                    )
+                    .await
+                    .err()
+                    .map(|error| describe_error(&error)),
+                Err(error) => Some(error.to_string()),
+            };
+            Some(TuiCommand::EditorOpened {
+                request_id,
+                generation,
+                result,
+                state: controller.state().await,
+            })
+        },
+    );
+    if task_id.is_none() {
+        let _ = app
+            .editor_state
+            .request
+            .fail(request_id, "TUI command channel unavailable".to_string());
+        app.editor_state.operation = None;
+        app.editor_state.status = EditorStatus::Closed;
+        app.editor_state.detach();
+        app.messages_state
+            .toasts
+            .warning("Cannot open document: TUI command channel unavailable");
+    }
+}
+
 /// Delete one file confined to `scope`.
 ///
 /// The daemon owns both the unlink and its containment; the TUI names a scope

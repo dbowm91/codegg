@@ -2368,6 +2368,13 @@ pub enum CoreResponse {
     GitRead {
         result: crate::git::GitReadResultDto,
     },
+    /// The result of one daemon-executed revert (M007-H).
+    ///
+    /// Names the paths the revert restored and the paths it found already
+    /// matching `HEAD`. It never carries file contents.
+    GitRevert {
+        result: crate::git::GitRevertResultDto,
+    },
     /// The skill catalogue discovered for one project (Phase 3).
     ///
     /// Carries skill metadata only: name, description, namespace, digest,
@@ -2650,6 +2657,15 @@ pub enum CoreRequest {
     /// and mutates nothing: there is no write path here to reach.
     GitRead {
         request: crate::git::GitReadRequestDto,
+    },
+    /// M007-H (work package C): the daemon-executed `/revert`.
+    ///
+    /// The daemon owns the write: it resolves the checkout from its own
+    /// durable binding, contains every path inside it, takes the checkout's
+    /// writer permit, and issues the typed `GitOperation`. A frontend never
+    /// spawns `git` for this.
+    GitRevert {
+        request: crate::git::GitRevertRequestDto,
     },
     /// Phase 3: the skill catalogue for one project (`direct_project` +
     /// `project.read`).

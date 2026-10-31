@@ -1408,16 +1408,6 @@ _misclassified(
 )
 
 _missing(
-    "/compact",
-    "M007-H — the daemon's missing command surfaces",
-    "compaction is a daemon-owned session operation; the daemon has no compaction request",
-)
-_missing(
-    "/subagent-send",
-    "M007-H — the daemon's missing command surfaces",
-    "steering a subagent is a daemon-owned turn operation",
-)
-_missing(
     "/plan",
     "M007-H — the daemon's missing command surfaces",
     "the plan list is daemon-owned work-plan state; the daemon has no plan request",
@@ -1428,52 +1418,9 @@ _missing(
     "the suite run is daemon-owned job state; the daemon has no test-suite request",
 )
 _missing(
-    "/revert",
-    "M007-H — the daemon's missing command surfaces",
-    "the daemon owns the git mutation; it exposes it as a tool, not as a request",
-)
-_missing(
     "/research",
     "M007-H — the daemon's missing command surfaces",
     "the research turn is daemon-owned agent-loop work",
-)
-_missing(
-    "/security-review",
-    "M007-H — the daemon's missing command surfaces",
-    "the security-review workflow is a daemon-owned agent turn",
-)
-_missing(
-    "/security-review-cancel",
-    "M007-H — the daemon's missing command surfaces",
-    "cancelling a security-review run is a daemon-owned turn cancellation",
-)
-_missing(
-    "/security-review-show",
-    "M007-H — the daemon's missing command surfaces",
-    "the arm shows the TUI's cached review result, and the daemon has no request that reads one — the same missing surface as `/security-review`",
-)
-_missing(
-    "/open",
-    "M007-H — the daemon's missing command surfaces",
-    "the daemon has `DocumentOpen` and the TUI already issues it, but the daemon "
-    "exposes no `/open` command form, so the catalog's form is unserved",
-)
-_missing(
-    "/review-change",
-    "M007-H — the daemon's missing command surfaces",
-    "the canonical checked apply `CoreRequest::LspPreviewApply` exists, but the "
-    "daemon exposes no `/review-change` command form, so the catalog's form is "
-    "unserved",
-)
-_missing(
-    "/shell-rerun",
-    "M007-H — the daemon's missing command surfaces",
-    "re-running a human-shell run is daemon-owned job state",
-)
-_missing(
-    "/logs",
-    "M007-H — the daemon's missing command surfaces",
-    "the daemon writes the log file and the frontend reads it out of band; the daemon has no log-tail request",
 )
 
 
