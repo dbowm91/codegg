@@ -461,9 +461,7 @@ impl SkillPublicationService {
         proposal: &SkillProposal,
         _now: i64,
     ) -> Result<(), SkillPublicationError> {
-        let habits = codegg_core::memory::habit::HabitStore::with_root(
-            self.habit_root.clone(),
-        )?;
+        let habits = codegg_core::memory::habit::HabitStore::with_root(self.habit_root.clone())?;
         let marked = habits.mark_promoted(
             project_identity,
             &proposal.habit_id,

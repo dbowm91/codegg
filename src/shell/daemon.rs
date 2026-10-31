@@ -509,9 +509,9 @@ impl HumanShellRunService {
             return Err("shell output can only be promoted after the command exits".to_owned());
         }
         let elapsed = match (run.started_at_ms, run.completed_at_ms) {
-            (Some(started), Some(completed)) => std::time::Duration::from_millis(
-                completed.saturating_sub(started).max(0) as u64,
-            ),
+            (Some(started), Some(completed)) => {
+                std::time::Duration::from_millis(completed.saturating_sub(started).max(0) as u64)
+            }
             _ => std::time::Duration::default(),
         };
         let digest = crate::shell::ShellDigest::build(

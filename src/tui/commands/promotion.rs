@@ -38,9 +38,7 @@ pub(crate) fn start_skill_promotion(app: &mut App, request: SkillPromotionReques
                 return Some(TuiCommand::SkillPromotionFinished {
                     action,
                     response: None,
-                    error: Some(
-                        "Core unavailable — check daemon status with /doctor".to_string(),
-                    ),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
             let envelope = crate::protocol::core::RequestEnvelope {

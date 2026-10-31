@@ -49,7 +49,11 @@ impl LegacyPromotionProbe {
             self.in_flight_proposals.len(),
             self.in_flight_requests.len()
         );
-        for id in self.in_flight_proposals.iter().chain(self.in_flight_requests.iter()) {
+        for id in self
+            .in_flight_proposals
+            .iter()
+            .chain(self.in_flight_requests.iter())
+        {
             message.push_str(&format!(" ({id})"));
         }
         message

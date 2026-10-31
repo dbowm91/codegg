@@ -108,10 +108,7 @@ fn validated_proposal(habit_id: &HabitId, workspace_id: &str) -> SkillProposal {
     .unwrap()
 }
 
-fn request(
-    proposal: &SkillProposal,
-    target_scope: SkillTargetScope,
-) -> SkillPublicationRequest {
+fn request(proposal: &SkillProposal, target_scope: SkillTargetScope) -> SkillPublicationRequest {
     SkillPublicationRequest {
         proposal_id: proposal.id.clone(),
         expected_revision: proposal.revision,
@@ -150,7 +147,8 @@ fn publication_lock_contents_are_preserved() {
 #[test]
 fn project_publication_is_atomic_provenance_bound_and_promotes_habit() {
     let (dir, identity, habit_id, proposal) = ready_fixture();
-    let expected_digest = codegg::skills::promotion::compute_content_digest(&proposal.skill_markdown);
+    let expected_digest =
+        codegg::skills::promotion::compute_content_digest(&proposal.skill_markdown);
     let result = service(&dir)
         .publish(
             &identity,

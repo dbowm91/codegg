@@ -388,10 +388,8 @@ pub fn build_validated_proposal(
     if submission.skill_markdown.len() as u64 > MAX_MARKDOWN_BYTES {
         return Err("proposal exceeds skill file size bound".to_owned());
     }
-    let parsed = validate_portable_document(
-        submission.skill_markdown,
-        &AssetDiscoveryConfig::default(),
-    );
+    let parsed =
+        validate_portable_document(submission.skill_markdown, &AssetDiscoveryConfig::default());
     let (name, description, mut diagnostics, status) = match parsed {
         Ok(document) => {
             let mut diagnostics = document

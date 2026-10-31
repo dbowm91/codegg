@@ -7047,7 +7047,7 @@ impl App {
                 };
                 let mut action = crate::protocol::skill::SkillPromotionActionDto::Preview;
                 let mut target_scope = None;
-                let id_text = if let Some(publish_args) =argument.strip_prefix("publish") {
+                let id_text = if let Some(publish_args) = argument.strip_prefix("publish") {
                     let parts = publish_args.split_whitespace().collect::<Vec<_>>();
                     if parts.len() != 2 {
                         self.messages_state

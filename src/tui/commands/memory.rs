@@ -773,4 +773,3 @@ pub(crate) fn apply_habit_result(app: &mut App, message: String, is_error: bool)
         }
     }
 }
-

@@ -517,6 +517,17 @@ mod shell_dispatch_tests {
             b"",
             Some(0),
         );
+        // The daemon's run binding. The frontend names the **run**; the
+        // daemon reads its own bytes and redacts them.
+        app.remote_shell_runs.insert(
+            2,
+            crate::shell::daemon::RemoteShellRunBinding {
+                run_id: "daemon-run-2".into(),
+                project_id: "/tmp".into(),
+                workspace_id: "workspace-1".into(),
+                session_id: Some("shell-test-session".into()),
+            },
+        );
         let (request_tx, mut request_rx) = tokio::sync::mpsc::unbounded_channel();
         app.attach_core_client(std::sync::Arc::new(CapturingTurnClient(request_tx)));
         let (tui_tx, mut tui_rx) = tokio::sync::mpsc::channel(4);
@@ -524,46 +535,42 @@ mod shell_dispatch_tests {
 
         handle_shell_ask(&mut app, 2, "explain this result".into());
 
-        let stage_request = tokio::time::timeout(Duration::from_secs(2), request_rx.recv())
-            .await
-            .expect("stage request arrives")
-            .expect("captured stage request");
-        let (staged_projection, staged_id) = match stage_request {
-            crate::protocol::core::CoreRequest::HumanShellPromotionStage {
-                promotion_id,
-                projection,
-                ..
-            } => (projection, promotion_id),
-            other => panic!("expected stage request, got {other:?}"),
-        };
-        assert!(staged_projection.contains("ask-shell-marker"));
-        assert!(staged_projection.contains("explain this result"));
-        assert!(staged_projection.contains("[REDACTED:bearer-token]"));
-        assert!(!staged_projection.contains("ask-secret-value-1234567890"));
+        // **One** request. The frontend names the daemon's run and the
+        // question; it never carries the evidence bytes, so it never
+        // redacts them either.
         let request = tokio::time::timeout(Duration::from_secs(2), request_rx.recv())
             .await
-            .expect("ask request arrives")
+            .expect("the ask request arrives")
             .expect("captured request");
-        let (text, promotion_ids) = match request {
-            crate::protocol::core::CoreRequest::SessionPromptSubmit {
-                text,
-                human_shell_promotion_ids,
-                ..
-            } => (text, human_shell_promotion_ids),
-            other => panic!("expected session prompt submit, got {other:?}"),
-        };
-        assert_eq!(
-            text,
-            "Answer the question contained in the attached human-shell evidence."
+        let wire = serde_json::to_string(&request).expect("serialize the ask request");
+        assert!(
+            !wire.contains("ask-shell-marker"),
+            "the frontend must not carry the evidence bytes: {wire}"
         );
-        assert_eq!(promotion_ids, vec![staged_id]);
-        let stage_ack = tokio::time::timeout(Duration::from_secs(2), tui_rx.recv())
-            .await
-            .expect("stage acknowledgement arrives")
-            .expect("stage command");
-        match stage_ack {
-            TuiCommand::ShellPromotionStaged { result } => app.apply_shell_promotion_staged(result),
-            other => panic!("unexpected stage acknowledgement: {other:?}"),
+        assert!(
+            !wire.contains("ask-secret-value-1234567890"),
+            "the frontend must not carry the evidence bytes: {wire}"
+        );
+        match request {
+            crate::protocol::core::CoreRequest::SessionPromptSubmitWithHumanShellPromotions {
+                session_id,
+                text,
+                human_shell_promotions,
+                ..
+            } => {
+                assert_eq!(session_id, "shell-test-session");
+                assert_eq!(
+                    text,
+                    "Answer the question contained in the attached human-shell evidence."
+                );
+                assert_eq!(human_shell_promotions.len(), 1);
+                assert_eq!(human_shell_promotions[0].source_id, "daemon-run-2");
+                assert_eq!(
+                    human_shell_promotions[0].question,
+                    "explain this result"
+                );
+            }
+            other => panic!("expected the atomic ask, got {other:?}"),
         }
         match tokio::time::timeout(Duration::from_secs(2), tui_rx.recv())
             .await
@@ -587,6 +594,13 @@ mod shell_dispatch_tests {
             }
             other => panic!("unexpected completion command: {other:?}"),
         }
+        // The ask is one request: a second request would already be queued
+        // by the time the completion arrives.
+        assert!(
+            request_rx.try_recv().is_err(),
+            "the ask must be one request: the daemon stages the evidence and \
+             admits the turn together"
+        );
         assert!(app.shell_store.get(ShellCommandId(2)).unwrap().promoted);
         assert!(app.pending_shell_promotions.is_empty());
     }

@@ -769,10 +769,22 @@ attributes.
   hosted lane's evidence while **no filesystem-enforcement backend is
   registered for Windows at all**, so no CI run could produce the missing
   evidence.
-- **Confirmed the fourteen mediated sinks.**
-  `CheckoutWriterSink` (`src/core/checkout_mediation.rs:45`) has exactly 14
-  variants, and `src/core/checkout_mediation.rs:226` names itself the live
+- **Confirmed the fifteen mediated sinks.**
+  `CheckoutWriterSink` (`src/core/checkout_mediation.rs:41`) has exactly 15
+  variants, and `src/core/checkout_mediation.rs:251` names itself the live
   owner of the `checkout_writer_refusal` audit action.
+- **The skill publication is one of them.** M007-I moved the publication of
+  a validated skill proposal into the daemon, for **both** the project scope
+  and the global scope. The project scope writes into the checkout's
+  `.codegg/skills` root, so it is a **checkout writer** and it is mediated:
+  `CheckoutWriterSink::SkillPublish` is the new variant, the gate is asked
+  in the daemon's own dispatch path
+  (`src/core/daemon.rs::checkout_write_target`), and the manifest's
+  `module.skills_publish` row carries `mediation = "checkout-gate"` with
+  that marker. A reserved checkout refuses the publication **before** its
+  first effect, and the refusal is durable and attributable. The global
+  scope writes under the user configuration directory, outside every
+  checkout, and is therefore not a checkout writer.
 - **Confirmed the audit actions.** `AuditAction::ProcessDenial` and
   `AuditAction::CheckoutWriterRefusal` both exist in
   `crates/codegg-core/src/audit.rs` (`:141` and `:133`).

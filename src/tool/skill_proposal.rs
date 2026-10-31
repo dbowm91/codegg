@@ -185,7 +185,11 @@ impl Tool for SkillProposalTool {
         // occupies: both sides name the canonical workspace, so the old
         // "promotion request not found" divergence cannot arise.
         let record = store
-            .get(workspace_id, SkillPromotionKind::Request, request_id.as_str())
+            .get(
+                workspace_id,
+                SkillPromotionKind::Request,
+                request_id.as_str(),
+            )
             .await
             .map_err(|error| {
                 crate::error::ToolError::Execution(format!("promotion store unavailable: {error}"))
@@ -195,10 +199,11 @@ impl Tool for SkillProposalTool {
                     "the promotion request was not found for this workspace".into(),
                 )
             })?;
-        let request = request_from_payload(&record.payload)
-            .map_err(|error| {
-                crate::error::ToolError::Execution(format!("the promotion request is unreadable: {error}"))
-            })?;
+        let request = request_from_payload(&record.payload).map_err(|error| {
+            crate::error::ToolError::Execution(format!(
+                "the promotion request is unreadable: {error}"
+            ))
+        })?;
         if request.session_id != session_id
             || request.habit_id != habit_id
             || request.workspace_id != workspace_id
@@ -250,9 +255,7 @@ impl Tool for SkillProposalTool {
         // transaction that consumes the request.
         if proposal.status == crate::skills::promotion::SkillProposalStatus::Validated {
             let collisions = self.collision_diagnostics(workspace_root, &proposal.name);
-            proposal
-                .diagnostics
-                .extend(collisions);
+            proposal.diagnostics.extend(collisions);
             proposal
                 .diagnostics
                 .truncate(crate::skills::promotion::MAX_DIAGNOSTICS);

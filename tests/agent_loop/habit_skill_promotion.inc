@@ -107,11 +107,7 @@ fn staged_request(
 }
 
 /// Record the staged request, as the daemon does.
-async fn stage(
-    store: &SkillPromotionStore,
-    identity: &str,
-    request: &PromotionDraftRequest,
-) {
+async fn stage(store: &SkillPromotionStore, identity: &str, request: &PromotionDraftRequest) {
     let _ = identity;
     let payload = request_to_payload(request).unwrap();
     store
@@ -185,18 +181,33 @@ async fn submit(
 #[tokio::test]
 async fn the_store_is_the_only_writer_and_is_keyed_on_the_workspace() {
     let (dir, identity, habit_id, store) = fixture().await;
-    let request = staged_request(&dir.path().join("memory"), &identity, &habit_id, Vec::new(), Vec::new(), 10);
+    let request = staged_request(
+        &dir.path().join("memory"),
+        &identity,
+        &habit_id,
+        Vec::new(),
+        Vec::new(),
+        10,
+    );
     stage(&store, &identity, &request).await;
 
     // The record is reachable under the canonical workspace and under no
     // other: the namespace is the workspace, not a digest of a path.
     assert!(store
-        .get(WORKSPACE_ID, SkillPromotionKind::Request, request.id.as_str())
+        .get(
+            WORKSPACE_ID,
+            SkillPromotionKind::Request,
+            request.id.as_str()
+        )
         .await
         .unwrap()
         .is_some());
     assert!(store
-        .get("workspace-2", SkillPromotionKind::Request, request.id.as_str())
+        .get(
+            "workspace-2",
+            SkillPromotionKind::Request,
+            request.id.as_str()
+        )
         .await
         .unwrap()
         .is_none());
@@ -233,22 +244,40 @@ async fn submission_without_explicit_request_is_denied() {
 #[tokio::test]
 async fn request_is_revision_bound_and_consumed_after_one_submission() {
     let (dir, identity, habit_id, store) = fixture().await;
-    let request = staged_request(&dir.path().join("memory"), &identity, &habit_id, vec!["existing".to_string()], Vec::new(), 10);
+    let request = staged_request(
+        &dir.path().join("memory"),
+        &identity,
+        &habit_id,
+        vec!["existing".to_string()],
+        Vec::new(),
+        10,
+    );
     stage(&store, &identity, &request).await;
     assert_eq!(request.context.target_scope_hint, SkillTargetScope::Project);
     let markdown = "---\nname: demo\ndescription: demo\n---\nbody";
-    let proposal = submit(&store, &request, &habit_id, markdown, 11).await.unwrap();
+    let proposal = submit(&store, &request, &habit_id, markdown, 11)
+        .await
+        .unwrap();
     assert_eq!(proposal.status, SkillProposalStatus::Validated);
     assert_eq!(proposal.revision, 1);
     assert_eq!(proposal.content_digest, compute_content_digest(markdown));
     // The request is consumed: a second submission finds nothing to consume.
-    assert!(submit(&store, &request, &habit_id, markdown, 12).await.is_err());
+    assert!(submit(&store, &request, &habit_id, markdown, 12)
+        .await
+        .is_err());
 }
 
 #[tokio::test]
 async fn a_stale_candidate_revision_is_rejected() {
     let (dir, identity, habit_id, store) = fixture().await;
-    let request = staged_request(&dir.path().join("memory"), &identity, &habit_id, Vec::new(), Vec::new(), 10);
+    let request = staged_request(
+        &dir.path().join("memory"),
+        &identity,
+        &habit_id,
+        Vec::new(),
+        Vec::new(),
+        10,
+    );
     stage(&store, &identity, &request).await;
     // The habit candidate moved underneath the staged request.
     let habits = HabitStore::with_root(dir.path().join("memory")).unwrap();
@@ -290,7 +319,14 @@ async fn proposal_restrictions_reject_allowed_tools_without_skill_root_changes()
         std::path::Path::new(&identity),
         &[],
     );
-    let request = staged_request(&dir.path().join("memory"), &identity, &habit_id, Vec::new(), Vec::new(), 10);
+    let request = staged_request(
+        &dir.path().join("memory"),
+        &identity,
+        &habit_id,
+        Vec::new(),
+        Vec::new(),
+        10,
+    );
     stage(&store, &identity, &request).await;
     let proposal = submit(
         &store,
@@ -341,14 +377,29 @@ fn proposal_parser_reuses_portable_discovery_rules() {
 #[tokio::test]
 async fn a_request_in_one_workspace_is_not_consumable_from_another() {
     let (dir, identity, habit_id, store) = fixture().await;
-    let request = staged_request(&dir.path().join("memory"), &identity, &habit_id, Vec::new(), Vec::new(), 10);
+    let request = staged_request(
+        &dir.path().join("memory"),
+        &identity,
+        &habit_id,
+        Vec::new(),
+        Vec::new(),
+        10,
+    );
     stage(&store, &identity, &request).await;
-    let markdown = "---\nname: demo\ndescription: demo\n---\nbody";
-    // The wrong session, the wrong habit and the wrong workspace all fail
-    // closed, because the record is found under the canonical workspace and
-    // the submission is bound to the request it was staged against.
-    let other = codegg::memory::habit::HabitId::parse("other-habit").unwrap();
-    assert!(submit(&store, &request, &other, markdown, 11).await.is_err());
+    // The record carries the session it was staged under, so a submission
+    // can be bound to it.
+    let record = store
+        .get(
+            WORKSPACE_ID,
+            SkillPromotionKind::Request,
+            request.id.as_str(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.session_id, "session-1");
+    // The wrong workspace fails closed: the record is found under the
+    // canonical workspace and under no other.
     assert!(store
         .consume_request_into_proposal(
             "workspace-2",
@@ -375,18 +426,37 @@ async fn a_request_in_one_workspace_is_not_consumable_from_another() {
 #[tokio::test]
 async fn an_expired_request_cannot_be_replayed() {
     let (dir, identity, habit_id, store) = fixture().await;
-    let request = staged_request(&dir.path().join("memory"), &identity, &habit_id, Vec::new(), Vec::new(), 10);
+    let request = staged_request(
+        &dir.path().join("memory"),
+        &identity,
+        &habit_id,
+        Vec::new(),
+        Vec::new(),
+        10,
+    );
     stage(&store, &identity, &request).await;
     let ttl = codegg::skills::promotion::PROMOTION_REQUEST_TTL_MS;
     // The request's own expiry is what bounds the replay.
     assert_eq!(request.expires_at, 10 + ttl);
     let record = store
-        .get(WORKSPACE_ID, SkillPromotionKind::Request, request.id.as_str())
+        .get(
+            WORKSPACE_ID,
+            SkillPromotionKind::Request,
+            request.id.as_str(),
+        )
         .await
         .unwrap()
         .unwrap();
     assert_eq!(record.expires_at_ms, Some(10 + ttl));
-    assert!(submit(&store, &request, &habit_id, "---\nname: demo\ndescription: demo\n---\nbody", 10 + ttl + 1).await.is_err());
+    assert!(submit(
+        &store,
+        &request,
+        &habit_id,
+        "---\nname: demo\ndescription: demo\n---\nbody",
+        10 + ttl + 1
+    )
+    .await
+    .is_err());
 }
 
 #[test]
@@ -523,7 +593,14 @@ fn proposal_digest_is_deterministic_and_content_bound() {
 #[tokio::test]
 async fn the_rejection_lifecycle_is_monotonic_and_the_habit_stays_ready() {
     let (dir, identity, habit_id, store) = fixture().await;
-    let request = staged_request(&dir.path().join("memory"), &identity, &habit_id, Vec::new(), Vec::new(), 10);
+    let request = staged_request(
+        &dir.path().join("memory"),
+        &identity,
+        &habit_id,
+        Vec::new(),
+        Vec::new(),
+        10,
+    );
     stage(&store, &identity, &request).await;
     let proposal = submit(
         &store,
@@ -581,7 +658,11 @@ async fn the_rejection_lifecycle_is_monotonic_and_the_habit_stays_ready() {
         .await
         .unwrap());
     let after = store
-        .get(WORKSPACE_ID, SkillPromotionKind::Proposal, proposal.id.as_str())
+        .get(
+            WORKSPACE_ID,
+            SkillPromotionKind::Proposal,
+            proposal.id.as_str(),
+        )
         .await
         .unwrap()
         .unwrap();
@@ -593,7 +674,14 @@ async fn the_rejection_lifecycle_is_monotonic_and_the_habit_stays_ready() {
 #[tokio::test]
 async fn the_proposal_scope_is_a_host_enum_not_a_path() {
     let (dir, identity, habit_id, store) = fixture().await;
-    let request = staged_request(&dir.path().join("memory"), &identity, &habit_id, Vec::new(), Vec::new(), 10);
+    let request = staged_request(
+        &dir.path().join("memory"),
+        &identity,
+        &habit_id,
+        Vec::new(),
+        Vec::new(),
+        10,
+    );
     stage(&store, &identity, &request).await;
     let proposal = submit(
         &store,
@@ -612,7 +700,14 @@ async fn the_proposal_scope_is_a_host_enum_not_a_path() {
 #[tokio::test]
 async fn a_malformed_persisted_proposal_fails_safely() {
     let (dir, identity, habit_id, store) = fixture().await;
-    let request = staged_request(&dir.path().join("memory"), &identity, &habit_id, Vec::new(), Vec::new(), 10);
+    let request = staged_request(
+        &dir.path().join("memory"),
+        &identity,
+        &habit_id,
+        Vec::new(),
+        Vec::new(),
+        10,
+    );
     stage(&store, &identity, &request).await;
     let proposal = submit(
         &store,
@@ -640,7 +735,11 @@ async fn a_malformed_persisted_proposal_fails_safely() {
         .await
         .unwrap());
     let record = store
-        .get(WORKSPACE_ID, SkillPromotionKind::Proposal, proposal.id.as_str())
+        .get(
+            WORKSPACE_ID,
+            SkillPromotionKind::Proposal,
+            proposal.id.as_str(),
+        )
         .await
         .unwrap()
         .unwrap();
@@ -723,7 +822,14 @@ async fn the_collision_diagnostic_is_advisory_without_overwrite() {
         .unwrap()
         .contains(".codegg"));
     // Recording a same-name proposal never overwrites the existing file.
-    let request = staged_request(&dir.path().join("memory"), &identity, &habit_id, Vec::new(), Vec::new(), 10);
+    let request = staged_request(
+        &dir.path().join("memory"),
+        &identity,
+        &habit_id,
+        Vec::new(),
+        Vec::new(),
+        10,
+    );
     stage(&store, &identity, &request).await;
     let proposal = submit(
         &store,

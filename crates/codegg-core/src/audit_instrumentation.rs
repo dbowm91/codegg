@@ -652,6 +652,13 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("session_launch", "session_create"),
     ("turn_submit", "prompt_submit"),
     ("session_prompt_submit", "prompt_submit"),
+    // M007-I (work packages D and E): the ask is one request. It stages the
+    // evidence and admits the turn together, so it is the same
+    // `prompt_submit` effect the stage-and-submit pair was.
+    (
+        "session_prompt_submit_with_human_shell_promotions",
+        "prompt_submit",
+    ),
     ("human_shell_promotion_stage", "prompt_submit"),
     ("human_shell_run_create", "human_shell_run"),
     ("human_shell_run_cancel", "human_shell_run"),

@@ -96,9 +96,7 @@ fn promotion_store(
 }
 
 /// The canonical scope the request acts in.
-fn request_scope(
-    request: &SkillPromotionRequestDto,
-) -> Result<(String, String), CoreResponse> {
+fn request_scope(request: &SkillPromotionRequestDto) -> Result<(String, String), CoreResponse> {
     if request.workspace_id.trim().is_empty() {
         return Err(promotion_error(
             REFUSAL_PROMOTION_NO_WORKSPACE,
@@ -263,7 +261,11 @@ async fn list_proposals(
         Err(refusal) => return Ok(refusal),
     };
     match store
-        .list(&workspace_id, SkillPromotionKind::Proposal, MAX_SKILL_PROMOTION_LIST)
+        .list(
+            &workspace_id,
+            SkillPromotionKind::Proposal,
+            MAX_SKILL_PROMOTION_LIST,
+        )
         .await
     {
         Ok(records) => Ok(CoreResponse::SkillPromotion {
@@ -537,7 +539,11 @@ async fn publish_proposal(
         Err(refusal) => return Ok(refusal),
     };
     let record = match store
-        .get(&workspace_id, SkillPromotionKind::Proposal, proposal_id.as_str())
+        .get(
+            &workspace_id,
+            SkillPromotionKind::Proposal,
+            proposal_id.as_str(),
+        )
         .await
     {
         Ok(Some(record)) => record,

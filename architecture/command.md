@@ -447,6 +447,15 @@ supports: `description`, `agent`, `model`, `template`, `runtime`,
   share one effect and still be two commands: `/memory` and `/memory-list`
   share a memory-summary effect, and each is executed under the id the user
   typed. A shared effect is not a shared identity.
+- **The diff view is daemon-owned.** `/diff` is a **daemon effect**: the
+  daemon resolves the checkout from its own durable binding, reads the
+  bytes through the read-only git fact layer and answers with the diff's
+  own bytes (`src/core/daemon_git.rs`). The frontend sends the form to the
+  daemon through `CoreRequest::CommandExecute` and renders the answer
+  (`src/tui/commands/diff.rs`); it no longer spawns `git` and reads the
+  working tree itself. Every invocation opens a **canonical `Run`**, and the
+  catalog's `/diff` descriptor is unchanged — the catalog's version moves by
+  **zero** for the move.
 - **A kind is never inferred.** A form's kind comes from the catalog. The
   daemon may never execute a frontend-effect form, and the frontend may
   never execute a daemon-effect form directly — a daemon effect goes

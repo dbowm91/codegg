@@ -45,9 +45,14 @@ to receive the original receipt without starting another turn. Receipt rows
 are retained for a bounded idempotency window. Daemon recovery marks
 still-accepted receipts interrupted and never replays them; turn
 completion/failure updates the receipt. Reconnect restores pending records,
-while consumed records are never replayed automatically. `/shell-ask` stages
-the question and evidence under a stable identity before submitting one
-session-scoped prompt turn.
+while consumed records are never replayed automatically. `/shell-ask` is
+**one** request: the frontend names the daemon's run and the question, and
+the daemon reads its **own** run bytes, redacts the assembled evidence,
+stages it and admits the turn together
+(`CoreRequest::SessionPromptSubmitWithHumanShellPromotions`). There is no
+second request, and therefore no `pending` row that survives a failed one:
+a failed admission expires the staged evidence in the same request. The
+frontend holds no evidence bytes and performs no redaction of its own.
 Promotions require a bound non-observer session.
 Neither staging command starts inference. `\!command` escapes to a literal
 `!` chat message.

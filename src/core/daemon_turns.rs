@@ -2170,9 +2170,7 @@ impl CoreDaemon {
         let store = codegg_core::session::HumanShellPromotionStore::new(pool);
         let outcomes = match store.stage_many(inputs).await {
             Ok(outcomes) => outcomes,
-            Err(error) => {
-                return Ok(promotion_error_response(error.code(), &error.to_string()))
-            }
+            Err(error) => return Ok(promotion_error_response(error.code(), &error.to_string())),
         };
         let promotion_ids: Vec<String> = outcomes
             .iter()

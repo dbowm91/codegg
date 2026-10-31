@@ -115,7 +115,11 @@ async fn workspace_with_two_ready_habits(
             WorkflowEffectClass::Mutating,
         ),
     ];
-    for (session, turn) in [("session-1", "turn-1"), ("session-1", "turn-2"), ("session-2", "turn-3")] {
+    for (session, turn) in [
+        ("session-1", "turn-1"),
+        ("session-1", "turn-2"),
+        ("session-2", "turn-3"),
+    ] {
         habits
             .observe(WorkflowOccurrence {
                 project_namespace: namespace.clone(),
@@ -178,9 +182,8 @@ fn memory_root() -> (tempfile::TempDir, std::path::PathBuf) {
 
 /// The tool's execution context for one session.
 fn tool_context(session_id: &str) -> codegg::tool::ToolExecutionContext {
-    let mut context = codegg::tool::ToolExecutionContext::with_backend(
-        codegg::tool::ToolBackendKind::Native,
-    );
+    let mut context =
+        codegg::tool::ToolExecutionContext::with_backend(codegg::tool::ToolBackendKind::Native);
     context.session_id = Some(session_id.to_owned());
     context
 }
@@ -341,7 +344,11 @@ async fn a_promotion_staged_through_the_frontend_is_submitted_by_the_daemon_tool
     );
     assert!(
         store
-            .get("some-other-workspace", SkillPromotionKind::Request, &request_id)
+            .get(
+                "some-other-workspace",
+                SkillPromotionKind::Request,
+                &request_id
+            )
             .await
             .expect("read under another workspace")
             .is_none(),
@@ -388,7 +395,9 @@ async fn a_legacy_proposal_that_cannot_be_migrated_fails_loudly() {
     std::fs::create_dir_all(&legacy_root).expect("create the legacy root");
     let identity = checkout.path().to_string_lossy().to_string();
     let namespace = codegg_core::memory::project_namespace(&identity);
-    let suffix = namespace.strip_prefix("project/").expect("the legacy namespace");
+    let suffix = namespace
+        .strip_prefix("project/")
+        .expect("the legacy namespace");
     let legacy_file = legacy_root.join(format!("{suffix}.json"));
     std::fs::write(
         &legacy_file,
@@ -659,10 +668,7 @@ fn the_sink_enum_and_the_manifest_agree_in_both_directions() {
             Some((variant.to_owned(), value.to_owned()))
         })
         .collect();
-    assert!(
-        !declared.is_empty(),
-        "the sink enum must name its sinks"
-    );
+    assert!(!declared.is_empty(), "the sink enum must name its sinks");
 
     // Direction one: every claimed marker names a sink the enum declares.
     for marker in &claimed {
@@ -710,11 +716,13 @@ async fn the_ask_leaves_no_orphan_pending_row() {
             session_id: "session-1".to_owned(),
             text: "Answer the question contained in the attached human-shell evidence.".to_owned(),
             plan_mode: false,
-            human_shell_promotions: vec![codegg_protocol::human_shell::HumanShellPromotionStageDto {
-                promotion_id: uuid::Uuid::new_v4().to_string(),
-                source_id: "no-such-run".to_owned(),
-                question: "what happened?".to_owned(),
-            }],
+            human_shell_promotions: vec![
+                codegg_protocol::human_shell::HumanShellPromotionStageDto {
+                    promotion_id: uuid::Uuid::new_v4().to_string(),
+                    source_id: "no-such-run".to_owned(),
+                    question: "what happened?".to_owned(),
+                },
+            ],
         },
     )
     .await;
@@ -823,4 +831,3 @@ async fn seed_daemon_run(daemon: &CoreDaemon, cwd: &std::path::Path) -> String {
     }
     panic!("the run did not exit in time");
 }
-
