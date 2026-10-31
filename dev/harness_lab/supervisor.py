@@ -893,6 +893,14 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
     binary = binary.resolve()
     with tempfile.TemporaryDirectory(prefix="codegg-harness-tool-"):
         root = private_dir(lane_root("tool-" + uuid.uuid4().hex[:8]))
+        lane_tracker = os.environ.get("CODEGG_HARNESS_S010_PRIVATE_LANE_TRACKER")
+        if lane_tracker:
+            tracker_path = Path(lane_tracker).expanduser().resolve()
+            tracker_path.parent.mkdir(parents=True, exist_ok=True)
+            with tracker_path.open("a", encoding="utf-8") as tracker:
+                tracker.write(str(root) + "\n")
+                tracker.flush()
+                os.fsync(tracker.fileno())
         workspace = root / "workspace"
         workspace.mkdir()
         target = (workspace / expected_file).resolve(strict=False)
