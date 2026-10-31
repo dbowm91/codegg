@@ -39,6 +39,36 @@
       "receipt_sha256": "47ffba85605c2ab49f6ebdad13bafec2b1a434d07453e9bcc40cee18515e8b7d",
       "diagnostic_log_path": "/private/tmp/s015-live01/case00/case/codegg_debug.log",
       "diagnostic_log_sha256": "81d97aff76cb963f1285db7bec7fca8c16d726f256bc7a02756bd859e88e654f"
+    },
+    {
+      "run_index": 2,
+      "status": "cancelled_disk_reserve",
+      "started_at_utc": "2026-10-31T16:04:03Z",
+      "git_commit": "543042070407ec5d2a93642e583f89fb0333ab56",
+      "binary_sha256": "7288ef309c724e6b950ea9fe363a84a7bfad174f6a73942e719bd601b78b17d8",
+      "binary_architecture": "arm64",
+      "provider": "opencode_go",
+      "model": "muse-spark-1.3-contributor",
+      "request_ceiling": 60,
+      "wall_clock_ceiling_seconds": 3600,
+      "minimum_free_disk_bytes": 10737418240,
+      "free_disk_bytes_at_start": 25418919936,
+      "lane_root": "/private/tmp/s015-live02",
+      "receipt_path": "/private/tmp/s015-attempt02.json",
+      "usd_cost": "unknown",
+      "terminal_observed_at_utc": "2026-10-31T16:14:26Z",
+      "elapsed_seconds_observed": 623,
+      "provider_requests": 45,
+      "provider_request_cap_exhausted": false,
+      "free_disk_displayed_minimum_gib": 12,
+      "free_disk_bytes_minimum": null,
+      "disk_floor_triggered": false,
+      "cancellation_reason": "operator stopped run at approximately 12 GiB free while unrelated builds were consuming disk, preserving reserve above the 10 GiB floor",
+      "provider_idle_timeout_count": 1,
+      "receipt_created": false,
+      "diagnostic_log_path": "/private/tmp/s015-live02/case00/case/codegg_debug.log",
+      "diagnostic_log_sha256": "6cddf86c56df31cc540b5c4184cc958c313f3e01212e6dc7a9821ab786fa772d",
+      "provider_admission_receipt_sha256": "bf2c193a6a56eaa4b29019e18ba724702f72b3b013e4888612bf70cca6f8c5d1"
     }
   ]
 }
