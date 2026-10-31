@@ -39,11 +39,17 @@ Implementation commits on this milestone's branch:
 - `f609f1803` — the fenced daemon `/revert`, the kind corrections and the
   TUI's arms.
 
-**Work package D3 was not committed.** The brief forbids any state-mutating
-`git` command, so D3's implementation — and this closure record, the registry
-entry and the roadmap row — live in the **working tree** of
-`feat/auto-20261024-6e9f52e4`. The commit id is deliberately not asserted
-here, for the same reason the M007-G record did not assert one.
+**Work package D3's commit is `db8d75c79`** — "feat(m007-h): the daemon
+publishes the plan and the test state; close M007-H", authored **David
+Bowman** at **2026-10-31 01:03:29 +0000**. It carries **25** of this
+milestone's files: D3's implementation, this closure record, the registry
+entry and the roadmap row.
+
+**A follow-up commit carries the milestone's last two files**: the
+`clippy::ptr_arg` fix in `src/core/daemon_git.rs` and this closure record's
+amendment of its own §3.1, §4 and §10 recording that fix. The follow-up
+changes no behaviour; it is the same work, committed separately because it
+was written after the milestone's main commit.
 
 ## 1. Executive finding
 
@@ -118,10 +124,10 @@ The plan's §13 listed thirteen acceptance criteria. Each is answered by a
 
 ### 3.1 The blast radius
 
-The committed part of the milestone spans five commits; the last of them,
-`f609f1803`, alone touched **28** files. **Work package D3** added **24**
-modified files and **one** new file, and this closure record, the registry
-entry and the roadmap row are counted separately from the code.
+The milestone's implementation spans **seven** commits: the five listed
+above, D3's, and the follow-up described below. **Work package D3** added
+**25** files — **19** Rust files and **six** planning, manifest and record
+files, this closure record among them.
 
 D3's **19 Rust files**:
 
@@ -142,13 +148,20 @@ D3's **19 Rust files**:
   TUI's projection sync and its `/plan` arm (`tui/commands/primary_projection.rs`,
   `tui/app/mod.rs`); `/plan`'s corrected palette description (`tui/command.rs`);
   and the TUI's new consumption test (`tui/command_route_tests.rs`).
-D3's **five planning and manifest files**, counted separately from the code:
+D3's **six planning, manifest and record files**, this closure record among
+them, counted separately from the code:
 
 - **`docs/comment-budget.toml`** — re-banked by the sanctioned mechanism
   (§10, finding 4).
 - **`plans/`** — the generator and its regenerated artifact; the registry's
   M007-H bullet and its `## Source verification` entry; and the roadmap's
   M007-H row.
+
+The **follow-up commit** carries the milestone's last two files:
+`src/core/daemon_git.rs`, which took `&PathBuf` where `&Path` is correct
+(`clippy::ptr_arg`) — the defect the separate clippy sweep found in the
+milestone's own committed code — and this closure record, amended by §3.1,
+§4 and §10 to record that fix. The follow-up changes no behaviour.
 
 **Nothing underneath moved.** The storage schema, the LSP surface, the
 editor's document foundation, the terminal surfaces and the MCP surface are
@@ -175,7 +188,7 @@ implementer. The measurement settles it: the daemon's durable, session-scoped,
 agent-authored plan is `codegg_core::work_plan`, and the work-plan tool's own
 description says so in the canonical map ("goal = session intent, **work_plan =
 actionable slice + revision**, work_order = future-session queue, **todowrite =
-in-turn steps**", `src/tool/work_plan.rs`). The todo list is the *other* thing.
+in-turn steps**", `src/tool/work_plan.rs:120`). The todo list is the *other* thing.
 
 The generated classification says the same, and said it before this milestone:
 the artifact's missing-capability row for `/plan` read "**the plan list is
@@ -294,7 +307,7 @@ Every command below was run in this worktree. Outcomes are as observed.
 | Command | Outcome |
 |---|---|
 | `CARGO_BUILD_JOBS=2 cargo check --workspace --all-targets --locked` | **pass** — no errors, re-run after D3's last edit |
-| `cargo fmt --check --all` | **pass** — clean, after `rustfmt --edition 2021 --config-path rustfmt.toml` over the 22 changed files (the workspace-wide `cargo fmt` was not used, per the brief) |
+| `cargo fmt --check --all` | **pass** — clean, after `rustfmt --edition 2021 --config-path rustfmt.toml` over each changed Rust file (the workspace-wide `cargo fmt` was not used, per the brief) |
 | `python3 scripts/check_command_catalog_ownership.py` | **pass** — "command catalog ownership: clean" |
 | `python3 scripts/check_command_catalog_ownership.py --self-test` | **pass** — "self-test passed: 9 injected defect classes were all rejected" |
 | `python3 scripts/check_frontend_action_set.py` | **pass** — "frontend-action set: clean" |
@@ -319,6 +332,7 @@ Every command below was run in this worktree. Outcomes are as observed.
 | `cargo test --locked --lib -- the_derived_state_carries_the_daemons_published_plan_and_test_state the_work_plan_update_maps_to_a_core_event` | **pass** — 2 tests, 0 failed: `core::tests::the_work_plan_update_maps_to_a_core_event` and `tui::command_route::command_route_tests::the_derived_state_carries_the_daemons_published_plan_and_test_state` |
 | `cargo test -p codegg-protocol --lib the_published_plan_and_test_state_reach_the_session_projection` | **pass** — 1 test, 0 failed |
 | `scripts/verify.sh quick` | **pass** — "==> Quick verification passed.": rustfmt, the two generated-asset checks, every guard script with its `--self-test`, the harness-lab unittests (**412** tests, 1 skipped, exit 0, 124.1 s) and the workspace `cargo check --workspace --all-targets --locked` |
+| `CARGO_BUILD_JOBS=2 cargo clippy --workspace --all-targets --locked -- -D warnings` | **pass** on the re-run — the first run failed with one `clippy::ptr_arg` error (`src/core/daemon_git.rs:170`), which was fixed (the parameter is now `&Path`) and the sweep re-run clean (§4.1) |
 
 ### 4.1 The sweep's results
 
@@ -497,7 +511,7 @@ command's outcome is the one recorded above.
 | 2 | **`/plan` and `/tests` have no effect-table row, so `serves_form` is false for them.** The plan's §6.1 gives their mechanism as "a consumed projection" and D3's consequence says work package B2 adds nothing — no new `CoreRequest` variant — so there is no inner request for a row to name. The two forms are served by the daemon's **published projection**, and the artifact records that as a third verdict. The cost is that `serves_form` (the daemon's **request-route** predicate) cannot express "served by the projection", so a reader of that predicate alone would conclude the forms are unserved. | medium | **open, by D3's resolution.** The alternative — a `CoreRequest` variant for the plan — is exactly what the plan's consequence forbids. Recorded rather than hidden. |
 | 3 | **The registered TUI compact command corrective's stop condition 1 is not discharged.** `/compact` is a **kind correction** to `FrontendEffect` with a declared action, and the daemon's automatic compaction trigger is untouched; the corrective's own conclusion is that it does not change the catalog, and the note records that M007-H is where its stop condition 1 would be discharged. | medium | **open.** D1 excluded the compaction overlap and the milestone adds no user-requested compaction path. |
 | 4 | **The comment budget had to be re-banked.** D3's comments put the corpus over the recorded ceiling. The brief's rule is to trim one's own comments first, and 60-odd comment lines were trimmed from the new surfaces before the corpus-level overage was gone; the per-file ceilings still failed, so `python3 scripts/check_comment_budget.py --bank` was run — the sanctioned mechanism — and the manifest moved by 19 lines (130827 → 130900 comment lines). The manifest was **not** hand-edited. | low | **closed, by the sanctioned mechanism.** The guard passes with no further edit, and the bank is a visible diff in the same change as the comments that took the lines. |
-| 5 | **`verify.sh full` was not run.** The brief's verification list names `quick`; the clippy sweep, the nextest workspace sweep and the bounded feature pass were not part of it. A clippy `-D warnings` failure introduced by this milestone would not be caught by the evidence in §4. | medium | **open.** The clippy sweep should be run before the milestone is merged. |
+| 5 | **`verify.sh full` was not run.** The brief's verification list names `quick`, and `full` adds the clippy sweep, the nextest workspace sweep and a bounded feature pass. The **clippy** half was run **separately** (`cargo clippy --workspace --all-targets --locked -- -D warnings`) and found one real defect in the milestone's own committed code — `clippy::ptr_arg` on `src/core/daemon_git.rs:170` — which is fixed and the sweep re-run clean. The **nextest workspace sweep** and the **bounded feature pass** were not run: on a machine this shared and this loaded, the workspace sweep's wall-clock is not bounded, and `verify.sh quick`'s own workspace `cargo check` is the compile evidence. | medium | **partly closed.** The clippy sweep is green (§4). The nextest sweep remains open and should be run before the milestone is merged. |
 | 6 | **The generated classification inventory has no automated staleness gate.** Neither `scripts/verify.sh quick` nor the CI `verify` job runs the generator's `--check`, and no guard script references the generator. A classification change that forgets to regenerate the inventory is invisible to every automated gate. | medium | **open.** Wiring `--check` into the CI `verify` job (and into `verify.sh quick`) is a small, separate change and is not this milestone's work. This milestone regenerated the inventory and the generator's `--check` passes. |
 | 7 | **The desktop was not migrated by this milestone.** It gains nothing from the plan and the test state: it reads the session projection, so it will pick up both when it next reads a snapshot, but no desktop code, bridge target or renderer change belongs to this milestone, and the plan says so explicitly. | low | **recorded, by the plan's §9.** The desktop's action table and parity are a later milestone's business. |
 | 8 | **`/plan`'s local checklist subcommands are gone.** The TUI can no longer add, complete, skip, block or clear a plan item itself. The catalogue's `/plan` form never took an argument, so these were never catalogued forms, and the plan's D3 resolution makes the daemon's plan the authority — but a user who used the local checklist as a scratch pad loses it. | low | **recorded, by D3 and D8.** The agent owns the plan through the daemon's work-plan surface. |
@@ -529,8 +543,9 @@ beyond it:
 - **The desktop's migration** — a later milestone's business.
 - **M007-I** (the two subsystem moves, under accepted ADR-0058) — untouched;
   it has its own plan, `022-the-subsystem-moves.md`.
-- **The generated inventory's staleness gate** and the **clippy sweep** —
-  recorded in §10.
+- **The generated inventory's staleness gate** and the **nextest workspace
+  sweep** — recorded in §10. The **clippy** sweep was run separately and is
+  green.
 
 **Recommendation: closed.** Every criterion the plan states is either proved
 by an anchor or a named test, or recorded as a finding with its reason. The

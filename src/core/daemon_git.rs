@@ -15,7 +15,7 @@
 //! own run, resolved from durable state. **The record**: the revert is
 //! authorized as a `git.write` operation and audited as a file mutation.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use codegg_git::{GitOperation, RepoPath, RepoRoot};
@@ -167,7 +167,7 @@ async fn handle_git_revert(
 /// The durable binding names the repository's own root; a binding that names
 /// a directory inside one is walked up to the repository, exactly as the
 /// frontend's own `git` invocation did.
-fn git_root(root: &PathBuf) -> Result<RepoRoot, String> {
+fn git_root(root: &Path) -> Result<RepoRoot, String> {
     if root.as_os_str().is_empty() {
         return Err("the project's checkout could not be resolved".to_string());
     }
