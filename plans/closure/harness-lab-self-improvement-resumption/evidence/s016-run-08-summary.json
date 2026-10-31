@@ -1,0 +1,109 @@
+{
+  "active_work_span_ms": 507315,
+  "binary_sha256": "16481cc8bf0d8866db352c3aab90c35950bde37e5799be1458a43012d594fe2a",
+  "campaign_id": "s016-deepseek-long-run-corrective-loop-20261031",
+  "case_duration_ms": 511628,
+  "controller_commit": "572c8ee",
+  "disk": {
+    "floor_bytes": 10737418240,
+    "floor_triggered": false,
+    "free_bytes_at_end": 26924793856,
+    "free_bytes_at_start": 31602835456,
+    "minimum_free_bytes": 25312247808
+  },
+  "elapsed_seconds": 520.617,
+  "fixture_manifest": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v1/cases.jsonl",
+  "fixture_manifest_sha256": "3bb3bcb6f802fcf317f064101bf116ca3b96111fa8d26984753a157350bb1df2",
+  "interpretation": "Run 8 exercised the corrected ARM64 binary from corrective commit 94fc8d4. It terminated at 60 provider requests after 8.53 minutes, far below the 30-minute active-work criterion. The context compaction error from run 5 did not recur, but the DropMiddleMessages compatibility branch was not logged, so this run did not establish that the corrected branch executed. Provider streams reached EOF for all 60 admitted calls, with no idle timeout or ACP gap; disk stayed above 10 GiB. The agent submitted five test jobs; its only job status call was the failed fake-ID probe, and it never queried any returned exact ID. It wrote a continuation containing the final job ID but no observed state, changed frozen README and contract files, and produced neither the required boundary report nor helper. The independent verifier ran through the harness and failed in catalog-query (0 tests run). Run 8 does not qualify. Run 7 shows the exact-ID status surface works when the request is simple, so run 9 will diagnose whether a concise lifecycle-first instruction with continuation is followed before adjusting the long-task prompt.",
+  "private_artifacts": {
+    "causal_trace_path": "/private/tmp/s016-live08/case00/private/causal-trace.jsonl",
+    "causal_trace_sha256": "fd47a9515d1cba1b2f650536c5443752e0b52481ee026374eab991a580f0ef59",
+    "diagnostic_log_path": "/private/tmp/s016-live08/case00/case/codegg_debug.log",
+    "diagnostic_log_sha256": "4214cabbc8123ba9329c65de59dc32ac5855df126392d7c7a07b74b6fd96f5ad",
+    "provider_admission_receipt_path": "/private/tmp/s016-live08/case00/artifacts/provider-request-admissions.jsonl",
+    "provider_admission_receipt_sha256": "b61122ce696d04f075aa4b721e93625e3919190c631f320fe30da44bc469b97b",
+    "receipt_path": "/private/tmp/s016-attempt08.json",
+    "receipt_sha256": "733c8df22982fdb57fe653ee62908e424ee682d8f91fd20c6af151c1ccc707a1"
+  },
+  "provider_requests": 60,
+  "provider_stream_lifecycle": {
+    "body_eof": 60,
+    "compatibility_compaction_strategy_logged": false,
+    "event_gaps": 0,
+    "idle_timeouts": 0,
+    "invalid_history_errors": 0,
+    "provider_request_count": 60,
+    "request_cap_refusals_logged": 3,
+    "setup_failures": 0,
+    "stream_setup_started": 61,
+    "tool_started": 42,
+    "tool_terminal": 42,
+    "unpaired_tool_events": 0
+  },
+  "request_cap": 60,
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "run_index": 8,
+  "run_kind": "long_qualification",
+  "run_status": "failed_request_cap_without_job_lifecycle_or_sustained_horizon",
+  "schema_version": 1,
+  "source_binary_commit": "94fc8d41ff61e5963adf5779475fd9ee08569493",
+  "started_at_utc": "2026-10-31T21:56:05Z",
+  "task": {
+    "active_work_span_ms": 507808,
+    "agent_terminal": "failed",
+    "basic_helper_created": false,
+    "continuation_confirmed": false,
+    "continuation_file_exists": true,
+    "continuation_job_id": "2e9f4ebf-cc23-49e3-bc76-20f99fbc80d3",
+    "continuation_next_phase": "provenance_queries",
+    "continuation_statuses_recorded": [],
+    "exact_job_running_and_terminal": false,
+    "exact_job_status_polls": 0,
+    "frozen_inputs_modified": [
+      "README.md",
+      "contract.json"
+    ],
+    "horizon_outcome": "not_qualified",
+    "horizon_reason": "measurement_incomplete",
+    "job_status_calls": [
+      {
+        "failed": true,
+        "job_id": null
+      }
+    ],
+    "job_submit_ids": [
+      "b1f539d7-a16a-4369-8685-6587ced0625c",
+      "42e45fd2-818d-4b90-b9f1-d0564914c123",
+      "2ca3ec86-b2db-4206-b4f8-ba743e0096c8",
+      "c5cda14c-fda5-43e8-b13f-bf73b69caa81",
+      "2e9f4ebf-cc23-49e3-bc76-20f99fbc80d3"
+    ],
+    "maximum_activity_gap_ms": 78628,
+    "probe_report_created": false,
+    "productive_work_during_job": false,
+    "repair_cycles": 0,
+    "task_outcome": "inconclusive",
+    "tool_call_count": 42,
+    "tool_counts": {
+      "apply_patch": 2,
+      "bash": 15,
+      "edit": 2,
+      "job": 1,
+      "read": 9,
+      "task": 2,
+      "test": 5,
+      "tool_search": 1,
+      "verify": 1,
+      "write": 4
+    }
+  },
+  "terminal_observed_at_utc": "2026-10-31T22:06:00Z",
+  "usd_cost": 0.044537,
+  "verifier": {
+    "exit_code": 1,
+    "failure_summary": "(errors=1)",
+    "ran_by_harness": true,
+    "tests_run": 0
+  },
+  "wallclock_cap_seconds": 3600
+}
