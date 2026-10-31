@@ -227,6 +227,28 @@
       "provider_admission_receipt_sha256": "1028eb0f4927962ea7057ad92948bab30ee6f393f9c7d37bc97c2224b2292898",
       "causal_trace_sha256": "908666bc573c809774bd160dd6e1d273285a914aa32a8998ce90c2419dba6780",
       "interpretation": "The agent completed all 36 provider requests, 36 ACP tool starts and 36 terminals without event gaps, idle timeouts, activity-stall termination, or request/disk cap exhaustion. It submitted exact job 011e4934-167e-44b3-8f4e-cffd8523166b, observed it running, then made seven more tool calls. The durable store shows that the job completed successfully after 7.743 seconds; no source file changed during that actual interval, and the agent never polled terminal state. The pending terminal notice remained durable for the next turn. The turn ended normally after 9.89 minutes with no repair cycles, no continuation evidence and hidden-verifier failure. This is a model/workload overlap failure, not ACP loss, scheduler failure, job execution failure or provider stream stall. The longest response completed normally after 129.436 seconds and 901,640 bytes in 4,127 complete SSE frames, showing the current stream decoder can handle a response beyond the 120-second threshold when it receives decoded events."
+    },
+    {
+      "run_index": 4,
+      "run_kind": "diagnostic",
+      "status": "started",
+      "started_at_utc": "2026-10-31T20:47:39Z",
+      "controller_commit": "0a9100ee00cef721b2eaeaee4b99e309a517bdb0",
+      "source_binary_commit": "26ce84f91d90a1281fcd2f7b513487d4adc15de1",
+      "binary_sha256": "50a9ae92b7aac46f9fd9855612caa7b8fe98a505979fe23fd4578e55262d3ada",
+      "binary_architecture": "arm64",
+      "sandbox_helper_sha256": "0f8db353fad3bf44ca9353aca6eab2162d933c4b8501748b05965bf7ff49f8b8",
+      "route": "opencode_go/deepseek-v4.1-flash",
+      "model": "deepseek-v4.1-flash",
+      "request_ceiling": 60,
+      "wall_clock_ceiling_seconds": 3600,
+      "minimum_free_disk_bytes": 10737418240,
+      "free_disk_bytes_at_start": 17012903936,
+      "lane_root": "/private/tmp/s016-live04",
+      "receipt_path": "/private/tmp/s016-attempt04.json",
+      "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+      "diagnostic_goal": "repeat the unchanged H007 job-lifecycle sequence with exact provider/ACP/job telemetry to distinguish model sequencing from CodeGG admission, terminal-state persistence, notification delivery, or tool observation failure",
+      "fixture_and_verifier_unchanged": true
     }
   ]
 }
