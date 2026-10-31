@@ -1247,6 +1247,52 @@ impl PluginCatalogueEntryProjection {
     }
 }
 
+/// Bounded projection of the daemon's work plan — the agent's plan.
+///
+/// M007-H (D3): the daemon owns the plan and publishes it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct WorkPlanProjection {
+    pub plan_id: String,
+    pub revision: i64,
+    pub status: String,
+    pub objective_preview: String,
+    #[serde(default)]
+    pub current_phase: Option<String>,
+    #[serde(default)]
+    pub current_item_id: Option<String>,
+    pub total_items: usize,
+    pub actionable_count: usize,
+    pub blocked_count: usize,
+    pub in_progress_count: usize,
+    pub assessment: String,
+    pub updated_at_ms: i64,
+    #[serde(default)]
+    pub items: Vec<WorkPlanItemProjection>,
+}
+
+/// Bounded projection of one work item in the daemon's published plan.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct WorkPlanItemProjection {
+    pub item_id: String,
+    pub description: String,
+    pub status: String,
+    #[serde(default)]
+    pub blocker: Option<String>,
+    #[serde(default)]
+    pub next_action: Option<String>,
+}
+
+/// Bounded projection of the daemon's test state for the session.
+///
+/// M007-H (D4): the daemon owns the test runner and publishes its state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct TestStateProjection {
+    pub status: String,
+    pub command: String,
+    #[serde(default)]
+    pub summary: Option<String>,
+}
+
 /// Bounded projection of a durable job (Phase 4 contract).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JobProjection {

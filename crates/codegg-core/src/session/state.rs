@@ -141,6 +141,20 @@ impl Default for TuiSessionState {
 
 const MAX_RECENT_TOOL_CALLS: usize = 50;
 
+/// Map the daemon's own work-item status into the display vocabulary the
+/// derived plan carries. M007-H (D3): the daemon's status is the authority;
+/// the mapping never invents an outcome the daemon did not report.
+fn work_plan_item_status(status: &str) -> super::events::PlanItemStatus {
+    use super::events::PlanItemStatus;
+    match status {
+        "in_progress" => PlanItemStatus::InProgress,
+        "completed" => PlanItemStatus::Done,
+        "cancelled" => PlanItemStatus::Skipped,
+        "blocked" => PlanItemStatus::Blocked,
+        _ => PlanItemStatus::Pending,
+    }
+}
+
 impl TuiSessionState {
     /// Build the state by applying a list of events in order.
     pub fn from_events(events: &[SessionEvent]) -> Self {
@@ -149,6 +163,59 @@ impl TuiSessionState {
             state.apply_event(event);
         }
         state
+    }
+
+    /// Apply the daemon's published work plan. M007-H (D3): the plan is
+    /// the daemon's durable work-plan state, so the derived plan carries the
+    /// daemon's answer and there is no second, frontend-owned copy.
+    pub fn apply_work_plan(
+        &mut self,
+        plan: Option<&codegg_protocol::projection::dto::WorkPlanProjection>,
+    ) {
+        let Some(plan) = plan else {
+            self.plan = None;
+            return;
+        };
+        self.plan = Some(AgentPlan {
+            items: plan
+                .items
+                .iter()
+                .map(|item| super::events::AgentPlanItem {
+                    id: item.item_id.clone(),
+                    text: item.description.clone(),
+                    status: work_plan_item_status(&item.status),
+                    note: item.blocker.clone().or_else(|| item.next_action.clone()),
+                })
+                .collect(),
+            updated_at: chrono::DateTime::<chrono::Utc>::from_timestamp_millis(plan.updated_at_ms)
+                .unwrap_or_else(chrono::Utc::now),
+        });
+    }
+
+    /// Apply the daemon's published test state. M007-H (D4): the daemon
+    /// owns the test runner, so its published state is the answer.
+    pub fn apply_test_state(
+        &mut self,
+        state: Option<&codegg_protocol::projection::dto::TestStateProjection>,
+    ) {
+        let Some(state) = state else {
+            return;
+        };
+        self.test_state = match state.status.as_str() {
+            "running" => TestState::Running {
+                command: state.command.clone(),
+            },
+            "passed" => TestState::Passed {
+                command: state.command.clone(),
+                duration_ms: None,
+            },
+            "failed" => TestState::Failed {
+                command: state.command.clone(),
+                duration_ms: None,
+                summary: state.summary.clone().unwrap_or_default(),
+            },
+            _ => TestState::Unknown,
+        };
     }
 
     /// Apply a single event, mutating the state in place.

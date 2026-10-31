@@ -378,6 +378,9 @@ pub(crate) fn core_event_metadata(
         | CoreEvent::WorktreeUpserted { session_id, .. }
         | CoreEvent::AgentRunGroupUpserted { session_id, .. }
         | CoreEvent::ConvergenceUpserted { session_id, .. } => (Some(session_id.clone()), None),
+        // M007-H (D3): the published plan is session-scoped, so the event
+        // log attributes it to the session that owns it.
+        CoreEvent::WorkPlanUpdated { session_id, .. } => (Some(session_id.clone()), None),
         CoreEvent::PluginUiEffect { envelope } => (envelope.session_id.clone(), None),
         CoreEvent::ToolProgramCompleted { session_id, .. }
         | CoreEvent::ToolProgramFailed { session_id, .. }
@@ -756,6 +759,40 @@ pub(crate) fn map_app_event_to_core_event(
             session_id,
             convergence,
         }),
+        // M007-H (D3): the daemon owns the plan, so it publishes the plan on
+        // the session projection and every frontend reads that answer.
+        crate::bus::events::AppEvent::WorkPlanUpdated { session_id, plan } => {
+            Some(CoreEvent::WorkPlanUpdated {
+                session_id,
+                plan: crate::protocol::projection::dto::WorkPlanProjection {
+                    plan_id: plan.plan_id,
+                    revision: plan.revision,
+                    status: plan.status,
+                    objective_preview: plan.objective_preview,
+                    current_phase: plan.current_phase,
+                    current_item_id: plan.current_item_id,
+                    total_items: plan.total_items,
+                    actionable_count: plan.actionable_count,
+                    blocked_count: plan.blocked_count,
+                    in_progress_count: plan.in_progress_count,
+                    assessment: plan.assessment,
+                    updated_at_ms: plan.updated_at_ms,
+                    items: plan
+                        .items
+                        .into_iter()
+                        .map(
+                            |item| crate::protocol::projection::dto::WorkPlanItemProjection {
+                                item_id: item.item_id,
+                                description: item.description,
+                                status: item.status,
+                                blocker: item.blocker,
+                                next_action: item.next_action,
+                            },
+                        )
+                        .collect(),
+                },
+            })
+        }
         crate::bus::events::AppEvent::PluginUiEffect {
             session_id,
             plugin_id,
@@ -1200,6 +1237,47 @@ mod tests {
                 assert_eq!(cwd, "/tmp");
             }
             other => panic!("expected Some(TestRunStarted), got {:?}", other),
+        }
+    }
+
+    /// M007-H (D3): the daemon owns the plan, so its own work-plan snapshot
+    /// is published as a core event and reaches the session projection.
+    #[test]
+    fn the_work_plan_update_maps_to_a_core_event() {
+        let ev = map_app_event_to_core_event(crate::bus::events::AppEvent::WorkPlanUpdated {
+            session_id: "s1".into(),
+            plan: crate::bus::events::WorkPlanSnapshot {
+                plan_id: "wp-1".into(),
+                revision: 2,
+                status: "active".into(),
+                objective_preview: "land the daemon's plan".into(),
+                current_phase: Some("implement".into()),
+                current_item_id: Some("wi-1".into()),
+                total_items: 1,
+                actionable_count: 1,
+                blocked_count: 0,
+                in_progress_count: 0,
+                assessment: "actionable".into(),
+                updated_at_ms: 1_700_000_000_000,
+                items: vec![crate::bus::events::WorkPlanItemSnapshot {
+                    item_id: "wi-1".into(),
+                    description: "publish the plan".into(),
+                    status: "in_progress".into(),
+                    blocker: None,
+                    next_action: Some("publish it".into()),
+                }],
+            },
+        });
+        match ev {
+            Some(crate::protocol::core::CoreEvent::WorkPlanUpdated { session_id, plan }) => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(plan.plan_id, "wp-1");
+                assert_eq!(plan.revision, 2);
+                assert_eq!(plan.items.len(), 1);
+                assert_eq!(plan.items[0].item_id, "wi-1");
+                assert_eq!(plan.items[0].status, "in_progress");
+            }
+            other => panic!("expected Some(WorkPlanUpdated), got {:?}", other),
         }
     }
 

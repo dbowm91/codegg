@@ -59,6 +59,9 @@ pub const MAX_PROJECTION_TOOL_CONTRACTS: usize = 64;
 /// Maximum number of plugin catalogue entries retained per session.
 pub const MAX_PROJECTION_PLUGIN_CATALOGUE: usize = 64;
 
+/// Maximum number of work-plan items retained in the published plan.
+pub const MAX_PROJECTION_WORK_PLAN_ITEMS: usize = 64;
+
 /// Maximum number of call entries returned in a single
 /// [`crate::projection::dto::ToolProgramCallPage`].
 pub const MAX_PROJECTION_CALL_PAGE_SIZE: usize = 32;

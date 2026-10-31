@@ -4834,6 +4834,13 @@ pub enum CoreEvent {
         session_id: String,
         entries: Vec<crate::projection::dto::PluginCatalogueEntryProjection>,
     },
+    /// The session's work plan changed. M007-H (D3): the daemon owns the
+    /// plan — it is the daemon's durable work-plan state — so the daemon
+    /// publishes the plan and every frontend reads the published answer.
+    WorkPlanUpdated {
+        session_id: String,
+        plan: crate::projection::dto::WorkPlanProjection,
+    },
     FileChanged {
         path: String,
         action: String,

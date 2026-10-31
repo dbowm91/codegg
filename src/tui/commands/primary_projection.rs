@@ -29,6 +29,9 @@ pub(crate) fn after_event(
     subscription_id: &ProjectionSubscriptionId,
     outcome: codegg_protocol::projection::controller::ControllerApplyOutcome,
 ) {
+    // M007-H (D3, D4): the derived state carries the daemon's published
+    // answer; the frontend keeps no second copy of either.
+    sync_derived_from_projection(app);
     if matches!(
         outcome,
         codegg_protocol::projection::controller::ControllerApplyOutcome::ResyncRequested { .. }
@@ -62,6 +65,22 @@ pub(crate) fn after_event(
             });
         }
     }
+}
+
+/// Carry the daemon's published plan and test state into the derived state.
+///
+/// M007-H (D3, D4): the read is from the **active** snapshot, because that
+/// is the snapshot the primary subscription maintains for the session on
+/// screen.
+pub(crate) fn sync_derived_from_projection(app: &mut App) {
+    let Some((_, snapshot)) = app.projection_client.active_snapshot() else {
+        return;
+    };
+    let plan = snapshot.work_plan.clone();
+    let test_state = snapshot.test_state.clone();
+    app.session_state_derived.apply_work_plan(plan.as_ref());
+    app.session_state_derived
+        .apply_test_state(test_state.as_ref());
 }
 
 pub(crate) fn bind_active_session(app: &mut App) {

@@ -1464,7 +1464,7 @@ static THE_CATALOG: CommandCatalog = CommandCatalog {
             command_id: "plan",
             name: "/plan",
             aliases: &[],
-            description: "Manage task plan (/plan, /plan add, done, skip, block, clear)",
+            description: "Show the session's plan, as the daemon published it (/plan)",
             category: CommandCategory::Session,
             domain: CommandDomain::Execution,
             kind: CommandKind::DaemonEffect,

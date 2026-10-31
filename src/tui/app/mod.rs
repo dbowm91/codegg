@@ -2514,9 +2514,13 @@ impl App {
                     }
                 }
                 // The completion names the outcome, not the command; the
-                // command is the one the start event carried.
+                // command is the one the start event carried. It is read
+                // from whichever state holds it, because the projection and
+                // this event stream carry the same run.
                 let command = match &self.session_state_derived.test_state {
-                    crate::session::state::TestState::Running { command } => command.clone(),
+                    crate::session::state::TestState::Running { command }
+                    | crate::session::state::TestState::Passed { command, .. }
+                    | crate::session::state::TestState::Failed { command, .. } => command.clone(),
                     _ => String::new(),
                 };
                 self.session_state_derived.test_state = if status == "passed" {
@@ -3787,6 +3791,10 @@ impl App {
                         .toasts
                         .error("Projection subscription failed");
                 }
+                // M007-H (D3, D4): the snapshot the daemon published is the
+                // session's plan and test state, so the derived state takes
+                // them from here rather than from a local default.
+                crate::tui::commands::primary_projection::sync_derived_from_projection(self);
             }
             Ok(RemoteTuiMessage::ProjectionReplay {
                 subscription_id,
@@ -7365,118 +7373,47 @@ impl App {
                 }
             }
             B::Plan => {
-                let query = argument;
-                let parts: Vec<&str> = query.splitn(2, ' ').collect();
-                let subcmd = parts.first().copied().unwrap_or("");
-                let args = parts.get(1).copied().unwrap_or("").trim();
-
-                match subcmd {
-                    "add" => {
-                        if args.is_empty() {
-                            self.messages_state
-                                .toasts
-                                .warning("Usage: /plan add <text>");
-                            return;
-                        }
-                        let item_id = format!("plan-{}", uuid::Uuid::new_v4());
-                        let mut plan = self.session_state_derived.plan.clone().unwrap_or(
-                            crate::session::events::AgentPlan {
-                                items: Vec::new(),
-                                updated_at: chrono::Utc::now(),
-                            },
-                        );
-                        plan.items.push(crate::session::events::AgentPlanItem {
-                            id: item_id,
-                            text: args.to_string(),
-                            status: crate::session::events::PlanItemStatus::Pending,
-                            note: None,
-                        });
-                        plan.updated_at = chrono::Utc::now();
-                        self.session_state_derived.plan = Some(plan.clone());
-                        self.messages_state
-                            .toasts
-                            .info(&format!("Plan item added: {}", args));
-                    }
-                    "done" | "skip" | "block" => {
-                        let status = match subcmd {
-                            "done" => crate::session::events::PlanItemStatus::Done,
-                            "skip" => crate::session::events::PlanItemStatus::Skipped,
-                            "block" => crate::session::events::PlanItemStatus::Blocked,
-                            _ => crate::session::events::PlanItemStatus::Pending,
-                        };
-                        let index: Option<usize> = args.parse().ok();
-                        if let Some(idx) = index {
-                            if let Some(ref mut plan) = self.session_state_derived.plan {
-                                if let Some(item) = plan.items.get_mut(idx) {
-                                    item.status = status;
-                                    self.messages_state
-                                        .toasts
-                                        .info(&format!("Plan item {} marked as {}", idx, subcmd));
-                                } else {
-                                    self.messages_state
-                                        .toasts
-                                        .warning(&format!("Plan item {} not found", idx));
-                                }
-                            } else {
-                                self.messages_state.toasts.warning("No active plan");
-                            }
-                        } else {
-                            self.messages_state
-                                .toasts
-                                .warning(&format!("Usage: /plan {} <index>", subcmd));
-                        }
-                    }
-                    "clear" => {
-                        self.session_state_derived.plan = None;
-                        self.messages_state.toasts.info("Plan cleared");
-                    }
-                    "" => {
-                        // Show current plan
-                        if let Some(ref plan) = self.session_state_derived.plan {
-                            if plan.items.is_empty() {
-                                self.messages_state.toasts.info("Plan is empty");
-                            } else {
-                                let items: Vec<String> = plan
-                                    .items
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(i, item)| {
-                                        let icon = match item.status {
-                                            crate::session::events::PlanItemStatus::Done => "[x]",
-                                            crate::session::events::PlanItemStatus::InProgress => {
-                                                "[>]"
-                                            }
-                                            crate::session::events::PlanItemStatus::Skipped => {
-                                                "[-]"
-                                            }
-                                            crate::session::events::PlanItemStatus::Blocked => {
-                                                "[?]"
-                                            }
-                                            crate::session::events::PlanItemStatus::Pending => {
-                                                "[ ]"
-                                            }
-                                        };
-                                        format!("{} {} {}", i, icon, item.text)
-                                    })
-                                    .collect();
-                                let mut plan_lines =
-                                    vec![format!("Plan ({} items):", plan.items.len())];
-                                plan_lines.extend(items);
-                                self.show_short_or_info(
-                                    crate::tui::components::dialogs::info::InfoType::Stats,
-                                    plan_lines,
-                                );
-                            }
-                        } else {
-                            self.messages_state.toasts.info("No active plan");
-                        }
-                    }
-                    _ => {
-                        self.messages_state
-                            .toasts
-                            .warning("Usage: /plan [add <text>|done <i>|skip <i>|block <i>|clear]");
-                    }
+                // M007-H (D3): the plan is the daemon's durable work-plan
+                // state, so the daemon publishes it and this arm renders
+                // that answer. The local checklist is **gone**: a second
+                // copy of the plan is a second source of truth.
+                if !argument.trim().is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("The plan is the daemon's; /plan takes no argument");
+                    return;
                 }
+                let Some(plan) = self.session_state_derived.plan.clone() else {
+                    self.messages_state
+                        .toasts
+                        .info("No plan published by the daemon");
+                    return;
+                };
+                if plan.items.is_empty() {
+                    self.messages_state.toasts.info("Plan is empty");
+                    return;
+                }
+                let items: Vec<String> = plan
+                    .items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, item)| {
+                        let icon = match item.status {
+                            crate::session::events::PlanItemStatus::Done => "[x]",
+                            crate::session::events::PlanItemStatus::InProgress => "[>]",
+                            crate::session::events::PlanItemStatus::Skipped => "[-]",
+                            crate::session::events::PlanItemStatus::Blocked => "[?]",
+                            crate::session::events::PlanItemStatus::Pending => "[ ]",
+                        };
+                        format!("{} {} {}", i, icon, item.text)
+                    })
+                    .collect();
+                let mut plan_lines = vec![format!("Plan ({} items):", plan.items.len())];
+                plan_lines.extend(items);
+                self.show_short_or_info(
+                    crate::tui::components::dialogs::info::InfoType::Stats,
+                    plan_lines,
+                );
             }
             B::State => {
                 let state = &self.session_state_derived;

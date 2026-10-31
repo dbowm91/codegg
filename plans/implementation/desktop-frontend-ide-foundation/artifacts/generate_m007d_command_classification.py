@@ -1301,6 +1301,15 @@ def _missing(name: str, surface: str, reason: str) -> None:
     VERDICTS[name] = ("missing capability", surface, reason)
 
 
+def _projected(name: str, reason: str) -> None:
+    """The daemon owns the state and publishes it on the session projection.
+
+    M007-H (D3, D4): the daemon's published projection is the surface, so
+    the arm reads the published answer and issues no request of its own.
+    """
+    VERDICTS[name] = ("published projection", "", reason)
+
+
 # The habit store, the skill-promotion store, the transcript search, the
 # doctor routine and the plugin manager are all **the frontend's own**: the
 # TUI opens the file, keeps the buffer, or runs the routine. None of them
@@ -1407,15 +1416,19 @@ _misclassified(
     "is a `FrontendEffect` and the catalog's kind is wrong",
 )
 
-_missing(
+# M007-H (D3, D4): the plan and the test state are daemon-owned state the
+# daemon **publishes** on the session projection. The arm reads the published
+# answer, so the form is not a missing capability any more — the daemon has
+# the surface, and the projection is how a frontend reaches it.
+_projected(
     "/plan",
-    "M007-H — the daemon's missing command surfaces",
-    "the plan list is daemon-owned work-plan state; the daemon has no plan request",
+    "the plan list is daemon-owned work-plan state; the daemon publishes it "
+    "on the session projection and the arm reads that published plan",
 )
-_missing(
+_projected(
     "/tests",
-    "M007-H — the daemon's missing command surfaces",
-    "the suite run is daemon-owned job state; the daemon has no test-suite request",
+    "the suite run is daemon-owned job state; the daemon publishes the "
+    "session's test state on the session projection and the arm reads it",
 )
 _missing(
     "/research",
@@ -1762,7 +1775,7 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     write("* `src/core/daemon_commands.rs` — the daemon's effect table, closed over the")
     write("  catalog's daemon-effect forms.")
     write("")
-    write("## 2. The three routes a form takes")
+    write("## 2. The four routes a form takes")
     write("")
     write("| route | who serves it | how a frontend reaches it |")
     write("|---|---|---|")
@@ -1773,6 +1786,9 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     write("  the same authoritative data |")
     write("| **frontend effect** | the frontend | the declared `FrontendAction` for the")
     write("  form; it never reaches the daemon |")
+    write("| **daemon effect, published projection** | the daemon | the daemon publishes")
+    write("  the state it owns on the session projection, and the arm reads the published")
+    write("  answer; there is no request for the form to issue |")
     write("| **daemon effect, not served** | nobody yet | the TUI keeps its local arm;")
     write("  the catalog marks the form `daemon_served: false` so a frontend shows it as")
     write("  unavailable instead of dispatching into a refusal |")
@@ -1790,6 +1806,8 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
             route = f"frontend → `{row['action']}`"
         elif row["served"]:
             route = "daemon → served"
+        elif VERDICTS.get(row["name"], ("",))[0] == "published projection":
+            route = "daemon → published projection"
         elif row["arm_requests"]:
             route = "daemon → not served (the TUI arm issues a daemon request)"
         else:
@@ -1941,14 +1959,18 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     write("")
     write("## 10. The classification of the forms the daemon does not serve")
     write("")
-    write("Every daemon-effect form the daemon does not serve is classified below, in")
-    write("two groups. The forms whose TUI arm issues **no** daemon request are one")
-    write("of two things:")
+    write("Every daemon-effect form the daemon does not serve **with a request** is")
+    write("classified below, in two groups. The forms whose TUI arm issues **no** daemon")
+    write("request are one of three things:")
     write("")
     write("* **misclassified** — the form is not really a daemon effect: it does not")
     write("  mutate daemon-owned state, does not read daemon-owned state as its")
     write("  result, and does not drive a daemon-mediated process. The catalog's kind")
     write("  is wrong, and the corrected kind is named.")
+    write("* **published projection** — the daemon owns the state and publishes it on")
+    write("  the session projection, so the arm reads the published answer and issues")
+    write("  no request of its own. The daemon has the surface; the projection is how")
+    write("  a frontend reaches it.")
     write("* **missing capability** — the classification is right and the daemon")
     write("  genuinely lacks the surface. That is new product capability, not")
     write("  migration work, and it belongs to the follow-up named here.")
@@ -1958,9 +1980,13 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     write("")
     misclassified = [row for row in local_only if VERDICTS.get(row["name"], ("",))[0] == "misclassified"]
     missing = [row for row in local_only if VERDICTS.get(row["name"], ("",))[0] == "missing capability"]
+    projected = [
+        row for row in local_only if VERDICTS.get(row["name"], ("",))[0] == "published projection"
+    ]
     undecided = [row for row in local_only if row["name"] not in VERDICTS]
-    write(f"**{len(misclassified)} are misclassified and {len(missing)} are real missing")
-    write(f"capability**, out of {len(local_only)} daemon-effect forms whose TUI arm issues")
+    write(f"**{len(misclassified)} are misclassified, {len(projected)} are served by the")
+    write(f"daemon's published projection and {len(missing)} are real missing capability**,")
+    write(f"out of {len(local_only)} daemon-effect forms whose TUI arm issues")
     write("no daemon request.")
     write("")
     arm_misclassified = [

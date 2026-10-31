@@ -1036,3 +1036,107 @@ fn a_frontend_effect_is_dispatched_from_the_declared_action() {
     }
     assert_eq!(checked, 43, "43 forms are frontend effects");
 }
+
+// ── The projection consumption (M007-H, D3/D4) ─────────────────────────────
+
+/// The derived plan and test state carry the daemon's published answer.
+///
+/// M007-H (D3, D4): before this, `session_state_derived.plan` was only ever
+/// what the frontend's own `/plan add` wrote and `test_state` was
+/// permanently `Unknown`.
+#[test]
+fn the_derived_state_carries_the_daemons_published_plan_and_test_state() {
+    use crate::protocol::projection::dto::{
+        TestStateProjection, WorkPlanItemProjection, WorkPlanProjection,
+    };
+    use crate::protocol::projection::replay::{
+        ProjectionStreamDescriptor, ProjectionStreamId, ProjectionStreamKind,
+        ProjectionSubscriptionId,
+    };
+    use crate::protocol::projection::snapshot::SessionProjectionSnapshot;
+
+    let mut app = App::new_for_testing("/tmp/m007h".to_string());
+    assert!(
+        app.session_state_derived.plan.is_none(),
+        "the derived plan starts empty, with no daemon answer behind it"
+    );
+    assert_eq!(
+        app.session_state_derived.test_state,
+        crate::session::state::TestState::Unknown,
+        "the derived test state starts at the local default"
+    );
+
+    let mut snapshot = SessionProjectionSnapshot::empty("sess", "proj", "ws");
+    snapshot.set_work_plan(WorkPlanProjection {
+        plan_id: "wp-1".to_string(),
+        revision: 3,
+        status: "active".to_string(),
+        objective_preview: "land the daemon's plan".to_string(),
+        current_phase: Some("implement".to_string()),
+        current_item_id: Some("wi-1".to_string()),
+        total_items: 1,
+        actionable_count: 1,
+        blocked_count: 0,
+        in_progress_count: 0,
+        assessment: "actionable".to_string(),
+        updated_at_ms: 1_700_000_000_000,
+        items: vec![WorkPlanItemProjection {
+            item_id: "wi-1".to_string(),
+            description: "publish the plan".to_string(),
+            status: "in_progress".to_string(),
+            blocker: None,
+            next_action: Some("publish it".to_string()),
+        }],
+    });
+    snapshot.set_test_state(TestStateProjection {
+        status: "passed".to_string(),
+        command: "cargo test".to_string(),
+        summary: Some("12 passed".to_string()),
+    });
+    app.projection_client.controller_mut().install_subscription(
+        ProjectionSubscriptionId::new("sub-1"),
+        ProjectionStreamDescriptor {
+            stream_id: ProjectionStreamId::new("stream-1").expect("a valid stream id"),
+            kind: ProjectionStreamKind::Session,
+            project_id: "proj".to_string(),
+            workspace_id: Some("ws".to_string()),
+            session_id: Some("sess".to_string()),
+            projection_version: 1,
+            retention_floor_seq: 0,
+            high_water_seq: 0,
+            latest_checkpoint_seq: None,
+        },
+        snapshot,
+    );
+
+    crate::tui::commands::primary_projection::sync_derived_from_projection(&mut app);
+
+    let plan = app
+        .session_state_derived
+        .plan
+        .clone()
+        .expect("the daemon's published plan is carried into the derived state");
+    assert_eq!(
+        plan.items.len(),
+        1,
+        "the published plan's items are carried"
+    );
+    assert_eq!(plan.items[0].id, "wi-1", "the item is the daemon's item");
+    assert_eq!(
+        plan.items[0].text, "publish the plan",
+        "the item's text is the daemon's description"
+    );
+    assert_eq!(
+        plan.items[0].status,
+        crate::session::events::PlanItemStatus::InProgress,
+        "the daemon's own item status is carried"
+    );
+    assert_eq!(
+        app.session_state_derived.test_state,
+        crate::session::state::TestState::Passed {
+            command: "cargo test".to_string(),
+            duration_ms: None,
+        },
+        "the daemon's published test state is carried, not the local default"
+    );
+}
