@@ -173,6 +173,12 @@ class H007NativeJobSequenceTest(unittest.TestCase):
                 "task_outcome": "passed",
                 "independent_verifier": {"kind": "h007_native_test", "tests_run": 1,
                                          "exit_code": 0},
+                "event_gap_count": trial["event_gap_count"],
+                "repair_cycles": sum(any(success > failed for success in successful_indices)
+                                     for failed in failed_indices),
+                "exact_id_job_lifecycle": "running_to_completed",
+                "dependent_work_overlapped": True,
+                "continuation_observed": True,
             }
             receipt_path = pathlib.Path(receipt_output)
             receipt_path.parent.mkdir(parents=True, exist_ok=True)
