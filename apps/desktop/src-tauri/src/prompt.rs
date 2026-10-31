@@ -22,6 +22,7 @@
 
 use codegg_client::{PromptIntent, PromptIntentState};
 use codegg_protocol::core::{CoreRequest, CoreResponse, RequestEnvelope, PROTOCOL_VERSION};
+use codegg_protocol::human_shell::HumanShellPromotionStageDto;
 
 use super::bridge::PromptSubmitView;
 use super::HostState;
@@ -31,14 +32,29 @@ impl HostState {
     /// session first when the route has none. Returns the accepted
     /// intent view; failures are `Err` strings and leave the renderer
     /// draft intact.
+    ///
+    /// M007-I (plan 022, work package F): `human_shell_promotions` is the
+    /// ask. A non-empty list turns the submit into the daemon's atomic ask
+    /// request, which stages the evidence and admits the turn together; an
+    /// empty list is the ordinary prompt submit.
     pub(crate) async fn route_prompt_submit(
         &self,
         text: String,
         plan_mode: bool,
+        human_shell_promotions: Vec<HumanShellPromotionStageDto>,
         expected_generation: u64,
     ) -> Result<PromptSubmitView, String> {
         let captured =
             PromptIntent::capture(expected_generation, text).map_err(|error| error.to_string())?;
+        // The ask's evidence is the ask's half of the intent's identity: the
+        // text alone cannot tell two asks apart, and the retry of a failed
+        // ask must carry the same evidence or it would admit a turn with no
+        // evidence attached.
+        let promotions = if human_shell_promotions.is_empty() {
+            None
+        } else {
+            Some(human_shell_promotions)
+        };
         // Snapshot the route and publish the in-flight intent before
         // any network I/O so a concurrent command coalesces instead
         // of submitting a second turn.
@@ -56,6 +72,7 @@ impl HostState {
             if let Some(stored) = route.prompt.as_ref() {
                 if stored.route_generation() != expected_generation {
                     route.prompt = None;
+                    route.prompt_human_shell_promotions = None;
                 } else if matches!(
                     stored.state(),
                     PromptIntentState::CreatingSession | PromptIntentState::Submitting
@@ -66,6 +83,7 @@ impl HostState {
                     return Err("another prompt is already being submitted for this route".into());
                 } else if stored.state() == PromptIntentState::Failed
                     && stored.text_digest() == intent.text_digest()
+                    && route.prompt_human_shell_promotions.as_deref() == promotions.as_deref()
                 {
                     let mut retry = stored.clone();
                     retry.retry().map_err(|error| error.to_string())?;
@@ -84,6 +102,7 @@ impl HostState {
             }
             let connection_generation = route.connection_generation;
             route.prompt = Some(intent.clone());
+            route.prompt_human_shell_promotions = promotions.clone();
             (session_id, connection_generation, intent)
         };
         // Create-then-submit continuation: exactly one session for an
@@ -131,16 +150,30 @@ impl HostState {
                 return Err(failure);
             }
         }
+        // M007-I (plan 022, work package F): the ask is **one** request. The
+        // daemon stages the evidence and admits the turn together, so a
+        // failed ask leaves no `pending` row behind.
+        let payload = match promotions {
+            Some(human_shell_promotions) => {
+                CoreRequest::SessionPromptSubmitWithHumanShellPromotions {
+                    session_id,
+                    text: intent.text().to_owned(),
+                    plan_mode,
+                    human_shell_promotions,
+                }
+            }
+            None => CoreRequest::SessionPromptSubmit {
+                session_id,
+                text: intent.text().to_owned(),
+                plan_mode,
+                human_shell_promotion_ids: Vec::new(),
+            },
+        };
         let response = client
             .request(RequestEnvelope {
                 protocol_version: PROTOCOL_VERSION,
                 request_id: intent.intent_id().to_owned(),
-                payload: CoreRequest::SessionPromptSubmit {
-                    session_id,
-                    text: intent.text().to_owned(),
-                    plan_mode,
-                    human_shell_promotion_ids: Vec::new(),
-                },
+                payload,
             })
             .await
             .map_err(|error| error.to_string());
@@ -185,6 +218,7 @@ impl HostState {
                 intent.accepted().map_err(|error| error.to_string())?;
                 let token = route.current_token();
                 route.prompt = None;
+                route.prompt_human_shell_promotions = None;
                 Ok(PromptSubmitView {
                     intent_id: intent.intent_id().to_owned(),
                     route_token: token,
@@ -199,6 +233,7 @@ impl HostState {
                 intent.accepted().map_err(|error| error.to_string())?;
                 let token = route.current_token();
                 route.prompt = None;
+                route.prompt_human_shell_promotions = None;
                 Ok(PromptSubmitView {
                     intent_id: intent.intent_id().to_owned(),
                     route_token: token,

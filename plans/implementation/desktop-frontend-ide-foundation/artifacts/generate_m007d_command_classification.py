@@ -1301,6 +1301,15 @@ def _missing(name: str, surface: str, reason: str) -> None:
     VERDICTS[name] = ("missing capability", surface, reason)
 
 
+def _projected(name: str, reason: str) -> None:
+    """The daemon owns the state and publishes it on the session projection.
+
+    M007-H (D3, D4): the daemon's published projection is the surface, so
+    the arm reads the published answer and issues no request of its own.
+    """
+    VERDICTS[name] = ("published projection", "", reason)
+
+
 # The habit store, the skill-promotion store, the transcript search, the
 # doctor routine and the plugin manager are all **the frontend's own**: the
 # TUI opens the file, keeps the buffer, or runs the routine. None of them
@@ -1373,17 +1382,18 @@ _misclassified(
     "the TUI lists its own agent registry (`app.agent_state`); the catalog's kind is wrong and the corrected kind is `FrontendEffect`",
 )
 
-# The git-review diff view is the frontend's own: the arm runs one local
-# `git` subprocess — `git diff`, or `git show HEAD:<path>` when a path is
-# given — and reads one file, and the two branches are mutually exclusive.
-# The git root comes from `crate::worktree::find_git_root`, which is
-# `egggit`'s read-only worktree reader, not `codegg-git`'s typed writer.
-_misclassified(
-    "/diff",
-    "the arm's effect is the frontend's own: one local `git` subprocess and one file read, "
-    "with the git root read through the read-only `egggit` crate — no daemon-mediated "
-    "process is driven",
-)
+# The git-review diff view **used to** be the frontend's own: the arm ran
+# one local `git` subprocess — `git diff`, or `git show HEAD:<path>` when a
+# path is given — and read one file, and the two branches were mutually
+# exclusive. The git root came from `crate::worktree::find_git_root`, which
+# is `egggit`'s read-only worktree reader, not `codegg-git`'s typed writer.
+#
+# M007-I moved it. The daemon's effect table now serves it, so the catalog's
+# kind (`DaemonEffect`) is **correct** and the form is not in the
+# unserved set below — the misclassification verdict that used to carry it
+# is **gone**, and the arm's verdict is now the one ADR-0058 decided. The
+# verdict table keeps the name, so the milestone's own list derives it
+# rather than carrying a hand-written one.
 
 # The research forms read the TUI's own research service over the local
 # filesystem. No daemon request is their effect.
@@ -1407,73 +1417,24 @@ _misclassified(
     "is a `FrontendEffect` and the catalog's kind is wrong",
 )
 
-_missing(
-    "/compact",
-    "M007-H — the daemon's missing command surfaces",
-    "compaction is a daemon-owned session operation; the daemon has no compaction request",
-)
-_missing(
-    "/subagent-send",
-    "M007-H — the daemon's missing command surfaces",
-    "steering a subagent is a daemon-owned turn operation",
-)
-_missing(
+# M007-H (D3, D4): the plan and the test state are daemon-owned state the
+# daemon **publishes** on the session projection. The arm reads the published
+# answer, so the form is not a missing capability any more — the daemon has
+# the surface, and the projection is how a frontend reaches it.
+_projected(
     "/plan",
-    "M007-H — the daemon's missing command surfaces",
-    "the plan list is daemon-owned work-plan state; the daemon has no plan request",
+    "the plan list is daemon-owned work-plan state; the daemon publishes it "
+    "on the session projection and the arm reads that published plan",
 )
-_missing(
+_projected(
     "/tests",
-    "M007-H — the daemon's missing command surfaces",
-    "the suite run is daemon-owned job state; the daemon has no test-suite request",
-)
-_missing(
-    "/revert",
-    "M007-H — the daemon's missing command surfaces",
-    "the daemon owns the git mutation; it exposes it as a tool, not as a request",
+    "the suite run is daemon-owned job state; the daemon publishes the "
+    "session's test state on the session projection and the arm reads it",
 )
 _missing(
     "/research",
     "M007-H — the daemon's missing command surfaces",
     "the research turn is daemon-owned agent-loop work",
-)
-_missing(
-    "/security-review",
-    "M007-H — the daemon's missing command surfaces",
-    "the security-review workflow is a daemon-owned agent turn",
-)
-_missing(
-    "/security-review-cancel",
-    "M007-H — the daemon's missing command surfaces",
-    "cancelling a security-review run is a daemon-owned turn cancellation",
-)
-_missing(
-    "/security-review-show",
-    "M007-H — the daemon's missing command surfaces",
-    "the arm shows the TUI's cached review result, and the daemon has no request that reads one — the same missing surface as `/security-review`",
-)
-_missing(
-    "/open",
-    "M007-H — the daemon's missing command surfaces",
-    "the daemon has `DocumentOpen` and the TUI already issues it, but the daemon "
-    "exposes no `/open` command form, so the catalog's form is unserved",
-)
-_missing(
-    "/review-change",
-    "M007-H — the daemon's missing command surfaces",
-    "the canonical checked apply `CoreRequest::LspPreviewApply` exists, but the "
-    "daemon exposes no `/review-change` command form, so the catalog's form is "
-    "unserved",
-)
-_missing(
-    "/shell-rerun",
-    "M007-H — the daemon's missing command surfaces",
-    "re-running a human-shell run is daemon-owned job state",
-)
-_missing(
-    "/logs",
-    "M007-H — the daemon's missing command surfaces",
-    "the daemon writes the log file and the frontend reads it out of band; the daemon has no log-tail request",
 )
 
 
@@ -1664,6 +1625,20 @@ _arm(
 )
 
 # The git-review and memory forms are subsystem moves.
+#
+# `/diff` is one of them, and it is the one whose premise the milestone
+# corrected: it measured as a **single** synchronous local effect — one
+# `git` subprocess, or one `git` subprocess plus one file read on the
+# path form — and not a workflow of dozens of requests. ADR-0058 accepted
+# Option B (**all three moves**), so the diff view moved anyway, to a
+# daemon-owned owner with a canonical `Run` per read. Its verdict is the
+# milestone's decision, and the milestone's own list derives the name from
+# here rather than carrying a hand-written one.
+_arm(
+    "/diff",
+    "subsystem move",
+    "the git-review diff view is a subsystem in its own right; ADR-0058 accepted Option B — all three moves — so it moved to a daemon-owned owner that opens a canonical `Run` per read",
+)
 _arm(
     "/memory-consolidate",
     "not mechanical",
@@ -1815,7 +1790,7 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     write("* `src/core/daemon_commands.rs` — the daemon's effect table, closed over the")
     write("  catalog's daemon-effect forms.")
     write("")
-    write("## 2. The three routes a form takes")
+    write("## 2. The four routes a form takes")
     write("")
     write("| route | who serves it | how a frontend reaches it |")
     write("|---|---|---|")
@@ -1826,6 +1801,9 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     write("  the same authoritative data |")
     write("| **frontend effect** | the frontend | the declared `FrontendAction` for the")
     write("  form; it never reaches the daemon |")
+    write("| **daemon effect, published projection** | the daemon | the daemon publishes")
+    write("  the state it owns on the session projection, and the arm reads the published")
+    write("  answer; there is no request for the form to issue |")
     write("| **daemon effect, not served** | nobody yet | the TUI keeps its local arm;")
     write("  the catalog marks the form `daemon_served: false` so a frontend shows it as")
     write("  unavailable instead of dispatching into a refusal |")
@@ -1843,6 +1821,8 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
             route = f"frontend → `{row['action']}`"
         elif row["served"]:
             route = "daemon → served"
+        elif VERDICTS.get(row["name"], ("",))[0] == "published projection":
+            route = "daemon → published projection"
         elif row["arm_requests"]:
             route = "daemon → not served (the TUI arm issues a daemon request)"
         else:
@@ -1994,14 +1974,18 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     write("")
     write("## 10. The classification of the forms the daemon does not serve")
     write("")
-    write("Every daemon-effect form the daemon does not serve is classified below, in")
-    write("two groups. The forms whose TUI arm issues **no** daemon request are one")
-    write("of two things:")
+    write("Every daemon-effect form the daemon does not serve **with a request** is")
+    write("classified below, in two groups. The forms whose TUI arm issues **no** daemon")
+    write("request are one of three things:")
     write("")
     write("* **misclassified** — the form is not really a daemon effect: it does not")
     write("  mutate daemon-owned state, does not read daemon-owned state as its")
     write("  result, and does not drive a daemon-mediated process. The catalog's kind")
     write("  is wrong, and the corrected kind is named.")
+    write("* **published projection** — the daemon owns the state and publishes it on")
+    write("  the session projection, so the arm reads the published answer and issues")
+    write("  no request of its own. The daemon has the surface; the projection is how")
+    write("  a frontend reaches it.")
     write("* **missing capability** — the classification is right and the daemon")
     write("  genuinely lacks the surface. That is new product capability, not")
     write("  migration work, and it belongs to the follow-up named here.")
@@ -2011,9 +1995,13 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     write("")
     misclassified = [row for row in local_only if VERDICTS.get(row["name"], ("",))[0] == "misclassified"]
     missing = [row for row in local_only if VERDICTS.get(row["name"], ("",))[0] == "missing capability"]
+    projected = [
+        row for row in local_only if VERDICTS.get(row["name"], ("",))[0] == "published projection"
+    ]
     undecided = [row for row in local_only if row["name"] not in VERDICTS]
-    write(f"**{len(misclassified)} are misclassified and {len(missing)} are real missing")
-    write(f"capability**, out of {len(local_only)} daemon-effect forms whose TUI arm issues")
+    write(f"**{len(misclassified)} are misclassified, {len(projected)} are served by the")
+    write(f"daemon's published projection and {len(missing)} are real missing capability**,")
+    write(f"out of {len(local_only)} daemon-effect forms whose TUI arm issues")
     write("no daemon request.")
     write("")
     arm_misclassified = [
@@ -2096,8 +2084,14 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     write("  " + ", ".join(f"`{name}`" for name in m007i) + ". Each is a workflow of")
     write("  more than one daemon request rather than one effect, so moving it is a")
     write("  milestone with its own ownership question — which daemon owns the")
-    write("  workflow's state, and whether the frontend keeps any of it. | **yes** —")
-    write("  each is a new ownership boundary, and ADR-0052 does not cover it |")
+    write("  workflow's state, and whether the frontend keeps any of it. `/diff` is")
+    write("  the one whose premise the milestone corrected: it measured as a **single**")
+    write("  synchronous local effect, and ADR-0058 accepted Option B — **all three**")
+    write("  moves — so it moved too, to a daemon-owned owner that opens a canonical")
+    write("  `Run` per read. **M007-I is implemented** under accepted ADR-0058. |")
+    write("  **yes** —")
+    write("  each is a new ownership boundary, and ADR-0052 does not cover it;")
+    write("  ADR-0058 records the accepted decision |")
     write("")
     write("### The forms whose TUI arm issues a daemon request")
     write("")

@@ -92,6 +92,7 @@ impl CoreClient for FakePresenceClient {
                     session_id: request.scope.session_id.as_deref(),
                     argument: &request.argument,
                     authority: None,
+                    turn_id: None,
                 };
                 let Some(codegg::core::daemon_commands::CommandEffect::Ready(inner)) =
                     codegg::core::daemon_commands::build_inner_request(

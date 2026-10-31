@@ -756,7 +756,7 @@ impl CommandRegistry {
             Command::new("/goal", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Goal))
                 .with_description("Manage active long-running goal (/goal set, show, pause, resume, clear, done, checkpoint, from-file, budget [show|raise <axis> <n>])"),
             Command::new("/plan", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Plan))
-                .with_description("Manage task plan (/plan, /plan add, done, skip, block, clear)"),
+                .with_description("Show the session's plan, as the daemon published it (/plan)"),
             Command::new("/state", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::State))
                 .with_description("Show work/session state view"),
             Command::new("/pr", CommandCategory::Agent, CommandAction::Template)

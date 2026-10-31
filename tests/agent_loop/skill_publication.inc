@@ -1,11 +1,22 @@
+//! M007-I (work package C): the daemon-owned publication.
+//!
+//! The publication is daemon-owned and **store-free**: the caller holds the
+//! exact proposal revision it approved, and the service performs the
+//! filesystem effects and returns the proposal the record must become.
+//!
+//! These tests exercise the service directly, because the service is where
+//! the filesystem authority lives. The daemon's own handler — the one that
+//! owns the record and the C004 gate — is exercised in
+//! `tests/core_daemon/m007i_daemon_promotion.inc`.
+
 use codegg::memory::habit::{
     HabitCandidateStatus, HabitId, HabitStore, WorkflowAction, WorkflowActionKind,
     WorkflowEffectClass, WorkflowOccurrence, WorkflowOutcome,
 };
 use codegg::memory::project_namespace;
 use codegg::skills::promotion::{
-    compute_content_digest, SkillPromotionStore, SkillProposalStatus, SkillProposalSubmission,
-    SkillTargetScope,
+    build_validated_proposal, HabitPromotionContext, PromotionDraftRequest, PromotionRequestId,
+    SkillProposal, SkillProposalStatus, SkillProposalSubmission, SkillTargetScope,
 };
 use codegg::skills::publish::{
     SkillPublicationError, SkillPublicationRequest, SkillPublicationService,
@@ -14,7 +25,11 @@ use codegg::skills::{AssetDiscoveryConfig, AssetRegistry, SourceKind};
 use std::fs;
 use tempfile::tempdir;
 
-fn ready_fixture() -> (tempfile::TempDir, String, HabitId, SkillPromotionStore) {
+const DEMO_MARKDOWN: &str =
+    "---\nname: demo\ndescription: A demo skill\n---\n# Demo\n\nUse the workflow.";
+
+/// A ready habit candidate and the proposal the workflow produced from it.
+fn ready_fixture() -> (tempfile::TempDir, String, HabitId, SkillProposal) {
     let dir = tempdir().unwrap();
     let project = dir.path().join("project");
     fs::create_dir_all(&project).unwrap();
@@ -48,39 +63,52 @@ fn ready_fixture() -> (tempfile::TempDir, String, HabitId, SkillPromotionStore) 
             .unwrap();
     }
     let habit_id = habits.load(&identity).unwrap().remove(0).id;
-    let promotions =
-        SkillPromotionStore::with_roots(dir.path().join("promotions"), dir.path().join("memory"))
-            .unwrap();
-    (dir, identity, habit_id, promotions)
+    let proposal = validated_proposal(&habit_id, &identity);
+    (dir, identity, habit_id, proposal)
 }
 
-fn proposal(
-    identity: &str,
-    habit_id: &HabitId,
-    store: &SkillPromotionStore,
-) -> codegg::skills::promotion::SkillProposal {
-    let request = store
-        .begin_request(identity, "session", habit_id, Vec::new(), Vec::new(), 10)
-        .unwrap();
-    store
-        .submit(SkillProposalSubmission {
-            project_identity: identity,
-            session_id: "session",
-            request_id: &request.id,
+/// The proposal the workflow produces from a ready habit.
+///
+/// The workflow is a pure function of the staged request and the model's
+/// draft, so the fixture builds the request the daemon would have staged.
+fn validated_proposal(habit_id: &HabitId, workspace_id: &str) -> SkillProposal {
+    let request_id = PromotionRequestId::new();
+    let request = PromotionDraftRequest {
+        id: request_id.clone(),
+        session_id: "session".to_owned(),
+        workspace_id: workspace_id.to_owned(),
+        habit_id: habit_id.clone(),
+        habit_fingerprint: "fingerprint".to_owned(),
+        candidate_revision: 3,
+        context: HabitPromotionContext {
+            habit_id: habit_id.clone(),
+            workflow_fingerprint: "fingerprint".to_owned(),
+            action_skeleton: Vec::new(),
+            successful_occurrences: 3,
+            distinct_sessions: 2,
+            related_memories: Vec::new(),
+            existing_skill_names: Vec::new(),
+            target_scope_hint: SkillTargetScope::Project,
+        },
+        created_at: 10,
+        expires_at: 10 + 15 * 60 * 1000,
+        consumed: false,
+    };
+    build_validated_proposal(
+        &request,
+        &SkillProposalSubmission {
+            request_id: &request_id,
             habit_id,
             supplied_name: "demo",
             supplied_description: "A demo skill",
-            skill_markdown:
-                "---\nname: demo\ndescription: A demo skill\n---\n# Demo\n\nUse the workflow.",
+            skill_markdown: DEMO_MARKDOWN,
             now: 11,
-        })
-        .unwrap()
+        },
+    )
+    .unwrap()
 }
 
-fn request(
-    proposal: &codegg::skills::promotion::SkillProposal,
-    target_scope: SkillTargetScope,
-) -> SkillPublicationRequest {
+fn request(proposal: &SkillProposal, target_scope: SkillTargetScope) -> SkillPublicationRequest {
     SkillPublicationRequest {
         proposal_id: proposal.id.clone(),
         expected_revision: proposal.revision,
@@ -89,23 +117,23 @@ fn request(
     }
 }
 
+fn service(dir: &tempfile::TempDir) -> SkillPublicationService {
+    SkillPublicationService::new(dir.path().join("memory"))
+}
+
 #[test]
 fn publication_lock_contents_are_preserved() {
-    let (dir, identity, habit_id, store) = ready_fixture();
-    let proposal = proposal(&identity, &habit_id, &store);
+    let (dir, identity, _habit_id, proposal) = ready_fixture();
     let lock_root = dir.path().join("project/.codegg/skills");
     fs::create_dir_all(&lock_root).unwrap();
     let lock_path = lock_root.join(".codegg-skill-publish.lock");
     let marker = b"advisory-lock-owner";
     fs::write(&lock_path, marker).unwrap();
 
-    let service = SkillPublicationService::new(
-        SkillPromotionStore::with_roots(dir.path().join("promotions"), dir.path().join("memory"))
-            .unwrap(),
-    );
-    service
+    service(&dir)
         .publish(
             &identity,
+            &proposal,
             std::path::Path::new(&identity),
             &dir.path().join("config"),
             request(&proposal, SkillTargetScope::Project),
@@ -118,16 +146,13 @@ fn publication_lock_contents_are_preserved() {
 
 #[test]
 fn project_publication_is_atomic_provenance_bound_and_promotes_habit() {
-    let (dir, identity, habit_id, store) = ready_fixture();
-    let proposal = proposal(&identity, &habit_id, &store);
-    let expected_digest = compute_content_digest(&proposal.skill_markdown);
-    let service = SkillPublicationService::new(
-        SkillPromotionStore::with_roots(dir.path().join("promotions"), dir.path().join("memory"))
-            .unwrap(),
-    );
-    let result = service
+    let (dir, identity, habit_id, proposal) = ready_fixture();
+    let expected_digest =
+        codegg::skills::promotion::compute_content_digest(&proposal.skill_markdown);
+    let result = service(&dir)
         .publish(
             &identity,
+            &proposal,
             std::path::Path::new(&identity),
             &dir.path().join("config"),
             request(&proposal, SkillTargetScope::Project),
@@ -165,28 +190,23 @@ fn project_publication_is_atomic_provenance_bound_and_promotes_habit() {
 
 #[test]
 fn publication_retry_is_idempotent_after_metadata_commit() {
-    let (dir, identity, habit_id, store) = ready_fixture();
-    let proposal = proposal(&identity, &habit_id, &store);
-    let service = SkillPublicationService::new(
-        SkillPromotionStore::with_roots(dir.path().join("promotions"), dir.path().join("memory"))
-            .unwrap(),
-    );
-    service
+    let (dir, identity, _habit_id, proposal) = ready_fixture();
+    let first = service(&dir)
         .publish(
             &identity,
+            &proposal,
             std::path::Path::new(&identity),
             &dir.path().join("config"),
             request(&proposal, SkillTargetScope::Project),
             20,
         )
         .unwrap();
-    let published = store
-        .get_proposal(&identity, &proposal.id)
-        .unwrap()
-        .unwrap();
-    let retry = service
+    // The record the daemon holds after the first publication.
+    let published = first.proposal;
+    let retry = service(&dir)
         .publish(
             &identity,
+            &published,
             std::path::Path::new(&identity),
             &dir.path().join("config"),
             request(&published, SkillTargetScope::Project),
@@ -199,19 +219,15 @@ fn publication_retry_is_idempotent_after_metadata_commit() {
 
 #[test]
 fn reconcile_completes_metadata_without_rewriting_exact_file() {
-    let (dir, identity, habit_id, store) = ready_fixture();
-    let proposal = proposal(&identity, &habit_id, &store);
+    let (dir, identity, _habit_id, proposal) = ready_fixture();
     let path = dir.path().join("project/.codegg/skills/demo/SKILL.md");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, &proposal.skill_markdown).unwrap();
     let before = fs::read(&path).unwrap();
-    let service = SkillPublicationService::new(
-        SkillPromotionStore::with_roots(dir.path().join("promotions"), dir.path().join("memory"))
-            .unwrap(),
-    );
-    let result = service
+    let result = service(&dir)
         .reconcile(
             &identity,
+            &proposal,
             std::path::Path::new(&identity),
             &dir.path().join("config"),
             request(&proposal, SkillTargetScope::Project),
@@ -225,31 +241,16 @@ fn reconcile_completes_metadata_without_rewriting_exact_file() {
 
 #[test]
 fn stale_revision_is_rejected_and_different_content_is_never_overwritten() {
-    let (dir, identity, habit_id, store) = ready_fixture();
-    let proposal = proposal(&identity, &habit_id, &store);
+    let (dir, identity, _habit_id, proposal) = ready_fixture();
     let stale = request(&proposal, SkillTargetScope::Project);
-    store
-        .append_diagnostics(
-            &identity,
-            &proposal.id,
-            vec![codegg::skills::promotion::BoundedDiagnostic {
-                severity: codegg::skills::Severity::Warning,
-                reason: "review note".to_string(),
-                location: None,
-            }],
-        )
-        .unwrap();
-    let fresh = store
-        .get_proposal(&identity, &proposal.id)
-        .unwrap()
-        .unwrap();
-    let service = SkillPublicationService::new(
-        SkillPromotionStore::with_roots(dir.path().join("promotions"), dir.path().join("memory"))
-            .unwrap(),
-    );
-    let error = service
+    // The record moved underneath the approval: a review note bumped the
+    // revision, so the captured approval is stale.
+    let mut fresh = proposal.clone();
+    fresh.revision = proposal.revision + 1;
+    let error = service(&dir)
         .publish(
             &identity,
+            &fresh,
             std::path::Path::new(&identity),
             &dir.path().join("config"),
             stale,
@@ -265,9 +266,10 @@ fn stale_revision_is_rejected_and_different_content_is_never_overwritten() {
         "---\nname: demo\ndescription: another\n---\nnot the proposal",
     )
     .unwrap();
-    let collision = service
+    let collision = service(&dir)
         .publish(
             &identity,
+            &fresh,
             std::path::Path::new(&identity),
             &dir.path().join("config"),
             request(&fresh, SkillTargetScope::Project),
@@ -283,7 +285,7 @@ fn stale_revision_is_rejected_and_different_content_is_never_overwritten() {
 
 #[test]
 fn global_scope_is_host_derived_and_foreign_precedence_requires_preview() {
-    let (dir, identity, habit_id, store) = ready_fixture();
+    let (dir, identity, _habit_id, proposal) = ready_fixture();
     let foreign = dir.path().join("project/.agents/skills/demo");
     fs::create_dir_all(&foreign).unwrap();
     fs::write(
@@ -291,14 +293,10 @@ fn global_scope_is_host_derived_and_foreign_precedence_requires_preview() {
         "---\nname: demo\ndescription: foreign\n---\nforeign",
     )
     .unwrap();
-    let proposal = proposal(&identity, &habit_id, &store);
-    let service = SkillPublicationService::new(
-        SkillPromotionStore::with_roots(dir.path().join("promotions"), dir.path().join("memory"))
-            .unwrap(),
-    );
-    let error = service
+    let error = service(&dir)
         .publish(
             &identity,
+            &proposal,
             std::path::Path::new(&identity),
             &dir.path().join("config"),
             request(&proposal, SkillTargetScope::Project),
@@ -314,15 +312,14 @@ fn global_scope_is_host_derived_and_foreign_precedence_requires_preview() {
         .join("project/.codegg/skills/demo/SKILL.md")
         .exists());
 
-    store.mark_previewed(&identity, &proposal.id, 21).unwrap();
-    let previewed = store
-        .get_proposal(&identity, &proposal.id)
-        .unwrap()
-        .unwrap();
+    // The human previewed the proposal's current revision.
+    let mut previewed = proposal.clone();
+    previewed.previewed_revision = Some(previewed.revision);
 
-    let result = service
+    let result = service(&dir)
         .publish(
             &identity,
+            &previewed,
             std::path::Path::new(&identity),
             &dir.path().join("config"),
             request(&previewed, SkillTargetScope::Global),
@@ -347,17 +344,16 @@ fn global_scope_is_host_derived_and_foreign_precedence_requires_preview() {
 #[test]
 fn symlinked_owned_root_is_rejected() {
     use std::os::unix::fs::symlink;
-    let (dir, identity, habit_id, store) = ready_fixture();
+    let (dir, identity, _habit_id, proposal) = ready_fixture();
     let outside = dir.path().join("outside");
     fs::create_dir_all(&outside).unwrap();
     let codegg = dir.path().join("project/.codegg");
     fs::create_dir_all(codegg.parent().unwrap()).unwrap();
     symlink(&outside, &codegg).unwrap();
-    let proposal = proposal(&identity, &habit_id, &store);
-    let service = SkillPublicationService::new(store);
-    let error = service
+    let error = service(&dir)
         .publish(
             &identity,
+            &proposal,
             std::path::Path::new(&identity),
             &dir.path().join("config"),
             request(&proposal, SkillTargetScope::Project),

@@ -6,6 +6,7 @@ import { useEditorSession } from './editor/session';
 import { useTerminalSession } from './terminal/session';
 import { GitPanel } from './panels/GitPanel';
 import { KeybindingsPanel } from './panels/KeybindingsPanel';
+import { PromotionPanel } from './panels/PromotionPanel';
 import { SkillsPanel } from './panels/SkillsPanel';
 import {
   dock,
@@ -60,7 +61,6 @@ import { answerFrontendAction } from './commands/frontendActions';
 import type {
   ConnectionSnapshot,
   GitBranchListView,
-  GitDiffView,
   GitReadKind,
   GitStatusView,
   ProjectDetailView,
@@ -69,7 +69,20 @@ import type {
   SessionPresentationView,
   SessionSummaryView,
   SkillCatalogueView,
+  SkillPromotionAction,
+  SkillPromotionView,
+  SkillTargetScope,
 } from './bridge-types';
+// M007-I (plan 022, work package F): the daemon's diff answer. The diff is
+// the daemon's own answer to the `diff` command, so the renderer reads it
+// through the daemon's command executor and parses the answer the daemon
+// serialized.
+import { DIFF_COMMAND_ID, readDiffAnswer } from './commands/diffAnswer';
+import type { DiffAnswerView } from './commands/diffAnswer';
+// M007-I (plan 022, work package F): the ask. The desktop names the run
+// and the question; the daemon owns the evidence.
+import { newShellAsk, shellAskPromotion } from './commands/shellAsk';
+import type { ShellAsk } from './commands/shellAsk';
 
 const initial: ConnectionSnapshot = { state: 'starting', daemonId: null, protocolVersion: null, uptimeSeconds: null, activeSessions: null, error: null, connectionGeneration: 0 };
 
@@ -111,6 +124,10 @@ export function App() {
   const [promptDraft, setPromptDraft] = useState('');
   const [planMode, setPlanMode] = useState(false);
   const [promptBusy, setPromptBusy] = useState(false);
+  // M007-I (plan 022, work package F): the ask. The human names one of the
+  // daemon's published shell runs and types the question; the daemon stages
+  // the evidence and admits the turn together.
+  const [shellAsk, setShellAsk] = useState<ShellAsk | null>(null);
   const routeRequest = useRef(0);
   const todoRequest = useRef(0);
   const [todoBusy, setTodoBusy] = useState(false);
@@ -122,7 +139,7 @@ export function App() {
   const gitRequest = useRef(0);
   const [gitFacts, setGitFacts] = useState<{
     status: GitStatusView | null;
-    diff: GitDiffView | null;
+    diff: DiffAnswerView | null;
     branches: GitBranchListView | null;
   }>({ status: null, diff: null, branches: null });
   const [gitBusy, setGitBusy] = useState(false);
@@ -131,6 +148,17 @@ export function App() {
   const [skills, setSkills] = useState<SkillCatalogueView | null>(null);
   const [skillsBusy, setSkillsBusy] = useState(false);
   const [skillsError, setSkillsError] = useState<string | null>(null);
+  // M007-I (plan 022, work package F): the daemon's skill-promotion
+  // workflow. The daemon owns the durable promotion record, so the
+  // renderer asks and renders: it holds the last answer and the two
+  // identifiers the human names, and nothing else.
+  const promotionRequest = useRef(0);
+  const [promotion, setPromotion] = useState<SkillPromotionView | null>(null);
+  const [promotionBusy, setPromotionBusy] = useState(false);
+  const [promotionError, setPromotionError] = useState<string | null>(null);
+  const [promotionHabitId, setPromotionHabitId] = useState('');
+  const [promotionProposalId, setPromotionProposalId] = useState('');
+  const [promotionScope, setPromotionScope] = useState<SkillTargetScope>('project');
 
   // The side-panel host: one slot per edge, and the panel state that
   // travels with the panel id. The placement is renderer-local — there is
@@ -276,6 +304,42 @@ export function App() {
   // fences each read on the route generation, and the renderer fences
   // on its own request counter, so a read that answers for a route
   // that has moved on is never merged in.
+  // The diff is not a git fact set: it is the daemon's own answer to the
+  // `diff` command (ADR-0058 D1). The renderer asks the daemon's catalog
+  // which command and which form the daemon serves, so the desktop holds no
+  // command spelling of its own, and quotes the catalog's version back so a
+  // stale classification is refused rather than executed against.
+  const readDiff = useCallback(async (routeGeneration: number) => {
+    try {
+      const catalog = await bridge.commandCatalog(routeGeneration);
+      const command = catalog.commands.find((entry) => entry.commandId === DIFF_COMMAND_ID);
+      const form = command?.forms.find((entry) => entry.form === '');
+      if (!command || !form) {
+        return { ok: false as const, error: 'the daemon publishes no diff command' };
+      }
+      if (form.kind !== 'daemon_effect' || !form.daemonServed) {
+        return { ok: false as const, error: 'the daemon does not serve the diff command' };
+      }
+      const execution = await bridge.commandExecute(
+        command.commandId,
+        form.form,
+        '',
+        catalog.catalogVersion,
+        routeGeneration,
+      );
+      if (execution.status === 'refused') {
+        return { ok: false as const, error: execution.summary };
+      }
+      const answer = readDiffAnswer(execution.response);
+      if (!answer) {
+        return { ok: false as const, error: 'the daemon answered without a diff' };
+      }
+      return { ok: true as const, answer };
+    } catch (error) {
+      return { ok: false as const, error: String(error) };
+    }
+  }, []);
+
   const refreshGit = useCallback(async (routeGeneration: number) => {
     const request = ++gitRequest.current;
     setGitBusy(true);
@@ -288,40 +352,40 @@ export function App() {
         return { ok: false as const, operation, error: String(error) };
       }
     };
-    const results = await Promise.all([
-      read('status'),
-      read('diff'),
-      read('branches'),
+    const [results, diff] = await Promise.all([
+      Promise.all([read('status'), read('branches')]),
+      readDiff(routeGeneration),
     ]);
     if (request !== gitRequest.current) return;
     const failures: string[] = [];
-    const facts = { status: null, diff: null, branches: null } as {
+    const facts = { status: null, branches: null } as {
       status: GitStatusView | null;
-      diff: GitDiffView | null;
       branches: GitBranchListView | null;
     };
     for (const result of results) {
       if (!result.ok) {
-        // The three reads can fail the same way; report each distinct
-        // failure once.
+        // The reads can fail the same way; report each distinct failure
+        // once.
         if (!failures.includes(result.error)) failures.push(result.error);
         continue;
       }
       const view = result.view;
       if (view.kind === 'status') facts.status = view.status;
-      if (view.kind === 'diff') facts.diff = view.diff;
       if (view.kind === 'branches') facts.branches = view.branches;
+    }
+    if (!diff.ok) {
+      if (!failures.includes(diff.error)) failures.push(diff.error);
     }
     // A failed read is not an empty answer: the panel keeps the facts it
     // already has and says which read failed.
     setGitFacts((previous) => ({
       status: facts.status ?? previous.status,
-      diff: facts.diff ?? previous.diff,
+      diff: diff.ok ? diff.answer : previous.diff,
       branches: facts.branches ?? previous.branches,
     }));
     if (failures.length) setGitError(failures.join('; '));
     setGitBusy(false);
-  }, []);
+  }, [readDiff]);
 
   const refreshSkills = useCallback(async (routeGeneration: number) => {
     const request = ++skillsRequest.current;
@@ -340,6 +404,52 @@ export function App() {
       if (request === skillsRequest.current) setSkillsBusy(false);
     }
   }, []);
+
+  // M007-I (plan 022, work package F): one request against the daemon's
+  // skill-promotion workflow.
+  //
+  // The renderer names the step and the identifiers that step acts on; the
+  // host supplies the workspace and the session, and the daemon resolves
+  // the habit candidate and the publication target. The renderer holds the
+  // last answer and nothing else — the durable record is the daemon's.
+  const runPromotion = useCallback(
+    async (action: SkillPromotionAction, routeGeneration: number) => {
+      const request = ++promotionRequest.current;
+      setPromotionBusy(true);
+      setPromotionError(null);
+      // Only the identifiers the action acts on travel: the daemon's
+      // request names a habit for a `begin` and a proposal for the steps
+      // that act on one, and carries a scope for a publication.
+      const habitId = action === 'begin' ? promotionHabitId.trim() || null : null;
+      const proposalId =
+        action === 'get' ||
+        action === 'preview' ||
+        action === 'reject' ||
+        action === 'publish'
+          ? promotionProposalId.trim() || null
+          : null;
+      const targetScope = action === 'publish' ? promotionScope : null;
+      try {
+        const answer = await bridge.skillPromotion(
+          action,
+          habitId,
+          proposalId,
+          targetScope,
+          routeGeneration,
+        );
+        if (request !== promotionRequest.current) return;
+        setPromotion(answer);
+      } catch (error) {
+        if (request !== promotionRequest.current) return;
+        // A failed request is not an empty answer: the panel keeps the one
+        // it already has and says the request failed.
+        setPromotionError(String(error));
+      } finally {
+        if (request === promotionRequest.current) setPromotionBusy(false);
+      }
+    },
+    [promotionHabitId, promotionProposalId, promotionScope],
+  );
 
   const refreshProjects = async (forGeneration = generation.current, forConnection = connectionRef.current.connectionGeneration) => {
     try {
@@ -637,10 +747,21 @@ export function App() {
     setPromptBusy(true);
     setRouteError(null);
     try {
-      const accepted = await bridge.promptSubmit(text, planMode, currentToken.routeGeneration);
+      // M007-I (plan 022, work package F): a named shell run makes this the
+      // ask. The daemon stages the evidence and admits the turn in one
+      // request, so the human's question travels as the question and the
+      // run's bytes stay on the daemon's side.
+      const promotions = shellAsk ? [shellAskPromotion(shellAsk, text.trim())] : [];
+      const accepted = await bridge.promptSubmit(
+        text,
+        planMode,
+        promotions,
+        currentToken.routeGeneration,
+      );
       if (request !== routeRequest.current || forConnection !== connectionRef.current.connectionGeneration) return;
       setDetail((previous) => (previous ? { ...previous, routeToken: accepted.routeToken } : previous));
       setPromptDraft('');
+      setShellAsk(null);
       // Converge immediately; live projection events keep following.
       const sessionId = accepted.routeToken.sessionId;
       if (sessionId && (!projection || projection.sessionId !== sessionId)) {
@@ -1273,6 +1394,32 @@ export function App() {
               error={skillsError}
               onRefresh={currentToken ? () => void refreshSkills(currentToken.routeGeneration) : undefined}
             />
+            <PromotionPanel
+              answer={promotion}
+              habitId={promotionHabitId}
+              onHabitIdChange={setPromotionHabitId}
+              proposalId={promotionProposalId}
+              onProposalIdChange={setPromotionProposalId}
+              targetScope={promotionScope}
+              onTargetScopeChange={setPromotionScope}
+              busy={promotionBusy}
+              error={promotionError}
+              onBegin={
+                currentToken ? () => void runPromotion('begin', currentToken.routeGeneration) : undefined
+              }
+              onList={
+                currentToken ? () => void runPromotion('list', currentToken.routeGeneration) : undefined
+              }
+              onPreview={
+                currentToken ? () => void runPromotion('preview', currentToken.routeGeneration) : undefined
+              }
+              onPublish={
+                currentToken ? () => void runPromotion('publish', currentToken.routeGeneration) : undefined
+              }
+              onReject={
+                currentToken ? () => void runPromotion('reject', currentToken.routeGeneration) : undefined
+              }
+            />
           </>
         )}
       </div>
@@ -1315,8 +1462,11 @@ export function App() {
           draft={promptDraft}
           planMode={planMode}
           busy={promptBusy}
+          shellRuns={projection?.shellRuns ?? []}
+          askRunId={shellAsk?.runId ?? null}
           onDraftChange={setPromptDraft}
           onPlanModeChange={setPlanMode}
+          onAskRunChange={(runId) => setShellAsk(runId ? newShellAsk(runId) : null)}
           onSubmit={() => void submitPrompt()}
         />
         <StatusRow

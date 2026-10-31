@@ -2483,6 +2483,60 @@ impl App {
                 self.set_todos(entries);
                 true
             }
+            // M007-H (D3): the daemon publishes the supervised test run, so
+            // the derived state carries the run the daemon actually
+            // performed. Nothing filled this before, so `/tests` reported
+            // "unknown (no tests run yet)" about a run the daemon had
+            // already finished.
+            E::TestRunStarted {
+                session_id,
+                command,
+                ..
+            } => {
+                if let Some(active_id) = self.session_state.session.as_ref().map(|s| &s.id) {
+                    if active_id != &session_id {
+                        return false;
+                    }
+                }
+                self.session_state_derived.test_state =
+                    crate::session::state::TestState::Running { command };
+                true
+            }
+            E::TestRunCompleted {
+                session_id,
+                status,
+                summary,
+                ..
+            } => {
+                if let Some(active_id) = self.session_state.session.as_ref().map(|s| &s.id) {
+                    if active_id != &session_id {
+                        return false;
+                    }
+                }
+                // The completion names the outcome, not the command; the
+                // command is the one the start event carried. It is read
+                // from whichever state holds it, because the projection and
+                // this event stream carry the same run.
+                let command = match &self.session_state_derived.test_state {
+                    crate::session::state::TestState::Running { command }
+                    | crate::session::state::TestState::Passed { command, .. }
+                    | crate::session::state::TestState::Failed { command, .. } => command.clone(),
+                    _ => String::new(),
+                };
+                self.session_state_derived.test_state = if status == "passed" {
+                    crate::session::state::TestState::Passed {
+                        command,
+                        duration_ms: None,
+                    }
+                } else {
+                    crate::session::state::TestState::Failed {
+                        command,
+                        duration_ms: None,
+                        summary,
+                    }
+                };
+                true
+            }
             E::PermissionPending { id, tool, path, .. } => {
                 // The turn is blocked on a human, not on the model. Saying so
                 // is the difference between "it is stuck" and "it is waiting on
@@ -3737,6 +3791,10 @@ impl App {
                         .toasts
                         .error("Projection subscription failed");
                 }
+                // M007-H (D3, D4): the snapshot the daemon published is the
+                // session's plan and test state, so the derived state takes
+                // them from here rather than from a local default.
+                crate::tui::commands::primary_projection::sync_derived_from_projection(self);
             }
             Ok(RemoteTuiMessage::ProjectionReplay {
                 subscription_id,
@@ -6743,13 +6801,17 @@ impl App {
                 // M006-A: `/open <workspace-relative path>`. With no
                 // argument the composer keeps the key so the user can
                 // type the path after the command.
+                //
+                // M007-H (work package A): the daemon owns the open, so the
+                // TUI sends the `open_document` command and attaches the
+                // response. It issues no open request of its own.
                 let path = argument;
                 if path.is_empty() {
                     self.messages_state
                         .toasts
                         .info("Usage: /open <workspace-relative path> (e.g. /open src/lib.rs)");
                 } else {
-                    crate::tui::commands::editor::open_editor(self, path);
+                    crate::tui::commands::editor::open_editor_via_command(self, path);
                 }
             }
             B::Loop => {
@@ -6921,87 +6983,71 @@ impl App {
                         .warning("Start or select a session before promoting a habit");
                     return;
                 };
-                let project_dir = self.active_workspace_root().unwrap_or_default();
-                let app_config = crate::config::schema::Config::load_or_default();
-                let config = crate::agent::asset_context::asset_discovery_config_from(&app_config);
-                let global_roots: Vec<std::path::PathBuf> =
-                    crate::agent::asset_context::default_global_discovery_root()
-                        .into_iter()
-                        .collect();
-                let registry = crate::skills::AssetRegistry::build(
-                    &config,
-                    project_dir.as_path(),
-                    &global_roots,
-                );
-                let names = registry
-                    .list()
-                    .iter()
-                    .take(32)
-                    .map(|skill| skill.name.clone())
-                    .collect();
-                let result =
-                    crate::skills::promotion::SkillPromotionStore::new().and_then(|store| {
-                        store.begin_request(
-                            project_dir.to_string_lossy().as_ref(),
-                            &session_id,
-                            &habit_id,
-                            names,
-                            Vec::new(),
-                            chrono::Utc::now().timestamp_millis(),
-                        )
-                    });
-                match result {
-                    Ok(request) => {
-                        self.prompt_state
-                            .prompt
-                            .set_text(crate::skills::promotion::build_draft_prompt(&request));
-                        self.send_prompt();
-                    }
-                    Err(error) => self
-                        .messages_state
+                let Some(workspace_id) = self.active_workspace_id().map(str::to_owned) else {
+                    self.messages_state
                         .toasts
-                        .warning(&format!("Could not start skill promotion: {error}")),
-                }
+                        .warning("Select a workspace before promoting a habit");
+                    return;
+                };
+                // M007-I (work package B): the daemon owns the promotion
+                // store, so the frontend stages nothing itself. It asks the
+                // daemon, and the daemon records the request against the
+                // canonical workspace.
+                crate::tui::commands::promotion::start_skill_promotion(
+                    self,
+                    crate::protocol::skill::SkillPromotionRequestDto {
+                        workspace_id,
+                        session_id,
+                        action: crate::protocol::skill::SkillPromotionActionDto::Begin,
+                        habit_id: Some(habit_id.as_str().to_owned()),
+                        proposal_id: None,
+                        target_scope: None,
+                    },
+                );
             }
             B::SkillProposals => {
-                let project_dir = self.active_workspace_root().unwrap_or_default();
-                match crate::skills::promotion::SkillPromotionStore::new().and_then(|store| {
-                    store.list_proposals(project_dir.to_string_lossy().as_ref(), 32)
-                }) {
-                    Ok(proposals) if proposals.is_empty() => self
-                        .messages_state
+                let Some(session_id) = self.session_state.session.as_ref().map(|s| s.id.clone())
+                else {
+                    self.messages_state
                         .toasts
-                        .info("No skill proposals yet. Use /skill-promote <habit-id>."),
-                    Ok(proposals) => {
-                        let mut lines = vec![format!("Skill proposals ({}):", proposals.len())];
-                        for proposal in proposals {
-                            lines.push(format!(
-                                "- [{}] {:?} {} — {} (rev {}, digest {})",
-                                proposal.id.as_str().chars().take(8).collect::<String>(),
-                                proposal.status,
-                                proposal.name,
-                                proposal.description,
-                                proposal.revision,
-                                proposal.content_digest.chars().take(12).collect::<String>()
-                            ));
-                        }
-                        lines.push(
-                            "Preview with /skill-proposal <id>; reject with /skill-proposal reject <id>; request a new draft with /skill-promote <habit-id>."
-                                .to_string(),
-                        );
-                        self.open_info_dialog(
-                            crate::tui::components::dialogs::info::InfoType::MemoryResults,
-                            lines,
-                        );
-                    }
-                    Err(error) => self
-                        .messages_state
+                        .warning("Start or select a session before listing proposals");
+                    return;
+                };
+                let Some(workspace_id) = self.active_workspace_id().map(str::to_owned) else {
+                    self.messages_state
                         .toasts
-                        .warning(&format!("Could not load skill proposals: {error}")),
-                }
+                        .warning("Select a workspace before listing proposals");
+                    return;
+                };
+                crate::tui::commands::promotion::start_skill_promotion(
+                    self,
+                    crate::protocol::skill::SkillPromotionRequestDto {
+                        workspace_id,
+                        session_id,
+                        action: crate::protocol::skill::SkillPromotionActionDto::List,
+                        habit_id: None,
+                        proposal_id: None,
+                        target_scope: None,
+                    },
+                );
             }
             B::SkillProposal => {
-                if let Some(publish_args) = argument.strip_prefix("publish") {
+                let Some(session_id) = self.session_state.session.as_ref().map(|s| s.id.clone())
+                else {
+                    self.messages_state
+                        .toasts
+                        .warning("Start or select a session before acting on a proposal");
+                    return;
+                };
+                let Some(workspace_id) = self.active_workspace_id().map(str::to_owned) else {
+                    self.messages_state
+                        .toasts
+                        .warning("Select a workspace before acting on a proposal");
+                    return;
+                };
+                let mut action = crate::protocol::skill::SkillPromotionActionDto::Preview;
+                let mut target_scope = None;
+                let id_text = if let Some(publish_args) = argument.strip_prefix("publish") {
                     let parts = publish_args.split_whitespace().collect::<Vec<_>>();
                     if parts.len() != 2 {
                         self.messages_state
@@ -7009,164 +7055,41 @@ impl App {
                             .warning("Usage: /skill-proposal publish <id> [project|global]");
                         return;
                     }
-                    let Some(target_scope) = (match parts[1] {
-                        "project" => Some(crate::skills::promotion::SkillTargetScope::Project),
-                        "global" => Some(crate::skills::promotion::SkillTargetScope::Global),
-                        _ => None,
-                    }) else {
-                        self.messages_state
-                            .toasts
-                            .warning("Publication scope must be project or global");
-                        return;
-                    };
-                    if crate::skills::promotion::SkillProposalId::parse(parts[0]).is_none() {
-                        self.messages_state
-                            .toasts
-                            .warning("Invalid skill proposal ID");
-                        return;
-                    }
-                    let id = parts[0].to_string();
-                    if let Some(ref tx) = self.tui_cmd_tx {
-                        let _ = send_tui(tx, TuiCommand::SkillPublish { id, target_scope });
-                    } else {
-                        crate::tui::commands::memory::start_skill_publish(self, id, target_scope);
-                    }
-                    return;
-                }
-                let (reject, id_text) = argument
-                    .strip_prefix("reject ")
-                    .map_or((false, argument), |id| (true, id.trim()));
-                let Some(id) = crate::skills::promotion::SkillProposalId::parse(id_text) else {
+                    target_scope = Some(match parts[1] {
+                        "project" => crate::protocol::skill::SkillTargetScopeDto::Project,
+                        "global" => crate::protocol::skill::SkillTargetScopeDto::Global,
+                        _ => {
+                            self.messages_state
+                                .toasts
+                                .warning("Publication scope must be project or global");
+                            return;
+                        }
+                    });
+                    action = crate::protocol::skill::SkillPromotionActionDto::Publish;
+                    parts[0].to_string()
+                } else if let Some(reject_id) = argument.strip_prefix("reject ") {
+                    action = crate::protocol::skill::SkillPromotionActionDto::Reject;
+                    reject_id.trim().to_string()
+                } else {
+                    argument.trim().to_string()
+                };
+                if crate::skills::promotion::SkillProposalId::parse(&id_text).is_none() {
                     self.messages_state
                         .toasts
                         .warning("Usage: /skill-proposal <id> or /skill-proposal reject <id>");
                     return;
-                };
-                let project_dir = self.active_workspace_root().unwrap_or_default();
-                let store = match crate::skills::promotion::SkillPromotionStore::new() {
-                    Ok(store) => store,
-                    Err(error) => {
-                        self.messages_state
-                            .toasts
-                            .warning(&format!("Could not open skill proposals: {error}"));
-                        return;
-                    }
-                };
-                if reject {
-                    match store.reject_proposal(
-                        project_dir.to_string_lossy().as_ref(),
-                        &id,
-                        chrono::Utc::now().timestamp_millis(),
-                    ) {
-                        Ok(true) => self.messages_state.toasts.info("Skill proposal rejected."),
-                        Ok(false) => self
-                            .messages_state
-                            .toasts
-                            .warning("Proposal not found or is not awaiting review."),
-                        Err(error) => self
-                            .messages_state
-                            .toasts
-                            .warning(&format!("Could not reject proposal: {error}")),
-                    }
-                } else {
-                    let _ = store.mark_previewed(
-                        project_dir.to_string_lossy().as_ref(),
-                        &id,
-                        chrono::Utc::now().timestamp_millis(),
-                    );
-                    match store.get_proposal(project_dir.to_string_lossy().as_ref(), &id) {
-                        Ok(Some(proposal)) => {
-                            // Advisory live collision view: the registry may have
-                            // changed since submission, so surface the current
-                            // same-name effective skill without mutating state.
-                            let app_config = crate::config::schema::Config::load_or_default();
-                            let config = crate::agent::asset_context::asset_discovery_config_from(
-                                &app_config,
-                            );
-                            let global_roots: Vec<std::path::PathBuf> =
-                                crate::agent::asset_context::default_global_discovery_root()
-                                    .into_iter()
-                                    .collect();
-                            let registry = crate::skills::AssetRegistry::build(
-                                &config,
-                                std::path::Path::new(&project_dir),
-                                &global_roots,
-                            );
-                            let live_collisions = crate::skills::promotion::collision_diagnostics(
-                                &registry,
-                                &proposal.name.to_lowercase(),
-                            );
-                            let mut lines = vec![
-                                format!("Skill proposal {}", proposal.id.as_str()),
-                                format!("Status: {:?}", proposal.status),
-                                format!("Name: {}", proposal.name),
-                                format!("Description: {}", proposal.description),
-                                format!("Target scope: {:?}", proposal.target_scope),
-                                format!(
-                                    "Habit: {} (fingerprint {}, candidate rev {})",
-                                    proposal.habit_id.as_str(),
-                                    proposal.habit_fingerprint,
-                                    proposal.candidate_revision
-                                ),
-                                format!(
-                                    "Content digest: {} (proposal rev {})",
-                                    proposal.content_digest, proposal.revision
-                                ),
-                                if proposal.status
-                                    == crate::skills::promotion::SkillProposalStatus::Published
-                                {
-                                    format!(
-                                        "Published at {}/{}; runtime activation is determined by the next asset refresh.",
-                                        proposal
-                                            .publication
-                                            .as_ref()
-                                            .map(|p| format!("{:?}", p.target_scope))
-                                            .unwrap_or_else(|| "unknown".to_string()),
-                                        proposal
-                                            .publication
-                                            .as_ref()
-                                            .map(|p| p.relative_path.clone())
-                                            .unwrap_or_else(|| "unknown".to_string())
-                                    )
-                                } else {
-                                    "Not installed or effective yet.".to_string()
-                                },
-                                String::new(),
-                                proposal.skill_markdown,
-                            ];
-                            for diagnostic in proposal.diagnostics {
-                                lines.push(format!(
-                                    "Diagnostic [{:?}]: {}",
-                                    diagnostic.severity, diagnostic.reason
-                                ));
-                            }
-                            for collision in live_collisions {
-                                lines.push(format!(
-                                    "Live collision [{:?}]: {} {}",
-                                    collision.severity,
-                                    collision.reason,
-                                    collision.location.unwrap_or_default()
-                                ));
-                            }
-                            lines.push(
-                                "Request a revised draft with /skill-promote <habit-id>; rejection does not dismiss the habit."
-                                    .to_string(),
-                            );
-                            self.open_info_dialog(
-                                crate::tui::components::dialogs::info::InfoType::MemoryResults,
-                                lines,
-                            );
-                        }
-                        Ok(None) => self
-                            .messages_state
-                            .toasts
-                            .warning("Skill proposal not found."),
-                        Err(error) => self
-                            .messages_state
-                            .toasts
-                            .warning(&format!("Could not load proposal: {error}")),
-                    }
                 }
+                crate::tui::commands::promotion::start_skill_promotion(
+                    self,
+                    crate::protocol::skill::SkillPromotionRequestDto {
+                        workspace_id,
+                        session_id,
+                        action,
+                        habit_id: None,
+                        proposal_id: Some(id_text),
+                        target_scope,
+                    },
+                );
             }
             B::Goal => {
                 let query = argument;
@@ -7311,118 +7234,47 @@ impl App {
                 }
             }
             B::Plan => {
-                let query = argument;
-                let parts: Vec<&str> = query.splitn(2, ' ').collect();
-                let subcmd = parts.first().copied().unwrap_or("");
-                let args = parts.get(1).copied().unwrap_or("").trim();
-
-                match subcmd {
-                    "add" => {
-                        if args.is_empty() {
-                            self.messages_state
-                                .toasts
-                                .warning("Usage: /plan add <text>");
-                            return;
-                        }
-                        let item_id = format!("plan-{}", uuid::Uuid::new_v4());
-                        let mut plan = self.session_state_derived.plan.clone().unwrap_or(
-                            crate::session::events::AgentPlan {
-                                items: Vec::new(),
-                                updated_at: chrono::Utc::now(),
-                            },
-                        );
-                        plan.items.push(crate::session::events::AgentPlanItem {
-                            id: item_id,
-                            text: args.to_string(),
-                            status: crate::session::events::PlanItemStatus::Pending,
-                            note: None,
-                        });
-                        plan.updated_at = chrono::Utc::now();
-                        self.session_state_derived.plan = Some(plan.clone());
-                        self.messages_state
-                            .toasts
-                            .info(&format!("Plan item added: {}", args));
-                    }
-                    "done" | "skip" | "block" => {
-                        let status = match subcmd {
-                            "done" => crate::session::events::PlanItemStatus::Done,
-                            "skip" => crate::session::events::PlanItemStatus::Skipped,
-                            "block" => crate::session::events::PlanItemStatus::Blocked,
-                            _ => crate::session::events::PlanItemStatus::Pending,
-                        };
-                        let index: Option<usize> = args.parse().ok();
-                        if let Some(idx) = index {
-                            if let Some(ref mut plan) = self.session_state_derived.plan {
-                                if let Some(item) = plan.items.get_mut(idx) {
-                                    item.status = status;
-                                    self.messages_state
-                                        .toasts
-                                        .info(&format!("Plan item {} marked as {}", idx, subcmd));
-                                } else {
-                                    self.messages_state
-                                        .toasts
-                                        .warning(&format!("Plan item {} not found", idx));
-                                }
-                            } else {
-                                self.messages_state.toasts.warning("No active plan");
-                            }
-                        } else {
-                            self.messages_state
-                                .toasts
-                                .warning(&format!("Usage: /plan {} <index>", subcmd));
-                        }
-                    }
-                    "clear" => {
-                        self.session_state_derived.plan = None;
-                        self.messages_state.toasts.info("Plan cleared");
-                    }
-                    "" => {
-                        // Show current plan
-                        if let Some(ref plan) = self.session_state_derived.plan {
-                            if plan.items.is_empty() {
-                                self.messages_state.toasts.info("Plan is empty");
-                            } else {
-                                let items: Vec<String> = plan
-                                    .items
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(i, item)| {
-                                        let icon = match item.status {
-                                            crate::session::events::PlanItemStatus::Done => "[x]",
-                                            crate::session::events::PlanItemStatus::InProgress => {
-                                                "[>]"
-                                            }
-                                            crate::session::events::PlanItemStatus::Skipped => {
-                                                "[-]"
-                                            }
-                                            crate::session::events::PlanItemStatus::Blocked => {
-                                                "[?]"
-                                            }
-                                            crate::session::events::PlanItemStatus::Pending => {
-                                                "[ ]"
-                                            }
-                                        };
-                                        format!("{} {} {}", i, icon, item.text)
-                                    })
-                                    .collect();
-                                let mut plan_lines =
-                                    vec![format!("Plan ({} items):", plan.items.len())];
-                                plan_lines.extend(items);
-                                self.show_short_or_info(
-                                    crate::tui::components::dialogs::info::InfoType::Stats,
-                                    plan_lines,
-                                );
-                            }
-                        } else {
-                            self.messages_state.toasts.info("No active plan");
-                        }
-                    }
-                    _ => {
-                        self.messages_state
-                            .toasts
-                            .warning("Usage: /plan [add <text>|done <i>|skip <i>|block <i>|clear]");
-                    }
+                // M007-H (D3): the plan is the daemon's durable work-plan
+                // state, so the daemon publishes it and this arm renders
+                // that answer. The local checklist is **gone**: a second
+                // copy of the plan is a second source of truth.
+                if !argument.trim().is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("The plan is the daemon's; /plan takes no argument");
+                    return;
                 }
+                let Some(plan) = self.session_state_derived.plan.clone() else {
+                    self.messages_state
+                        .toasts
+                        .info("No plan published by the daemon");
+                    return;
+                };
+                if plan.items.is_empty() {
+                    self.messages_state.toasts.info("Plan is empty");
+                    return;
+                }
+                let items: Vec<String> = plan
+                    .items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, item)| {
+                        let icon = match item.status {
+                            crate::session::events::PlanItemStatus::Done => "[x]",
+                            crate::session::events::PlanItemStatus::InProgress => "[>]",
+                            crate::session::events::PlanItemStatus::Skipped => "[-]",
+                            crate::session::events::PlanItemStatus::Blocked => "[?]",
+                            crate::session::events::PlanItemStatus::Pending => "[ ]",
+                        };
+                        format!("{} {} {}", i, icon, item.text)
+                    })
+                    .collect();
+                let mut plan_lines = vec![format!("Plan ({} items):", plan.items.len())];
+                plan_lines.extend(items);
+                self.show_short_or_info(
+                    crate::tui::components::dialogs::info::InfoType::Stats,
+                    plan_lines,
+                );
             }
             B::State => {
                 let state = &self.session_state_derived;
@@ -7621,7 +7473,10 @@ impl App {
             B::Review => {
                 self.ui_state.command_mode = false;
                 let id = argument.to_string();
-                crate::tui::commands::change_review::open(self, &id);
+                // M007-H (D4): the daemon owns the preview store, so the
+                // candidate is read from it. The TUI's own `LspTool` copy is
+                // never installed, so the old arm could not work.
+                crate::tui::commands::change_review::open_via_daemon(self, &id);
             }
             B::LspPreviewApply => {
                 self.ui_state.command_mode = false;
@@ -8254,11 +8109,10 @@ impl App {
             B::Diff => {
                 let path_arg = argument;
                 self.ui_state.command_mode = false;
-                if path_arg.is_empty() {
-                    self.handle_diff_command(None);
-                } else {
-                    self.handle_diff_command(Some(path_arg));
-                }
+                // M007-I (work package A): the daemon owns the read. The TUI
+                // no longer spawns `git` and no longer reads the working
+                // tree for this.
+                crate::tui::commands::diff::start_diff(self, path_arg.to_string());
             }
             B::Tests => {
                 let subcmd = argument;
@@ -8284,7 +8138,9 @@ impl App {
                 if path_arg.is_empty() {
                     self.messages_state.toasts.warning("Usage: /revert <path>");
                 } else {
-                    self.handle_revert_command(path_arg);
+                    // M007-H (work package C): the daemon owns the write.
+                    // The TUI no longer spawns `git` for this.
+                    crate::tui::commands::revert::start_revert(self, path_arg.to_string());
                 }
             }
             B::EditUndo => {
@@ -11255,94 +11111,6 @@ impl App {
         }
     }
 
-    /// Show the diff for `path`, or the whole working tree when it is `None`.
-    ///
-    /// Returns whether a diff box was actually opened. Four of the paths below
-    /// return without mounting anything — no git root, no changes, a failed
-    /// `git diff` — and the caller needs to be able to say so. It used to
-    /// re-read `dock_target()` to find out, which is the inference this return
-    /// value replaces.
-    pub(crate) fn handle_diff_command(&mut self, path: Option<&str>) -> bool {
-        let project_dir = self.active_workspace_root().unwrap_or_default();
-        let git_root = match crate::worktree::find_git_root(&project_dir) {
-            Some(r) => r,
-            None => {
-                self.messages_state
-                    .toasts
-                    .info("Not in a git repository - showing text diff");
-                return false;
-            }
-        };
-
-        if let Some(file_path) = path {
-            let abs_path = if std::path::Path::new(file_path).is_absolute() {
-                std::path::PathBuf::from(file_path)
-            } else {
-                project_dir.join(file_path)
-            };
-
-            let show_argv: Vec<String> =
-                vec!["git".into(), "show".into(), format!("HEAD:{}", file_path)];
-            let old_content = crate::git_mutations::GitEnvPolicy::default()
-                .apply_sync(&show_argv, &git_root)
-                .ok()
-                .and_then(|mut command| command.output().ok())
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                .unwrap_or_default();
-
-            let new_content = std::fs::read_to_string(&abs_path).unwrap_or_default();
-
-            if old_content == new_content {
-                self.messages_state.toasts.info("No changes detected");
-                return false;
-            }
-
-            let title = format!("Diff: {}", file_path);
-            self.process_msg(TuiMsg::OpenDiffDialog {
-                old_content: old_content.into_boxed_str(),
-                new_content: new_content.into_boxed_str(),
-                title: title.into_boxed_str(),
-            });
-            true
-        } else {
-            let diff_argv: Vec<String> = vec!["git".into(), "diff".into()];
-            let output = crate::git_mutations::GitEnvPolicy::default()
-                .apply_sync(&diff_argv, &git_root)
-                .map_err(|outcome| std::io::Error::other(outcome.to_string()))
-                .and_then(|mut command| command.output());
-
-            match output {
-                Ok(o) if o.status.success() => {
-                    let diff_text = String::from_utf8_lossy(&o.stdout).to_string();
-                    if diff_text.is_empty() {
-                        self.messages_state.toasts.info("No changes detected");
-                        return false;
-                    }
-                    self.process_msg(TuiMsg::OpenDiffDialog {
-                        old_content: String::new().into_boxed_str(),
-                        new_content: diff_text.into_boxed_str(),
-                        title: "Repository Diff".to_string().into_boxed_str(),
-                    });
-                    true
-                }
-                Ok(o) => {
-                    let stderr = String::from_utf8_lossy(&o.stderr).to_string();
-                    self.messages_state
-                        .toasts
-                        .error(&format!("git diff failed: {}", stderr));
-                    false
-                }
-                Err(e) => {
-                    self.messages_state
-                        .toasts
-                        .error(&format!("Failed to run git diff: {}", e));
-                    false
-                }
-            }
-        }
-    }
-
     fn handle_tests_command(&mut self, subcmd: &str) {
         match subcmd {
             "" | "last" => {
@@ -11413,48 +11181,6 @@ impl App {
                 self.messages_state
                     .toasts
                     .warning("Usage: /tests [last|failed]");
-            }
-        }
-    }
-
-    fn handle_revert_command(&mut self, path: &str) {
-        let project_dir = self.active_workspace_root().unwrap_or_default();
-        let git_root = match crate::worktree::find_git_root(&project_dir) {
-            Some(r) => r,
-            None => {
-                self.messages_state.toasts.error("Not in a git repository");
-                return;
-            }
-        };
-
-        let checkout_argv: Vec<String> = vec![
-            "git".into(),
-            "checkout".into(),
-            "HEAD".into(),
-            "--".into(),
-            path.to_string(),
-        ];
-        let output = crate::git_mutations::GitEnvPolicy::default()
-            .apply_sync(&checkout_argv, &git_root)
-            .map_err(|outcome| std::io::Error::other(outcome.to_string()))
-            .and_then(|mut command| command.output());
-
-        match output {
-            Ok(o) if o.status.success() => {
-                self.messages_state
-                    .toasts
-                    .success(&format!("Reverted: {}", path));
-            }
-            Ok(o) => {
-                let stderr = String::from_utf8_lossy(&o.stderr).to_string();
-                self.messages_state
-                    .toasts
-                    .error(&format!("git checkout failed: {}", stderr));
-            }
-            Err(e) => {
-                self.messages_state
-                    .toasts
-                    .error(&format!("Failed to run git: {}", e));
             }
         }
     }

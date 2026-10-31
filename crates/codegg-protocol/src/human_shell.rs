@@ -118,3 +118,20 @@ pub struct HumanShellRunListDto {
     #[serde(default)]
     pub limit: Option<u32>,
 }
+
+/// One staged human-shell evidence, named by the run the daemon owns.
+///
+/// M007-I (work packages D and E): the frontend names the **run** and the
+/// question. It never carries the bytes: the daemon reads its own run
+/// bytes, assembles the evidence and redacts it, so the evidence and its
+/// redaction are the daemon's own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HumanShellPromotionStageDto {
+    /// The durable identity of the staged promotion.
+    pub promotion_id: String,
+    /// The daemon's run id for the shell command whose output is the
+    /// evidence.
+    pub source_id: String,
+    /// The question the human asked about the evidence.
+    pub question: String,
+}

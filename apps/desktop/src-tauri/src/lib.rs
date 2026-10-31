@@ -18,8 +18,9 @@ pub mod present;
 
 use bridge::{
     ArtifactExcerptView, ConnectionSnapshot, ControllerSummaryView, DesktopEvent, GitReadOperation,
-    GitReadView, ProjectDetailView, ProjectSummary, PromptSubmitView, RouteTokenView,
-    SessionListView, SessionPresentationView, SessionView, SkillCatalogueView, SubscriptionInfo,
+    GitReadView, HumanShellPromotionStageView, ProjectDetailView, ProjectSummary, PromptSubmitView,
+    RouteTokenView, SessionListView, SessionPresentationView, SessionView, SkillCatalogueView,
+    SubscriptionInfo,
 };
 use codegg_client::{
     connect_or_start_local_daemon, FrontendDescriptor, LocalDaemonOptions, LocalDaemonPaths,
@@ -28,6 +29,7 @@ use codegg_client::{
 use codegg_protocol::{
     core::{CoreEvent, CoreRequest, CoreResponse, RequestEnvelope, PROTOCOL_VERSION},
     frames::{ClientCapabilities, ClientKind},
+    human_shell::HumanShellPromotionStageDto,
 };
 use document::{
     desktop_document_close, desktop_document_completion, desktop_document_cursor,
@@ -55,6 +57,10 @@ use terminal::{
 use tokio::sync::{Mutex, Notify};
 
 const MAX_PROJECTS: usize = 50;
+
+/// The most shell runs one ask may name. The desktop's ask is about one
+/// run, so this is a bound and not a feature.
+const MAX_HUMAN_SHELL_PROMOTIONS: usize = 8;
 
 fn bound_projects(projects: impl IntoIterator<Item = ProjectSummary>) -> Vec<ProjectSummary> {
     projects.into_iter().take(MAX_PROJECTS).collect()
@@ -953,16 +959,57 @@ async fn desktop_session_create(
 /// M004 WP D prompt command. One renderer intent becomes at most one
 /// daemon turn; the host coalesces concurrent intents and fences every
 /// completion on the route/connection generation.
+///
+/// M007-I (plan 022, work package F): `human_shell_promotions` is the ask.
+/// A non-empty list names the daemon's own runs and the human's question;
+/// the daemon reads its own run bytes and stages the evidence with the turn
+/// admission, so no bytes cross the bridge. An empty list is an ordinary
+/// prompt.
 #[tauri::command]
 async fn desktop_prompt_submit(
     state: State<'_, Arc<HostState>>,
     text: String,
     plan_mode: bool,
+    human_shell_promotions: Vec<HumanShellPromotionStageView>,
     route_generation: u64,
 ) -> Result<PromptSubmitView, String> {
+    let human_shell_promotions = bound_human_shell_promotions(human_shell_promotions)?;
     state
-        .route_prompt_submit(text, plan_mode, route_generation)
+        .route_prompt_submit(text, plan_mode, human_shell_promotions, route_generation)
         .await
+}
+
+/// The ask's promotions, bounded and checked before they reach the daemon.
+///
+/// An unbounded or half-named promotion would make the daemon stage an
+/// evidence record the human never asked for, so the host refuses it here.
+fn bound_human_shell_promotions(
+    promotions: Vec<HumanShellPromotionStageView>,
+) -> Result<Vec<HumanShellPromotionStageDto>, String> {
+    if promotions.len() > MAX_HUMAN_SHELL_PROMOTIONS {
+        return Err(format!(
+            "an ask names at most {MAX_HUMAN_SHELL_PROMOTIONS} shell runs"
+        ));
+    }
+    promotions
+        .into_iter()
+        .map(|promotion| {
+            if promotion.promotion_id.trim().is_empty()
+                || promotion.source_id.trim().is_empty()
+                || promotion.question.trim().is_empty()
+            {
+                return Err(
+                    "an ask names a run, a promotion identity and a question; one is missing"
+                        .to_string(),
+                );
+            }
+            Ok(HumanShellPromotionStageDto {
+                promotion_id: promotion.promotion_id,
+                source_id: promotion.source_id,
+                question: promotion.question,
+            })
+        })
+        .collect()
 }
 
 /// M004 WP C artifact command: one bounded excerpt for an opaque
@@ -1052,6 +1099,34 @@ async fn desktop_skill_catalogue(
     route_generation: u64,
 ) -> Result<SkillCatalogueView, String> {
     state.route_skill_catalogue(route_generation).await
+}
+
+/// M007-I (plan 022, work package F): one request against the daemon's
+/// skill-promotion workflow.
+///
+/// The daemon owns the durable promotion record, so the desktop asks and
+/// renders. The renderer names the **action** and the identifiers that
+/// action names; the route supplies the workspace (the record's namespace)
+/// and the session, and the daemon resolves the habit candidate and the
+/// publication target itself. No path ever crosses the bridge.
+#[tauri::command]
+async fn desktop_skill_promotion(
+    state: State<'_, Arc<HostState>>,
+    action: String,
+    habit_id: Option<String>,
+    proposal_id: Option<String>,
+    target_scope: Option<String>,
+    route_generation: u64,
+) -> Result<bridge::SkillPromotionView, String> {
+    state
+        .route_skill_promotion(
+            &action,
+            habit_id,
+            proposal_id,
+            target_scope.as_deref(),
+            route_generation,
+        )
+        .await
 }
 
 /// M007-D: the daemon's command catalog.
@@ -1248,6 +1323,7 @@ pub fn run() {
             desktop_todo_refresh,
             desktop_git_read,
             desktop_skill_catalogue,
+            desktop_skill_promotion,
             desktop_command_catalog,
             desktop_command_execute,
             desktop_projection_start,

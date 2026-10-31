@@ -29,9 +29,8 @@ use super::super::commands::interactive_terminal::{
 };
 #[allow(unused_imports)]
 use super::super::commands::memory::{
-    apply_habit_result, apply_memory_result, apply_skill_publish_finished, start_habit_dismiss,
-    start_habit_list, start_memory_forget, start_memory_remember, start_memory_search,
-    start_memory_summary, start_skill_publish,
+    apply_habit_result, apply_memory_result, start_habit_dismiss, start_habit_list,
+    start_memory_forget, start_memory_remember, start_memory_search, start_memory_summary,
 };
 #[allow(unused_imports)]
 use super::super::commands::plugins::{
@@ -830,11 +829,14 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::HabitDismiss { id } => {
             start_habit_dismiss(app, id);
         }
-        TuiCommand::SkillPublish { id, target_scope } => {
-            start_skill_publish(app, id, target_scope);
-        }
-        TuiCommand::SkillPublishFinished { message, is_error } => {
-            apply_skill_publish_finished(app, message, is_error);
+        TuiCommand::SkillPromotionFinished {
+            action,
+            response,
+            error,
+        } => {
+            crate::tui::commands::promotion::apply_skill_promotion_finished(
+                app, action, response, error,
+            );
         }
         TuiCommand::CompactSession => {
             handle_compact_session(app);
@@ -1172,6 +1174,15 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             error,
         } => {
             apply_goal_operation_finished(app, session_id, op, response, error);
+        }
+        TuiCommand::ChangeReviewOpened { response, error } => {
+            crate::tui::commands::change_review::apply_opened(app, response, error);
+        }
+        TuiCommand::RevertFinished { response, error } => {
+            crate::tui::commands::revert::apply_revert_finished(app, response, error);
+        }
+        TuiCommand::DiffFinished { response, error } => {
+            crate::tui::commands::diff::apply_diff_finished(app, response, error);
         }
         TuiCommand::SessionStateRefreshed {
             todos,

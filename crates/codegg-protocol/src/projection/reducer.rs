@@ -1212,6 +1212,37 @@ impl ProjectionReducer {
                 snapshot.set_plugin_catalogue(entries.clone());
                 ApplyOutcome::Applied
             }
+            ProjectionEvent::WorkPlanUpdated { plan, at: _ } => {
+                snapshot.set_work_plan(plan.clone());
+                ApplyOutcome::Applied
+            }
+            ProjectionEvent::TestRunStarted { command, at: _ } => {
+                snapshot.set_test_state(crate::projection::dto::TestStateProjection {
+                    status: "running".to_string(),
+                    command: command.clone(),
+                    summary: None,
+                });
+                ApplyOutcome::Applied
+            }
+            ProjectionEvent::TestRunCompleted {
+                status,
+                summary,
+                at: _,
+            } => {
+                // The completion names the outcome, not the command; the
+                // command is the one the start event carried.
+                let command = snapshot
+                    .test_state
+                    .as_ref()
+                    .map(|state| state.command.clone())
+                    .unwrap_or_default();
+                snapshot.set_test_state(crate::projection::dto::TestStateProjection {
+                    status: status.clone(),
+                    command,
+                    summary: Some(summary.clone()),
+                });
+                ApplyOutcome::Applied
+            }
             ProjectionEvent::Diagnostic { code, message } => {
                 let mut diag = ProjectionDiagnostic::new(
                     clip_str(code, MAX_PROJECTION_STRING_BYTES),
@@ -2590,6 +2621,101 @@ mod tests {
                 .map(|entry| entry.plugin_id.as_str()),
             Some("plugin:only")
         );
+    }
+
+    /// M007-H (D3, D4): the daemon's published plan and test state reach the
+    /// session projection, so a frontend reads the daemon's answer.
+    #[test]
+    fn the_published_plan_and_test_state_reach_the_session_projection() {
+        let mut snap = SessionProjectionSnapshot::empty("s", "p", "w");
+        let reducer = ProjectionReducer::default();
+
+        reducer.apply(
+            &mut snap,
+            ReducerEventInput::session(
+                1,
+                0,
+                "s",
+                None,
+                ProjectionEvent::WorkPlanUpdated {
+                    plan: crate::projection::dto::WorkPlanProjection {
+                        plan_id: "wp-1".into(),
+                        revision: 2,
+                        status: "active".into(),
+                        objective_preview: "land the daemon's plan".into(),
+                        current_phase: Some("implement".into()),
+                        current_item_id: Some("wi-1".into()),
+                        total_items: 1,
+                        actionable_count: 1,
+                        blocked_count: 0,
+                        in_progress_count: 0,
+                        assessment: "actionable".into(),
+                        updated_at_ms: 1_700_000_000_000,
+                        items: vec![crate::projection::dto::WorkPlanItemProjection {
+                            item_id: "wi-1".into(),
+                            description: "publish the plan".into(),
+                            status: "in_progress".into(),
+                            blocker: None,
+                            next_action: Some("publish it".into()),
+                        }],
+                    },
+                    at: 0,
+                },
+            ),
+        );
+        let plan = snap
+            .work_plan
+            .clone()
+            .expect("the published plan reaches the snapshot");
+        assert_eq!(plan.plan_id, "wp-1");
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.items[0].item_id, "wi-1");
+
+        reducer.apply(
+            &mut snap,
+            ReducerEventInput::session(
+                2,
+                0,
+                "s",
+                None,
+                ProjectionEvent::TestRunStarted {
+                    command: "cargo test".into(),
+                    at: 0,
+                },
+            ),
+        );
+        assert_eq!(
+            snap.test_state
+                .as_ref()
+                .map(|state| (state.status.as_str(), state.command.as_str())),
+            Some(("running", "cargo test")),
+            "the started run reaches the snapshot with the command it names"
+        );
+
+        reducer.apply(
+            &mut snap,
+            ReducerEventInput::session(
+                3,
+                0,
+                "s",
+                None,
+                ProjectionEvent::TestRunCompleted {
+                    status: "passed".into(),
+                    summary: "12 passed".into(),
+                    at: 0,
+                },
+            ),
+        );
+        let test_state = snap
+            .test_state
+            .clone()
+            .expect("the completed run reaches the snapshot");
+        assert_eq!(test_state.status, "passed");
+        assert_eq!(
+            test_state.command, "cargo test",
+            "the completion carries forward the command the start named"
+        );
+        assert_eq!(test_state.summary.as_deref(), Some("12 passed"));
     }
 
     #[test]

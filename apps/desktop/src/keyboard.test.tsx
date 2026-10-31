@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { App } from './App';
 import { bridge } from './bridge';
+import type { HumanShellPromotionStageView } from './bridge-types';
 import {
   ALL_ACTION_DECLARATIONS,
   buildEffectiveMap,
@@ -203,7 +204,7 @@ beforeEach(() => {
     routeToken: token(routeGeneration, sessionId),
   }));
   vi.mocked(bridge.promptSubmit).mockImplementation(
-    async (_text: string, _planMode: boolean, routeGeneration: number) => ({
+    async (_text: string, _planMode: boolean, _promotions: HumanShellPromotionStageView[], routeGeneration: number) => ({
       intentId: 'intent-1',
       routeToken: token(routeGeneration + 1, 's-1'),
     }),
@@ -473,7 +474,7 @@ describe('the desktop input model', () => {
     // `enter` in the composer submits.
     await pressKey('Enter', {}, input);
     await waitFor(() => expect(bridge.promptSubmit).toHaveBeenCalledTimes(1));
-    expect(bridge.promptSubmit).toHaveBeenCalledWith('hello', false, expect.any(Number));
+    expect(bridge.promptSubmit).toHaveBeenCalledWith('hello', false, [], expect.any(Number));
 
     // `shift+enter` inserts a newline instead.
     await act(async () => {

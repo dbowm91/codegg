@@ -67,6 +67,9 @@ pub enum CheckoutWriterSink {
     HttpFileDelete,
     /// Create a workspace directory over the HTTP API (`POST /workspace`).
     HttpWorkspaceCreate,
+    /// Publish a validated skill proposal into a skill root
+    /// (`CoreRequest::SkillPromotion` with the publish action).
+    SkillPublish,
 }
 
 impl CheckoutWriterSink {
@@ -88,6 +91,7 @@ impl CheckoutWriterSink {
             Self::HttpFileWrite => "http_file_write",
             Self::HttpFileDelete => "http_file_delete",
             Self::HttpWorkspaceCreate => "http_workspace_create",
+            Self::SkillPublish => "skill_publish",
         }
     }
 }

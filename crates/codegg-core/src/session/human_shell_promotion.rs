@@ -182,17 +182,88 @@ impl HumanShellPromotionStore {
         &self,
         input: NewHumanShellPromotion,
     ) -> Result<StageHumanShellPromotionOutcome, HumanShellPromotionError> {
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        let outcome = Self::stage_in(&mut tx, &input).await?;
+        if matches!(outcome, StageHumanShellPromotionOutcome::Staged(_)) {
+            tx.commit().await.map_err(storage_error)?;
+        } else {
+            tx.rollback().await.map_err(storage_error)?;
+        }
+        Ok(outcome)
+    }
+
+    /// Persist several projections in **one** transaction.
+    ///
+    /// M007-I (work package D): the ask stages its evidence and admits the
+    /// turn together. Staging several rows in one transaction means a
+    /// failure part-way through leaves no half-staged evidence behind.
+    pub async fn stage_many(
+        &self,
+        inputs: Vec<NewHumanShellPromotion>,
+    ) -> Result<Vec<StageHumanShellPromotionOutcome>, HumanShellPromotionError> {
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        let mut outcomes = Vec::with_capacity(inputs.len());
+        for input in &inputs {
+            let outcome = Self::stage_in(&mut tx, input).await?;
+            let staged = matches!(outcome, StageHumanShellPromotionOutcome::Staged(_));
+            outcomes.push(outcome);
+            if !staged {
+                // A duplicate is not an error, but the transaction must not
+                // hold a write lock the caller does not need.
+                tx.rollback().await.map_err(storage_error)?;
+                return Ok(outcomes);
+            }
+        }
+        tx.commit().await.map_err(storage_error)?;
+        Ok(outcomes)
+    }
+
+    /// Expire the named pending rows.
+    ///
+    /// The daemon uses this when the turn admission fails after the evidence
+    /// was staged: the evidence must not survive as a `pending` row that no
+    /// turn will ever consume.
+    pub async fn expire_pending(
+        &self,
+        session_id: &str,
+        ids: &[String],
+    ) -> Result<usize, HumanShellPromotionError> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let mut expired = 0usize;
+        for id in ids {
+            let updated = sqlx::query(
+                "UPDATE human_shell_promotion SET status = 'expired' \
+                 WHERE session_id = ? AND id = ? AND status = 'pending'",
+            )
+            .bind(session_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(storage_error)?
+            .rows_affected();
+            expired += usize::try_from(updated).unwrap_or(0);
+        }
+        Ok(expired)
+    }
+
+    /// Stage one projection inside a caller's transaction.
+    async fn stage_in(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        input: &NewHumanShellPromotion,
+    ) -> Result<StageHumanShellPromotionOutcome, HumanShellPromotionError> {
+        let input = input.clone();
         validate_input(&input)?;
         let projection_bytes = input.projection.len();
         let digest = sha256_hex(input.projection.as_bytes());
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
 
         sqlx::query(
             "UPDATE human_shell_promotion SET status = 'expired' \
              WHERE status = 'pending' AND expires_at_ms <= ?",
         )
         .bind(input.created_at_ms)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(storage_error)?;
         sqlx::query(
@@ -204,7 +275,7 @@ impl HumanShellPromotionStore {
         .bind(&input.principal_id)
         .bind(&input.project_id)
         .bind(&input.workspace_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(storage_error)?;
 
@@ -217,7 +288,7 @@ impl HumanShellPromotionStore {
                     .created_at_ms
                     .saturating_sub(HUMAN_SHELL_PROMOTION_TTL_MS),
             )
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(storage_error)?;
         let existing: Option<PromotionRow> = sqlx::query_as(
@@ -227,7 +298,7 @@ impl HumanShellPromotionStore {
              FROM human_shell_promotion WHERE id = ?",
         )
         .bind(&input.id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await
         .map_err(storage_error)?;
         if let Some(existing) = existing {
@@ -242,7 +313,6 @@ impl HumanShellPromotionStore {
             if !same {
                 return Err(HumanShellPromotionError::IdentityConflict);
             }
-            tx.rollback().await.map_err(storage_error)?;
             return Ok(StageHumanShellPromotionOutcome::Duplicate(existing));
         }
 
@@ -254,7 +324,7 @@ impl HumanShellPromotionStore {
         .bind(&input.session_id)
         .bind(&input.principal_id)
         .bind(input.created_at_ms)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await
         .map_err(storage_error)?;
         if pending >= HUMAN_SHELL_PROMOTION_MAX_PENDING {
@@ -266,7 +336,7 @@ impl HumanShellPromotionStore {
         )
         .bind(&input.session_id)
         .bind(&input.principal_id)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await
         .map_err(storage_error)?;
         if retained >= HUMAN_SHELL_PROMOTION_MAX_RETAINED_PER_SESSION {
@@ -302,10 +372,9 @@ impl HumanShellPromotionStore {
         .bind(&digest)
         .bind(input.created_at_ms)
         .bind(expires_at_ms)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(storage_error)?;
-        tx.commit().await.map_err(storage_error)?;
 
         Ok(StageHumanShellPromotionOutcome::Staged(
             HumanShellPromotionRecord {

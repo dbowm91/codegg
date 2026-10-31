@@ -21,6 +21,7 @@
 //! buffer — is a deferred ADR; the rejection in `src/lsp/mutation.rs` is
 //! correct as written and this milestone does not touch it.
 
+use crate::protocol::core::CoreResponse;
 use crate::tui::app::App;
 use crate::tui::unified_diff::parse_review;
 use codegg_protocol::lsp::{LspPreviewApplyRequestDto, LspPreviewCandidateDto};
@@ -124,76 +125,6 @@ pub fn build_apply_request(
     Ok(crate::protocol::core::CoreRequest::LspPreviewApply { request })
 }
 
-/// Open a review for a pending candidate. Applies nothing.
-pub fn open(app: &mut App, preview_id: &str) {
-    let id = preview_id.trim();
-    if id.is_empty() {
-        app.messages_state
-            .toasts
-            .info("Usage: /review <preview-id>");
-        return;
-    }
-    let Some(lsp_tool) = app.lsp_tool.as_ref() else {
-        app.messages_state
-            .toasts
-            .info("The LSP tool is unavailable in this session");
-        return;
-    };
-
-    // A stale candidate is refused *before* a review is built: showing a diff
-    // that no longer corresponds to the candidate would invite the user to
-    // approve something that is not what would be applied.
-    let (is_stale, _detail) = lsp_tool
-        .refresh_preview_staleness(id)
-        .unwrap_or((true, "candidate not found".to_string()));
-    if is_stale {
-        app.messages_state.toasts.warning(&format!(
-            "Candidate {id} is STALE or unknown — regenerate it before reviewing."
-        ));
-        return;
-    }
-
-    // Resolve the candidate through the one shared builder, purely to learn
-    // the title/kind/provenance and to obtain its patches. Building the
-    // request here does not send it.
-    let Ok(core_request) = build_apply_request(app, ApplySource::Registry(id)) else {
-        app.messages_state
-            .toasts
-            .info(ApplyRefusal::PreviewUnknown.message());
-        return;
-    };
-    let crate::protocol::core::CoreRequest::LspPreviewApply { request } = core_request else {
-        return;
-    };
-
-    let patches: Vec<(String, String)> = request
-        .patches
-        .iter()
-        .map(|patch| (patch.path.clone(), patch.patch.clone()))
-        .collect();
-    let parsed = parse_review(&patches);
-    let affected_paths = request
-        .patches
-        .iter()
-        .map(|patch| patch.path.clone())
-        .collect();
-
-    app.change_review_state.open(
-        request.preview_id.clone(),
-        request.kind.clone(),
-        request.title.clone(),
-        request.provenance.clone(),
-        is_stale,
-        parsed,
-        affected_paths,
-    );
-    app.messages_state.toasts.info(&format!(
-        "Reviewing \"{}\" — {} file(s). [a]pply or Esc to reject.",
-        request.title,
-        patches.len()
-    ));
-}
-
 /// Open a review on a candidate the editor carried. Applies nothing.
 ///
 /// This is the editor's half of the bridge: a preview read returned the
@@ -220,6 +151,82 @@ pub fn open_carried(app: &mut App, candidate: LspPreviewCandidateDto) {
     app.messages_state.toasts.info(&format!(
         "Reviewing \"{title}\" — {file_count} file(s). [a]pply or Esc to reject."
     ));
+}
+
+/// Read a pending candidate from the daemon and open its review.
+///
+/// M007-H (D4): the daemon owns the preview store, so the TUI reads the
+/// candidate from it instead of from a local `LspTool` that is never
+/// installed. The daemon's answer is rendered in place: a refusal is the
+/// daemon's typed refusal, never a local approximation.
+pub fn open_via_daemon(app: &mut App, preview_id: &str) {
+    let id = preview_id.trim().to_string();
+    if id.is_empty() {
+        app.messages_state
+            .toasts
+            .info("Usage: /review-change <preview-id>");
+        return;
+    }
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state
+            .toasts
+            .warning("The daemon is unavailable, so the preview cannot be read");
+        return;
+    };
+    let scope = crate::tui::command_route::scope_for(app);
+    let tx = app.tui_cmd_tx.clone();
+    crate::tui::async_cmd::spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        crate::tui::task_lifecycle::TuiTaskKind::Command,
+        "review_change_open",
+        async move {
+            let response =
+                crate::tui::command_route::send_command(&core_client, scope, "review", "", &id)
+                    .await;
+            let (response, error) = match response {
+                Ok(response) => (Some(response), None),
+                Err(error) => (None, Some(error.to_string())),
+            };
+            Some(crate::tui::app::TuiCommand::ChangeReviewOpened { response, error })
+        },
+    );
+}
+
+/// Render the daemon's answer to a preview read.
+pub fn apply_opened(app: &mut App, response: Option<CoreResponse>, error: Option<String>) {
+    if let Some(error) = error {
+        app.messages_state
+            .toasts
+            .warning(&format!("The preview could not be read: {error}"));
+        return;
+    }
+    let Some(response) = response else {
+        app.messages_state
+            .toasts
+            .warning("The preview could not be read");
+        return;
+    };
+    match response {
+        CoreResponse::LspPreviewRead {
+            candidate: Some(candidate),
+        } => open_carried(app, candidate),
+        CoreResponse::LspPreviewRead { candidate: None } => {
+            app.messages_state
+                .toasts
+                .warning("No pending preview with that id");
+        }
+        CoreResponse::Error { code, message } => {
+            app.messages_state
+                .toasts
+                .warning(&format!("{code}: {message}"));
+        }
+        _ => {
+            app.messages_state
+                .toasts
+                .warning("The preview read returned an unexpected response");
+        }
+    }
 }
 
 /// Accept the reviewed change.
@@ -485,6 +492,33 @@ mod tests {
         (app, dir, preview_id, target)
     }
 
+    /// The daemon path's shape, over the local fixture.
+    ///
+    /// M007-H (D4): the daemon mints the candidate and the review opens from
+    /// the carried material. The fixture mints it locally, so the test drives
+    /// the same open the daemon's answer reaches.
+    fn open_carried_from_registry(app: &mut App, preview_id: &str) -> bool {
+        let Ok(core_request) = build_apply_request(app, ApplySource::Registry(preview_id)) else {
+            return false;
+        };
+        let crate::protocol::core::CoreRequest::LspPreviewApply { request } = core_request else {
+            return false;
+        };
+        open_carried(
+            app,
+            LspPreviewCandidateDto {
+                preview_id: request.preview_id,
+                preview_revision: request.preview_revision,
+                preview_digest: request.preview_digest,
+                kind: request.kind,
+                title: request.title,
+                provenance: request.provenance,
+                patches: request.patches,
+            },
+        );
+        true
+    }
+
     /// The one-apply-path invariant, in its value-level form.
     ///
     /// "One apply path" is structural: both `/lsp-preview-apply` and the
@@ -525,7 +559,10 @@ mod tests {
         assert_eq!(request.patches[0].original_hash, base_hash());
 
         // Now open the review and confirm it displays that same change.
-        open(&mut app, &preview_id);
+        assert!(
+            open_carried_from_registry(&mut app, &preview_id),
+            "a fresh candidate must open for review"
+        );
         assert!(
             app.change_review_state.is_open(),
             "a fresh candidate must open for review"
@@ -582,8 +619,13 @@ mod tests {
             ApplyRefusal::PreviewUnknown,
             "an already-applied candidate must not produce a second request"
         );
-        // A review open over it shows the refusal rather than applying again.
-        open(&mut app, &preview_id);
+        // A review open over it shows the refusal rather than applying again:
+        // the daemon would have no candidate to return, so the frontend has
+        // nothing to open.
+        assert!(
+            !open_carried_from_registry(&mut app, &preview_id),
+            "a spent candidate must not open a review that looks applyable"
+        );
         assert!(
             !app.change_review_state.is_open(),
             "a spent candidate must not open a review that looks applyable"

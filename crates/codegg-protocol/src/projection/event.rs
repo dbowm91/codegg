@@ -417,6 +417,22 @@ pub enum ProjectionEvent {
         entries: Vec<crate::projection::dto::PluginCatalogueEntryProjection>,
         at: i64,
     },
+    /// The session's work plan changed. M007-H (D3): the daemon owns the
+    /// plan, so it publishes the plan and a frontend reads it.
+    WorkPlanUpdated {
+        plan: crate::projection::dto::WorkPlanProjection,
+        at: i64,
+    },
+    /// A supervised test run started. M007-H (D4): the daemon owns the
+    /// test runner, so its state is the authoritative answer.
+    TestRunStarted { command: String, at: i64 },
+    /// A supervised test run completed. M007-H (D4): the daemon's own
+    /// outcome, published so every frontend reads the same answer.
+    TestRunCompleted {
+        status: String,
+        summary: String,
+        at: i64,
+    },
     /// Projection diagnostic — used by adapters and reducers to
     /// surface impossible or out-of-order transitions without
     /// mutating session state. The reducer appends the diagnostic to

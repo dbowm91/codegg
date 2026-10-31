@@ -55,7 +55,10 @@ use crate::error::StorageError;
 /// ADR-0055 adds **v91**, the revisioned session-relative working directory.
 /// A002 adds **v92**, the durable marker for exclusive read-only worktree leases,
 /// and **v93**, the run's durable read-only placement projection flag.
-pub const STORAGE_LAYOUT_VERSION: u32 = 93;
+///
+/// M007-I adds **v94**, the daemon's durable skill-promotion record, keyed on
+/// the canonical `WorkspaceId`.
+pub const STORAGE_LAYOUT_VERSION: u32 = 94;
 
 pub struct Database {
     pool: SqlitePool,

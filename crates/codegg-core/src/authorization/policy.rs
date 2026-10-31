@@ -132,6 +132,25 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::GitRead),
         ),
+        // M007-H (work package C): the daemon's own `/revert` restores paths
+        // in a checkout, so it asks for the write capability and not the
+        // read one. The scope is the project whose checkout is written, the
+        // same `DirectProject` the git read resolves through.
+        R::GitRevert { .. } => OperationDescriptor::new(
+            "git_revert",
+            ScopeKind::DirectProject,
+            Some(Capability::GitWrite),
+        ),
+        // M007-I (work package A): the daemon's own diff read discloses the
+        // working tree's bytes against `HEAD`. It is a **read**: it asks for
+        // the read capability and not the write one, and it resolves through
+        // the same `DirectProject` scope the git read does. There is no write
+        // path behind this variant.
+        R::GitDiff { .. } => OperationDescriptor::new(
+            "git_diff",
+            ScopeKind::DirectProject,
+            Some(Capability::GitRead),
+        ),
         // Phase 3: the skill catalogue discloses a project's discoverable
         // skill metadata — names and descriptions, never bodies and never
         // paths. It is project-scoped inert metadata, so it takes the
@@ -142,6 +161,17 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             "skill_catalogue_list",
             ScopeKind::DirectProject,
             Some(Capability::ProjectRead),
+        ),
+        // M007-I (work package B): the promotion workflow. The daemon owns
+        // the durable record, so a request against it is an **effect**: it
+        // stages, rejects and publishes. It takes the same
+        // `command.execute` grant the catalog's daemon-effect commands take,
+        // and it is scoped through the session, because the session names
+        // the project the record belongs to.
+        R::SkillPromotion { .. } => OperationDescriptor::new(
+            "skill_promotion",
+            ScopeKind::ViaSession,
+            Some(Capability::CommandExecute),
         ),
         // M007-D: reading the daemon's command catalog discloses which
         // commands exist and how each one is classified. It is inert
@@ -433,6 +463,15 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
         // provider identity the client is not trusted to assert.
         R::SessionPromptSubmit { .. } => OperationDescriptor::new(
             "session_prompt_submit",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
+        // M007-I (work packages D and E): the ask, as one request. It
+        // stages the evidence and admits the turn, so it takes the same
+        // authority as the prompt submit it replaces. The operation is
+        // named after the command that issues it, `/shell-ask`.
+        R::SessionPromptSubmitWithHumanShellPromotions { .. } => OperationDescriptor::new(
+            "shell_ask_submit",
             ScopeKind::ViaSession,
             Some(Capability::AgentInvoke),
         ),
@@ -2723,6 +2762,27 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
             request: codegg_protocol::skill::SkillCatalogueRequestDto {
                 project_id: String::new(),
                 max_entries: None,
+            },
+        },
+        // M007-I (work packages D and E): the atomic ask. The payload
+        // values are inert placeholders and only the variant matters here.
+        R::SessionPromptSubmitWithHumanShellPromotions {
+            session_id: String::new(),
+            text: String::new(),
+            plan_mode: false,
+            human_shell_promotions: Vec::new(),
+        },
+        // M007-I (work package B): one representative request against the
+        // daemon's promotion workflow. The payload values are inert
+        // placeholders and only the variant matters here.
+        R::SkillPromotion {
+            request: codegg_protocol::skill::SkillPromotionRequestDto {
+                workspace_id: String::new(),
+                session_id: String::new(),
+                action: codegg_protocol::skill::SkillPromotionActionDto::List,
+                habit_id: None,
+                proposal_id: None,
+                target_scope: None,
             },
         },
         // M007-D: the command catalog read and the daemon-effect command

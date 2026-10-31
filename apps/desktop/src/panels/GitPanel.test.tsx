@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { GitPanel } from './GitPanel';
-import type { GitBranchListView, GitDiffView, GitStatusView } from '../bridge-types';
+import type { GitBranchListView, GitStatusView } from '../bridge-types';
+import type { DiffAnswerView } from '../commands/diffAnswer';
 
 const status = (overrides: Partial<GitStatusView> = {}): GitStatusView => ({
   branch: 'main',
@@ -12,14 +13,21 @@ const status = (overrides: Partial<GitStatusView> = {}): GitStatusView => ({
   ...overrides,
 });
 
-const diff = (overrides: Partial<GitDiffView> = {}): GitDiffView => ({
-  filesChanged: 1,
-  insertions: 4,
-  deletions: 2,
-  files: [{ path: 'src/lib.rs', kind: 'modified' }],
-  totalFiles: 1,
-  truncated: false,
-  consistency: 'immutable_generation',
+/** The daemon's whole-tree answer: one unified diff, no `HEAD` side. */
+const treeDiff = (overrides: Partial<DiffAnswerView> = {}): DiffAnswerView => ({
+  title: 'Repository Diff',
+  path: null,
+  oldContent: '',
+  newContent: 'diff --git a/src/lib.rs b/src/lib.rs\n-old\n+new\n',
+  ...overrides,
+});
+
+/** The daemon's per-file answer: both sides of one file. */
+const fileDiff = (overrides: Partial<DiffAnswerView> = {}): DiffAnswerView => ({
+  title: 'Diff: src/lib.rs',
+  path: 'src/lib.rs',
+  oldContent: 'old\n',
+  newContent: 'new\n',
   ...overrides,
 });
 
@@ -55,48 +63,52 @@ describe('the desktop git surface', () => {
     expect(screen.getByTestId('git-state')).toHaveTextContent('clean');
   });
 
-  it('lists every changed file with its change kind', () => {
-    render(
-      <GitPanel
-        status={null}
-        diff={diff({
-          filesChanged: 2,
-          files: [
-            { path: 'src/lib.rs', kind: 'modified' },
-            { path: 'src/new.rs', kind: 'added' },
-          ],
-          totalFiles: 2,
-        })}
-        branches={null}
-      />,
+  it("draws the daemon's whole-tree diff answer", () => {
+    render(<GitPanel status={null} diff={treeDiff()} branches={null} />);
+    // The answer is the diff itself, not a summary of it: the daemon's
+    // title and the unified diff it read are what the panel shows.
+    expect(screen.getByTestId('git-diff-heading')).toHaveTextContent('Repository Diff');
+    expect(screen.getByTestId('git-diff-body')).toHaveTextContent(
+      'diff --git a/src/lib.rs b/src/lib.rs',
     );
-    const files = screen.getAllByTestId('git-file-item');
-    expect(files).toHaveLength(2);
-    expect(screen.getAllByTestId('git-file-path').map((node) => node.textContent)).toEqual([
-      'src/lib.rs',
-      'src/new.rs',
-    ]);
-    expect(screen.getAllByTestId('git-file-kind').map((node) => node.textContent)).toEqual([
-      'modified',
-      'added',
-    ]);
+    expect(screen.getByTestId('git-diff-body')).toHaveTextContent('-old');
+    expect(screen.getByTestId('git-diff-body')).toHaveTextContent('+new');
   });
 
-  it('shows the consistency class of each read', () => {
+  it("draws both sides of the daemon's per-file diff answer", () => {
+    render(<GitPanel status={null} diff={fileDiff()} branches={null} />);
+    expect(screen.getByTestId('git-diff-heading')).toHaveTextContent('Diff: src/lib.rs');
+    expect(screen.getByTestId('git-diff-path')).toHaveTextContent('src/lib.rs');
+    expect(screen.getByTestId('git-diff-old')).toHaveTextContent('old');
+    expect(screen.getByTestId('git-diff-new')).toHaveTextContent('new');
+  });
+
+  it('says the whole tree has no changes when the daemon answered with no diff', () => {
+    render(<GitPanel status={null} diff={treeDiff({ newContent: '' })} branches={null} />);
+    expect(screen.getByTestId('git-diff-empty')).toHaveTextContent('No changes.');
+    expect(screen.queryByTestId('git-diff-body')).toBeNull();
+  });
+
+  it('says a file is new when the daemon answered with no HEAD side', () => {
+    render(<GitPanel status={null} diff={fileDiff({ oldContent: '' })} branches={null} />);
+    expect(screen.getByTestId('git-diff-old-empty')).toHaveTextContent('No file at HEAD.');
+    expect(screen.getByTestId('git-diff-new')).toHaveTextContent('new');
+  });
+
+  it('shows the consistency class of each fact set it read', () => {
     // The class says what the observation is worth. A panel that drew the
     // numbers without it would be implying a guarantee the daemon never
     // gave, so every fact set names the class it was read under.
     render(
       <GitPanel
         status={status({ consistency: 'captured_not_current' })}
-        diff={diff({ consistency: 'live_mutable' })}
+        diff={treeDiff()}
         branches={branches({ consistency: 'no_object_generation' })}
       />,
     );
     expect(screen.getByTestId('git-status-consistency')).toHaveTextContent(
       'captured, possibly stale',
     );
-    expect(screen.getByTestId('git-diff-consistency')).toHaveTextContent('live, may be torn');
     expect(screen.getByTestId('git-branch-consistency')).toHaveTextContent(
       'no generation observed',
     );
@@ -107,25 +119,21 @@ describe('the desktop git surface', () => {
     );
   });
 
-  it('says the facts are unknown until the host has read them', () => {    render(<GitPanel status={null} diff={null} branches={null} />);
+  it('invents no consistency class for the diff answer', () => {
+    // The daemon's diff answer carries no consistency class: it is the
+    // daemon's answer to a command, not a git fact read. The panel must
+    // not borrow the class of some other read and present it as this one.
+    render(<GitPanel status={null} diff={treeDiff()} branches={null} />);
+    expect(screen.queryByTestId('git-diff-consistency')).toBeNull();
+  });
+
+  it('says the facts are unknown until the host has read them', () => {
+    render(<GitPanel status={null} diff={null} branches={null} />);
     // "not read yet" and "nothing to report" are different claims, and an
     // absent fact set must not read as an empty one.
     expect(screen.getByTestId('git-status-unknown')).toHaveTextContent('Git status not read yet.');
     expect(screen.getByTestId('git-diff-unknown')).toHaveTextContent('Diff not read yet.');
     expect(screen.getByTestId('git-branches-unknown')).toHaveTextContent('Branches not read yet.');
-  });
-
-  it('says the daemon capped the changed file list', () => {
-    render(
-      <GitPanel
-        status={null}
-        diff={diff({ filesChanged: 900, totalFiles: 900, truncated: true })}
-        branches={null}
-      />,
-    );
-    // The daemon's bound is part of the answer: the panel must not imply
-    // the list is complete.
-    expect(screen.getByTestId('git-diff-truncated')).toHaveTextContent('Showing 1 of 900');
   });
 
   it('marks the current branch and its sync counts', () => {

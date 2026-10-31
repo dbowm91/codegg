@@ -334,6 +334,17 @@ pub fn build_session_tool_registry(
         Some(session_id.to_owned()),
         Some(execution.workspace_root.clone()),
     ) {
+        // M007-I (work package B): the proposal tool writes the promotion
+        // record into the daemon's own store, keyed on the canonical
+        // workspace. The rooted tool replaces the unrooted registration the
+        // base registry carries, so the tool can never record a proposal
+        // against a namespace the daemon does not own.
+        tool_registry.register(crate::tool::skill_proposal::SkillProposalTool::new(
+            pool.clone(),
+            execution.workspace_id.as_str(),
+            execution.workspace_root.clone(),
+            crate::core::daemon_skills::default_habit_root(),
+        ));
         tool_registry.register(
             crate::tool::session_working_directory::SessionWorkingDirectoryTool::new(
                 pool, session_id, root,

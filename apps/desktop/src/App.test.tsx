@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { App } from './App';
 import { bridge } from './bridge';
+import type { HumanShellPromotionStageView } from './bridge-types';
 
 vi.mock('./bridge', () => ({
   bridge: {
@@ -24,6 +25,9 @@ vi.mock('./bridge', () => ({
     todoRefresh: vi.fn(),
     gitRead: vi.fn(),
     skillCatalogue: vi.fn(),
+    commandCatalog: vi.fn(),
+    commandExecute: vi.fn(),
+    skillPromotion: vi.fn(),
     documentOpen: vi.fn(),
     documentViewport: vi.fn(),
     documentCursor: vi.fn(),
@@ -385,7 +389,7 @@ describe('session route flow', () => {
     }));
     vi.mocked(bridge.projectionStart).mockImplementation(async (sessionId: string) => presentation(sessionId));
     vi.mocked(bridge.todoRefresh).mockImplementation(async () => presentation('s-1'));
-    vi.mocked(bridge.promptSubmit).mockImplementation(async (_text: string, _planMode: boolean, routeGeneration: number) => ({
+    vi.mocked(bridge.promptSubmit).mockImplementation(async (_text: string, _planMode: boolean, _promotions: HumanShellPromotionStageView[], routeGeneration: number) => ({
       intentId: 'intent-1',
       routeToken: token(routeGeneration, 's-1'),
     }));
@@ -418,22 +422,6 @@ describe('session route flow', () => {
           branches: null,
         };
       }
-      if (operation === 'diff') {
-        return {
-          kind: 'diff' as const,
-          status: null,
-          diff: {
-            filesChanged: 1,
-            insertions: 4,
-            deletions: 2,
-            files: [{ path: 'src/lib.rs', kind: 'modified' as const }],
-            totalFiles: 1,
-            truncated: false,
-            consistency: 'immutable_generation' as const,
-          },
-          branches: null,
-        };
-      }
       return {
         kind: 'branches' as const,
         status: null,
@@ -456,6 +444,53 @@ describe('session route flow', () => {
         },
       };
     });
+    // M007-I (plan 022, work package F): the diff is the daemon's answer to
+    // the `diff` command, not a git fact set. The renderer resolves the
+    // command in the daemon's catalog and dispatches it.
+    vi.mocked(bridge.commandCatalog).mockImplementation(async () => ({
+      catalogVersion: 7,
+      commands: [
+        {
+          commandId: 'diff',
+          name: '/fixture-diff',
+          aliases: [],
+          description: 'the daemon publishes this description',
+          domain: 'git_review',
+          kind: 'daemon_effect' as const,
+          capability: 'command.execute',
+          forms: [
+            {
+              form: '',
+              kind: 'daemon_effect' as const,
+              argumentHint: '<path>',
+              argumentRequired: true,
+              daemonServed: true,
+              action: null,
+            },
+          ],
+        },
+      ],
+    }));
+    vi.mocked(bridge.commandExecute).mockImplementation(async () => ({
+      runId: 'run-1',
+      commandId: 'diff',
+      status: 'completed' as const,
+      summary: 'the daemon answered with a diff',
+      lines: [],
+      report: null,
+      startedAtMs: 1,
+      completedAtMs: 2,
+      response: {
+        type: 'git_diff',
+        result: {
+          project_id: 'p0',
+          workspace_id: 'w0',
+          old_content: '',
+          new_content: 'diff --git a/src/lib.rs b/src/lib.rs\n',
+          title: 'Repository Diff',
+        },
+      },
+    }));
     vi.mocked(bridge.skillCatalogue).mockImplementation(async () => ({
       projectId: 'p0',
       skills: [
@@ -469,6 +504,25 @@ describe('session route flow', () => {
       ],
       total: 1,
       truncated: false,
+    }));
+    // M007-I (plan 022, work package F): the daemon owns the durable
+    // promotion record, so the desktop asks and renders.
+    vi.mocked(bridge.skillPromotion).mockImplementation(async (action: string) => ({
+      action,
+      changed: false,
+      requestId: null,
+      draftPrompt: null,
+      proposals: [
+        {
+          proposalId: 'proposal-1',
+          name: 'testing-ci',
+          description: 'Select focused verification.',
+          status: 'awaiting_review',
+          revision: 1,
+        },
+      ],
+      detail: null,
+      publishedRelativePath: null,
     }));
   });
 
@@ -504,18 +558,79 @@ describe('session route flow', () => {
     // The facts are read for the route's project, with the route's own
     // generation: the renderer names the fact set, never the project.
     await waitFor(() => expect(bridge.gitRead).toHaveBeenCalledWith('status', 1));
-    expect(bridge.gitRead).toHaveBeenCalledWith('diff', 1);
     expect(bridge.gitRead).toHaveBeenCalledWith('branches', 1);
     await waitFor(() => expect(bridge.skillCatalogue).toHaveBeenCalledWith(1));
     expect(await screen.findByTestId('git-branch')).toHaveTextContent('main');
     expect(screen.getByTestId('git-state')).toHaveTextContent('dirty');
-    expect(screen.getByTestId('git-file-path')).toHaveTextContent('src/lib.rs');
     expect(screen.getByTestId('git-branch-current')).toHaveTextContent('current');
     expect(screen.getByTestId('skill-name')).toHaveTextContent('testing-ci');
   });
 
-  it('reports a failed project-fact read without clobbering the route error', async () => {
-    vi.mocked(bridge.gitRead).mockRejectedValue(new Error('git_facts_unavailable: unavailable'));
+  it('reads the diff from the daemon answer rather than the git facts', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('project-select-p0'));
+    });
+    expect(await screen.findByTestId('workspace-list')).toBeInTheDocument();
+    // The diff is the daemon's answer to its own command, so it is read
+    // through the command executor — the git-fact layer's diff summary is
+    // not consulted for it.
+    await waitFor(() => expect(bridge.commandExecute).toHaveBeenCalled());
+    expect(bridge.gitRead).not.toHaveBeenCalledWith('diff', expect.anything());
+    // The renderer resolves the command in the daemon's catalog and quotes
+    // the catalog's version back.
+    expect(bridge.commandCatalog).toHaveBeenCalledWith(1);
+    expect(bridge.commandExecute).toHaveBeenCalledWith('diff', '', '', 7, 1);
+    // The panel draws the daemon's answer: its title and its diff.
+    expect(await screen.findByTestId('git-diff-heading')).toHaveTextContent('Repository Diff');
+    expect(screen.getByTestId('git-diff-body')).toHaveTextContent(
+      'diff --git a/src/lib.rs b/src/lib.rs',
+    );
+  });
+
+  it('asks the daemon for a promotion and draws its answer', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('project-select-p0'));
+    });
+    expect(await screen.findByTestId('workspace-list')).toBeInTheDocument();
+    // The daemon owns the durable promotion record: the desktop names the
+    // step and the identifiers it acts on, and the daemon resolves the
+    // workspace, the session and the publication target.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('promotion-list-button'));
+    });
+    await waitFor(() => expect(bridge.skillPromotion).toHaveBeenCalled());
+    expect(bridge.skillPromotion).toHaveBeenCalledWith('list', null, null, null, 1);
+    expect(await screen.findByTestId('promotion-action')).toHaveTextContent('list');
+    expect(screen.getByTestId('promotion-proposal-name')).toHaveTextContent('testing-ci');
+  });
+
+  it('names the habit and the proposal the daemon asked for', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('project-select-p0'));
+    });
+    expect(await screen.findByTestId('workspace-list')).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('promotion-habit-input'), {
+        target: { value: 'habit-1' },
+      });
+      fireEvent.change(screen.getByTestId('promotion-proposal-input'), {
+        target: { value: 'proposal-1' },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('promotion-begin-button'));
+    });
+    await waitFor(() => expect(bridge.skillPromotion).toHaveBeenCalled());
+    expect(bridge.skillPromotion).toHaveBeenCalledWith('begin', 'habit-1', null, null, 1);
+  });
+
+  it('reports a failed project-fact read without clobbering the route error', async () => {    vi.mocked(bridge.gitRead).mockRejectedValue(new Error('git_facts_unavailable: unavailable'));
     render(<App />);
     await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
     await act(async () => {
@@ -615,10 +730,53 @@ describe('session route flow', () => {
       fireEvent.click(screen.getByTestId('prompt-submit-button'));
     });
     await waitFor(() => expect(bridge.promptSubmit).toHaveBeenCalledTimes(1));
-    expect(bridge.promptSubmit).toHaveBeenCalledWith('hello desktop', false, 2);
+    expect(bridge.promptSubmit).toHaveBeenCalledWith('hello desktop', false, [], 2);
     // Accepted: draft cleared, projection refreshed through current.
     await waitFor(() => expect(bridge.projectionCurrent).toHaveBeenCalled());
     expect(screen.getByTestId('prompt-input')).toHaveValue('');
+  });
+
+  // M007-I (plan 022, work package F): the ask. The desktop names the run
+  // the human picked and the question they typed; the daemon reads its own
+  // run bytes, so no evidence crosses the bridge.
+  it('submits the ask with the run the human named', async () => {
+    const withRun = (sessionId: string) => ({
+      ...presentation(sessionId),
+      shellRuns: [
+        { runId: 'run-1', command: 'cargo build', cwd: '/repo', origin: 'bang', status: 'exited' },
+      ],
+    });
+    vi.mocked(bridge.projectionStart).mockImplementation(async (sessionId: string) => withRun(sessionId));
+    vi.mocked(bridge.projectionCurrent).mockImplementation(async () => withRun('s-1'));
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('project-select-p0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('workspace-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('workspace-select-w0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('session-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('session-open-s-1'));
+    });
+    await waitFor(() => expect(screen.getByTestId('projection-state')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('composer-ask-run'), { target: { value: 'run-1' } });
+    });
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('prompt-input'), { target: { value: 'why did it fail?' } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('prompt-submit-button'));
+    });
+    await waitFor(() => expect(bridge.promptSubmit).toHaveBeenCalledTimes(1));
+    const call = vi.mocked(bridge.promptSubmit).mock.calls[0];
+    expect(call[0]).toBe('why did it fail?');
+    expect(call[2]).toHaveLength(1);
+    expect(call[2][0]).toMatchObject({ sourceId: 'run-1', question: 'why did it fail?' });
+    expect(call[2][0].promotionId).not.toBe('');
   });
 
   it('keeps the draft and surfaces the error on prompt failure', async () => {

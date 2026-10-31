@@ -74,6 +74,7 @@ pub(crate) fn inner_request_for_test(request: &CommandExecuteRequestDto) -> Opti
         session_id: request.scope.session_id.as_deref(),
         argument: &request.argument,
         authority: None,
+        turn_id: None,
     };
     match crate::core::daemon_commands::build_inner_request(
         &request.command_id,
@@ -169,10 +170,8 @@ pub fn route_for(command_id: &str, form: &str) -> CommandRoute {
 /// canonical binding. A command the user runs with no session attached has
 /// no project or workspace to name, and the scope says so with empty
 /// identities: the daemon then refuses the command with a typed reason
-/// rather than acting on a project the caller did not name.
-///
-/// The session is the caller's selection, so it travels in the scope rather
-/// than being guessed by the daemon.
+/// rather than acting on a project the caller did not name. The session is
+/// the caller's selection, so it travels in the scope.
 pub fn scope_for(app: &crate::tui::app::App) -> CommandCatalogScopeDto {
     let session = app.session_state.session.as_ref();
     CommandCatalogScopeDto {
@@ -291,8 +290,24 @@ mod tests {
         // The LSP workflow family has no daemon request: the recipe runs in
         // the frontend's LSP tool.
         assert_eq!(route_for("lsp_doctor", ""), CommandRoute::NotServed);
-        // The plugin family has no daemon request surface.
-        assert_eq!(route_for("plugin_install", ""), CommandRoute::NotServed);
+    }
+
+    #[test]
+    fn the_mutating_plugin_forms_are_served_by_the_daemon() {
+        // M007-G (ADR-0057): the four mutating plugin forms are daemon
+        // effects with canonical runs; the three read-only ones are frontend
+        // effects and are covered by the frontend-action route instead.
+        for command_id in [
+            "plugin_enable",
+            "plugin_disable",
+            "plugin_remove",
+            "plugin_install",
+        ] {
+            assert!(
+                matches!(route_for(command_id, ""), CommandRoute::DaemonEffect { .. }),
+                "{command_id} must route to the daemon"
+            );
+        }
     }
 
     #[test]

@@ -989,6 +989,8 @@ impl CoreDaemon {
             lsp_diagnostics: Arc::new(parking_lot::Mutex::new(
                 super::lsp_diagnostics_store::LspDiagnosticsStore::new(),
             )),
+            lsp_previews: Arc::new(super::lsp_preview_store::LspPreviewStore::default()),
+            security_reviews: Arc::new(super::security_review_store::SecurityReviewStore::default()),
             sessions: Arc::new(crate::core::session_runtime::SessionRuntimeRegistry::new()),
             queue_schedule_changed: Arc::new(tokio::sync::Notify::new()),
             clients: Arc::new(super::client_registry::ClientRegistry::new()),

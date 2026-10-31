@@ -181,16 +181,31 @@ fn loop_receives_the_interval_without_the_command_name() {
     );
 }
 
+/// M007-H (D4): the review reads its candidate from the daemon, so an
+/// empty id is refused with the usage and a real id reaches the daemon path.
+#[test]
+fn review_change_without_an_id_reports_the_usage() {
+    let mut app = App::new_for_testing("/tmp".into());
+    dispatch_typed(&mut app, "/review-change");
+    let messages = toast_messages(&app);
+    assert!(
+        messages.iter().any(|m| m.contains("Usage: /review-change")),
+        "an empty id must be refused with the usage: {messages:?}"
+    );
+}
+
 #[test]
 fn review_change_receives_the_id_without_the_command_name() {
     let mut app = App::new_for_testing("/tmp".into());
     dispatch_typed(&mut app, "/review-change cand-1");
     let messages = toast_messages(&app);
     assert!(
-        messages
-            .iter()
-            .any(|m| m.contains("LSP tool is unavailable")),
-        "the candidate id must reach the review handler: {messages:?}"
+        messages.iter().any(|m| m.contains("daemon is unavailable")),
+        "the id must reach the daemon path rather than the usage refusal: {messages:?}"
+    );
+    assert!(
+        !messages.iter().any(|m| m.contains("Usage: /review-change")),
+        "the id must be consumed as the preview id: {messages:?}"
     );
 }
 
@@ -200,10 +215,12 @@ fn review_change_alias_receives_the_same_id() {
     dispatch_typed(&mut app, "/preview-review cand-1");
     let messages = toast_messages(&app);
     assert!(
-        messages
-            .iter()
-            .any(|m| m.contains("LSP tool is unavailable")),
+        messages.iter().any(|m| m.contains("daemon is unavailable")),
         "the alias must resolve to the same command and lose its own token: {messages:?}"
+    );
+    assert!(
+        !messages.iter().any(|m| m.contains("Usage: /review-change")),
+        "the alias must lose its own token too: {messages:?}"
     );
 }
 

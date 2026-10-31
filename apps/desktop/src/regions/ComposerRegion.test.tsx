@@ -11,6 +11,9 @@ describe('the desktop composer region', () => {
         draft="hello desktop"
         planMode={false}
         busy={false}
+        shellRuns={[]}
+        askRunId={null}
+        onAskRunChange={vi.fn()}
         onDraftChange={vi.fn()}
         onPlanModeChange={vi.fn()}
         onSubmit={onSubmit}
@@ -27,6 +30,9 @@ describe('the desktop composer region', () => {
         draft="   "
         planMode={false}
         busy={false}
+        shellRuns={[]}
+        askRunId={null}
+        onAskRunChange={vi.fn()}
         onDraftChange={vi.fn()}
         onPlanModeChange={vi.fn()}
         onSubmit={vi.fn()}
@@ -44,6 +50,9 @@ describe('the desktop composer region', () => {
         draft=""
         planMode={false}
         busy={false}
+        shellRuns={[]}
+        askRunId={null}
+        onAskRunChange={vi.fn()}
         onDraftChange={onDraftChange}
         onPlanModeChange={onPlanModeChange}
         onSubmit={vi.fn()}
@@ -62,6 +71,9 @@ describe('the desktop composer region', () => {
         draft=""
         planMode={false}
         busy={false}
+        shellRuns={[]}
+        askRunId={null}
+        onAskRunChange={vi.fn()}
         onDraftChange={vi.fn()}
         onPlanModeChange={vi.fn()}
         onSubmit={vi.fn()}
@@ -70,5 +82,49 @@ describe('the desktop composer region', () => {
     expect(screen.queryByTestId('prompt-input')).not.toBeInTheDocument();
     // The region itself stays in the frame.
     expect(screen.getByTestId('composer-region')).toBeInTheDocument();
+  });
+
+  // M007-I (plan 022, work package F): the ask names one of the daemon's
+  // published runs. The strip offers exactly those runs and nothing else.
+  it('offers the shell runs the daemon published and reports the chosen one', () => {
+    const onAskRunChange = vi.fn();
+    render(
+      <ComposerRegion
+        enabled
+        draft="why did it fail?"
+        planMode={false}
+        busy={false}
+        shellRuns={[
+          { runId: 'run-1', command: 'cargo build', cwd: '/repo', origin: 'bang', status: 'exited' },
+        ]}
+        askRunId={null}
+        onAskRunChange={onAskRunChange}
+        onDraftChange={vi.fn()}
+        onPlanModeChange={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+    const select = screen.getByTestId('composer-ask-run');
+    expect(screen.getByRole('option', { name: /cargo build/ })).toBeInTheDocument();
+    fireEvent.change(select, { target: { value: 'run-1' } });
+    expect(onAskRunChange).toHaveBeenCalledWith('run-1');
+  });
+
+  it('offers no ask when the daemon published no shell run', () => {
+    render(
+      <ComposerRegion
+        enabled
+        draft=""
+        planMode={false}
+        busy={false}
+        shellRuns={[]}
+        askRunId={null}
+        onAskRunChange={vi.fn()}
+        onDraftChange={vi.fn()}
+        onPlanModeChange={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId('composer-ask')).not.toBeInTheDocument();
   });
 });

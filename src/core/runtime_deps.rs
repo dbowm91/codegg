@@ -79,6 +79,13 @@ pub struct LegacyAgentRuntimeDeps {
 pub struct CoreRuntimeDeps {
     pub pool: Option<sqlx::SqlitePool>,
     pub memory_store: Option<Arc<crate::memory::MemoryStore>>,
+    /// Where the habit candidates live.
+    ///
+    /// M007-I (work package B): the daemon's promotion workflow reads the
+    /// habit candidate from here, and the model-facing tool reads it from
+    /// the same place. It is a host setting: `None` means the standard
+    /// user-scoped memory root.
+    pub habit_root: Option<std::path::PathBuf>,
     pub legacy_agent: LegacyAgentRuntimeDeps,
     /// Canonical durable ownership store for delegated agent tasks/runs.
     pub agent_run_store: Arc<dyn codegg_core::agent_run::AgentRunStore>,
@@ -210,6 +217,7 @@ pub struct CoreRuntimeDeps {
 impl Clone for CoreRuntimeDeps {
     fn clone(&self) -> Self {
         Self {
+            habit_root: self.habit_root.clone(),
             pool: self.pool.clone(),
             memory_store: self.memory_store.clone(),
             legacy_agent: self.legacy_agent.clone(),
@@ -353,6 +361,7 @@ impl CoreRuntimeDeps {
         Self {
             pool,
             memory_store,
+            habit_root: None,
             legacy_agent: LegacyAgentRuntimeDeps { subagent_pool },
             agent_run_store,
             run_control,
@@ -408,6 +417,7 @@ impl CoreRuntimeDeps {
         Self {
             pool,
             memory_store,
+            habit_root: None,
             legacy_agent,
             agent_run_store,
             run_control,
@@ -533,6 +543,7 @@ impl CoreRuntimeDeps {
                 )),
         );
         Self {
+            habit_root: None,
             pool: Some(pool.clone()),
             memory_store,
             legacy_agent: LegacyAgentRuntimeDeps { subagent_pool },
@@ -599,6 +610,12 @@ impl CoreRuntimeDeps {
     /// Builder-style setter for the shared LSP service.
     /// M007-D: install the daemon-owned run store used to audit
     /// daemon-effect commands as canonical `Run`s.
+    /// Point the habit candidates at an explicit root.
+    pub fn with_habit_root(mut self, root: std::path::PathBuf) -> Self {
+        self.habit_root = Some(root);
+        self
+    }
+
     pub fn with_run_store(mut self, store: Arc<dyn codegg_core::run_store::RunStore>) -> Self {
         self.run_store = Some(store);
         self

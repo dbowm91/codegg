@@ -120,6 +120,22 @@ pub struct PromptSubmitView {
     pub route_token: RouteTokenView,
 }
 
+/// One staged human-shell evidence, named by the run the daemon owns.
+///
+/// M007-I (plan 022, work package F): the frontend names the **run** and the
+/// question. It never carries the bytes: the daemon reads its own run bytes,
+/// assembles the evidence and redacts it, so the evidence is the daemon's.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HumanShellPromotionStageView {
+    /// The durable identity the staged promotion will carry.
+    pub promotion_id: String,
+    /// The daemon's run id for the shell command whose output is the evidence.
+    pub source_id: String,
+    /// The question the human asked about the evidence.
+    pub question: String,
+}
+
 /// One visible projection message. Text is the canonical (already
 /// bounded) text; only public `user`/`assistant`/`tool` roles cross.
 #[derive(Debug, Clone, Serialize)]
@@ -714,6 +730,70 @@ pub struct SkillCatalogueView {
     pub skills: Vec<SkillSummaryView>,
     pub total: usize,
     pub truncated: bool,
+}
+
+/// The daemon's answer to one skill-promotion request.
+///
+/// M007-I (plan 022, work package F): the daemon owns the durable
+/// promotion record, so the desktop asks and renders — it holds no
+/// promotion state of its own. The view carries what the daemon said and
+/// nothing the desktop would have to infer.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillPromotionView {
+    /// The action the daemon performed.
+    pub action: String,
+    /// Whether the durable record changed.
+    pub changed: bool,
+    /// The request's identity, when the action produced one.
+    pub request_id: Option<String>,
+    /// The bounded draft prompt, when the action staged a request.
+    pub draft_prompt: Option<String>,
+    /// The proposals, when the action listed or read them.
+    pub proposals: Option<Vec<SkillProposalSummaryView>>,
+    /// The proposal in full, when the action read or previewed one.
+    pub detail: Option<SkillProposalDetailView>,
+    /// The published proposal's relative path, when the action published one.
+    pub published_relative_path: Option<String>,
+}
+
+/// One proposal, as the daemon reports it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillProposalSummaryView {
+    pub proposal_id: String,
+    pub name: String,
+    pub description: String,
+    pub status: String,
+    pub revision: u64,
+}
+
+/// One proposal in full, as the daemon reports it.
+///
+/// The body is the model's own `SKILL.md` draft. The human reads it before
+/// approving it, which is why the detail carries it and the listing does
+/// not. The daemon bounds the body, so the bridge carries a bounded
+/// document too.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillProposalDetailView {
+    pub proposal_id: String,
+    pub name: String,
+    pub status: String,
+    pub revision: u64,
+    pub target_scope: String,
+    pub skill_markdown: String,
+    pub diagnostics: Vec<SkillProposalDiagnosticView>,
+    pub published_relative_path: Option<String>,
+}
+
+/// One diagnostic a proposal carries.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillProposalDiagnosticView {
+    pub severity: String,
+    pub reason: String,
+    pub location: Option<String>,
 }
 
 /// One argument form of a command, as the daemon's catalog describes it.

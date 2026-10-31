@@ -1,21 +1,22 @@
 //! User-authorized, pre-publication skill promotion state.
 //!
-//! This module owns the short-lived initiation capability and the durable
-//! proposal record. Publication remains a separate host/TUI-only service and
-//! this module never writes a skill root.
+//! This module owns the workflow's **domain**: the identity types, the
+//! bounded context, the draft prompt and the proposal validation. It writes
+//! nothing.
+//!
+//! M007-I moved the durable record out of this module and into the daemon's
+//! session storage (`codegg_core::session::skill_promotion`). The workflow
+//! used to be two writers of one JSON file, held together by an `flock`
+//! sidecar; the daemon is now the **one** writer, and the record is keyed on
+//! the canonical `WorkspaceId` rather than on a digest of a path string. The
+//! sidecar is retired with the second writer.
 
 use super::parser::{validate_portable_document, ValidatedSkillDocument};
 use super::{AssetDiscoveryConfig, AssetRegistry, Diagnostic, Severity, SourceKind};
 use codegg_core::memory::habit::{HabitCandidate, HabitCandidateStatus, HabitId, WorkflowAction};
-use codegg_core::memory::project_namespace;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
 
-pub const MAX_REQUESTS: usize = 64;
-pub const MAX_PROPOSALS: usize = 64;
 pub const MAX_NAME_BYTES: usize = 128;
 pub const MAX_DESCRIPTION_BYTES: usize = 2048;
 pub const MAX_MARKDOWN_BYTES: u64 = 256 * 1024;
@@ -23,11 +24,8 @@ pub const MAX_DIAGNOSTICS: usize = 32;
 pub const MAX_DIAGNOSTIC_BYTES: usize = 512;
 pub const MAX_MEMORY_SUMMARY_BYTES: usize = 512;
 pub const MAX_RELATED_MEMORIES: usize = 16;
-pub const REQUEST_TTL_MS: i64 = 15 * 60 * 1000;
-const FILE_VERSION: u16 = 1;
-/// Upper bound for one serialized promotion file: 64 proposals at the 256 KiB
-/// skill bound each, plus request/provenance overhead.
-const MAX_PROMOTION_FILE_BYTES: u64 = (MAX_PROPOSALS as u64) * MAX_MARKDOWN_BYTES + 256 * 1024;
+/// How long a staged request stays usable before it expires.
+pub const PROMOTION_REQUEST_TTL_MS: i64 = 15 * 60 * 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -110,11 +108,18 @@ pub struct HabitPromotionContext {
     pub target_scope_hint: SkillTargetScope,
 }
 
+/// One staged request: the human asked for a draft from a ready habit.
+///
+/// The record is keyed on the canonical `WorkspaceId`, so the human's staged
+/// request and the model tool's proposal resolve to **the same** record. The
+/// old namespace was a digest of a path string, derived differently on each
+/// side, and the disagreement surfaced as "promotion request not found".
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromotionDraftRequest {
     pub id: PromotionRequestId,
     pub session_id: String,
-    pub project_namespace: String,
+    /// The canonical workspace the request belongs to.
+    pub workspace_id: String,
     pub habit_id: HabitId,
     pub habit_fingerprint: String,
     pub candidate_revision: u64,
@@ -132,6 +137,31 @@ pub enum SkillProposalStatus {
     Rejected,
     Published,
     Superseded,
+}
+
+impl SkillProposalStatus {
+    /// The status' own name, which is also the stored record's status.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Validated => "validated",
+            Self::Rejected => "rejected",
+            Self::Published => "published",
+            Self::Superseded => "superseded",
+        }
+    }
+
+    /// The status a stored name names.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "draft" => Some(Self::Draft),
+            "validated" => Some(Self::Validated),
+            "rejected" => Some(Self::Rejected),
+            "published" => Some(Self::Published),
+            "superseded" => Some(Self::Superseded),
+            _ => None,
+        }
+    }
 }
 
 /// Durable, root-relative provenance for a published proposal.  The
@@ -186,7 +216,8 @@ pub struct SkillProposal {
     pub habit_id: HabitId,
     pub habit_fingerprint: String,
     pub candidate_revision: u64,
-    pub project_namespace: String,
+    /// The canonical workspace the proposal belongs to.
+    pub workspace_id: String,
     pub target_scope: SkillTargetScope,
     pub name: String,
     pub description: String,
@@ -203,10 +234,19 @@ pub struct SkillProposal {
     pub previewed_revision: Option<u64>,
 }
 
+/// What one proposal's summary carries, without its body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillProposalSummary {
+    pub name: String,
+    pub description: String,
+    pub status: String,
+    pub revision: u64,
+    pub content_digest: String,
+}
+
+/// The model's own submission, against a staged request.
 #[derive(Debug, Clone, Copy)]
 pub struct SkillProposalSubmission<'a> {
-    pub project_identity: &'a str,
-    pub session_id: &'a str,
     pub request_id: &'a PromotionRequestId,
     pub habit_id: &'a HabitId,
     pub supplied_name: &'a str,
@@ -215,439 +255,52 @@ pub struct SkillProposalSubmission<'a> {
     pub now: i64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct PromotionFile {
-    version: u16,
-    requests: Vec<PromotionDraftRequest>,
-    proposals: Vec<SkillProposal>,
+/// The workflow's own serialized proposal, as the durable record holds it.
+pub fn proposal_to_payload(proposal: &SkillProposal) -> Result<String, String> {
+    serde_json::to_string(proposal).map_err(|error| format!("failed to encode proposal: {error}"))
 }
 
-pub struct SkillPromotionStore {
-    root: PathBuf,
-    habit_root: PathBuf,
+/// A durable proposal record's payload, decoded.
+pub fn proposal_from_payload(payload: &str) -> Result<SkillProposal, String> {
+    serde_json::from_str(payload).map_err(|error| format!("malformed proposal record: {error}"))
 }
 
-impl SkillPromotionStore {
-    pub fn new() -> io::Result<Self> {
-        let root = dirs::config_dir()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no config dir"))?
-            .join("codegg")
-            .join("memory")
-            .join("skill-promotions");
-        Self::with_roots(
-            root,
-            dirs::config_dir()
-                .map(|d| d.join("codegg").join("memory"))
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no config dir"))?,
-        )
-    }
+/// The workflow's own serialized request, as the durable record holds it.
+pub fn request_to_payload(request: &PromotionDraftRequest) -> Result<String, String> {
+    serde_json::to_string(request)
+        .map_err(|error| format!("failed to encode promotion request: {error}"))
+}
 
-    pub fn with_root(root: impl Into<PathBuf>) -> io::Result<Self> {
-        let root = root.into();
-        // Production layout nests promotions under the memory root
-        // (`.../memory/skill-promotions`). Tests use sibling temp dirs.
-        // Handle both so a caller passing either layout resolves habits.
-        let habit_root = match (root.file_name().and_then(|n| n.to_str()), root.parent()) {
-            (Some("skill-promotions"), Some(parent))
-                if parent.file_name().and_then(|n| n.to_str()) == Some("memory") =>
-            {
-                parent.to_path_buf()
-            }
-            (_, Some(parent)) => parent.join("memory"),
-            (_, None) => root.join("memory"),
-        };
-        Self::with_roots(root, habit_root)
-    }
+/// A durable request record's payload, decoded.
+pub fn request_from_payload(payload: &str) -> Result<PromotionDraftRequest, String> {
+    serde_json::from_str(payload)
+        .map_err(|error| format!("malformed promotion request record: {error}"))
+}
 
-    pub fn with_roots(
-        root: impl Into<PathBuf>,
-        habit_root: impl Into<PathBuf>,
-    ) -> io::Result<Self> {
-        let root = root.into();
-        fs::create_dir_all(&root)?;
-        Ok(Self {
-            root,
-            habit_root: habit_root.into(),
-        })
-    }
+/// A durable proposal record's payload, summarized without its body.
+pub fn proposal_summary_from_payload(payload: &str) -> Result<SkillProposalSummary, String> {
+    let proposal = proposal_from_payload(payload)?;
+    Ok(SkillProposalSummary {
+        name: proposal.name,
+        description: proposal.description,
+        status: proposal.status.as_str().to_owned(),
+        revision: proposal.revision,
+        content_digest: proposal.content_digest,
+    })
+}
 
-    fn habit_store(&self) -> io::Result<codegg_core::memory::habit::HabitStore> {
-        codegg_core::memory::habit::HabitStore::with_root(self.habit_root.clone())
-    }
-
-    pub(crate) fn habit_root_for_publication(&self) -> PathBuf {
-        self.habit_root.clone()
-    }
-
-    /// Record that the user opened the current proposal preview. This is
-    /// metadata rather than proposal content, so it does not invalidate an
-    /// approval captured from that preview.
-    pub fn mark_previewed(
-        &self,
-        project_identity: &str,
-        id: &SkillProposalId,
-        now: i64,
-    ) -> io::Result<bool> {
-        let namespace = project_namespace(project_identity);
-        self.with_locked_file(&namespace, |file| {
-            let Some(proposal) = file
-                .proposals
-                .iter_mut()
-                .find(|proposal| &proposal.id == id)
-            else {
-                return Ok(false);
-            };
-            proposal.previewed_revision = Some(proposal.revision);
-            proposal.updated_at = now;
-            Ok(true)
-        })
-    }
-
-    pub fn begin_request(
-        &self,
-        project_identity: &str,
-        session_id: &str,
-        habit_id: &HabitId,
-        existing_skill_names: Vec<String>,
-        related_memories: Vec<BoundedMemoryRef>,
-        now: i64,
-    ) -> io::Result<PromotionDraftRequest> {
-        if session_id.is_empty() || session_id.len() > MAX_NAME_BYTES {
-            return Err(invalid_data("invalid session id"));
-        }
-        let habit_store = self.habit_store()?;
-        let namespace = project_namespace(project_identity);
-        let candidate = habit_store
-            .load(project_identity)?
-            .into_iter()
-            .find(|candidate| &candidate.id == habit_id)
-            .ok_or_else(|| invalid_data("habit candidate not found"))?;
-        if candidate.status != HabitCandidateStatus::Ready {
-            return Err(invalid_data("habit candidate is not ready for promotion"));
-        }
-        let context = bounded_context(&candidate, existing_skill_names, related_memories)?;
-        let request = PromotionDraftRequest {
-            id: PromotionRequestId::new(),
-            session_id: session_id.to_string(),
-            project_namespace: namespace.clone(),
-            habit_id: candidate.id,
-            habit_fingerprint: candidate.workflow_fingerprint,
-            candidate_revision: candidate.revision,
-            context,
-            created_at: now,
-            expires_at: now.saturating_add(REQUEST_TTL_MS),
-            consumed: false,
-        };
-        self.with_locked_file(&namespace, |file| {
-            prune_expired(file, now);
-            if file.requests.len() >= MAX_REQUESTS {
-                return Err(invalid_data("promotion request capacity reached"));
-            }
-            file.requests.push(request.clone());
-            Ok(request.clone())
-        })
-    }
-
-    pub fn list_proposals(
-        &self,
-        project_identity: &str,
-        limit: usize,
-    ) -> io::Result<Vec<SkillProposal>> {
-        let namespace = project_namespace(project_identity);
-        let file = self.load_namespace(&namespace)?;
-        Ok(file
-            .proposals
-            .into_iter()
-            .rev()
-            .take(limit.min(MAX_PROPOSALS))
-            .collect())
-    }
-
-    pub fn get_proposal(
-        &self,
-        project_identity: &str,
-        id: &SkillProposalId,
-    ) -> io::Result<Option<SkillProposal>> {
-        let namespace = project_namespace(project_identity);
-        Ok(self
-            .load_namespace(&namespace)?
-            .proposals
-            .into_iter()
-            .find(|proposal| &proposal.id == id))
-    }
-
-    pub fn reject_proposal(
-        &self,
-        project_identity: &str,
-        id: &SkillProposalId,
-        now: i64,
-    ) -> io::Result<bool> {
-        let namespace = project_namespace(project_identity);
-        self.with_locked_file(&namespace, |file| {
-            let Some(proposal) = file
-                .proposals
-                .iter_mut()
-                .find(|proposal| &proposal.id == id)
-            else {
-                return Ok(false);
-            };
-            if proposal.status != SkillProposalStatus::Validated {
-                return Ok(false);
-            }
-            proposal.status = SkillProposalStatus::Rejected;
-            proposal.updated_at = now;
-            proposal.revision = proposal.revision.saturating_add(1);
-            Ok(true)
-        })
-    }
-
-    pub fn append_diagnostics(
-        &self,
-        project_identity: &str,
-        id: &SkillProposalId,
-        diagnostics: Vec<BoundedDiagnostic>,
-    ) -> io::Result<bool> {
-        let namespace = project_namespace(project_identity);
-        self.with_locked_file(&namespace, |file| {
-            let Some(proposal) = file
-                .proposals
-                .iter_mut()
-                .find(|proposal| &proposal.id == id)
-            else {
-                return Ok(false);
-            };
-            proposal.diagnostics.extend(diagnostics);
-            proposal.diagnostics.truncate(MAX_DIAGNOSTICS);
-            proposal.updated_at = chrono::Utc::now().timestamp_millis();
-            proposal.revision = proposal.revision.saturating_add(1);
-            Ok(true)
-        })
-    }
-
-    /// Validate and persist one proposal, consuming the initiation record in
-    /// the same locked transaction. No filesystem skill root is touched.
-    pub fn submit(&self, submission: SkillProposalSubmission<'_>) -> io::Result<SkillProposal> {
-        let SkillProposalSubmission {
-            project_identity,
-            session_id,
-            request_id,
-            habit_id,
-            supplied_name,
-            supplied_description,
-            skill_markdown,
-            now,
-        } = submission;
-        if skill_markdown.len() as u64 > MAX_MARKDOWN_BYTES {
-            return Err(invalid_data("proposal exceeds skill file size bound"));
-        }
-        let parsed = validate_portable_document(skill_markdown, &AssetDiscoveryConfig::default());
-        let (name, description, mut diagnostics, status) = match parsed {
-            Ok(document) => {
-                let mut diagnostics = document
-                    .diagnostics
-                    .iter()
-                    .map(BoundedDiagnostic::from_diagnostic)
-                    .collect::<Vec<_>>();
-                diagnostics.extend(generated_restriction_diagnostics(skill_markdown, &document));
-                if normalize_input_name(supplied_name) != Some(document.normalized_name.clone())
-                    || supplied_description.trim() != document.description.trim()
-                {
-                    diagnostics.push(BoundedDiagnostic::error(
-                        "submitted name/description must match portable frontmatter",
-                    ));
-                }
-                let status = if diagnostics.iter().any(|d| d.severity == Severity::Error) {
-                    SkillProposalStatus::Rejected
-                } else {
-                    SkillProposalStatus::Validated
-                };
-                (document.name, document.description, diagnostics, status)
-            }
-            Err(diagnostic) => (
-                bounded_text(supplied_name, MAX_NAME_BYTES),
-                bounded_text(supplied_description, MAX_DESCRIPTION_BYTES),
-                vec![BoundedDiagnostic::from_diagnostic(&diagnostic)],
-                SkillProposalStatus::Rejected,
-            ),
-        };
-        diagnostics.truncate(MAX_DIAGNOSTICS);
-        let namespace = project_namespace(project_identity);
-        self.with_locked_file(&namespace, |file| {
-            prune_expired(file, now);
-            let request = file
-                .requests
-                .iter_mut()
-                .find(|request| request.id == *request_id)
-                .ok_or_else(|| invalid_data("promotion request not found"))?;
-            if request.consumed || request.expires_at < now {
-                return Err(invalid_data(
-                    "promotion request is expired or already consumed",
-                ));
-            }
-            if request.session_id != session_id
-                || request.project_namespace != namespace
-                || request.habit_id != *habit_id
-            {
-                return Err(invalid_data("promotion request scope does not match"));
-            }
-            let candidates = self.habit_store()?.load(project_identity)?;
-            let candidate = candidates
-                .iter()
-                .find(|candidate| candidate.id == *habit_id)
-                .ok_or_else(|| invalid_data("habit candidate no longer exists"))?;
-            if candidate.status != HabitCandidateStatus::Ready
-                || candidate.revision != request.candidate_revision
-                || candidate.workflow_fingerprint != request.habit_fingerprint
-            {
-                return Err(invalid_data(
-                    "habit candidate changed; start a new promotion request",
-                ));
-            }
-            if file.proposals.len() >= MAX_PROPOSALS {
-                return Err(invalid_data("skill proposal capacity reached"));
-            }
-            let proposal = SkillProposal {
-                id: SkillProposalId::new(),
-                promotion_request_id: request.id.clone(),
-                habit_id: request.habit_id.clone(),
-                habit_fingerprint: request.habit_fingerprint.clone(),
-                candidate_revision: request.candidate_revision,
-                project_namespace: namespace.clone(),
-                target_scope: request.context.target_scope_hint,
-                name: bounded_text(&name, MAX_NAME_BYTES),
-                description: bounded_text(&description, MAX_DESCRIPTION_BYTES),
-                skill_markdown: skill_markdown.to_string(),
-                content_digest: compute_content_digest(skill_markdown),
-                status,
-                diagnostics,
-                created_at: now,
-                updated_at: now,
-                revision: 1,
-                publication: None,
-                previewed_revision: None,
-            };
-            request.consumed = true;
-            file.proposals.push(proposal.clone());
-            Ok(proposal)
-        })
-    }
-
-    /// Record publication only after the caller has durably renamed the
-    /// exact proposal bytes into the host-derived destination.  The revision
-    /// and digest checks make this a compare-and-swap transition and also
-    /// make retries idempotent after a crash between rename and persistence.
-    pub fn mark_published(
-        &self,
-        project_identity: &str,
-        id: &SkillProposalId,
-        expected_revision: u64,
-        expected_digest: &str,
-        publication: PublishedSkillRef,
-        now: i64,
-    ) -> io::Result<SkillProposal> {
-        let namespace = project_namespace(project_identity);
-        self.with_locked_file(&namespace, |file| {
-            let proposal = file
-                .proposals
-                .iter_mut()
-                .find(|proposal| &proposal.id == id)
-                .ok_or_else(|| invalid_data("skill proposal not found"))?;
-            if proposal.status == SkillProposalStatus::Published {
-                if proposal.publication.as_ref() == Some(&publication) {
-                    return Ok(proposal.clone());
-                }
-                return Err(invalid_data("skill proposal was published differently"));
-            }
-            if proposal.status != SkillProposalStatus::Validated {
-                return Err(invalid_data("skill proposal is not validated"));
-            }
-            if proposal.revision != expected_revision
-                || proposal.content_digest != expected_digest
-                || proposal.content_digest != publication.content_digest
-            {
-                return Err(invalid_data("skill proposal approval is stale"));
-            }
-            proposal.status = SkillProposalStatus::Published;
-            proposal.publication = Some(publication);
-            proposal.updated_at = now;
-            proposal.revision = proposal.revision.saturating_add(1);
-            Ok(proposal.clone())
-        })
-    }
-
-    /// Complete proposal metadata after a prior rename was observed but the
-    /// first metadata write failed.  The caller must have already verified the
-    /// exact destination digest and host-derived scope.
-    pub fn reconcile_published(
-        &self,
-        project_identity: &str,
-        id: &SkillProposalId,
-        expected_revision: u64,
-        expected_digest: &str,
-        publication: PublishedSkillRef,
-        now: i64,
-    ) -> io::Result<SkillProposal> {
-        self.mark_published(
-            project_identity,
-            id,
-            expected_revision,
-            expected_digest,
-            publication,
-            now,
-        )
-    }
-
-    fn path_for_namespace(&self, namespace: &str) -> io::Result<PathBuf> {
-        let suffix = namespace
-            .strip_prefix("project/")
-            .filter(|suffix| {
-                suffix.len() == 64 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
-            })
-            .ok_or_else(|| invalid_data("invalid project namespace"))?;
-        Ok(self.root.join(format!("{suffix}.json")))
-    }
-
-    fn load_namespace(&self, namespace: &str) -> io::Result<PromotionFile> {
-        let path = self.path_for_namespace(namespace)?;
-        if !path.exists() {
-            return Ok(empty_file());
-        }
-        let metadata = fs::metadata(&path)?;
-        if metadata.len() > MAX_PROMOTION_FILE_BYTES {
-            return Err(invalid_data("promotion file exceeds size bound"));
-        }
-        let mut bytes = Vec::new();
-        File::open(path)?
-            .take(MAX_PROMOTION_FILE_BYTES + 1)
-            .read_to_end(&mut bytes)?;
-        let file: PromotionFile = serde_json::from_slice(&bytes)
-            .map_err(|error| invalid_data(&format!("malformed promotion file: {error}")))?;
-        validate_file(&file)?;
-        Ok(file)
-    }
-
-    fn with_locked_file<T>(
-        &self,
-        namespace: &str,
-        operation: impl FnOnce(&mut PromotionFile) -> io::Result<T>,
-    ) -> io::Result<T> {
-        let path = self.path_for_namespace(namespace)?;
-        let lock_path = path.with_extension("json.lock");
-        let lock = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(lock_path)?;
-        flock_lock(&lock)?;
-        let result = (|| {
-            let mut file = self.load_namespace(namespace)?;
-            let result = operation(&mut file)?;
-            save_file(&path, &file)?;
-            Ok(result)
-        })();
-        let _ = flock_unlock(&lock);
-        result
-    }
+/// The bounded context a staged request carries.
+pub fn draft_context(
+    candidate: &HabitCandidate,
+    existing_skill_names: Vec<String>,
+    related_memories: Vec<BoundedMemoryRef>,
+) -> Result<HabitPromotionContext, String> {
+    bounded_context(candidate, existing_skill_names, related_memories).map_err(|error| {
+        error
+            .to_string()
+            .replace("invalid data: ", "")
+            .replace("promotion request ", "")
+    })
 }
 
 pub fn compute_content_digest(markdown: &str) -> String {
@@ -723,6 +376,79 @@ pub fn collision_diagnostics(
         .unwrap_or_default()
 }
 
+/// Validate the model's draft against the portable-document rules and build
+/// the proposal it produces.
+///
+/// The function is **pure**: it reads no store and writes none. The caller
+/// owns the atomic consume-and-record step.
+pub fn build_validated_proposal(
+    request: &PromotionDraftRequest,
+    submission: &SkillProposalSubmission<'_>,
+) -> Result<SkillProposal, String> {
+    if submission.skill_markdown.len() as u64 > MAX_MARKDOWN_BYTES {
+        return Err("proposal exceeds skill file size bound".to_owned());
+    }
+    let parsed =
+        validate_portable_document(submission.skill_markdown, &AssetDiscoveryConfig::default());
+    let (name, description, mut diagnostics, status) = match parsed {
+        Ok(document) => {
+            let mut diagnostics = document
+                .diagnostics
+                .iter()
+                .map(BoundedDiagnostic::from_diagnostic)
+                .collect::<Vec<_>>();
+            diagnostics.extend(generated_restriction_diagnostics(
+                submission.skill_markdown,
+                &document,
+            ));
+            if normalize_input_name(submission.supplied_name)
+                != Some(document.normalized_name.clone())
+                || submission.supplied_description.trim() != document.description.trim()
+            {
+                diagnostics.push(BoundedDiagnostic::error(
+                    "submitted name/description must match portable frontmatter",
+                ));
+            }
+            let status = if diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == Severity::Error)
+            {
+                SkillProposalStatus::Rejected
+            } else {
+                SkillProposalStatus::Validated
+            };
+            (document.name, document.description, diagnostics, status)
+        }
+        Err(diagnostic) => (
+            bounded_text(submission.supplied_name, MAX_NAME_BYTES),
+            bounded_text(submission.supplied_description, MAX_DESCRIPTION_BYTES),
+            vec![BoundedDiagnostic::from_diagnostic(&diagnostic)],
+            SkillProposalStatus::Rejected,
+        ),
+    };
+    diagnostics.truncate(MAX_DIAGNOSTICS);
+    Ok(SkillProposal {
+        id: SkillProposalId::new(),
+        promotion_request_id: request.id.clone(),
+        habit_id: request.habit_id.clone(),
+        habit_fingerprint: request.habit_fingerprint.clone(),
+        candidate_revision: request.candidate_revision,
+        workspace_id: request.workspace_id.clone(),
+        target_scope: request.context.target_scope_hint,
+        name: bounded_text(&name, MAX_NAME_BYTES),
+        description: bounded_text(&description, MAX_DESCRIPTION_BYTES),
+        skill_markdown: submission.skill_markdown.to_string(),
+        content_digest: compute_content_digest(submission.skill_markdown),
+        status,
+        diagnostics,
+        created_at: submission.now,
+        updated_at: submission.now,
+        revision: 1,
+        publication: None,
+        previewed_revision: None,
+    })
+}
+
 fn generated_restriction_diagnostics(
     source: &str,
     document: &ValidatedSkillDocument,
@@ -790,23 +516,30 @@ fn bounded_context(
     candidate: &HabitCandidate,
     mut existing_skill_names: Vec<String>,
     related_memories: Vec<BoundedMemoryRef>,
-) -> io::Result<HabitPromotionContext> {
+) -> Result<HabitPromotionContext, String> {
     existing_skill_names.truncate(32);
     existing_skill_names
         .retain(|name| name.len() <= MAX_NAME_BYTES && !name.chars().any(char::is_control));
     if related_memories.len() > MAX_RELATED_MEMORIES {
-        return Err(invalid_data("too many related memories"));
+        return Err("too many related memories".to_owned());
     }
-    for m in &related_memories {
-        if m.id.is_empty() || m.id.len() > MAX_NAME_BYTES || m.id.chars().any(char::is_control) {
-            return Err(invalid_data("invalid related memory reference"));
+    for memory in &related_memories {
+        if memory.id.is_empty()
+            || memory.id.len() > MAX_NAME_BYTES
+            || memory.id.chars().any(char::is_control)
+        {
+            return Err("invalid related memory reference".to_owned());
         }
     }
     let related_memories = related_memories
         .into_iter()
-        .map(|m| BoundedMemoryRef {
-            id: m.id.chars().take(MAX_NAME_BYTES).collect(),
-            summary: m.summary.chars().take(MAX_MEMORY_SUMMARY_BYTES).collect(),
+        .map(|memory| BoundedMemoryRef {
+            id: memory.id.chars().take(MAX_NAME_BYTES).collect(),
+            summary: memory
+                .summary
+                .chars()
+                .take(MAX_MEMORY_SUMMARY_BYTES)
+                .collect(),
         })
         .collect();
     Ok(HabitPromotionContext {
@@ -819,6 +552,14 @@ fn bounded_context(
         existing_skill_names,
         target_scope_hint: SkillTargetScope::Project,
     })
+}
+
+/// The habit candidate is promotable only when it is **ready**.
+///
+/// The check is part of the domain, so the daemon's request handler and the
+/// model-facing tool agree on it without either re-deriving the rule.
+pub fn habit_is_promotable(candidate: &HabitCandidate) -> bool {
+    candidate.status == HabitCandidateStatus::Ready
 }
 
 fn normalize_input_name(name: &str) -> Option<String> {
@@ -852,94 +593,16 @@ fn source_kind_label(kind: SourceKind) -> &'static str {
         SourceKind::CursorProject => "cursor-project",
         SourceKind::GeminiProject => "gemini-project",
         SourceKind::CopilotProject => "copilot-project",
-        SourceKind::PiProject => "pi-project",
-        SourceKind::ClineProject => "cline-project",
-        SourceKind::RooProject => "roo-project",
-        SourceKind::FactoryProject => "factory-project",
-        SourceKind::ClineGlobal => "cline-global",
-        SourceKind::PiGlobal => "pi-global",
-        SourceKind::RooGlobal => "roo-global",
         SourceKind::CopilotGlobal => "copilot-global",
+        SourceKind::PiProject => "pi-project",
+        SourceKind::PiGlobal => "pi-global",
+        SourceKind::RooProject => "roo-project",
+        SourceKind::RooGlobal => "roo-global",
+        SourceKind::FactoryProject => "factory-project",
         SourceKind::FactoryGlobal => "factory-global",
+        SourceKind::ClineProject => "cline-project",
+        SourceKind::ClineGlobal => "cline-global",
         SourceKind::Plugin => "plugin",
         SourceKind::Configured => "configured",
     }
-}
-
-fn empty_file() -> PromotionFile {
-    PromotionFile {
-        version: FILE_VERSION,
-        requests: Vec::new(),
-        proposals: Vec::new(),
-    }
-}
-
-fn prune_expired(file: &mut PromotionFile, now: i64) {
-    file.requests
-        .retain(|request| request.expires_at >= now && !request.consumed);
-}
-
-fn validate_file(file: &PromotionFile) -> io::Result<()> {
-    if file.version != FILE_VERSION
-        || file.requests.len() > MAX_REQUESTS
-        || file.proposals.len() > MAX_PROPOSALS
-        || file.proposals.iter().any(|proposal| {
-            proposal.skill_markdown.len() as u64 > MAX_MARKDOWN_BYTES
-                || proposal.diagnostics.len() > MAX_DIAGNOSTICS
-        })
-    {
-        return Err(invalid_data("unsupported or oversized promotion file"));
-    }
-    Ok(())
-}
-
-fn save_file(path: &Path, file: &PromotionFile) -> io::Result<()> {
-    validate_file(file)?;
-    let bytes = serde_json::to_vec_pretty(file)
-        .map_err(|error| invalid_data(&format!("failed to serialize promotion file: {error}")))?;
-    if bytes.len() as u64 > MAX_PROMOTION_FILE_BYTES {
-        return Err(invalid_data("serialized promotion file exceeds size bound"));
-    }
-    let temp = path.with_extension("json.tmp");
-    let mut output = File::create(&temp)?;
-    output.write_all(&bytes)?;
-    output.sync_all()?;
-    drop(output);
-    fs::rename(temp, path)
-}
-
-fn invalid_data(message: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message)
-}
-
-#[cfg(unix)]
-fn flock_lock(file: &File) -> io::Result<()> {
-    use std::os::fd::AsRawFd;
-    #[allow(unsafe_code)]
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
-    if result != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn flock_unlock(file: &File) -> io::Result<()> {
-    use std::os::fd::AsRawFd;
-    #[allow(unsafe_code)]
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
-    if result != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn flock_lock(_file: &File) -> io::Result<()> {
-    Ok(())
-}
-
-#[cfg(windows)]
-fn flock_unlock(_file: &File) -> io::Result<()> {
-    Ok(())
 }

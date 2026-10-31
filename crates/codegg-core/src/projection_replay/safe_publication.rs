@@ -66,6 +66,9 @@ pub fn classify(event: &CoreEvent) -> SafePublicationClass {
         CoreEvent::HumanShellRunUpserted { .. } => SafePublicationClass::Safe,
         CoreEvent::ToolContractsUpdated { .. } => SafePublicationClass::Safe,
         CoreEvent::PluginCatalogueUpdated { .. } => SafePublicationClass::Safe,
+        // M007-H (D3): the daemon owns the plan, so the published plan is
+        // the daemon's own state.
+        CoreEvent::WorkPlanUpdated { .. } => SafePublicationClass::Safe,
         CoreEvent::ProjectRegistered { .. } => SafePublicationClass::Safe,
         CoreEvent::ProjectRestored { .. } => SafePublicationClass::Safe,
         CoreEvent::ProjectDeleted { .. } => SafePublicationClass::Safe,
@@ -230,6 +233,7 @@ pub fn has_safe_origin(event: &CoreEvent) -> bool {
         CoreEvent::HumanShellRunUpserted { session_id, .. } => !session_id.is_empty(),
         CoreEvent::ToolContractsUpdated { session_id, .. } => !session_id.is_empty(),
         CoreEvent::PluginCatalogueUpdated { session_id, .. } => !session_id.is_empty(),
+        CoreEvent::WorkPlanUpdated { session_id, .. } => !session_id.is_empty(),
         CoreEvent::FileChanged { .. } => true,
         CoreEvent::JobCreated { session_id, .. } => session_id.is_some(),
         CoreEvent::ToolProgramCompleted { session_id, .. } => session_id.is_some(),

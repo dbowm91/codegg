@@ -20,6 +20,7 @@ use crate::projection::limits::{
     MAX_PROJECTION_PLUGIN_CATALOGUE, MAX_PROJECTION_RUNS, MAX_PROJECTION_RUN_GROUPS,
     MAX_PROJECTION_SESSION_SUBAGENTS, MAX_PROJECTION_SHELL_RUNS, MAX_PROJECTION_TOOL_CONTRACTS,
     MAX_PROJECTION_TOOL_PROGRAMS, MAX_PROJECTION_TRANSCRIPT_WATERMARKS, MAX_PROJECTION_WORKTREES,
+    MAX_PROJECTION_WORK_PLAN_ITEMS,
 };
 
 /// Bounded projection of one session plus its surrounding context.
@@ -73,6 +74,13 @@ pub struct SessionProjectionSnapshot {
     /// M007-G (ADR-0057): the daemon's plugin registry is the authority.
     #[serde(default)]
     pub plugin_catalogue: VecDeque<crate::projection::dto::PluginCatalogueEntryProjection>,
+    /// The session's work plan and test state, as the daemon published them.
+    /// M007-H (D3, D4): the daemon owns both, so the snapshot carries the
+    /// daemon's answer and no frontend keeps a second copy.
+    #[serde(default)]
+    pub work_plan: Option<crate::projection::dto::WorkPlanProjection>,
+    #[serde(default)]
+    pub test_state: Option<crate::projection::dto::TestStateProjection>,
     /// Active and recently observed durable jobs.
     pub jobs: VecDeque<JobProjection>,
     /// Active and recently completed background tool programs.
@@ -150,6 +158,8 @@ impl SessionProjectionSnapshot {
             shell_runs: VecDeque::new(),
             tool_contracts: VecDeque::new(),
             plugin_catalogue: VecDeque::new(),
+            work_plan: None,
+            test_state: None,
             jobs: VecDeque::new(),
             tool_programs: VecDeque::new(),
             agent_runs: VecDeque::new(),
@@ -320,6 +330,18 @@ impl SessionProjectionSnapshot {
         }
         entries.truncate(MAX_PROJECTION_PLUGIN_CATALOGUE);
         self.plugin_catalogue = entries.into();
+    }
+
+    /// Record the daemon's published work plan. M007-H (D3): the item list
+    /// is bounded, because the projection is what every frontend receives.
+    pub fn set_work_plan(&mut self, mut plan: crate::projection::dto::WorkPlanProjection) {
+        plan.items.truncate(MAX_PROJECTION_WORK_PLAN_ITEMS);
+        self.work_plan = Some(plan);
+    }
+
+    /// Record the daemon's published test state.
+    pub fn set_test_state(&mut self, state: crate::projection::dto::TestStateProjection) {
+        self.test_state = Some(state);
     }
 
     /// Upsert a tool program summary, dropping the oldest if the cap

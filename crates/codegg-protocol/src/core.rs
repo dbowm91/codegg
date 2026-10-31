@@ -2368,12 +2368,33 @@ pub enum CoreResponse {
     GitRead {
         result: crate::git::GitReadResultDto,
     },
+    /// The result of one daemon-executed revert (M007-H).
+    ///
+    /// Names the paths the revert restored and the paths it found already
+    /// matching `HEAD`. It never carries file contents.
+    GitRevert {
+        result: crate::git::GitRevertResultDto,
+    },
+    /// The result of one daemon-executed diff read (M007-I, work package A).
+    ///
+    /// Carries the diff's own bytes, so the frontend renders the answer the
+    /// daemon produced instead of reading the working tree itself.
+    GitDiff {
+        result: crate::git::GitDiffResultDto,
+    },
     /// The skill catalogue discovered for one project (Phase 3).
     ///
     /// Carries skill metadata only: name, description, namespace, digest,
     /// and resource count. Never a skill body, never a filesystem path.
     SkillCatalogueList {
         result: crate::skill::SkillCatalogueDto,
+    },
+    /// M007-I (work package B): the daemon's answer to a promotion request.
+    ///
+    /// The daemon owns the durable promotion record, so the frontend reads
+    /// the workflow's state from the daemon and never holds its own copy.
+    SkillPromotion {
+        result: crate::skill::SkillPromotionResultDto,
     },
     /// M007-D: the daemon's command catalog.
     ///
@@ -2651,6 +2672,24 @@ pub enum CoreRequest {
     GitRead {
         request: crate::git::GitReadRequestDto,
     },
+    /// M007-H (work package C): the daemon-executed `/revert`.
+    ///
+    /// The daemon owns the write: it resolves the checkout from its own
+    /// durable binding, contains every path inside it, takes the checkout's
+    /// writer permit, and issues the typed `GitOperation`. A frontend never
+    /// spawns `git` for this.
+    GitRevert {
+        request: crate::git::GitRevertRequestDto,
+    },
+    /// M007-I (work package A): the daemon-executed diff read.
+    ///
+    /// The daemon owns the read: it resolves the checkout from its own
+    /// durable binding, reads the bytes through the read-only git fact
+    /// layer, and answers with the diff's own bytes. A frontend never
+    /// spawns `git` for this.
+    GitDiff {
+        request: crate::git::GitDiffRequestDto,
+    },
     /// Phase 3: the skill catalogue for one project (`direct_project` +
     /// `project.read`).
     ///
@@ -2659,6 +2698,29 @@ pub enum CoreRequest {
     /// is metadata only — no skill body, no filesystem path.
     SkillCatalogueList {
         request: crate::skill::SkillCatalogueRequestDto,
+    },
+    /// M007-I (work packages D and E): the ask, as **one** request.
+    ///
+    /// The daemon stages the evidence and admits the turn together. The
+    /// frontend names the run and the question; the daemon reads its own
+    /// run bytes, redacts the assembled evidence and admits the turn under
+    /// its own transaction boundary. There is therefore no state in which
+    /// the evidence is staged and the turn was not admitted.
+    SessionPromptSubmitWithHumanShellPromotions {
+        session_id: String,
+        text: String,
+        plan_mode: bool,
+        human_shell_promotions: Vec<crate::human_shell::HumanShellPromotionStageDto>,
+    },
+    /// M007-I (work package B): one request against the daemon's promotion
+    /// workflow.
+    ///
+    /// The daemon owns the durable promotion record, so every step of the
+    /// workflow — staging, listing, previewing, rejecting and publishing —
+    /// is a request against the daemon's store. The request is keyed on the
+    /// canonical `WorkspaceId`, which is the namespace the record lives in.
+    SkillPromotion {
+        request: crate::skill::SkillPromotionRequestDto,
     },
     /// M007-D: read the daemon's command catalog.
     ///
@@ -4817,6 +4879,13 @@ pub enum CoreEvent {
     PluginCatalogueUpdated {
         session_id: String,
         entries: Vec<crate::projection::dto::PluginCatalogueEntryProjection>,
+    },
+    /// The session's work plan changed. M007-H (D3): the daemon owns the
+    /// plan — it is the daemon's durable work-plan state — so the daemon
+    /// publishes the plan and every frontend reads the published answer.
+    WorkPlanUpdated {
+        session_id: String,
+        plan: crate::projection::dto::WorkPlanProjection,
     },
     FileChanged {
         path: String,

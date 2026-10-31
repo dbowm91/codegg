@@ -8,6 +8,7 @@ pub mod legacy_resolution;
 pub mod message;
 pub mod schema;
 pub mod selection_catalog;
+pub mod skill_promotion;
 pub mod state;
 pub mod status;
 pub mod user_prompt_queue;
@@ -44,6 +45,10 @@ pub use models::{
     SessionSummaryProvider, TodoItem, TodoItemInput, UpdateSession, UsageRecord,
 };
 pub use row::{MessageRow, PartRow, PermissionRow, SessionRow, TodoRow};
+pub use skill_promotion::{
+    SkillPromotionError, SkillPromotionKind, SkillPromotionRecord, SkillPromotionStore,
+    SKILL_PROMOTION_MAX_PAYLOAD_BYTES, SKILL_PROMOTION_MAX_RECORDS_PER_WORKSPACE,
+};
 pub use state::TuiSessionState;
 pub use store::{
     escape_sql_like, generate_slug, ConfirmExistingEvent, EventStore, MessageStore, PartStore,

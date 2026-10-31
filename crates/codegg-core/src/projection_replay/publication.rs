@@ -477,6 +477,39 @@ pub fn projection_events_from_core(
             };
             Some((session_id.clone(), None, event))
         }
+        // M007-H (D3, D4): the daemon owns the plan and the test runner, so
+        // it publishes both and a frontend reads the published answer.
+        CoreEvent::WorkPlanUpdated { session_id, plan } => {
+            let event = ProjectionEvent::WorkPlanUpdated {
+                plan: plan.clone(),
+                at: envelope.timestamp_ms,
+            };
+            Some((session_id.clone(), None, event))
+        }
+        CoreEvent::TestRunStarted {
+            session_id,
+            command,
+            ..
+        } => {
+            let event = ProjectionEvent::TestRunStarted {
+                command: command.clone(),
+                at: envelope.timestamp_ms,
+            };
+            Some((session_id.clone(), None, event))
+        }
+        CoreEvent::TestRunCompleted {
+            session_id,
+            status,
+            summary,
+            ..
+        } => {
+            let event = ProjectionEvent::TestRunCompleted {
+                status: status.clone(),
+                summary: summary.clone(),
+                at: envelope.timestamp_ms,
+            };
+            Some((session_id.clone(), None, event))
+        }
         CoreEvent::JobCreated {
             session_id,
             job_id,

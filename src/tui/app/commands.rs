@@ -281,13 +281,12 @@ pub enum TuiCommand {
     HabitDismiss {
         id: String,
     },
-    SkillPublish {
-        id: String,
-        target_scope: crate::skills::promotion::SkillTargetScope,
-    },
-    SkillPublishFinished {
-        message: String,
-        is_error: bool,
+    /// M007-I (work packages B and C): the daemon's answer to one promotion
+    /// request. The frontend holds no promotion state of its own.
+    SkillPromotionFinished {
+        action: crate::protocol::skill::SkillPromotionActionDto,
+        response: Option<crate::protocol::core::CoreResponse>,
+        error: Option<String>,
     },
     HabitResult {
         toast_message: String,
@@ -897,6 +896,32 @@ pub enum TuiCommand {
     GoalOperationFinished {
         session_id: String,
         op: String,
+        response: Option<CoreResponse>,
+        error: Option<String>,
+    },
+    /// Completion: the daemon's preview read for `/review-change` finished.
+    ///
+    /// M007-H (D4): the candidate comes from the daemon's preview store,
+    /// so the TUI reads the daemon's answer and never a local copy.
+    ChangeReviewOpened {
+        response: Option<CoreResponse>,
+        error: Option<String>,
+    },
+    /// Completion: the daemon's `/revert` finished.
+    ///
+    /// M007-H (work package C): the response is the daemon's own answer —
+    /// its typed refusal included. The TUI renders it and never restores a
+    /// file itself.
+    RevertFinished {
+        response: Option<CoreResponse>,
+        error: Option<String>,
+    },
+    /// Completion: the daemon's diff read finished.
+    ///
+    /// M007-I (work package A): the response is the daemon's own answer —
+    /// its typed refusal included. The TUI renders it and never reads the
+    /// working tree itself.
+    DiffFinished {
         response: Option<CoreResponse>,
         error: Option<String>,
     },

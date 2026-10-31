@@ -316,16 +316,7 @@ impl DocumentController {
         scope: DocumentScope,
     ) -> Result<(), DocumentControllerError> {
         let _op = self.operation.lock().await;
-        let open_epoch = {
-            let mut replica = self.replica.lock().expect("replica mutex poisoned");
-            if replica.attachment.is_some() {
-                return Err(DocumentControllerError::AlreadyOpen);
-            }
-            replica.lifecycle = ControllerLifecycle::Opening;
-            replica.lifecycle_epoch = replica.lifecycle_epoch.wrapping_add(1);
-            replica.state = DocumentState::Opening;
-            replica.lifecycle_epoch
-        };
+        let open_epoch = self.begin_open()?;
         let lifecycle = LifecycleGuard {
             controller: self,
             epoch: open_epoch,
@@ -348,6 +339,80 @@ impl DocumentController {
                 return Err(DocumentControllerError::Transport(error));
             }
         };
+        let state = self
+            .complete_open(
+                project_id,
+                workspace_id,
+                relative_path,
+                scope,
+                writable,
+                response,
+            )
+            .await?;
+        lifecycle.finish(state);
+        Ok(())
+    }
+
+    /// Attach a document the daemon has already opened.
+    ///
+    /// M007-H (work package A): the open itself was performed by the
+    /// daemon's `open_document` command, so the frontend issues no open
+    /// request. This installs the replica from the response the daemon
+    /// returned, by exactly the rules [`DocumentController::open`] uses, so
+    /// the buffer stays live and the writer lease is taken the same way.
+    pub async fn attach_opened(
+        &self,
+        project_id: String,
+        workspace_id: String,
+        relative_path: String,
+        writable: bool,
+        scope: DocumentScope,
+        response: CoreResponse,
+    ) -> Result<(), DocumentControllerError> {
+        let _op = self.operation.lock().await;
+        let open_epoch = self.begin_open()?;
+        let lifecycle = LifecycleGuard {
+            controller: self,
+            epoch: open_epoch,
+            restore: DocumentState::Closed,
+            finished: false,
+        };
+        let state = self
+            .complete_open(
+                project_id,
+                workspace_id,
+                relative_path,
+                scope,
+                writable,
+                response,
+            )
+            .await?;
+        lifecycle.finish(state);
+        Ok(())
+    }
+
+    /// Mark the replica as opening and return the lifecycle epoch.
+    fn begin_open(&self) -> Result<u64, DocumentControllerError> {
+        let mut replica = self.replica.lock().expect("replica mutex poisoned");
+        if replica.attachment.is_some() {
+            return Err(DocumentControllerError::AlreadyOpen);
+        }
+        replica.lifecycle = ControllerLifecycle::Opening;
+        replica.lifecycle_epoch = replica.lifecycle_epoch.wrapping_add(1);
+        replica.state = DocumentState::Opening;
+        Ok(replica.lifecycle_epoch)
+    }
+
+    /// Install the replica from an open response.
+    async fn complete_open(
+        &self,
+        project_id: String,
+        workspace_id: String,
+        relative_path: String,
+        scope: DocumentScope,
+        writable: bool,
+        response: CoreResponse,
+    ) -> Result<DocumentState, DocumentControllerError> {
         let (snapshot, lease) = match response {
             CoreResponse::DocumentSnapshot {
                 snapshot,
@@ -410,8 +475,7 @@ impl DocumentController {
             lease,
             state.clone(),
         );
-        lifecycle.finish(state);
-        Ok(())
+        Ok(state)
     }
 
     /// Create one new workspace file holding `initial_text`, then attach it.

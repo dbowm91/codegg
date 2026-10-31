@@ -22,8 +22,8 @@ use async_trait::async_trait;
 use codegg::core::CoreClient;
 use codegg::error::AppError;
 use codegg::protocol::core::{
-    CoreRequest, CoreResponse, EventEnvelope, RequestEnvelope, UserPromptQueueEntryDto,
-    UserPromptQueueSendNowResult,
+    CommandExecuteResultDto, CommandOutcomeStatusDto, CoreRequest, CoreResponse, EventEnvelope,
+    RequestEnvelope, UserPromptQueueEntryDto, UserPromptQueueSendNowResult,
 };
 use codegg::tui::app::state::is_observer_allowed_command;
 use codegg::tui::app::state::subagents::SubagentRow;
@@ -238,6 +238,38 @@ impl CoreClient for FakeQueueClient {
                     entry_id: entry_id.clone(),
                     outcome,
                     entries: self.projection.lock().unwrap().clone(),
+                })
+            }
+            // M007-H: the addressed reply goes through the daemon's command
+            // executor, so the frontend names the **command**, the session and
+            // the text; the daemon resolves the turn. The record is therefore
+            // the frontend's request, and the turn is absent from it.
+            CoreRequest::CommandExecute { request } => {
+                assert_eq!(
+                    request.command_id, "subagent_send",
+                    "the queue box must not issue {request:?}"
+                );
+                let session_id = request.scope.session_id.clone().unwrap_or_default();
+                self.record(&format!("steer:{session_id}:{}", request.argument));
+                let (status, summary) = match self.steer_refusal.lock().unwrap().clone() {
+                    Some(code) => (
+                        CommandOutcomeStatusDto::Refused,
+                        format!("the daemon refused the steer: {code}"),
+                    ),
+                    None => (CommandOutcomeStatusDto::Completed, "ok".to_string()),
+                };
+                Ok(CoreResponse::CommandExecute {
+                    result: CommandExecuteResultDto {
+                        run_id: "run-1".to_string(),
+                        command_id: request.command_id.clone(),
+                        status,
+                        summary,
+                        lines: Vec::new(),
+                        report: None,
+                        started_at_ms: 0,
+                        completed_at_ms: 1,
+                        response: None,
+                    },
                 })
             }
             // C007: the addressed reply. Recorded in full because the
@@ -2644,15 +2676,15 @@ fn submit(app: &mut App, text: &str) {
 }
 
 /// The milestone's central claim, stated as a measurement: an addressed submit
-/// issues exactly one `TurnSteer` naming the **parent turn**, and issues no
-/// `TurnSubmit` at all.
+/// issues exactly one **command** — the daemon's `subagent_send` — naming the
+/// **parent session** and the user's own words, and issues no `TurnSubmit` at
+/// all.
 ///
-/// The parent turn is the point. `TurnSteer` is keyed on a session turn, so a
-/// steer naming the subagent's `task_id` — the identity the UI actually has —
-/// would resolve to `turn_id_mismatch` every single time, and the UI would look
-/// like it had a bug rather than a wrong id.
+/// The parent is the point, but naming it is now the daemon's job: a steer
+/// naming the subagent's `task_id` — the identity the UI actually has — would
+/// resolve to `turn_id_mismatch` every single time.
 #[tokio::test]
-async fn an_addressed_reply_steers_the_parent_turn_and_submits_nothing() {
+async fn an_addressed_reply_names_the_parent_session_and_submits_nothing() {
     let (mut app, client) = app_with_queue_and_core(Vec::new());
     // The same transport shape the unarmed regression test uses. Without it
     // the unarmed path here would dispatch nothing at all, so "no TurnSubmit
@@ -2687,22 +2719,26 @@ async fn an_addressed_reply_steers_the_parent_turn_and_submits_nothing() {
         0,
         "an addressed reply must never fall through to TurnSubmit: {kinds:?}"
     );
-    let steer = kinds
+    let command = kinds
         .iter()
         .find(|k| k.starts_with("steer:"))
-        .expect("one steer");
+        .expect("one command");
     assert!(
-        steer.starts_with("steer:session-queue-1:turn-live:"),
-        "the steer must name the parent session and turn, not the subagent's task_id: \
-         {steer:?}"
+        command.starts_with("steer:session-queue-1:"),
+        "the command must name the parent session it acts on: {command:?}"
     );
     assert!(
-        steer.contains("Sally"),
-        "the captured name travels: {steer:?}"
+        !command.contains("task-1"),
+        "the subagent's task id is not the steer recipient, and naming it would \
+         resolve to turn_id_mismatch: {command:?}"
     );
     assert!(
-        steer.ends_with("try the second retry first"),
-        "the user's own words are sent verbatim: {steer:?}"
+        command.contains("Sally"),
+        "the captured name travels: {command:?}"
+    );
+    assert!(
+        command.ends_with("try the second retry first"),
+        "the user's own words are sent verbatim: {command:?}"
     );
 }
 
@@ -2809,27 +2845,27 @@ async fn a_slash_command_typed_while_addressed_is_not_steered() {
     );
 }
 
-/// Addressing requires a run that is actually running. With none, the reply is
-/// refused **before** any request is built — there is no turn to steer.
+/// The decision about the turn moved to the daemon, so the frontend delegates
+/// it.
+///
+/// Before M007-H the TUI read its own `active_turn_id` and refused a reply
+/// **locally** when nothing was running. It no longer reads a turn id at all,
+/// so the reply is handed to the daemon either way, and what the daemon makes
+/// of a session that runs no turn is the daemon's answer.
 #[tokio::test]
-async fn addressing_with_no_running_turn_issues_no_request() {
+async fn an_addressed_reply_is_delegated_to_the_daemon_rather_than_refused_locally() {
     let (mut app, client) = app_with_queue_and_core(Vec::new());
     seed_running_subagent(&mut app);
     assert!(codegg::tui::commands::subagent_steer::arm_addressee(
         &mut app, "task-1"
     ));
     submit(&mut app, "are you there");
-    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+    settle_prefix_until(&client, "steer:", 1).await;
     let kinds = client.kinds();
-    assert_eq!(count_prefix(&kinds, "steer:"), 0, "{kinds:?}");
     assert_eq!(
-        count_prefix(&kinds, "submit:"),
-        0,
-        "and no silent TurnSubmit either: {kinds:?}"
-    );
-    assert_eq!(
-        app.prompt_state.prompt.get_text(),
-        "are you there",
-        "the words survive a refusal that never left the process"
+        count_prefix(&kinds, "steer:"),
+        1,
+        "the frontend hands the reply to the daemon even with no turn running: {kinds:?}"
     );
 }

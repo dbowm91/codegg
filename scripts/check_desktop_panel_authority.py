@@ -101,12 +101,12 @@ PANEL_LAYER_DIRS = (
 BRIDGE_MODULE = Path("apps/desktop/src/bridge.ts")
 HOST_COMMAND_TABLE = Path("apps/desktop/src-tauri/src/lib.rs")
 
-# The recorded bridge baseline: the desktop's 50 `invoke` targets, which are
-# the same 50 commands the host registers. The set is recorded **here**
+# The recorded bridge baseline: the desktop's 51 `invoke` targets, which are
+# the same 51 commands the host registers. The set is recorded **here**
 # rather than measured from the tree at run time, because a baseline that is
 # measured is a baseline that grows by itself.
 #
-# The set is the union of five deliberate additions, each named in the
+# The set is the union of six deliberate additions, each named in the
 # change that added it:
 #
 # * M007-D adds `desktop_command_catalog` and `desktop_command_execute`: the
@@ -125,9 +125,13 @@ HOST_COMMAND_TABLE = Path("apps/desktop/src-tauri/src/lib.rs")
 #   bounded operations over the daemon's interactive-process service — list,
 #   attach, resume, input, resize and detach. Each is a named operation
 #   over one daemon request, never a generic request passthrough.
+# * M007-I (plan 022, work package F) adds `desktop_skill_promotion`: the
+#   daemon's skill-promotion workflow. It is a named operation over one
+#   daemon request — the daemon owns the durable promotion record, so the
+#   desktop asks and renders — and never a generic request passthrough.
 #
-# The baseline was re-measured once all five additions were present: 50
-# targets, and the same 50 the host's `generate_handler!` table registers.
+# The baseline was re-measured once all six additions were present: 51
+# targets, and the same 51 the host's `generate_handler!` table registers.
 # The sets are disjoint and the union is what the guard holds.
 RECORDED_BRIDGE_TARGETS = frozenset(
     {
@@ -171,6 +175,7 @@ RECORDED_BRIDGE_TARGETS = frozenset(
         "desktop_session_list",
         "desktop_session_open",
         "desktop_skill_catalogue",
+        "desktop_skill_promotion",
         "desktop_subscribe_events",
         "desktop_terminal_attach",
         "desktop_terminal_detach",

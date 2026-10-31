@@ -28,6 +28,7 @@ fn work_plan_snapshot(
     blocked_count: usize,
     in_progress_count: usize,
     assessment: &codegg_core::work_plan::WorkPlanCompletionAssessment,
+    items: &[codegg_core::work_plan::WorkItem],
 ) -> codegg_core::bus::events::WorkPlanSnapshot {
     let objective_preview: String = plan.objective.chars().take(200).collect();
     codegg_core::bus::events::WorkPlanSnapshot {
@@ -45,6 +46,20 @@ fn work_plan_snapshot(
         blocked_count,
         in_progress_count,
         assessment: assessment.reason_code().to_string(),
+        updated_at_ms: plan.updated_at.timestamp_millis(),
+        // M007-H (D3): the daemon owns the plan and publishes it, so the
+        // published plan carries the items a frontend renders.
+        items: items
+            .iter()
+            .take(64)
+            .map(|item| codegg_core::bus::events::WorkPlanItemSnapshot {
+                item_id: item.id.as_str().to_string(),
+                description: item.description.chars().take(400).collect(),
+                status: item.status.as_str().to_string(),
+                blocker: item.blocker.clone(),
+                next_action: item.next_action.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -71,6 +86,7 @@ fn publish_work_plan(
             .filter(|item| item.status == ItemStatus::InProgress)
             .count(),
         assessment,
+        items,
     );
     snapshot.total_items = items.len();
     crate::bus::global::GlobalEventBus::publish(crate::bus::events::AppEvent::WorkPlanUpdated {

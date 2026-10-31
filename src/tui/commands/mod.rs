@@ -4,6 +4,7 @@ pub(super) mod change_review;
 pub(super) mod chat;
 pub(super) mod control;
 pub(super) mod diagnostics;
+pub(super) mod diff;
 pub(super) mod editor;
 pub(super) mod exit_control;
 pub(super) mod file_tree;
@@ -27,6 +28,7 @@ pub(super) mod primary_projection;
 pub(super) mod project_catalog;
 pub(super) mod project_init;
 pub(super) mod project_picker;
+pub(super) mod promotion;
 pub(super) mod prompt;
 pub(super) mod provider_connections;
 /// M004: the `/queue` box — open, refresh, and delete one waiting prompt.
@@ -38,6 +40,7 @@ pub mod queue;
 /// name its payload types) stay well-formed.
 pub mod reasoning;
 pub(super) mod research;
+pub(super) mod revert;
 pub(super) mod run_rerun;
 pub(super) mod security;
 pub(super) mod session_selection;

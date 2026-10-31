@@ -581,22 +581,22 @@ fifth reconciliations recorded. The full reconciliation is in
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 58 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 61 | `crates/codegg-core/src/bus/events.rs` |
-| `CoreRequest` variants | 275 (249 struct + 26 unit) | `crates/codegg-protocol/src/core.rs` |
-| `CoreResponse` variants | 183 (182 struct + 1 unit) | `crates/codegg-protocol/src/core.rs` |
-| `CoreEvent` variants | 98 | `crates/codegg-protocol/src/core.rs` |
-| `ProjectionEvent` variants | 51 | `crates/codegg-protocol/src/projection/event.rs` |
-| Authorized operations | 270 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) — 276 arms carrying 270 distinct operation names, covering all 275 `CoreRequest` variants; the `representative_requests()` list holds 259 of them |
+| `CoreRequest` variants | 283 (257 struct + 26 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreResponse` variants | 189 (188 struct + 1 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreEvent` variants | 99 | `crates/codegg-protocol/src/core.rs` |
+| `ProjectionEvent` variants | 54 | `crates/codegg-protocol/src/projection/event.rs` |
+| Authorized operations | 278 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) — 276 arms carrying 270 distinct operation names, covering all 275 `CoreRequest` variants; the `representative_requests()` list holds 259 of them |
 | Identity newtypes | 19 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
 | Built-in slash commands | 169 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
 | TUI state modules | 34 (35 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
-| Database tables (`CREATE TABLE`) | 101 statements / 97 tables | `crates/codegg-core/src/session/schema.rs` (98 distinct `CREATE TABLE` names, less the transient `origin_attribution_new` rebuild name; `migration_version`, `origin_attribution` and that rebuild each appear twice) |
-| Storage layout version | 93 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
+| Database tables (`CREATE TABLE`) | 102 statements / 98 tables | `crates/codegg-core/src/session/schema.rs` (98 distinct `CREATE TABLE` names, less the transient `origin_attribution_new` rebuild name; `migration_version`, `origin_attribution` and that rebuild each appear twice) |
+| Storage layout version | 94 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 356 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Integration test files | 359 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
 | Guard scripts (all) | 105 | `scripts/check_*` — every guard the repository ships |
 | CI guard scripts | 71 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs guards CI does not |
 

@@ -63,6 +63,13 @@ export interface PromptSubmitView {
   intentId: string;
   routeToken: RouteTokenView;
 }
+// M007-I (plan 022, work package F): the ask. The frontend names the
+// daemon's own run and the human's question; the bytes never cross.
+export interface HumanShellPromotionStageView {
+  promotionId: string;
+  sourceId: string;
+  question: string;
+}
 // M004 projection presentation (WP C). Bounded, renderer-safe views
 // derived from the canonical snapshot by the Rust host. No raw tool
 // arguments/output, no filesystem paths, no cursor authority.
@@ -461,6 +468,79 @@ export interface SkillCatalogueView {
   skills: SkillSummaryView[];
   total: number;
   truncated: boolean;
+}
+
+// The step of the daemon's promotion workflow the renderer names.
+//
+// The action is a closed set: the renderer says which step it wants and the
+// daemon performs the durable effect.
+export type SkillPromotionAction =
+  | 'begin'
+  | 'list'
+  | 'get'
+  | 'preview'
+  | 'reject'
+  | 'publish';
+
+// The scope a publication targets.
+//
+// The scope is a closed enum, never a filesystem path: the daemon resolves
+// the target root itself.
+export type SkillTargetScope = 'project' | 'global';
+
+// M007-I (plan 022, work package F): the daemon's answer to one
+// skill-promotion request.
+//
+// The daemon owns the durable promotion record, so the desktop asks and
+// renders — it holds no promotion state of its own. The view carries what
+// the daemon said and nothing the desktop would have to infer.
+export interface SkillPromotionView {
+  // The action the daemon performed.
+  action: string;
+  // Whether the durable record changed.
+  changed: boolean;
+  // The request's identity, when the action produced one.
+  requestId: string | null;
+  // The bounded draft prompt, when the action staged a request.
+  draftPrompt: string | null;
+  // The proposals, when the action listed or read them.
+  proposals: SkillProposalSummaryView[] | null;
+  // The proposal in full, when the action read or previewed one.
+  detail: SkillProposalDetailView | null;
+  // The published proposal's relative path, when the action published one.
+  publishedRelativePath: string | null;
+}
+
+// One proposal, as the daemon reports it.
+export interface SkillProposalSummaryView {
+  proposalId: string;
+  name: string;
+  description: string;
+  status: string;
+  revision: number;
+}
+
+// One proposal in full, as the daemon reports it.
+//
+// The body is the model's own draft, and the human reads it before
+// approving it — which is why the detail carries it and the listing does
+// not.
+export interface SkillProposalDetailView {
+  proposalId: string;
+  name: string;
+  status: string;
+  revision: number;
+  targetScope: string;
+  skillMarkdown: string;
+  diagnostics: SkillProposalDiagnosticView[];
+  publishedRelativePath: string | null;
+}
+
+// One diagnostic a proposal carries.
+export interface SkillProposalDiagnosticView {
+  severity: string;
+  reason: string;
+  location: string | null;
 }
 
 // M007-D: the daemon's command catalog.

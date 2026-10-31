@@ -71,6 +71,92 @@ pub enum GitReadResultDto {
     Branches(GitBranchListDto),
 }
 
+/// The daemon's git revert request (M007-H, work package C).
+///
+/// The daemon resolves the checkout from its own durable project binding,
+/// so this request carries identifiers and repository-relative paths — never
+/// a filesystem path a caller could point at an unrelated tree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitRevertRequestDto {
+    /// The project whose bound checkout is reverted.
+    pub project_id: String,
+    /// The workspace whose checkout is reverted.
+    pub workspace_id: String,
+    /// The session the revert was invoked from, when one is attached.
+    ///
+    /// The session is what the daemon resolves the acting turn and the
+    /// checkout's writer attribution from. It is never a path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// The repository-relative paths restored from `HEAD`.
+    pub paths: Vec<String>,
+}
+
+/// The result of a git revert.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitRevertResultDto {
+    /// The project whose checkout was reverted.
+    pub project_id: String,
+    /// The workspace whose checkout was reverted.
+    pub workspace_id: String,
+    /// The repository-relative paths the revert restored.
+    pub paths: Vec<String>,
+    /// The typed outcome of the underlying mutation: `completed`, `no-op`,
+    /// `fast-forward`, `conflict` or `rejected`.
+    pub outcome: String,
+}
+
+/// The daemon's diff request (M007-I, work package A).
+///
+/// The daemon resolves the checkout from its own durable project binding, so
+/// this request carries identifiers and a repository-relative path — never a
+/// filesystem path a caller could point at an unrelated tree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitDiffRequestDto {
+    /// The project whose bound checkout is diffed.
+    pub project_id: String,
+    /// The workspace whose checkout is diffed.
+    pub workspace_id: String,
+    /// The session the diff was invoked from, when one is attached.
+    ///
+    /// The session is what the daemon resolves the acting turn from. It is
+    /// never a path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// The repository-relative path to diff.
+    ///
+    /// `None` is the **bare** `/diff` branch: the whole working tree against
+    /// `HEAD`. `Some(path)` is the `/diff <path>` branch: that one file
+    /// against `HEAD`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+/// The result of a diff read.
+///
+/// Both branches of the diff view carry their own bytes, so the frontend
+/// renders the answer the daemon produced without reading the working tree
+/// itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitDiffResultDto {
+    /// The project whose checkout was diffed.
+    pub project_id: String,
+    /// The workspace whose checkout was diffed.
+    pub workspace_id: String,
+    /// The repository-relative path that was diffed, when the request named
+    /// one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The bytes as they stood at `HEAD`.
+    ///
+    /// The bare branch has no `HEAD` side, so it is empty there.
+    pub old_content: String,
+    /// The bytes as they stand in the working tree.
+    pub new_content: String,
+    /// The title the diff view carries.
+    pub title: String,
+}
+
 /// The status of one repository.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitRepoStatusDto {

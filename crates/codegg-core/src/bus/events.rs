@@ -75,6 +75,25 @@ pub struct WorkPlanSnapshot {
     pub blocked_count: usize,
     pub in_progress_count: usize,
     pub assessment: String,
+    /// When the plan was last updated, in epoch milliseconds.
+    pub updated_at_ms: i64,
+    /// The plan's items, in the daemon's own order. M007-H (D3): the list
+    /// is bounded, because the snapshot is what every frontend receives.
+    #[serde(default)]
+    pub items: Vec<WorkPlanItemSnapshot>,
+}
+
+/// One work item in the published work plan. M007-H (D3): the item's status
+/// is the daemon's own vocabulary, not a frontend's rendering of it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkPlanItemSnapshot {
+    pub item_id: String,
+    pub description: String,
+    pub status: String,
+    #[serde(default)]
+    pub blocker: Option<String>,
+    #[serde(default)]
+    pub next_action: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

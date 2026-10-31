@@ -919,7 +919,7 @@ impl ToolRegistry {
             crate::tool::skill::SkillTool::with_snapshot(options.asset_snapshot, options.asset_pin)
                 .with_workspace_root(workspace_root.clone()),
         );
-        registry.register(crate::tool::skill_proposal::SkillProposalTool);
+        registry.register(crate::tool::skill_proposal::SkillProposalTool::default());
         registry.register_boxed(match workspace_root.as_ref() {
             Some(root) => Box::new(
                 crate::tool::apply_patch::ApplyPatchTool::default().with_allowed_root(root.clone()),

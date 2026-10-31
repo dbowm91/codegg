@@ -587,12 +587,16 @@ static THE_CATALOG: CommandCatalog = CommandCatalog {
             description: "Compact session",
             category: CommandCategory::Session,
             domain: CommandDomain::Session,
-            kind: CommandKind::DaemonEffect,
-            capability: Some(CommandCapability::CommandExecute),
+            // M007-H (D1): compaction is the daemon's automatic policy and the
+            // TUI's own compact command owns the user-facing form. The
+            // daemon has no compaction request, so the form is a frontend
+            // effect and the declared action names it.
+            kind: CommandKind::FrontendEffect,
+            capability: None,
             forms: &[
                 CommandForm {
                     form: "",
-                    kind: CommandKind::DaemonEffect,
+                    kind: CommandKind::FrontendEffect,
                     argument_hint: "",
                     argument_required: false,
                 },
@@ -1460,7 +1464,7 @@ static THE_CATALOG: CommandCatalog = CommandCatalog {
             command_id: "plan",
             name: "/plan",
             aliases: &[],
-            description: "Manage task plan (/plan, /plan add, done, skip, block, clear)",
+            description: "Show the session's plan, as the daemon published it (/plan)",
             category: CommandCategory::Session,
             domain: CommandDomain::Execution,
             kind: CommandKind::DaemonEffect,
@@ -1679,12 +1683,15 @@ static THE_CATALOG: CommandCatalog = CommandCatalog {
             description: "Show recent daemon log lines and past notifications",
             category: CommandCategory::System,
             domain: CommandDomain::System,
-            kind: CommandKind::DaemonEffect,
-            capability: Some(CommandCapability::CommandExecute),
+            // M007-H (D6): the log tail is permanently frontend-local. The
+            // daemon discloses no log contents to a frontend, so the form is a
+            // frontend effect and the declared action names it.
+            kind: CommandKind::FrontendEffect,
+            capability: None,
             forms: &[
                 CommandForm {
                     form: "",
-                    kind: CommandKind::DaemonEffect,
+                    kind: CommandKind::FrontendEffect,
                     argument_hint: "",
                     argument_required: false,
                 },

@@ -652,11 +652,18 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("session_launch", "session_create"),
     ("turn_submit", "prompt_submit"),
     ("session_prompt_submit", "prompt_submit"),
+    // M007-I (work packages D and E): the ask is one request. It stages the
+    // evidence and admits the turn together, so it is the same
+    // `prompt_submit` effect the stage-and-submit pair was.
+    ("shell_ask_submit", "prompt_submit"),
     ("human_shell_promotion_stage", "prompt_submit"),
     ("human_shell_run_create", "human_shell_run"),
     ("human_shell_run_cancel", "human_shell_run"),
     // M007-H: the review's start may apply a checked change.
     ("security_review_start", "file_mutate"),
+    // M007-H (work package C): the daemon's own `/revert` restores paths in
+    // a checkout, so it is a shared-state mutation and is recorded.
+    ("git_revert", "file_mutate"),
     // M007: the operator disposition of one of the daemon's own disposable
     // scratch trees.
     ("scratch_reclaim", "scratch_reclaim"),
@@ -723,6 +730,11 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("project_init_publish", "file_mutate"),
     // M007-G (ADR-0057): the mutating plugin forms are file mutations.
     ("plugin_manage", "file_mutate"),
+    // M007-I (work package B): the promotion workflow. The daemon owns the
+    // durable record, so staging, rejecting and publishing are the daemon's
+    // effects. The publication writes a skill file, so the operation is
+    // recorded as a file mutation — the same shape `plugin_manage` has.
+    ("skill_promotion", "file_mutate"),
     ("managed_worktree_cleanup", "worktree_lifecycle"),
     ("managed_worktree_archive", "worktree_lifecycle"),
     ("job_submit", "job_submit"),
@@ -872,6 +884,11 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     // git fact layer, and mutates nothing: there is no write path behind it
     // to audit. Denial *is* audited upstream by `authorize_request`.
     "git_read",
+    // M007-I (work package A): the daemon's own diff read. It discloses the
+    // working tree's bytes against `HEAD` through the read-only git fact
+    // layer and mutates nothing: there is no write path behind it to audit.
+    // Denial *is* audited upstream by `authorize_request`.
+    "git_diff",
     // Phase 3: the skill catalogue. It discloses a project's discoverable
     // skill metadata — names and descriptions, never bodies, never paths —
     // and mutates nothing. Denial *is* audited upstream by

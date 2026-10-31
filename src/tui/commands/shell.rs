@@ -682,14 +682,35 @@ pub(crate) fn handle_shell_include(
 }
 
 pub(crate) fn handle_shell_ask(app: &mut app::App, id: u64, question: String) {
-    use crate::shell::types::ShellCommandId;
-
     if app.observer.blocks_prompt_submit() {
         app.messages_state
             .toasts
             .warning("Observer sessions cannot submit shell output to a model");
         return;
     }
+    // M007-I (work package E): the evidence is the **daemon's** own run
+    // bytes. The frontend names the run and the question; it never reads
+    // the run's bytes and never assembles the evidence. The daemon reads
+    // its own bytes and redacts the assembled evidence.
+    if app.core_client.is_some() {
+        let Some(binding) = app.remote_shell_runs.get(&id).cloned() else {
+            app.messages_state
+                .toasts
+                .error(&format!("Shell command {} not found", id));
+            return;
+        };
+        if app.session_state.session.is_some() && !shell_binding_matches_current(app, id) {
+            app.messages_state
+                .toasts
+                .warning("Shell output cannot be submitted from a different session or workspace");
+            return;
+        }
+        submit_shell_ask(app, id, binding.run_id, question);
+        return;
+    }
+    // The standalone path: with no daemon attached, the TUI owns the run
+    // bytes itself and keeps its own redaction.
+    use crate::shell::types::ShellCommandId;
     let cmd_id = ShellCommandId(id);
     if let Some(entry) = app.shell_store.get(cmd_id) {
         if app.session_state.session.is_some() && !shell_binding_matches_current(app, id) {
@@ -724,7 +745,7 @@ pub(crate) fn handle_shell_ask(app: &mut app::App, id: u64, question: String) {
         );
         match project_for_model(&include_text) {
             Ok(include_text) => {
-                submit_shell_ask(app, id, include_text);
+                submit_shell_ask_standalone(app, id, include_text);
             }
             Err(error) => app.messages_state.toasts.error(&error),
         }
@@ -735,7 +756,72 @@ pub(crate) fn handle_shell_ask(app: &mut app::App, id: u64, question: String) {
     }
 }
 
-fn submit_shell_ask(app: &mut app::App, id: u64, text: String) {
+/// Submit the ask, as one request.
+///
+/// M007-I (work packages D and E): the frontend sends the run id and the
+/// question. The daemon reads its own run bytes, redacts the assembled
+/// evidence, stages it and admits the turn **together**. There is no second
+/// request, and therefore no `pending` row that survives a failed one.
+fn submit_shell_ask(app: &mut app::App, id: u64, run_id: String, question: String) {
+    use crate::protocol::core::{CoreRequest, CoreResponse};
+
+    let Some(client) = app.core_client.clone() else {
+        app.messages_state
+            .toasts
+            .error("Cannot submit shell question: no daemon is connected");
+        return;
+    };
+    let Some(session_id) = app.session_state.session.as_ref().map(|s| s.id.clone()) else {
+        app.messages_state
+            .toasts
+            .warning("Select a session before asking about shell output");
+        return;
+    };
+    let Some(tx) = app.tui_cmd_tx.clone() else {
+        app.messages_state
+            .toasts
+            .error("Cannot submit shell question: TUI command channel is unavailable");
+        return;
+    };
+    let promotion_id = uuid::Uuid::new_v4();
+    let request = crate::core::new_request(
+        uuid::Uuid::new_v4().to_string(),
+        CoreRequest::SessionPromptSubmitWithHumanShellPromotions {
+            session_id: session_id.clone(),
+            text: "Answer the question contained in the attached human-shell evidence.".into(),
+            plan_mode: app.agent_state.plan_mode,
+            human_shell_promotions: vec![
+                crate::protocol::human_shell::HumanShellPromotionStageDto {
+                    promotion_id: promotion_id.to_string(),
+                    source_id: run_id,
+                    question,
+                },
+            ],
+        },
+    );
+    app.task_registry
+        .spawn(TuiTaskKind::Command, "shell_ask_submit", async move {
+            let error = match client.request(request).await {
+                Ok(CoreResponse::Ack) => None,
+                Ok(CoreResponse::Error { code, message }) => Some(format!("{code}: {message}")),
+                Ok(_) => Some("unexpected response to shell question".to_string()),
+                Err(error) => Some(error.to_string()),
+            };
+            let _ = send_tui(
+                &tx,
+                app::TuiCommand::ShellAskSubmitted {
+                    id,
+                    promotion_id: Some(promotion_id),
+                    text: String::new(),
+                    error,
+                },
+            );
+        });
+}
+
+/// The standalone path's submit: with no daemon attached, the TUI sends the
+/// evidence it assembled itself.
+fn submit_shell_ask_standalone(app: &mut app::App, id: u64, text: String) {
     use crate::protocol::core::{CoreRequest, CoreResponse};
 
     if let Some(client) = app.core_client.clone() {

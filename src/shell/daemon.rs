@@ -452,9 +452,88 @@ impl HumanShellRunService {
         }
     }
 
-    /// The session's runs, newest first; a run with no start timestamp
-    /// sorts last. The daemon's registry is the authority for which runs
-    /// exist, and the listing carries no output: `read` serves that.
+    /// The human-shell evidence for one run, assembled from the daemon's
+    /// **own** run bytes.
+    ///
+    /// M007-I (work package E): the frontend no longer assembles the
+    /// evidence from its own mirror of the run. The daemon reads its own
+    /// bytes, renders the digest and returns the assembled text; the
+    /// promotion staging then redacts it. The bytes and the redaction are
+    /// therefore one daemon-owned path.
+    pub async fn evidence_text(&self, run_id: &str, question: &str) -> Result<String, String> {
+        let Some(scope) = self.scope_for(run_id).await else {
+            return Err("the shell run is unavailable or expired".to_owned());
+        };
+        let read = self
+            .read(&scope, run_id, 0, HUMAN_SHELL_MAX_READ_BYTES)
+            .await;
+        let CoreResponse::HumanShellRunOutput {
+            run,
+            chunks,
+            output_truncated,
+            ..
+        } = read
+        else {
+            return Err("the shell run is unavailable or expired".to_owned());
+        };
+        let mut stdout = crate::shell::store::BoundedOutput::new();
+        let mut stderr = crate::shell::store::BoundedOutput::new();
+        for chunk in &chunks {
+            if chunk.stderr {
+                stderr.append(&chunk.bytes);
+            } else {
+                stdout.append(&chunk.bytes);
+            }
+        }
+        let status = match run.status {
+            crate::protocol::human_shell::HumanShellRunStatusDto::Running => {
+                crate::shell::types::ShellStatus::Running
+            }
+            crate::protocol::human_shell::HumanShellRunStatusDto::Exited => {
+                crate::shell::types::ShellStatus::Exited
+            }
+            crate::protocol::human_shell::HumanShellRunStatusDto::TimedOut => {
+                crate::shell::types::ShellStatus::TimedOut
+            }
+            crate::protocol::human_shell::HumanShellRunStatusDto::Cancelled => {
+                crate::shell::types::ShellStatus::Killed
+            }
+            crate::protocol::human_shell::HumanShellRunStatusDto::Failed => {
+                crate::shell::types::ShellStatus::FailedToStart
+            }
+            crate::protocol::human_shell::HumanShellRunStatusDto::Lost => {
+                crate::shell::types::ShellStatus::FailedToStart
+            }
+        };
+        if status != crate::shell::types::ShellStatus::Exited {
+            return Err("shell output can only be promoted after the command exits".to_owned());
+        }
+        let elapsed = match (run.started_at_ms, run.completed_at_ms) {
+            (Some(started), Some(completed)) => {
+                std::time::Duration::from_millis(completed.saturating_sub(started).max(0) as u64)
+            }
+            _ => std::time::Duration::default(),
+        };
+        let digest = crate::shell::ShellDigest::build(
+            &run.command,
+            std::path::Path::new(&run.cwd),
+            status,
+            run.exit_code,
+            elapsed,
+            &stdout,
+            &stderr,
+        );
+        let mut text = format!(
+            "Using the attached shell output, answer: {question}\n\n{}",
+            digest.render()
+        );
+        if output_truncated {
+            text.push_str("\n[shell output truncated]");
+        }
+        Ok(text)
+    }
+
+    /// The session's runs, newest first; the listing carries no output.
     pub async fn list_for_session(&self, session_id: &str) -> Vec<HumanShellRunMetadataDto> {
         let mut inner = self.inner.lock().await;
         Self::prune(&mut inner);
@@ -474,10 +553,39 @@ impl HumanShellRunService {
         runs
     }
 
-    /// The run's own binding, for a run this daemon still holds.
+    /// The runs in one exact scope, newest first and bounded by `limit`.
     ///
-    /// A cancel's authority is the **run's own** binding; the runs live in
-    /// memory, so this answers `None` for a run the daemon does not hold.
+    /// The scope is exact — principal, project, workspace and session.
+    pub async fn list_for_scope(
+        &self,
+        scope: &HumanShellRunScope,
+        limit: usize,
+    ) -> Vec<HumanShellRunMetadataDto> {
+        let mut inner = self.inner.lock().await;
+        Self::prune(&mut inner);
+        let mut runs: Vec<HumanShellRunMetadataDto> = inner
+            .runs
+            .values()
+            .filter_map(|record| {
+                let run = record.lock();
+                (run.scope.principal_id == scope.principal_id
+                    && run.scope.project_id == scope.project_id
+                    && run.scope.workspace_id == scope.workspace_id
+                    && run.scope.session_id == scope.session_id)
+                    .then(|| run.meta.clone())
+            })
+            .collect();
+        runs.sort_by(|left, right| {
+            run_order_key(right)
+                .cmp(&run_order_key(left))
+                .then_with(|| left.run_id.cmp(&right.run_id))
+        });
+        runs.truncate(limit);
+        runs
+    }
+
+    /// The run's own binding: a cancel's authority, for a run this daemon
+    /// still holds. The runs live in memory, so an absent run answers `None`.
     pub async fn scope_for(&self, run_id: &str) -> Option<HumanShellRunScope> {
         let mut inner = self.inner.lock().await;
         Self::prune(&mut inner);
