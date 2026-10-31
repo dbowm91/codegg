@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "campaign_id": "s015-provider-stream-stall-diagnostics-20261031",
+  "run_index": 3,
+  "run_status": "completed_diagnostic_unqualified",
+  "started_at_utc": "2026-10-31T17:27:38Z",
+  "terminal_observed_at_utc": "2026-10-31T17:30:36Z",
+  "elapsed_seconds": 161.119,
+  "source_commit": "e99d3c1fe",
+  "binary_sha256": "7d06fc68058e1963a7a81dee54a581c9bce01063b17a90bd62940b9857a99f92",
+  "binary_architecture": "arm64",
+  "route": "opencode_go/muse-spark-1.3-contributor",
+  "case_id": "build-provenance-catalog",
+  "manifest": "dev/harness_lab/fixtures/agent_autonomy_h007/cases.jsonl",
+  "manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "provider_requests": 28,
+  "per_run_request_cap": 60,
+  "usd_cost": 0.018025,
+  "provider_stream_lifecycle": {
+    "setup_started": 28,
+    "transport_started": 28,
+    "response_headers": 28,
+    "body_started": 28,
+    "sampled_body_progress": 47,
+    "decoded_events": 217,
+    "body_eof": 28,
+    "decoded_eof": 28,
+    "turn_eof": 28,
+    "idle_timeouts": 0,
+    "setup_failures": 0
+  },
+  "task": {
+    "terminal": "completed",
+    "agent_terminal": "completed",
+    "task_outcome": "failed",
+    "horizon_outcome": "not_qualified",
+    "horizon_reason": "job_lifecycle_missing",
+    "tool_call_count": 44,
+    "active_work_span_ms": 152621,
+    "verifier_exit_code": 1,
+    "verifier_failure_count": 2
+  },
+  "disk": {
+    "minimum_free_bytes": 14568390656,
+    "free_bytes_at_end": 14486200320,
+    "stop_floor_bytes": 10737418240,
+    "floor_triggered": false
+  },
+  "corrective_confirmation": "inconclusive_no_stream_gap_near_old_timeout",
+  "interpretation": "The hidden verifier again found no exact-ID job observed running during productive edits. This ended after about 2.7 minutes, with 28 admitted requests and clean stream EOF on every request. No stream idle timeout or first-event latency near the old 90-second bound occurred, so this run does not confirm the timeout correction. The task failure is the job-lifecycle overlap criterion, separate from the reproduced provider timeout.",
+  "private_artifacts": {
+    "receipt_path": "/private/tmp/s015-attempt03.json",
+    "receipt_sha256": "9d577c9bd4a69faca8d4e32b4677c9c4b4416ae96e01b8b81bde5aed98b1975c",
+    "diagnostic_log_path": "/private/tmp/s015-live03/case00/case/codegg_debug.log",
+    "diagnostic_log_sha256": "53008fd4bba0ac0aaa379f14198bd135a868d6209ba66c370bc72f90756107e2",
+    "provider_admission_receipt_path": "/private/tmp/s015-live03/case00/artifacts/provider-request-admissions.jsonl",
+    "provider_admission_receipt_sha256": "009412f1f1a05f016edab0037d3228a3ec843ebd24a674bbf5eacafca4c4297d",
+    "causal_trace_path": "/private/tmp/s015-live03/case00/private/causal-trace.jsonl",
+    "causal_trace_sha256": "d55220459e9fd5025a35b71337f36937999bb89437957944336e37e46ba085c7"
+  }
+}
