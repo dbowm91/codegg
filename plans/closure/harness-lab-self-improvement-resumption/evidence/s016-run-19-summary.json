@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "campaign_id": "s016-deepseek-long-run-corrective-loop-20261031",
+  "run_index": 19,
+  "run_kind": "diagnostic",
+  "run_status": "completed_diagnostic_job_failed_before_background_execution",
+  "counts_as_live_provider_run": true,
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "controller_commit": "771f58ff7",
+  "source_binary_commit": "94fc8d41ff61e5963adf5779475fd9ee08569493",
+  "binary_architecture": "arm64",
+  "binary_sha256": "16481cc8bf0d8866db352c3aab90c35950bde37e5799be1458a43012d594fe2a",
+  "sandbox_helper_sha256": "37ee6c8cd876d1e05bbd650c7a26520753fe55534ac821a52d9089712d751d43",
+  "fixture_manifest": "dev/harness_lab/fixtures/agent_autonomy_s016_job_overlap_diagnostic_v7/cases.jsonl",
+  "fixture_manifest_sha256": "c56b44762aba0f2d18cb34d41e322ba739296a497c312c23761890978a660c8e",
+  "qualification_fixture_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "started_at_utc": "2026-10-31T23:14:03Z",
+  "terminal_observed_at_utc": "2026-10-31T23:14:31Z",
+  "elapsed_seconds": 28.741,
+  "case_duration_ms": 17529,
+  "active_work_span_ms": 7395,
+  "provider_requests": 6,
+  "request_cap": 15,
+  "request_cap_exhausted": false,
+  "usd_cost": 0.004964,
+  "provider_stream_lifecycle": {
+    "transport_requests_started": 6,
+    "response_headers_received": 6,
+    "body_eof": 6,
+    "decoded_event_idle_timeouts": 0,
+    "raw_sse_retained": false
+  },
+  "task": {
+    "agent_terminal": "completed",
+    "task_outcome": "failed",
+    "horizon_outcome": "not_qualified",
+    "horizon_reason": "job_lifecycle_missing",
+    "continuation_confirmed": false,
+    "exact_job_running_and_terminal": false,
+    "productive_work_during_job": false,
+    "tool_calls": 4,
+    "tool_events": [
+      {
+        "tool": "test",
+        "status": "completed",
+        "started_elapsed_ms": 2915,
+        "finished_elapsed_ms": 2950,
+        "job_action": "submit",
+        "job_id": "08079514-4b09-431f-8a42-11dd361eba64",
+        "job_status": null
+      },
+      {
+        "tool": "job",
+        "status": "failed",
+        "started_elapsed_ms": 4339,
+        "finished_elapsed_ms": 4361,
+        "job_action": "status",
+        "job_id": "08079514-4b09-431f-8a42-11dd361eba64",
+        "job_status": "failed"
+      },
+      {
+        "tool": "job",
+        "status": "failed",
+        "started_elapsed_ms": 6599,
+        "finished_elapsed_ms": 6619,
+        "job_action": "status",
+        "job_id": "08079514-4b09-431f-8a42-11dd361eba64",
+        "job_status": "failed"
+      },
+      {
+        "tool": "job",
+        "status": "failed",
+        "started_elapsed_ms": 10326,
+        "finished_elapsed_ms": 10345,
+        "job_action": "output",
+        "job_id": "08079514-4b09-431f-8a42-11dd361eba64",
+        "job_status": "failed"
+      }
+    ],
+    "test_command": "cargo test --offline --locked --release --workspace",
+    "job_observation": "exact returned ID was queried twice and output was requested; status stayed failed",
+    "cause": "test tool call omitted workdir=fixture and execution_mode=background; DB receipt shows case-root cwd, foreground default and 80ms command failure"
+  },
+  "event_observation": {
+    "tool_started_count": 4,
+    "tool_terminal_count": 4,
+    "unpaired_tool_events": 0,
+    "event_gaps": 0,
+    "dropped_causal_events": 0,
+    "causal_trace_events": 15
+  },
+  "verification": {
+    "harness_automatically_invoked_unchanged_verifier": true,
+    "exit_code": 1,
+    "tests_run": 0,
+    "verifier_contents_not_inspected": true
+  },
+  "disk": {
+    "floor_bytes": 10737418240,
+    "floor_triggered": false,
+    "free_bytes_at_start": 33955360768,
+    "minimum_free_bytes": 33949270016,
+    "free_bytes_at_end": 33949270016
+  },
+  "diagnosis": {
+    "test_tool_default_execution_mode": "foreground",
+    "test_tool_default_workdir": "session workspace root",
+    "evidence": "src/tool/test.rs documents execution_mode=background as returning a stable JobHandle immediately and foreground as the default; the run-19 job receipt records cwd at the case root and a 0.08s command failure.",
+    "classification": "diagnostic_prompt_misconfiguration_not_job_surface_defect",
+    "corrective": "long prompt v6 explicitly sets workdir=fixture and execution_mode=background on each test submission, then requires exact-ID status polls and productive edits while running"
+  },
+  "interpretation": "Run 19 did not exercise asynchronous job overlap: the diagnostic prompt omitted the explicit background mode and fixture workdir. The command failed almost immediately from the case root, so no running interval could exist. The agent nevertheless observed the exact returned ID and the causal trace contains no event gaps. This is a prompt-side diagnostic setup error, not evidence of an ACP or job lifecycle defect. Run 20 will use a versioned long prompt that explicitly targets the fixture workspace and requests background execution for every test.",
+  "private_artifacts": {
+    "receipt_path": "/private/tmp/s016-attempt19.json",
+    "receipt_sha256": "c1b178dd8c3798268446b6709c7bc90924290215fd17954d9291cf939b64ea2a",
+    "transcript_path": "/private/tmp/s016-live19/case00/private/TRANSCRIPT.json",
+    "transcript_sha256": "63756472929074917fd11b36ee806f112209a0323263df9c81ab2e61e80c7d7a",
+    "diagnostic_log_path": "/private/tmp/s016-live19/case00/case/codegg_debug.log",
+    "diagnostic_log_sha256": "363fdaf7d3ff4ff67443ce57191147946112504476386bf49a801a970c56de13",
+    "provider_admission_receipt_path": "/private/tmp/s016-live19/case00/artifacts/provider-request-admissions.jsonl",
+    "provider_admission_receipt_sha256": "2e5e17e39f3651c9bb8017b92ebd4284e7d0f0d1f994f08f18c8479a439f5e20",
+    "causal_trace_path": "/private/tmp/s016-live19/case00/private/causal-trace.jsonl",
+    "causal_trace_sha256": "c874d0a39cc75d4f8e340cca434f40877565660df90232763bb233c2eaac0c94",
+    "fixture_metadata_sha256": "08b51eaf8c61373ddf492a5594e84991cac9b1e2dabb03388662286e454f24bd"
+  }
+}
