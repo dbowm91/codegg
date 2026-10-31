@@ -1791,15 +1791,61 @@ class S010NativeTrialCrashRecoveryTests(unittest.TestCase):
             suite.write_text(json.dumps(case, sort_keys=True) + "\n", encoding="utf-8")
             suite_digest = hashlib.sha256(suite.read_bytes()).hexdigest()
             ledger_root = root / "ledger"
-            baseline = run_tool_trial(
-                binary, "workspace-write", timeout=90, ledger_root=ledger_root,
-                candidate="baseline", task_id=case["task_id"], group_id=case["group_id"],
-                suite_sha256=suite_digest, case_sha256=ledger_module.canonical_digest(case),
-                content=case["content"], expected_text=case["expected_text"],
-                expected_file=case["expected_file"], source_root=repository)
+            lane_tracker = root / "private-lanes.jsonl"
+            with unittest.mock.patch.dict(
+                    os.environ, {"CODEGG_HARNESS_S010_PRIVATE_LANE_TRACKER": str(lane_tracker)}):
+                baseline = run_tool_trial(
+                    binary, "workspace-write", timeout=90, ledger_root=ledger_root,
+                    candidate="baseline", task_id=case["task_id"], group_id=case["group_id"],
+                    suite_sha256=suite_digest, case_sha256=ledger_module.canonical_digest(case),
+                    content=case["content"], expected_text=case["expected_text"],
+                    expected_file=case["expected_file"], source_root=repository)
             self.assertEqual(baseline["ledger_manifest"]["terminal"], "passed")
             self.assertEqual(baseline["provider"], "local-openai-fixture")
             self.assertEqual(baseline["ledger_manifest"]["subject"]["revision"], revision)
+
+            def reap_private_lane(lane: Path) -> int:
+                lane = lane.expanduser().resolve()
+                self.assertTrue(lane.name.startswith("tool-"))
+                managed_roots = ((Path.home() / ".codegg-harness-lanes").resolve(),
+                                 Path("/tmp").resolve())
+                self.assertTrue(any(lane.is_relative_to(parent) for parent in managed_roots))
+
+                def lane_daemon_pids() -> list[int]:
+                    listing = subprocess.run(["ps", "-axo", "pid=,command="],
+                                              capture_output=True, text=True, check=True)
+                    matches = []
+                    for line in listing.stdout.splitlines():
+                        fields = line.strip().split(maxsplit=1)
+                        if (len(fields) == 2 and str(lane) in fields[1]
+                                and "daemon start" in fields[1]):
+                            matches.append(int(fields[0]))
+                    return matches
+
+                found = lane_daemon_pids()
+                for daemon_pid in found:
+                    os.kill(daemon_pid, signal.SIGTERM)
+                daemon_deadline = time.monotonic() + 5
+                while lane_daemon_pids() and time.monotonic() < daemon_deadline:
+                    time.sleep(0.02)
+                remaining = lane_daemon_pids()
+                for daemon_pid in remaining:
+                    os.kill(daemon_pid, signal.SIGKILL)
+                if remaining:
+                    kill_deadline = time.monotonic() + 5
+                    while lane_daemon_pids() and time.monotonic() < kill_deadline:
+                        time.sleep(0.02)
+                self.assertFalse(lane_daemon_pids(),
+                                 "S010 left a daemon running under a private lane endpoint")
+                if lane.exists():
+                    shutil.rmtree(lane)
+                self.assertFalse(lane.exists())
+                return len(found)
+
+            baseline_lanes = [Path(line) for line in lane_tracker.read_text(
+                encoding="utf-8").splitlines() if line.strip()]
+            self.assertEqual(len(baseline_lanes), 1)
+            reaped_lane_daemons = reap_private_lane(baseline_lanes[0])
 
             candidate_root = root / "candidate-worktrees"
             target_root = root / "candidate-targets"
@@ -1870,6 +1916,7 @@ print(json.dumps(result, sort_keys=True))
                 "PATH": str(cargo_bin) + os.pathsep + child_env.get("PATH", ""),
                 "CODEGG_S010_CONTROLLER_ROOT": str(REPO_ROOT),
                 "CODEGG_S010_CRASH_TARGET_CACHE": str(cache_source),
+                "CODEGG_HARNESS_S010_PRIVATE_LANE_TRACKER": str(lane_tracker),
                 "CODEGG_HARNESS_S010_NATIVE_TRIAL_MARKER": str(marker),
                 "CODEGG_HARNESS_INHERIT_PROCESS_GROUP": "1",
                 "CARGO_BUILD_JOBS": "2", "CARGO_NET_OFFLINE": "true",
@@ -1942,10 +1989,8 @@ print(json.dumps(result, sort_keys=True))
                               if row["candidate"] == candidate_id])
 
             private_lane = Path(observed["private_lane_root"]).resolve()
-            self.assertTrue(private_lane.name.startswith("tool-"))
-            self.assertTrue(private_lane.is_relative_to(Path.home() / ".codegg-harness-lanes"))
-            shutil.rmtree(private_lane)
-            self.assertFalse(private_lane.exists())
+            crash_daemons = reap_private_lane(private_lane)
+            reaped_lane_daemons += crash_daemons
 
             resumed = subprocess.run(arguments + ["--resume"], cwd=REPO_ROOT,
                                      env={key: value for key, value in child_env.items()
@@ -1970,6 +2015,11 @@ print(json.dumps(result, sort_keys=True))
                             if event["kind"] == "run_finished"]
             self.assertEqual(len(finished), 1)
             self.assertEqual(len(run_finished), 1)
+            all_lanes = [Path(line) for line in lane_tracker.read_text(
+                encoding="utf-8").splitlines() if line.strip()]
+            self.assertEqual(len(all_lanes), 3)
+            for lane in all_lanes:
+                reaped_lane_daemons += reap_private_lane(lane)
 
             receipt_value = os.environ.get("CODEGG_S010_CRASH_RECEIPT_PATH")
             if receipt_value:
@@ -1998,6 +2048,8 @@ print(json.dumps(result, sort_keys=True))
                         "candidate_checkpoint_state_after_crash": child_events[-1]["state"],
                         "ambiguous_trial_rows_before_resume": 0,
                         "private_lane_process_group_reaped": descendants_reaped,
+                        "private_lane_daemon_processes_found": reaped_lane_daemons,
+                        "private_lane_daemons_reaped": True,
                         "private_lane_removed": not private_lane.exists(),
                     },
                     "resume": {
