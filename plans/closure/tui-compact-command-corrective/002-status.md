@@ -58,7 +58,7 @@ Three properties hold on every path:
 The one thing the daemon **cannot** do is compact outside a turn, and that is
 a fact about the product rather than a policy choice: the context is built
 when a turn starts (`TurnRunInput.messages_dto`,
-`src/agent/turn_runtime.rs:91`), so a compaction request is honoured at the
+`src/agent/turn_runtime.rs:99`), so a compaction request is honoured at the
 daemon's **next compaction opportunity** for the session — the live turn's
 next opportunity when one is live (and that turn continues), and otherwise
 the start of the next turn. The frontend's message says exactly that.

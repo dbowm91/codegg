@@ -57,7 +57,7 @@ The daemon's compaction machinery is:
 - `compact_context` (`src/context/compaction.rs:954`) — the canonical engine,
   owned by `src/context/compaction.rs`. It applies the configured policy
   (`auto`, `prune`, `mode`, `policy`) and produces the replacement history.
-- the durable rollover (`src/agent/context_runtime.rs:1136` onward) — the
+- the durable rollover (`src/agent/context_runtime.rs:1135` onward) — the
   transactional checkpoint install, and finally `publish_compaction_tail`,
   which publishes `AppEvent::CompactionTriggered`
   (`src/agent/context_runtime.rs:1664`).
@@ -184,7 +184,7 @@ behaviour, its tracker and its checkpoint install are exactly what they are.
 ### 6. The outcome is the daemon's report, not the frontend's
 
 The daemon reports the compaction it performed through its own
-`AppEvent::CompactionTriggered` (`src/agent/context_runtime.rs:1665`), which
+`AppEvent::CompactionTriggered` (`src/agent/context_runtime.rs:1664`), which
 the TUI already handles and counts
 (`src/tui/runtime/app_events.rs:525`). The frontend's own message reports
 only what the daemon answered to the request. A frontend that cannot reach
