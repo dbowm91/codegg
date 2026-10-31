@@ -51,6 +51,8 @@ const REFUSAL_PROMOTION_NO_WORKSPACE: &str = "skill_promotion_no_workspace";
 const REFUSAL_PROMOTION_NO_SESSION: &str = "skill_promotion_no_session";
 /// The daemon refuses the promotion when the named habit is not promotable.
 const REFUSAL_PROMOTION_NO_HABIT: &str = "skill_promotion_no_habit";
+/// The daemon refuses the promotion when a legacy record would vanish.
+const REFUSAL_PROMOTION_LEGACY_UNMIGRATED: &str = "skill_promotion_legacy_unmigrated";
 /// The daemon refuses the promotion when the named proposal is not found.
 const REFUSAL_PROMOTION_NO_PROPOSAL: &str = "skill_promotion_no_proposal";
 /// The daemon refuses the promotion when the record is not in the expected
@@ -150,7 +152,7 @@ async fn begin_request(
             ))
         }
     };
-    let candidate = match load_habit_candidate(&workspace_root, habit_id) {
+    let candidate = match load_habit_candidate(&habit_root(daemon), &workspace_root, habit_id) {
         Ok(Some(candidate)) => candidate,
         Ok(None) => {
             return Ok(promotion_error(
@@ -170,6 +172,16 @@ async fn begin_request(
             REFUSAL_PROMOTION_NO_HABIT,
             "the habit candidate is not ready for promotion",
         ));
+    }
+    // M007-I (work package B): a legacy record cannot be mapped onto the
+    // canonical workspace, so it **fails loudly** rather than vanishing.
+    if let Some(probe) = legacy_probe(daemon, &workspace_root) {
+        if probe.has_in_flight_records() {
+            return Ok(promotion_error(
+                REFUSAL_PROMOTION_LEGACY_UNMIGRATED,
+                &probe.refusal_message(),
+            ));
+        }
     }
     let existing_skill_names = discovered_skill_names(&workspace_root);
     let context = match draft_context(&candidate, existing_skill_names, Vec::new()) {
@@ -579,13 +591,16 @@ async fn publish_proposal(
     };
     let project_identity = workspace_root.to_string_lossy().to_string();
     let approved = proposal.clone();
+    let publication_habit_root = habit_root(daemon);
+    let publication_config_root = global_config_root(&publication_habit_root);
     let published = tokio::task::spawn_blocking(move || {
-        let service = crate::skills::publish::SkillPublicationService::new(habit_root());
+        let service =
+            crate::skills::publish::SkillPublicationService::new(publication_habit_root.clone());
         service.publish(
             &project_identity,
             &approved,
             &workspace_root,
-            &global_config_dir(),
+            &publication_config_root,
             publication_request,
             chrono::Utc::now().timestamp_millis(),
         )
@@ -733,16 +748,26 @@ fn proposal_detail(record: &SkillPromotionRecord) -> SkillProposalDetailDto {
 /// The habit store is keyed on the workspace's canonical root, which is the
 /// same identity the daemon resolves for every other workflow.
 fn load_habit_candidate(
+    habit_root: &Path,
     workspace_root: &Path,
     habit_id: &str,
 ) -> Result<Option<codegg_core::memory::habit::HabitCandidate>, String> {
     let identity = workspace_root.to_string_lossy().to_string();
-    let store = codegg_core::memory::habit::HabitStore::new()
+    let store = codegg_core::memory::habit::HabitStore::with_root(habit_root.to_path_buf())
         .map_err(|error| error.to_string())?;
     let candidates = store.load(&identity).map_err(|error| error.to_string())?;
     Ok(candidates
         .into_iter()
         .find(|candidate| candidate.id.as_str() == habit_id))
+}
+
+/// The legacy file-backed store's in-flight records for one workspace.
+fn legacy_probe(
+    daemon: &crate::core::daemon::CoreDaemon,
+    workspace_root: &Path,
+) -> Option<crate::skills::legacy_promotion::LegacyPromotionProbe> {
+    let root = crate::skills::legacy_promotion::legacy_store_root(&habit_root(daemon));
+    crate::skills::legacy_promotion::probe_legacy_promotions(workspace_root, &root)
 }
 
 /// The names of the skills the workspace already has, for the draft's
@@ -762,7 +787,20 @@ fn discovered_skill_names(workspace_root: &Path) -> Vec<String> {
 }
 
 /// Where the habit candidates live.
-fn habit_root() -> PathBuf {
+///
+/// The root is a host setting: the daemon's own, and the model-facing tool's
+/// is the same one, so both sides of the workflow read the **same**
+/// candidate.
+fn habit_root(daemon: &crate::core::daemon::CoreDaemon) -> PathBuf {
+    daemon
+        .deps
+        .habit_root
+        .clone()
+        .unwrap_or_else(|| default_habit_root())
+}
+
+/// The standard user-scoped memory root.
+pub(crate) fn default_habit_root() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("codegg")
@@ -770,8 +808,16 @@ fn habit_root() -> PathBuf {
 }
 
 /// The user-level configuration root, which holds the global skill scope.
-fn global_config_dir() -> PathBuf {
-    dirs::config_dir().unwrap_or_else(|| PathBuf::from("."))
+///
+/// The root is derived from the daemon's habit root, which lives at
+/// `<config>/codegg/memory`, so the configuration root is its grandparent.
+/// Deriving one from the other keeps the two host settings in step.
+pub fn global_config_root(habit_root: &Path) -> PathBuf {
+    habit_root
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// A typed refusal, in the shape the frontend renders.

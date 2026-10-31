@@ -99,6 +99,8 @@ pub mod m007h_daemon_read_surfaces;
 
 #[path = "m007i_daemon_diff.inc"]
 pub mod m007i_daemon_diff;
+#[path = "m007i_daemon_promotion.inc"]
+pub mod m007i_daemon_promotion;
 
 #[path = "model_preference_convergence.inc"]
 pub mod model_preference_convergence;

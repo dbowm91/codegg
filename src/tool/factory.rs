@@ -343,6 +343,7 @@ pub fn build_session_tool_registry(
             pool.clone(),
             execution.workspace_id.as_str(),
             execution.workspace_root.clone(),
+            crate::core::daemon_skills::default_habit_root(),
         ));
         tool_registry.register(
             crate::tool::session_working_directory::SessionWorkingDirectoryTool::new(

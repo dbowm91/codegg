@@ -1,6 +1,7 @@
 pub mod candidate;
 pub mod compat;
 pub mod diagnostic;
+pub mod legacy_promotion;
 pub mod parser;
 pub mod promotion;
 pub mod publish;

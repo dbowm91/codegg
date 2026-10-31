@@ -44,6 +44,9 @@ pub struct SkillProposalTool {
     store: Option<SkillPromotionStore>,
     workspace_id: Option<String>,
     workspace_root: Option<PathBuf>,
+    /// Where the habit candidates live. The daemon's own root, so the tool
+    /// and the daemon's request handler read the **same** candidate.
+    habit_root: Option<PathBuf>,
 }
 
 impl Default for SkillProposalTool {
@@ -52,6 +55,7 @@ impl Default for SkillProposalTool {
             store: None,
             workspace_id: None,
             workspace_root: None,
+            habit_root: None,
         }
     }
 }
@@ -62,11 +66,13 @@ impl SkillProposalTool {
         pool: sqlx::SqlitePool,
         workspace_id: impl Into<String>,
         workspace_root: impl Into<PathBuf>,
+        habit_root: impl Into<PathBuf>,
     ) -> Self {
         Self {
             store: Some(SkillPromotionStore::new(pool)),
             workspace_id: Some(workspace_id.into()),
             workspace_root: Some(workspace_root.into()),
+            habit_root: Some(habit_root.into()),
         }
     }
 }
@@ -205,7 +211,12 @@ impl Tool for SkillProposalTool {
         // The habit candidate is re-validated against the daemon's own view:
         // a candidate that changed since the request invalidates the
         // approval, and the human must start a new request.
-        let candidate = self.load_habit_candidate(workspace_root, &habit_id)?;
+        let habit_root = self.habit_root.as_deref().ok_or_else(|| {
+            crate::error::ToolError::Execution(
+                "skill_proposal requires the daemon's habit store".to_string(),
+            )
+        })?;
+        let candidate = self.load_habit_candidate(habit_root, workspace_root, &habit_id)?;
         let Some(candidate) = candidate else {
             return Err(crate::error::ToolError::Execution(
                 "habit candidate no longer exists".into(),
@@ -284,14 +295,16 @@ impl SkillProposalTool {
     /// The habit candidate the daemon owns, for one workspace.
     fn load_habit_candidate(
         &self,
+        habit_root: &std::path::Path,
         workspace_root: &std::path::Path,
         habit_id: &codegg_core::memory::habit::HabitId,
     ) -> Result<Option<codegg_core::memory::habit::HabitCandidate>, crate::error::ToolError> {
         let identity = workspace_root.to_string_lossy().to_string();
         let habit_id = habit_id.as_str().to_owned();
-        let store = codegg_core::memory::habit::HabitStore::new().map_err(|error| {
-            crate::error::ToolError::Execution(format!("habit store unavailable: {error}"))
-        })?;
+        let store = codegg_core::memory::habit::HabitStore::with_root(habit_root.to_path_buf())
+            .map_err(|error| {
+                crate::error::ToolError::Execution(format!("habit store unavailable: {error}"))
+            })?;
         let candidates = store.load(&identity).map_err(|error| {
             crate::error::ToolError::Execution(format!("habit store unavailable: {error}"))
         })?;

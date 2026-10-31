@@ -303,6 +303,11 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 93 {
         migrate_and_record(pool, 93).await?;
     }
+    // M007-I (work package B): the durable skill-promotion record. It is
+    // keyed on the canonical workspace, so the daemon is the only writer.
+    if current_version < 94 {
+        migrate_and_record(pool, 94).await?;
+    }
 
     Ok(())
 }
