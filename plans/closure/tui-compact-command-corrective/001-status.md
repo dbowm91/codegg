@@ -129,10 +129,10 @@ registry's builtin mapping, and that both paths produce the same message.
 
 | Command | Outcome |
 |---|---|
-| `cargo test --locked -- compact` | **PASS** — see §4.2 |
+| `cargo test --locked -- compact` | **PASS** — **137 passed, 0 failed** across the workspace's matching targets; see §4.2 |
 | `cargo fmt --all -- --check` | **PASS** — clean |
 | `rustup run 1.99.0 cargo clippy --workspace --all-targets --locked -- -D warnings` | **PASS** — exit 0. The CI lane installs `dtolnay/rust-toolchain@stable` (clippy **1.99.0**) and the local default is 1.89, so clippy is run at the CI toolchain |
-| `scripts/verify.sh quick` | **PASS** — "Quick verification passed." |
+| `scripts/verify.sh quick` | **PASS** — "Quick verification passed.", with the harness-lab suite at **412 tests, 1 skipped** |
 
 ### 4.2 The new tests
 
