@@ -410,12 +410,12 @@ directly, and their results are in §4.1.
 - **The TUI keeps its standalone mode.** With no daemon attached, the TUI
   still runs the ask against its own run bytes with its own redaction — the
   same shape M007-G established for the plugin registry
-  (`daemon_owns_plugins(app)` = `app.core_client.is_some()`). The promotion
-  path keeps the two-request staging shape, because there is no daemon to own
-  the transaction boundary; the seam it leaves is the standalone seam, not a
-  daemon one. The promotion
-  workflow's standalone path is **not** implemented: the promotion store is
-  the daemon's session database, and the TUI's standalone mode has no such
+  (`daemon_owns_plugins(app)` = `app.core_client.is_some()`). The **ask's**
+  promotion staging keeps the two-request shape in that mode, because there
+  is no daemon to own the transaction boundary; the seam it leaves is the
+  standalone seam, not a daemon one. The **skill-promotion workflow's**
+  standalone path is **not** implemented: the promotion store is the
+  daemon's session database, and the TUI's standalone mode has no such
   database. The TUI's promotion commands therefore require a daemon; this is
   recorded as a limitation in §10.
 
