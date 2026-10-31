@@ -385,7 +385,8 @@
       "provider_requests": 0,
       "counts_as_live_provider_run": false,
       "preflight_error": "budget policy file /private/tmp/s016-budget06.json was absent; autonomy runner refused admission before provider or daemon startup",
-      "lane_created": false
+      "lane_created": false,
+      "summary_path": "plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-06-summary.json"
     },
     {
       "run_index": 7,
@@ -774,7 +775,8 @@
       "prompt_revision": "one offline --release --workspace test job; continuation with exact ID; two substantive dependent edits before first status poll; no artificial delay",
       "terminal_observed_at_utc": "2026-10-31T22:47:00Z",
       "provider_requests": 0,
-      "preflight_error": "budget policy file was missing; provider admission never began"
+      "preflight_error": "budget policy file was missing; provider admission never began",
+      "summary_path": "plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-13-summary.json"
     },
     {
       "run_index": 14,
@@ -1106,7 +1108,7 @@
     {
       "run_index": 20,
       "run_kind": "long_qualification",
-      "status": "started",
+      "status": "request_cap_exhausted_horizon_not_qualified",
       "counts_as_live_provider_run": true,
       "started_at_utc": "2026-10-31T23:16:30Z",
       "controller_commit": "c082faec4",
@@ -1127,7 +1129,35 @@
       "qualification_fixture_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
       "fixture_source_contract_corpus_verifier_unchanged": true,
       "prompt_revision": "promptfix v6: explicit fixture workdir and asynchronous background execution for every test",
-      "request_budget_file": "/private/tmp/s016-budget20.json"
+      "request_budget_file": "/private/tmp/s016-budget20.json",
+      "terminal_observed_at_utc": "2026-10-31T23:20:30Z",
+      "elapsed_seconds": 240.019,
+      "provider_requests": 60,
+      "request_cap_exhausted": true,
+      "usd_cost": "0.030678",
+      "case_duration_ms": 231199,
+      "active_work_span_ms": 228472,
+      "free_disk_bytes_minimum": 33894371328,
+      "free_disk_bytes_at_end": 40301043712,
+      "terminal_failure_category": "provider_api",
+      "agent_terminal": "failed",
+      "horizon_outcome": "not_qualified",
+      "horizon_reason": "measurement_incomplete",
+      "repair_cycles": 0,
+      "continuation_confirmed": true,
+      "exact_job_running_and_terminal": false,
+      "productive_work_during_job": false,
+      "maximum_activity_gap_ms": 31027,
+      "event_gaps": 0,
+      "unpaired_tool_events": 0,
+      "verifier_exit_code": 1,
+      "verifier_tests_run": 0,
+      "receipt_sha256": "562e79b3f6f49c026af097e86cc0434e53005674cc56e7f7c2e59168c7a29f2b",
+      "transcript_sha256": "9e50bec9f8f0838bc197a6ddf36c7b42b4a0a57d83a0e08311285142563a015d",
+      "causal_trace_sha256": "91b9d33c5e3de2dd7f08d1217f08149e9200f0b0d91b6f757d929eff4deda327",
+      "diagnostic_log_sha256": "f980f634beb8c55f5fb42417df94834cd7b1c37c5071ea0f0ebe2dac50820596",
+      "provider_admission_receipt_sha256": "294bcbfc243daa5f86bc897e0da5b60725838fc18bbcca02562f4b8d19743a9d",
+      "summary_path": "plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-20-summary.json"
     }
   ],
   "active_qualification_fixture": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v6/cases.jsonl",
