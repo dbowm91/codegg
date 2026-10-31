@@ -29,7 +29,7 @@ Repository baseline reviewed: `58f4c5ec9` — the merge of
 `feat/auto-20261024-6e9f52e4` into `main` (PR #220), the tree this milestone
 was handed.
 
-Implementation commits on this milestone's branch:
+Implementation commits on this milestone's branch (PR `#224`):
 
 - `d0bedbfa6` — the daemon's new request surfaces: protocol, authorization,
   routing.
