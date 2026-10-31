@@ -58,7 +58,7 @@ class CurrentDefectIntakeTests(unittest.TestCase):
                         "test_sha256": intake._sha((_root / intake.TEST_PATH).read_bytes())}
 
             with (mock.patch.object(intake, "_build_binary",
-                                    return_value=(binary, "aarch64-apple-darwin")),
+                                    return_value=(binary, "rustc 1.98.1", "aarch64-apple-darwin")),
                   mock.patch.object(intake, "_execute", side_effect=controlled_red)):
                 dossier = intake.reproduce_current_defect(root,
                                                           defect_id="native-write-regression")
@@ -71,7 +71,7 @@ class CurrentDefectIntakeTests(unittest.TestCase):
                 ["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip())
             self.assertEqual(dossier["binary_sha256"], intake._sha(binary.read_bytes()))
             with (mock.patch.object(intake, "_build_binary",
-                                    return_value=(binary, "aarch64-apple-darwin")),
+                                    return_value=(binary, "rustc 1.98.1", "aarch64-apple-darwin")),
                   mock.patch.object(intake, "_execute", side_effect=controlled_red)):
                 validated = intake.validate_dossier(root, dossier)
             self.assertTrue(validated["defect_eligible"])
@@ -84,6 +84,20 @@ class CurrentDefectIntakeTests(unittest.TestCase):
                          ("verifier_or_setup_error", None))
         self.assertEqual(intake._classify(0, "Ran 1 test\n\nOK (skipped=1)"),
                          ("unknown", None))
+        setup_assertion = ("FAIL: native sequence\nAssertionError: None is not true : "
+                           "native Rust fixture requires the configured toolchain")
+        self.assertEqual(intake._classify(1, setup_assertion), ("unknown", None))
+        native_observation = {
+            "schema": "h007_native_intake_observation_v1",
+            "task_id": "h007-dependent-rust-and-exact-job",
+            "trial_returned": True,
+            "binary_sha256": "a" * 64,
+            "tool_call_count": 2,
+        }
+        self.assertEqual(intake._classify(1, "FAIL: native sequence\nAssertionError: gap count 1\nFAILED (failures=1)",
+                                          native_observation),
+                         ("native_contract_red", intake._sha(
+                             (intake.TEST_ID + "\0gap count 1").encode())))
 
     def test_dirty_source_and_unknown_command_fields_are_not_admitted(self):
         with tempfile.TemporaryDirectory() as temporary:

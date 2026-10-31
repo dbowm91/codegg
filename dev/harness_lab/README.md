@@ -100,7 +100,10 @@ reproduction.
 display-only view and never accepts a dossier's own eligibility claim.
 Synthetic and historical evidence remains ineligible, and even an eligible
 current defect has `live_authorized: false`. No current real defect is asserted
-by this offline implementation.
+by this offline implementation. An assertion only counts as a CodeGG contract
+red after the controller test writes its typed observation proving that the
+native trial returned with the pinned executable; setup assertions stay
+inconclusive.
 
 ## External proposer request admission
 
