@@ -76,6 +76,12 @@ The same live log now provides direct CodeGG defect evidence: repeated `InvalidH
 
 The focused live diagnostic submitted one `catalog-format` test job and polled its exact returned ID (`e1034616-8c5b-42ff-8d06-dc8cdbdd508f`). CodeGG returned a terminal `failed` state for that job. All three ACP tool calls were paired and observed; the run used five provider requests and did not hit resource limits. The fixture's seeded test fails in this no-edit diagnostic, so its hidden verifier did not pass. This shows exact-ID status routing works for a terminal job; it does not reproduce the run-5 compaction failure. The S016 follow-up will isolate context compaction with a failing-first local regression before making any production change.
 
+### Run 8 outcome after compaction corrective (2026-10-31)
+
+Run 8 used the corrected ARM64 binary from commit `94fc8d4` with the unchanged S016 promptfix manifest, H007 fixture, verifier, and thresholds. It ended after 8.53 minutes at the 60-request cap. All 60 provider bodies reached EOF, ACP tool starts and terminals paired, no stream idle timeout or activity-stall fired, and disk stayed above 10 GiB. The run log contained no invalid-history compaction error, but it also did not log entry into the `DropMiddleMessages` compatibility path; live traversal of the corrected branch remains unproven.
+
+The agent submitted five test jobs and recorded a continuation file with the last returned ID, but it never queried any returned exact ID. Its only `job status` call was the failed fake-ID probe. It modified frozen README/contract inputs, omitted the probe report and helper, and ended with zero repair cycles. The harness-run verifier failed in `catalog-query` (0 tests run). Run 7 had shown exact-ID status works on a simple prompt, so run 9 will use a concise lifecycle-first diagnostic that requires one exact test-job ID, continuation write, and status-to-terminal before additional work. After that diagnostic, simplify the long prompt's test/job sequencing without changing H007 acceptance criteria, then retry.
+
 ## 6. Required evidence and verification
 
 - Append-only run authorization ledger; each started run records start/terminal time, route/model, source and binary digests, requests, cap status, USD or unknown, disk start/minimum/end, and outcome.
