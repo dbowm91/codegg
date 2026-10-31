@@ -779,7 +779,7 @@
     {
       "run_index": 14,
       "run_kind": "diagnostic",
-      "status": "started",
+      "status": "request_cap_exhausted_before_job_observation",
       "counts_as_live_provider_run": true,
       "started_at_utc": "2026-10-31T22:47:47Z",
       "controller_commit": "330309e6bdcb11b190ecf2d6266c4fe5bd3a96a1",
@@ -799,13 +799,49 @@
       "fixture_manifest_sha256": "11736931e8e6581f6dacfcc1509c180e9126f6af8466c625cb4e94bde7c79caa",
       "fixture_source_contract_corpus_verifier_unchanged": true,
       "qualification_fixture_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
-      "prompt_revision": "one offline --release --workspace test job; continuation with exact ID; two substantive dependent edits before first status poll; no artificial delay"
+      "prompt_revision": "one offline --release --workspace test job; continuation with exact ID; two substantive dependent edits before first status poll; no artificial delay",
+      "terminal_observed_at_utc": "2026-10-31T22:50:00Z",
+      "provider_requests": 20,
+      "provider_request_cap_exhausted": true,
+      "elapsed_seconds": 96.709,
+      "usd_cost": 0.007825,
+      "agent_tool_counts": {
+        "bash": 10,
+        "read": 6,
+        "edit": 2,
+        "test": 2,
+        "job": 0,
+        "write": 0
+      },
+      "test_job_ids_submitted": [
+        "0e7291bd-617e-4a5a-89c6-46d324766114",
+        "4fd8cb96-ade1-4e5e-8c56-a9152e0c54da"
+      ],
+      "continuation_written": false,
+      "exact_job_status_calls": 0,
+      "provider_body_eof_count": 20,
+      "provider_idle_timeout_count": 0,
+      "tool_calls": 20,
+      "event_gaps": 0,
+      "unpaired_tool_events": 0,
+      "hidden_verifier_exit_code": 1,
+      "hidden_verifier_tests_run": 0,
+      "horizon_outcome": "not_qualified",
+      "horizon_reason": "measurement_incomplete",
+      "disk_floor_triggered": false,
+      "free_disk_bytes_minimum": 34088689664,
+      "free_disk_bytes_at_end": 34240253952,
+      "receipt_sha256": "7d714e7e3f8b163b9026c9b453e0cb6f52fda3efaafec11a3e8c0e2df5e6aa80",
+      "diagnostic_log_sha256": "70ce2d57912337ab6af572ffb6fafc953625cd9e62373dfb3979a46189cd3c27",
+      "provider_admission_receipt_sha256": "4ee091ee4e2fb3225e87fd5eece279f1db3899ed2d5bdd683c5c75bc79601274",
+      "causal_trace_sha256": "fe8c244142e8fb76ee4ec68c209f502648e72708e7acb65cf5fd98ed2519b5c1",
+      "summary_path": "plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-14-summary.json"
     }
   ],
   "active_qualification_fixture": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v3/cases.jsonl",
   "active_qualification_fixture_sha256": "8aa4d4af9fc36334819a9e494d5f7f02d58437be9bed6fa1ad672b7d16f4f875",
   "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
   "fixture_revision_note": "Runs 1-4 used the original H007 manifest and its recorded digest. Run 5 onward uses versioned prompt calibration without changing the source fixture, contract, corpus, public tests, hidden verifier, or acceptance criteria. Runs 5-9 used promptfix v1; run 10 used promptfix v2. Run 12 onward uses promptfix v3, which maps every asynchronous test submission to exact-ID terminal polling and orders each test lifecycle after run 11 confirmed sequential ID tracking works in a focused diagnostic.",
-  "active_diagnostic_fixture": "dev/harness_lab/fixtures/agent_autonomy_s016_natural_overlap_diagnostic_v4/cases.jsonl",
-  "active_diagnostic_fixture_sha256": "11736931e8e6581f6dacfcc1509c180e9126f6af8466c625cb4e94bde7c79caa"
+  "active_diagnostic_fixture": "dev/harness_lab/fixtures/agent_autonomy_s016_overlap_diagnostic_v5/cases.jsonl",
+  "active_diagnostic_fixture_sha256": "67dddf38cc8b4df42cd825a6ddec100ad8c80b250f24e2ee025aa58526a246a2"
 }
