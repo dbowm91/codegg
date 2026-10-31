@@ -1092,7 +1092,7 @@ fn a_frontend_effect_is_dispatched_from_the_declared_action() {
             }
         }
     }
-    assert_eq!(checked, 43, "43 forms are frontend effects");
+    assert_eq!(checked, 42, "42 forms are frontend effects");
 }
 
 // ── The projection consumption (M007-H, D3/D4) ─────────────────────────────

@@ -3925,6 +3925,35 @@ impl CoreDaemon {
         self.audit_emitter().emit(builder).await;
     }
 
+    /// C002 (ADR-0060): the audited row for a compaction **request**.
+    ///
+    /// The handler owns it rather than the generic seam, because the
+    /// catalog's `compact` command reaches the handler without passing that
+    /// seam. One request leaves one row, on whichever route it arrived.
+    pub(crate) async fn emit_session_compact_audit(
+        &self,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        decision: &codegg_core::authorization::AuthorizationDecision,
+        session_id: &str,
+    ) {
+        use codegg_core::audit_instrumentation as instr;
+        let provenance = codegg_core::authorization::audit_provenance(decision);
+        let chain = Self::audit_chain_for_request(
+            &CoreRequest::SessionCompact {
+                session_id: session_id.to_owned(),
+            },
+            decision,
+        );
+        let builder = instr::session_compact_event(
+            authority.principal(),
+            &provenance,
+            &chain,
+            session_id,
+            "allow",
+        );
+        self.append_audit_event(builder).await;
+    }
+
     /// M005: causal chain locators for one request.
     ///
     /// Derived from request DTO locators plus the gate-resolved project.
@@ -4042,7 +4071,12 @@ impl CoreDaemon {
             // recorded post-creation with its durable id (same pattern
             // as `JobSubmit`). Revocation keeps the generic pre-emit.
             | CoreRequest::ContinuationGrantCreate { .. }
-            | CoreRequest::AuditExport { .. } => return,
+            | CoreRequest::AuditExport { .. }
+            // C002 (ADR-0060): the compaction request is audited by its
+            // handler, not here. The catalog's `compact` command reaches
+            // that handler without passing this seam, and one request
+            // must leave one row.
+            | CoreRequest::SessionCompact { .. } => return,
             // Work Orders M001: creation and mutation operations mint or
             // change durable identity in the handler, so they skip the
             // pre-side-effect emit and are recorded post-mutation with

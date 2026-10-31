@@ -627,9 +627,16 @@ The action is its own rather than a reuse of `prompt_submit`: no prompt was
 submitted. The audited event is the **request** — a caller asked the daemon
 to compact a session's context — and the compaction it causes is reported by
 the daemon's own `CompactionTriggered`, not by an audit row. Its metadata is
-bounded to one key, `session.compaction_requested`: the request names the
-session and nothing else, so no path, model, policy or turn identity enters
-audit metadata.
+bounded to two keys, `session.id` and `decision.outcome`: the request names
+the session and nothing else, so no path, model, policy or turn identity
+enters audit metadata.
+
+The row is written by the **handler** that records the request, not by the
+generic control-plane seam, because the catalog's `compact` command reaches
+that handler without passing the seam. The seam skips this request, exactly
+as it skips the creation operations that mint their identity in the handler.
+One request leaves one row, on the direct route and on the command route
+alike.
 
 **2026-10-23 re-verification.** Re-measured the action taxonomy against
 `AuditAction::ALL` in `crates/codegg-core/src/audit.rs`: the canonical

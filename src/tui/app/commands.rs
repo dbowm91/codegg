@@ -295,6 +295,8 @@ pub enum TuiCommand {
     /// C002 (ADR-0060): the daemon's answer to a compaction request. The
     /// frontend reports it and never claims a compaction it did not cause.
     CompactSessionFinished {
+        /// The session this frontend asked about.
+        session_id: String,
         response: Option<crate::protocol::core::CoreResponse>,
         error: Option<String>,
     },

@@ -893,14 +893,14 @@ impl AgentLoop {
             tracing::info!("Skipping context compaction after cancellation");
             return;
         }
-        // C002 (ADR-0060): a frontend's compaction request is honoured at
-        // the daemon's next compaction opportunity for this session. It is
-        // read here and spent at the attempt.
+        // C002 (ADR-0060): a frontend's compaction request is honoured at the
+        // daemon's next compaction opportunity. Taking it and spending it are one
+        // atomic step, so a request that arrives after this point is a new one.
         let requested = self
             .services
             .compaction_requested
             .as_ref()
-            .is_some_and(|requested| requested.load(std::sync::atomic::Ordering::Acquire));
+            .is_some_and(|requested| requested.swap(false, std::sync::atomic::Ordering::AcqRel));
         if !requested
             && !needs_context_compaction(
                 messages,
@@ -1065,11 +1065,7 @@ impl AgentLoop {
         let original_len = messages.len();
         let original_user = self.current_user_prompt.clone();
 
-        // The request is spent when the daemon attempts the compaction.
         if requested {
-            if let Some(flag) = self.services.compaction_requested.as_ref() {
-                let _ = flag.swap(false, std::sync::atomic::Ordering::AcqRel);
-            }
             tracing::info!(
                 session_id = %self.session_id,
                 "honouring a frontend's compaction request"

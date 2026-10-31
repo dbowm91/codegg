@@ -204,12 +204,10 @@ pub const REQUIRED_AUDIT_COVERAGE: &[AuditCoverageEntry] = &[
         action: "session_compact",
         owner: "daemon:session",
         actor: "transport-bound principal",
-        scope: "session",
+        scope: "via_session",
         decision: "session_compact",
-        metadata: &[
-            "session.compaction_requested",
-        ],
-        causation: "the caller's own session; the request names the session and nothing else, so no path, model, policy or turn identity enters audit metadata",
+        metadata: &["session.id", "project.id", "decision.outcome"],
+        causation: "request correlation -> session; the request names the session and nothing else, so no path, model, policy or turn identity enters audit metadata",
         visibility: AuditVisibility::Project,
         live_mapped: true,
     },
@@ -1368,6 +1366,26 @@ pub fn session_attach_event(
     outcome: &str,
 ) -> AuditEventBuilder {
     let builder = AuditEventBuilder::new(AuditAction::SessionAttach, principal, provenance)
+        .with_visibility(AuditVisibility::Project)
+        .with_metadata("session.id", truncate_label(session_id, 128))
+        .with_metadata("decision.outcome", truncate_label(outcome, 64));
+    apply_chain(builder, chain, provenance.project())
+}
+
+/// C002 (ADR-0060): one compaction request.
+///
+/// The audited event is the **request**: a caller asked the daemon to
+/// compact a session's context. The compaction it causes is reported by
+/// the daemon's own `CompactionTriggered`, not by an audit row, so this
+/// event never claims a compaction happened.
+pub fn session_compact_event(
+    principal: &AuthenticatedPrincipal,
+    provenance: &AuditDecisionProvenance,
+    chain: &AuditChainContext,
+    session_id: &str,
+    outcome: &str,
+) -> AuditEventBuilder {
+    let builder = AuditEventBuilder::new(AuditAction::SessionCompact, principal, provenance)
         .with_visibility(AuditVisibility::Project)
         .with_metadata("session.id", truncate_label(session_id, 128))
         .with_metadata("decision.outcome", truncate_label(outcome, 64));

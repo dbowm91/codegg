@@ -17,7 +17,7 @@ use codegg::tool::apply_patch::ApplyPatchTool;
 use codegg::tool::grep::GrepTool;
 use codegg::tool::task::TaskTool;
 use codegg::tool::{Tool, ToolRegistry};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::sync::Mutex;
@@ -8324,5 +8324,107 @@ async fn temp_root_write_following_the_offer_needs_no_human() {
     assert!(
         !std::path::Path::new(&target).exists(),
         "the restricted temp path must never be written"
+    );
+}
+
+// =============================================================================
+// C002 (ADR-0060): A FRONTEND'S COMPACTION REQUEST REACHES THE AGENT LOOP
+// =============================================================================
+
+/// One plain message, marked so the test can tell a compacted history from an
+/// untouched one.
+fn c002_message(marker: &str, assistant: bool) -> Message {
+    let part = codegg::provider::ContentPart::Text {
+        text: Arc::new(marker.to_string()),
+    };
+    if assistant {
+        Message::Assistant {
+            content: vec![part],
+            tool_calls: vec![],
+        }
+    } else {
+        Message::User {
+            content: vec![part],
+        }
+    }
+}
+
+/// Six plain messages — far below any threshold. The compaction policy keeps
+/// the first two and the last two, so `c002-m3` is what a compaction drops.
+fn c002_history() -> Vec<Message> {
+    vec![
+        c002_message("c002-m1", false),
+        c002_message("c002-m2", true),
+        c002_message("c002-m3", false),
+        c002_message("c002-m4", true),
+        c002_message("c002-m5", false),
+        c002_message("c002-m6", true),
+    ]
+}
+
+/// The text of one message, whatever its role.
+fn c002_text(message: &Message) -> String {
+    match message {
+        Message::System { content } => content.to_string(),
+        Message::User { content } | Message::Assistant { content, .. } => content
+            .iter()
+            .map(|part| match part {
+                codegg::provider::ContentPart::Text { text } => text.to_string(),
+                _ => String::new(),
+            })
+            .collect(),
+        Message::Tool { content, .. } => content.to_string(),
+    }
+}
+
+/// Run one turn with the given compaction request bound, and report whether
+/// the model still saw the middle of the history.
+async fn c002_model_saw_the_middle(requested: Option<Arc<AtomicBool>>) -> bool {
+    let provider = ScriptedProvider::new(vec![vec![
+        ChatEvent::TextDelta("done".to_string().into()),
+        finish_event(),
+    ]]);
+    let mut agent_loop =
+        build_test_agent_loop(Box::new(provider.clone()), ToolRegistry::new()).await;
+    if let Some(requested) = requested {
+        agent_loop.set_compaction_requested(Some(requested));
+    }
+    let mut request = make_chat_request("compact this history");
+    request.messages = c002_history();
+    agent_loop
+        .run(request)
+        .await
+        .expect("the turn must complete");
+
+    let requests = provider.get_requests().await;
+    let first = requests.first().expect("the model must be called");
+    first
+        .messages
+        .iter()
+        .any(|message| c002_text(message).contains("c002-m3"))
+}
+
+/// C002 (ADR-0060): a frontend's compaction request reaches the agent loop
+/// and forces a compaction the threshold would have kept.
+///
+/// The two turns differ in one thing: the request flag the daemon binds to a
+/// turn. Without it the threshold decides, and a six-message history is far
+/// below it. With it the history is compacted even though nothing asked for
+/// one.
+#[tokio::test]
+async fn a_compaction_request_forces_a_compaction_the_threshold_would_keep() {
+    assert!(
+        c002_model_saw_the_middle(None).await,
+        "the threshold must keep a history this small"
+    );
+
+    let requested = Arc::new(AtomicBool::new(true));
+    assert!(
+        !c002_model_saw_the_middle(Some(requested.clone())).await,
+        "the request must force the compaction the threshold would not trigger"
+    );
+    assert!(
+        !requested.load(Ordering::Acquire),
+        "the request must be spent at the attempt"
     );
 }

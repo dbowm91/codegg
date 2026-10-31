@@ -9,6 +9,7 @@ use super::common;
 
 use codegg::core::daemon::CoreDaemon;
 use codegg::core::runtime_deps::CoreRuntimeDeps;
+use codegg_core::audit::{AuditQueryFilter, AuditStore};
 use codegg_protocol::core::{
     CommandCatalogScopeDto, CommandExecuteRequestDto, CoreRequest, CoreResponse, RequestEnvelope,
     PROTOCOL_VERSION,
@@ -246,5 +247,62 @@ async fn the_compact_command_reaches_the_daemons_compaction_handler() {
     assert_eq!(
         inner["session_id"], "c002-session",
         "the command must name the session it compacts: {inner}"
+    );
+}
+
+/// The request is audited under its own action, on the route a frontend
+/// takes: the catalog's command.
+///
+/// The row is written by the handler, not by the generic seam, because the
+/// command reaches the handler without passing that seam. One request leaves
+/// one row.
+#[tokio::test]
+async fn the_compaction_request_is_audited_under_its_own_action() {
+    let pool = common::pool::isolated_pool().await;
+    seed_session(&pool, "c002-session").await;
+    let daemon = daemon_with_pool(pool.clone(), std::env::temp_dir().join("c002-runs-audit"));
+
+    let answer = send(
+        &daemon,
+        CoreRequest::CommandExecute {
+            request: CommandExecuteRequestDto {
+                scope: CommandCatalogScopeDto {
+                    project_id: PROJECT_ID.to_string(),
+                    workspace_id: WORKSPACE_ID.to_string(),
+                    session_id: Some("c002-session".to_string()),
+                },
+                command_id: "compact".to_string(),
+                form: String::new(),
+                argument: String::new(),
+                catalog_version: codegg_core::command_catalog::catalog_version(),
+            },
+        },
+    )
+    .await;
+    assert!(
+        matches!(answer, CoreResponse::CommandExecute { .. }),
+        "the command must be served: {answer:?}"
+    );
+
+    let page = AuditStore::new(pool)
+        .query(&AuditQueryFilter::new(None).with_action("session_compact"))
+        .await
+        .expect("the audit store must answer");
+    let event = page
+        .events
+        .iter()
+        .find(|event| event.action == "session_compact")
+        .expect("the compaction request must be audited under its own action");
+    assert_eq!(
+        event.metadata.get("session.id").map(String::as_str),
+        Some("c002-session"),
+        "the audited row must name the session that was asked to compact"
+    );
+    // The local client is bound as the local owner, so the row names that
+    // principal — never a client-supplied identity.
+    assert_eq!(
+        event.actor_principal.as_str(),
+        "local-owner",
+        "the audited row must name the principal that asked"
     );
 }

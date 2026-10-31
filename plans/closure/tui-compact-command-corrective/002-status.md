@@ -59,22 +59,22 @@ The one thing the daemon **cannot** do is compact outside a turn, and that is
 a fact about the product rather than a policy choice: the context is built
 when a turn starts (`TurnRunInput.messages_dto`,
 `src/agent/turn_runtime.rs:91`), so a compaction request is honoured at the
-daemon's **next compaction opportunity** for the session — inside the running
-turn when one is live, and otherwise at the start of the next turn. The
-frontend's message says exactly that, in those words.
+daemon's **next compaction opportunity** for the session — the live turn's
+next opportunity when one is live (and that turn continues), and otherwise
+the start of the next turn. The frontend's message says exactly that.
 
 ## 2. Requirement-to-evidence matrix
 
 | # | Requirement | Evidence |
 |---|---|---|
 | R1 | The frontend asks the daemon's own catalog command | `src/tui/commands/compaction.rs:17` sends `send_command(…, "compact", "", "")`; the catalog form is a daemon effect (`crates/codegg-core/src/command_catalog.rs:586`) and the daemon's effect table serves it (`src/core/daemon_commands.rs:266`) |
-| R2 | The daemon accepts and performs the compaction | `src/core/daemon_sessions.rs:1202` records the request against the session's runtime (`src/core/session_runtime.rs:55`) and answers `CoreResponse::SessionCompact`; the loop honours it at `src/agent/context_runtime.rs:901` |
+| R2 | The daemon accepts and performs the compaction | `src/core/daemon_sessions.rs:1202` records the request against the session's runtime (`src/core/session_runtime.rs:55`) and answers `CoreResponse::SessionCompact`; the loop honours it at `src/agent/context_runtime.rs:905` |
 | R3 | The daemon refuses only what is factually unanswerable | The handler's only refusal is the unresolvable session; the daemon test proves an unknown session is refused and a known one is not (`tests/core_daemon/c002_daemon_compaction.inc`) |
 | R4 | One engine, one policy | The forced compaction calls `compact_context` (`src/context/compaction.rs:954`) with `force` bypassing only the threshold gate (`:1004`); the automatic path passes `force: false` and is unchanged |
-| R5 | The frontend reports the daemon's answer | `src/tui/commands/compaction.rs:72` renders the answer; the six TUI members in `src/tui/app/compact_command_tests.rs` assert the request, the answer, the running-turn case, the refusal case, the no-session case, and the catalog's classification |
+| R5 | The frontend reports the daemon's answer | `src/tui/commands/compaction.rs:81` renders the answer; the seven TUI members in `src/tui/app/compact_command_tests.rs` assert the request, the answer, the running-turn case, the refusal case, the no-session case, the catalog's classification, and that an answer about another session is not this session's compaction |
 | R6 | The compaction itself is the daemon's report | `AppEvent::CompactionTriggered` is published by the daemon (`src/agent/context_runtime.rs`, `publish_compaction_tail`) and counted by the TUI (`src/tui/runtime/app_events.rs:525`) — unchanged by this milestone |
 | R7 | The catalog's classification is truthful | `compact` is `CommandKind::DaemonEffect` under `CommandCapability::CommandExecute` (`crates/codegg-core/src/command_catalog.rs:586`), the catalog version is 4, and `FrontendAction::CompactSession` is **removed** from the declared frontend action set |
-| R8 | The operation is audited under its own action | `session_compact` is a new audit action (`crates/codegg-core/src/audit.rs:144`) mapped to the `session_compact` operation (`crates/codegg-core/src/audit_instrumentation.rs:685`) — not `prompt_submit`, because no prompt was submitted |
+| R8 | The operation is audited under its own action | `session_compact` is a new audit action (`crates/codegg-core/src/audit.rs:144`) mapped to the `session_compact` operation (`crates/codegg-core/src/audit_instrumentation.rs:683`) — not `prompt_submit`, because no prompt was submitted — and the handler writes the row on whichever route the request arrived |
 
 ## 3. What was delivered
 
@@ -134,9 +134,9 @@ three pieces:
 
 - `handle_compact_session` (`:17`) — the ask. It refuses locally only when
   there is no session to compact or no core connection to ask;
-- `apply_compact_session_finished` (`:55`) — the answer, applied on the UI
+- `apply_compact_session_finished` (`:62`) — the answer, applied on the UI
   thread when the daemon has answered rather than when the request was sent;
-- `compact_answer_message` (`:72`) — the renderer, pure, so the truth it
+- `compact_answer_message` (`:81`) — the renderer, pure, so the truth it
   states is testable without a runtime.
 
 The palette's builtin arm reaches the handler
@@ -163,13 +163,20 @@ asking the daemon to change daemon-owned state is not one.
 
 A compaction request is its **own** audit action, `session_compact`
 (`crates/codegg-core/src/audit.rs:144`,
-`crates/codegg-core/src/audit_instrumentation.rs:685`). It is deliberately
+`crates/codegg-core/src/audit_instrumentation.rs:683`). It is deliberately
 **not** `prompt_submit`: no prompt was submitted, and labelling the request
 as one would put a false statement in the operator's log — the same class of
 defect this line exists to close. The audited event is the **request**; the
 compaction it causes is reported by the daemon's own
 `AppEvent::CompactionTriggered`, not by an audit row. The metadata is bounded
-to one key, `session.compaction_requested`.
+to two keys, `session.id` and `decision.outcome`.
+
+The row is written by the **handler**, not by the generic control-plane seam,
+because the catalog's `compact` command reaches the handler without passing
+that seam. The seam therefore skips this request, exactly as it skips the
+creation operations that mint their identity in the handler. One request
+leaves one row, on the direct route and on the command route alike — the
+route a frontend actually takes.
 
 ### 3.7 What did **not** move
 
@@ -194,11 +201,12 @@ to one key, `session.compaction_requested`.
 | `cargo fmt --all -- --check` | clean |
 | `CARGO_BUILD_JOBS=2 cargo check --workspace --all-targets --locked` | exit 0 |
 | `rustup run 1.99.0 cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0 (CI's toolchain) |
-| `cargo test --locked -p codegg-core` | **990 passed, 0 failed** |
-| `cargo test --locked --test core_daemon` | **535 passed, 0 failed** |
-| `cargo test --locked --test agent_loop -- compact` | **73 passed, 0 failed** |
+| `cargo test --locked -p codegg-core` | **991 passed, 0 failed** (the crate's library target; its auxiliary targets add 4, 7, 11 and 1) |
+| `cargo test --locked --test core_daemon` | **536 passed, 0 failed** |
+| `cargo test --locked --test agent_loop -- compact` | **74 passed, 0 failed** |
 | `cargo test --locked --test tui_render` | **1110 passed, 0 failed** |
-| `cargo test --locked -p codegg --lib -- compact` | **66 passed, 0 failed** |
+| `cargo test --locked -p codegg --lib -- compact` | **67 passed, 0 failed** |
+| `cargo test --locked -p codegg-protocol` | **333 passed, 0 failed** |
 | `cargo test --locked --test tui_render -- compact` | **0 tests selected** — that family has no compaction-named member; the TUI's compaction members live in the library target, and the family's 1110 members all pass (§4.2) |
 | `python3 scripts/check_frontend_action_set.py` | `frontend-action set: clean` |
 | `python3 scripts/check_command_catalog_ownership.py` | `command catalog ownership: clean` |
@@ -209,6 +217,7 @@ to one key, `session.compaction_requested`.
 | `python3 scripts/check_test_assertion_quality.py` | `check_test_assertion_quality: all checks pass` |
 | `python3 scripts/check_test_duplication.py` | `check_test_duplication: all checks pass` |
 | `python3 scripts/check_comment_budget.py` | `comment budget guard passed` (after the sanctioned `--bank`) |
+| `XDG_CACHE_HOME="$(mktemp -d)" cargo nextest run --workspace --locked --profile ci --no-fail-fast` | **16758 tests run, 16758 passed, 0 failed, 10 skipped** — the same sweep CI runs |
 | `scripts/verify.sh quick` | see §4.4 |
 
 **One failure was observed and explained.** In the first full `core_daemon`
@@ -234,8 +243,12 @@ records 125 daemon-effect forms and 42 frontend-effect forms.
 | `tests/core_daemon/c002_daemon_compaction.inc::the_daemon_accepts_a_compaction_request_and_records_it` | the daemon accepts the request for a resolvable session and records it on that session's runtime |
 | `…::the_daemon_refuses_a_compaction_request_for_an_unknown_session` | the only refusal is factual, and it is named |
 | `…::the_compact_command_reaches_the_daemons_compaction_handler` | the catalog's own command reaches the same handler — the frontend reaches the daemon **through** the catalog |
+| `…::the_compaction_request_is_audited_under_its_own_action` | the request leaves one `session_compact` row on the route a frontend takes, naming the session and the principal |
 | `src/core/daemon_commands.rs::the_compact_row_asks_for_the_callers_session` | the row names the caller's session, and a call that names none is `NeedsSession` |
 | `src/context/compaction.rs::a_forced_compaction_reduces_a_history_the_threshold_would_keep` | the forced call compacts where the automatic call does not, and the automatic call is unchanged |
+| `src/tui/app/compact_command_tests.rs::an_answer_about_another_session_is_not_reported_as_this_sessions_compaction` | the daemon's answer names the session it compacts, and an answer about another session is refused rather than reported as this session's compaction |
+| `tests/agent_loop/agent_loop_harness.inc::a_compaction_request_forces_a_compaction_the_threshold_would_keep` | the request reaches the **agent loop**: with the flag bound, a six-message history the threshold would keep is compacted; without it, the same history is untouched; and the flag is spent at the attempt |
+| `crates/codegg-protocol/src/core.rs::the_compaction_request_and_answer_round_trip` | the request and its answer round-trip over the wire shape the daemon's effect table builds |
 
 ### 4.3 The guards that bite this change
 
@@ -288,7 +301,7 @@ automatic path's outcome is unchanged for the same history.
 | The daemon's answer is not understood | the toast says so. It never falls back to a claim of its own |
 | The command's effect fails before running | the toast reports the failure summary, distinguished from a refusal by the outcome status |
 | The daemon restarts after the request | the request is bound to the daemon's in-memory session runtime and is dropped by the restart (ADR-0060 §7). The session is unchanged, and the user may ask again |
-| The turn is cancelled before the compaction | the request is spent only when the daemon **attempts** the compaction; a cancelled turn leaves it pending for the next one |
+| The turn is cancelled before the compaction opportunity | the request is taken at the opportunity, so a cancellation **before** it leaves the request pending for the next turn |
 
 ## 7. Migration and compatibility
 
@@ -311,7 +324,7 @@ automatic path's outcome is unchanged for the same history.
 - The operation is `via_session` under `agent.invoke` — the same authority
   class as a steer — and the daemon resolves the session's project from the
   **session's own durable binding**, never from a caller-supplied path.
-- The audit metadata is bounded to one key; no path, file name, model or turn
+- The audit metadata is bounded to two keys; no path, file name, model or turn
   identity enters it.
 - The compaction runs the daemon's own engine with the daemon's own policy.
   A frontend cannot widen the policy, choose the summarization model, or
@@ -342,9 +355,16 @@ record's §1.
 A request that arrives while the session is idle is honoured at the **start
 of the next turn**, not immediately. The reason is structural: the context
 is built when a turn starts (`TurnRunInput.messages_dto`), so there is no
-context to compact before one exists. The frontend's message says so in
-those words, and the daemon's own `CompactionTriggered` reports the
-compaction when it happens.
+context to compact before one exists.
+
+A request that arrives **mid-turn** is honoured at that turn's next
+compaction opportunity — which exists only if the turn continues. A turn
+whose provider call ends it has no further opportunity, and the compaction
+falls to the next turn. The frontend's message names both cases rather than
+predicting that the live turn continues: it says the compaction happens "at
+the running turn's next compaction opportunity, or at the start of the next
+turn if that turn ends first". The daemon's own `CompactionTriggered`
+reports the compaction when it happens.
 
 Compacting *outside* a turn would mean rebuilding the turn's context outside
 a turn — a second compaction path, which ADR-0060 §2 forbids.
@@ -367,7 +387,24 @@ The event carries the session, the tokens before and the tokens after — it
 does not say who asked. The audit trail carries the request separately
 (`session_compact`), which is the record of the requester.
 
-### 10.5 The desktop's own surface was not exercised by a hosted test (low, **recorded**)
+### 10.5 The request is taken even when the attempt cannot complete (low, **recorded**)
+
+Taking the request and spending it are one atomic step
+(`src/agent/context_runtime.rs:905`), so exactly one compaction opportunity can
+honour it and a request that arrives later is a new one that survives. The
+cost of that atomicity is that a request is **taken** even when the attempt it
+was taken for cannot finish: a plugin's `SessionCompacting` hook that blocks
+the compaction, or an engine that reports `InsufficientCapacity` or
+`InvalidHistoryOrBudget`, spends the request without a compaction.
+
+This is recorded rather than repaired. Re-arming the flag on a blocked attempt
+would make one request span several attempts, and the flag is a boolean rather
+than a counter, so a second request arriving in that window would be merged
+into the first. One request, one attempt, is the cleaner rule — and the
+attempt that failed was still an attempt, so the daemon's "does not refuse"
+decision is not what is in question here.
+
+### 10.6 The desktop's own surface was not exercised by a hosted test (low, **recorded**)
 
 The desktop gains `/compact` by consequence: its palette routes a
 daemon-served form to the daemon

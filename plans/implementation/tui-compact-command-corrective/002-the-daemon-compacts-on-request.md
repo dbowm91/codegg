@@ -68,8 +68,8 @@ perform. Concretely:
 - The daemon accepts it and performs the compaction through
   `compact_context`, the canonical engine, with the configured policy.
 - The compaction happens at the daemon's next compaction opportunity for that
-  session: inside the turn if a turn is live, at the start of the next turn
-  if the session is idle.
+  session: the live turn's next opportunity if a turn is live (and that turn
+  continues), and the start of the next turn if the session is idle.
 
 ### 2.3 What must not happen
 
@@ -157,15 +157,17 @@ compaction against a session it did not ask for.
   `src/agent/coordinator.rs`: the request is threaded into the loop's
   services.
 - `src/agent/context_runtime.rs`: `compact_if_needed` honours the request —
-  it bypasses the threshold gate for that one call, and the request is spent
-  when the daemon **attempts** the compaction, not when it reads it.
+  it bypasses the threshold gate for that one call. Taking the request and
+  spending it are **one atomic step**, so exactly one compaction opportunity
+  can honour it, and a request that arrives after that step is a new one
+  that survives.
 
 ### WP-E — the engine honours a forced compaction
 
 `src/context/compaction.rs`:
 
 - `ContextCompactionRequest` carries `force: bool`. When it is set, the
-  engine's own threshold gate (`src/context/compaction.rs:998`) does not
+  engine's own threshold gate (`src/context/compaction.rs:1004`) does not
   short-circuit the call. The policy is otherwise untouched: `auto` still
   selects the provider-backed reduction or the deterministic one, `prune`
   still prunes, and the configured `mode` and `policy` still decide the
@@ -197,8 +199,14 @@ compaction against a session it did not ask for.
 - **The engine.** A forced compaction runs the canonical engine and reduces
   the history, where the automatic path would not have; and the automatic
   path is unchanged.
+- **The wiring.** The request reaches the **agent loop**: with the flag bound
+  to a turn, a history the threshold would keep is compacted, and without it
+  the same history is untouched. The daemon-side test proves the daemon
+  records the request on the session's runtime; this one proves the loop
+  honours it.
 - **The TUI.** The message reports the daemon's answer; a refusal is
-  reported as a refusal; and no message claims a compaction the daemon did
+  reported as a refusal; an answer about another session is not reported as
+  this session's compaction; and no message claims a compaction the daemon did
   not perform.
 
 ## 6. Required verification commands
@@ -207,10 +215,10 @@ compaction against a session it did not ask for.
 cargo fmt --all -- --check
 CARGO_BUILD_JOBS=2 cargo check --workspace --all-targets --locked
 rustup run 1.99.0 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --locked --test core_daemon -- compact
+cargo test --locked --test core_daemon -- c002
 cargo test --locked --test agent_loop -- compact
-cargo test --locked --test tui_render -- compact
 cargo test --locked -p codegg --lib -- compact
+cargo test --locked -p codegg-protocol -- the_compaction_request
 python3 scripts/check_frontend_action_set.py
 python3 scripts/check_command_catalog_ownership.py
 python3 scripts/check_adr_integrity.py

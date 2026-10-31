@@ -87,7 +87,7 @@ impl RecordingDaemon {
 }
 
 /// The daemon's answer, in the shape its executor produces.
-fn daemon_compaction_answer(turn_active: bool) -> CoreResponse {
+fn daemon_compaction_answer(session_id: &str, turn_active: bool) -> CoreResponse {
     CoreResponse::CommandExecute {
         result: CommandExecuteResultDto {
             run_id: "run-1".to_string(),
@@ -100,7 +100,7 @@ fn daemon_compaction_answer(turn_active: bool) -> CoreResponse {
             completed_at_ms: 1,
             response: Some(serde_json::json!({
                 "type": "session_compact",
-                "session_id": "s-1",
+                "session_id": session_id,
                 "turn_active": turn_active,
             })),
         },
@@ -190,7 +190,7 @@ async fn the_compact_command_asks_the_daemon_to_compact_the_session() {
 #[tokio::test]
 async fn the_compact_command_reports_the_daemons_answer() {
     let daemon = std::sync::Arc::new(RecordingDaemon::default());
-    daemon.answer_with(daemon_compaction_answer(false));
+    daemon.answer_with(daemon_compaction_answer("s-1", false));
     let mut app = app_with_daemon(daemon.clone());
     app.session_state.compaction_count = 3;
     dispatch(&mut app, "/compact");
@@ -216,11 +216,12 @@ async fn the_compact_command_reports_the_daemons_answer() {
     );
 }
 
-/// A live turn is named as such: the compaction happens inside it.
+/// A live turn is named as such — and what happens if that turn ends first
+/// is named too.
 #[tokio::test]
 async fn the_compact_command_names_the_running_turn_when_the_daemon_says_so() {
     let daemon = std::sync::Arc::new(RecordingDaemon::default());
-    daemon.answer_with(daemon_compaction_answer(true));
+    daemon.answer_with(daemon_compaction_answer("s-1", true));
     let mut app = app_with_daemon(daemon.clone());
     dispatch(&mut app, "/compact");
     let completion = wait_for_completion(&mut app).await;
@@ -228,8 +229,16 @@ async fn the_compact_command_names_the_running_turn_when_the_daemon_says_so() {
 
     let toast = last_toast(&app);
     assert!(
-        toast.contains("in the running turn"),
-        "the command must say the compaction happens in the running turn: {toast:?}"
+        toast.contains("the running turn's next compaction opportunity"),
+        "the command must name the live turn's opportunity: {toast:?}"
+    );
+    assert!(
+        toast.contains("if that turn ends first"),
+        "the command must not predict that the live turn continues: {toast:?}"
+    );
+    assert!(
+        !toast.contains("Compaction triggered"),
+        "the command must not claim it triggered a compaction: {toast:?}"
     );
 }
 
@@ -254,6 +263,30 @@ async fn a_refused_compaction_request_is_reported_as_a_refusal() {
     assert!(
         !toast.contains("Compaction requested"),
         "a refusal must not read as a request that was accepted: {toast:?}"
+    );
+}
+
+/// An answer about another session is not an answer about this one.
+///
+/// The daemon's answer names the session it compacts, so a frontend that
+/// asked about `s-1` never reports a compaction for another session.
+#[tokio::test]
+async fn an_answer_about_another_session_is_not_reported_as_this_sessions_compaction() {
+    let daemon = std::sync::Arc::new(RecordingDaemon::default());
+    daemon.answer_with(daemon_compaction_answer("s-other", false));
+    let mut app = app_with_daemon(daemon.clone());
+    dispatch(&mut app, "/compact");
+    let completion = wait_for_completion(&mut app).await;
+    crate::tui::runtime::command_dispatch::dispatch_tui_command(&mut app, completion).await;
+
+    let toast = last_toast(&app);
+    assert!(
+        toast.contains("another session"),
+        "the command must say the answer was about another session: {toast:?}"
+    );
+    assert!(
+        !toast.contains("Compaction requested"),
+        "the command must not report a compaction it did not ask for: {toast:?}"
     );
 }
 

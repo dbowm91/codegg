@@ -51,18 +51,19 @@ this record decides the shape.
 The daemon's compaction machinery is:
 
 - `compact_if_needed` (`src/agent/context_runtime.rs:865`) — the turn-lifecycle
-  entry point. It reads the session's execution policy, checks the threshold
-  at `src/agent/context_runtime.rs:904`, and runs the engine.
+  entry point. It reads the session's execution policy, takes the pending
+  request and the threshold at `src/agent/context_runtime.rs:900`, and runs the
+  engine.
 - `compact_context` (`src/context/compaction.rs:954`) — the canonical engine,
   owned by `src/context/compaction.rs`. It applies the configured policy
   (`auto`, `prune`, `mode`, `policy`) and produces the replacement history.
-- the durable rollover (`src/agent/context_runtime.rs:1118` onward) — the
+- the durable rollover (`src/agent/context_runtime.rs:1136` onward) — the
   transactional checkpoint install, and finally `publish_compaction_tail`,
   which publishes `AppEvent::CompactionTriggered`
-  (`src/agent/context_runtime.rs:1668`).
+  (`src/agent/context_runtime.rs:1664`).
 
 The history it compacts is the **live turn's** history, carried on the turn
-(`TurnRunInput.messages_dto`, `src/agent/turn_runtime.rs:85`). The user's
+(`TurnRunInput.messages_dto`, `src/agent/turn_runtime.rs:99`). The user's
 durable transcript is not rewritten by compaction: the compaction is carried
 across turns by an installed continuation checkpoint, and the transcript the
 user reads stays whole.
@@ -154,7 +155,8 @@ rather than about policy:
 
 There is **no** refusal for "compaction is disabled", for "the session is
 mid-turn", for "no summarization model is configured", or for "the context is
-below the threshold". A mid-turn request is honoured inside the turn. The
+below the threshold". A mid-turn request is honoured at that turn's next
+compaction opportunity. The
 configured policy — including `auto: false`, which selects the deterministic
 reduction rather than the provider-backed one — is applied as the automatic
 path applies it, and a policy that produces no reduction produces no
@@ -165,8 +167,8 @@ reduction; that is the policy's answer, not a refusal.
 The request marks the session, and the daemon compacts at its **next
 compaction opportunity** for that session:
 
-- if a turn is live, that is inside the turn, before the turn's next provider
-  call; and
+- if a turn is live, that is the live turn's next compaction opportunity —
+  before its next provider call, **if the turn continues**; and
 - if the session is idle, that is the start of the next turn.
 
 That is the only place the compaction can happen, for the reason in Context
@@ -182,7 +184,7 @@ behaviour, its tracker and its checkpoint install are exactly what they are.
 ### 6. The outcome is the daemon's report, not the frontend's
 
 The daemon reports the compaction it performed through its own
-`AppEvent::CompactionTriggered` (`src/agent/context_runtime.rs:1646`), which
+`AppEvent::CompactionTriggered` (`src/agent/context_runtime.rs:1665`), which
 the TUI already handles and counts
 (`src/tui/runtime/app_events.rs:525`). The frontend's own message reports
 only what the daemon answered to the request. A frontend that cannot reach
@@ -255,9 +257,14 @@ would be honoured by a daemon the user never asked.
 - `python3 scripts/check_command_catalog_ownership.py` — the catalog and the
   TUI's command surface are still the same set, and only the catalog
   executes.
-- `cargo test --locked --test core_daemon -- compact` — the effect table's
+- `cargo test --locked --test core_daemon -- c002` — the effect table's
   row, the family's routing, and the handler.
-- `cargo test --locked --test agent_loop -- compact` — a forced compaction
-  runs the canonical engine and publishes the daemon's report.
-- `cargo test --locked --test tui_render -- compact` — the TUI's message
-  reports the daemon's answer and never an effect it did not cause.
+- `cargo test --locked --test agent_loop -- a_compaction_request_forces` —
+  the request reaches the agent loop and forces a compaction the threshold
+  would have kept.
+- `cargo test --locked -p codegg --lib -- compact_command_tests` — the TUI's
+  message reports the daemon's answer and never an effect it did not cause.
+  (The TUI's compaction suite is a library test, not a `tui_render` member:
+  `--test tui_render -- compact` selects zero tests and proves nothing.)
+- `cargo test --locked -p codegg-protocol -- the_compaction_request` — the
+  request and its answer round-trip over the wire shape.

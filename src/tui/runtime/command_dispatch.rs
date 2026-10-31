@@ -837,8 +837,14 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app, action, response, error,
             );
         }
-        TuiCommand::CompactSessionFinished { response, error } => {
-            crate::tui::commands::compaction::apply_compact_session_finished(app, response, error);
+        TuiCommand::CompactSessionFinished {
+            session_id,
+            response,
+            error,
+        } => {
+            crate::tui::commands::compaction::apply_compact_session_finished(
+                app, session_id, response, error,
+            );
         }
         TuiCommand::OpenDiffDialog {
             old_content,

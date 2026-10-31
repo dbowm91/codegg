@@ -5834,6 +5834,38 @@ mod tests {
         assert_eq!(PROTOCOL_VERSION, 2);
     }
 
+    /// C002 (ADR-0060): the compaction request and its answer round-trip
+    /// over the wire shape, and the wire shape is the one the daemon's
+    /// effect table builds.
+    #[test]
+    fn the_compaction_request_and_answer_round_trip() {
+        let request = CoreRequest::SessionCompact {
+            session_id: "session-1".to_string(),
+        };
+        let json = serde_json::to_value(&request).expect("the request serializes");
+        assert_eq!(json["type"], "session_compact");
+        assert_eq!(json["session_id"], "session-1");
+        let decoded: CoreRequest = serde_json::from_value(json).expect("the request deserializes");
+        assert!(matches!(
+            decoded,
+            CoreRequest::SessionCompact { session_id } if session_id == "session-1"
+        ));
+
+        let answer = CoreResponse::SessionCompact {
+            session_id: "session-1".to_string(),
+            turn_active: true,
+        };
+        let json = serde_json::to_value(&answer).expect("the answer serializes");
+        assert_eq!(json["type"], "session_compact");
+        assert_eq!(json["turn_active"], true);
+        let decoded: CoreResponse = serde_json::from_value(json).expect("the answer deserializes");
+        assert!(matches!(
+            decoded,
+            CoreResponse::SessionCompact { session_id, turn_active }
+                if session_id == "session-1" && turn_active
+        ));
+    }
+
     #[test]
     fn legacy_template_create_fixture_decodes_with_optional_context_fields() {
         let request: CoreRequest = serde_json::from_str(

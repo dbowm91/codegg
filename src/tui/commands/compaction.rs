@@ -28,6 +28,12 @@ pub(crate) fn handle_compact_session(app: &mut App) {
         return;
     };
     let scope = crate::tui::command_route::scope_for(app);
+    let session_id = app
+        .session_state
+        .session
+        .as_ref()
+        .map(|session| session.id.clone())
+        .unwrap_or_default();
     let tx = app.tui_cmd_tx.clone();
     spawn_registered_tui_task(
         tx,
@@ -41,6 +47,7 @@ pub(crate) fn handle_compact_session(app: &mut App) {
                 crate::tui::command_route::send_command(&core_client, scope, "compact", "", "")
                     .await;
             Some(TuiCommand::CompactSessionFinished {
+                session_id,
                 response: answer.as_ref().ok().cloned(),
                 error: answer.err().map(|error| error.to_string()),
             })
@@ -48,17 +55,17 @@ pub(crate) fn handle_compact_session(app: &mut App) {
     );
 }
 
-/// Apply the daemon's answer to a compaction request.
-///
-/// A refusal is reported as a refusal, and a transport failure says the
-/// request never reached the daemon — neither is dressed up as a compaction.
+/// Apply the daemon's answer to a compaction request: a refusal reads as a
+/// refusal, and a transport failure says the request never reached the daemon.
 pub(crate) fn apply_compact_session_finished(
     app: &mut App,
+    session_id: String,
     response: Option<CoreResponse>,
     error: Option<String>,
 ) {
     let count = app.session_state.compaction_count;
-    let (message, failed) = compact_answer_message(response.as_ref(), error.as_deref(), count);
+    let (message, failed) =
+        compact_answer_message(response.as_ref(), error.as_deref(), count, &session_id);
     if failed {
         app.messages_state.toasts.error(&message);
     } else {
@@ -73,11 +80,27 @@ pub(crate) fn compact_answer_message(
     response: Option<&CoreResponse>,
     error: Option<&str>,
     count: usize,
+    asked_session_id: &str,
 ) -> (String, bool) {
     match response {
-        Some(CoreResponse::SessionCompact { turn_active, .. }) => {
+        Some(CoreResponse::SessionCompact {
+            session_id,
+            turn_active,
+        }) => {
+            // The answer names the session it compacts.
+            if session_id.as_str() != asked_session_id {
+                return (
+                    format!(
+                        "The daemon answered about another session ({session_id}); this session was \
+                         not asked to compact."
+                    ),
+                    true,
+                );
+            }
+            // A live turn has a compaction opportunity only if it continues.
             let when = if *turn_active {
-                "in the running turn"
+                "at the running turn's next compaction opportunity, or at the start of the \
+                 next turn if that turn ends first"
             } else {
                 "at the start of the next turn"
             };
