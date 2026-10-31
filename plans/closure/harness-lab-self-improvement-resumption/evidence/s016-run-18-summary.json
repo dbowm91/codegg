@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "campaign_id": "s016-deepseek-long-run-corrective-loop-20261031",
+  "run_index": 18,
+  "run_kind": "long_qualification",
+  "run_status": "request_cap_exhausted_horizon_not_qualified",
+  "counts_as_live_provider_run": true,
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "controller_commit": "848b512b62450e32d748c5346ea0fa86d0515bf2",
+  "source_binary_commit": "94fc8d41ff61e5963adf5779475fd9ee08569493",
+  "binary_architecture": "arm64",
+  "binary_sha256": "16481cc8bf0d8866db352c3aab90c35950bde37e5799be1458a43012d594fe2a",
+  "sandbox_helper_sha256": "37ee6c8cd876d1e05bbd650c7a26520753fe55534ac821a52d9089712d751d43",
+  "fixture_manifest": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v5/cases.jsonl",
+  "fixture_manifest_sha256": "fc2cff0a9c13feaee4ef91b13caa520b80d0b411c9c7be366e3a486ccf7de808",
+  "qualification_fixture_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d3f187c2f6f4fc178",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "started_at_utc": "2026-10-31T23:05:01Z",
+  "terminal_observed_at_utc": "2026-10-31T23:10:15Z",
+  "elapsed_seconds": 314.06,
+  "case_duration_ms": 305275,
+  "active_work_span_ms": 302780,
+  "provider_requests": 60,
+  "request_cap": 60,
+  "request_cap_exhausted": true,
+  "usd_cost": 0.030681,
+  "provider_stream_lifecycle": {
+    "transport_requests_started": 60,
+    "response_headers_received": 60,
+    "body_eof": 60,
+    "decoded_event_idle_timeouts": 0,
+    "budget_refused_request_61_before_transport": true,
+    "request_budget_setup_failures": 2,
+    "raw_sse_retained": false
+  },
+  "task": {
+    "agent_terminal": "failed",
+    "terminal_failure": {
+      "category": "provider_api",
+      "kind": "HarnessTurnFailure",
+      "usage_reason": null
+    },
+    "task_outcome": "inconclusive",
+    "continuation_confirmed": true,
+    "repair_cycles": 1,
+    "active_work_span_ms": 303089,
+    "maximum_activity_gap_ms": 67225,
+    "maximum_activity_gap_limit_ms": 300000,
+    "exact_job_running_and_terminal": false,
+    "productive_work_during_job": false,
+    "test_jobs": [
+      {
+        "job_id": "1bb421e0-c328-4a03-9960-dd3fefc12793",
+        "test_submission": "failed",
+        "terminal_status_observed": true,
+        "terminal_status": "failed"
+      },
+      {
+        "job_id": "36b06aef-f08d-443e-aebf-986553adc01d",
+        "test_submission": "completed",
+        "terminal_status_observed": true,
+        "terminal_status": "completed"
+      },
+      {
+        "job_id": "fb130eb5-8860-460f-b208-66ef355faff9",
+        "test_submission": "failed",
+        "terminal_status_observed": true,
+        "terminal_status": "failed"
+      }
+    ],
+    "test_submissions": 3,
+    "exact_job_status_polls": 3,
+    "tool_counts": {
+      "bash": 22,
+      "edit": 1,
+      "job": 4,
+      "read": 11,
+      "task": 4,
+      "test": 3,
+      "write": 4
+    }
+  },
+  "event_observation": {
+    "tool_started_count": 49,
+    "tool_terminal_count": 49,
+    "unpaired_tool_events": 0,
+    "event_gaps": 0,
+    "dropped_causal_events": 0,
+    "causal_trace_events": 108
+  },
+  "verification": {
+    "harness_automatically_invoked_unchanged_verifier": true,
+    "exit_code": 1,
+    "tests_run": 0,
+    "verifier_contents_not_inspected": true
+  },
+  "disk": {
+    "floor_bytes": 10737418240,
+    "floor_triggered": false,
+    "free_bytes_at_start": 34069307392,
+    "minimum_free_bytes": 33992949760,
+    "free_bytes_at_end": 33992949760
+  },
+  "diagnosis": {
+    "cap_failure": "The configured 60-request provider cap was enforced; request 61 was refused before transport.",
+    "streaming": "All admitted provider requests received headers and reached body EOF; no stream idle timeout or event gap was observed.",
+    "job_overlap": "The agent submitted only package-scoped tests; each terminal exact-ID poll observed a job already completed or failed. The required full release-workspace overlap job was not submitted.",
+    "request_budget_behavior": "expected_cap_enforcement_not_a_harness_defect"
+  },
+  "interpretation": "The harness preserved request, stream, ACP event, job terminal, verifier, and disk evidence. Run 18 ended after about five minutes because the 60-request cap was consumed. It demonstrated exact-ID terminal polling but no observed running state or productive overlap, one repair cycle, and no qualification. The model did not reach the prompt's priority release-workspace overlap job before the cap. Run 19 will isolate whether a natural release workspace test exposes a running state and allows productive overlap; it is diagnostic only and does not change H007 criteria.",
+  "private_artifacts": {
+    "receipt_path": "/private/tmp/s016-attempt18.json",
+    "receipt_sha256": "94d56f6c155d186d54b8f0b11468fee9246aeb3a781d91be3adbd74018424cf3",
+    "transcript_path": "/private/tmp/s016-live18/case00/private/TRANSCRIPT.json",
+    "transcript_sha256": "f056b61713b868e87b8b103913078c60941c23a6399c201aa53c572eb8072b75",
+    "diagnostic_log_path": "/private/tmp/s016-live18/case00/case/codegg_debug.log",
+    "diagnostic_log_sha256": "0c9b1b3bf03c9267efe9a46a9e6d890f389164b3d197be27b487779b8411618c",
+    "provider_admission_receipt_path": "/private/tmp/s016-live18/case00/artifacts/provider-request-admissions.jsonl",
+    "provider_admission_receipt_sha256": "7a03c6cb269da247cbbee15da24da59c6a1268830db921c01acb8fa178d0450b",
+    "causal_trace_path": "/private/tmp/s016-live18/case00/private/causal-trace.jsonl",
+    "causal_trace_sha256": "239ad87be5f3f9312ff25266319af63e7e189278eb428017745accbe3273bb80",
+    "fixture_metadata_sha256": "08b51eaf8c61373ddf492a5594e84991cac9b1e2dabb03388662286e454f24bd"
+  }
+}
