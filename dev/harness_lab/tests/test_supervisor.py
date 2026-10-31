@@ -197,7 +197,11 @@ while True:
         self.assertEqual(env["CODEGG_HARNESS_MAX_PROVIDER_REQUESTS"], "60")
         self.assertTrue(env["CODEGG_HARNESS_PROVIDER_REQUEST_RECEIPT"].endswith(
             "artifacts/provider-request-admissions.jsonl"))
-        self.assertEqual(env["RUST_LOG"], "error,codegg_providers::request_budget=info")
+        self.assertEqual(
+            env["RUST_LOG"],
+            "error,codegg_providers::request_budget=info,"
+            "codegg_providers::opencode_go=debug,codegg::agent::provider_turn=debug",
+        )
 
     def test_provider_request_limit_can_be_bound_to_a_trial_without_parent_env(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -219,7 +223,11 @@ while True:
         self.assertEqual(env["CODEGG_HARNESS_MAX_PROVIDER_REQUESTS"], "297")
         self.assertTrue(env["CODEGG_HARNESS_PROVIDER_REQUEST_RECEIPT"].endswith(
             "artifacts/provider-request-admissions.jsonl"))
-        self.assertEqual(env["RUST_LOG"], "error,codegg_providers::request_budget=info")
+        self.assertEqual(
+            env["RUST_LOG"],
+            "error,codegg_providers::request_budget=info,"
+            "codegg_providers::opencode_go=debug,codegg::agent::provider_turn=debug",
+        )
         child = subprocess.run(
             [sys.executable, "-c", "import os; print(os.environ['CODEGG_HARNESS_MAX_PROVIDER_REQUESTS']); print(os.environ['CODEGG_HARNESS_PROVIDER_REQUEST_RECEIPT'])"],
             env=env, capture_output=True, text=True, check=True)
