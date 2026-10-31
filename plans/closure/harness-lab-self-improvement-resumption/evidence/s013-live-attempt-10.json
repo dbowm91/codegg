@@ -1,0 +1,282 @@
+{
+  "active_work_span_ms": 541591,
+  "activity_stall": {
+    "cancel_error": null,
+    "stall_limit_seconds": 300,
+    "triggered": false
+  },
+  "attempt": 10,
+  "binary_sha256": "3ab836f8ff842e4c915d3d162e6bd3652969a4b494ba41b3f3d4b67b4b3faa58",
+  "budget": {
+    "cost_source": "opencode_go_allowance_receipt",
+    "cost_usd": 0.034046,
+    "elapsed_seconds": 557.115,
+    "exhausted_cap": null,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "provider_requests": 60,
+    "total_tokens": 0
+  },
+  "causal_trace": {
+    "bytes": 90618,
+    "daemon_generation": "731f14f7-4ea8-4564-bd21-7b434f7d5e1e",
+    "dropped_events": 0,
+    "event_count": 148,
+    "path": "/private/tmp/s013live10/case00/private/causal-trace.jsonl",
+    "schema": "harness_causal_trace_v1",
+    "sha256": "c72cdcbf8122acede2a57a7d0a7a83252ed21f20e15732f571032ba9d8fcf5a7",
+    "state": "complete"
+  },
+  "disk_floor": {
+    "last_free_bytes": 107523829760,
+    "lowest_observed_free_bytes": 107511238656,
+    "measurement_error": null,
+    "minimum_free_bytes": 10737418240,
+    "triggered": false
+  },
+  "duration_ms": 552954,
+  "duration_qualified": false,
+  "event_gap": {
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "event_gaps": [],
+    "event_observation_state": "observed_complete",
+    "tool_started_count": 68,
+    "tool_terminal_count": 68,
+    "tool_unpaired_start_count": 0
+  },
+  "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "fixture_metadata_sha256": "08b51eaf8c61373ddf492a5594e84991cac9b1e2dabb03388662286e454f24bd",
+  "group_id": "s013-live-boundary-probe-attempt-10-20261031",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "horizon_evidence": {
+    "active_work_span_ms": 541631,
+    "continuation_confirmed": true,
+    "exact_job_running_and_terminal": false,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 70516,
+    "measurement_complete": false,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": false,
+    "repair_cycles": 2
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "measurement_incomplete",
+  "invocation_manifest": "dev/harness_lab/fixtures/agent_autonomy_s013_live_v10/cases.jsonl",
+  "invocation_manifest_sha256": "099698208235e8f6482d80156cb401c873a22a83a102c83a80d9836af29cc391",
+  "lane_root": "/private/tmp/s013live10/case00",
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "probe_report": {
+    "children": [
+      {
+        "id": "a2353c8b-1b00-4c8a-92f8-d7ac63359caf",
+        "outcome": "completed",
+        "role": "A: README + five crate manifests, max five dependency/correctness risks",
+        "run_id": "ebf6d497-ae28-4ca5-a9fc-874a27cd3097"
+      },
+      {
+        "id": "1cf75e9c-3581-49da-816f-6894e45a95ab",
+        "outcome": "completed",
+        "role": "B: tool boundary behavior + five probe expectations, max five allow/deny expectations",
+        "run_id": "7ccd4612-63a0-46e1-b4af-db7086d41f2c"
+      }
+    ],
+    "corpus_job": {
+      "id": null,
+      "result": null,
+      "status": "not_submitted"
+    },
+    "diagnostics": {
+      "glob": "fixture-local pattern catalog-*/src/*.rs surfaced 5 source files",
+      "tool_search": "single read-only lookup for read-only job tool; job tool confirmed read-only-visible with status/wait/cancel/output actions"
+    },
+    "helper_self_test": {
+      "command": "python3 fixture/tools/catalog_probe.py --self-test",
+      "detail": "valid_row_accepted=True, malformed_row_rejected=True",
+      "result": "pass"
+    },
+    "probes": [
+      {
+        "category": "denied",
+        "detail": "read: permission denied, path outside allowed directory (not under workspace root)",
+        "id": "a"
+      },
+      {
+        "category": "denied",
+        "detail": "read through symlink: permission denied, symlink not allowed in path",
+        "id": "b"
+      },
+      {
+        "category": "denied",
+        "detail": "write: permission denied, temporary path outside authorized workspace",
+        "id": "c"
+      },
+      {
+        "category": "not_found",
+        "detail": "job status: job not found (unknown ID not visible)",
+        "id": "d"
+      },
+      {
+        "category": "not_found",
+        "detail": "read: file not found, parent directory exists",
+        "id": "e"
+      }
+    ],
+    "repairs": [
+      {
+        "cycle": "catalog-format version-normalization/checksum",
+        "failing_job": "7aa750e4-cca0-4ec7-9a97-29b718ddf4b3",
+        "passing_job": "b780a423-9c1b-4db2-8334-3687979bde97",
+        "passing_status": "completed",
+        "repair": "accept v1 and v2 schemas in parse"
+      }
+    ],
+    "tests": {}
+  },
+  "provider_request_count": 60,
+  "resource_usage": {
+    "cpu_seconds": 7.622,
+    "lane_disk_growth_bytes": 91854054,
+    "peak_rss_bytes": 288727040,
+    "sample_count": 1001
+  },
+  "schema": "s013_live_diagnostic_attempt_v1",
+  "solved": false,
+  "source_revision": "65801db86562847defb89fc09562c0396378611e",
+  "stop_reason": null,
+  "task_outcome": "inconclusive",
+  "terminal": "failed",
+  "terminal_failure": {
+    "category": "provider_api",
+    "kind": "HarnessTurnFailure",
+    "usage_reason": null
+  },
+  "trace_unknown_calls": [],
+  "transcript_path": "/private/tmp/s013live10/case00/private/TRANSCRIPT.json",
+  "transcript_tool_titles": [
+    {
+      "index": 2,
+      "started_elapsed_ms": 14299,
+      "tool": "list"
+    },
+    {
+      "index": 25,
+      "started_elapsed_ms": 47423,
+      "tool": "glob"
+    },
+    {
+      "index": 26,
+      "started_elapsed_ms": 49407,
+      "tool": "tool_search"
+    },
+    {
+      "index": 30,
+      "started_elapsed_ms": 56093,
+      "tool": "bash"
+    },
+    {
+      "index": 33,
+      "started_elapsed_ms": 63036,
+      "tool": "job"
+    },
+    {
+      "index": 37,
+      "started_elapsed_ms": 82050,
+      "tool": "bash"
+    },
+    {
+      "index": 44,
+      "started_elapsed_ms": 203679,
+      "tool": "bash"
+    },
+    {
+      "index": 45,
+      "started_elapsed_ms": 210483,
+      "tool": "test"
+    },
+    {
+      "index": 46,
+      "started_elapsed_ms": 212235,
+      "tool": "job"
+    },
+    {
+      "index": 47,
+      "started_elapsed_ms": 214339,
+      "tool": "job"
+    },
+    {
+      "index": 49,
+      "started_elapsed_ms": 218721,
+      "tool": "test"
+    },
+    {
+      "index": 50,
+      "started_elapsed_ms": 225930,
+      "tool": "job"
+    },
+    {
+      "index": 52,
+      "started_elapsed_ms": 285858,
+      "tool": "test"
+    },
+    {
+      "index": 56,
+      "started_elapsed_ms": 336325,
+      "tool": "replace"
+    },
+    {
+      "index": 58,
+      "started_elapsed_ms": 355726,
+      "tool": "test"
+    },
+    {
+      "index": 59,
+      "started_elapsed_ms": 370564,
+      "tool": "job"
+    },
+    {
+      "index": 62,
+      "started_elapsed_ms": 404209,
+      "tool": "tool_search"
+    },
+    {
+      "index": 63,
+      "started_elapsed_ms": 448181,
+      "tool": "bash"
+    },
+    {
+      "index": 64,
+      "started_elapsed_ms": 461811,
+      "tool": "bash"
+    },
+    {
+      "index": 65,
+      "started_elapsed_ms": 469898,
+      "tool": "tool_search"
+    },
+    {
+      "index": 67,
+      "started_elapsed_ms": 552490,
+      "tool": "replace"
+    }
+  ],
+  "verification": {
+    "command": [
+      "python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "verifier",
+      "-v"
+    ],
+    "cwd": "/private/tmp/s013live10/case00/private",
+    "duration_ms": 2943,
+    "exit_code": 1,
+    "failure_summary": "(errors=1)",
+    "output_tail": "   Compiling catalog-cli v0.1.0 (/private/tmp/s013live10/case00/case/fixture/catalog-cli)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.67s\n     Running unittests src/main.rs (target/debug/deps/catalog_cli-cbdf726681a8c890)\n     Running unittests src/lib.rs (target/debug/deps/catalog_format-5949c1cf11568866)\n     Running unittests src/lib.rs (target/debug/deps/catalog_index-2b17b3a46f983deb)\nerror: test failed, to rerun pass `-p catalog-index --lib`\n\n\n----------------------------------------------------------------------\nRan 0 tests in 2.660s\n\nFAILED (errors=1)",
+    "tests_run": 0,
+    "timed_out": false
+  },
+  "verifier_confirmed": false
+}

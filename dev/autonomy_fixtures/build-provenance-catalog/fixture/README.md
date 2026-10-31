@@ -27,11 +27,8 @@ The checksum is eight lowercase hexadecimal digits over the first five fields,
 joined by `|`, using 32-bit FNV-1a. Dependencies are comma-separated package
 identities; `-` means none. The bundled corpus is deliberately small (96 rows)
 and exercises shuffled input, repeated imports, one schema upgrade, invalid
-checksum, missing references, a cycle and an incremental update. A separate
-deterministic test generates 250,000 compact records to exercise dependency
-index ordering and memory behavior; it is a bounded integration check, not a
-duration target. The fixed corpus size is not intended to create a long-running
-test.
+checksum, missing references, a cycle and an incremental update. Its size is
+not intended to create a long-running test.
 
 Run `cargo test --offline --locked --workspace` and the CLI contract tests. The
 provided tests and `contract.json` are frozen inputs. No dependencies or
