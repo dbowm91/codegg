@@ -45,12 +45,15 @@ than by a comment.
   together. There is no second request, and therefore no `pending` row that
   survives a failed one.
 
+- **The desktop consumes all three.** Plan work package F is delivered (§3.8):
+  the desktop's diff view reads the daemon's **answer** rather than the
+  daemon's git facts, the promotion workflow is daemon-owned so the desktop
+  can begin a request, preview it and publish it, and the ask is one request
+  over the daemon's own run bytes.
+
 **Two High findings are recorded rather than hidden** (§10): the daemon's diff
 answer is **unbounded**, and the old `/diff` arm's **text-diff fallback**
-outside a Git repository is **gone**. The **desktop's** consumption of the
-three moves (plan work package F) is **not** implemented — it is a separate
-Cargo workspace with its own hosted lane, and none of the plan's thirteen
-acceptance criteria names the desktop.
+outside a Git repository is **gone**.
 
 ---
 
@@ -392,6 +395,23 @@ strings rather than a whole `CoreResponse`), a `redundant_closure`, a
 The **nextest** sweep was **not** run: the whole-suite sweep is the parent's
 step, not this milestone's. The suites this milestone touches were run
 directly, and their results are in §4.1.
+
+### 4.4 The hosted receipts
+
+PR `#224` carries both milestones. The hosted lanes on head
+`14fb41e5d`:
+
+| Lane | Run | Outcome |
+|---|---|---|
+| `CI / verify` | `41212240317` | **green** — the guards, rustfmt, clippy at **1.99.0**, and the workspace sweep (`cargo nextest run --workspace --locked --profile ci`) all pass. |
+| `Desktop E2E` | `41212240310` | **green**. |
+| `Windows process launcher` | `41212240292` | **green**. |
+| `Linux M004 process and IPC qualification` | `41212240315` | **green**. |
+
+The `CI / verify` lane's **Workspace tests** step is exactly
+`cargo nextest run --workspace --locked --profile ci`, so the **nextest
+workspace sweep** that M007-H's closure recorded as open is discharged here
+(hosted, on the merge candidate).
 
 ---
 
