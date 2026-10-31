@@ -111,6 +111,13 @@ that §13 does not name.
 | `src/tui/commands/shell.rs` | The ask is one request. |
 | `src/tui/app/mod.rs` | The promotion arms send requests; the diff arm is gone. |
 | `docs/writer-disposition.toml` | Two rows' owner, mediation and locator. |
+| `apps/desktop/src/commands/diffAnswer.ts` | **New.** The desktop's diff answer, read from the daemon. |
+| `apps/desktop/src/panels/PromotionPanel.tsx` | **New.** The desktop's promotion surface: begin, preview, publish. |
+| `apps/desktop/src/commands/shellAsk.ts` | **New.** The desktop's ask, over the daemon's run bytes. |
+| `apps/desktop/src/bridge.ts`, `bridge-types.ts` | The desktop's bridge surface for the three moves. |
+| `apps/desktop/src-tauri/src/bridge.rs`, `lib.rs`, `route.rs`, `prompt.rs` | The host's `desktop_skill_promotion` target and the ask's staged evidence. |
+| `apps/desktop/src/panels/GitPanel.tsx`, `App.tsx`, `regions/ComposerRegion.tsx` | The renderers that consume the daemon's answers. |
+| `scripts/check_desktop_panel_authority.py` | The recorded bridge baseline gains `desktop_skill_promotion` — **50 → 51**. |
 
 ### 3.2 The diff view, and the cost the owner accepted
 
@@ -277,6 +284,33 @@ the `subsystem move` verdict ADR-0058 decided. The counts in §1 are
 untouched by the correction: the artifact's own `--check` and `--self-test`
 pass, and the regeneration changed only the M007-I row.
 
+### 3.8 The desktop, and the three moves it now consumes
+
+Work package F is the desktop's half of the milestone, and it is the first
+time in this line the desktop performs work the TUI cannot: the diff view
+reads the daemon's **answer** rather than the daemon's git facts, the
+promotion workflow is daemon-owned so the desktop can begin a request, preview
+it and publish it, and the ask is one request over the daemon's own run bytes.
+
+The desktop is a **separate Cargo workspace** (`apps/desktop/src-tauri`),
+pinned to Rust **1.90.0** and compiled by no root-workspace gate. Its own
+evidence is in §4.
+
+**One new bridge target, deliberately recorded.** `desktop_skill_promotion`
+is a named operation over one daemon request — the daemon owns the durable
+promotion record, so the desktop asks and renders — and never a generic
+request passthrough. `scripts/check_desktop_panel_authority.py` holds the
+recorded bridge baseline, and the target is added to it with its reason; the
+baseline moves **50 → 51** and the host's `generate_handler!` table registers
+the same 51.
+
+**The panel layer still holds no authority.** The new surfaces are a
+**command** module (`apps/desktop/src/commands/`), which is the desktop's
+half of a declared action, and a panel that renders what the command module
+gives it. No panel calls `invoke`, imports a bridge module, holds a Tauri
+capability, reaches a filesystem or a process, or keeps a durable
+frontend-owned store.
+
 ---
 
 ## 4. Verification executed
@@ -301,6 +335,14 @@ Every command in the plan's §11, with its outcome.
 | `python3 scripts/check_test_duplication.py` | **pass** — `all checks pass`. |
 | `python3 scripts/check_desktop_panel_authority.py` | **pass** — `desktop panel authority guard passed`. |
 | `bash scripts/check-desktop-boundary.sh` | **pass** — `desktop dependency and authority boundaries verified`. |
+| `python3 scripts/check_desktop_gate_wiring.py` | **pass** — `desktop gate wiring guard passed`. |
+| `cd apps/desktop/src-tauri && rustup run 1.90.0 cargo check --workspace --all-targets --locked` | **pass** — exit 0. The desktop is a separate workspace the root check never compiles, so this is its compile evidence. |
+| `cd apps/desktop/src-tauri && rustup run 1.90.0 cargo test --locked --lib` | **pass** — 120 passed, 0 failed, 1 ignored. |
+| `cd apps/desktop/src-tauri && rustup run 1.90.0 cargo clippy --all-targets --locked -- -D warnings` | **pass** — exit 0. |
+| `cd apps/desktop/src-tauri && rustup run 1.90.0 cargo fmt --all --check` | **pass** — clean after `cargo fmt` over the tree; the reflow was verified line-only with `diff -w`. |
+| `cd apps/desktop && npm run typecheck` | **pass** — clean. |
+| `cd apps/desktop && npm test` | **pass** — 321 passed across 37 files. |
+| `cd apps/desktop && node scripts/check-bindings.mjs` | **pass** — the desktop's bridge DTO fields match. |
 | `generate_m007d_command_classification.py --check` | **pass** — `matches the tree`. |
 | `generate_m007d_command_classification.py --self-test` | **pass**. |
 | `scripts/verify.sh quick` | **see §4.2**. |
@@ -311,7 +353,11 @@ Every command in the plan's §11, with its outcome.
 
 - `cargo test -p codegg-core` — **991 passed, 0 failed**.
 - `cargo test -p codegg-protocol` — **332 passed, 0 failed**.
-- `cargo test -p codegg --lib` — **7810 passed, 0 failed, 5 ignored**.
+- `cargo test -p codegg --lib` — **7810 passed, 0 failed, 5 ignored**. On a
+  loaded machine a separate run of the same suite showed **three** failures,
+  all in `tui::commands::interactive_terminal::tests` — the known
+  load-sensitive family. All **94** of its members pass in isolation, three
+  runs out of three.
 - `cargo test --locked -p codegg --test core_daemon -- m007i_daemon_diff` —
   **3 passed, 0 failed**.
 - `cargo test --locked -p codegg --test core_daemon -- m007i_daemon_promotion` —
@@ -503,14 +549,14 @@ Stated as findings, not as excuses.
 
 ### Medium
 
-3. **The desktop does not consume the three moves.** Plan work package F is
-   **not implemented**. The desktop's diff view still reads the daemon's
-   *git facts* rather than the diff answer, and it has no promotion or ask
-   surface. The desktop is a separate Cargo workspace with its own hosted
-   lane, and none of the plan's thirteen acceptance criteria names it, so it
-   is out of the criteria's scope — but it is **not** done.
-   **Recommendation:** a follow-up milestone for the desktop's consumption,
-   with the desktop's own hosted lane as its gate.
+3. **The desktop now consumes the three moves.** Work package F **is**
+   implemented (§3.8): the desktop's diff view reads the daemon's answer, the
+   promotion workflow is daemon-owned and the desktop can begin, preview and
+   publish, and the ask is one request over the daemon's own run bytes. One
+   bridge target was added and deliberately recorded in the desktop's panel
+   authority guard.
+   **Status: closed.** The desktop's own evidence is §4; the hosted
+   `Desktop E2E` lane is the gate.
 4. **The promotion workflow needs a daemon.** The store is the daemon's
    session database, so the TUI's standalone mode (no daemon attached) has
    no promotion workflow. The plan's §9.4 keeps the TUI's standalone mode,
@@ -549,6 +595,14 @@ Stated as findings, not as excuses.
 | the skill-promotion workflow | the daemon, with the canonical `WorkspaceId` as the namespace | `src/core/daemon_skills.rs`, `crates/codegg-core/src/session/skill_promotion.rs` |
 | the human-shell ask workflow | the daemon, with its own run bytes and one request | `src/core/daemon_turns.rs:2107`, `src/shell/daemon.rs:463` |
 
+And the **desktop** consumes all three:
+
+| Move | The desktop's surface | Evidence |
+|---|---|---|
+| the git-review diff view | the daemon's answer, not the git facts | `apps/desktop/src/commands/diffAnswer.ts` |
+| the skill-promotion workflow | begin, preview and publish against the daemon's record | `apps/desktop/src/panels/PromotionPanel.tsx` |
+| the human-shell ask workflow | one request over the daemon's run bytes | `apps/desktop/src/commands/shellAsk.ts` |
+
 The seven owner decisions are discharged as the ADR's acceptance recorded
 them: **D1** the diff view moves (Option B, a canonical `Run` per read — the
 cost the owner accepted against the record's recommendation); **D2** the
@@ -558,8 +612,9 @@ scopes; **D5** the publication is mediated by the C004 checkout reservation
 gate; **D6** the ask's stage-and-submit is one request; **D7** the ask reads
 the daemon's run bytes.
 
-**Outstanding, and routed rather than closed:** the desktop's consumption of
-the three moves (finding 3) and the two High findings (§10.1, §10.2) are
-follow-up work. They are **not** part of M007-I's thirteen acceptance
-criteria, and closing them here would either widen the milestone or change
-the diff's bytes.
+**Outstanding, and routed rather than closed:** the two High findings
+(§10.1, §10.2) are follow-up work. The first — the diff answer's unbounded
+size — is **not** part of M007-I's thirteen acceptance criteria, and closing
+it here would change the diff's bytes; the second is a release-note item.
+The desktop's consumption of the three moves (finding 3) was **not** one of
+them: it is work package F, and it is delivered (§3.8).
