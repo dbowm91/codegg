@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement S016 — DeepSeek Long-Run Corrective Loop
 
-Status: **active**
+Status: **conditionally closed**
 
 Repository baseline: `300cb4aba` (S015 timeout correction live-confirmed; S015 conditionally closed)
 
@@ -129,6 +129,16 @@ This run attributes the five-minute end to expected request-cap enforcement, not
 Run 19 used the v7 diagnostic to submit `cargo test --offline --locked --release --workspace` once. It consumed 6 of 15 permitted requests, cost $0.004964, and completed in 17.529 seconds. The exact returned job ID was polled twice and its output requested; the job failed before any useful run, and no `running` state or productive overlap occurred. All four ACP tool starts had terminals, with no causal gaps, provider idle timeout, or disk-floor event. Free disk remained about 31.6 GiB. The unchanged harness verifier was invoked automatically; its exit code was 1 with zero tests reported, and its contents were not inspected.
 
 Inspection of the safe job receipt showed the diagnostic prompt omitted both `workdir` and `execution_mode`. The test tool defaults to the session root and foreground mode (`src/tool/test.rs` documents that background mode returns a stable JobHandle); this submission ran from the case root and failed in 0.08 seconds. Run 19 therefore diagnoses a prompt-side setup mistake, not an ACP/job notification fault. The final long prompt v6 now explicitly sends every test through `workdir: "fixture"` and `execution_mode: "background"`, uses exact IDs, and reserves productive edits for observed `running` intervals. The frozen fixture, task, verifier, and acceptance criteria remain unchanged. Run 20 is the final authorized run under the 20-run ledger cap. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-19-summary.json`.
+
+### Run 20 final long qualification and campaign disposition (2026-10-31)
+
+Run 20 used prompt v6 and the unchanged H007 task inputs, verifier, and acceptance criteria. It reached the configured 60-request cap after 231.199 seconds of case time (228.790 seconds active work), with cost $0.030678. All 60 admitted response bodies reached EOF; request 61 was refused before transport. The 52 ACP tool starts paired with terminals, there were no causal gaps, stream idle timeouts, activity-stall cancellations, or disk-floor events, and free disk stayed above 31 GiB.
+
+The model confirmed continuation but completed zero repair cycles. It submitted three `catalog-format` tests, did not reach `catalog-store` or the priority release-workspace overlap job, and exhausted the cap. The first two exact IDs were observed `running` and later `failed`; the third was only observed `running` by the model and later became `failed` in the durable job store after the turn stopped. Their actual durations were 1.588, 2.591, and 1.734 seconds, so the observed `running` snapshots did not overlap productive source edits. Horizon evidence is `exact_job_running_and_terminal: false`, `productive_work_during_job: false`, `repair_cycles: 0`, `active_work_span_ms: 228790`, and `maximum_activity_gap_ms: 31027`. The unchanged verifier was automatically invoked and returned exit code 1 with zero tests reported; its contents were not inspected. H007 did not qualify.
+
+Across the full 20-entry ledger, 17 runs admitted a provider request and three stopped before provider admission. The campaign used 641 requests and reported $0.444327 total USD. The request cap and disk floor were enforced; there was no live reproduction of a provider-stream, ACP event-pairing, or job-projection defect. Run 19 found and corrected a prompt-side diagnostic error (foreground default and wrong workdir); run 20 explicitly used the fixture workdir and background mode. The remaining failure is that this model repeatedly tested only the first crate, did not complete the required repairs, and used its request allowance in under four minutes. This is not evidence that the 60-request gate is defective: it refused excess requests as configured.
+
+**Final status: conditionally closed at the exhausted authorization limit.** `stable_live_evidenced` remains unestablished. The residual owner is a successor S017 planning pass, requiring fresh explicit authorization before any provider call; it must first resolve whether a bounded request ceiling can support the frozen 30-minute criterion and/or whether the agent can make substantially more task progress per request. It must preserve the frozen verifier and not reopen provider/ACP/job architecture without a reproduced defect. See `plans/closure/harness-lab-self-improvement-resumption/016-status.md` and the final receipt at `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-20-summary.json`.
 
 ## 6. Required evidence and verification
 
