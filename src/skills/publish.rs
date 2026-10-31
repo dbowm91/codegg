@@ -1,14 +1,21 @@
 //! Explicit user-authorized publication of validated skill proposals.
 //!
-//! This is deliberately a host/TUI service.  The model-facing proposal tool
+//! This is deliberately a host service.  The model-facing proposal tool
 //! can create and validate a proposal, but it cannot construct a
 //! [`SkillPublicationRequest`] or call this module.  Targets are derived from
 //! the closed [`SkillTargetScope`] enum and never accepted as filesystem
 //! paths.
+//!
+//! M007-I moved the publication into the daemon. The service is therefore
+//! **store-free**: the caller owns the durable record and hands the service
+//! the exact proposal revision it approved. The service performs the
+//! filesystem effects and returns the proposal the record must become; the
+//! caller writes that back under a compare-and-swap, so a stale approval
+//! cannot become durable.
 
 use super::promotion::{
-    publication_restriction_diagnostics, PublishedSkillRef, SkillPromotionStore, SkillProposal,
-    SkillProposalId, SkillProposalStatus, SkillTargetScope,
+    publication_restriction_diagnostics, PublishedSkillRef, SkillProposal, SkillProposalId,
+    SkillProposalStatus, SkillTargetScope,
 };
 use super::{AssetDiscoveryConfig, AssetRegistry};
 use std::fs::{self, File, OpenOptions};
@@ -20,6 +27,8 @@ const MAX_READ_BYTES: u64 = 256 * 1024;
 
 struct PublishLockedInput<'a> {
     project_identity: &'a str,
+    /// The exact proposal revision the caller approved.
+    proposal: SkillProposal,
     project_root: &'a Path,
     global_config_dir: &'a Path,
     request: SkillPublicationRequest,
@@ -69,35 +78,48 @@ pub enum SkillPublicationError {
 }
 
 pub struct SkillPublicationService {
-    store: SkillPromotionStore,
+    /// Where the habit candidates live, so a published proposal can mark the
+    /// habit it came from as promoted.
+    habit_root: PathBuf,
 }
 
 impl SkillPublicationService {
-    pub fn new(store: SkillPromotionStore) -> Self {
-        Self { store }
+    pub fn new(habit_root: impl Into<PathBuf>) -> Self {
+        Self {
+            habit_root: habit_root.into(),
+        }
     }
 
-    pub fn with_default_store() -> Result<Self, SkillPublicationError> {
-        Ok(Self::new(SkillPromotionStore::new()?))
+    /// The service with the default habit root, for a host that keeps its
+    /// candidates in the standard memory root.
+    pub fn with_default_habit_root() -> Result<Self, SkillPublicationError> {
+        let root = dirs::config_dir()
+            .ok_or_else(|| {
+                SkillPublicationError::Io(io::Error::new(io::ErrorKind::NotFound, "no config dir"))
+            })?
+            .join("codegg")
+            .join("memory");
+        Ok(Self::new(root))
     }
 
     /// Publish one exact proposal revision.  `project_root` and
     /// `global_config_dir` are explicit host-resolved context values; the
     /// request itself contains only a closed scope enum.
+    ///
+    /// The proposal is the caller's approved revision. The service never
+    /// reads the store, so the approval it acts on is the one the caller
+    /// holds.
     pub fn publish(
         &self,
         project_identity: &str,
+        proposal: &SkillProposal,
         project_root: &Path,
         global_config_dir: &Path,
         request: SkillPublicationRequest,
         now: i64,
     ) -> Result<SkillPublicationResult, SkillPublicationError> {
-        let proposal = self
-            .store
-            .get_proposal(project_identity, &request.proposal_id)?
-            .ok_or(SkillPublicationError::StaleApproval)?;
-        self.validate_approval(&proposal, &request)?;
-        let document = validate_current_proposal(&proposal)?;
+        self.validate_approval(proposal, &request)?;
+        let document = validate_current_proposal(proposal)?;
         let root =
             self.resolve_owned_root(request.target_scope, project_root, global_config_dir)?;
         let normalized_name = document.normalized_name.clone();
@@ -114,6 +136,7 @@ impl SkillPublicationService {
 
         let result = self.publish_locked(PublishLockedInput {
             project_identity,
+            proposal: proposal.clone(),
             project_root,
             global_config_dir,
             request,
@@ -133,17 +156,14 @@ impl SkillPublicationService {
     pub fn reconcile(
         &self,
         project_identity: &str,
+        proposal: &SkillProposal,
         project_root: &Path,
         global_config_dir: &Path,
         request: SkillPublicationRequest,
         now: i64,
     ) -> Result<SkillPublicationResult, SkillPublicationError> {
-        let proposal = self
-            .store
-            .get_proposal(project_identity, &request.proposal_id)?
-            .ok_or(SkillPublicationError::StaleApproval)?;
-        self.validate_approval(&proposal, &request)?;
-        let document = validate_current_proposal(&proposal)?;
+        self.validate_approval(proposal, &request)?;
+        let document = validate_current_proposal(proposal)?;
         let root =
             self.resolve_owned_root(request.target_scope, project_root, global_config_dir)?;
         let lock_path = root.join(".codegg-skill-publish.lock");
@@ -155,7 +175,7 @@ impl SkillPublicationService {
         flock_lock(&lock)?;
         let result = self.reconcile_locked(
             project_identity,
-            proposal,
+            proposal.clone(),
             request,
             root,
             document.normalized_name,
@@ -174,10 +194,7 @@ impl SkillPublicationService {
         normalized_name: String,
         now: i64,
     ) -> Result<SkillPublicationResult, SkillPublicationError> {
-        let proposal = self
-            .store
-            .get_proposal(project_identity, &request.proposal_id)?
-            .ok_or(SkillPublicationError::StaleApproval)?;
+        let proposal = initial_proposal.clone();
         self.validate_approval(&proposal, &request)?;
         let document = validate_current_proposal(&proposal)?;
         if proposal != initial_proposal || document.normalized_name != normalized_name {
@@ -199,17 +216,7 @@ impl SkillPublicationService {
             &format!("{}/{}", normalized_name, SKILL_FILE),
             now,
         );
-        let published = self
-            .store
-            .reconcile_published(
-                project_identity,
-                &proposal.id,
-                request.expected_revision,
-                &request.expected_content_digest,
-                publication,
-                now,
-            )
-            .map_err(|error| SkillPublicationError::MetadataPersistence(error.to_string()))?;
+        let published = published_proposal(&proposal, &request, publication, now)?;
         self.mark_habit_promoted(project_identity, &published, now)?;
         Ok(SkillPublicationResult {
             proposal: published,
@@ -227,6 +234,7 @@ impl SkillPublicationService {
     ) -> Result<SkillPublicationResult, SkillPublicationError> {
         let PublishLockedInput {
             project_identity,
+            proposal,
             project_root,
             global_config_dir,
             request,
@@ -236,12 +244,8 @@ impl SkillPublicationService {
             relative_path,
             now,
         } = input;
-        // Reload under the destination lock so a stale preview cannot race a
-        // revision change or another publisher.
-        let proposal = self
-            .store
-            .get_proposal(project_identity, &request.proposal_id)?
-            .ok_or(SkillPublicationError::StaleApproval)?;
+        // The caller handed the exact approved revision; the destination lock
+        // keeps a second publisher from racing the same fixed directory name.
         self.validate_approval(&proposal, &request)?;
         let document = validate_current_proposal(&proposal)?;
 
@@ -256,12 +260,9 @@ impl SkillPublicationService {
         )?;
 
         if let Some(existing_digest) = read_existing_skill(destination)? {
-            let current = self
-                .store
-                .get_proposal(project_identity, &request.proposal_id)?
-                .ok_or(SkillPublicationError::StaleApproval)?;
+            let current = &proposal;
             let expected_publication = publication_ref(
-                &current,
+                current,
                 request.target_scope,
                 &document.normalized_name,
                 relative_path,
@@ -279,7 +280,7 @@ impl SkillPublicationService {
             {
                 self.mark_habit_promoted(project_identity, &current, now)?;
                 return Ok(SkillPublicationResult {
-                    proposal: current,
+                    proposal: current.clone(),
                     relative_path: relative_path.to_string(),
                     content_digest: existing_digest,
                     idempotent: true,
@@ -294,7 +295,7 @@ impl SkillPublicationService {
 
         ensure_directory(package)?;
         let temp = package.join(format!(".SKILL.md.codegg-tmp-{}", uuid::Uuid::new_v4()));
-        let bytes = current_skill_bytes(project_identity, &request, &self.store)?;
+        let bytes = current_skill_bytes(&proposal, &request)?;
         let write_result = (|| -> Result<(), SkillPublicationError> {
             let mut file = OpenOptions::new()
                 .create_new(true)
@@ -311,15 +312,12 @@ impl SkillPublicationService {
                     relative_path.to_string(),
                 ));
             }
-            // The proposal store has its own lock. Revalidate immediately
-            // before rename so a concurrent diagnostic/rejection cannot cause
-            // bytes from an obsolete approval to become durable.
-            let latest = self
-                .store
-                .get_proposal(project_identity, &request.proposal_id)?
-                .ok_or(SkillPublicationError::StaleApproval)?;
-            self.validate_approval(&latest, &request)?;
-            let latest_document = validate_current_proposal(&latest)?;
+            // The proposal record carries its own revision. Revalidate
+            // immediately before commit so a concurrent diagnostic/rejection
+            // cannot cause bytes from an obsolete approval to become durable.
+            let latest = &proposal;
+            self.validate_approval(latest, &request)?;
+            let latest_document = validate_current_proposal(latest)?;
             if latest_document.normalized_name != document.normalized_name
                 || latest.skill_markdown.as_bytes() != bytes.as_slice()
             {
@@ -350,28 +348,15 @@ impl SkillPublicationService {
             return write_result.map(|_| unreachable!());
         }
 
-        let current = self
-            .store
-            .get_proposal(project_identity, &request.proposal_id)?
-            .ok_or(SkillPublicationError::StaleApproval)?;
+        let current = &proposal;
         let publication = publication_ref(
-            &current,
+            current,
             request.target_scope,
             &document.normalized_name,
             relative_path,
             now,
         );
-        let published = self
-            .store
-            .mark_published(
-                project_identity,
-                &current.id,
-                request.expected_revision,
-                &request.expected_content_digest,
-                publication,
-                now,
-            )
-            .map_err(|error| SkillPublicationError::MetadataPersistence(error.to_string()))?;
+        let published = published_proposal(current, &request, publication, now)?;
         self.mark_habit_promoted(project_identity, &published, now)?;
         Ok(SkillPublicationResult {
             proposal: published,
@@ -477,7 +462,7 @@ impl SkillPublicationService {
         _now: i64,
     ) -> Result<(), SkillPublicationError> {
         let habits = codegg_core::memory::habit::HabitStore::with_root(
-            self.store.habit_root_for_publication(),
+            self.habit_root.clone(),
         )?;
         let marked = habits.mark_promoted(
             project_identity,
@@ -702,19 +687,49 @@ fn read_existing_skill(path: &Path) -> Result<Option<String>, SkillPublicationEr
 }
 
 fn current_skill_bytes(
-    project_identity: &str,
+    proposal: &SkillProposal,
     request: &SkillPublicationRequest,
-    store: &SkillPromotionStore,
 ) -> Result<Vec<u8>, SkillPublicationError> {
-    let proposal = store
-        .get_proposal(project_identity, &request.proposal_id)?
-        .ok_or(SkillPublicationError::StaleApproval)?;
     if proposal.revision != request.expected_revision
         || proposal.content_digest != request.expected_content_digest
     {
         return Err(SkillPublicationError::StaleApproval);
     }
-    Ok(proposal.skill_markdown.into_bytes())
+    Ok(proposal.skill_markdown.clone().into_bytes())
+}
+
+/// The proposal the durable record becomes once the publication is durable.
+///
+/// The transition is a compare-and-swap the **caller** performs: the caller
+/// holds the record's revision, so a concurrent rejection or a second
+/// publication cannot be overwritten by this result.
+fn published_proposal(
+    proposal: &SkillProposal,
+    request: &SkillPublicationRequest,
+    publication: PublishedSkillRef,
+    now: i64,
+) -> Result<SkillProposal, SkillPublicationError> {
+    if proposal.revision != request.expected_revision
+        || proposal.content_digest != request.expected_content_digest
+        || proposal.content_digest != publication.content_digest
+    {
+        return Err(SkillPublicationError::StaleApproval);
+    }
+    if proposal.status == SkillProposalStatus::Published {
+        if proposal.publication.as_ref() == Some(&publication) {
+            return Ok(proposal.clone());
+        }
+        return Err(SkillPublicationError::StaleApproval);
+    }
+    if proposal.status != SkillProposalStatus::Validated {
+        return Err(SkillPublicationError::ProposalNotValidated);
+    }
+    let mut published = proposal.clone();
+    published.status = SkillProposalStatus::Published;
+    published.publication = Some(publication);
+    published.updated_at = now;
+    published.revision = published.revision.saturating_add(1);
+    Ok(published)
 }
 
 fn publication_ref(

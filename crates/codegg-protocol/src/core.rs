@@ -2389,6 +2389,13 @@ pub enum CoreResponse {
     SkillCatalogueList {
         result: crate::skill::SkillCatalogueDto,
     },
+    /// M007-I (work package B): the daemon's answer to a promotion request.
+    ///
+    /// The daemon owns the durable promotion record, so the frontend reads
+    /// the workflow's state from the daemon and never holds its own copy.
+    SkillPromotion {
+        result: crate::skill::SkillPromotionResultDto,
+    },
     /// M007-D: the daemon's command catalog.
     ///
     /// The daemon owns the catalog (ADR-0052), so the desktop and the TUI
@@ -2691,6 +2698,29 @@ pub enum CoreRequest {
     /// is metadata only — no skill body, no filesystem path.
     SkillCatalogueList {
         request: crate::skill::SkillCatalogueRequestDto,
+    },
+    /// M007-I (work packages D and E): the ask, as **one** request.
+    ///
+    /// The daemon stages the evidence and admits the turn together. The
+    /// frontend names the run and the question; the daemon reads its own
+    /// run bytes, redacts the assembled evidence and admits the turn under
+    /// its own transaction boundary. There is therefore no state in which
+    /// the evidence is staged and the turn was not admitted.
+    SessionPromptSubmitWithHumanShellPromotions {
+        session_id: String,
+        text: String,
+        plan_mode: bool,
+        human_shell_promotions: Vec<crate::human_shell::HumanShellPromotionStageDto>,
+    },
+    /// M007-I (work package B): one request against the daemon's promotion
+    /// workflow.
+    ///
+    /// The daemon owns the durable promotion record, so every step of the
+    /// workflow — staging, listing, previewing, rejecting and publishing —
+    /// is a request against the daemon's store. The request is keyed on the
+    /// canonical `WorkspaceId`, which is the namespace the record lives in.
+    SkillPromotion {
+        request: crate::skill::SkillPromotionRequestDto,
     },
     /// M007-D: read the daemon's command catalog.
     ///

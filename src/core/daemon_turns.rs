@@ -1158,6 +1158,28 @@ impl CoreDaemon {
                 ))
                 .await;
             }
+            // M007-I (work packages D and E): the ask, as one request. The
+            // daemon stages the evidence and admits the turn together, so
+            // there is no state in which the evidence is staged and the
+            // turn was not admitted.
+            CoreRequest::SessionPromptSubmitWithHumanShellPromotions {
+                session_id,
+                text,
+                plan_mode,
+                human_shell_promotions,
+            } => {
+                return Box::pin(self.submit_prompt_with_human_shell_promotions(
+                    session_id,
+                    text,
+                    plan_mode,
+                    human_shell_promotions,
+                    request_id,
+                    trusted_client_id,
+                    authority,
+                    authz_decision,
+                ))
+                .await;
+            }
             CoreRequest::HumanShellPromotionStage {
                 session_id,
                 promotion_id,
@@ -2074,6 +2096,153 @@ impl CoreDaemon {
     /// `TurnSubmit` body: a still-active turn rejects the duplicate
     /// with `turn_already_active` instead of spawning a second turn.
     pub(crate) const SESSION_PROMPT_MAX_TEXT_CHARS: usize = 200_000;
+
+    /// M007-I (work packages D and E): the ask, as one request.
+    ///
+    /// The daemon owns both halves. It reads the evidence from its **own**
+    /// run bytes, stages every promotion in one transaction, and admits the
+    /// turn. If the admission fails, the staged evidence is expired in the
+    /// same request, so a failed ask leaves no `pending` row behind.
+    #[allow(clippy::too_many_arguments)]
+    async fn submit_prompt_with_human_shell_promotions(
+        &self,
+        session_id: String,
+        text: String,
+        plan_mode: bool,
+        human_shell_promotions: Vec<codegg_protocol::human_shell::HumanShellPromotionStageDto>,
+        request_id: &str,
+        trusted_client_id: &str,
+        authority: codegg_core::transport_auth::RequestAuthorityContext,
+        authz_decision: codegg_core::authorization::AuthorizationDecision,
+    ) -> Result<CoreResponse, AppError> {
+        let Some(pool) = self.pool.clone() else {
+            return Ok(promotion_error_response(
+                "human_shell_promotion_unavailable",
+                "durable session storage is required for promotion staging",
+            ));
+        };
+        if human_shell_promotions.is_empty() {
+            return Ok(promotion_error_response(
+                "human_shell_promotion_invalid",
+                "the ask names no shell evidence",
+            ));
+        }
+        // The runtime binding resolves the project and workspace the
+        // evidence belongs to. It fails before anything is staged.
+        let runtime = match self.bind_runtime_for_session(&session_id).await {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                return Ok(promotion_error_response(
+                    "human_shell_promotion_stale_binding",
+                    &error.to_string(),
+                ))
+            }
+        };
+        // The evidence is assembled from the daemon's own run bytes, and
+        // the redaction happens in the staging path below.
+        let created_at_ms = chrono::Utc::now().timestamp_millis();
+        let mut inputs = Vec::with_capacity(human_shell_promotions.len());
+        for promotion in &human_shell_promotions {
+            let projection = match self
+                .human_shell_runs
+                .evidence_text(&promotion.source_id, &promotion.question)
+                .await
+            {
+                Ok(projection) => projection,
+                Err(message) => {
+                    return Ok(promotion_error_response(
+                        "human_shell_promotion_invalid",
+                        &message,
+                    ))
+                }
+            };
+            inputs.push(codegg_core::session::NewHumanShellPromotion {
+                id: promotion.promotion_id.clone(),
+                source_id: promotion.source_id.clone(),
+                session_id: session_id.clone(),
+                principal_id: authority.principal_id().as_str().to_owned(),
+                project_id: runtime.project_id.clone(),
+                workspace_id: runtime.workspace_id.as_str().to_owned(),
+                projection,
+                created_at_ms,
+            });
+        }
+        let store = codegg_core::session::HumanShellPromotionStore::new(pool);
+        let outcomes = match store.stage_many(inputs).await {
+            Ok(outcomes) => outcomes,
+            Err(error) => {
+                return Ok(promotion_error_response(error.code(), &error.to_string()))
+            }
+        };
+        let promotion_ids: Vec<String> = outcomes
+            .iter()
+            .map(|outcome| match outcome {
+                codegg_core::session::StageHumanShellPromotionOutcome::Staged(record) => {
+                    record.id.clone()
+                }
+                codegg_core::session::StageHumanShellPromotionOutcome::Duplicate(record) => {
+                    record.id.clone()
+                }
+            })
+            .collect();
+        for outcome in &outcomes {
+            if let codegg_core::session::StageHumanShellPromotionOutcome::Staged(record) = outcome {
+                self.record_human_shell_promotion_stage(
+                    &authority,
+                    &authz_decision,
+                    record,
+                    "staged",
+                )
+                .await;
+            }
+        }
+        // The turn's composition is resolved daemon-side, exactly as the
+        // prompt submit it replaces does.
+        let (model, agents, messages) = match self
+            .resolve_prompt_submit_composition(&session_id, &text)
+            .await
+        {
+            Ok(composed) => composed,
+            Err(error) => {
+                let _ = store.expire_pending(&session_id, &promotion_ids).await;
+                return Ok(error.into_core_response());
+            }
+        };
+        let reasoning = self
+            .resolve_reasoning_selection(&session_id, None, &authority)
+            .await;
+        let admission = Box::pin(self.handle_turns_request(
+            CoreRequest::TurnSubmit {
+                session_id: session_id.clone(),
+                text,
+                plan_mode,
+                model,
+                agents,
+                current_agent_idx: 0,
+                messages,
+                reasoning,
+                human_shell_promotion_ids: promotion_ids.clone(),
+            },
+            request_id,
+            None,
+            trusted_client_id,
+            authority,
+            authz_decision,
+        ))
+        .await;
+        let admitted = match &admission {
+            Ok(CoreResponse::Error { .. }) => false,
+            Err(_) => false,
+            Ok(_) => true,
+        };
+        if !admitted {
+            // The turn was not admitted, so the evidence must not stay
+            // staged: a `pending` row no turn will consume is the seam this
+            // request exists to close.
+            let _ = store.expire_pending(&session_id, &promotion_ids).await;
+        }
+        admission
+    }
 
     async fn stage_human_shell_promotion(
         &self,

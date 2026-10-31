@@ -452,6 +452,87 @@ impl HumanShellRunService {
         }
     }
 
+    /// The human-shell evidence for one run, assembled from the daemon's
+    /// **own** run bytes.
+    ///
+    /// M007-I (work package E): the frontend no longer assembles the
+    /// evidence from its own mirror of the run. The daemon reads its own
+    /// bytes, renders the digest and returns the assembled text; the
+    /// promotion staging then redacts it. The bytes and the redaction are
+    /// therefore one daemon-owned path.
+    pub async fn evidence_text(&self, run_id: &str, question: &str) -> Result<String, String> {
+        let Some(scope) = self.scope_for(run_id).await else {
+            return Err("the shell run is unavailable or expired".to_owned());
+        };
+        let read = self
+            .read(&scope, run_id, 0, HUMAN_SHELL_MAX_READ_BYTES)
+            .await;
+        let CoreResponse::HumanShellRunOutput {
+            run,
+            chunks,
+            output_truncated,
+            ..
+        } = read
+        else {
+            return Err("the shell run is unavailable or expired".to_owned());
+        };
+        let mut stdout = crate::shell::store::BoundedOutput::new();
+        let mut stderr = crate::shell::store::BoundedOutput::new();
+        for chunk in &chunks {
+            if chunk.stderr {
+                stderr.append(&chunk.bytes);
+            } else {
+                stdout.append(&chunk.bytes);
+            }
+        }
+        let status = match run.status {
+            crate::protocol::human_shell::HumanShellRunStatusDto::Running => {
+                crate::shell::types::ShellStatus::Running
+            }
+            crate::protocol::human_shell::HumanShellRunStatusDto::Exited => {
+                crate::shell::types::ShellStatus::Exited
+            }
+            crate::protocol::human_shell::HumanShellRunStatusDto::TimedOut => {
+                crate::shell::types::ShellStatus::TimedOut
+            }
+            crate::protocol::human_shell::HumanShellRunStatusDto::Cancelled => {
+                crate::shell::types::ShellStatus::Killed
+            }
+            crate::protocol::human_shell::HumanShellRunStatusDto::Failed => {
+                crate::shell::types::ShellStatus::FailedToStart
+            }
+            crate::protocol::human_shell::HumanShellRunStatusDto::Lost => {
+                crate::shell::types::ShellStatus::FailedToStart
+            }
+        };
+        if status != crate::shell::types::ShellStatus::Exited {
+            return Err("shell output can only be promoted after the command exits".to_owned());
+        }
+        let elapsed = match (run.started_at_ms, run.completed_at_ms) {
+            (Some(started), Some(completed)) => std::time::Duration::from_millis(
+                completed.saturating_sub(started).max(0) as u64,
+            ),
+            _ => std::time::Duration::default(),
+        };
+        let digest = crate::shell::ShellDigest::build(
+            &run.command,
+            std::path::Path::new(&run.cwd),
+            status,
+            run.exit_code,
+            elapsed,
+            &stdout,
+            &stderr,
+        );
+        let mut text = format!(
+            "Using the attached shell output, answer: {question}\n\n{}",
+            digest.render()
+        );
+        if output_truncated {
+            text.push_str("\n[shell output truncated]");
+        }
+        Ok(text)
+    }
+
     /// The session's runs, newest first; the listing carries no output.
     pub async fn list_for_session(&self, session_id: &str) -> Vec<HumanShellRunMetadataDto> {
         let mut inner = self.inner.lock().await;

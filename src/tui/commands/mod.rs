@@ -29,6 +29,7 @@ pub(super) mod project_catalog;
 pub(super) mod project_init;
 pub(super) mod project_picker;
 pub(super) mod prompt;
+pub(super) mod promotion;
 pub(super) mod provider_connections;
 /// M004: the `/queue` box — open, refresh, and delete one waiting prompt.
 /// Public so the `TuiCommand` delete-completion variant and the integration

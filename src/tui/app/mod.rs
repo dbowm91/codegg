@@ -6983,87 +6983,71 @@ impl App {
                         .warning("Start or select a session before promoting a habit");
                     return;
                 };
-                let project_dir = self.active_workspace_root().unwrap_or_default();
-                let app_config = crate::config::schema::Config::load_or_default();
-                let config = crate::agent::asset_context::asset_discovery_config_from(&app_config);
-                let global_roots: Vec<std::path::PathBuf> =
-                    crate::agent::asset_context::default_global_discovery_root()
-                        .into_iter()
-                        .collect();
-                let registry = crate::skills::AssetRegistry::build(
-                    &config,
-                    project_dir.as_path(),
-                    &global_roots,
-                );
-                let names = registry
-                    .list()
-                    .iter()
-                    .take(32)
-                    .map(|skill| skill.name.clone())
-                    .collect();
-                let result =
-                    crate::skills::promotion::SkillPromotionStore::new().and_then(|store| {
-                        store.begin_request(
-                            project_dir.to_string_lossy().as_ref(),
-                            &session_id,
-                            &habit_id,
-                            names,
-                            Vec::new(),
-                            chrono::Utc::now().timestamp_millis(),
-                        )
-                    });
-                match result {
-                    Ok(request) => {
-                        self.prompt_state
-                            .prompt
-                            .set_text(crate::skills::promotion::build_draft_prompt(&request));
-                        self.send_prompt();
-                    }
-                    Err(error) => self
-                        .messages_state
+                let Some(workspace_id) = self.active_workspace_id().map(str::to_owned) else {
+                    self.messages_state
                         .toasts
-                        .warning(&format!("Could not start skill promotion: {error}")),
-                }
+                        .warning("Select a workspace before promoting a habit");
+                    return;
+                };
+                // M007-I (work package B): the daemon owns the promotion
+                // store, so the frontend stages nothing itself. It asks the
+                // daemon, and the daemon records the request against the
+                // canonical workspace.
+                crate::tui::commands::promotion::start_skill_promotion(
+                    self,
+                    crate::protocol::skill::SkillPromotionRequestDto {
+                        workspace_id,
+                        session_id,
+                        action: crate::protocol::skill::SkillPromotionActionDto::Begin,
+                        habit_id: Some(habit_id.as_str().to_owned()),
+                        proposal_id: None,
+                        target_scope: None,
+                    },
+                );
             }
             B::SkillProposals => {
-                let project_dir = self.active_workspace_root().unwrap_or_default();
-                match crate::skills::promotion::SkillPromotionStore::new().and_then(|store| {
-                    store.list_proposals(project_dir.to_string_lossy().as_ref(), 32)
-                }) {
-                    Ok(proposals) if proposals.is_empty() => self
-                        .messages_state
+                let Some(session_id) = self.session_state.session.as_ref().map(|s| s.id.clone())
+                else {
+                    self.messages_state
                         .toasts
-                        .info("No skill proposals yet. Use /skill-promote <habit-id>."),
-                    Ok(proposals) => {
-                        let mut lines = vec![format!("Skill proposals ({}):", proposals.len())];
-                        for proposal in proposals {
-                            lines.push(format!(
-                                "- [{}] {:?} {} — {} (rev {}, digest {})",
-                                proposal.id.as_str().chars().take(8).collect::<String>(),
-                                proposal.status,
-                                proposal.name,
-                                proposal.description,
-                                proposal.revision,
-                                proposal.content_digest.chars().take(12).collect::<String>()
-                            ));
-                        }
-                        lines.push(
-                            "Preview with /skill-proposal <id>; reject with /skill-proposal reject <id>; request a new draft with /skill-promote <habit-id>."
-                                .to_string(),
-                        );
-                        self.open_info_dialog(
-                            crate::tui::components::dialogs::info::InfoType::MemoryResults,
-                            lines,
-                        );
-                    }
-                    Err(error) => self
-                        .messages_state
+                        .warning("Start or select a session before listing proposals");
+                    return;
+                };
+                let Some(workspace_id) = self.active_workspace_id().map(str::to_owned) else {
+                    self.messages_state
                         .toasts
-                        .warning(&format!("Could not load skill proposals: {error}")),
-                }
+                        .warning("Select a workspace before listing proposals");
+                    return;
+                };
+                crate::tui::commands::promotion::start_skill_promotion(
+                    self,
+                    crate::protocol::skill::SkillPromotionRequestDto {
+                        workspace_id,
+                        session_id,
+                        action: crate::protocol::skill::SkillPromotionActionDto::List,
+                        habit_id: None,
+                        proposal_id: None,
+                        target_scope: None,
+                    },
+                );
             }
             B::SkillProposal => {
-                if let Some(publish_args) = argument.strip_prefix("publish") {
+                let Some(session_id) = self.session_state.session.as_ref().map(|s| s.id.clone())
+                else {
+                    self.messages_state
+                        .toasts
+                        .warning("Start or select a session before acting on a proposal");
+                    return;
+                };
+                let Some(workspace_id) = self.active_workspace_id().map(str::to_owned) else {
+                    self.messages_state
+                        .toasts
+                        .warning("Select a workspace before acting on a proposal");
+                    return;
+                };
+                let mut action = crate::protocol::skill::SkillPromotionActionDto::Preview;
+                let mut target_scope = None;
+                let id_text = if let Some(publish_args) =argument.strip_prefix("publish") {
                     let parts = publish_args.split_whitespace().collect::<Vec<_>>();
                     if parts.len() != 2 {
                         self.messages_state
@@ -7071,164 +7055,41 @@ impl App {
                             .warning("Usage: /skill-proposal publish <id> [project|global]");
                         return;
                     }
-                    let Some(target_scope) = (match parts[1] {
-                        "project" => Some(crate::skills::promotion::SkillTargetScope::Project),
-                        "global" => Some(crate::skills::promotion::SkillTargetScope::Global),
-                        _ => None,
-                    }) else {
-                        self.messages_state
-                            .toasts
-                            .warning("Publication scope must be project or global");
-                        return;
-                    };
-                    if crate::skills::promotion::SkillProposalId::parse(parts[0]).is_none() {
-                        self.messages_state
-                            .toasts
-                            .warning("Invalid skill proposal ID");
-                        return;
-                    }
-                    let id = parts[0].to_string();
-                    if let Some(ref tx) = self.tui_cmd_tx {
-                        let _ = send_tui(tx, TuiCommand::SkillPublish { id, target_scope });
-                    } else {
-                        crate::tui::commands::memory::start_skill_publish(self, id, target_scope);
-                    }
-                    return;
-                }
-                let (reject, id_text) = argument
-                    .strip_prefix("reject ")
-                    .map_or((false, argument), |id| (true, id.trim()));
-                let Some(id) = crate::skills::promotion::SkillProposalId::parse(id_text) else {
+                    target_scope = Some(match parts[1] {
+                        "project" => crate::protocol::skill::SkillTargetScopeDto::Project,
+                        "global" => crate::protocol::skill::SkillTargetScopeDto::Global,
+                        _ => {
+                            self.messages_state
+                                .toasts
+                                .warning("Publication scope must be project or global");
+                            return;
+                        }
+                    });
+                    action = crate::protocol::skill::SkillPromotionActionDto::Publish;
+                    parts[0].to_string()
+                } else if let Some(reject_id) = argument.strip_prefix("reject ") {
+                    action = crate::protocol::skill::SkillPromotionActionDto::Reject;
+                    reject_id.trim().to_string()
+                } else {
+                    argument.trim().to_string()
+                };
+                if crate::skills::promotion::SkillProposalId::parse(&id_text).is_none() {
                     self.messages_state
                         .toasts
                         .warning("Usage: /skill-proposal <id> or /skill-proposal reject <id>");
                     return;
-                };
-                let project_dir = self.active_workspace_root().unwrap_or_default();
-                let store = match crate::skills::promotion::SkillPromotionStore::new() {
-                    Ok(store) => store,
-                    Err(error) => {
-                        self.messages_state
-                            .toasts
-                            .warning(&format!("Could not open skill proposals: {error}"));
-                        return;
-                    }
-                };
-                if reject {
-                    match store.reject_proposal(
-                        project_dir.to_string_lossy().as_ref(),
-                        &id,
-                        chrono::Utc::now().timestamp_millis(),
-                    ) {
-                        Ok(true) => self.messages_state.toasts.info("Skill proposal rejected."),
-                        Ok(false) => self
-                            .messages_state
-                            .toasts
-                            .warning("Proposal not found or is not awaiting review."),
-                        Err(error) => self
-                            .messages_state
-                            .toasts
-                            .warning(&format!("Could not reject proposal: {error}")),
-                    }
-                } else {
-                    let _ = store.mark_previewed(
-                        project_dir.to_string_lossy().as_ref(),
-                        &id,
-                        chrono::Utc::now().timestamp_millis(),
-                    );
-                    match store.get_proposal(project_dir.to_string_lossy().as_ref(), &id) {
-                        Ok(Some(proposal)) => {
-                            // Advisory live collision view: the registry may have
-                            // changed since submission, so surface the current
-                            // same-name effective skill without mutating state.
-                            let app_config = crate::config::schema::Config::load_or_default();
-                            let config = crate::agent::asset_context::asset_discovery_config_from(
-                                &app_config,
-                            );
-                            let global_roots: Vec<std::path::PathBuf> =
-                                crate::agent::asset_context::default_global_discovery_root()
-                                    .into_iter()
-                                    .collect();
-                            let registry = crate::skills::AssetRegistry::build(
-                                &config,
-                                std::path::Path::new(&project_dir),
-                                &global_roots,
-                            );
-                            let live_collisions = crate::skills::promotion::collision_diagnostics(
-                                &registry,
-                                &proposal.name.to_lowercase(),
-                            );
-                            let mut lines = vec![
-                                format!("Skill proposal {}", proposal.id.as_str()),
-                                format!("Status: {:?}", proposal.status),
-                                format!("Name: {}", proposal.name),
-                                format!("Description: {}", proposal.description),
-                                format!("Target scope: {:?}", proposal.target_scope),
-                                format!(
-                                    "Habit: {} (fingerprint {}, candidate rev {})",
-                                    proposal.habit_id.as_str(),
-                                    proposal.habit_fingerprint,
-                                    proposal.candidate_revision
-                                ),
-                                format!(
-                                    "Content digest: {} (proposal rev {})",
-                                    proposal.content_digest, proposal.revision
-                                ),
-                                if proposal.status
-                                    == crate::skills::promotion::SkillProposalStatus::Published
-                                {
-                                    format!(
-                                        "Published at {}/{}; runtime activation is determined by the next asset refresh.",
-                                        proposal
-                                            .publication
-                                            .as_ref()
-                                            .map(|p| format!("{:?}", p.target_scope))
-                                            .unwrap_or_else(|| "unknown".to_string()),
-                                        proposal
-                                            .publication
-                                            .as_ref()
-                                            .map(|p| p.relative_path.clone())
-                                            .unwrap_or_else(|| "unknown".to_string())
-                                    )
-                                } else {
-                                    "Not installed or effective yet.".to_string()
-                                },
-                                String::new(),
-                                proposal.skill_markdown,
-                            ];
-                            for diagnostic in proposal.diagnostics {
-                                lines.push(format!(
-                                    "Diagnostic [{:?}]: {}",
-                                    diagnostic.severity, diagnostic.reason
-                                ));
-                            }
-                            for collision in live_collisions {
-                                lines.push(format!(
-                                    "Live collision [{:?}]: {} {}",
-                                    collision.severity,
-                                    collision.reason,
-                                    collision.location.unwrap_or_default()
-                                ));
-                            }
-                            lines.push(
-                                "Request a revised draft with /skill-promote <habit-id>; rejection does not dismiss the habit."
-                                    .to_string(),
-                            );
-                            self.open_info_dialog(
-                                crate::tui::components::dialogs::info::InfoType::MemoryResults,
-                                lines,
-                            );
-                        }
-                        Ok(None) => self
-                            .messages_state
-                            .toasts
-                            .warning("Skill proposal not found."),
-                        Err(error) => self
-                            .messages_state
-                            .toasts
-                            .warning(&format!("Could not load proposal: {error}")),
-                    }
                 }
+                crate::tui::commands::promotion::start_skill_promotion(
+                    self,
+                    crate::protocol::skill::SkillPromotionRequestDto {
+                        workspace_id,
+                        session_id,
+                        action,
+                        habit_id: None,
+                        proposal_id: Some(id_text),
+                        target_scope,
+                    },
+                );
             }
             B::Goal => {
                 let query = argument;

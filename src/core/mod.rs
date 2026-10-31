@@ -35,6 +35,7 @@ pub mod daemon_reads;
 pub mod daemon_refresh;
 pub mod daemon_scratch;
 pub mod daemon_sessions;
+pub mod daemon_skills;
 pub mod daemon_shutdown;
 pub mod daemon_team;
 pub mod daemon_turns;

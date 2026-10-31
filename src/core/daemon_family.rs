@@ -127,6 +127,9 @@ impl DaemonRequestFamily {
             // read-only git fact layer.
             CoreRequest::GitDiff { .. } => Self::Git,
             CoreRequest::SkillCatalogueList { .. } => Self::Skills,
+            // M007-I (work packages B and C): the daemon owns the promotion
+            // workflow's durable record and its publication.
+            CoreRequest::SkillPromotion { .. } => Self::Skills,
             // M007-D: the daemon-owned command catalog and the daemon-effect
             // command executor. Both are project-scoped: the scope names the
             // project and the workspace the catalog is read for and the
@@ -200,6 +203,10 @@ impl DaemonRequestFamily {
             CoreRequest::TurnSteer { .. } => Self::Turns,
             CoreRequest::TurnSubmit { .. } => Self::Turns,
             CoreRequest::SessionPromptSubmit { .. } => Self::Turns,
+            // M007-I (work packages D and E): the ask is one request, so
+            // it belongs to the same family as the prompt submit it
+            // replaces.
+            CoreRequest::SessionPromptSubmitWithHumanShellPromotions { .. } => Self::Turns,
             CoreRequest::HumanShellPromotionStage { .. } => Self::Turns,
             CoreRequest::HumanShellPromotionsGet { .. } => Self::Turns,
             CoreRequest::UserPromptQueueList { .. } => Self::Turns,

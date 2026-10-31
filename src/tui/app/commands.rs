@@ -281,13 +281,12 @@ pub enum TuiCommand {
     HabitDismiss {
         id: String,
     },
-    SkillPublish {
-        id: String,
-        target_scope: crate::skills::promotion::SkillTargetScope,
-    },
-    SkillPublishFinished {
-        message: String,
-        is_error: bool,
+    /// M007-I (work packages B and C): the daemon's answer to one promotion
+    /// request. The frontend holds no promotion state of its own.
+    SkillPromotionFinished {
+        action: crate::protocol::skill::SkillPromotionActionDto,
+        response: Option<crate::protocol::core::CoreResponse>,
+        error: Option<String>,
     },
     HabitResult {
         toast_message: String,

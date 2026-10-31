@@ -408,6 +408,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             91 => migrate_v91(&mut tx).await?,
             92 => migrate_v92(&mut tx).await?,
             93 => migrate_v93(&mut tx).await?,
+            94 => migrate_v94(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -485,6 +486,45 @@ async fn migrate_v93(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
             .to_string(),
     )
     .await
+}
+
+/// M007-I (work package B): the daemon's durable skill-promotion record.
+///
+/// The namespace is the canonical `WorkspaceId`, so the human's request and
+/// the daemon tool's proposal resolve to the same record. The payload is
+/// bounded and digested: it is the workflow's own serialized state, and this
+/// table does not interpret it.
+async fn migrate_v94(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS skill_promotion (
+            id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('request', 'proposal')),
+            payload TEXT NOT NULL,
+            payload_bytes INTEGER NOT NULL CHECK (payload_bytes >= 0 AND payload_bytes <= 262144),
+            payload_sha256 TEXT NOT NULL,
+            status TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            expires_at_ms INTEGER,
+            PRIMARY KEY (workspace_id, kind, id)
+        )
+        "#,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_skill_promotion_workspace \
+         ON skill_promotion(workspace_id, kind, created_at_ms)",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    Ok(())
 }
 
 /// Attempt-scoped execution subject provenance. NULL is intentionally retained

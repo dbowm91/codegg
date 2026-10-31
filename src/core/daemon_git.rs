@@ -109,7 +109,12 @@ async fn handle_git_diff(
         }
     };
 
-    let Some(path) = request.path.as_deref().map(str::trim).filter(|p| !p.is_empty()) else {
+    let Some(path) = request
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    else {
         // The bare branch: one `git diff`, no file read.
         let argv = vec!["git".to_string(), "diff".to_string()];
         let output = match run_git_read(&argv, &git_root).await {
@@ -203,10 +208,7 @@ fn repo_relative_path(path: &str) -> Result<String, String> {
 /// The read is a **read**: the policy is the same one the frontend's own
 /// read used, so the object-reading allowlist and `GIT_OPTIONAL_LOCKS=0`
 /// apply unchanged.
-async fn run_git_read(
-    argv: &[String],
-    git_root: &Path,
-) -> Result<std::process::Output, String> {
+async fn run_git_read(argv: &[String], git_root: &Path) -> Result<std::process::Output, String> {
     let argv = argv.to_vec();
     let git_root = git_root.to_path_buf();
     tokio::task::spawn_blocking(move || {

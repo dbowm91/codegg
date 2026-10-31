@@ -1074,7 +1074,10 @@ impl CoreDaemon {
     /// mediating: an identifier the effect can resolve must reach the
     /// mediation too. `None` means the workspace registry does not know the
     /// identifier at all, which the caller turns into a typed refusal.
-    async fn workspace_root_for(&self, workspace_id: &str) -> Option<std::path::PathBuf> {
+    pub(crate) async fn workspace_root_for(
+        &self,
+        workspace_id: &str,
+    ) -> Option<std::path::PathBuf> {
         let id = codegg_core::workspace::WorkspaceId::new_unchecked(workspace_id.to_owned());
         let workspace = self.workspaces.resolve(&id).await?;
         Some(workspace.canonical_root.clone())
@@ -1139,6 +1142,17 @@ impl CoreDaemon {
                     workspace_id,
                 )
                 .await
+            }
+            // M007-I (work package C): the skill publication is a
+            // non-broker writer into a checkout's skill root. Only the
+            // publish action writes; the other promotion actions touch the
+            // daemon's own database and are not checkout writers at all.
+            CoreRequest::SkillPromotion { request } => {
+                if request.action != codegg_protocol::skill::SkillPromotionActionDto::Publish {
+                    return CheckoutWriteTargetResolution::NotAWriter;
+                }
+                self.root_write_target(CheckoutWriterSink::SkillPublish, &request.workspace_id)
+                    .await
             }
             CoreRequest::ManagedWorktreeCleanup { worktree_id, .. } => {
                 match codegg_core::identity::WorktreeId::parse(worktree_id) {
@@ -4772,7 +4786,14 @@ impl CoreDaemon {
                 .await
             }
             super::daemon_family::DaemonRequestFamily::Skills => {
-                Box::pin(self.handle_skill_catalogue_request(payload)).await
+                // M007-I (work packages B and C): the promotion workflow is
+                // daemon-owned, so the request reaches the daemon's handler
+                // and the frontend holds no durable state of its own.
+                if let CoreRequest::SkillPromotion { .. } = &payload {
+                    Box::pin(super::daemon_skills::handle_skill_promotion(self, payload)).await
+                } else {
+                    Box::pin(self.handle_skill_catalogue_request(payload)).await
+                }
             }
             // M007-D: the daemon-owned command catalog and the daemon-effect
             // command executor.
