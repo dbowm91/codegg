@@ -1381,6 +1381,13 @@ pub struct EventEnvelope<T> {
 #[allow(clippy::large_enum_variant)]
 pub enum CoreResponse {
     Ack,
+    /// C002 (ADR-0060): the daemon's answer to a compaction request. It
+    /// names the session, and whether that session had a live turn when the
+    /// request was accepted.
+    SessionCompact {
+        session_id: String,
+        turn_active: bool,
+    },
     /// M006: the result of a session launch.
     ///
     /// The launch returns the **concrete** identities it produced — the
@@ -2711,6 +2718,13 @@ pub enum CoreRequest {
         text: String,
         plan_mode: bool,
         human_shell_promotions: Vec<crate::human_shell::HumanShellPromotionStageDto>,
+    },
+    /// C002 (ADR-0060): ask the daemon to compact this session's context.
+    ///
+    /// The daemon performs the compaction and does not refuse. The request
+    /// names the session it compacts and nothing else.
+    SessionCompact {
+        session_id: String,
     },
     /// M007-I (work package B): one request against the daemon's promotion
     /// workflow.
@@ -5818,6 +5832,38 @@ mod tests {
             } if project_id == "project-1" && workspace_id == "workspace-1"
         ));
         assert_eq!(PROTOCOL_VERSION, 2);
+    }
+
+    /// C002 (ADR-0060): the compaction request and its answer round-trip
+    /// over the wire shape, and the wire shape is the one the daemon's
+    /// effect table builds.
+    #[test]
+    fn the_compaction_request_and_answer_round_trip() {
+        let request = CoreRequest::SessionCompact {
+            session_id: "session-1".to_string(),
+        };
+        let json = serde_json::to_value(&request).expect("the request serializes");
+        assert_eq!(json["type"], "session_compact");
+        assert_eq!(json["session_id"], "session-1");
+        let decoded: CoreRequest = serde_json::from_value(json).expect("the request deserializes");
+        assert!(matches!(
+            decoded,
+            CoreRequest::SessionCompact { session_id } if session_id == "session-1"
+        ));
+
+        let answer = CoreResponse::SessionCompact {
+            session_id: "session-1".to_string(),
+            turn_active: true,
+        };
+        let json = serde_json::to_value(&answer).expect("the answer serializes");
+        assert_eq!(json["type"], "session_compact");
+        assert_eq!(json["turn_active"], true);
+        let decoded: CoreResponse = serde_json::from_value(json).expect("the answer deserializes");
+        assert!(matches!(
+            decoded,
+            CoreResponse::SessionCompact { session_id, turn_active }
+                if session_id == "session-1" && turn_active
+        ));
     }
 
     #[test]

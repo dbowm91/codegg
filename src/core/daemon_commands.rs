@@ -260,6 +260,18 @@ pub fn build_inner_request(
             }
             json!({ "type": "session_export", "session_id": first })
         }
+        // C002 (ADR-0060): the compaction request acts on the session the
+        // **caller** selected, so the session travels in the scope and a
+        // call that names none is refused with `no_session`.
+        ("compact", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            json!({
+                "type": "session_compact",
+                "session_id": session_id,
+            })
+        }
         // M007-017: `status` is a frontend effect now, so its row is gone.
 
         // ── goals, tasks and schedules ──
@@ -1681,6 +1693,7 @@ mod tests {
         ("share", "", "session-1"),
         ("unshare", "", "session-1"),
         ("export", "", "session-1"),
+        ("compact", "", ""),
         ("tasks", "", "200"),
         ("task", "", "200"),
         ("schedules", "", ""),
@@ -1954,6 +1967,43 @@ mod tests {
         assert_eq!(
             value["turn_id"], "",
             "a session that runs no turn names no turn, and never the task id"
+        );
+    }
+
+    /// C002 (ADR-0060): the `compact` row asks the daemon to compact the
+    /// **caller's** session, and refuses a call that names none.
+    #[test]
+    fn the_compact_row_asks_for_the_callers_session() {
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session-1"),
+            argument: "",
+            authority: None,
+            turn_id: None,
+        };
+        let effect = build_inner_request("compact", "", &ctx)
+            .unwrap_or_else(|| panic!("compact must have a row"));
+        let CommandEffect::Ready(inner) = effect else {
+            panic!("compact must build a request");
+        };
+        assert!(
+            matches!(
+                inner.as_ref(),
+                CoreRequest::SessionCompact { session_id } if session_id == "session-1"
+            ),
+            "the row must name the session it compacts"
+        );
+
+        let without_session = CommandContext {
+            session_id: None,
+            ..ctx
+        };
+        let refused = build_inner_request("compact", "", &without_session)
+            .unwrap_or_else(|| panic!("compact must have a row"));
+        assert!(
+            matches!(refused, CommandEffect::NeedsSession),
+            "compact must refuse a call that names no session"
         );
     }
 

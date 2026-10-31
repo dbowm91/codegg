@@ -340,6 +340,7 @@ async fn m004_eight_compaction_trajectory() {
             cancellation: None,
             baseline: Some(&snapshot),
             proposed_checkpoint_id: Some(checkpoint_id.as_str()),
+            force: false,
         })
         .await;
         assert!(
@@ -701,6 +702,7 @@ async fn m004_transaction_ordering() {
         cancellation: None,
         baseline: Some(&snapshot),
         proposed_checkpoint_id: Some(checkpoint_id),
+        force: false,
     })
     .await;
     let candidate = result.continuation_candidate.expect("candidate");
@@ -931,6 +933,7 @@ async fn m004_cancellation_matrix() {
         cancellation: Some(&token),
         baseline: None,
         proposed_checkpoint_id: None,
+        force: false,
     })
     .await;
     assert_eq!(cancelled.status, CompactionStatus::Cancelled);
@@ -1181,6 +1184,7 @@ async fn m004_strategy_matrix() {
         cancellation: None,
         baseline: Some(&snapshot),
         proposed_checkpoint_id: Some("ckpt-strategy"),
+        force: false,
     })
     .await;
     assert!(matches!(
@@ -1242,6 +1246,7 @@ async fn m004_repeated_compaction_invariants() {
         cancellation: None,
         baseline: Some(&snapshot),
         proposed_checkpoint_id: Some("ckpt-repeat"),
+        force: false,
     })
     .await;
     assert!(

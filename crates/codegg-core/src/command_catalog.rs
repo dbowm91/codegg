@@ -236,7 +236,9 @@ impl std::error::Error for CatalogBoundError {}
 static THE_CATALOG: CommandCatalog = CommandCatalog {
     // M007-G (ADR-0057): version 3 reclassifies the three read-only plugin
     // forms as frontend effects, so a version 2 client is refused.
-    version: 3,
+    // C002 (ADR-0060): version 4 reclassifies `compact` as a daemon effect,
+    // so a version 3 client is refused.
+    version: 4,
     commands: &[
         CommandDescriptor {
             command_id: "project_init",
@@ -587,16 +589,14 @@ static THE_CATALOG: CommandCatalog = CommandCatalog {
             description: "Compact session",
             category: CommandCategory::Session,
             domain: CommandDomain::Session,
-            // M007-H (D1): compaction is the daemon's automatic policy and the
-            // TUI's own compact command owns the user-facing form. The
-            // daemon has no compaction request, so the form is a frontend
-            // effect and the declared action names it.
-            kind: CommandKind::FrontendEffect,
-            capability: None,
+            // C002 (ADR-0060): the daemon owns compaction, so the form is a
+            // daemon effect under `command.execute`.
+            kind: CommandKind::DaemonEffect,
+            capability: Some(CommandCapability::CommandExecute),
             forms: &[
                 CommandForm {
                     form: "",
-                    kind: CommandKind::FrontendEffect,
+                    kind: CommandKind::DaemonEffect,
                     argument_hint: "",
                     argument_required: false,
                 },
@@ -3348,9 +3348,9 @@ mod tests {
         }
     }
 
-    /// M007-G (ADR-0057): the catalog version moved with the reclassification.
+    /// The catalog version moved with each reclassification (M007-G, C002).
     #[test]
     fn the_catalog_version_moved_with_the_plugin_reclassification() {
-        assert_eq!(catalog_version(), 3);
+        assert_eq!(catalog_version(), 4);
     }
 }

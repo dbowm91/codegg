@@ -581,11 +581,11 @@ fifth reconciliations recorded. The full reconciliation is in
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 58 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 61 | `crates/codegg-core/src/bus/events.rs` |
-| `CoreRequest` variants | 283 (257 struct + 26 unit) | `crates/codegg-protocol/src/core.rs` |
-| `CoreResponse` variants | 189 (188 struct + 1 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreRequest` variants | 284 (258 struct + 26 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreResponse` variants | 190 (189 struct + 1 unit) | `crates/codegg-protocol/src/core.rs` |
 | `CoreEvent` variants | 99 | `crates/codegg-protocol/src/core.rs` |
 | `ProjectionEvent` variants | 54 | `crates/codegg-protocol/src/projection/event.rs` |
-| Authorized operations | 278 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) — 276 arms carrying 270 distinct operation names, covering all 275 `CoreRequest` variants; the `representative_requests()` list holds 259 of them |
+| Authorized operations | 279 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) — 279 arms carrying 279 distinct operation names, covering all 284 `CoreRequest` variants; the `representative_requests()` list holds 266 of them |
 | Identity newtypes | 19 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
 | Built-in slash commands | 169 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
@@ -596,9 +596,20 @@ fifth reconciliations recorded. The full reconciliation is in
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 359 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Integration test files | 360 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
 | Guard scripts (all) | 105 | `scripts/check_*` — every guard the repository ships |
 | CI guard scripts | 71 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs guards CI does not |
+
+### Count reconciliation — the daemon's compaction request (2026-10-31)
+
+C002 (ADR-0060) gave the daemon a compaction request, and four code-count rows moved, each re-measured in this tree with `python3 scripts/measure_overview_counts.py` rather than incremented:
+
+- *`CoreRequest` variants* is **284** (258 struct + 26 unit) — the new `SessionCompact` arm.
+- *`CoreResponse` variants* is **190** (189 struct + 1 unit) — the new `SessionCompact` answer.
+- *Authorized operations* is **279** — the new `session_compact` operation, authorized by the `agent.invoke` capability under the `via_session` scope. The descriptor holds **279** arms carrying **279** distinct operation names and covers every one of the **284** `CoreRequest` variants; the `representative_requests()` list holds **266** of them.
+- *Integration test files* is **360** — by **one**: the new `tests/core_daemon/c002_daemon_compaction.inc`. It sits inside the existing `core_daemon` family, so the root package's **test-target** count did **not** move.
+
+Every other row was confirmed unchanged by measurement.
 
 ### Count reconciliation — the daemon's plugin catalogue (2026-10-30)
 

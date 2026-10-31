@@ -701,28 +701,6 @@ pub(crate) async fn handle_send_notification(
     }
 }
 
-/// The `/compact` command's outcome.
-///
-/// The daemon owns compaction: it is automatic, and it fires only when the
-/// daemon's own threshold is crossed. This reports what compaction **is**
-/// and what this TUI has seen — never that it triggered anything. The count
-/// is the TUI's observed total, not a session's, so no session scope is claimed.
-pub(crate) fn handle_compact_session(app: &mut App) {
-    if app.session_state.session.is_none() {
-        app.messages_state.toasts.info(
-            "Compaction is automatic: the daemon compacts when its context threshold is \
-             crossed. No session is attached.",
-        );
-        return;
-    }
-    let count = app.session_state.compaction_count;
-    let message = format!(
-        "Compaction is automatic: the daemon compacts when its context threshold is crossed. \
-         Compactions so far: {count}."
-    );
-    app.messages_state.toasts.info(&message);
-}
-
 pub(crate) fn handle_open_diff_dialog(
     app: &mut App,
     old_content: Box<str>,

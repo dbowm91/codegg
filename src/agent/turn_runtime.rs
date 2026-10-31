@@ -85,6 +85,10 @@ impl LspAgentContextInput {
 pub struct TurnRunInput {
     /// Session identifier.
     pub session_id: String,
+    /// C002 (ADR-0060): the session's pending compaction request, shared
+    /// with the session's runtime so a request that arrives mid-turn
+    /// reaches this loop.
+    pub compaction_requested: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Raw agent DTOs from the protocol layer.
     pub agents_dto: Vec<codegg_protocol::dto::Agent>,
     /// Index into `agents_dto` for the active agent this turn.
@@ -395,6 +399,7 @@ impl TurnRuntime for DefaultTurnRuntime {
 
         let TurnRunInput {
             session_id,
+            compaction_requested,
             agents_dto,
             current_agent_idx,
             model,
@@ -1077,6 +1082,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             tool_registry,
             pool,
             session_id: session_id.clone(),
+            compaction_requested,
             turn_id: Some(turn_id.clone()),
             provider_registry: Arc::new(registry),
             subagent_pool,

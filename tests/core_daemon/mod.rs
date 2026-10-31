@@ -40,6 +40,9 @@ pub mod checkout_reservation_c004;
 #[path = "checkout_mediation_authority_c008.inc"]
 pub mod checkout_mediation_authority_c008;
 
+#[path = "c002_daemon_compaction.inc"]
+pub mod c002_daemon_compaction;
+
 #[path = "command_catalog_m007d.inc"]
 pub mod command_catalog_m007d;
 

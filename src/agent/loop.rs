@@ -497,6 +497,7 @@ impl AgentLoop {
             services: AgentLoopServices {
                 provider,
                 credential_observer: None,
+                compaction_requested: None,
                 transcript_capture: None,
                 permission_checker,
                 tool_registry,
@@ -1028,6 +1029,14 @@ impl AgentLoop {
         observer: crate::agent::provider_qualification::SharedProviderCredentialObserver,
     ) {
         self.services.credential_observer = Some(observer);
+    }
+
+    /// Bind a pending compaction request to this turn (C002, ADR-0060).
+    pub fn set_compaction_requested(
+        &mut self,
+        requested: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    ) {
+        self.services.compaction_requested = requested;
     }
 
     /// Bind this turn to a durable delegated run's recorded conversation.

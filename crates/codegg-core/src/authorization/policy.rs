@@ -356,6 +356,13 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::ViaSession,
             Some(Capability::SessionRead),
         ),
+        // C002 (ADR-0060): a compaction request acts on the session's own
+        // agent context — the same class as a steer.
+        R::SessionCompact { .. } => OperationDescriptor::new(
+            "session_compact",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
         R::SessionLoad { .. } => OperationDescriptor::new(
             "session_load",
             ScopeKind::ViaSession,
@@ -1758,6 +1765,9 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
             workspace_id: None,
         },
         R::SessionAttach {
+            session_id: String::new(),
+        },
+        R::SessionCompact {
             session_id: String::new(),
         },
         R::SessionLoad {

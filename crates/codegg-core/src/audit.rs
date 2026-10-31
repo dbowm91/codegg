@@ -138,13 +138,17 @@ pub enum AuditAction {
     /// M007: the operator disposition removed one of the daemon's own
     /// disposable scratch trees.
     ScratchReclaim,
+    /// C002 (ADR-0060): a caller asked the daemon to compact a session's
+    /// context. Distinct from `prompt_submit`: no prompt was submitted. The
+    /// audited event is the **request**.
+    SessionCompact,
     #[serde(other)]
     Unknown,
 }
 
 impl AuditAction {
     /// Every known action in canonical order.
-    pub const ALL: [&'static str; 30] = [
+    pub const ALL: [&'static str; 31] = [
         "authentication",
         "authorization_decision",
         "membership_change",
@@ -175,6 +179,7 @@ impl AuditAction {
         "checkout_writer_refusal",
         "process_denial",
         "scratch_reclaim",
+        "session_compact",
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -209,6 +214,7 @@ impl AuditAction {
             Self::CheckoutWriterRefusal => "checkout_writer_refusal",
             Self::ProcessDenial => "process_denial",
             Self::ScratchReclaim => "scratch_reclaim",
+            Self::SessionCompact => "session_compact",
             Self::Unknown => "unknown",
         }
     }
@@ -246,6 +252,7 @@ impl AuditAction {
             "checkout_writer_refusal" => Self::CheckoutWriterRefusal,
             "process_denial" => Self::ProcessDenial,
             "scratch_reclaim" => Self::ScratchReclaim,
+            "session_compact" => Self::SessionCompact,
             _ => {
                 return Err(AuditError::UnknownAction(value.to_owned()));
             }

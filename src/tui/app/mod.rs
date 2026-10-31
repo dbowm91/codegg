@@ -6044,7 +6044,7 @@ impl App {
                 self.new_session();
             }
             B::Compact => {
-                crate::tui::commands::tasks::handle_compact_session(self);
+                crate::tui::commands::compaction::handle_compact_session(self);
             }
             B::Connect => {
                 self.ui_state.command_mode = false;

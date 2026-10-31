@@ -2,6 +2,7 @@ pub(super) mod agent_editor;
 pub(super) mod agents;
 pub(super) mod change_review;
 pub(super) mod chat;
+pub(super) mod compaction;
 pub(super) mod control;
 pub(super) mod diagnostics;
 pub(super) mod diff;

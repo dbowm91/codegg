@@ -987,6 +987,9 @@ impl CoreDaemon {
                 });
                 let turn_input = crate::agent::turn_runtime::TurnRunInput {
                     session_id: session_id.clone(),
+                    // C002 (ADR-0060): the turn honours the session's
+                    // pending compaction request.
+                    compaction_requested: Some(runtime.compaction_requested.clone()),
                     agents_dto: agents,
                     current_agent_idx,
                     model,

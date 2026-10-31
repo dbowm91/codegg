@@ -14,7 +14,7 @@ impl CoreDaemon {
         authority: codegg_core::transport_auth::RequestAuthorityContext,
         authz_decision: codegg_core::authorization::AuthorizationDecision,
     ) -> Result<CoreResponse, AppError> {
-        let _ = (request_id, trusted_client_id, &authority, &authz_decision);
+        let _ = (request_id, trusted_client_id);
         match request {
             CoreRequest::SessionSelectionGet { session_id } => {
                 let Some(service) = self.selection_service.as_ref() else {
@@ -1195,6 +1195,33 @@ impl CoreDaemon {
                         message: e.to_string(),
                     }),
                 }
+            }
+            // C002 (ADR-0060): the daemon compacts on request and does not
+            // refuse. The only refusal here is factual: the session cannot
+            // be resolved, so there is nothing to compact.
+            CoreRequest::SessionCompact { session_id } => {
+                let runtime = match self.bind_runtime_for_session(&session_id).await {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "session_unavailable".to_string(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                runtime
+                    .compaction_requested
+                    .store(true, std::sync::atomic::Ordering::Release);
+                let turn_active = runtime.active_turn.read().await.is_some();
+                // C002 (ADR-0060): the request is the audited event, and the
+                // handler is where it is recorded, so the row appears whether
+                // the request arrived directly or through the catalog.
+                self.emit_session_compact_audit(&authority, &authz_decision, &session_id)
+                    .await;
+                Ok(CoreResponse::SessionCompact {
+                    session_id,
+                    turn_active,
+                })
             }
             _ => {
                 tracing::warn!("Unhandled CoreRequest variant");

@@ -72,10 +72,9 @@ use super::super::commands::shell::{
 #[allow(unused_imports)]
 use super::super::commands::tasks::{
     apply_notification_sent, apply_subagent_spawn_finished, apply_task_operation_finished,
-    apply_tasks_listed, apply_worktree_listed, handle_compact_session,
-    handle_file_diff_stats_ready, handle_open_diff_dialog, handle_spawn_subagent,
-    start_delete_task, start_list_tasks, start_send_notification, start_task_schedule,
-    start_worktree_list,
+    apply_tasks_listed, apply_worktree_listed, handle_file_diff_stats_ready,
+    handle_open_diff_dialog, handle_spawn_subagent, start_delete_task, start_list_tasks,
+    start_send_notification, start_task_schedule, start_worktree_list,
 };
 #[allow(unused_imports)]
 use super::super::commands::test::{apply_test_run_finished, start_test_run};
@@ -838,8 +837,14 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app, action, response, error,
             );
         }
-        TuiCommand::CompactSession => {
-            handle_compact_session(app);
+        TuiCommand::CompactSessionFinished {
+            session_id,
+            response,
+            error,
+        } => {
+            crate::tui::commands::compaction::apply_compact_session_finished(
+                app, session_id, response, error,
+            );
         }
         TuiCommand::OpenDiffDialog {
             old_content,
