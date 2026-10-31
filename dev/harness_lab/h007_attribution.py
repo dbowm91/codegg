@@ -15,6 +15,10 @@ DEFAULT_MANIFEST = Path(
     "plans/closure/harness-lab-self-improvement-resumption/evidence/s001-input-manifest.json"
 )
 EXPECTED_TRIALS = tuple(f"H007-{number}" for number in range(1, 8))
+S001_FIXTURE_ROOT = "dev/harness_lab/fixtures/build_provenance_catalog/fixture/"
+S001_FIXTURE_SNAPSHOT = Path(
+    "plans/closure/harness-lab-self-improvement-resumption/evidence/s001-frozen-fixture"
+)
 TASK_OUTCOMES = {"passed", "failed", "inconclusive"}
 HORIZON_OUTCOMES = {"qualified", "not_qualified", "not_observed"}
 HORIZON_REASONS = {
@@ -60,8 +64,14 @@ def _source_blob(repo_root: Path, revision: str, relative: str) -> bytes:
         stdin=subprocess.DEVNULL, capture_output=True, check=False, timeout=15,
     )
     if commit.returncode:
-        # Hosted CI uses a shallow checkout. The frozen inputs also live in the
-        # checked-out tree and are verified against their recorded digests below.
+        # Later live campaigns intentionally evolved the H007 starter fixture.
+        # A shallow checkout cannot read the pinned baseline commit, so use its
+        # committed snapshot rather than mistaking today's fixture for history.
+        if rel.startswith(S001_FIXTURE_ROOT):
+            snapshot_rel = (S001_FIXTURE_SNAPSHOT / rel.removeprefix(S001_FIXTURE_ROOT)).as_posix()
+            return _repo_bytes(repo_root, snapshot_rel)
+        # Other pinned inputs still live in the checked-out tree and are checked
+        # against their recorded digests by the caller.
         return _repo_bytes(repo_root, rel)
     result = subprocess.run(
         ["git", "cat-file", "blob", f"{revision}:{rel}"], cwd=repo_root,
