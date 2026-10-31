@@ -362,7 +362,7 @@
     {
       "run_index": 6,
       "run_kind": "diagnostic",
-      "status": "started",
+      "status": "preflight_refused_before_provider_admission",
       "started_at_utc": "2026-10-31T21:14:26Z",
       "controller_commit": "206e33b5979a1e600ceb9119c88b0623e24816a6",
       "source_binary_commit": "26ce84f91d90a1281fcd2f7b513487d4adc15de1",
@@ -380,7 +380,12 @@
       "fixture_manifest": "dev/harness_lab/fixtures/agent_autonomy_s016_job_diagnostic_v1/cases.jsonl",
       "fixture_manifest_sha256": "c4d9f3da1bb15ca7ef3360cd9f2003c3c825505644a573565183034545b41f68",
       "fixture_source_contract_corpus_verifier_unchanged": true,
-      "prompt_revision": "focused diagnostic: submit one test job, immediately poll the exact returned ID to terminal; no edits or fake-ID probe"
+      "prompt_revision": "focused diagnostic: submit one test job, immediately poll the exact returned ID to terminal; no edits or fake-ID probe",
+      "terminal_observed_at_utc": "2026-10-31T21:14:53Z",
+      "provider_requests": 0,
+      "counts_as_live_provider_run": false,
+      "preflight_error": "budget policy file /private/tmp/s016-budget06.json was absent; autonomy runner refused admission before provider or daemon startup",
+      "lane_created": false
     }
   ],
   "active_qualification_fixture": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v1/cases.jsonl",
