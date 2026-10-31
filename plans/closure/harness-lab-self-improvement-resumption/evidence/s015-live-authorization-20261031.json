@@ -111,7 +111,7 @@
     },
     {
       "run_index": 4,
-      "status": "started",
+      "status": "completed_diagnostic_unqualified",
       "started_at_utc": "2026-10-31T17:31:39Z",
       "git_commit": "e99d3c1fe",
       "binary_sha256": "7d06fc68058e1963a7a81dee54a581c9bce01063b17a90bd62940b9857a99f92",
@@ -124,11 +124,37 @@
       "free_disk_bytes_at_start": 14488952832,
       "lane_root": "/private/tmp/s015-live04",
       "receipt_path": "/private/tmp/s015-attempt04.json",
-      "usd_cost": "unknown_pending",
+      "usd_cost": 0.018788,
       "fixture_manifest": "dev/harness_lab/fixtures/agent_autonomy_h007/cases.jsonl",
       "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
       "workload": "build-provenance-catalog",
-      "corrective": "120-second provider decoded-event idle bound"
+      "corrective": "120-second provider decoded-event idle bound",
+      "terminal_observed_at_utc": "2026-10-31T17:41:58Z",
+      "elapsed_seconds": 614.723,
+      "provider_requests": 34,
+      "provider_request_cap_exhausted": false,
+      "free_disk_bytes_minimum": 14343712768,
+      "free_disk_bytes_at_end": 14400413696,
+      "disk_floor_triggered": false,
+      "terminal": "completed",
+      "task_outcome": "failed",
+      "horizon_outcome": "not_qualified",
+      "horizon_reason": "repair_cycles_insufficient",
+      "provider_idle_timeout_count": 0,
+      "corrective_confirmation": "confirmed_live_first_event_after_old_timeout_bound",
+      "receipt_sha256": "588e1192c5696aeb27836f850829269a4ed4eb467920d29a887c948c031bda66",
+      "diagnostic_log_path": "/private/tmp/s015-live04/case00/case/codegg_debug.log",
+      "diagnostic_log_sha256": "9877051732bc38f76b2c40d9e058db18cb9b86d6c80268bc1afef8388185941c",
+      "provider_admission_receipt_path": "/private/tmp/s015-live04/case00/artifacts/provider-request-admissions.jsonl",
+      "provider_admission_receipt_sha256": "384253fb2a1375db82fab09fe933f686b3b96941449806e1ae98a44c03e87c63",
+      "causal_trace_sha256": "1afb92a0a97f034f976e71d5623fb5013621e21b9b329343767306bacb23e277",
+      "provider_stream_observation": {
+        "provider_stream_first_decoded_event_ms": 101521,
+        "provider_stream_body_eof_ms": 110388,
+        "response_status": 200,
+        "idle_timeout_seconds": 120,
+        "idle_timeout_count_for_run": 0
+      }
     }
   ]
 }
