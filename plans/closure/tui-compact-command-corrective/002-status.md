@@ -217,7 +217,7 @@ route a frontend actually takes.
 | `python3 scripts/check_test_assertion_quality.py` | `check_test_assertion_quality: all checks pass` |
 | `python3 scripts/check_test_duplication.py` | `check_test_duplication: all checks pass` |
 | `python3 scripts/check_comment_budget.py` | `comment budget guard passed` (after the sanctioned `--bank`) |
-| `XDG_CACHE_HOME="$(mktemp -d)" cargo nextest run --workspace --locked --profile ci --no-fail-fast` | **16758 tests run, 16758 passed, 0 failed, 10 skipped** — the same sweep CI runs |
+| `XDG_CACHE_HOME="$(mktemp -d)" cargo nextest run --workspace --locked --profile ci --no-fail-fast` | **16758 tests run, 16758 passed, 0 failed, 10 skipped** — the same sweep CI runs. nextest also reported **1 leaky** test: a resource-leak report, not a failure |
 | `scripts/verify.sh quick` | see §4.4 |
 
 **One failure was observed and explained.** In the first full `core_daemon`
@@ -269,8 +269,25 @@ records 125 daemon-effect forms and 42 frontend-effect forms.
 
 ### 4.4 The hosted receipts
 
-See §4.4 of this record's final commit: the hosted CI receipts for the
-merge candidate are recorded there.
+The merge candidate is `b8739e7ce` — the branch head at the time of the
+merge. All three lanes ran on it and all three passed:
+
+| Lane | Run | Result |
+|---|---|---|
+| CI (the `verify` job: the guards, fmt, clippy, and the whole workspace sweep) | [41250188527](https://github.com/dbowm91/codegg/actions/runs/41250188527) | **success** — the workspace sweep reported **16819 tests run, 16819 passed, 11 skipped** |
+| Desktop E2E | [41250188535](https://github.com/dbowm91/codegg/actions/runs/41250188535) | **success** |
+| Linux M004 process and IPC qualification | [41250188656](https://github.com/dbowm91/codegg/actions/runs/41250188656) | **success** |
+
+The **Windows** process-launcher lane does not run on this branch: its
+`branches:` are `main` and `work/windows-native-sandbox-foundation`, and its
+paths are Windows-specific. It runs on the merge to `main`, and its result is
+recorded with the merge's own receipts.
+
+An earlier head, `6fe1f683a`, failed the CI lane at exactly one test —
+`tui::command_route::command_route_tests::a_frontend_effect_is_dispatched_from_the_declared_action`,
+which still asserted 43 frontend-effect forms after `compact` left the
+frontend effects. Every other test in that run passed. The count is now 42,
+and the hosted sweep above is green.
 
 ### 4.5 The daemon's automatic compaction still fires
 
