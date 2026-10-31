@@ -1,0 +1,110 @@
+{
+  "active_work_span_ms": 406974,
+  "binary_sha256": "50a9ae92b7aac46f9fd9855612caa7b8fe98a505979fe23fd4578e55262d3ada",
+  "campaign_id": "s016-deepseek-long-run-corrective-loop-20261031",
+  "case_duration_ms": 412503,
+  "compaction_diagnostics": {
+    "auto_compact_compatibility_strategy_observed": true,
+    "interpretation": "The live debug log records repeated compaction history-validation failures during the turn, followed by provider-request-cap refusal. ACP tool events remained paired and provider streams completed, so this is a distinct context-compaction path from stream or ACP observation.",
+    "last_provider_request_refused_at_cap": true,
+    "log_phrase": "Compaction result failed tool-call history validation",
+    "observed": true
+  },
+  "controller_commit": "2ff78d8f377a4577e05dc7824cb39eb4d667ef8e",
+  "disk": {
+    "floor_bytes": 10737418240,
+    "floor_triggered": false,
+    "free_bytes_at_end": 38791684096,
+    "free_bytes_at_start": 39783391232,
+    "minimum_free_bytes": 38632964096
+  },
+  "elapsed_seconds": 414.541,
+  "fixture_manifest": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v1/cases.jsonl",
+  "fixture_manifest_sha256": "3bb3bcb6f802fcf317f064101bf116ca3b96111fa8d26984753a157350bb1df2",
+  "frozen_fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "interpretation": "Run 5 used the versioned S016 prompt manifest and preserved the H007 verifier and thresholds. It ended after 6.88 minutes at exactly 60 provider requests, with no provider stream timeouts, ACP event gaps, or disk-floor event. The model used two read-only subagents, but attempted five jobs and did not poll a returned exact job ID; the sole job status call was the prescribed fake-ID probe and failed. It did not create the probe report or update continuation. Separately, the live log recorded repeated InvalidHistoryOrBudget compaction failures because the compaction result failed tool-call history validation, then the request cap refused the next provider call. This gives direct runtime evidence of a context compaction failure to diagnose. No qualification passed.",
+  "private_artifacts": {
+    "causal_trace_path": "/private/tmp/s016-live05/case00/private/causal-trace.jsonl",
+    "causal_trace_sha256": "03d14aec0faba016bfbe766f94d3995944bff84e570dcec89a5d9af7d2332ac6",
+    "diagnostic_log_path": "/private/tmp/s016-live05/case00/case/codegg_debug.log",
+    "diagnostic_log_sha256": "02f0de1c502678a6b7a747e93ba31a0cca2c44a02763f9f5c3a14b0918786da0",
+    "provider_admission_receipt_path": "/private/tmp/s016-live05/case00/artifacts/provider-request-admissions.jsonl",
+    "provider_admission_receipt_sha256": "6427f6242865ea98f792eef1f922b99c27d373c33a39fb7f6062a4c4b1bc28f3",
+    "receipt_path": "/private/tmp/s016-attempt05.json",
+    "receipt_sha256": "95d028b6ea477a0a22de166fd2971e013c2f3491b25380afa22fe36e6968876e"
+  },
+  "provider_requests": 60,
+  "provider_stream_lifecycle": {
+    "body_eof": 60,
+    "body_progress_log_events": null,
+    "body_streams_started": 60,
+    "decoded_event_idle_timeouts": 0,
+    "event_gaps": 0,
+    "raw_sse_retained": false,
+    "response_headers_received": 60,
+    "tool_started": 57,
+    "tool_terminal": 57,
+    "transport_requests_started": 60,
+    "unpaired_tool_events": 0
+  },
+  "request_cap": 60,
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "run_index": 5,
+  "run_kind": "long_qualification",
+  "run_status": "failed_provider_request_cap_and_compaction_history_validation",
+  "schema_version": 1,
+  "source_binary_commit": "26ce84f91d90a1281fcd2f7b513487d4adc15de1",
+  "started_at_utc": "2026-10-31T21:03:38Z",
+  "task": {
+    "active_work_span_ms": 407583,
+    "agent_terminal": "failed",
+    "continuation_confirmed": false,
+    "continuation_updated": false,
+    "exact_job_running_and_terminal": false,
+    "exact_job_status_polls": 0,
+    "fake_job_probe_failed": true,
+    "horizon_outcome": "not_qualified",
+    "horizon_reason": "measurement_incomplete",
+    "job_observations": [
+      {
+        "action": "submit",
+        "elapsed_ms": 94567
+      },
+      {
+        "action": "submit",
+        "elapsed_ms": 287165
+      },
+      {
+        "action": "submit",
+        "elapsed_ms": 315469
+      },
+      {
+        "action": "submit",
+        "elapsed_ms": 340916
+      },
+      {
+        "action": "submit",
+        "elapsed_ms": 378118
+      }
+    ],
+    "maximum_activity_gap_ms": 45505,
+    "minimum_active_duration_ms": 1800000,
+    "probe_report_created": false,
+    "productive_work_during_job": false,
+    "repair_cycles": 0,
+    "task_outcome": "inconclusive",
+    "tool_calls": 57,
+    "tool_counts": {
+      "bash": 27,
+      "edit": 3,
+      "job": 1,
+      "read": 8,
+      "task": 6,
+      "test": 6,
+      "write": 6
+    }
+  },
+  "terminal_observed_at_utc": "2026-10-31T21:13:28Z",
+  "usd_cost": 0.054859,
+  "wallclock_cap_seconds": 3600
+}
