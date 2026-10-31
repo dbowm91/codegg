@@ -236,7 +236,8 @@ class SubjectSpec:
             "TMP": str(self.root / "scratch"),
             "TEMP": str(self.root / "scratch"),
             "RUST_LOG": (
-                "error,codegg_providers::request_budget=info"
+                "error,codegg_providers::request_budget=info,"
+                "codegg_providers::opencode_go=debug,codegg::agent::provider_turn=debug"
                 if has_request_limit else "error"
             ),
         })
