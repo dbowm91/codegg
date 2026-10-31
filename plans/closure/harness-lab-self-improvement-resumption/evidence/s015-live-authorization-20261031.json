@@ -108,6 +108,27 @@
       "provider_admission_receipt_path": "/private/tmp/s015-live03/case00/artifacts/provider-request-admissions.jsonl",
       "provider_admission_receipt_sha256": "009412f1f1a05f016edab0037d3228a3ec843ebd24a674bbf5eacafca4c4297d",
       "test_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358"
+    },
+    {
+      "run_index": 4,
+      "status": "started",
+      "started_at_utc": "2026-10-31T17:31:39Z",
+      "git_commit": "e99d3c1fe",
+      "binary_sha256": "7d06fc68058e1963a7a81dee54a581c9bce01063b17a90bd62940b9857a99f92",
+      "binary_architecture": "arm64",
+      "provider": "opencode_go",
+      "model": "muse-spark-1.3-contributor",
+      "request_ceiling": 60,
+      "wall_clock_ceiling_seconds": 3600,
+      "minimum_free_disk_bytes": 10737418240,
+      "free_disk_bytes_at_start": 14488952832,
+      "lane_root": "/private/tmp/s015-live04",
+      "receipt_path": "/private/tmp/s015-attempt04.json",
+      "usd_cost": "unknown_pending",
+      "fixture_manifest": "dev/harness_lab/fixtures/agent_autonomy_h007/cases.jsonl",
+      "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+      "workload": "build-provenance-catalog",
+      "corrective": "120-second provider decoded-event idle bound"
     }
   ]
 }
