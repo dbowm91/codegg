@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement S015 — Provider Stream Stall Causal Diagnostics
 
-Status: **active**
+Status: **conditionally closed — provider stall correction live-confirmed; H007 sustained task not qualified**
 
 Repository baseline: `ac610d1cdc8b6b4bcde0262cff12eaa7da899c41` (S010–S014 branch; PR #223)
 
@@ -115,7 +115,7 @@ Intent: correct only the reproduced CodeGG timeout-policy mismatch and requalify
 
 Required changes: the 90-second decoded-event timeout fired even though the same HTTP response continued delivering body chunks. The longest independently observed first decoded event in the diagnostic cohort took approximately 83 seconds. Increase the finite event-idle bound to 120 seconds, add tests that a delayed event is accepted and a silent stream still times out, run focused verification, then use fresh runs within the original 20-run authorization to check whether the previous timeout signature is avoided. This does not claim that body chunks are valid SSE heartbeats or that a stream active beyond 120 seconds is healthy; further evidence would be needed before changing the timeout model more broadly.
 
-Acceptance evidence: independent reproduction and post-fix confirmation receipts are linked, or a precise non-CodeGG boundary is identified with an honest incomplete result.
+Acceptance evidence: run 2 independently reproduced the old-bound timeout while the same response continued to deliver bytes. Run 4 on the corrected binary received its first decoded event at 101.521 seconds and completed the response at 110.388 seconds with no idle timeout. Run 3 is retained as an inconclusive post-fix observation because it did not approach the old bound. The run 4 hidden verifier still failed its repair-cycle requirement; task/horizon qualification is separate and remains unachieved. See `plans/closure/harness-lab-self-improvement-resumption/evidence/s015-run-04-summary.json` and `plans/closure/harness-lab-self-improvement-resumption/015-status.md`.
 
 ## 8. Failure, cancellation, restart, and contention semantics
 
@@ -194,6 +194,20 @@ Stop and report if only changing provider/model/credential or widening transport
 - Failing-first reproduction, narrow diff, and post-fix confirmation if a CodeGG defect is corrected; otherwise an explicit non-CodeGG/inconclusive disposition.
 - Remaining live authorization, S013 historical status, and S014 status stated accurately.
 
-## 16. Handoff notes
+## 16. Recorded disposition
+
+The live correction is confirmed, and the campaign stopped after four of the
+authorized twenty runs. The remaining sixteen slots are intentionally unused
+under the early-stop rule. S015 is conditionally closed because the corrected
+binary and live behavior are confirmed, but the provider-turn unit tests were
+only typechecked in this disk-constrained ARM64 environment and were not
+executed after the correction. The earlier `scripts/verify.sh quick` passed
+before the timeout change; post-change `cargo check -p codegg --lib --tests
+--locked --target aarch64-apple-darwin` passed, and the exact corrected ARM64
+binary completed run 4. Run focused tests and exact-head hosted CI before
+promoting/merging the branch. This condition does not reopen the provider
+diagnosis or imply H007 task success.
+
+## 17. Handoff notes
 
 Build artifacts have consumed substantial disk during prior campaigns. Keep targets private and avoid parallel builds; remove only this campaign's private artifacts after preserving evidence. Current free disk at plan start: 58 GiB. Prior S013 authorization is exhausted and is not reused. The new user message explicitly authorizes up to 20 additional bounded Muse Spark 1.3 Contributor runs via the existing OpenCode Go adapter; no USD ceiling was stated and USD may be unavailable, so report it as unknown rather than inventing a charge estimate.
