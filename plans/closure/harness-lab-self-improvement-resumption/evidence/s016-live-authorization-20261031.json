@@ -12,5 +12,25 @@
   "usd_cost": "record provider-reported cost when available; otherwise unknown; no separate USD ceiling was stated",
   "qualification_fixture": "dev/harness_lab/fixtures/agent_autonomy_h007/cases.jsonl",
   "qualification_fixture_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
-  "runs": []
+  "runs": [
+    {
+      "run_index": 1,
+      "run_kind": "long_qualification",
+      "status": "started",
+      "started_at_utc": "2026-10-31T19:52:12Z",
+      "controller_commit": "a4b76c1a1",
+      "binary_sha256": "7d06fc68058e1963a7a81dee54a581c9bce01063b17a90bd62940b9857a99f92",
+      "binary_architecture": "arm64",
+      "sandbox_helper_sha256": "0f8db353fad3bf44ca9353aca6eab2162d933c4b8501748b05965bf7ff49f8b8",
+      "route": "opencode_go/deepseek-v4.1-flash",
+      "model": "deepseek-v4.1-flash",
+      "request_ceiling": 60,
+      "wall_clock_ceiling_seconds": 3600,
+      "minimum_free_disk_bytes": 10737418240,
+      "free_disk_bytes_at_start": 17312735232,
+      "lane_root": "/private/tmp/s016-live01",
+      "receipt_path": "/private/tmp/s016-attempt01.json",
+      "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358"
+    }
+  ]
 }
