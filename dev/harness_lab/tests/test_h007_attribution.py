@@ -29,6 +29,16 @@ class H007AttributionTests(unittest.TestCase):
                     b'{"frozen":true}\n',
                 )
 
+    def test_shallow_checkout_uses_the_pinned_h007_fixture_snapshot(self) -> None:
+        changed_fixture = ROOT / "dev/harness_lab/fixtures/build_provenance_catalog/fixture/README.md"
+        snapshot = ROOT / attribution.S001_FIXTURE_SNAPSHOT / "README.md"
+        self.assertNotEqual(changed_fixture.read_bytes(), snapshot.read_bytes())
+        with mock.patch.object(
+            attribution.subprocess, "run", return_value=mock.Mock(returncode=128),
+        ):
+            report = attribution.build_report(ROOT, attribution.DEFAULT_MANIFEST)
+        self.assertEqual(report["attempt_count"], 7)
+
     def test_frozen_report_is_deterministic_and_has_seven_unique_receipts(self) -> None:
         first = attribution.build_report(ROOT, attribution.DEFAULT_MANIFEST)
         second = attribution.build_report(ROOT, attribution.DEFAULT_MANIFEST)
