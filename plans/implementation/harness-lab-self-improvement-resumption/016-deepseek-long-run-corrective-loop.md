@@ -124,6 +124,12 @@ The model made 49 paired tool calls, confirmed continuation, and completed one r
 
 This run attributes the five-minute end to expected request-cap enforcement, not a stream, ACP, or job-projection failure. Run 19 uses a narrowly scoped diagnostic with a natural release workspace job and an explicit productive overlap step, on a 900-second total diagnostic wall clock (leaving time after H007 teardown reserve). It will determine whether a running state is observable when a real workspace build lasts long enough. No acceptance criteria or frozen H007 inputs change. Evidence is in `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-18-summary.json`.
 
+### Run 19 diagnostic (2026-10-31)
+
+Run 19 used the v7 diagnostic to submit `cargo test --offline --locked --release --workspace` once. It consumed 6 of 15 permitted requests, cost $0.004964, and completed in 17.529 seconds. The exact returned job ID was polled twice and its output requested; the job failed before any useful run, and no `running` state or productive overlap occurred. All four ACP tool starts had terminals, with no causal gaps, provider idle timeout, or disk-floor event. Free disk remained about 31.6 GiB. The unchanged harness verifier was invoked automatically; its exit code was 1 with zero tests reported, and its contents were not inspected.
+
+Inspection of the safe job receipt showed the diagnostic prompt omitted both `workdir` and `execution_mode`. The test tool defaults to the session root and foreground mode (`src/tool/test.rs` documents that background mode returns a stable JobHandle); this submission ran from the case root and failed in 0.08 seconds. Run 19 therefore diagnoses a prompt-side setup mistake, not an ACP/job notification fault. The final long prompt v6 now explicitly sends every test through `workdir: "fixture"` and `execution_mode: "background"`, uses exact IDs, and reserves productive edits for observed `running` intervals. The frozen fixture, task, verifier, and acceptance criteria remain unchanged. Run 20 is the final authorized run under the 20-run ledger cap. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-19-summary.json`.
+
 ## 6. Required evidence and verification
 
 - Append-only run authorization ledger; each started run records start/terminal time, route/model, source and binary digests, requests, cap status, USD or unknown, disk start/minimum/end, and outcome.
