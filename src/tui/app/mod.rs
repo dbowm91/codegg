@@ -13,6 +13,8 @@
 #[cfg(test)]
 mod command_argument_tests;
 mod commands;
+#[cfg(test)]
+mod compact_command_tests;
 mod input;
 mod modal;
 #[path = "plugin_ui.rs"]
@@ -6042,9 +6044,7 @@ impl App {
                 self.new_session();
             }
             B::Compact => {
-                self.messages_state
-                    .toasts
-                    .info("Compaction triggered - reducing context");
+                crate::tui::commands::tasks::handle_compact_session(self);
             }
             B::Connect => {
                 self.ui_state.command_mode = false;

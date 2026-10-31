@@ -1,6 +1,6 @@
 # TUI Compact Command Corrective — Subsystem Roadmap
 
-Status: proposed (opened 2026-10-25 by the owner's direction)
+Status: closed (opened 2026-10-25 by the owner's direction; C001 closed 2026-10-31)
 
 ## 1. What this line is
 
@@ -54,12 +54,31 @@ evidence, and is not decided by the implementer.
 
 | Milestone | Scope | Dependency | Status |
 |---|---|---|---|
-| C001 | `/compact` reports only what happened; the command's outcome is truthful, and the manual-compaction question is recorded with its evidence | none — the defect is self-contained | **ready for handoff** — `plans/implementation/tui-compact-command-corrective/001-compact-command-has-a-sender.md` |
+| C001 | `/compact` reports only what happened; the command's outcome is truthful, and the manual-compaction question is recorded with its evidence | none — the defect is self-contained | **closed 2026-10-31** — plan `plans/implementation/tui-compact-command-corrective/001-compact-command-has-a-sender.md`, closure `plans/closure/tui-compact-command-corrective/001-status.md`. Shape B was taken: the command reports what compaction is and what this TUI has observed, and sends no request. The manual-compaction question is **recorded, not decided** — the proposed `CoreRequest` variant and the daemon's right to refuse are in the closure's §10.1 |
 
 ## 4. Closure boundary
 
 This line's closure evidence is C001's closure record at
 `plans/closure/tui-compact-command-corrective/001-status.md`.
+
+**Discharged 2026-10-31.** C001 closed with **Shape B**: the command's
+outcome is truthful on every path, and both of its surfaces reach one
+handler. The **manual-compaction question is the owner's** and stays open —
+the proposed `CoreRequest` variant, its shape, and the daemon's right to
+refuse are reported in the closure's §10.1.
+
+The command had **two** surfaces, and one of them was also wrong: the
+palette's builtin arm toasted "Compaction triggered" and the catalog's
+declared action promised "Compaction will occur at end of current turn",
+which the daemon does not guarantee (`compact_if_needed` returns without
+compacting unless the threshold is crossed,
+`src/agent/context_runtime.rs:896`). Both now reach
+`src/tui/commands/tasks.rs:710`.
+
+The desktop is the line's **third** surface: it does not carry the
+`compact_session` action, so `/compact` there reports that it does not
+implement it. That is honest, and it is recorded as a follow-up rather than
+changed here.
 
 ## 5. What this line must not do
 
