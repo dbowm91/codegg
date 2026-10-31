@@ -1,7 +1,8 @@
-import type { GitBranchListView, GitDiffView, GitStatusView } from '../bridge-types';
+import type { GitBranchListView, GitStatusView } from '../bridge-types';
+import type { DiffAnswerView } from '../commands/diffAnswer';
 import { formatConsistency } from './format';
 
-// The project's git facts.
+// The project's git facts, and the daemon's diff answer.
 //
 // The TUI draws these in its "Git" sidebar section: the branch, the
 // working tree's state, and the sync counts
@@ -10,16 +11,21 @@ import { formatConsistency } from './format';
 // read, because the daemon's read is scoped to a single operation
 // (`crates/codegg-protocol/src/git.rs:28-38`).
 //
-// A `null` fact set means the host has not read it yet — not that the
-// repository has nothing to report. The panel says so instead of
-// drawing an empty list, because "nothing changed" and "not known yet"
-// are different claims.
+// The diff is not a fact set: it is the daemon's own answer to the
+// `diff` command (ADR-0058 D1), and it carries the bytes of both
+// sides. The desktop renders that answer rather than a summary of it,
+// because a summary of a diff is not a diff.
+//
+// A `null` fact set — or a `null` diff — means the host has not read it
+// yet — not that the repository has nothing to report. The panel says so
+// instead of drawing an empty list, because "nothing changed" and "not
+// known yet" are different claims.
 
 export interface GitPanelProps {
   /** The repository's status facts, or null when not read yet. */
   status: GitStatusView | null;
-  /** The working tree's diff summary, or null when not read yet. */
-  diff: GitDiffView | null;
+  /** The daemon's diff answer, or null when not read yet. */
+  diff: DiffAnswerView | null;
   /** The local branches, or null when not read yet. */
   branches: GitBranchListView | null;
   /** Whether a read is in flight. */
@@ -40,10 +46,7 @@ export function GitPanel({
 }: GitPanelProps) {
   return (
     <section className="surface" data-testid="git-surface">
-      <h3>
-        Git
-        {diff && <small data-testid="git-count">{diff.filesChanged} changed file(s)</small>}
-      </h3>
+      <h3>Git</h3>
       {onRefresh && (
         <button data-testid="git-refresh-button" disabled={busy} onClick={onRefresh}>
           {busy ? 'Refreshing…' : 'Refresh git'}
@@ -83,36 +86,35 @@ export function GitPanel({
       <h4>Changes</h4>
       {diff ? (
         <>
-          <p className="fact-row" data-testid="git-diff-counts">
-            {diff.filesChanged} changed file(s), +{diff.insertions} -{diff.deletions}
-            <span data-testid="git-diff-consistency" data-consistency={diff.consistency}>
-              {formatConsistency(diff.consistency)}
-            </span>
+          <p className="fact-row" data-testid="git-diff-title">
+            <strong data-testid="git-diff-heading">{diff.title}</strong>
           </p>
-          {diff.files.length ? (
-            <ul data-testid="git-file-list">
-              {diff.files.map((file) => (
-                <li
-                  key={file.path}
-                  data-testid="git-file-item"
-                  data-change-kind={file.kind}
-                >
-                  <span data-testid="git-file-path">{file.path}</span>
-                  <span data-testid="git-file-kind">{file.kind}</span>
-                </li>
-              ))}
-            </ul>
+          {diff.path === null ? (
+            // The whole-tree branch: the daemon answered with one unified
+            // diff and there is no separate `HEAD` side to draw.
+            diff.newContent ? (
+              <pre data-testid="git-diff-body">{diff.newContent}</pre>
+            ) : (
+              <p className="muted" data-testid="git-diff-empty">
+                No changes.
+              </p>
+            )
           ) : (
-            <p className="muted" data-testid="git-diff-empty">
-              No changed files.
-            </p>
-          )}
-          {diff.truncated && (
-            // The daemon capped the list: the panel says so rather than
-            // implying the list is complete.
-            <p className="muted" data-testid="git-diff-truncated">
-              Showing {diff.files.length} of {diff.totalFiles} changed file(s).
-            </p>
+            <>
+              <p className="fact-row" data-testid="git-diff-path">
+                {diff.path}
+              </p>
+              <h5>At HEAD</h5>
+              {diff.oldContent ? (
+                <pre data-testid="git-diff-old">{diff.oldContent}</pre>
+              ) : (
+                <p className="muted" data-testid="git-diff-old-empty">
+                  No file at HEAD.
+                </p>
+              )}
+              <h5>Working tree</h5>
+              <pre data-testid="git-diff-new">{diff.newContent}</pre>
+            </>
           )}
         </>
       ) : (

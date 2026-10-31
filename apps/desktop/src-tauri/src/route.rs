@@ -31,7 +31,12 @@ use codegg_protocol::{
         GitChangeKindDto, GitReadConsistencyDto, GitReadOperationDto, GitReadRequestDto,
         GitReadResultDto,
     },
-    skill::{SkillCatalogueRequestDto, SkillSourceDto},
+    human_shell::HumanShellPromotionStageDto,
+    skill::{
+        SkillCatalogueRequestDto, SkillPromotionActionDto, SkillPromotionRequestDto,
+        SkillPromotionResultDto, SkillProposalDetailDto, SkillProposalSummaryDto, SkillSourceDto,
+        SkillTargetScopeDto,
+    },
 };
 
 use super::bridge::{
@@ -39,7 +44,8 @@ use super::bridge::{
     CommandReportView, GitBranchListView, GitBranchView, GitChangeKind, GitChangedFileView,
     GitConsistency, GitDiffView, GitReadKind, GitReadOperation, GitReadView, GitStatusView,
     ProjectDetailView, RouteTokenView, SessionListView, SessionSummaryView, SessionView,
-    SkillCatalogueView, SkillSource, SkillSummaryView, WorkspaceView,
+    SkillCatalogueView, SkillPromotionView, SkillProposalDetailView, SkillProposalDiagnosticView,
+    SkillProposalSummaryView, SkillSource, SkillSummaryView, WorkspaceView,
 };
 use super::projection::ProjectionOwner;
 use super::HostState;
@@ -68,6 +74,12 @@ pub(crate) struct RouteState {
     pub(crate) stopped: Option<StoppedDriver>,
     pub(crate) watcher: Option<tokio::task::JoinHandle<()>>,
     pub(crate) prompt: Option<codegg_client::PromptIntent>,
+    /// The human-shell evidence the in-flight prompt intent carries.
+    ///
+    /// The intent's own identity is its text, so an ask needs its evidence
+    /// beside it: two asks can carry the same question and name different
+    /// runs, and only the evidence tells them apart.
+    pub(crate) prompt_human_shell_promotions: Option<Vec<HumanShellPromotionStageDto>>,
     pub(crate) controller: Option<super::bridge::ControllerSummaryView>,
     pub(crate) responding: HashSet<String>,
 }
@@ -770,21 +782,87 @@ impl HostState {
         Ok(view)
     }
 
-    /// Snapshot the current project/workspace selection, requiring a
+    /// M007-I (plan 022, work package F): one request against the daemon's
+    /// skill-promotion workflow.
+    ///
+    /// The daemon owns the durable promotion record, so the desktop asks and
+    /// renders — it holds no promotion state of its own. The route supplies
+    /// the workspace (the record's namespace) and the session (the workflow's
+    /// scope); the renderer supplies only the action and the identifiers that
+    /// action names. The daemon resolves the habit candidate and the
+    /// publication target itself.
+    pub(crate) async fn route_skill_promotion(
+        &self,
+        action: &str,
+        habit_id: Option<String>,
+        proposal_id: Option<String>,
+        target_scope: Option<&str>,
+        expected_generation: u64,
+    ) -> Result<SkillPromotionView, String> {
+        let action = skill_promotion_action(action)?;
+        let target_scope = match target_scope {
+            Some(scope) => Some(skill_target_scope(scope)?),
+            None => None,
+        };
+        let (_project_id, workspace_id, session_id, connection_generation) =
+            self.route_scope(expected_generation, true).await?;
+        let session_id = session_id.ok_or_else(|| {
+            "no session selected for the current route; a promotion acts in a session".to_string()
+        })?;
+        let (client, _) = self.route_request().await?;
+        let response = client
+            .request(RequestEnvelope {
+                protocol_version: PROTOCOL_VERSION,
+                request_id: uuid::Uuid::new_v4().to_string(),
+                payload: CoreRequest::SkillPromotion {
+                    request: SkillPromotionRequestDto {
+                        workspace_id,
+                        session_id,
+                        action,
+                        habit_id,
+                        proposal_id,
+                        target_scope,
+                    },
+                },
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        let CoreResponse::SkillPromotion { result } = response else {
+            return Err(unexpected_daemon_response(&response));
+        };
+        let view = skill_promotion_view(action, result);
+        {
+            let route = self.route.lock().await;
+            if self.current_generation() != connection_generation
+                || route.connection_generation != connection_generation
+                || route.route_generation != expected_generation
+            {
+                return Err("stale route; skill promotion discarded".into());
+            }
+        }
+        Ok(view)
+    }
+
+    /// Snapshot the current project/workspace/session selection, requiring a
     /// live connection, a matching route generation, and (optionally) a
     /// selected workspace.
-    /// The route's selected project and workspace, fenced on the expected
+    ///
+    /// The route's project, workspace and session, fenced on the expected
     /// route generation.
     ///
     /// This is the **one** implementation of the rule. The editor's host
     /// commands resolve their scope through it too: a second implementation
     /// of "which project and workspace is this call about" is a second
     /// rule, and two rules drift.
-    pub(crate) async fn route_selection(
+    /// [`Self::route_selection`] is the projection of it that the callers
+    /// which do not need the session read; a second implementation of "which
+    /// project, workspace and session is this call about" is a second rule,
+    /// and two rules drift.
+    pub(crate) async fn route_scope(
         &self,
         expected_generation: u64,
         require_workspace: bool,
-    ) -> Result<(String, String, u64), String> {
+    ) -> Result<(String, String, Option<String>, u64), String> {
         let route = self.route.lock().await;
         if route.connection_generation != self.current_generation() || route.project_id.is_none() {
             return Err("no current route; select a project first".into());
@@ -793,13 +871,38 @@ impl HostState {
             return Err("stale route; refresh before continuing".into());
         }
         let project_id = route.project_id.clone().unwrap_or_default();
+        let session_id = route.session_id.clone();
         let Some(workspace_id) = route.workspace_id.clone() else {
             if require_workspace {
                 return Err("no workspace selected for the current route".into());
             }
-            return Ok((project_id, String::new(), route.connection_generation));
+            return Ok((
+                project_id,
+                String::new(),
+                session_id,
+                route.connection_generation,
+            ));
         };
-        Ok((project_id, workspace_id, route.connection_generation))
+        Ok((
+            project_id,
+            workspace_id,
+            session_id,
+            route.connection_generation,
+        ))
+    }
+
+    /// The route's selected project and workspace, fenced on the expected
+    /// route generation. The projection of [`Self::route_scope`] for the
+    /// callers which do not need the session.
+    pub(crate) async fn route_selection(
+        &self,
+        expected_generation: u64,
+        require_workspace: bool,
+    ) -> Result<(String, String, u64), String> {
+        let (project_id, workspace_id, _session_id, connection_generation) = self
+            .route_scope(expected_generation, require_workspace)
+            .await?;
+        Ok((project_id, workspace_id, connection_generation))
     }
 }
 
@@ -822,15 +925,122 @@ fn command_outcome_name(status: codegg_protocol::core::CommandOutcomeStatusDto) 
     }
 }
 
+/// The promotion action the renderer named.
+///
+/// The action is a closed set: the renderer names which step of the daemon's
+/// workflow it wants, and the daemon performs the durable effect. An unknown
+/// name is refused here rather than being passed through as a guess.
+fn skill_promotion_action(action: &str) -> Result<SkillPromotionActionDto, String> {
+    match action {
+        "begin" => Ok(SkillPromotionActionDto::Begin),
+        "list" => Ok(SkillPromotionActionDto::List),
+        "get" => Ok(SkillPromotionActionDto::Get),
+        "preview" => Ok(SkillPromotionActionDto::Preview),
+        "reject" => Ok(SkillPromotionActionDto::Reject),
+        "publish" => Ok(SkillPromotionActionDto::Publish),
+        other => Err(format!("unknown skill promotion action: {other}")),
+    }
+}
+
+/// The scope a publication targets.
+///
+/// The scope is a closed enum, never a filesystem path: the daemon resolves
+/// the target root itself.
+fn skill_target_scope(scope: &str) -> Result<SkillTargetScopeDto, String> {
+    match scope {
+        "project" => Ok(SkillTargetScopeDto::Project),
+        "global" => Ok(SkillTargetScopeDto::Global),
+        other => Err(format!("unknown skill promotion scope: {other}")),
+    }
+}
+
+/// The daemon's promotion answer, as the renderer sees it.
+fn skill_promotion_view(
+    action: SkillPromotionActionDto,
+    result: SkillPromotionResultDto,
+) -> SkillPromotionView {
+    SkillPromotionView {
+        action: skill_promotion_action_name(action).to_string(),
+        changed: result.changed,
+        request_id: result.request_id,
+        draft_prompt: result.draft_prompt,
+        proposals: result.proposals.map(|proposals| {
+            proposals
+                .into_iter()
+                .map(skill_proposal_summary_view)
+                .collect()
+        }),
+        detail: result.detail.map(skill_proposal_detail_view),
+        published_relative_path: result.published_relative_path,
+    }
+}
+
+/// The wire name of a promotion action.
+fn skill_promotion_action_name(action: SkillPromotionActionDto) -> &'static str {
+    match action {
+        SkillPromotionActionDto::Begin => "begin",
+        SkillPromotionActionDto::List => "list",
+        SkillPromotionActionDto::Get => "get",
+        SkillPromotionActionDto::Preview => "preview",
+        SkillPromotionActionDto::Reject => "reject",
+        SkillPromotionActionDto::Publish => "publish",
+    }
+}
+
+/// One proposal, as the renderer sees it.
+fn skill_proposal_summary_view(proposal: SkillProposalSummaryDto) -> SkillProposalSummaryView {
+    SkillProposalSummaryView {
+        proposal_id: proposal.proposal_id,
+        name: proposal.name,
+        description: proposal.description,
+        status: proposal.status,
+        revision: proposal.revision,
+    }
+}
+
+/// One proposal in full, as the renderer sees it.
+fn skill_proposal_detail_view(detail: SkillProposalDetailDto) -> SkillProposalDetailView {
+    SkillProposalDetailView {
+        proposal_id: detail.proposal_id,
+        name: detail.name,
+        status: detail.status,
+        revision: detail.revision,
+        target_scope: skill_target_scope_name(detail.target_scope).to_string(),
+        skill_markdown: detail.skill_markdown,
+        diagnostics: detail
+            .diagnostics
+            .into_iter()
+            .map(|diagnostic| SkillProposalDiagnosticView {
+                severity: diagnostic.severity,
+                reason: diagnostic.reason,
+                location: diagnostic.location,
+            })
+            .collect(),
+        published_relative_path: detail.published_relative_path,
+    }
+}
+
+/// The wire name of a publication scope.
+fn skill_target_scope_name(scope: SkillTargetScopeDto) -> &'static str {
+    match scope {
+        SkillTargetScopeDto::Project => "project",
+        SkillTargetScopeDto::Global => "global",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codegg_protocol::core::TurnAdmissionReceiptDto;
     use codegg_protocol::dto::{ProjectDetailsDto, ProjectSummaryDto, ProjectWorkspaceSummaryDto};
     use codegg_protocol::frames::{CoreFrame, ServerCapabilities, ServerHello};
     use codegg_protocol::git::{
         GitBranchListDto, GitChangedFileDto, GitDiffSummaryDto, GitRepoStatusDto,
     };
-    use codegg_protocol::skill::{SkillCatalogueDto, SkillSummaryDto};
+    use codegg_protocol::skill::{
+        SkillCatalogueDto, SkillPromotionActionDto, SkillPromotionResultDto,
+        SkillProposalSummaryDto, SkillSummaryDto,
+    };
 
     /// The consistency class the daemon reports for a read served from one
     /// materialized generation. The route carries it into the view, so a
@@ -1498,13 +1708,107 @@ mod tests {
             .await
             .expect("open");
         let view = state
-            .route_prompt_submit("hello desktop".into(), false, token.route_generation)
+            .route_prompt_submit(
+                "hello desktop".into(),
+                false,
+                Vec::new(),
+                token.route_generation,
+            )
             .await
             .expect("submit");
         assert!(!view.intent_id.is_empty());
         assert_eq!(view.route_token.session_id.as_deref(), Some("s-1"));
         // Terminal accept clears the stored intent.
         assert!(state.route.lock().await.prompt.is_none());
+        server.await.expect("server");
+    }
+
+    /// M007-I (plan 022, work package F): the ask is **one** request.
+    ///
+    /// The desktop names the run and the question; the daemon receives them
+    /// in the atomic ask request and reads the run's bytes itself. The
+    /// accepted ask leaves no in-flight intent and no staged evidence of its
+    /// own behind.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prompt_ask_submits_the_daemons_atomic_ask_request() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(
+                    id,
+                    detail_response("proj-a", vec![("ws-1", "One", Some("/root-a"))], 0),
+                )
+                .await;
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::Session {
+                        session: session_dto("s-1", "proj-a", "ws-1", "First"),
+                    },
+                )
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            let CoreRequest::SessionPromptSubmitWithHumanShellPromotions {
+                session_id,
+                text,
+                plan_mode,
+                human_shell_promotions,
+            } = payload
+            else {
+                panic!("expected the atomic ask request, got {payload:?}");
+            };
+            assert_eq!(session_id, "s-1");
+            assert_eq!(text, "why did it fail?");
+            assert!(!plan_mode);
+            assert_eq!(human_shell_promotions.len(), 1);
+            assert_eq!(human_shell_promotions[0].promotion_id, "promotion-1");
+            assert_eq!(human_shell_promotions[0].source_id, "run-1");
+            assert_eq!(human_shell_promotions[0].question, "why did it fail?");
+            daemon
+                .respond(
+                    id.clone(),
+                    CoreResponse::TurnAdmissionReceipt {
+                        receipt: TurnAdmissionReceiptDto {
+                            submission_id: id,
+                            session_id: "s-1".into(),
+                            turn_id: "turn-1".into(),
+                            status: "active".into(),
+                            accepted_at_ms: 1,
+                            updated_at_ms: 1,
+                        },
+                    },
+                )
+                .await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let token = select_workspace_only(&state).await;
+        state
+            .route_session_open("s-1".into(), token.route_generation)
+            .await
+            .expect("open");
+        let view = state
+            .route_prompt_submit(
+                "why did it fail?".into(),
+                false,
+                vec![HumanShellPromotionStageDto {
+                    promotion_id: "promotion-1".into(),
+                    source_id: "run-1".into(),
+                    question: "why did it fail?".into(),
+                }],
+                token.route_generation,
+            )
+            .await
+            .expect("ask");
+        assert!(!view.intent_id.is_empty());
+        let route = state.route.lock().await;
+        assert!(route.prompt.is_none());
+        assert!(route.prompt_human_shell_promotions.is_none());
+        drop(route);
         server.await.expect("server");
     }
 
@@ -1550,12 +1854,12 @@ mod tests {
         let generation = token.route_generation;
         let first = tokio::spawn(async move {
             first_state
-                .route_prompt_submit("same text".into(), false, generation)
+                .route_prompt_submit("same text".into(), false, Vec::new(), generation)
                 .await
         });
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let duplicate = state
-            .route_prompt_submit("same text".into(), false, generation)
+            .route_prompt_submit("same text".into(), false, Vec::new(), generation)
             .await
             .expect_err("concurrent duplicate coalesces");
         assert!(
@@ -1612,7 +1916,12 @@ mod tests {
         let state = routed_host(&endpoint).await;
         let token = select_workspace_only(&state).await;
         let view = state
-            .route_prompt_submit("fresh session prompt".into(), true, token.route_generation)
+            .route_prompt_submit(
+                "fresh session prompt".into(),
+                true,
+                Vec::new(),
+                token.route_generation,
+            )
             .await
             .expect("create-then-submit");
         assert_eq!(view.route_token.session_id.as_deref(), Some("s-new"));
@@ -1656,7 +1965,7 @@ mod tests {
         let state = routed_host(&endpoint).await;
         let token = select_workspace_only(&state).await;
         let error = state
-            .route_prompt_submit("doomed".into(), false, token.route_generation)
+            .route_prompt_submit("doomed".into(), false, Vec::new(), token.route_generation)
             .await
             .expect_err("create failure surfaces");
         assert!(
@@ -1724,7 +2033,7 @@ mod tests {
         let generation = token.route_generation;
         let submit = tokio::spawn(async move {
             submitting
-                .route_prompt_submit("late".into(), false, generation)
+                .route_prompt_submit("late".into(), false, Vec::new(), generation)
                 .await
         });
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -2156,7 +2465,7 @@ mod tests {
         let generation = token.route_generation;
         let submit = tokio::spawn(async move {
             submitting
-                .route_prompt_submit("gone".into(), false, generation)
+                .route_prompt_submit("gone".into(), false, Vec::new(), generation)
                 .await
         });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -2555,5 +2864,137 @@ mod tests {
             "unexpected error: {error}"
         );
         server.await.expect("server");
+    }
+
+    /// M007-I (plan 022, work package F): the promotion request carries the
+    /// route's workspace and session, and only the action the renderer named.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn skill_promotion_carries_the_routes_workspace_and_session() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(
+                    id,
+                    detail_response("proj-a", vec![("ws-1", "One", None)], 0),
+                )
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::SessionAttach { .. }));
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::Session {
+                        session: session_dto("s-1", "proj-a", "ws-1", "hello"),
+                    },
+                )
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            let CoreRequest::SkillPromotion { request } = payload else {
+                panic!("expected a skill promotion request, got {payload:?}");
+            };
+            // The record's namespace and the workflow's session come from the
+            // route; the renderer named only the action.
+            assert_eq!(request.workspace_id, "ws-1");
+            assert_eq!(request.session_id, "s-1");
+            assert_eq!(request.action, SkillPromotionActionDto::List);
+            assert_eq!(request.habit_id, None);
+            assert_eq!(request.proposal_id, None);
+            assert_eq!(request.target_scope, None);
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::SkillPromotion {
+                        result: SkillPromotionResultDto {
+                            request_id: None,
+                            draft_prompt: None,
+                            proposals: Some(vec![SkillProposalSummaryDto {
+                                proposal_id: "proposal-1".into(),
+                                name: "testing-ci".into(),
+                                description: "Select focused verification.".into(),
+                                status: "awaiting_review".into(),
+                                revision: 1,
+                                content_digest: "sha256:abc".into(),
+                            }]),
+                            published_relative_path: None,
+                            detail: None,
+                            changed: false,
+                        },
+                    },
+                )
+                .await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let detail = state
+            .route_project_detail("proj-a".into())
+            .await
+            .expect("detail");
+        let token = state
+            .route_workspace_select("ws-1".into(), detail.route_token.route_generation)
+            .await
+            .expect("select");
+        state
+            .route_session_open("s-1".into(), token.route_generation)
+            .await
+            .expect("open session");
+        let view = state
+            .route_skill_promotion("list", None, None, None, token.route_generation)
+            .await
+            .expect("promotion");
+        assert_eq!(view.action, "list");
+        let proposals = view.proposals.expect("the daemon listed its proposals");
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(proposals[0].name, "testing-ci");
+        assert_eq!(proposals[0].status, "awaiting_review");
+        server.await.expect("server");
+    }
+
+    /// The promotion acts in a session, so a route without one is refused
+    /// before the daemon is asked.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn skill_promotion_without_a_session_fails_closed() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(
+                    id,
+                    detail_response("proj-a", vec![("ws-1", "One", None)], 0),
+                )
+                .await;
+            // No further request: the host refuses before it asks.
+        });
+
+        let state = routed_host(&endpoint).await;
+        let detail = state
+            .route_project_detail("proj-a".into())
+            .await
+            .expect("detail");
+        let token = state
+            .route_workspace_select("ws-1".into(), detail.route_token.route_generation)
+            .await
+            .expect("select");
+        let error = state
+            .route_skill_promotion("list", None, None, None, token.route_generation)
+            .await
+            .expect_err("a promotion without a session must not reach the daemon");
+        assert!(error.contains("session"), "unexpected error: {error}");
+        server.await.expect("server");
+    }
+
+    /// An unknown action is refused by the host rather than being passed
+    /// through as a guess.
+    #[test]
+    fn skill_promotion_action_is_a_closed_set() {
+        assert!(skill_promotion_action("begin").is_ok());
+        assert!(skill_promotion_action("publish").is_ok());
+        let error = skill_promotion_action("delete-everything")
+            .expect_err("an unknown action must not be forwarded");
+        assert!(error.contains("unknown"), "unexpected error: {error}");
     }
 }

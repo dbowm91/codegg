@@ -8,6 +8,7 @@ import type {
   DesktopEvent,
   GitReadKind,
   GitReadView,
+  HumanShellPromotionStageView,
   ProjectDetailView,
   PromptSubmitView,
   ProjectSummary,
@@ -16,6 +17,9 @@ import type {
   SessionPresentationView,
   SessionView,
   SkillCatalogueView,
+  SkillPromotionAction,
+  SkillPromotionView,
+  SkillTargetScope,
   SubscriptionHandle,
   SubscriptionInfo,
 } from './bridge-types';
@@ -54,8 +58,21 @@ export const bridge = {
     invoke<SessionView>('desktop_session_open', { sessionId, routeGeneration }),
   sessionCreate: (title: string | null, routeGeneration: number) =>
     invoke<SessionView>('desktop_session_create', { title, routeGeneration }),
-  promptSubmit: (text: string, planMode: boolean, routeGeneration: number) =>
-    invoke<PromptSubmitView>('desktop_prompt_submit', { text, planMode, routeGeneration }),
+  // M007-I (plan 022, work package F): a non-empty
+  // `humanShellPromotions` makes the submit the daemon's atomic ask — the
+  // daemon stages the evidence and admits the turn together.
+  promptSubmit: (
+    text: string,
+    planMode: boolean,
+    humanShellPromotions: HumanShellPromotionStageView[],
+    routeGeneration: number,
+  ) =>
+    invoke<PromptSubmitView>('desktop_prompt_submit', {
+      text,
+      planMode,
+      humanShellPromotions,
+      routeGeneration,
+    }),
   artifactRead: (handle: string, start: number, length: number | null, routeGeneration: number) =>
     invoke<ArtifactExcerptView>('desktop_artifact_read', { handle, start, length, routeGeneration }),
   controlRefresh: (routeGeneration: number) =>
@@ -83,6 +100,25 @@ export const bridge = {
     invoke<GitReadView>('desktop_git_read', { operation, routeGeneration }),
   skillCatalogue: (routeGeneration: number) =>
     invoke<SkillCatalogueView>('desktop_skill_catalogue', { routeGeneration }),
+  // M007-I (plan 022, work package F): one request against the daemon's
+  // skill-promotion workflow. The renderer names the action and the
+  // identifiers that action names; the host supplies the workspace and the
+  // session, and the daemon resolves the habit candidate and the
+  // publication target itself. No path ever crosses the bridge.
+  skillPromotion: (
+    action: SkillPromotionAction,
+    habitId: string | null,
+    proposalId: string | null,
+    targetScope: SkillTargetScope | null,
+    routeGeneration: number,
+  ) =>
+    invoke<SkillPromotionView>('desktop_skill_promotion', {
+      action,
+      habitId,
+      proposalId,
+      targetScope,
+      routeGeneration,
+    }),
   // M007-D: the daemon's command catalog, and the execution of one
   // daemon-effect command form. The renderer holds no command list of its
   // own: it renders what the daemon's catalog says. The catalog version is

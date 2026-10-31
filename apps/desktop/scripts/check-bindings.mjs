@@ -38,6 +38,9 @@ const expected = {
   SessionListView: { source: 'bridge', fields: ['sessions', 'route_token'] },
   SessionView: { source: 'bridge', fields: ['session', 'route_token'] },
   PromptSubmitView: { source: 'bridge', fields: ['intent_id', 'route_token'] },
+  // M007-I (plan 022, work package F): the ask. The desktop names the
+  // daemon's run and the human's question; the bytes never cross.
+  HumanShellPromotionStageView: { source: 'bridge', fields: ['promotion_id', 'source_id', 'question'] },
   MessageView: { source: 'bridge', fields: ['message_id', 'role', 'text', 'truncated'] },
   TranscriptMessageView: { source: 'bridge', fields: ['message_id', 'turn_id', 'role', 'text', 'truncated', 'created_at'] },
   TurnSummaryView: { source: 'bridge', fields: ['turn_id', 'status', 'updated_at', 'stop_reason', 'error', 'message_count', 'tool_count', 'pending_permissions', 'pending_questions', 'input_tokens', 'output_tokens', 'cached_tokens', 'context_limit', 'reasoning_tokens'] },
@@ -71,6 +74,13 @@ const expected = {
   GitReadView: { source: 'bridge', fields: ['kind', 'status', 'diff', 'branches'] },
   SkillSummaryView: { source: 'bridge', fields: ['name', 'description', 'source', 'content_digest', 'resource_count'] },
   SkillCatalogueView: { source: 'bridge', fields: ['project_id', 'skills', 'total', 'truncated'] },
+  // M007-I (plan 022, work package F): the daemon's answer to one
+  // skill-promotion request. The daemon owns the durable promotion record,
+  // so the desktop asks and renders.
+  SkillPromotionView: { source: 'bridge', fields: ['action', 'changed', 'request_id', 'draft_prompt', 'proposals', 'detail', 'published_relative_path'] },
+  SkillProposalSummaryView: { source: 'bridge', fields: ['proposal_id', 'name', 'description', 'status', 'revision'] },
+  SkillProposalDetailView: { source: 'bridge', fields: ['proposal_id', 'name', 'status', 'revision', 'target_scope', 'skill_markdown', 'diagnostics', 'published_relative_path'] },
+  SkillProposalDiagnosticView: { source: 'bridge', fields: ['severity', 'reason', 'location'] },
   // M007-D: the daemon's command catalog and one command execution. The
   // renderer holds no command list of its own, so these four types are the
   // whole of the desktop's command contract.
