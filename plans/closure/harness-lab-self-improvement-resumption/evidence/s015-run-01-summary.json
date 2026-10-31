@@ -1,0 +1,195 @@
+{
+  "schema_version": 1,
+  "campaign_id": "s015-provider-stream-stall-diagnostics-20261031",
+  "run_index": 1,
+  "run_status": "completed",
+  "started_at_utc": "2026-10-31T15:55:56Z",
+  "terminal_observed_at_utc": "2026-10-31T16:03:08Z",
+  "source_commit": "543042070407ec5d2a93642e583f89fb0333ab56",
+  "binary_sha256": "7288ef309c724e6b950ea9fe363a84a7bfad174f6a73942e719bd601b78b17d8",
+  "binary_architecture": "arm64",
+  "route": "opencode_go/muse-spark-1.3-contributor",
+  "elapsed_seconds": 344.312,
+  "provider_requests": 60,
+  "per_run_request_cap": 60,
+  "request_cap_result": "request_61_refused_before_transport",
+  "usd_cost": 0.023493,
+  "provider_stream_lifecycle": {
+    "provider_stream_setup_started": 61,
+    "transport_request_started": 60,
+    "response_headers_received": 60,
+    "provider_stream_setup_completed": 60,
+    "provider_stream_setup_failed_before_transport": 1,
+    "response_body_stream_started": 60,
+    "sampled_response_body_progress_events": 96,
+    "response_body_eof": 60,
+    "sse_decoder_started": 60,
+    "decoded_events": 347,
+    "turn_events_received": 347,
+    "decoded_stream_eof": 60,
+    "turn_eof_consumed": 60,
+    "setup_timeouts": 0,
+    "idle_timeouts": 0,
+    "transport_failures": 0,
+    "body_failures": 0,
+    "decode_failures": 0
+  },
+  "stream_stall_observed": false,
+  "agent_terminal": "failed",
+  "terminal_failure_category": "provider_api",
+  "task_outcome": "inconclusive",
+  "hidden_verifier_exit_code": 1,
+  "hidden_verifier_failure_count": 3,
+  "hidden_verifier_observation": "No submitted background job was observed running during the required productive edits; the exact-ID lifecycle assertion failed.",
+  "tool_calls": 69,
+  "active_work_span_ms": 323549,
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "measurement_incomplete",
+  "disk_floor": {
+    "minimum_free_bytes": 10737418240,
+    "lowest_observed_free_bytes": 22290923520,
+    "triggered": false
+  },
+  "private_artifacts": {
+    "receipt_path": "/private/tmp/s015-attempt01.json",
+    "receipt_sha256": "47ffba85605c2ab49f6ebdad13bafec2b1a434d07453e9bcc40cee18515e8b7d",
+    "diagnostic_log_path": "/private/tmp/s015-live01/case00/case/codegg_debug.log",
+    "diagnostic_log_sha256": "81d97aff76cb963f1285db7bec7fca8c16d726f256bc7a02756bd859e88e654f"
+  },
+  "interpretation": "This run did not reproduce the provider stream stall. Every admitted stream reached HTTP headers, body progress, decoded events, and clean EOF. It ended after the authorized request ceiling; the task did not demonstrate the required running-job overlap.",
+  "job_observations": {
+    "calls": [
+      {
+        "job_id_sha256_prefix": "f2fe28a11b6c",
+        "tool": "test",
+        "action": "submit",
+        "status": null,
+        "started_elapsed_ms": 113200,
+        "finished_elapsed_ms": 115645
+      },
+      {
+        "job_id_sha256_prefix": "f2fe28a11b6c",
+        "tool": "job",
+        "action": "status",
+        "status": "failed",
+        "started_elapsed_ms": 120207,
+        "finished_elapsed_ms": 120262
+      },
+      {
+        "job_id_sha256_prefix": "a5d32370ad1b",
+        "tool": "test",
+        "action": "submit",
+        "status": null,
+        "started_elapsed_ms": 123981,
+        "finished_elapsed_ms": 125953
+      },
+      {
+        "job_id_sha256_prefix": "a5d32370ad1b",
+        "tool": "job",
+        "action": "status",
+        "status": "failed",
+        "started_elapsed_ms": 127519,
+        "finished_elapsed_ms": 127675
+      },
+      {
+        "job_id_sha256_prefix": "2712af9b9f0b",
+        "tool": "test",
+        "action": "submit",
+        "status": null,
+        "started_elapsed_ms": 141265,
+        "finished_elapsed_ms": 143585
+      },
+      {
+        "job_id_sha256_prefix": "2712af9b9f0b",
+        "tool": "job",
+        "action": "status",
+        "status": "completed",
+        "started_elapsed_ms": 146323,
+        "finished_elapsed_ms": 146357
+      },
+      {
+        "job_id_sha256_prefix": "c073286cf374",
+        "tool": "test",
+        "action": "submit",
+        "status": null,
+        "started_elapsed_ms": 183028,
+        "finished_elapsed_ms": 185350
+      },
+      {
+        "job_id_sha256_prefix": "c073286cf374",
+        "tool": "job",
+        "action": "status",
+        "status": "completed",
+        "started_elapsed_ms": 187005,
+        "finished_elapsed_ms": 187033
+      },
+      {
+        "job_id_sha256_prefix": "9d50c5c5f2c1",
+        "tool": "test",
+        "action": "submit",
+        "status": null,
+        "started_elapsed_ms": 262538,
+        "finished_elapsed_ms": 265668
+      },
+      {
+        "job_id_sha256_prefix": "9d50c5c5f2c1",
+        "tool": "job",
+        "action": "status",
+        "status": "completed",
+        "started_elapsed_ms": 267059,
+        "finished_elapsed_ms": 267089
+      },
+      {
+        "job_id_sha256_prefix": "7f7b84854782",
+        "tool": "test",
+        "action": "submit",
+        "status": null,
+        "started_elapsed_ms": 271005,
+        "finished_elapsed_ms": 272142
+      },
+      {
+        "job_id_sha256_prefix": "7f7b84854782",
+        "tool": "job",
+        "action": "status",
+        "status": "completed",
+        "started_elapsed_ms": 273404,
+        "finished_elapsed_ms": 273436
+      },
+      {
+        "job_id_sha256_prefix": "8b456e082d90",
+        "tool": "test",
+        "action": "submit",
+        "status": null,
+        "started_elapsed_ms": 312914,
+        "finished_elapsed_ms": 314964
+      },
+      {
+        "job_id_sha256_prefix": "8b456e082d90",
+        "tool": "job",
+        "action": "status",
+        "status": "completed",
+        "started_elapsed_ms": 316307,
+        "finished_elapsed_ms": 316350
+      },
+      {
+        "job_id_sha256_prefix": "a8f9ef8f45d2",
+        "tool": "test",
+        "action": "submit",
+        "status": null,
+        "started_elapsed_ms": 317633,
+        "finished_elapsed_ms": 323262
+      },
+      {
+        "job_id_sha256_prefix": "a8f9ef8f45d2",
+        "tool": "job",
+        "action": "status",
+        "status": "completed",
+        "started_elapsed_ms": 324505,
+        "finished_elapsed_ms": 324537
+      }
+    ],
+    "running_status_observed": false,
+    "first_submission_status_delay_ms": 4562,
+    "interpretation": "Every captured exact-ID status was already failed or completed; no running state was projected. This run alone cannot distinguish a task that completed too quickly from missing productive overlap in the agent trajectory."
+  }
+}
