@@ -160,8 +160,8 @@ async fn command_catalog_serves_the_daemon_catalog() {
     }
 }
 
-/// The catalog's classification is the reviewed one: 161 commands, 167
-/// forms, 124 daemon-effect forms and 43 frontend-effect forms.
+/// The catalog's classification is the reviewed one: 161 commands, 167 forms,
+/// 125 daemon-effect forms and 42 frontend-effect forms (C002 moved `compact`).
 #[tokio::test]
 async fn command_catalog_carries_the_reviewed_classification() {
     let pool = migrated_pool().await;
@@ -192,8 +192,8 @@ async fn command_catalog_carries_the_reviewed_classification() {
         167,
         "the catalog holds 167 command forms"
     );
-    assert_eq!(daemon_effect, 124, "124 forms are daemon effects");
-    assert_eq!(frontend_effect, 43, "43 forms are frontend effects");
+    assert_eq!(daemon_effect, 125, "125 forms are daemon effects");
+    assert_eq!(frontend_effect, 42, "42 forms are frontend effects");
 }
 
 /// An unknown command identity is refused, with a reason and no run.
@@ -559,7 +559,7 @@ async fn command_catalog_publishes_the_daemons_serve_ability() {
             }
         }
     }
-    assert_eq!(frontend, 43, "43 forms are frontend effects");
+    assert_eq!(frontend, 42, "42 forms are frontend effects");
     assert!(served > 0, "the daemon must publish the forms it serves");
 }
 
@@ -607,5 +607,5 @@ async fn command_catalog_publishes_the_action_of_every_frontend_effect() {
             }
         }
     }
-    assert_eq!(frontend, 43, "43 forms are frontend effects");
+    assert_eq!(frontend, 42, "42 forms are frontend effects");
 }

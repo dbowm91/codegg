@@ -1196,6 +1196,28 @@ impl CoreDaemon {
                     }),
                 }
             }
+            // C002 (ADR-0060): the daemon compacts on request and does not
+            // refuse. The only refusal here is factual: the session cannot
+            // be resolved, so there is nothing to compact.
+            CoreRequest::SessionCompact { session_id } => {
+                let runtime = match self.bind_runtime_for_session(&session_id).await {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "session_unavailable".to_string(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                runtime
+                    .compaction_requested
+                    .store(true, std::sync::atomic::Ordering::Release);
+                let turn_active = runtime.active_turn.read().await.is_some();
+                Ok(CoreResponse::SessionCompact {
+                    session_id,
+                    turn_active,
+                })
+            }
             _ => {
                 tracing::warn!("Unhandled CoreRequest variant");
                 Ok(CoreResponse::Error {

@@ -3683,6 +3683,9 @@ impl CoreDaemon {
             | CoreRequest::SessionRestore { session_id }
             | CoreRequest::SessionShare { session_id }
             | CoreRequest::SessionUnshare { session_id }
+            // C002 (ADR-0060): a compaction request acts on the session the
+            // caller named, so its project resolves through the session.
+            | CoreRequest::SessionCompact { session_id }
             | CoreRequest::SessionRename { session_id, .. }
             | CoreRequest::SessionExport { session_id }
             | CoreRequest::TurnSubmit { session_id, .. }

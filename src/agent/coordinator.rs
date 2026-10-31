@@ -48,6 +48,9 @@ pub(super) struct AgentLoopServices {
     /// are not, in which case nothing is inferred and nothing is written.
     pub(super) credential_observer:
         Option<super::provider_qualification::SharedProviderCredentialObserver>,
+    /// C002 (ADR-0060): the session's pending compaction request. `None`
+    /// for a loop that is not bound to a session's runtime.
+    pub(super) compaction_requested: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// The in-execution capture of a durable delegated run's transcript.
     ///
     /// Present only when this turn belongs to a durable delegated run; `None`

@@ -1381,6 +1381,13 @@ pub struct EventEnvelope<T> {
 #[allow(clippy::large_enum_variant)]
 pub enum CoreResponse {
     Ack,
+    /// C002 (ADR-0060): the daemon's answer to a compaction request. It
+    /// names the session, and whether that session had a live turn when the
+    /// request was accepted.
+    SessionCompact {
+        session_id: String,
+        turn_active: bool,
+    },
     /// M006: the result of a session launch.
     ///
     /// The launch returns the **concrete** identities it produced — the
@@ -2711,6 +2718,13 @@ pub enum CoreRequest {
         text: String,
         plan_mode: bool,
         human_shell_promotions: Vec<crate::human_shell::HumanShellPromotionStageDto>,
+    },
+    /// C002 (ADR-0060): ask the daemon to compact this session's context.
+    ///
+    /// The daemon performs the compaction and does not refuse. The request
+    /// names the session it compacts and nothing else.
+    SessionCompact {
+        session_id: String,
     },
     /// M007-I (work package B): one request against the daemon's promotion
     /// workflow.

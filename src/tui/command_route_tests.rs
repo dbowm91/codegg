@@ -76,6 +76,7 @@ const MIGRATED: &[(&str, &str, &str)] = &[
     ("share", "", "Session"),
     ("unshare", "", "Session"),
     ("export", "", "Session"),
+    ("compact", "", "Session"),
     ("reasoning", "", "Session"),
     ("control", "", "Session"),
     // Collaboration

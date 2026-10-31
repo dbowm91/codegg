@@ -167,6 +167,7 @@ impl DaemonRequestFamily {
             CoreRequest::ProviderConnectionModels { .. } => Self::Providers,
             CoreRequest::SessionArchive { .. } => Self::Sessions,
             CoreRequest::SessionAttach { .. } => Self::Sessions,
+            CoreRequest::SessionCompact { .. } => Self::Sessions,
             CoreRequest::SessionCreate { .. } => Self::Sessions,
             CoreRequest::SessionCreateFromTemplate { .. } => Self::Sessions,
             CoreRequest::SessionDelete { .. } => Self::Sessions,

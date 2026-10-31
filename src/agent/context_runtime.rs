@@ -893,13 +893,23 @@ impl AgentLoop {
             tracing::info!("Skipping context compaction after cancellation");
             return;
         }
-        if !needs_context_compaction(
-            messages,
-            context_limit,
-            threshold,
-            reserved_output_tokens,
-            Some(model_profile.model.as_str()),
-        ) {
+        // C002 (ADR-0060): a frontend's compaction request is honoured at
+        // the daemon's next compaction opportunity for this session. It is
+        // read here and spent at the attempt.
+        let requested = self
+            .services
+            .compaction_requested
+            .as_ref()
+            .is_some_and(|requested| requested.load(std::sync::atomic::Ordering::Acquire));
+        if !requested
+            && !needs_context_compaction(
+                messages,
+                context_limit,
+                threshold,
+                reserved_output_tokens,
+                Some(model_profile.model.as_str()),
+            )
+        {
             return;
         }
 
@@ -1055,6 +1065,16 @@ impl AgentLoop {
         let original_len = messages.len();
         let original_user = self.current_user_prompt.clone();
 
+        // The request is spent when the daemon attempts the compaction.
+        if requested {
+            if let Some(flag) = self.services.compaction_requested.as_ref() {
+                let _ = flag.swap(false, std::sync::atomic::Ordering::AcqRel);
+            }
+            tracing::info!(
+                session_id = %self.session_id,
+                "honouring a frontend's compaction request"
+            );
+        }
         // M004 step B: deterministic compaction + optional semantic
         // enrichment through the canonical owner. No history is mutated
         // here; the owned result is verified before replacement (step H).
@@ -1066,6 +1086,7 @@ impl AgentLoop {
             max_tool_result_tokens,
             auto,
             prune,
+            force: requested,
             compaction_config: self.services.config.compaction.as_ref(),
             active_model: Some(model_profile.model.as_str()),
             provider: Some(self.services.provider.as_ref()),
@@ -1473,6 +1494,7 @@ impl AgentLoop {
                 max_tool_result_tokens,
                 auto,
                 prune,
+                force: requested,
                 compaction_config: self.services.config.compaction.as_ref(),
                 active_model: Some(model_profile.model.as_str()),
                 provider: Some(self.services.provider.as_ref()),

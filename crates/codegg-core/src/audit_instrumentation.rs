@@ -201,6 +201,19 @@ pub const REQUIRED_AUDIT_COVERAGE: &[AuditCoverageEntry] = &[
         live_mapped: true,
     },
     AuditCoverageEntry {
+        action: "session_compact",
+        owner: "daemon:session",
+        actor: "transport-bound principal",
+        scope: "session",
+        decision: "session_compact",
+        metadata: &[
+            "session.compaction_requested",
+        ],
+        causation: "the caller's own session; the request names the session and nothing else, so no path, model, policy or turn identity enters audit metadata",
+        visibility: AuditVisibility::Project,
+        live_mapped: true,
+    },
+    AuditCoverageEntry {
         action: "human_shell_run",
         owner: "daemon:human_shell",
         actor: "transport-bound principal",
@@ -667,6 +680,9 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     // M007: the operator disposition of one of the daemon's own disposable
     // scratch trees.
     ("scratch_reclaim", "scratch_reclaim"),
+    // C002 (ADR-0060): a compaction request is its own action: no prompt
+    // was submitted.
+    ("session_compact", "session_compact"),
     ("turn_steer", "prompt_submit"),
     // M002b (ADR-0037): every queue mutation, INCLUDING adoption and transfer,
     // reuses the `prompt_submit` action ADR-0035 selected.

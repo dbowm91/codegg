@@ -2411,6 +2411,7 @@ async fn eight_transition_trajectory_with_epoch_reset() {
             cancellation: None,
             baseline: Some(&snapshot),
             proposed_checkpoint_id: Some(checkpoint_id.as_str()),
+            force: false,
         })
         .await;
         assert!(
@@ -2752,6 +2753,7 @@ async fn missing_recovery_artifact_degrades_boundedly() {
         cancellation: None,
         baseline: Some(&snapshot),
         proposed_checkpoint_id: Some("m005-degraded-00"),
+        force: false,
     })
     .await;
     let candidate = result.continuation_candidate.expect("candidate");

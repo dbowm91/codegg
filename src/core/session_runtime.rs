@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use dashmap::{DashMap, DashSet};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use tokio::sync::{mpsc, watch, RwLock};
 
 use codegg_core::workspace::WorkspaceId;
@@ -48,6 +48,11 @@ pub struct SessionRuntime {
     /// starts empty after daemon restart, so dead workers cannot reappear live.
     pub subagents: RwLock<std::collections::HashMap<String, AgentTreeNodeProjection>>,
     pub subagent_overflow: AtomicUsize,
+    /// C002 (ADR-0060): a pending compaction request for this session.
+    ///
+    /// Shared with the turn's loop, so a request that arrives mid-turn
+    /// reaches it; spent when the daemon attempts the compaction.
+    pub compaction_requested: std::sync::Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,6 +183,7 @@ impl SessionRuntimeRegistry {
             active_subagent_count: AtomicUsize::new(0),
             subagents: RwLock::new(std::collections::HashMap::new()),
             subagent_overflow: AtomicUsize::new(0),
+            compaction_requested: std::sync::Arc::new(AtomicBool::new(false)),
         });
         self.sessions.insert(key, arc.clone());
         arc

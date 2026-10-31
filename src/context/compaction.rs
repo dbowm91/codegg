@@ -865,6 +865,10 @@ pub struct ContextCompactionRequest<'a> {
     /// still `Prepared` until the transactional install commits. `None`
     /// preserves the pure-reduction path for compatibility callers.
     pub proposed_checkpoint_id: Option<&'a str>,
+    /// C002 (ADR-0060): the caller asserts that a compaction is wanted now.
+    /// A forced compaction skips the threshold gate below and applies the
+    /// configured policy exactly as an automatic compaction applies it.
+    pub force: bool,
 }
 
 /// Typed continuation candidate carried through the compaction boundary
@@ -995,7 +999,9 @@ pub async fn compact_context(request: ContextCompactionRequest<'_>) -> ContextCo
         });
     }
 
-    if !working_tracker.needs_compaction() {
+    // A forced compaction is the caller's assertion that a compaction is
+    // wanted now, so the threshold gate does not short-circuit it.
+    if !request.force && !working_tracker.needs_compaction() {
         let status = if !changed {
             CompactionStatus::Ready
         } else {
@@ -3581,6 +3587,78 @@ mod tests {
         assert_eq!(capacity.available_context_tokens, 112_000);
     }
 
+    /// C002 (ADR-0060): a forced compaction reduces a history the threshold
+    /// would have left alone, and the automatic path is unchanged.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_forced_compaction_reduces_a_history_the_threshold_would_keep() {
+        let messages: Vec<Message> = (0..20)
+            .map(|index| Message::User {
+                content: vec![ContentPart::Text {
+                    text: format!("message {index}").into(),
+                }],
+            })
+            .collect();
+
+        let automatic = compact_context(ContextCompactionRequest {
+            messages: &messages,
+            context_limit: 128_000,
+            threshold: 0.8,
+            reserved_output_tokens: 10_000,
+            max_tool_result_tokens: 100,
+            auto: false,
+            prune: false,
+            force: false,
+            compaction_config: None,
+            active_model: Some("gpt-4o"),
+            provider: None,
+            provider_context: ProviderRequestContext::default(),
+            cancellation: None,
+            baseline: None,
+            proposed_checkpoint_id: None,
+        })
+        .await;
+        assert_eq!(
+            automatic.status,
+            CompactionStatus::Ready,
+            "the automatic path must leave a history below the threshold alone"
+        );
+        assert_eq!(
+            automatic.messages.len(),
+            messages.len(),
+            "the automatic path must not reduce the history"
+        );
+
+        let forced = compact_context(ContextCompactionRequest {
+            messages: &messages,
+            context_limit: 128_000,
+            threshold: 0.8,
+            reserved_output_tokens: 10_000,
+            max_tool_result_tokens: 100,
+            auto: false,
+            prune: false,
+            force: true,
+            compaction_config: None,
+            active_model: Some("gpt-4o"),
+            provider: None,
+            provider_context: ProviderRequestContext::default(),
+            cancellation: None,
+            baseline: None,
+            proposed_checkpoint_id: None,
+        })
+        .await;
+        assert_eq!(
+            forced.status,
+            CompactionStatus::Compacted,
+            "the forced call must compact"
+        );
+        assert!(
+            forced.messages.len() < messages.len(),
+            "the forced call must reduce the history: {} of {} survived",
+            forced.messages.len(),
+            messages.len()
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn canonical_context_result_reports_compaction() {
         let messages = (0..20)
@@ -3598,6 +3676,7 @@ mod tests {
             max_tool_result_tokens: 100,
             auto: false,
             prune: false,
+            force: false,
             compaction_config: None,
             active_model: Some("gpt-4o"),
             provider: None,
@@ -3630,6 +3709,7 @@ mod tests {
             max_tool_result_tokens: 100,
             auto: true,
             prune: true,
+            force: false,
             compaction_config: None,
             active_model: Some("gpt-4o"),
             provider: None,

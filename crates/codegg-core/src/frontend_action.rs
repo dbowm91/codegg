@@ -70,7 +70,6 @@ pub enum FrontendAction {
     ShowPluginInfo,
     ShowPluginDoctor,
     ShowLogs,
-    CompactSession,
 }
 
 impl FrontendAction {
@@ -116,7 +115,6 @@ impl FrontendAction {
             Self::ShowPluginInfo => "show_plugin_info",
             Self::ShowPluginDoctor => "show_plugin_doctor",
             Self::ShowLogs => "show_logs",
-            Self::CompactSession => "compact_session",
         }
     }
 
@@ -161,7 +159,6 @@ impl FrontendAction {
         FrontendAction::ShowPluginInfo,
         FrontendAction::ShowPluginDoctor,
         FrontendAction::ShowLogs,
-        FrontendAction::CompactSession,
     ];
 }
 
@@ -380,19 +377,14 @@ static THE_FRONTEND_ACTION_SET: &[FrontendActionDeclaration] = &[
         disposition: FrontendActionDisposition::NonMutating,
         forms: &[("plugin_doctor", "")],
     },
-    // M007-H (D6, D1): the two kind corrections this milestone owns. The log
-    // tail is permanently frontend-local — the daemon discloses no log
-    // contents to a frontend — and the compact form belongs to the TUI's own
-    // compact command, not to a daemon request the daemon does not have.
+    // M007-H (D6): the log tail is permanently frontend-local — the daemon
+    // discloses no log contents to a frontend. The compact form moved in
+    // C002 (ADR-0060): the daemon owns compaction, so no frontend action
+    // serves it.
     FrontendActionDeclaration {
         action: FrontendAction::ShowLogs,
         disposition: FrontendActionDisposition::NonMutating,
         forms: &[("logs", "")],
-    },
-    FrontendActionDeclaration {
-        action: FrontendAction::CompactSession,
-        disposition: FrontendActionDisposition::NonMutating,
-        forms: &[("compact", "")],
     },
 ];
 

@@ -16,6 +16,8 @@ pub struct AgentLoopBuildInput {
     pub tool_registry: ToolRegistry,
     pub pool: Option<sqlx::SqlitePool>,
     pub session_id: String,
+    /// C002 (ADR-0060): the session's pending compaction request.
+    pub compaction_requested: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub turn_id: Option<String>,
     pub subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
     pub task_state_policy: TaskStatePolicy,
@@ -105,6 +107,9 @@ pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::Age
         input.process_admission.clone(),
     );
     agent_loop.set_working_directory(input.execution.working_directory.clone());
+    if let Some(requested) = input.compaction_requested.clone() {
+        agent_loop.set_compaction_requested(Some(requested));
+    }
     agent_loop.set_turn_id(input.turn_id);
     agent_loop.set_provider_registry(input.provider_registry);
     agent_loop.set_workspace_id(input.execution.workspace_id.clone());
