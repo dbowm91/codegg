@@ -24,10 +24,9 @@ use crate::provider_profile::{self, ProfileError, RouteAuth, SurfaceRoute};
 use crate::{create_http_client, ChatRequest, EventStream, ModelInfo, Provider};
 use async_trait::async_trait;
 use eggpool_wire::profile::WireSurface;
+use futures_util::{stream, StreamExt};
 use http::header::{HeaderName, HeaderValue};
-
-#[cfg(test)]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Transport-owned deadline applied identically on every surface.
 ///
@@ -368,7 +367,28 @@ impl Provider for OpenCodeGoProvider {
         // 6. One request. No retry to another surface is ever attempted.
         let builder = self.request_builder(&route, request, &body)?;
         crate::request_budget::admit_opencode_go_request(true)?;
-        let mut response = builder.send().await.map_err(ProviderError::from)?;
+        let request_started = Instant::now();
+        let provider_span_id = tracing::Span::current().id().map(|id| id.into_u64());
+        tracing::debug!(
+            provider_span_id = ?provider_span_id,
+            surface = ?route.surface,
+            "opencode_go_transport_request_started"
+        );
+        let mut response = builder.send().await.map_err(|error| {
+            tracing::warn!(
+                provider_span_id = ?provider_span_id,
+                elapsed_ms = request_started.elapsed().as_millis() as u64,
+                stage = "response_headers",
+                "opencode_go_transport_request_failed"
+            );
+            ProviderError::from(error)
+        })?;
+        tracing::debug!(
+            provider_span_id = ?provider_span_id,
+            elapsed_ms = request_started.elapsed().as_millis() as u64,
+            status = response.status().as_u16(),
+            "opencode_go_response_headers_received"
+        );
 
         if response.status() == http::StatusCode::TOO_MANY_REQUESTS {
             return Err(ProviderError::rate_limit_from_headers(response.headers()));
@@ -392,8 +412,118 @@ impl Provider for OpenCodeGoProvider {
             .wire_policy
             .clone()
             .or_else(|| Some(std::sync::Arc::new(crate::ProviderWirePolicy::default())));
-        let bytes = response.bytes_stream().map_err(ProviderError::from)?;
-        Ok(crate::wire::shared_stream(bytes, adapter, policy))
+        let body_started = Instant::now();
+        let body = response.bytes_stream().map_err(ProviderError::from)?;
+        tracing::debug!(
+            provider_span_id = ?provider_span_id,
+            "opencode_go_response_body_stream_started"
+        );
+        let observed_body = stream::unfold(
+            (
+                body,
+                body_started,
+                0u64,
+                0u64,
+                body_started,
+                provider_span_id,
+            ),
+            |(mut body, started, mut chunk_count, mut byte_count, mut last_log, span_id)| async move {
+                match body.next().await {
+                    Some(Ok(chunk)) => {
+                        chunk_count = chunk_count.saturating_add(1);
+                        byte_count = byte_count.saturating_add(chunk.len() as u64);
+                        let now = Instant::now();
+                        if chunk_count == 1
+                            || chunk_count % 1024 == 0
+                            || now.duration_since(last_log) >= Duration::from_secs(1)
+                        {
+                            tracing::debug!(
+                                provider_span_id = ?span_id,
+                                chunk_index = chunk_count,
+                                chunk_bytes = chunk.len(),
+                                total_body_bytes = byte_count,
+                                elapsed_ms = started.elapsed().as_millis() as u64,
+                                "opencode_go_response_body_progress"
+                            );
+                            last_log = now;
+                        }
+                        Some((
+                            Ok(chunk),
+                            (body, started, chunk_count, byte_count, last_log, span_id),
+                        ))
+                    }
+                    Some(Err(error)) => {
+                        tracing::warn!(
+                            provider_span_id = ?span_id,
+                            chunk_count,
+                            byte_count,
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            stage = "response_body",
+                            "opencode_go_response_body_failed"
+                        );
+                        Some((
+                            Err(ProviderError::from(error)),
+                            (body, started, chunk_count, byte_count, last_log, span_id),
+                        ))
+                    }
+                    None => {
+                        tracing::debug!(
+                            provider_span_id = ?span_id,
+                            chunk_count,
+                            byte_count,
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            "opencode_go_response_body_eof"
+                        );
+                        None
+                    }
+                }
+            },
+        );
+        let observed_body = Box::pin(observed_body);
+        let decoded_started = Instant::now();
+        tracing::debug!(
+            provider_span_id = ?provider_span_id,
+            "opencode_go_sse_decoder_started"
+        );
+        let decoded = crate::wire::shared_stream(observed_body, adapter, policy);
+        let observed_decoded = stream::unfold(
+            (decoded, decoded_started, 0u64, provider_span_id),
+            |(mut decoded, started, mut event_count, span_id)| async move {
+                match decoded.next().await {
+                    Some(Ok(event)) => {
+                        event_count = event_count.saturating_add(1);
+                        tracing::debug!(
+                            provider_span_id = ?span_id,
+                            event_index = event_count,
+                            event_kind = provider_chat_event_kind(&event),
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            "opencode_go_decoded_event"
+                        );
+                        Some((Ok(event), (decoded, started, event_count, span_id)))
+                    }
+                    Some(Err(error)) => {
+                        tracing::warn!(
+                            provider_span_id = ?span_id,
+                            event_count,
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            stage = "sse_decode",
+                            "opencode_go_decoded_stream_error"
+                        );
+                        Some((Err(error), (decoded, started, event_count, span_id)))
+                    }
+                    None => {
+                        tracing::debug!(
+                            provider_span_id = ?span_id,
+                            event_count,
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            "opencode_go_decoded_stream_eof"
+                        );
+                        None
+                    }
+                }
+            },
+        );
+        Ok(Box::pin(observed_decoded))
     }
 
     /// Discover models, then keep only wire-resolved ones selectable.
@@ -411,6 +541,17 @@ impl Provider for OpenCodeGoProvider {
         })?;
         let discovered = discovery.models().await?;
         Ok(qualify_models(&discovered, &self.id))
+    }
+}
+
+fn provider_chat_event_kind(event: &crate::ChatEvent) -> &'static str {
+    match event {
+        crate::ChatEvent::TextDelta(_) => "text_delta",
+        crate::ChatEvent::ReasoningDelta(_) => "reasoning_delta",
+        crate::ChatEvent::ToolCall(_) => "tool_call",
+        crate::ChatEvent::ToolResult { .. } => "tool_result",
+        crate::ChatEvent::Finish { .. } => "finish",
+        crate::ChatEvent::Error(_) => "error",
     }
 }
 
@@ -452,7 +593,7 @@ mod capture_tests {
     use futures_util::StreamExt;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     struct Capture {
         request_line: String,
@@ -608,6 +749,123 @@ mod capture_tests {
 
     const CHAT_SSE: &str =
         "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+
+    #[derive(Clone, Default)]
+    struct LogBuffer(Arc<Mutex<Vec<u8>>>);
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    impl Write for LogBuffer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("log buffer lock")
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn stream_stage_diagnostics_correlate_events_without_logging_payloads() {
+        use tracing::Instrument;
+
+        let (base, handle) = spawn_capture(RESPONSES_SSE);
+        let provider = provider_at(&base);
+        let mut request = request("muse-spark-1.3-contributor", Some("session-safe-id"));
+        if let Message::User { content } = &mut request.messages[0] {
+            content[0] = ContentPart::Text {
+                text: "PRIVATE_PROMPT_MARKER".to_string().into(),
+            };
+        }
+        let buffer = LogBuffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(buffer.clone())
+            .finish();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let events = tracing::subscriber::with_default(subscriber, || {
+            runtime.block_on(async {
+                let span = tracing::info_span!(
+                    "provider_stream_attempt",
+                    session_id = "session-safe-id",
+                    attempt_id = "attempt-safe-id",
+                    provider = "opencode_go",
+                    model = "muse-spark-1.3-contributor",
+                );
+                let mut stream = provider
+                    .stream(&request)
+                    .instrument(span.clone())
+                    .await
+                    .expect("provider stream");
+                let mut events = Vec::new();
+                let mut stream_errors = Vec::new();
+                while let Some(event) =
+                    tracing::Instrument::instrument(stream.next(), span.clone()).await
+                {
+                    match event {
+                        Ok(event) => events.push(event),
+                        Err(error) => stream_errors.push(error.to_string()),
+                    }
+                }
+                (events, stream_errors)
+            })
+        });
+        let capture = handle.join().expect("capture joins");
+        let logs = String::from_utf8(buffer.0.lock().expect("log buffer lock").clone())
+            .expect("diagnostic logs are UTF-8");
+        assert_eq!(
+            capture.header("authorization"),
+            Some("Bearer sk-test-secret-value")
+        );
+        let (events, stream_errors) = events;
+        assert!(
+            stream_errors.is_empty(),
+            "stream errors: {stream_errors:?}; logs: {logs}"
+        );
+        assert_eq!(events.len(), 2);
+        assert!(
+            matches!(events[0], crate::ChatEvent::TextDelta(ref text) if text.as_str() == "ok")
+        );
+        assert!(matches!(events[1], crate::ChatEvent::Finish { .. }));
+
+        let ordered_markers = [
+            "opencode_go_transport_request_started",
+            "opencode_go_response_headers_received",
+            "opencode_go_response_body_stream_started",
+            "opencode_go_sse_decoder_started",
+            "opencode_go_response_body_progress",
+            "opencode_go_decoded_event",
+            "opencode_go_response_body_eof",
+            "opencode_go_decoded_stream_eof",
+        ];
+        let positions: Vec<_> = ordered_markers
+            .iter()
+            .map(|marker| {
+                logs.find(marker)
+                    .unwrap_or_else(|| panic!("missing {marker}: {logs}"))
+            })
+            .collect();
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(logs.contains("provider_span_id=Some("));
+        assert!(!logs.contains("PRIVATE_PROMPT_MARKER"));
+        assert!(!logs.contains("sk-test-secret-value"));
+        assert!(!logs.contains("content\\\":\\\"ok"));
+    }
+
     const RESPONSES_SSE: &str = concat!(
         "event: response.output_text.delta\n",
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",

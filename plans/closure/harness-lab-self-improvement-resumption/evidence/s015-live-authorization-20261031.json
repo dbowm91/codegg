@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "campaign_id": "s015-provider-stream-stall-diagnostics-20261031",
+  "authorization_source": "user message dated 2026-10-31: up to 20 more runs authorized to diagnose and resolve the harness stall",
+  "authorized_route": "opencode_go/muse-spark-1.3-contributor",
+  "max_started_runs": 20,
+  "per_run_provider_request_ceiling": 60,
+  "per_run_wall_clock_seconds": 3600,
+  "minimum_free_disk_bytes": 10737418240,
+  "execution": "sequential; stop early after a reproduced and independently confirmed narrow correction or a boundary attribution that does not implicate CodeGG",
+  "cancellation": "operator cancellation, cap exhaustion, disk below floor, sensitive-data exposure, or unobservable provider admission",
+  "usd_cost": "record provider-reported amount when available; otherwise unknown",
+  "qualification_scope": "diagnostic and corrective only; does not satisfy the separate 30-minute sustained-work objective",
+  "started_runs": []
+}

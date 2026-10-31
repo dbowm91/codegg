@@ -30,7 +30,7 @@ use crate::bus::events::AppEvent;
 use crate::error::{AppError, ProviderError};
 use crate::provider::{ChatEvent, ChatRequest, RetryContext, RetryDisposition};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Adapter-owned entry point for provider streaming, retries, and normalized
 /// chat events. The turn driver does not need to know wire compatibility
@@ -533,12 +533,36 @@ async fn stream_once(
     request: &ChatRequest,
     attempt_id: &str,
 ) -> Result<(Vec<ChatEvent>, bool), (AppError, bool)> {
+    let stream_span = tracing::info_span!(
+        "provider_stream_attempt",
+        session_id = %loop_.session_id,
+        attempt_id = %attempt_id,
+        provider = %loop_.services.provider.id(),
+        model = %request.model,
+    );
+    let span_id = stream_span.id().map(|id| id.into_u64());
+    let setup_started = Instant::now();
+    tracing::debug!(
+        attempt_id = %attempt_id,
+        provider_span_id = ?span_id,
+        "provider_stream_setup_started"
+    );
     let stream = tokio::time::timeout(
         STREAM_SETUP_TIMEOUT,
-        loop_.services.provider.stream(request),
+        tracing::Instrument::instrument(
+            loop_.services.provider.stream(request),
+            stream_span.clone(),
+        ),
     )
     .await
     .map_err(|_| {
+        tracing::warn!(
+            attempt_id = %attempt_id,
+            provider_span_id = ?span_id,
+            elapsed_ms = setup_started.elapsed().as_millis() as u64,
+            stage = "response_headers",
+            "provider_stream_setup_timeout"
+        );
         (
             AppError::Provider(ProviderError::Timeout(
                 "provider stream timeout".to_string(),
@@ -546,7 +570,24 @@ async fn stream_once(
             false,
         )
     })?
-    .map_err(|e| (AppError::Provider(e), false))?;
+    .map_err(|e| {
+        let error = AppError::Provider(e);
+        tracing::warn!(
+            attempt_id = %attempt_id,
+            provider_span_id = ?span_id,
+            elapsed_ms = setup_started.elapsed().as_millis() as u64,
+            stage = "response_headers",
+            error_class = %provider_error_class(&error),
+            "provider_stream_setup_failed"
+        );
+        (error, false)
+    })?;
+    tracing::debug!(
+        attempt_id = %attempt_id,
+        provider_span_id = ?span_id,
+        setup_elapsed_ms = setup_started.elapsed().as_millis() as u64,
+        "provider_stream_setup_completed"
+    );
     let mut events = Vec::with_capacity(64);
     let mut visible_output = false;
     let session_id_arc: Arc<str> = Arc::from(loop_.session_id.as_str());
@@ -558,25 +599,59 @@ async fn stream_once(
 
     use futures_util::StreamExt;
     let mut stream = stream;
+    let mut decoded_event_count = 0u64;
+    let mut last_decoded_event_elapsed = setup_started.elapsed();
     loop {
         if is_cancelled(loop_) {
             return Err((cancelled_error(), visible_output));
         }
-        let next_event = tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next())
-            .await
-            .map_err(|_| {
-                (
-                    AppError::Provider(ProviderError::Timeout(
-                        "provider stream stalled waiting for next event".to_string(),
-                    )),
-                    visible_output,
-                )
-            })?;
+        let wait_started = Instant::now();
+        let next_event = tokio::time::timeout(
+            STREAM_IDLE_TIMEOUT,
+            tracing::Instrument::instrument(stream.next(), stream_span.clone()),
+        )
+        .await
+        .map_err(|_| {
+            tracing::warn!(
+                attempt_id = %attempt_id,
+                provider_span_id = ?span_id,
+                decoded_event_count,
+                    elapsed_since_setup_ms = setup_started.elapsed().as_millis() as u64,
+                    since_last_decoded_event_ms = setup_started
+                        .elapsed()
+                        .saturating_sub(last_decoded_event_elapsed)
+                        .as_millis() as u64,
+                idle_wait_ms = wait_started.elapsed().as_millis() as u64,
+                "provider_stream_idle_timeout"
+            );
+            (
+                AppError::Provider(ProviderError::Timeout(
+                    "provider stream stalled waiting for next event".to_string(),
+                )),
+                visible_output,
+            )
+        })?;
         let Some(event) = next_event else {
+            tracing::debug!(
+                attempt_id = %attempt_id,
+                provider_span_id = ?span_id,
+                decoded_event_count,
+                "provider_stream_eof_consumed"
+            );
             break;
         };
+        decoded_event_count = decoded_event_count.saturating_add(1);
+        last_decoded_event_elapsed = setup_started.elapsed();
         match event {
             Ok(evt) => {
+                tracing::debug!(
+                    attempt_id = %attempt_id,
+                    provider_span_id = ?span_id,
+                    event_index = decoded_event_count,
+                    event_kind = chat_event_kind(&evt),
+                    elapsed_ms = last_decoded_event_elapsed.as_millis() as u64,
+                    "provider_turn_event_received"
+                );
                 match &evt {
                     ChatEvent::TextDelta(text) => {
                         visible_output = true;
@@ -707,6 +782,17 @@ async fn stream_once(
     }
 
     Ok((events, visible_output))
+}
+
+fn chat_event_kind(event: &ChatEvent) -> &'static str {
+    match event {
+        ChatEvent::TextDelta(_) => "text_delta",
+        ChatEvent::ReasoningDelta(_) => "reasoning_delta",
+        ChatEvent::ToolCall(_) => "tool_call",
+        ChatEvent::ToolResult { .. } => "tool_result",
+        ChatEvent::Finish { .. } => "finish",
+        ChatEvent::Error(_) => "error",
+    }
 }
 
 #[cfg(test)]
