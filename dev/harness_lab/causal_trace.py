@@ -103,7 +103,7 @@ class Recorder:
         row: dict[str, Any] = {"elapsed_ms": elapsed_ms if isinstance(elapsed_ms, int) and elapsed_ms >= 0 else None}
         if detail in {"user", "disk_floor", "activity_stall", "budget", "controller", "passed", "failed", "unknown"}:
             row["detail"] = detail
-        self._append(event_type, row)
+        self._append(event_type, None, **row)
 
     def _append(self, event_type: str, notification: Mapping[str, Any] | None = None, **fields: Any) -> None:
         if self._closed:

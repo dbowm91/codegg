@@ -78,6 +78,23 @@ class CausalTraceTests(unittest.TestCase):
         self.assertEqual(rows[0]["tool"], "unknown")
         self.assertNotIn("credential=do-not-store", joined)
 
+    def test_controller_markers_persist_only_bounded_outcomes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "trace.jsonl"
+            recorder = causal_trace.Recorder(path, run_id="run", case_id="case",
+                                             source_sha256=None, binary_sha256=None)
+            recorder.record("repair_cycle", detail="failed")
+            recorder.record("repair_cycle", detail="passed")
+            recorder.record("continuation", detail="passed", elapsed_ms=120)
+            recorder.record("checkpoint", detail="private-prompt-must-not-persist")
+            recorder.finish()
+            rows = causal_trace.read_trace(path)
+            persisted = path.read_text(encoding="utf-8")
+        self.assertEqual([row.get("detail") for row in rows[:3]],
+                         ["failed", "passed", "passed"])
+        self.assertEqual(rows[2]["elapsed_ms"], 120)
+        self.assertNotIn("private-prompt-must-not-persist", persisted)
+
     def test_cli_rejects_trace_receipt_identity_or_digest_mismatch(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "trace.jsonl"
