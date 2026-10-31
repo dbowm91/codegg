@@ -1152,9 +1152,16 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             for _cycle in repair_cycles:
                 causal_recorder.record("repair_cycle", detail="failed")
                 causal_recorder.record("repair_cycle", detail="passed")
+            continuation_requested = any(
+                item.get("name") == "write"
+                and item.get("arguments", {}).get("path") == expected_file
+                and isinstance(item.get("arguments", {}).get("content"), str)
+                and expected_text is not None
+                and expected_text in item["arguments"]["content"]
+                for item in tool_sequence)
             if (task_id == "h007-dependent-rust-and-exact-job"
-                    and expected_file == "CONTINUATION.md" and exists
-                    and expected_text is not None and target.read_text(encoding="utf-8") == expected_text):
+                    and expected_file == "CONTINUATION.md" and observed_exists
+                    and continuation_requested):
                 causal_recorder.record("continuation", detail="passed")
                 causal_recorder.record("checkpoint", detail="passed")
             causal_receipt = causal_recorder.finish()
