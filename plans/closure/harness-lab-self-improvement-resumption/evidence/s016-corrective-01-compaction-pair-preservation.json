@@ -1,0 +1,36 @@
+{
+  "campaign_id": "s016-deepseek-long-run-corrective-loop-20261031",
+  "correction": {
+    "H007_fixture_and_verifier_unchanged": true,
+    "acceptance_criteria_unchanged": true,
+    "change": "drop_middle_messages now delegates to emergency_pair_safe_compaction with the default resolved config",
+    "file": "src/context/compaction.rs"
+  },
+  "corrective_id": "s016-corrective-01-compaction-pair-preservation",
+  "failure_evidence": {
+    "live_run_index": 5,
+    "log_path": "/private/tmp/s016-live05/case00/case/codegg_debug.log",
+    "log_sha256": "02f0de1c502678a6b7a747e93ba31a0cca2c44a02763f9f5c3a14b0918786da0",
+    "observed_message": "compaction result failed tool-call history validation",
+    "observed_strategy": "auto=false DropMiddleMessages compatibility path",
+    "provider_request_cap_after_error": 60
+  },
+  "qualification_status": "not_qualified; unchanged H007 long run must be retried",
+  "reproduction": {
+    "case_shape": "valid eight-message history with two assistant tool calls and matching tool results; first/last two-message slicing omitted a required result",
+    "pre_fix_result": "failed: CompactionStatus::InvalidHistoryOrBudget",
+    "test": "context::compaction::tests::compatibility_compaction_preserves_tool_call_history"
+  },
+  "schema_version": 1,
+  "verification": {
+    "architecture": "aarch64-apple-darwin",
+    "cargo_fmt_check": "passed",
+    "check_test_assertion_quality": "passed",
+    "check_test_duplication": "passed",
+    "context_compaction_test_module": "42 passed, 0 failed",
+    "focused_regression": "passed",
+    "git_diff_check": "passed",
+    "rustc": "1.89.0 (29483883e 2025-08-04)",
+    "target_dir": "/private/tmp/codegg-s001-target-arm64-20261030/aarch64-apple-darwin"
+  }
+}

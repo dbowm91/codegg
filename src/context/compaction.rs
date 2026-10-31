@@ -460,12 +460,7 @@ fn drop_middle_messages(messages: Vec<Message>) -> Vec<Message> {
         return messages;
     }
 
-    let keep_each_side = 2;
-    let mut result = Vec::new();
-
-    result.extend(messages.iter().take(keep_each_side).cloned());
-    result.extend(messages.iter().rev().take(keep_each_side).rev().cloned());
-    result
+    emergency_pair_safe_compaction(&messages, &ResolvedCompactionConfig::default())
 }
 
 pub fn detect_overflow(messages: &[Message], context_limit: usize, reserved: usize) -> bool {
@@ -3611,6 +3606,79 @@ mod tests {
         assert_eq!(result.status, CompactionStatus::Compacted);
         assert!(result.messages.len() < messages.len());
         assert_eq!(result.capacity.available_context_tokens, 40);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn compatibility_compaction_preserves_tool_call_history() {
+        let long_text = "history ".repeat(2_000);
+        let messages = vec![
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: long_text.clone().into(),
+                }],
+            },
+            Message::Assistant {
+                content: vec![],
+                tool_calls: vec![crate::provider::ToolCall {
+                    id: "first-call".to_string().into(),
+                    name: "read".to_string().into(),
+                    arguments: serde_json::json!({"path": "first.rs"}),
+                }],
+            },
+            Message::Tool {
+                tool_call_id: "first-call".to_string().into(),
+                content: long_text.clone().into(),
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: long_text.clone().into(),
+                }],
+            },
+            Message::Assistant {
+                content: vec![],
+                tool_calls: vec![crate::provider::ToolCall {
+                    id: "second-call".to_string().into(),
+                    name: "read".to_string().into(),
+                    arguments: serde_json::json!({"path": "second.rs"}),
+                }],
+            },
+            Message::Tool {
+                tool_call_id: "second-call".to_string().into(),
+                content: long_text.clone().into(),
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: long_text.clone().into(),
+                }],
+            },
+            Message::Assistant {
+                content: vec![ContentPart::Text {
+                    text: long_text.into(),
+                }],
+                tool_calls: vec![],
+            },
+        ];
+
+        let result = compact_context(ContextCompactionRequest {
+            messages: &messages,
+            context_limit: 128,
+            threshold: 0.5,
+            reserved_output_tokens: 16,
+            max_tool_result_tokens: 100,
+            auto: false,
+            prune: false,
+            compaction_config: None,
+            active_model: Some("deepseek-v4.1-flash"),
+            provider: None,
+            provider_context: ProviderRequestContext::default(),
+            cancellation: None,
+            baseline: None,
+            proposed_checkpoint_id: None,
+        })
+        .await;
+
+        assert_ne!(result.status, CompactionStatus::InvalidHistoryOrBudget);
+        assert!(validate_message_invariants(&result.messages).is_ok());
     }
 
     #[tokio::test(flavor = "current_thread")]
