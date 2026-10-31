@@ -1749,6 +1749,279 @@ class S010IntegratedNativeOptimizerTests(unittest.TestCase):
                                         encoding="utf-8")
 
 
+@unittest.skipUnless(os.environ.get("CODEGG_S010_NATIVE_CRASH_INTEGRATION") == "1",
+                     "S010 native crash/restart qualification is an explicit offline campaign")
+class S010NativeTrialCrashRecoveryTests(unittest.TestCase):
+    """SIGKILL a live native ACP trial, then resume its exact optimizer run."""
+
+    def test_sigkill_during_native_acp_trial_resumes_once_without_duplicate_rows(self):
+        from dev.harness_lab import ledger as ledger_module
+        from dev.harness_lab.supervisor import run_tool_trial
+
+        binary_value = (os.environ.get("CODEGG_S010_CRASH_BINARY")
+                        or os.environ.get("CODEGG_H006_CODEGG_BINARY")
+                        or os.environ.get("CODEGG_H007_CODEGG_BINARY"))
+        self.assertIsNotNone(binary_value, "set CODEGG_S010_CRASH_BINARY to the qualified native binary")
+        binary = Path(binary_value).expanduser().resolve()
+        self.assertTrue(binary.is_file(), f"S010 native trial binary is missing: {binary}")
+        cache_value = os.environ.get("CODEGG_S010_CRASH_TARGET_CACHE")
+        cache_source = (Path(cache_value).expanduser().resolve() if cache_value else
+                        (binary.parent.parent if binary.parent.name == "debug" else None))
+        self.assertIsNotNone(cache_source, "set CODEGG_S010_CRASH_TARGET_CACHE to the binary's Cargo target root")
+        self.assertTrue((cache_source / "debug" / "codegg").is_file())
+        cargo = shutil.which("cargo")
+        self.assertIsNotNone(cargo)
+
+        with tempfile.TemporaryDirectory(prefix="harness-s010-native-crash-") as temporary:
+            root = Path(temporary).resolve()
+            repository = root / "repository"
+            subprocess.run(["git", "clone", "--quiet", "--shared", str(REPO_ROOT),
+                            str(repository)], check=True, timeout=60)
+            subprocess.run(["git", "-C", str(repository), "config", "user.name", "Harness S010"], check=True)
+            subprocess.run(["git", "-C", str(repository), "config", "user.email",
+                            "harness-s010@example.invalid"], check=True)
+            revision = subprocess.check_output(
+                ["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
+
+            case = {"schema_version": 1, "task_id": "s010-native-crash-recovery",
+                    "group_id": "s010-native-crash", "profile": "workspace-write",
+                    "content": "s010-native-write-ok", "expected_file": "tool-receipt.txt",
+                    "expected_text": "s010-native-write-ok", "expected_terminal": "passed"}
+            suite = root / "suite.jsonl"
+            suite.write_text(json.dumps(case, sort_keys=True) + "\n", encoding="utf-8")
+            suite_digest = hashlib.sha256(suite.read_bytes()).hexdigest()
+            ledger_root = root / "ledger"
+            baseline = run_tool_trial(
+                binary, "workspace-write", timeout=90, ledger_root=ledger_root,
+                candidate="baseline", task_id=case["task_id"], group_id=case["group_id"],
+                suite_sha256=suite_digest, case_sha256=ledger_module.canonical_digest(case),
+                content=case["content"], expected_text=case["expected_text"],
+                expected_file=case["expected_file"], source_root=repository)
+            self.assertEqual(baseline["ledger_manifest"]["terminal"], "passed")
+            self.assertEqual(baseline["provider"], "local-openai-fixture")
+            self.assertEqual(baseline["ledger_manifest"]["subject"]["revision"], revision)
+
+            candidate_root = root / "candidate-worktrees"
+            target_root = root / "candidate-targets"
+            checkpoint = root / "optimizer.json"
+            proposal_log = root / "proposal-receipts.jsonl"
+            marker = root / "native-trial-active.json"
+            child_script = root / "optimizer_child.py"
+            child_script.write_text(r'''import json, os, sys
+from pathlib import Path
+sys.path.insert(0, os.environ["CODEGG_S010_CONTROLLER_ROOT"])
+from dev.harness_lab import budget, improve
+
+repository, suite, ledger, candidates, targets, checkpoint, proposal_log = map(
+    Path, sys.argv[1:8])
+resume = "--resume" in sys.argv[8:]
+
+def propose(worktree, _prompt, allowed, _timeout, _executable=None, _model=None,
+            spend_guard=None):
+    changelog = worktree / "CHANGELOG.harness.md"
+    changelog.write_text(
+        "## Root cause\nNo product defect is proposed; this is a non-improving control.\n\n"
+        "## Contracts\nPreserve the existing native write behavior.\n\n"
+        "## Validation\nNative ACP trial and independent file verifier.\n\n"
+        "## Accepted risks\nThe control measures crash recovery only.\n", encoding="utf-8")
+    paths = improve.changed_paths(worktree)
+    improve.check_scope(paths, allowed + ("CHANGELOG.harness.md",))
+    digest = improve.candidate_patch_sha256(worktree, paths)
+    with proposal_log.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({"provider_requests": 0, "patch_sha256": digest}) + "\n")
+    return {"changed_paths": paths, "patch_sha256": digest,
+            "proposer": {"provider_requests": 0, "usage": "not_reported"},
+            "proposer_model": None, "candidate_worktree": str(worktree),
+            "baseline_revision": "private-seeded"}
+
+improve.opencode_propose = propose
+improve.CANDIDATE_GATE_SEQUENCE = (
+    ("cargo", "fmt", "--all", "--", "--check"),
+    ("cargo", "build", "--locked", "--bin", "codegg", "--bin", "codegg-sandbox-helper"),
+    ("cargo", "fmt", "--all", "--", "--check"),
+)
+result = improve.run_optimizer(
+    repository, suite, ledger, baseline_candidate="baseline",
+    candidate_root=candidates, target_root=targets, checkpoint_path=checkpoint,
+    allowed_prefixes=("src/",), prompt="Keep the seeded behavior unchanged.",
+    max_iterations=1, max_wallclock=1800, timeout=900, resume=resume,
+    budget_policy=budget.BudgetPolicy(max_provider_requests=1))
+print(json.dumps(result, sort_keys=True))
+''', encoding="utf-8")
+
+            cargo_bin = root / "cargo-bin"
+            cargo_bin.mkdir()
+            wrapper = cargo_bin / "cargo"
+            wrapper.write_text(
+                "#!" + sys.executable + "\n"
+                "import os, pathlib, shutil, sys\n"
+                "source = pathlib.Path(os.environ['CODEGG_S010_CRASH_TARGET_CACHE'])\n"
+                "target = pathlib.Path(os.environ['CARGO_TARGET_DIR'])\n"
+                "marker = target / '.s010_crash_cache_seeded'\n"
+                "if not marker.exists():\n"
+                "    shutil.copytree(source, target, dirs_exist_ok=True)\n"
+                "    marker.touch()\n"
+                f"os.execv({str(Path(cargo).resolve())!r}, [{str(Path(cargo).resolve())!r}, *sys.argv[1:]])\n",
+                encoding="utf-8")
+            wrapper.chmod(0o700)
+
+            child_env = os.environ.copy()
+            child_env.update({
+                "PATH": str(cargo_bin) + os.pathsep + child_env.get("PATH", ""),
+                "CODEGG_S010_CONTROLLER_ROOT": str(REPO_ROOT),
+                "CODEGG_S010_CRASH_TARGET_CACHE": str(cache_source),
+                "CODEGG_HARNESS_S010_NATIVE_TRIAL_MARKER": str(marker),
+                "CODEGG_HARNESS_INHERIT_PROCESS_GROUP": "1",
+                "CARGO_BUILD_JOBS": "2", "CARGO_NET_OFFLINE": "true",
+                "CARGO_PROFILE_DEV_DEBUG": "0",
+            })
+            for key in ("OPENCODE_API_KEY", "OPENCODE_GO_API_KEY", "OPENCODE_ZEN_API_KEY",
+                        "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY",
+                        "OPENROUTER_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY",
+                        "DEEPINFRA_API_KEY", "CEREBRAS_API_KEY", "COHERE_API_KEY",
+                        "TOGETHERAI_API_KEY", "PERPLEXITY_API_KEY", "XAI_API_KEY",
+                        "VENICE_API_KEY", "MINIMAX_API_KEY", "GENERALCOMPUTE_API_KEY"):
+                child_env.pop(key, None)
+            rustc = shutil.which("rustc")
+            self.assertIsNotNone(rustc)
+            rust_toolchain = Path(rustc).resolve().parent.parent
+            child_env["DYLD_LIBRARY_PATH"] = os.pathsep.join(
+                item for item in (str(rust_toolchain / "lib"),
+                                  child_env.get("DYLD_LIBRARY_PATH", "")) if item)
+
+            arguments = [sys.executable, str(child_script), str(repository), str(suite),
+                         str(ledger_root), str(candidate_root), str(target_root),
+                         str(checkpoint), str(proposal_log)]
+            process = subprocess.Popen(arguments, cwd=REPO_ROOT, env=child_env,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       start_new_session=True)
+            deadline = time.monotonic() + 300
+            while time.monotonic() < deadline and not marker.is_file():
+                if process.poll() is not None:
+                    stdout, stderr = process.communicate()
+                    self.fail("native optimizer exited before the ACP crash gate: "
+                              + stderr.decode(errors="replace")[-5000:]
+                              + stdout.decode(errors="replace")[-2000:])
+                time.sleep(0.02)
+            self.assertTrue(marker.is_file(), "native ACP trial did not reach the crash gate")
+            observed = json.loads(marker.read_text(encoding="utf-8"))
+            self.assertEqual(observed["state"], "native_tool_completed_provider_response_active")
+            self.assertGreaterEqual(observed["provider_calls"], 2)
+            self.assertEqual(observed["tool_calls"], [{"name": "write"}])
+            self.assertEqual(observed["completed_tool_terminals"],
+                             [{"tool_call_id": "call-harness-1", "status": "completed"}])
+            self.assertEqual(os.getpgid(observed["acp_pid"]), process.pid)
+            self.assertTrue(Path(observed["private_lane_root"]).name.startswith("tool-"))
+
+            os.killpg(process.pid, signal.SIGKILL)
+            stdout, stderr = process.communicate(timeout=30)
+            self.assertEqual(process.returncode, -signal.SIGKILL,
+                             stderr.decode(errors="replace")[-3000:])
+            descendants_reaped = False
+            reap_deadline = time.monotonic() + 5
+            while time.monotonic() < reap_deadline:
+                try:
+                    os.killpg(process.pid, 0)
+                except ProcessLookupError:
+                    descendants_reaped = True
+                    break
+                time.sleep(0.02)
+            self.assertTrue(descendants_reaped,
+                            "SIGKILL left a process in the private native trial group")
+            events, _torn = improve._read_event_log(checkpoint.with_suffix(".jsonl"))
+            starts = [event for event in events if event["kind"] == "iteration_started"]
+            self.assertEqual(len(starts), 1)
+            candidate_checkpoint = Path(starts[0]["data"]["candidate_checkpoint"])
+            child_events, _child_torn = improve._read_event_log(
+                candidate_checkpoint.with_suffix(".jsonl"))
+            self.assertEqual(child_events[-1]["state"], "EVALUATING")
+            self.assertFalse(any(event["kind"] == "iteration_finished" for event in events))
+            self.assertEqual(len(proposal_log.read_text(encoding="utf-8").splitlines()), 1)
+            candidate_id = starts[0]["data"]["candidate"]
+            self.assertFalse([row for row in ledger_module.load_runs(ledger_root)
+                              if row["candidate"] == candidate_id])
+
+            private_lane = Path(observed["private_lane_root"]).resolve()
+            self.assertTrue(private_lane.name.startswith("tool-"))
+            self.assertTrue(private_lane.is_relative_to(Path.home() / ".codegg-harness-lanes"))
+            shutil.rmtree(private_lane)
+            self.assertFalse(private_lane.exists())
+
+            resumed = subprocess.run(arguments + ["--resume"], cwd=REPO_ROOT,
+                                     env={key: value for key, value in child_env.items()
+                                          if key not in {"CODEGG_HARNESS_S010_NATIVE_TRIAL_MARKER",
+                                                         "CODEGG_HARNESS_INHERIT_PROCESS_GROUP"}},
+                                     capture_output=True, text=True, timeout=1800, check=False)
+            self.assertEqual(resumed.returncode, 0, resumed.stderr[-5000:])
+            result = json.loads(resumed.stdout.strip().splitlines()[-1])
+            self.assertEqual(result["status"], "NO_IMPROVEMENT")
+            self.assertEqual(result["budget_guard"]["provider_requests"], 0)
+            self.assertEqual(len(proposal_log.read_text(encoding="utf-8").splitlines()), 1)
+            candidate_rows = [row for row in ledger_module.load_runs(ledger_root)
+                              if row["candidate"] == candidate_id]
+            self.assertEqual(len(candidate_rows), 1)
+            self.assertEqual(candidate_rows[0]["terminal"], "passed")
+            self.assertEqual(ledger_module.attempts_by_pair(ledger_root, candidate_id),
+                             {(case["task_id"], 0): 1})
+            final_events, _final_torn = improve._read_event_log(checkpoint.with_suffix(".jsonl"))
+            finished = [event for event in final_events
+                        if event["kind"] == "iteration_finished"]
+            run_finished = [event for event in final_events
+                            if event["kind"] == "run_finished"]
+            self.assertEqual(len(finished), 1)
+            self.assertEqual(len(run_finished), 1)
+
+            receipt_value = os.environ.get("CODEGG_S010_CRASH_RECEIPT_PATH")
+            if receipt_value:
+                build_workspace = cache_source.parent
+                build_revision = subprocess.check_output(
+                    ["git", "-C", str(build_workspace), "rev-parse", "HEAD"],
+                    text=True).strip()
+                proposal = json.loads(proposal_log.read_text(encoding="utf-8").splitlines()[0])
+                receipt = {
+                    "schema": "s010_native_trial_crash_resume_v1",
+                    "controller_revision": subprocess.check_output(
+                        ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+                        text=True).strip(),
+                    "subject_revision": revision,
+                    "binary_build_revision": build_revision,
+                    "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+                    "host_architecture": __import__("platform").machine(),
+                    "host_platform": sys.platform,
+                    "crash_observation": {
+                        "state": observed["state"],
+                        "provider_fixture_calls_before_sigkill": observed["provider_calls"],
+                        "native_tool_calls": observed["tool_calls"],
+                        "completed_tool_terminals": observed["completed_tool_terminals"],
+                        "acp_process_joined_optimizer_process_group": True,
+                        "optimizer_exit_signal": "SIGKILL",
+                        "candidate_checkpoint_state_after_crash": child_events[-1]["state"],
+                        "ambiguous_trial_rows_before_resume": 0,
+                        "private_lane_process_group_reaped": descendants_reaped,
+                        "private_lane_removed": not private_lane.exists(),
+                    },
+                    "resume": {
+                        "optimizer_status": result["status"],
+                        "candidate_terminal": candidate_rows[0]["terminal"],
+                        "proposed_patch_sha256": proposal["patch_sha256"],
+                        "candidate_pair_attempts": 1,
+                        "proposal_count_across_crash_and_resume": 1,
+                        "optimizer_iteration_finished_count": len(finished),
+                        "optimizer_run_finished_count": len(run_finished),
+                        "external_provider_requests": result["budget_guard"]["provider_requests"],
+                        "cost_usd": "not_applicable_no_external_provider_requests",
+                    },
+                    "provider_fixture": "local_openai_compatible_loopback_only",
+                    "qualification_result": "no_op_rejected_after_resumed_native_trial",
+                }
+                receipt_path = Path(receipt_value).expanduser().resolve()
+                receipt_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary_receipt = receipt_path.with_name(receipt_path.name + ".tmp")
+                temporary_receipt.write_text(
+                    json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+                os.replace(temporary_receipt, receipt_path)
+
+
 class CampaignResourceContentionTests(unittest.TestCase):
     def test_parallel_offline_cargo_builds_use_disjoint_capped_targets(self) -> None:
         cargo = shutil.which("cargo")
