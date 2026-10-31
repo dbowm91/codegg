@@ -91,8 +91,10 @@ class CurrentDefectIntakeTests(unittest.TestCase):
             "schema": "h007_native_intake_observation_v1",
             "task_id": "h007-dependent-rust-and-exact-job",
             "trial_returned": True,
+            "native_terminal": "end_turn",
             "binary_sha256": "a" * 64,
             "tool_call_count": 2,
+            "event_gap_count": 0,
         }
         self.assertEqual(intake._classify(1, "FAIL: native sequence\nAssertionError: gap count 1\nFAILED (failures=1)",
                                           native_observation),

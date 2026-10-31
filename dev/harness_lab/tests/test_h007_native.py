@@ -112,7 +112,8 @@ class H007NativeJobSequenceTest(unittest.TestCase):
                 "binary_sha256": trial["source_sha256"],
                 "tool_call_count": len(trial["tool_calls"]),
                 "event_gap_count": trial["event_gap_count"],
-                "native_terminal": trial["ledger_manifest"]["terminal"],
+                "native_terminal": trial.get("ledger_manifest", {}).get(
+                    "terminal", trial.get("stop_reason")),
             }
             with observation_path.open("x", encoding="utf-8") as destination:
                 destination.write(json.dumps(observation, sort_keys=True) + "\n")

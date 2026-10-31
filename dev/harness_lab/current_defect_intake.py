@@ -86,10 +86,13 @@ def _is_native_trial_observation(observation: dict[str, Any] | None) -> bool:
             and observation.get("schema") == "h007_native_intake_observation_v1"
             and observation.get("task_id") == "h007-dependent-rust-and-exact-job"
             and observation.get("trial_returned") is True
+            and observation.get("native_terminal") == "end_turn"
             and isinstance(observation.get("binary_sha256"), str)
             and bool(re.fullmatch(r"[0-9a-f]{64}", observation["binary_sha256"]))
             and isinstance(observation.get("tool_call_count"), int)
-            and observation["tool_call_count"] > 0)
+            and observation["tool_call_count"] > 0
+            and isinstance(observation.get("event_gap_count"), int)
+            and observation["event_gap_count"] >= 0)
 
 
 def _execute(root: Path, binary: Path, lane: Path) -> dict[str, Any]:
