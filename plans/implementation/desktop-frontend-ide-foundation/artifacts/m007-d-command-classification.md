@@ -609,12 +609,18 @@ smuggled into this milestone.
   `/research`. Each is a surface the
   daemon has not exposed as a command. | no — these extend request
   families that already exist |
-| M007-I | the 2 **subsystem moves**:
-  `/shell-ask`, `/skill-promote`. Each is a workflow of
+| M007-I | the 3 **subsystem moves**:
+  `/diff`, `/shell-ask`, `/skill-promote`. Each is a workflow of
   more than one daemon request rather than one effect, so moving it is a
   milestone with its own ownership question — which daemon owns the
-  workflow's state, and whether the frontend keeps any of it. | **yes** —
-  each is a new ownership boundary, and ADR-0052 does not cover it |
+  workflow's state, and whether the frontend keeps any of it. `/diff` is
+  the one whose premise the milestone corrected: it measured as a **single**
+  synchronous local effect, and ADR-0058 accepted Option B — **all three**
+  moves — so it moved too, to a daemon-owned owner that opens a canonical
+  `Run` per read. **M007-I is implemented** under accepted ADR-0058. |
+  **yes** —
+  each is a new ownership boundary, and ADR-0052 does not cover it;
+  ADR-0058 records the accepted decision |
 
 ### The forms whose TUI arm issues a daemon request
 

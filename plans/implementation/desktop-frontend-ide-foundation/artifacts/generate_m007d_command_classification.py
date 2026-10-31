@@ -1382,17 +1382,18 @@ _misclassified(
     "the TUI lists its own agent registry (`app.agent_state`); the catalog's kind is wrong and the corrected kind is `FrontendEffect`",
 )
 
-# The git-review diff view is the frontend's own: the arm runs one local
-# `git` subprocess — `git diff`, or `git show HEAD:<path>` when a path is
-# given — and reads one file, and the two branches are mutually exclusive.
-# The git root comes from `crate::worktree::find_git_root`, which is
-# `egggit`'s read-only worktree reader, not `codegg-git`'s typed writer.
-_misclassified(
-    "/diff",
-    "the arm's effect is the frontend's own: one local `git` subprocess and one file read, "
-    "with the git root read through the read-only `egggit` crate — no daemon-mediated "
-    "process is driven",
-)
+# The git-review diff view **used to** be the frontend's own: the arm ran
+# one local `git` subprocess — `git diff`, or `git show HEAD:<path>` when a
+# path is given — and read one file, and the two branches were mutually
+# exclusive. The git root came from `crate::worktree::find_git_root`, which
+# is `egggit`'s read-only worktree reader, not `codegg-git`'s typed writer.
+#
+# M007-I moved it. The daemon's effect table now serves it, so the catalog's
+# kind (`DaemonEffect`) is **correct** and the form is not in the
+# unserved set below — the misclassification verdict that used to carry it
+# is **gone**, and the arm's verdict is now the one ADR-0058 decided. The
+# verdict table keeps the name, so the milestone's own list derives it
+# rather than carrying a hand-written one.
 
 # The research forms read the TUI's own research service over the local
 # filesystem. No daemon request is their effect.
@@ -1624,6 +1625,20 @@ _arm(
 )
 
 # The git-review and memory forms are subsystem moves.
+#
+# `/diff` is one of them, and it is the one whose premise the milestone
+# corrected: it measured as a **single** synchronous local effect — one
+# `git` subprocess, or one `git` subprocess plus one file read on the
+# path form — and not a workflow of dozens of requests. ADR-0058 accepted
+# Option B (**all three moves**), so the diff view moved anyway, to a
+# daemon-owned owner with a canonical `Run` per read. Its verdict is the
+# milestone's decision, and the milestone's own list derives the name from
+# here rather than carrying a hand-written one.
+_arm(
+    "/diff",
+    "subsystem move",
+    "the git-review diff view is a subsystem in its own right; ADR-0058 accepted Option B — all three moves — so it moved to a daemon-owned owner that opens a canonical `Run` per read",
+)
 _arm(
     "/memory-consolidate",
     "not mechanical",
@@ -2069,8 +2084,14 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     write("  " + ", ".join(f"`{name}`" for name in m007i) + ". Each is a workflow of")
     write("  more than one daemon request rather than one effect, so moving it is a")
     write("  milestone with its own ownership question — which daemon owns the")
-    write("  workflow's state, and whether the frontend keeps any of it. | **yes** —")
-    write("  each is a new ownership boundary, and ADR-0052 does not cover it |")
+    write("  workflow's state, and whether the frontend keeps any of it. `/diff` is")
+    write("  the one whose premise the milestone corrected: it measured as a **single**")
+    write("  synchronous local effect, and ADR-0058 accepted Option B — **all three**")
+    write("  moves — so it moved too, to a daemon-owned owner that opens a canonical")
+    write("  `Run` per read. **M007-I is implemented** under accepted ADR-0058. |")
+    write("  **yes** —")
+    write("  each is a new ownership boundary, and ADR-0052 does not cover it;")
+    write("  ADR-0058 records the accepted decision |")
     write("")
     write("### The forms whose TUI arm issues a daemon request")
     write("")
