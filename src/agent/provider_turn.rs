@@ -66,7 +66,12 @@ const MAX_ATTEMPTS: usize = 3;
 const BASE_RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 const STREAM_SETUP_TIMEOUT: Duration = Duration::from_secs(120);
-const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+// OpenCode Go can keep an HTTP response active while the first decodable
+// ChatEvent is delayed. Live diagnostics observed a valid stream whose first
+// decoded event arrived after 83 seconds, and another with body progress but
+// no decoded event at the old 90-second edge. Keep the event-silence bound
+// finite, with 30 seconds of margin over the longest observed latency.
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 async fn stream_with_retry(
     loop_: &mut AgentLoop,
@@ -606,9 +611,9 @@ async fn stream_once(
             return Err((cancelled_error(), visible_output));
         }
         let wait_started = Instant::now();
-        let next_event = tokio::time::timeout(
-            STREAM_IDLE_TIMEOUT,
+        let next_event = next_event_with_idle_timeout(
             tracing::Instrument::instrument(stream.next(), stream_span.clone()),
+            STREAM_IDLE_TIMEOUT,
         )
         .await
         .map_err(|_| {
@@ -784,6 +789,16 @@ async fn stream_once(
     Ok((events, visible_output))
 }
 
+async fn next_event_with_idle_timeout<T, F>(
+    next: F,
+    idle_timeout: Duration,
+) -> Result<Option<T>, tokio::time::error::Elapsed>
+where
+    F: std::future::Future<Output = Option<T>>,
+{
+    tokio::time::timeout(idle_timeout, next).await
+}
+
 fn chat_event_kind(event: &ChatEvent) -> &'static str {
     match event {
         ChatEvent::TextDelta(_) => "text_delta",
@@ -798,6 +813,7 @@ fn chat_event_kind(event: &ChatEvent) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::{stream, StreamExt};
 
     #[test]
     fn backoff_cap_grows_and_respects_hint_cap() {
@@ -836,6 +852,32 @@ mod tests {
         let b = new_attempt_id();
         assert_eq!(a.len(), 8);
         assert_ne!(a, b);
+    }
+
+    #[tokio::test]
+    async fn delayed_first_event_is_allowed_within_stream_idle_bound() {
+        assert_eq!(STREAM_IDLE_TIMEOUT, Duration::from_secs(120));
+        let mut events = Box::pin(stream::once(async {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            Ok::<_, ProviderError>(ChatEvent::TextDelta(Arc::new("first event".to_string())))
+        }));
+
+        let next = next_event_with_idle_timeout(events.next(), STREAM_IDLE_TIMEOUT)
+            .await
+            .expect("first event should arrive within the configured idle bound");
+        assert!(
+            matches!(next, Some(Ok(ChatEvent::TextDelta(text))) if text.as_str() == "first event")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_silent_provider_stream_still_times_out() {
+        let mut events = Box::pin(stream::pending::<Result<ChatEvent, ProviderError>>());
+        let timeout = Duration::from_millis(10);
+
+        assert!(next_event_with_idle_timeout(events.next(), timeout)
+            .await
+            .is_err());
     }
 
     #[test]
