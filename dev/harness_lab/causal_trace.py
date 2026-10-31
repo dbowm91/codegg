@@ -12,7 +12,7 @@ MAX_EVENTS = 10_000
 MAX_BYTES = 1_048_576
 _JOB_ID = re.compile(r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b", re.I)
 _JOB_STATUS = re.compile(r"\bjob\s+(queued|running|completed|failed|cancelled|canceled|timed_out|still-running)\b", re.I)
-_TOOLS = frozenset({"read", "write", "edit", "bash", "test", "job", "lint", "format",
+_TOOLS = frozenset({"read", "write", "edit", "bash", "test", "job", "task", "lint", "format",
                     "python", "git", "context_read", "unknown"})
 
 

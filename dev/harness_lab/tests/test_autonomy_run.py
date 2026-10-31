@@ -334,6 +334,12 @@ class ProviderRequestAccountingTests(unittest.TestCase):
 class RunCaseRefusalTests(unittest.TestCase):
     """A run that cannot be trusted must stop before a provider is called."""
 
+    def test_disk_preflight_uses_nearest_existing_ancestor_for_new_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp).resolve()
+            missing_lane = root / "not-created" / "case00"
+            self.assertEqual(autonomy_run._nearest_existing_directory(missing_lane), root)
+
     def test_a_deferred_case_is_refused(self) -> None:
         suite = autonomy.load_autonomy_suite()
         deferred = [case for case in suite.cases if case.support != "supported"]
