@@ -1,6 +1,6 @@
 # TUI Compact Command Corrective — Subsystem Roadmap
 
-Status: closed (opened 2026-10-25 by the owner's direction; C001 closed 2026-10-31)
+Status: closed (opened 2026-10-25 by the owner's direction; C001 and C002 closed 2026-10-31)
 
 ## 1. What this line is
 
@@ -55,11 +55,13 @@ evidence, and is not decided by the implementer.
 | Milestone | Scope | Dependency | Status |
 |---|---|---|---|
 | C001 | `/compact` reports only what happened; the command's outcome is truthful, and the manual-compaction question is recorded with its evidence | none — the defect is self-contained | **closed 2026-10-31** — plan `plans/implementation/tui-compact-command-corrective/001-compact-command-has-a-sender.md`, closure `plans/closure/tui-compact-command-corrective/001-status.md`. Shape B was taken: the command reports what compaction is and what this TUI has observed, and sends no request. The manual-compaction question is **recorded, not decided** — the proposed `CoreRequest` variant and the daemon's right to refuse are in the closure's §10.1 |
+| C002 | the daemon compacts when a frontend asks: `/compact` is a daemon effect, the daemon performs the compaction, and it does not refuse | the owner's decision on the question C001 recorded (ADR-0060) | **closed 2026-10-31** — plan `plans/implementation/tui-compact-command-corrective/002-the-daemon-compacts-on-request.md`, closure `plans/closure/tui-compact-command-corrective/002-status.md`, decision `plans/adrs/ADR-0060-frontend-requested-compaction.md`. The owner answered on 2026-10-31: *"ideally no, if a frontend asks for compaction, the daemon should do the compaction and not refuse."* The command is a daemon effect under `command.execute`, the daemon performs the compaction through its own engine at its next compaction opportunity for the session, and the frontend reports the daemon's answer |
 
 ## 4. Closure boundary
 
 This line's closure evidence is C001's closure record at
-`plans/closure/tui-compact-command-corrective/001-status.md`.
+`plans/closure/tui-compact-command-corrective/001-status.md` and C002's at
+`plans/closure/tui-compact-command-corrective/002-status.md`.
 
 **Discharged 2026-10-31.** C001 closed with **Shape B**: the command's
 outcome is truthful on every path, and both of its surfaces reach one
@@ -75,10 +77,19 @@ compacting unless the threshold is crossed,
 `src/agent/context_runtime.rs:896`). Both now reach
 `src/tui/commands/tasks.rs:710`.
 
-The desktop is the line's **third** surface: it does not carry the
-`compact_session` action, so `/compact` there reports that it does not
-implement it. That is honest, and it is recorded as a follow-up rather than
+The desktop is the line's **third** surface: it did not carry the
+`compact_session` action, so `/compact` there reported that it did not
+implement it. That was honest, and it was recorded as a follow-up rather than
 changed here.
+
+**Discharged 2026-10-31 (C002).** The owner answered the question C001
+recorded — *"ideally no, if a frontend asks for compaction, the daemon should
+do the compaction and not refuse"* — and `plans/adrs/ADR-0060-frontend-requested-compaction.md`
+records the decision and its shape. `/compact` is now a **daemon effect**:
+the daemon performs the compaction through `compact_context`, the canonical
+engine, at its next compaction opportunity for the session, and the frontend
+reports the daemon's answer. The desktop's third surface is therefore closed
+by consequence: its palette routes a daemon-served form to the daemon.
 
 ## 5. What this line must not do
 
@@ -86,6 +97,8 @@ changed here.
   tracker and the loop's behaviour are not in scope; the automatic path works.
 - **No new protocol variant without the owner's decision.** A
   "compact now" request is a new capability on the daemon's surface, and ADR-
-  shaped authority questions are the owner's, not the implementer's.
+  shaped authority questions are the owner's, not the implementer's. **C002
+  carries the owner's decision** (ADR-0060), so the variant it adds is
+  authorised; the rule still binds every line that has not been answered.
 - **No change to the TUI's rendering of `AppEvent::CompactionTriggered`.** The
   daemon's report is already handled truthfully.

@@ -59,7 +59,7 @@ best-effort emission, redaction, backpressure, and operator reads).
 
 ## Action and visibility taxonomy
 
-Known actions (`AuditAction::ALL`, 30): `authentication`,
+Known actions (`AuditAction::ALL`, 31): `authentication`,
 `authorization_decision`, `membership_change`, `node_enrollment`,
 `session_create`, `session_attach`, `prompt_submit`,
 `provider_select`, `model_select`, `agent_delegate`,
@@ -69,7 +69,7 @@ Known actions (`AuditAction::ALL`, 30): `authentication`,
 `chat_triggered_action`, `config_change`, `asset_refresh`,
 `audit_export`, `audit_query`, `work_order_lifecycle`,
 `human_shell_run`, `checkout_writer_refusal`, `process_denial`,
-`scratch_reclaim`.
+`scratch_reclaim`, `session_compact`.
 
 Writers use strict parsing (`AuditAction::parse_known` — unknown actions
 fail closed at build time with `audit_unknown_action`). Readers use
@@ -612,6 +612,24 @@ scripts/verify.sh quick
 ```
 
 ## Source verification
+
+**2026-10-31 re-verification (C002, ADR-0060).** C002 added the
+`session_compact` action and the `session_compact` operation mapping. The
+action taxonomy above was re-measured against `AuditAction::ALL` in
+`crates/codegg-core/src/audit.rs`: the canonical list holds **31** entries,
+and the taxonomy section lists exactly those 31 names. The operation
+classification was re-measured: `INSTRUMENTED_OPERATIONS` holds **119**
+entries, `UNINSTRUMENTED_OPERATIONS` holds **164**, the union covers all
+**283** operations with zero overlap, and `REQUIRED_AUDIT_COVERAGE` holds
+exactly **31** rows — one per `AuditAction::ALL`.
+
+The action is its own rather than a reuse of `prompt_submit`: no prompt was
+submitted. The audited event is the **request** — a caller asked the daemon
+to compact a session's context — and the compaction it causes is reported by
+the daemon's own `CompactionTriggered`, not by an audit row. Its metadata is
+bounded to one key, `session.compaction_requested`: the request names the
+session and nothing else, so no path, model, policy or turn identity enters
+audit metadata.
 
 **2026-10-23 re-verification.** Re-measured the action taxonomy against
 `AuditAction::ALL` in `crates/codegg-core/src/audit.rs`: the canonical
