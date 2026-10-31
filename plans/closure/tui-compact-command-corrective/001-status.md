@@ -162,8 +162,21 @@ registry's builtin mapping, and that both paths produce the same message.
 | `python3 scripts/check_test_duplication.py` | **PASS** |
 | `python3 scripts/check_command_catalog_ownership.py` | **PASS** |
 | `python3 scripts/check_frontend_action_set.py` | **PASS** |
+| `python3 scripts/check_adr_integrity.py` | **PASS** |
 
-### 4.4 The daemon's automatic compaction still fires
+### 4.4 The hosted receipts
+
+PR `#225` carries the milestone. The hosted lanes on head
+`d64e58455`:
+
+| Lane | Run | Outcome |
+|---|---|---|
+| `CI / verify` | `41221259491` | **green** |
+| `Desktop E2E` | `41222463559` | **green** |
+| `Windows process launcher` | `41222466035` | **green** |
+| `Linux M004 process and IPC qualification` | `41222468217` | **green** |
+
+### 4.5 The daemon's automatic compaction still fires
 
 The daemon's own compaction family is untouched and green — **73 members of
 `tests/agent_loop/compaction.inc` match `compact` and all pass**, including:
