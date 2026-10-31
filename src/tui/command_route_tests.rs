@@ -975,6 +975,63 @@ async fn the_principal_listing_is_executed_by_the_daemon() {
     );
 }
 
+/// The addressed reply is executed by the daemon, as the `subagent_send`
+/// command.
+///
+/// M007-H moved `/subagent-send` behind the daemon's command executor. The
+/// frontend names the command, the session and the text; the **daemon**
+/// resolves the turn, because `TurnSteer` is keyed on a session turn and the
+/// frontend holds no turn id it could name safely.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_addressed_reply_is_executed_by_the_daemon_as_the_subagent_send_command() {
+    let recorder = Arc::new(RecordingClient::default());
+    let mut app = app_with_project(recorder.clone());
+    app.ui_state
+        .subagents
+        .set_rows(vec![crate::tui::app::state::SubagentRow {
+            transcript: None,
+            child_instance_id: None,
+            task_id: "task-1".to_string(),
+            run_id: Some("run-1".to_string()),
+            display_name: Some("Sally".to_string()),
+            profile: None,
+            usefulness: None,
+            agent: "explore".to_string(),
+            description: "find the retry path".to_string(),
+            status: "running".to_string(),
+        }]);
+    assert!(
+        crate::tui::commands::subagent_steer::arm_addressee(&mut app, "task-1"),
+        "the live run must be addressable"
+    );
+
+    crate::tui::commands::subagent_steer::start_subagent_reply(
+        &mut app,
+        "try the second retry first".to_string(),
+    );
+    wait_for_command(&recorder, "subagent_send").await;
+    let (command_id, form, argument) =
+        recorded_for(&recorder, "subagent_send").expect("the addressed reply is a command");
+    assert_eq!(command_id, "subagent_send");
+    assert_eq!(
+        form, "",
+        "the command's default form is the only form it has"
+    );
+    assert!(
+        argument.contains("Sally"),
+        "the addressee's name travels in the argument: {argument:?}"
+    );
+    assert!(
+        argument.ends_with("try the second retry first"),
+        "the user's own words are sent verbatim: {argument:?}"
+    );
+    assert!(
+        !argument.contains("task-1"),
+        "the subagent's task id is not the steer recipient, and it must not be \
+         named as one: {argument:?}"
+    );
+}
+
 // ── 3. The outcome ───────────────────────────────────────────────────/// The response the TUI's presentation receives is the daemon's inner
 /// response, verbatim.
 ///

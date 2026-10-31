@@ -1904,6 +1904,59 @@ mod tests {
         }
     }
 
+    /// The `subagent_send` row steers the turn the **session** runs, and never
+    /// the subagent's task id.
+    ///
+    /// M007-H moved `/subagent-send` behind the command executor, so this row
+    /// is what names the turn. The frontend holds the subagent's `task_id` — a
+    /// daemon-local `u64` — and `TurnSteer` is keyed on a *session turn*, so a
+    /// steer naming the task id would resolve to `turn_id_mismatch` every
+    /// time. The row takes the turn the daemon resolved for the session.
+    ///
+    /// A session that runs no turn names none: the daemon's own `TurnSteer`
+    /// handler refuses the empty turn, which is the answer the user sees.
+    #[test]
+    fn the_subagent_send_row_steers_the_resolved_session_turn() {
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session"),
+            turn_id: Some("turn-live"),
+            argument: "try the second retry first",
+            authority: None,
+        };
+        let Some(CommandEffect::Ready(request)) = build_inner_request("subagent_send", "", &ctx)
+        else {
+            panic!("the addressed reply must build a request");
+        };
+        let value = serde_json::to_value(request).expect("request serializes");
+        assert_eq!(value["type"], "turn_steer");
+        assert_eq!(value["session_id"], "session");
+        assert_eq!(
+            value["turn_id"], "turn-live",
+            "the steer names the turn the session runs"
+        );
+        assert_eq!(value["text"], "try the second retry first");
+
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session"),
+            turn_id: None,
+            argument: "try the second retry first",
+            authority: None,
+        };
+        let Some(CommandEffect::Ready(request)) = build_inner_request("subagent_send", "", &ctx)
+        else {
+            panic!("the addressed reply must build a request");
+        };
+        let value = serde_json::to_value(request).expect("request serializes");
+        assert_eq!(
+            value["turn_id"], "",
+            "a session that runs no turn names no turn, and never the task id"
+        );
+    }
+
     #[test]
     fn lsp_workflow_forms_build_typed_session_scoped_requests() {
         let ctx = CommandContext {
