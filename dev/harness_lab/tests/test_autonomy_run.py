@@ -340,6 +340,7 @@ class RunCaseRefusalTests(unittest.TestCase):
             missing_lane = root / "not-created" / "case00"
             self.assertEqual(autonomy_run._nearest_existing_directory(missing_lane), root)
 
+
     def test_a_deferred_case_is_refused(self) -> None:
         suite = autonomy.load_autonomy_suite()
         deferred = [case for case in suite.cases if case.support != "supported"]
@@ -531,6 +532,17 @@ class RunCaseRefusalTests(unittest.TestCase):
                                       budget_policy=policy,
                                       lane_root=deep)
             self.assertIn("sun_path", str(caught.exception))
+
+
+class H007ModelRouteTests(unittest.TestCase):
+    def test_authorized_deepseek_route_is_accepted_and_other_routes_are_refused(self) -> None:
+        self.assertIn("opencode_go/deepseek-v4.1-flash",
+                      autonomy_run.H007_ALLOWED_MODEL_ROUTES)
+        self.assertIn("opencode_go/muse-spark-1.3-contributor",
+                      autonomy_run.H007_ALLOWED_MODEL_ROUTES)
+        autonomy_run._validate_h007_model_route("opencode_go/deepseek-v4.1-flash")
+        with self.assertRaisesRegex(HarnessError, "explicit qualification allowlist"):
+            autonomy_run._validate_h007_model_route("opencode_go/unapproved-model")
 
 
 class IsolationTests(unittest.TestCase):

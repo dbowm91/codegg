@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "campaign_id": "s016-deepseek-long-run-corrective-loop-20261031",
+  "authorization_source": "user message dated 2026-10-31: change model to DeepSeek 4.1 Flash; authorize up to 20 runs; attempt long run; after a failure diagnose and correct narrowly before the next long run; continue until long-run qualification or 20 runs exhausted",
+  "authorized_route": "opencode_go/deepseek-v4.1-flash",
+  "max_started_runs": 20,
+  "per_run_provider_request_ceiling": 60,
+  "per_run_wall_clock_seconds": 3600,
+  "minimum_free_disk_bytes": 10737418240,
+  "execution": "sequential; long qualification first, then diagnostic on failure, narrow evidence-backed correction if CodeGG defect is reproduced, then retry unchanged long qualification",
+  "cancellation": "operator request, per-run cap exhaustion, free disk below floor or unreadable disk state, sensitive-data exposure, or unobservable provider admission",
+  "usd_cost": "record provider-reported cost when available; otherwise unknown; no separate USD ceiling was stated",
+  "qualification_fixture": "dev/harness_lab/fixtures/agent_autonomy_h007/cases.jsonl",
+  "qualification_fixture_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "runs": []
+}
