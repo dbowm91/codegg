@@ -747,10 +747,37 @@
       "provider_admission_receipt_sha256": "e10cba4e84b8b3c65a9ebb2e6118e245a670d13fa79c4241cf0948ba1c1af6ea",
       "causal_trace_sha256": "1b10e5df9c02598bbcfbfe5af3ccc40e685831a0b5e789a4578b24901a6b5250",
       "summary_path": "plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-12-summary.json"
+    },
+    {
+      "run_index": 13,
+      "run_kind": "diagnostic",
+      "status": "started",
+      "counts_as_live_provider_run": true,
+      "started_at_utc": "2026-10-31T22:46:59Z",
+      "controller_commit": "637907010860502a11f9c161b5f990ae1f9ca933",
+      "source_binary_commit": "94fc8d41ff61e5963adf5779475fd9ee08569493",
+      "binary_sha256": "16481cc8bf0d8866db352c3aab90c35950bde37e5799be1458a43012d594fe2a",
+      "binary_architecture": "arm64",
+      "sandbox_helper_sha256": "37ee6c8cd876d1e05bbd650c7a26520753fe55534ac821a52d9089712d751d43",
+      "route": "opencode_go/deepseek-v4.1-flash",
+      "model": "deepseek-v4.1-flash",
+      "request_ceiling": 20,
+      "wall_clock_ceiling_seconds": 900,
+      "minimum_free_disk_bytes": 10737418240,
+      "free_disk_bytes_at_start": 26749083648,
+      "lane_root": "/private/tmp/s016-live13",
+      "receipt_path": "/private/tmp/s016-attempt13.json",
+      "fixture_manifest": "dev/harness_lab/fixtures/agent_autonomy_s016_natural_overlap_diagnostic_v4/cases.jsonl",
+      "fixture_manifest_sha256": "11736931e8e6581f6dacfcc1509c180e9126f6af8466c625cb4e94bde7c79caa",
+      "fixture_source_contract_corpus_verifier_unchanged": true,
+      "qualification_fixture_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d3f187c2f6f4fc178",
+      "prompt_revision": "one offline --release --workspace test job; continuation with exact ID; two substantive dependent edits before first status poll; no artificial delay"
     }
   ],
   "active_qualification_fixture": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v3/cases.jsonl",
   "active_qualification_fixture_sha256": "8aa4d4af9fc36334819a9e494d5f7f02d58437be9bed6fa1ad672b7d16f4f875",
   "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
-  "fixture_revision_note": "Runs 1-4 used the original H007 manifest and its recorded digest. Run 5 onward uses versioned prompt calibration without changing the source fixture, contract, corpus, public tests, hidden verifier, or acceptance criteria. Runs 5-9 used promptfix v1; run 10 used promptfix v2. Run 12 onward uses promptfix v3, which maps every asynchronous test submission to exact-ID terminal polling and orders each test lifecycle after run 11 confirmed sequential ID tracking works in a focused diagnostic."
+  "fixture_revision_note": "Runs 1-4 used the original H007 manifest and its recorded digest. Run 5 onward uses versioned prompt calibration without changing the source fixture, contract, corpus, public tests, hidden verifier, or acceptance criteria. Runs 5-9 used promptfix v1; run 10 used promptfix v2. Run 12 onward uses promptfix v3, which maps every asynchronous test submission to exact-ID terminal polling and orders each test lifecycle after run 11 confirmed sequential ID tracking works in a focused diagnostic.",
+  "active_diagnostic_fixture": "dev/harness_lab/fixtures/agent_autonomy_s016_natural_overlap_diagnostic_v4/cases.jsonl",
+  "active_diagnostic_fixture_sha256": "11736931e8e6581f6dacfcc1509c180e9126f6af8466c625cb4e94bde7c79caa"
 }
