@@ -309,5 +309,9 @@
       "causal_trace_sha256": "06e33a8fb02be34b08fd6e21cdcf46c45d2a6af17daeed4e038fd2447a899da1",
       "interpretation": "The diagnostic again showed all 42 provider requests and all 42 ACP tool starts/terminals observed without event gaps, provider idle timeout, or activity-stall termination. The background test job completed successfully in 5.656 seconds. The agent observed it running 2.980 seconds after submission, but its next tool started 13.816 seconds after that status; no source file changed during the job, and it never polled terminal state. The daemon persisted the completed state and a pending terminal notice. The model ended normally after 10.06 minutes; the hidden verifier could not complete because the final Cargo test command failed to compile/test the catalog-cli target (0 tests ran). This reproduces a workload/agent-sequencing gap: the task prompt does not state the 30-minute substantive-work requirement, and the prescribed background test is too short to support realistic downstream edits between model turns. It does not reproduce an ACP, scheduler, job-store, provider-stream, or disk-control failure."
     }
-  ]
+  ],
+  "active_qualification_fixture": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v1/cases.jsonl",
+  "active_qualification_fixture_sha256": "3bb3bcb6f802fcf317f064101bf116ca3b96111fa8d26984753a157350bb1df2",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "fixture_revision_note": "Runs 1-4 used the original H007 manifest and its recorded digest. After run 4 reproduced that the prompt omitted the active-work horizon and the prescribed job completed in 5.656 seconds before a source edit, run 5 onward uses the versioned prompt correction. The source fixture, contract, corpus, public tests, hidden verifier, and acceptance criteria remain unchanged."
 }
