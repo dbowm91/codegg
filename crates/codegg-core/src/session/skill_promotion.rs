@@ -117,6 +117,22 @@ fn storage_error(error: sqlx::Error) -> SkillPromotionError {
     SkillPromotionError::Storage(error.to_string())
 }
 
+/// One record's next state.
+///
+/// The status and the payload are written **together**, because the
+/// workflow's own state carries the same status as the indexed column.
+#[derive(Debug, Clone, Copy)]
+pub struct SkillPromotionUpdate<'a> {
+    /// The record's new status.
+    pub status: &'a str,
+    /// The record's new payload.
+    pub payload: &'a str,
+    /// The record's new revision.
+    pub next_revision: i64,
+    /// When the record was written, in epoch milliseconds.
+    pub now_ms: i64,
+}
+
 /// One stored row.
 #[derive(Debug, Clone, FromRow)]
 struct PromotionRow {
@@ -277,11 +293,14 @@ impl SkillPromotionStore {
         kind: SkillPromotionKind,
         id: &str,
         expected_revision: i64,
-        status: &str,
-        payload: &str,
-        next_revision: i64,
-        now_ms: i64,
+        update: SkillPromotionUpdate<'_>,
     ) -> Result<bool, SkillPromotionError> {
+        let SkillPromotionUpdate {
+            status,
+            payload,
+            next_revision,
+            now_ms,
+        } = update;
         let payload_bytes = payload.len();
         if payload_bytes > SKILL_PROMOTION_MAX_PAYLOAD_BYTES {
             return Err(SkillPromotionError::PayloadTooLarge);

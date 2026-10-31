@@ -637,10 +637,12 @@ async fn the_rejection_lifecycle_is_monotonic_and_the_habit_stays_ready() {
             SkillPromotionKind::Proposal,
             proposal.id.as_str(),
             1,
-            SkillProposalStatus::Rejected.as_str(),
-            &payload,
-            rejected.revision as i64,
-            12,
+            codegg_core::session::skill_promotion::SkillPromotionUpdate {
+                status: SkillProposalStatus::Rejected.as_str(),
+                payload: &payload,
+                next_revision: rejected.revision as i64,
+                now_ms: 12,
+            },
         )
         .await
         .unwrap());
@@ -650,10 +652,12 @@ async fn the_rejection_lifecycle_is_monotonic_and_the_habit_stays_ready() {
             SkillPromotionKind::Proposal,
             proposal.id.as_str(),
             1,
-            SkillProposalStatus::Rejected.as_str(),
-            &payload,
-            rejected.revision as i64,
-            13,
+            codegg_core::session::skill_promotion::SkillPromotionUpdate {
+                status: SkillProposalStatus::Rejected.as_str(),
+                payload: &payload,
+                next_revision: rejected.revision as i64,
+                now_ms: 13,
+            },
         )
         .await
         .unwrap());
@@ -727,10 +731,12 @@ async fn a_malformed_persisted_proposal_fails_safely() {
             SkillPromotionKind::Proposal,
             proposal.id.as_str(),
             1,
-            "validated",
-            "{ not json",
-            2,
-            12,
+            codegg_core::session::skill_promotion::SkillPromotionUpdate {
+                status: "validated",
+                payload: "{ not json",
+                next_revision: 2,
+                now_ms: 12,
+            },
         )
         .await
         .unwrap());

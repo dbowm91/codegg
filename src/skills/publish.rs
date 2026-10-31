@@ -278,7 +278,7 @@ impl SkillPublicationService {
                 })
                 && existing_digest == request.expected_content_digest
             {
-                self.mark_habit_promoted(project_identity, &current, now)?;
+                self.mark_habit_promoted(project_identity, current, now)?;
                 return Ok(SkillPublicationResult {
                     proposal: current.clone(),
                     relative_path: relative_path.to_string(),

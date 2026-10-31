@@ -468,9 +468,10 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
         ),
         // M007-I (work packages D and E): the ask, as one request. It
         // stages the evidence and admits the turn, so it takes the same
-        // authority as the prompt submit it replaces.
+        // authority as the prompt submit it replaces. The operation is
+        // named after the command that issues it, `/shell-ask`.
         R::SessionPromptSubmitWithHumanShellPromotions { .. } => OperationDescriptor::new(
-            "session_prompt_submit_with_human_shell_promotions",
+            "shell_ask_submit",
             ScopeKind::ViaSession,
             Some(Capability::AgentInvoke),
         ),

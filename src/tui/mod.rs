@@ -565,10 +565,7 @@ mod shell_dispatch_tests {
                 );
                 assert_eq!(human_shell_promotions.len(), 1);
                 assert_eq!(human_shell_promotions[0].source_id, "daemon-run-2");
-                assert_eq!(
-                    human_shell_promotions[0].question,
-                    "explain this result"
-                );
+                assert_eq!(human_shell_promotions[0].question, "explain this result");
             }
             other => panic!("expected the atomic ask, got {other:?}"),
         }

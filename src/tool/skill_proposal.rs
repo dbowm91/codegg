@@ -40,6 +40,7 @@ struct SkillProposalInput {
 /// canonical workspace identity, so the proposal it records lands in the
 /// same record the human's staged request occupies. An unrooted tool has no
 /// store to write and refuses.
+#[derive(Debug, Default)]
 pub struct SkillProposalTool {
     store: Option<SkillPromotionStore>,
     workspace_id: Option<String>,
@@ -47,17 +48,6 @@ pub struct SkillProposalTool {
     /// Where the habit candidates live. The daemon's own root, so the tool
     /// and the daemon's request handler read the **same** candidate.
     habit_root: Option<PathBuf>,
-}
-
-impl Default for SkillProposalTool {
-    fn default() -> Self {
-        Self {
-            store: None,
-            workspace_id: None,
-            workspace_root: None,
-            habit_root: None,
-        }
-    }
 }
 
 impl SkillProposalTool {
@@ -248,7 +238,7 @@ impl Tool for SkillProposalTool {
                 now,
             },
         )
-        .map_err(|error| crate::error::ToolError::Execution(error))?;
+        .map_err(crate::error::ToolError::Execution)?;
 
         // The collision advisory is computed **before** the record is
         // written, so the proposal's own diagnostics are complete in the one

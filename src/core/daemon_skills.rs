@@ -82,32 +82,53 @@ pub(crate) async fn handle_skill_promotion(
     }
 }
 
+/// A typed refusal, in the compact form the handler converts into an
+/// answer.
+///
+/// The refusal is **not** a whole `CoreResponse`: that type is large, and a
+/// helper returning it by value would carry a kilobyte of answer for a
+/// refusal that is two strings.
+struct PromotionRefusal {
+    code: &'static str,
+    message: String,
+}
+
+impl PromotionRefusal {
+    /// The refusal, as the frontend receives it.
+    fn into_response(self) -> CoreResponse {
+        CoreResponse::Error {
+            code: self.code.to_owned(),
+            message: self.message,
+        }
+    }
+}
+
 /// The daemon's promotion store, or a typed refusal.
 fn promotion_store(
     daemon: &crate::core::daemon::CoreDaemon,
-) -> Result<SkillPromotionStore, CoreResponse> {
+) -> Result<SkillPromotionStore, PromotionRefusal> {
     let Some(pool) = daemon.pool.clone() else {
-        return Err(promotion_error(
-            REFUSAL_PROMOTION_UNAVAILABLE,
-            "the daemon has no session storage",
-        ));
+        return Err(PromotionRefusal {
+            code: REFUSAL_PROMOTION_UNAVAILABLE,
+            message: "the daemon has no session storage".to_owned(),
+        });
     };
     Ok(SkillPromotionStore::new(pool))
 }
 
 /// The canonical scope the request acts in.
-fn request_scope(request: &SkillPromotionRequestDto) -> Result<(String, String), CoreResponse> {
+fn request_scope(request: &SkillPromotionRequestDto) -> Result<(String, String), PromotionRefusal> {
     if request.workspace_id.trim().is_empty() {
-        return Err(promotion_error(
-            REFUSAL_PROMOTION_NO_WORKSPACE,
-            "the promotion request names no workspace",
-        ));
+        return Err(PromotionRefusal {
+            code: REFUSAL_PROMOTION_NO_WORKSPACE,
+            message: "the promotion request names no workspace".to_owned(),
+        });
     }
     if request.session_id.trim().is_empty() {
-        return Err(promotion_error(
-            REFUSAL_PROMOTION_NO_SESSION,
-            "the promotion request names no session",
-        ));
+        return Err(PromotionRefusal {
+            code: REFUSAL_PROMOTION_NO_SESSION,
+            message: "the promotion request names no session".to_owned(),
+        });
     }
     Ok((
         request.workspace_id.trim().to_owned(),
@@ -126,7 +147,7 @@ async fn begin_request(
 ) -> Result<CoreResponse, crate::error::AppError> {
     let (workspace_id, session_id) = match request_scope(request) {
         Ok(scope) => scope,
-        Err(refusal) => return Ok(refusal),
+        Err(refusal) => return Ok(refusal.into_response()),
     };
     let Some(habit_id) = request.habit_id.as_deref() else {
         return Ok(promotion_error(
@@ -136,7 +157,7 @@ async fn begin_request(
     };
     let store = match promotion_store(daemon) {
         Ok(store) => store,
-        Err(refusal) => return Ok(refusal),
+        Err(refusal) => return Ok(refusal.into_response()),
     };
 
     // The daemon owns the habit candidate too, so the staged request's
@@ -254,11 +275,11 @@ async fn list_proposals(
 ) -> Result<CoreResponse, crate::error::AppError> {
     let (workspace_id, _) = match request_scope(request) {
         Ok(scope) => scope,
-        Err(refusal) => return Ok(refusal),
+        Err(refusal) => return Ok(refusal.into_response()),
     };
     let store = match promotion_store(daemon) {
         Ok(store) => store,
-        Err(refusal) => return Ok(refusal),
+        Err(refusal) => return Ok(refusal.into_response()),
     };
     match store
         .list(
@@ -292,7 +313,7 @@ async fn get_proposal(
 ) -> Result<CoreResponse, crate::error::AppError> {
     let (workspace_id, _) = match request_scope(request) {
         Ok(scope) => scope,
-        Err(refusal) => return Ok(refusal),
+        Err(refusal) => return Ok(refusal.into_response()),
     };
     let Some(proposal_id) = request.proposal_id.as_deref() else {
         return Ok(promotion_error(
@@ -302,7 +323,7 @@ async fn get_proposal(
     };
     let store = match promotion_store(daemon) {
         Ok(store) => store,
-        Err(refusal) => return Ok(refusal),
+        Err(refusal) => return Ok(refusal.into_response()),
     };
     match store
         .get(&workspace_id, SkillPromotionKind::Proposal, proposal_id)
@@ -339,7 +360,7 @@ async fn preview_proposal(
 ) -> Result<CoreResponse, crate::error::AppError> {
     let (workspace_id, _) = match request_scope(request) {
         Ok(scope) => scope,
-        Err(refusal) => return Ok(refusal),
+        Err(refusal) => return Ok(refusal.into_response()),
     };
     let Some(proposal_id) = request.proposal_id.as_deref() else {
         return Ok(promotion_error(
@@ -349,7 +370,7 @@ async fn preview_proposal(
     };
     let store = match promotion_store(daemon) {
         Ok(store) => store,
-        Err(refusal) => return Ok(refusal),
+        Err(refusal) => return Ok(refusal.into_response()),
     };
     let record = match store
         .get(&workspace_id, SkillPromotionKind::Proposal, proposal_id)
@@ -395,10 +416,12 @@ async fn preview_proposal(
             SkillPromotionKind::Proposal,
             proposal_id,
             record.revision,
-            &record.status,
-            &payload,
-            record.revision,
-            proposal.updated_at,
+            codegg_core::session::skill_promotion::SkillPromotionUpdate {
+                status: &record.status,
+                payload: &payload,
+                next_revision: record.revision,
+                now_ms: proposal.updated_at,
+            },
         )
         .await
         .unwrap_or(false);
@@ -421,7 +444,7 @@ async fn reject_proposal(
 ) -> Result<CoreResponse, crate::error::AppError> {
     let (workspace_id, _) = match request_scope(request) {
         Ok(scope) => scope,
-        Err(refusal) => return Ok(refusal),
+        Err(refusal) => return Ok(refusal.into_response()),
     };
     let Some(proposal_id) = request.proposal_id.as_deref() else {
         return Ok(promotion_error(
@@ -431,7 +454,7 @@ async fn reject_proposal(
     };
     let store = match promotion_store(daemon) {
         Ok(store) => store,
-        Err(refusal) => return Ok(refusal),
+        Err(refusal) => return Ok(refusal.into_response()),
     };
     let record = match store
         .get(&workspace_id, SkillPromotionKind::Proposal, proposal_id)
@@ -484,10 +507,12 @@ async fn reject_proposal(
             SkillPromotionKind::Proposal,
             proposal_id,
             record.revision,
-            SkillProposalStatus::Rejected.as_str(),
-            &payload,
-            proposal.revision as i64,
-            proposal.updated_at,
+            codegg_core::session::skill_promotion::SkillPromotionUpdate {
+                status: SkillProposalStatus::Rejected.as_str(),
+                payload: &payload,
+                next_revision: proposal.revision as i64,
+                now_ms: proposal.updated_at,
+            },
         )
         .await
         .unwrap_or(false);
@@ -516,7 +541,7 @@ async fn publish_proposal(
 ) -> Result<CoreResponse, crate::error::AppError> {
     let (workspace_id, _session_id) = match request_scope(request) {
         Ok(scope) => scope,
-        Err(refusal) => return Ok(refusal),
+        Err(refusal) => return Ok(refusal.into_response()),
     };
     let Some(proposal_id) = request.proposal_id.as_deref() else {
         return Ok(promotion_error(
@@ -536,7 +561,7 @@ async fn publish_proposal(
     };
     let store = match promotion_store(daemon) {
         Ok(store) => store,
-        Err(refusal) => return Ok(refusal),
+        Err(refusal) => return Ok(refusal.into_response()),
     };
     let record = match store
         .get(
@@ -642,10 +667,12 @@ async fn publish_proposal(
             SkillPromotionKind::Proposal,
             proposal_id.as_str(),
             record.revision,
-            SkillProposalStatus::Published.as_str(),
-            &payload,
-            publication.proposal.revision as i64,
-            publication.proposal.updated_at,
+            codegg_core::session::skill_promotion::SkillPromotionUpdate {
+                status: SkillProposalStatus::Published.as_str(),
+                payload: &payload,
+                next_revision: publication.proposal.revision as i64,
+                now_ms: publication.proposal.updated_at,
+            },
         )
         .await
         .unwrap_or(false);
@@ -802,7 +829,7 @@ fn habit_root(daemon: &crate::core::daemon::CoreDaemon) -> PathBuf {
         .deps
         .habit_root
         .clone()
-        .unwrap_or_else(|| default_habit_root())
+        .unwrap_or_else(default_habit_root)
 }
 
 /// The standard user-scoped memory root.

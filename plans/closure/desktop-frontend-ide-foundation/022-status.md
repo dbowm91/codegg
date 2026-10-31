@@ -62,13 +62,13 @@ and a line.
 
 | # | Criterion | Evidence |
 |---|---|---|
-| 1 | `/diff` is served by the daemon, its catalog form is `daemon_served`, and the frontend no longer constructs the read itself. | The daemon's handler `src/core/daemon_git.rs` (the `GitDiff` family arm); the effect-table row `src/core/daemon_commands.rs:636`; the frontend's arm `src/tui/commands/diff.rs:24` (`start_diff`) and `:63` (`apply_diff_finished`); the catalog's descriptor `crates/codegg-core/src/command_catalog.rs:1500` (unchanged). The bespoke `handle_diff_command` is **deleted**. |
+| 1 | `/diff` is served by the daemon, its catalog form is `daemon_served`, and the frontend no longer constructs the read itself. | The daemon's handler `src/core/daemon_git.rs:84` (`handle_git_diff`), reached from the family's router at `:68`; the effect-table row `src/core/daemon_commands.rs:636`; the frontend's arm `src/tui/commands/diff.rs:24` (`start_diff`) and `:63` (`apply_diff_finished`); the catalog's descriptor `crates/codegg-core/src/command_catalog.rs:1500` (unchanged). The bespoke `handle_diff_command` is **deleted**. |
 | 2 | Each diff invocation creates a canonical `Run` that is readable back from the durable run store. | The effect-table row `src/core/daemon_commands.rs:636` runs through the daemon's canonical-`Run` path; the test `tests/core_daemon/m007i_daemon_diff.inc::a_diff_invocation_opens_a_canonical_run` reads the manifest back from `FsRunStore` and asserts `RunKind::Command`. |
 | 3 | The daemon's diff answer carries the same bytes the TUI's read produced, for both branches. | The test `tests/core_daemon/m007i_daemon_diff.inc::the_daemons_diff_answer_carries_the_frontends_own_bytes` compares the daemon's `old_content`/`new_content` against the frontend's **own** two reads (`git show HEAD:<path>` plus the working-tree file read for the path branch; one `git diff` for the bare branch). |
-| 4 | The promotion store has exactly **one** writer, and it is the daemon. | The store is `crates/codegg-core/src/session/skill_promotion.rs:145` (`SkillPromotionStore`), written only through `put` (`:158`), `compare_and_set_record` (`:274`) and `consume_request_into_proposal` (`:317`); the daemon's handler `src/core/daemon_skills.rs:65`; the tool `src/tool/skill_proposal.rs` writes through the same store. The file-backed store and its `flock` sidecar are **deleted** from `src/skills/promotion.rs`. The test `tests/core_daemon/m007i_daemon_promotion.inc::the_promotion_record_has_exactly_one_writer_and_it_is_the_daemon` drives both paths and asserts exactly one request row and one proposal row. |
-| 5 | The promotion namespace is keyed on the canonical `WorkspaceId`, and a promotion staged through the TUI is submitted successfully by the daemon tool. | The store's key is `(workspace_id, kind, id)` (`crates/codegg-core/src/session/skill_promotion.rs:145`, the migration's `PRIMARY KEY` at `crates/codegg-core/src/session/schema.rs:502`); the daemon's `Begin` stages under `request.workspace_id` (`src/core/daemon_skills.rs:123`); the tool looks the request up under the same workspace (`src/tool/skill_proposal.rs`). The test `a_promotion_staged_through_the_frontend_is_submitted_by_the_daemon_tool` stages through the daemon and submits through the tool. |
+| 4 | The promotion store has exactly **one** writer, and it is the daemon. | The store is `crates/codegg-core/src/session/skill_promotion.rs:161` (`SkillPromotionStore`), written only through `put` (`:174`), `compare_and_set_record` (`:290`) and `consume_request_into_proposal` (`:336`); the daemon's handler `src/core/daemon_skills.rs:65`; the tool `src/tool/skill_proposal.rs` writes through the same store. The file-backed store and its `flock` sidecar are **deleted** from `src/skills/promotion.rs`. The test `tests/core_daemon/m007i_daemon_promotion.inc::the_promotion_record_has_exactly_one_writer_and_it_is_the_daemon` drives both paths and asserts exactly one request row and one proposal row. |
+| 5 | The promotion namespace is keyed on the canonical `WorkspaceId`, and a promotion staged through the TUI is submitted successfully by the daemon tool. | The store's key is `(workspace_id, kind, id)` (`crates/codegg-core/src/session/skill_promotion.rs:161`, the migration's `PRIMARY KEY` at `crates/codegg-core/src/session/schema.rs:502`); the daemon's `Begin` stages under `request.workspace_id` (`src/core/daemon_skills.rs:144`); the tool looks the request up under the same workspace (`src/tool/skill_proposal.rs`). The test `a_promotion_staged_through_the_frontend_is_submitted_by_the_daemon_tool` stages through the daemon and submits through the tool. |
 | 6 | A proposal that cannot be migrated **fails loudly** rather than vanishing. | The legacy store keyed its file on a digest of a path string, so a legacy record cannot be mapped onto a workspace. `src/skills/legacy_promotion.rs:91` (`probe_legacy_promotions`) finds it and the daemon refuses with `skill_promotion_legacy_unmigrated` (`src/core/daemon_skills.rs`, the `REFUSAL_PROMOTION_LEGACY_UNMIGRATED` arm in `begin_request`), naming the record it will not drop. The test `a_legacy_proposal_that_cannot_be_migrated_fails_loudly` asserts the refusal, that the legacy file is still on disk, and that nothing was staged. |
-| 7 | The daemon publishes a skill to **both** the project scope and the global scope, and the manifest's `owner` names the daemon for both roots. | `src/core/daemon_skills.rs:513` (`publish_proposal`) resolves the project root and the global configuration root and publishes through `SkillPublicationService`; the manifest row `docs/writer-disposition.toml` `module.skills_publish` carries `owner = "CoreDaemon"` and a `locator` naming both roots. The test `the_daemon_publishes_to_both_scopes` publishes to each scope and asserts the file at `<workspace>/.codegg/skills/<name>/SKILL.md` and at `<config>/codegg/skills/<name>/SKILL.md`. |
+| 7 | The daemon publishes a skill to **both** the project scope and the global scope, and the manifest's `owner` names the daemon for both roots. | `src/core/daemon_skills.rs:538` (`publish_proposal`) resolves the project root and the global configuration root and publishes through `SkillPublicationService`; the manifest row `docs/writer-disposition.toml` `module.skills_publish` carries `owner = "CoreDaemon"` and a `locator` naming both roots. The test `the_daemon_publishes_to_both_scopes` publishes to each scope and asserts the file at `<workspace>/.codegg/skills/<name>/SKILL.md` and at `<config>/codegg/skills/<name>/SKILL.md`. |
 | 8 | A daemon-executed publication is **refused** by the C004 gate when the checkout is reserved by a live run, and the refusal is durable and attributable. | The new sink variant `src/core/checkout_mediation.rs:72` (`SkillPublish`) and `:94` (`as_str` → `"skill_publish"`); the gate call `src/core/daemon.rs:1154` (`root_write_target(CheckoutWriterSink::SkillPublish, …)`), reached from the same dispatch path as the existing sinks; the manifest row `module.skills_publish` carries `mediation = "checkout-gate"` and `mediation_markers = "CheckoutWriterSink::SkillPublish"`. The test `the_c004_gate_refuses_a_publication_into_a_reserved_checkout` asserts the typed `checkout_reserved` conflict **and** a `checkout_writer_refusal` row in the audit trail. |
 | 9 | The sink enum and the manifest agree in both directions: a declared sink no root claims fails, and a claimed marker no sink declares fails. | `scripts/check_writer_disposition.py` checks both directions (`declared - claimed` and `claimed - declared`) and its `--self-test` injects a defect to prove it is not vacuous. The test `the_sink_enum_and_the_manifest_agree_in_both_directions` re-derives the same two directions in-process from the enum's `as_str` mapping and the manifest's `mediation_markers` rows. |
 | 10 | The ask's stage-and-submit is **one** request, and a failed admission leaves **no** orphan `pending` row. | The single request `CoreRequest::SessionPromptSubmitWithHumanShellPromotions` (`crates/codegg-protocol/src/core.rs`); the daemon's handler `src/core/daemon_turns.rs:2107` (`submit_prompt_with_human_shell_promotions`) stages every promotion in **one** transaction and **expires** them when the admission fails (`codegg_core::session::HumanShellPromotionStore::expire_pending`). `CoreRequest::HumanShellPromotionStage` and the `human_shell_promotion_ids` payload are **gone** from the TUI's path. The test `the_ask_leaves_no_orphan_pending_row` asserts zero `pending` rows after a refused ask. |
@@ -279,19 +279,31 @@ Every command in the plan's §11, with its outcome.
 
 ### 4.2 `scripts/verify.sh quick`
 
-Run. It covers rustfmt, the two generated-asset checks, the guard scripts and
-a workspace `cargo check`. Its outcome is recorded in the milestone's final
-report.
+**pass** — `Quick verification passed.`, exit 0. It covers rustfmt, the two
+generated-asset checks, the 85 guard scripts (with their `--self-test`s),
+the harness-lab unit suite (412 tests) and a workspace `cargo check`.
 
 ### 4.3 `scripts/verify.sh full` — the known gap
 
-**Not run.** `full` adds clippy at `-D warnings` and the nextest workspace
-sweep. The clippy run this milestone did perform is recorded in the final
-report, under the toolchain the CI lane uses
-(`rustup run 1.99.0 cargo clippy --workspace --all-targets --locked -- -D
-warnings`), because the local default toolchain (1.89) misses lints the CI
-lane's stable toolchain (1.99.0) reports. The nextest sweep was **not**
-run: the whole-suite sweep is the parent's step, not this milestone's.
+**Not run.** `full` adds the nextest workspace sweep on top of clippy. The
+**clippy** half was run, under the toolchain the CI lane uses:
+
+```bash
+CARGO_BUILD_JOBS=2 rustup run 1.99.0 cargo clippy --workspace --all-targets --locked -- -D warnings
+```
+
+— **pass**, exit 0. The local default toolchain is 1.89, whose clippy
+misses lints the CI lane's stable toolchain (1.99.0) reports, so the CI
+toolchain is the one that matters here. Six lints were found and fixed
+before it went green: a `too_many_arguments` on the promotion store's
+compare-and-swap (the update is now one value), two `result_large_err` on
+the daemon's promotion helpers (a refusal is now a compact pair of
+strings rather than a whole `CoreResponse`), a `redundant_closure`, a
+`needless_borrow` and a `derivable_impls`.
+
+The **nextest** sweep was **not** run: the whole-suite sweep is the parent's
+step, not this milestone's. The suites this milestone touches were run
+directly, and their results are in §4.1.
 
 ---
 
@@ -387,9 +399,9 @@ run: the whole-suite sweep is the parent's step, not this milestone's.
 - **The authorization matrix grew with the milestone.** Three new operation
   descriptors — `git_diff` (a read, `GitRead`), `skill_promotion` (an
   effect, `CommandExecute`, scoped through the session) and
-  `session_prompt_submit_with_human_shell_promotions` (`AgentInvoke`,
-  scoped through the session) — and three new representative requests, so
-  the matrix's coverage assertion still holds.
+  `shell_ask_submit` (`AgentInvoke`, scoped through the session, named
+  after the command that issues it) — and three new representative
+  requests, so the matrix's coverage assertion still holds.
 - **The audit trail grew with the milestone.** `skill_promotion` is
   instrumented as `file_mutate`; `git_diff` is a read and is denied by
   `authorize_request` upstream.
