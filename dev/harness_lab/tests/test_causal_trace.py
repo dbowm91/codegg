@@ -90,6 +90,64 @@ class CausalTraceTests(unittest.TestCase):
         self.assertEqual(rows[0]["event_type"], "tool_started")
         self.assertEqual(rows[0]["tool"], "task")
 
+    def test_list_tool_is_preserved_for_live_boundary_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "trace.jsonl"
+            recorder = causal_trace.Recorder(path, run_id="run", case_id="case",
+                                             source_sha256=None, binary_sha256=None)
+            recorder.observe(notification("tool_call", toolCallId="list-call", title="list"))
+            recorder.finish()
+            rows = causal_trace.read_trace(path)
+        self.assertEqual(rows[0]["event_type"], "tool_started")
+        self.assertEqual(rows[0]["tool"], "list")
+
+    def test_glob_tool_is_preserved_for_live_boundary_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "trace.jsonl"
+            recorder = causal_trace.Recorder(path, run_id="run", case_id="case",
+                                             source_sha256=None, binary_sha256=None)
+            recorder.observe(notification("tool_call", toolCallId="glob-call", title="glob"))
+            recorder.finish()
+            rows = causal_trace.read_trace(path)
+        self.assertEqual(rows[0]["event_type"], "tool_started")
+        self.assertEqual(rows[0]["tool"], "glob")
+
+    def test_tool_search_is_preserved_for_live_tool_surface_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "trace.jsonl"
+            recorder = causal_trace.Recorder(path, run_id="run", case_id="case",
+                                             source_sha256=None, binary_sha256=None)
+            recorder.observe(notification("tool_call", toolCallId="tool-search-call",
+                                          title="tool_search"))
+            recorder.finish()
+            rows = causal_trace.read_trace(path)
+        self.assertEqual(rows[0]["event_type"], "tool_started")
+        self.assertEqual(rows[0]["tool"], "tool_search")
+
+    def test_replace_tool_is_preserved_for_live_edit_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "trace.jsonl"
+            recorder = causal_trace.Recorder(path, run_id="run", case_id="case",
+                                             source_sha256=None, binary_sha256=None)
+            recorder.observe(notification("tool_call", toolCallId="replace-call",
+                                          title="replace"))
+            recorder.finish()
+            rows = causal_trace.read_trace(path)
+        self.assertEqual(rows[0]["event_type"], "tool_started")
+        self.assertEqual(rows[0]["tool"], "replace")
+
+    def test_apply_patch_tool_is_preserved_for_live_edit_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "trace.jsonl"
+            recorder = causal_trace.Recorder(path, run_id="run", case_id="case",
+                                             source_sha256=None, binary_sha256=None)
+            recorder.observe(notification("tool_call", toolCallId="apply-patch-call",
+                                          title="apply_patch"))
+            recorder.finish()
+            rows = causal_trace.read_trace(path)
+        self.assertEqual(rows[0]["event_type"], "tool_started")
+        self.assertEqual(rows[0]["tool"], "apply_patch")
+
     def test_controller_markers_persist_only_bounded_outcomes(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "trace.jsonl"

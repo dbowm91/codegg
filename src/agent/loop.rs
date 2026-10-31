@@ -230,6 +230,7 @@ pub struct AgentLoop {
     pub(super) question_rx: Option<tokio::sync::oneshot::Receiver<String>>,
     pub(super) plugin_service: Option<Arc<crate::plugin::service::PluginService>>,
     pub(super) session_id: String,
+    pub(super) usage_session_id: String,
     /// Exact daemon-owned turn identity for this loop, when available.
     /// Durable child loops retain the originating turn for provenance while
     /// their run ID remains the invocation owner scope.
@@ -598,6 +599,7 @@ impl AgentLoop {
             question_tx: None,
             question_rx: None,
             plugin_service: None,
+            usage_session_id: session_id.clone(),
             session_id,
             turn_id: None,
             inherited_execution_audit: None,
@@ -931,6 +933,11 @@ impl AgentLoop {
     /// callers. Workspace authority is immutable and is never changed here.
     pub fn set_session_id(&mut self, id: &str) {
         self.session_id = id.to_string();
+        self.usage_session_id = id.to_string();
+    }
+
+    pub(crate) fn set_usage_session_id(&mut self, id: &str) {
+        self.usage_session_id = id.to_string();
     }
 
     pub fn set_turn_id(&mut self, turn_id: Option<String>) {
@@ -2662,6 +2669,30 @@ impl AgentLoop {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn delegated_usage_attribution_preserves_private_session_identity() {
+        let workspace = tempfile::tempdir().expect("temporary workspace");
+        let mut agent_loop = super::AgentLoop::new(
+            Vec::new(),
+            Box::new(crate::research::tests::StubProvider),
+            crate::permission::PermissionChecker::new(None, None),
+            crate::tool::ToolRegistry::default(),
+            crate::config::schema::Config::default(),
+            None,
+            None,
+            std::sync::Arc::new(crate::context::InMemoryArtifactStore::new()),
+            workspace.path().to_path_buf(),
+            "private-child-session".to_string(),
+            None,
+            None,
+        );
+
+        agent_loop.set_usage_session_id("durable-parent-session");
+
+        assert_eq!(agent_loop.session_id, "private-child-session");
+        assert_eq!(agent_loop.usage_session_id, "durable-parent-session");
+    }
+
     fn assert_destructive(cmd: &str) {
         assert!(
             crate::tool::destructive::destructive_match(cmd).is_some(),

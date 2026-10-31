@@ -291,8 +291,13 @@ mod tests {
         // The LSP workflow family has no daemon request: the recipe runs in
         // the frontend's LSP tool.
         assert_eq!(route_for("lsp_doctor", ""), CommandRoute::NotServed);
-        // The plugin family has no daemon request surface.
-        assert_eq!(route_for("plugin_install", ""), CommandRoute::NotServed);
+        assert_eq!(
+            route_for("plugin_install", ""),
+            CommandRoute::DaemonEffect {
+                command_id: "plugin_install",
+                form: ""
+            }
+        );
     }
 
     #[test]

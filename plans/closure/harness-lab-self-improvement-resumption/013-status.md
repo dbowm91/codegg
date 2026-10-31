@@ -1,88 +1,128 @@
 # Harness Lab Self-Improvement S013 — Live Diagnostic Campaign
 
-Status: **in progress**. User authorization allows up to 20 Muse Spark 1.3
-attempts through CodeGG's existing `opencode_go` route. One live attempt has
-completed; the next attempt will use the two narrow observability/preflight
-correctives recorded below. S013 is not a stable-live qualification.
+Status: **closed — observed live diagnostic and corrective cycle; sustained qualification not established**. All 20 of the authorized Muse Spark 1.3 attempts have complete preserved receipts, and the request/cost totals reconcile. A genuine delegated usage-attribution persistence defect was independently observed in attempts 17 and 18, corrected narrowly, and confirmed live in attempt 19; attempt 20 showed no recurrence. No attempt qualified the 30-minute sustained horizon. `stable_live_evidenced` is not established. S014 remains blocked on a separate eligible defect campaign and fresh authorization.
 
 ## Authorization and bounds
 
-Authorization provenance: user instruction in this conversation on
-2026-10-31. Exact scope is recorded in
-[`evidence/s013-live-authorization-20261031.json`](evidence/s013-live-authorization-20261031.json):
+Authorization provenance: user instruction in this conversation on 2026-10-31. Exact scope is recorded in [`evidence/s013-live-authorization-20261031.json`](evidence/s013-live-authorization-20261031.json): only `opencode_go/muse-spark-1.3-contributor`; at most 20 one-at-a-time attempts; 60 provider requests, 3600 seconds, `workspace-write`, 10 GiB minimum free disk, and cancellation after 300 seconds without observed activity, on operator request, cap, disk-floor breach, uncertain request/event/job identity, or unexpected private-verifier access. Cost is recorded when reported and otherwise as unknown. No other model route is authorized.
 
-- Route: `opencode_go/muse-spark-1.3-contributor` only.
-- At most 20 attempts; run and inspect each separately.
-- Per attempt: 60 provider requests, 3600 seconds, `workspace-write`,
-  10 GiB minimum free disk, and 300 seconds without observed activity.
-- Cancel on operator request, any cap, disk-floor breach, uncertain request or
-  event accounting, or unexpected private-verifier access.
-- USD cost may be absent; record it as unknown, never as zero.
-
-The no-provider admission refusal caused by the nonexistent lane ancestor is
-recorded as a zero-request setup refusal and does not consume a live-model
-attempt. It exposed and led to the disk-probe correction described below.
+The first no-provider refusal was a setup defect in disk preflight: the new lane root and its parent did not yet exist. The preflight now measures the nearest existing ancestor. It used zero provider requests and did not consume an attempt.
 
 ## Attempt 1
 
-Exact sanitized receipt: [`evidence/s013-live-attempt-01.json`](evidence/s013-live-attempt-01.json).
-The run used the frozen live manifest
-`dev/harness_lab/fixtures/agent_autonomy_s013_live/cases.jsonl`, the native
-ARM64 CodeGG binary, and source revision `e89ae1e2e602e894f2504ccce999fe924e6feec4`.
-The receipt separately records the Python working-tree patch digest present
-during this run.
+Evidence: [`evidence/s013-live-attempt-01.json`](evidence/s013-live-attempt-01.json). The run lasted 606,167 ms (not sustained-qualified), used 32 requests, and reported $0.019777. The task/verifier failed (one failure and one error). There were 43 paired ACP tool events and no event gap. The helper and complete probe report were absent; two delegated runs remained nonterminal when the private daemon stopped. The causal trace had rendered the real `task` tool as `unknown`; the allowlist was corrected and focused tests passed.
 
-| Measure | Result |
-|---|---|
-| Agent terminal | `completed` |
-| Task outcome | `failed`; independent verifier exited 1 (5 tests, 1 failure and 1 error) |
-| Active horizon | 606,167 ms; not qualified for 30 minutes |
-| Provider admissions | 32 of 60 |
-| USD allowance reported | $0.019777 |
-| ACP observation | 43 starts, 43 terminals, zero event gaps |
-| Activity stall | Not triggered |
-| Boundary helper/report | Not created; probe outcomes are incomplete |
-| Delegated work at teardown | Two private-lane subagent runs and jobs still recorded `running` |
+## Attempt 2
 
-The agent made 43 tool calls, attempted both requested task delegations, and
-completed several test submissions and edits. It did not complete the Rust
-workspace, create the required helper/probe report, or show terminal status for
-both delegated runs. This is a task/model outcome, not sufficient evidence for
-a CodeGG task-execution defect. The lane database showed two nonterminal
-delegated runs after the parent turn ended and the harness stopped its private
-daemon. Whether that is an expected durable-run state or a teardown/observation
-defect remains unresolved; attempt 2 must require the agent to wait for each
-exact child ID and must record the terminal states.
+Evidence: [`evidence/s013-live-attempt-02.json`](evidence/s013-live-attempt-02.json). The run lasted 834,823 ms, used all 60 requests, and reported $0.029673. All five Rust test groups, helper self-test, and five bounded boundary probes passed or were refused as expected; the exact corpus job was observed running and completed. The independent transcript verifier failed because it found zero repair cycles: failed and repaired test submissions were not all correlated through exact-ID terminal observations. One child remained running. ACP observation was complete with no event gap; the 30-minute horizon was not qualified.
 
-The causal trace recorded valid `task` tool events as `unknown` because its
-bounded tool allowlist omitted `task`. The main receipt still identified the
-tool, but the causal diagnostic could not distinguish delegation. A narrow
-allowlist fix and regression were added.
+## Attempt 3
 
-## Correctives before attempt 2
+Evidence: [`evidence/s013-live-attempt-03.json`](evidence/s013-live-attempt-03.json). The model turn ended in `provider_api` failure at the 60-request ceiling after 342,995 ms of active work; reported cost was $0.029032. Both bounded child runs completed, three repair cycles were observed, and the helper was created. The boundary probe report was missing, and the exact corpus job `4303e743-81e5-45cf-9b21-7107930c5976` was still running at daemon teardown. ACP observation had 69 starts and terminals with no gap; disk stayed above 10 GiB. The horizon was not qualified.
 
-1. Disk preflight now walks to the nearest existing ancestor before calling
-   `disk_usage`; this permits a fresh nested lane root while retaining fail
-   closed behavior if the filesystem probe itself fails. A focused regression
-   covers a not-yet-created lane.
-2. The causal trace now retains the allowlisted `task` tool name. A focused
-   regression confirms task events stay attributable without persisting
-   arguments or output.
+The independent verifier's workspace command timed out after 240 seconds before running verifier cases. Inspection of the model-produced `catalog-index` implementation found `insert_record` rescanning all prior packages to recompute missing references on every insertion. The 250,000-record corpus test remained CPU-bound past 60 seconds in a post-run direct reproduction. This is evidence of an inefficient candidate implementation, not a CodeGG runtime defect. The outcome remains inconclusive because the provider-cap failure ended the agent turn and the verifier did not complete. No hidden-verifier contents were used by the agent.
 
-Both focused tests passed:
+## Attempts 4 and 5; live trace correction
 
-```text
-test_disk_preflight_uses_nearest_existing_ancestor_for_new_lane ... ok
-test_task_tool_is_preserved_for_delegation_diagnostics ... ok
-```
+Attempt 4 evidence: [`evidence/s013-live-attempt-04.json`](evidence/s013-live-attempt-04.json). Both delegated children completed, all five boundary probes were documented as denied/not-found, the helper self-test passed, both repair sequences were observed through exact job IDs, and the corpus job completed after productive edits. The verifier ran all five tests in 15.6 seconds; it failed only the CLI diff assertion (zero `added|` rows instead of 32). The trace also labeled one `list` call and two `tool_search` calls as `unknown`.
 
-## Remaining work
+Attempts 3 and 4 independently reproduced the same `list` trace gap using the same source revision and binary digest in separate private lanes: a transcript `list` call aligned to a causal trace `unknown` event. A failing-first regression in `test_causal_trace.py` reproduced `unknown`; adding `list` to the bounded causal tool allowlist made all 10 causal-trace unit tests pass. Attempt 5 ran with that correction and recorded the live `list` call as `list`. This is a narrow development-diagnostic correction, not an eligible native product-source candidate under S011.
 
-Continue with separately receipted, one-at-a-time live runs up to the
-authorization limit. Prioritize valid tool and boundary observations, complete
-subagent lifecycle evidence, the actual dependent engineering task, and
-independent verification. Independently reproduce any suspected harness issue
-before a corrective; do not infer one from task failure, incomplete probes, or
-an unobserved child status. Keep task outcome and horizon qualification
-separate. Do not claim `stable_live_evidenced` unless the distinct-campaign
-requirements in S014 are later met.
+Attempt 5 evidence: [`evidence/s013-live-attempt-05.json`](evidence/s013-live-attempt-05.json). The helper, probe report, child completion, both repair sequences, and corpus job were observed. The model reached the 60-request cap before updating the continuation marker; the hidden verifier ran and reported the exact submitted corpus ID absent from `CONTINUATION.md`. The receipt remains task-inconclusive due to provider-cap termination; horizon not qualified. The same trace run recorded a `glob` ACP call as `unknown`, currently one live observation. A follow-up should independently reproduce `glob` and the one-observation `tool_search` trace before correcting those names.
+
+## Attempt 6 and repeated tool-trace diagnostics
+
+Evidence: [`evidence/s013-live-attempt-06.json`](evidence/s013-live-attempt-06.json). The agent completed after 648,712 ms with all 60 provider requests admitted; reported cost was $0.027677. The independent verifier failed the exact-ID running/overlap assertion, and `CONTINUATION.md` remained pending. This is a task-execution failure: ACP had 74 paired starts/terminals with no event gap, maximum observed activity gap was 60,766 ms, the 300-second stall cancellation did not trigger, and free disk remained over 126 GiB. Both children completed, all five probes had the expected denied/not-found outcomes, both seeded repair cycles passed, and the helper self-test passed. The model submitted the exact corpus job only near closeout and did not observe it running or terminal in the transcript.
+
+The same attempt independently reproduces two additional dev-only trace omissions: transcript `tool_search` and `glob` calls align by timestamp with causal trace entries labeled `unknown`. Across attempts 4–6, `tool_search` was seen as unknown in attempts 4 and 6, and `glob` was seen as unknown in attempts 5 and 6. Failing-first regression tests reproduced both names as `unknown`; the bounded allowlist now includes `glob` and `tool_search`, and all 12 causal-trace unit tests pass. This is a narrow diagnostics correction, not a native product-code defect classification under S011.
+
+## Attempt 7
+
+Evidence: [`evidence/s013-live-attempt-07.json`](evidence/s013-live-attempt-07.json). Muse Spark used all 60 requests and reported $0.024369; the terminal was a provider API cap failure after 156,342 ms of active work. The independent verifier ran five checks and reported two failures; its captured tail identifies the exact-ID running/overlap assertion. The corpus test completed (`8cc05f45-3399-4389-bf82-934724c48327`), but the transcript shows the model waited directly on that ID until completion and only then made two edits. Thus the run did not establish productive overlap; continuation named the job, but the required running observation was absent. The active span was 154,481 ms, maximum activity gap 19,087 ms, repairs 3, ACP 70/70 with no gap, and disk stayed above 123 GiB. Both children completed; five boundary probes were denied/not-found as expected; helper self-test passed. The exact `glob` and `tool_search` calls appeared in the transcript and causal trace with no `unknown` tool labels, validating the diagnostic allowlist correction in a new live lane. No 30-minute horizon or sustained qualification was established.
+
+## Attempt 8 and newly reproduced tool-name omissions
+
+Evidence: [`evidence/s013-live-attempt-08.json`](evidence/s013-live-attempt-08.json). The run lasted 604,918 ms (active span 602,024 ms), used all 60 requests, and reported $0.021715. The agent terminal completed but the task failed. The verifier ran zero tests because the model-produced `catalog-index` did not compile (`E0499`, mutable-borrow error); this is a candidate implementation failure, not a CodeGG defect. ACP was complete at 69/69 with no gap, the activity watchdog did not fire, the maximum observed activity gap was 179,656 ms, and free disk stayed above 117 GiB.
+
+The corpus overlap was not established. The probe report has no corpus-job record and the transcript contains no corpus-test submission for the UUID written in `CONTINUATION.md`; the agent did not produce an exact-ID running/terminal lifecycle. It did complete the delegated children, boundary probes, helper self-test, and two seeded repair cycles. Five causal-trace `unknown` entries map exactly by timestamp/correlation to two native `replace` calls and three `apply_patch` calls. This extends the repeated development-only instrumentation finding: `replace` and `apply_patch` were missing from `_TOOLS` despite being surfaced native tool names. These names are being added with failing-first regressions and will be checked in another live lane. The previously corrected `glob`/`tool_search` labels remain visible in attempt 8's trace.
+
+## Attempt 9
+
+Evidence: [`evidence/s013-live-attempt-09.json`](evidence/s013-live-attempt-09.json). The run used 60 requests and reported $0.028021; the provider cap ended the agent after 538,195 ms (535,034 ms active). The candidate verifier ran zero tests because `catalog-query` failed to compile with E0308 (an `Option<&BTreeSet<_>>` versus `Option<&BTreeMap<String, BTreeSet<_>>>` mismatch). This is a model-produced candidate error, not a harness defect. The model did submit the corpus test, but its report says the job failed on the still-stub `Index::build` before an overlap could occur; it correctly recorded `observed_running: false` and did not resubmit. ACP was complete at 73/73 with no gap; disk remained above 115 GiB. The run exercised `replace`, and its causal trace preserved that name; it did not exercise `apply_patch`, so the live confirmation for that new label remains pending. No sustained horizon was qualified.
+
+## Attempt 10
+
+Evidence: [`evidence/s013-live-attempt-10.json`](evidence/s013-live-attempt-10.json). The run used all 60 requests, reported $0.034046, and ended after 552,954 ms with a provider-cap terminal. The agent attempted `cargo test -p catalog-format` through `bash` with the lane root as its CWD; the command failed because that directory has no `Cargo.toml`. The fixture workspace is beneath `fixture/`, and the manifest requires the native `test` tool. Consequently no seeded repair or corpus lifecycle was recorded, `CONTINUATION.md` remained pending, and the independent verifier ran zero cases. This is the model selecting the wrong tool/workdir, not a CodeGG execution defect. ACP was complete at 68/68 with no gap; disk stayed above 100 GiB and the stall watcher did not trigger. The trace contained no unknown tool names.
+
+## Attempt 11
+
+Evidence: [`evidence/s013-live-attempt-11.json`](evidence/s013-live-attempt-11.json). The run consumed all 60 requests, reported $0.023946, and ended at the provider cap after 397,848 ms. Both seeded repair cycles completed. The agent then used native `test` correctly at `fixture/`, repaired an index lifetime compile error and a query-output assertion, and its broad `cargo test -p catalog-index` passed the library and corpus integration tests. However, it never submitted the required exact `cargo test --offline --locked -p catalog-index --test corpus` job, so the report has no exact-ID overlap and continuation remains pending. `HARNESS_PROBE_REPORT.json` also left `repairs` empty despite transcript-observed repair sequences. The verifier ran five tests and failed the lifecycle assertion; additional assertions were not fully visible in the bounded output tail. This remains a task/reporting failure, not a confirmed CodeGG runtime defect. The causal trace had 73/73 paired tool events, no gap, and zero unknown tool names, including observed `replace` and `apply_patch` calls. Disk remained above 86 GiB; no stall cancellation occurred.
+
+## Attempt 12
+
+Evidence: [`evidence/s013-live-attempt-12.json`](evidence/s013-live-attempt-12.json). The agent used 60 requests and reported $0.033550; it ended after 649,514 ms, with a completed agent turn and failed independent qualification. The two seeded format/store repair cycles passed. The candidate then failed two `catalog-index --lib` tests: updating a package left a stale missing-reference tuple and did not update a local index entry. No corpus job was submitted; `CONTINUATION.md` remained pending. The agent-written probe report was invalid JSON at terminal, so no report contents are treated as evidence. The hidden verifier ran zero tests after its build/test setup encountered the index failure. ACP was complete at 73/73 with no gap, no stall cancellation occurred, and free disk remained above 88 GiB. The causal trace had zero unknown names, including surfaced `replace` calls. This is an implementation/reporting failure, not evidence of CodeGG runtime instability.
+
+## Attempt 13
+
+Evidence: [`evidence/s013-live-attempt-13.json`](evidence/s013-live-attempt-13.json). This was the longest attempt so far: 1,089,360 ms active, 60 requests, and reported cost $0.034737. The two seeded repair cycles and focused `catalog-index --lib` and `catalog-query --lib` suites passed. The agent used the exact fixture workdir and maintained a valid report with both seeded repairs, but it spent several calls on repeated `tool_search` lookups and never submitted the exact corpus job; report and continuation remained pending. The independent verifier ran five tests and failed the exact running/overlap requirement. This is a task sequencing/request-allocation miss, not evidence of runtime failure. ACP was 72/72 paired with no gaps, no stall cancellation, and minimum free disk above 87 GiB. All traced native tool names were known.
+
+## Attempt 14 — exact corpus job returned terminal immediately
+
+Evidence: [`evidence/s013-live-attempt-14.json`](evidence/s013-live-attempt-14.json). The agent completed the implementation and repair cycles, recorded a valid report, and submitted the exact corpus command once. It received ID `cd54612d-e051-49e2-ac83-db5d017e2c9a` with a passing result in the same tool response (3 tests, 5.08 seconds); no `running` observation was available, so it did not fabricate overlap or resubmit. The independent verifier ran five tests and failed the required running/overlap assertion. This run isolated a workload/timing limitation: the exact test terminates before an agent can use a background window. ACP remained complete at 72/72 with no event gap; disk stayed above 87 GiB. The run used 60 requests and reported $0.026617 before the provider cap ended it at 178,681 ms. It is not sustained qualification.
+
+## Attempt 15
+
+Evidence: [`evidence/s013-live-attempt-15.json`](evidence/s013-live-attempt-15.json). The run lasted 655,628 ms (active span 653,484 ms), used 60 requests, and reported $0.023139. It ended with a completed agent turn but an unsuccessful task. The agent tried to add realistic scale coverage to the corpus target, but the candidate `catalog-index/tests/corpus.rs` had an unexpected closing delimiter at line 115. The independent verifier ran zero tests because compilation failed; no exact corpus job was submitted. The probe report correctly captured denied/not-found boundaries, though its two read-only child runs did not both finish. ACP was complete at 71/71 with no gap; no stall cancellation occurred and free disk remained above 87 GiB. This is a model-produced syntax error, not a CodeGG defect.
+
+## Corrective carried into the next run
+
+Attempt 16 keeps the same route and verifier. Attempt 14 showed the exact corpus job completes in 5.08 seconds. Attempt 15 tried to extend it but left an unexpected closing delimiter at line 115 of `catalog-index/tests/corpus.rs`. Add a scale regression append-only after inspecting the file boundary; do not rewrite or unbalance the existing test. Compile the target once with `cargo test --offline --locked -p catalog-index --test corpus --no-run`, repair any syntax error, then run the exact corpus test once and try the live overlap sequence. It tells the agent to avoid full-index rescans on every insertion; to write and update the probe report immediately after each phase; to update `CONTINUATION.md` with the exact corpus ID as soon as it is submitted; to avoid duplicate corpus submissions; and to wait for every exact job ID to reach terminal before closeout. It keeps bounded read-only subagents, the standard-library helper, the safe path/job boundary probes, and the explicit request/time/disk/activity limits.
+
+## Closure and operator handoff
+
+S013 closes as the plan permits: an observed live diagnostic and corrective cycle with complete receipts, probe outcomes, and an operator handoff. The user-authorized ceiling is consumed: 20 attempts, 1,134 admitted provider requests, and $0.551751 reported cost across the receipts. The initial attempt-19 preflight refusal used zero requests and did not consume a run. The cumulative authorization ledger is [`evidence/s013-live-authorization-20261031.json`](evidence/s013-live-authorization-20261031.json); attempts 01–20 are individually recorded beside it. USD figures are the provider-reported amounts, not independently billed totals.
+
+**Confirmed defect:** attempts 17 and 18 independently logged `UsageStore::insert` foreign-key failures on the same baseline source revision (`65801db86562847defb89fc09562c0396378611e`) and binary (`3ab836f8ff842e4c915d3d162e6bd3652969a4b494ba41b3f3d4b67b4b3faa58`). Delegated loops used a private event/transcript session ID for usage rows, but `usage.session_id` references durable `session(id)`. The narrow corrective in `src/agent/loop.rs`, `src/agent/provider_turn.rs`, and `src/agent/worker.rs` carries a separate durable usage owner while preserving the private delegated identity. The focused ARM64 unit test `delegated_usage_attribution_preserves_private_session_identity` passed. Attempt 19 on the patched ARM64 binary (`81bc87d3c32b94c2fb974a81e198edc2e6753872bf76ccac83defbe0cb8bd27d`) recorded 60 usage rows for 60 admitted requests under the durable parent, with zero usage FK errors and a clean database FK check. Attempt 20 on the same binary recorded no usage FK errors; its 44 rows for 46 requests reflect the final provider stream stalling before two `Finish` events, not a usage attribution failure.
+
+The live evidence supplies two independent red observations and a live patched confirmation. The change was made before a separate S011 dossier command was run; this procedural deviation is recorded rather than represented as a machine-validated S011 dossier. The test, source trace, and live receipts are the available evidence for this corrective. Any later promotion decision must review the patch and this deviation explicitly.
+
+**Verification:** ARM64 Rust 1.89 focused attribution test passed; causal-trace Python tests passed (14/14); the full harness Python suite passed (478 tests, 12 skipped) with the corrected ARM64 binary supplied for the deterministic H006 native-job test and without a shared `CARGO_TARGET_DIR`; `scripts/verify.sh quick` passed with that binary configured; workspace `cargo check` passed; full workspace Clippy passed before the final assertion-only test correction, and current `codegg --all-targets` Clippy passed afterward; ARM64 `cargo nextest run --workspace --locked --profile ci --no-fail-fast` passed (16,721 passed, 10 skipped); the ARM64 feature subset (`server,plugins,lsp-test-support`, `--lib --test lsp_test_support --test server_feature`) passed (8,028 passed, 5 skipped); formatting, diff checks, and all 20 JSON receipt parses passed. The H007 packaged editable fixture was synchronized with the user-edited starter README and contract so the frozen-input equality test passes. A stale TUI route assertion for `plugin_install` was corrected to match the command catalog's declared daemon route; its focused ARM64 unit test and the subsequent full workspace sweep passed.
+
+The single `scripts/verify.sh full` wrapper did not finish cleanly on this host: its x86_64 attempt could not link native dependencies, and the ARM64 attempt inherited one shared target directory into multiple temporary H007 fixture workspaces, causing compile-time fixture paths to be reused incorrectly. The constituent quick, Clippy, workspace-test, and feature-test checks were then run separately with architecture and fixture target isolation and passed as listed above. Hosted exact-head CI has not run on this uncommitted branch.
+
+**Unresolved:** attempts 17 and 20 ended with `provider_timeout: provider stream stalled waiting for next event` while ACP tool-event pairing remained complete. Current evidence cannot attribute the stall to CodeGG, `opencode_go`, or Muse Spark. The workload did not pass its hidden verifier, complete exact-ID corpus job overlap, or reach 30 minutes of active development. Candidate-code failures and sequencing misses remain task outcomes, not additional harness defects. Safe boundary probes and ACP observation completed as recorded per attempt; no universal health claim follows from those results.
+
+**Next owner:** S014 stays blocked. It requires a different, current CodeGG defect dossier with independent reproduction, its own corrective/repeatability evidence, a rejected/no-defect control, and fresh explicit live authorization. The consumed S013 allowance cannot be reused. Do not claim `stable_live_evidenced`.
+
+
+## Attempt 16
+
+Evidence: [`evidence/s013-live-attempt-16.json`](evidence/s013-live-attempt-16.json). The Muse Spark turn completed after 1,081,620 ms of elapsed time (1,069,089 ms active), used all 60 provider requests, and reported $0.03483. Disk remained above 87 GiB, the inactivity stop did not fire, and ACP observation was complete at 72/72 with no event gap or unknown causal-trace tool labels. Both read-only children completed and the five boundary probes were refused or returned not-found as expected. The independent verifier ran five tests and failed its same-ID running-overlap assertion (plus one error in the bounded summary). The report left the corpus job ID and lifecycle null; `CONTINUATION.md` remained `job_id: pending`. The transcript has four native test submissions, including later terminal submissions, but no same-ID `running` observation followed by productive edits. This is a task sequencing/reporting failure, not evidence of lost ACP events or a CodeGG harness defect. The 30-minute active horizon and sustained qualification remain unachieved.
+
+
+## Attempt 17 — provider stream stall and usage persistence signals
+
+Evidence: [`evidence/s013-live-attempt-17.json`](evidence/s013-live-attempt-17.json). The run used 36 of 60 requests and reported $0.023259, then failed at 630,459 ms with `provider_timeout: provider stream stalled waiting for next event`; 43/43 ACP tool events were paired, no causal-trace names were unknown, no inactivity cancellation occurred, and free disk stayed above 87 GiB. The report captured all five expected boundary refusals/not-found results and child B completion, while child A remained running. No implementation, repairs, exact corpus job, or continuation occurred, so the attempt is inconclusive and the horizon measurement incomplete.
+
+The lane debug log also contains two `UsageStore::insert` foreign-key failures early in the run. The post-run lane database contains the parent session and 32 usage rows with a clean `foreign_key_check`, so these two failed writes are not yet attributed to a missing parent session or another specific CodeGG cause. Preserve this as a live diagnostic signal and seek one independent reproduction with child delegation/provider usage; do not treat the later provider stream stall as proof of a CodeGG stream defect or merge the two observations.
+
+
+## Attempt 18 — usage attribution defect reproduced
+
+Evidence: [`evidence/s013-live-attempt-18.json`](evidence/s013-live-attempt-18.json). Muse Spark used all 60 requests and reported $0.031992; ACP observation was complete at 77/77 and the five boundary probes were correctly refused/not-found. Both children completed. The agent left continuation and corpus-job lifecycle pending; the independent verifier ran zero cases because the model-produced `catalog-format` had an unexpected closing delimiter. That task failure does not qualify the sustained horizon.
+
+The daemon logged three `UsageStore::insert` foreign-key failures during the same attempt. The durable parent session exists, 57 usage rows remain from 60 admitted provider requests, and the database has no residual FK violations. Source tracing identified the cause: a delegated `AgentLoop` is given a generated `subagent_session_id` for private events/transcripts, but provider usage was also written under that ID even though `usage.session_id` references durable `session(id)`. This is a reproducible CodeGG persistence defect, distinct from the candidate syntax failure. A narrow correction now records child usage against its originating durable session while preserving its private event/session ID. The patched binary still needs focused verification and a live confirmation.
+
+
+## Attempt 19 — live confirmation of usage attribution fix
+
+Evidence: [`evidence/s013-live-attempt-19.json`](evidence/s013-live-attempt-19.json). A no-provider preflight refusal occurred first because the new ARM64 target directory lacked the sandbox helper; it used zero requests and did not consume an attempt. After copying the matching existing ARM64 helper, the corrected ARM64 binary ran the authorized attempt using all 60 requests and reported $0.029595. The persisted lane database has one durable parent session and 60 usage rows, all attributed to that session; there were zero usage insert FK errors and no FK-check violations. This live run confirms the narrow delegated usage-attribution corrective.
+
+The agent turn then hit the 60-request cap after 186,859 ms (184,298 ms active). ACP was complete at 66/66 with no gap; causal trace was complete, disk stayed above 61 GiB, and the stall watcher did not fire. The independent verifier ran zero tests because the candidate corpus job failed; the exact running-overlap lifecycle and sustained horizon were not qualified. This is separate from the corrected usage persistence defect.
+
+
+## Attempt 20 — final authorized live run
+
+Evidence: [`evidence/s013-live-attempt-20.json`](evidence/s013-live-attempt-20.json). The final attempt used the corrected ARM64 binary. Both child agents completed, all five boundary probes were denied/not-found as expected, the helper self-test passed, and native `glob`/`tool_search` observations were recorded. The model produced invalid catalog-index behavior and the hidden verifier ran zero tests after a library error. The turn later failed with `provider_timeout: provider stream stalled waiting for next event` after 46 requests (663,231 ms elapsed; 476,922 ms active); ACP remained complete at 49/49 with no event gap, and free disk stayed above 61 GiB.
+
+No `UsageStore` foreign-key errors recurred. The database recorded 44 usage rows for 46 requests; the final stalled stream did not emit `Finish` for two provider requests. The exact corpus lifecycle remained pending, so neither task qualification nor the 30-minute sustained horizon passed. The 20-run live authorization is now exhausted. The provider stream stall appeared again in attempt 20 after attempt 17; both runs had complete ACP tool pairing. There is not enough evidence to assign its cause to CodeGG versus the opencode_go/Muse service, so keep that signal unresolved.

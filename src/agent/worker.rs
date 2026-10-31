@@ -1380,6 +1380,7 @@ async fn run_subagent_task_with_cancel(
         result = async {
             let execution = execute_agent_task(
                 &request,
+                &session_id,
                 agents,
                 provider_registry,
                 Arc::clone(&config),
@@ -1461,6 +1462,7 @@ async fn run_subagent_task_with_cancel(
 
 async fn execute_agent_task(
     request: &SubAgentRequest,
+    usage_session_id: &str,
     agents: Arc<Vec<Agent>>,
     provider_registry: Arc<ProviderRegistry>,
     config: Arc<Config>,
@@ -1920,6 +1922,7 @@ async fn execute_agent_task(
         // M005 corrective C005: the inherited process admission policy.
         request.process_admission.clone(),
     );
+    agent_loop.set_usage_session_id(usage_session_id);
     // M005 corrective C009: the child's writes run on behalf of the actor
     // that admitted the dispatching turn. The child has no turn of its own,
     // so the dispatch site's attribution is what resolves its writer.
