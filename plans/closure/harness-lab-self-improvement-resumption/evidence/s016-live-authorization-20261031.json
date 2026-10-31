@@ -840,7 +840,7 @@
     {
       "run_index": 15,
       "run_kind": "diagnostic",
-      "status": "started",
+      "status": "request_cap_exhausted_after_submission_without_status_poll",
       "counts_as_live_provider_run": true,
       "started_at_utc": "2026-10-31T22:51:04Z",
       "controller_commit": "33e0832711c208143c999d8f1d78fab3be2b02ae",
@@ -860,13 +860,49 @@
       "fixture_manifest_sha256": "67dddf38cc8b4df42cd825a6ddec100ad8c80b250f24e2ee025aa58526a246a2",
       "qualification_fixture_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d3f187c2f6f4fc178",
       "fixture_source_contract_corpus_verifier_unchanged": true,
-      "prompt_revision": "first tool call submits one release workspace test; immediate exact-ID continuation; two dependent edits; status exact ID only"
+      "prompt_revision": "first tool call submits one release workspace test; immediate exact-ID continuation; two dependent edits; status exact ID only",
+      "terminal_observed_at_utc": "2026-10-31T22:52:39Z",
+      "provider_requests": 14,
+      "provider_request_cap_exhausted": true,
+      "elapsed_seconds": 95.253,
+      "usd_cost": 0.007611,
+      "submitted_test_job_ids": [
+        "fb9267c1-5335-4087-bfde-ed316b62f4b2"
+      ],
+      "exact_job_status_calls": 0,
+      "continuation_confirmed": false,
+      "agent_tool_counts": {
+        "test": 1,
+        "write": 1,
+        "read": 6,
+        "bash": 5,
+        "edit": 0,
+        "apply_patch": 1,
+        "job": 0
+      },
+      "provider_body_eof_count": 14,
+      "provider_idle_timeout_count": 0,
+      "tool_calls": 14,
+      "event_gaps": 0,
+      "unpaired_tool_events": 0,
+      "hidden_verifier_exit_code": 1,
+      "hidden_verifier_tests_run": 0,
+      "horizon_outcome": "not_qualified",
+      "horizon_reason": "measurement_incomplete",
+      "disk_floor_triggered": false,
+      "free_disk_bytes_minimum": 33118728192,
+      "free_disk_bytes_at_end": 33133764608,
+      "receipt_sha256": "b2a01cdc84cec21d231da689cbdf8b24c7de9b49832c1afc0da2917d7444b199",
+      "diagnostic_log_sha256": "1ca56cd54f4bce5c5c8fc60cd2c13f067d9ab9eb12b391fc97947949bf4bef42",
+      "provider_admission_receipt_sha256": "cc23440f4643d04ecca8c2a33d22d4c4484a9905ca66e9dad9fb91b1f70c2917",
+      "causal_trace_sha256": "d65cd28985baf7cd6fb65a75efa4035100b3f1d2648cc43278f35267180148f3",
+      "summary_path": "plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-15-summary.json"
     }
   ],
-  "active_qualification_fixture": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v3/cases.jsonl",
-  "active_qualification_fixture_sha256": "8aa4d4af9fc36334819a9e494d5f7f02d58437be9bed6fa1ad672b7d16f4f875",
+  "active_qualification_fixture": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v4/cases.jsonl",
+  "active_qualification_fixture_sha256": "42ba02ed8388ae7c4e7a32900592ee6b7046acebe712aa0624786f6ebb3b8237",
   "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
-  "fixture_revision_note": "Runs 1-4 used the original H007 manifest and its recorded digest. Run 5 onward uses versioned prompt calibration without changing the source fixture, contract, corpus, public tests, hidden verifier, or acceptance criteria. Runs 5-9 used promptfix v1; run 10 used promptfix v2. Run 12 onward uses promptfix v3, which maps every asynchronous test submission to exact-ID terminal polling and orders each test lifecycle after run 11 confirmed sequential ID tracking works in a focused diagnostic.",
+  "fixture_revision_note": "Runs 1-4 used the original H007 manifest and its recorded digest. Run 5 onward uses versioned prompt calibration without changing the source fixture, contract, corpus, public tests, hidden verifier, or acceptance criteria. Runs 5-9 used promptfix v1; run 10 used promptfix v2. Run 12 onward uses promptfix v3, which maps every asynchronous test submission to exact-ID terminal polling and orders each test lifecycle after run 11 confirmed sequential ID tracking works in a focused diagnostic. Run 16 uses promptfix v4: batched discovery/probes, one bounded read-only subagent, and an offline release full-workspace overlap job after index implementation; H007 inputs and thresholds are unchanged.",
   "active_diagnostic_fixture": "dev/harness_lab/fixtures/agent_autonomy_s016_overlap_diagnostic_v5/cases.jsonl",
   "active_diagnostic_fixture_sha256": "67dddf38cc8b4df42cd825a6ddec100ad8c80b250f24e2ee025aa58526a246a2"
 }
