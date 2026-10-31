@@ -78,6 +78,18 @@ class CausalTraceTests(unittest.TestCase):
         self.assertEqual(rows[0]["tool"], "unknown")
         self.assertNotIn("credential=do-not-store", joined)
 
+    def test_task_tool_is_preserved_for_delegation_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "trace.jsonl"
+            recorder = causal_trace.Recorder(path, run_id="run", case_id="case",
+                                             source_sha256=None, binary_sha256=None)
+            recorder.observe(notification("tool_call", toolCallId="task-call",
+                                          title="task"))
+            recorder.finish()
+            rows = causal_trace.read_trace(path)
+        self.assertEqual(rows[0]["event_type"], "tool_started")
+        self.assertEqual(rows[0]["tool"], "task")
+
     def test_controller_markers_persist_only_bounded_outcomes(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "trace.jsonl"

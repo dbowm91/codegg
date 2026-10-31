@@ -1,95 +1,88 @@
-# Harness Lab Self-Improvement S013 — Current-Defect Preflight
+# Harness Lab Self-Improvement S013 — Live Diagnostic Campaign
 
-Status: **blocked** (preflight rechecked 2026-10-31). The authorized
-live-campaign request reached the trusted preflight, but the current source
-reproduced no eligible CodeGG defect in two
-independent native lanes. No live campaign or provider request was started.
+Status: **in progress**. User authorization allows up to 20 Muse Spark 1.3
+attempts through CodeGG's existing `opencode_go` route. One live attempt has
+completed; the next attempt will use the two narrow observability/preflight
+correctives recorded below. S013 is not a stable-live qualification.
 
-Source implementation plan:
+## Authorization and bounds
 
-- `plans/implementation/harness-lab-self-improvement-resumption/013-first-fresh-authorized-live-causal-campaign.md`
+Authorization provenance: user instruction in this conversation on
+2026-10-31. Exact scope is recorded in
+[`evidence/s013-live-authorization-20261031.json`](evidence/s013-live-authorization-20261031.json):
 
-Source subsystem roadmap:
+- Route: `opencode_go/muse-spark-1.3-contributor` only.
+- At most 20 attempts; run and inspect each separately.
+- Per attempt: 60 provider requests, 3600 seconds, `workspace-write`,
+  10 GiB minimum free disk, and 300 seconds without observed activity.
+- Cancel on operator request, any cap, disk-floor breach, uncertain request or
+  event accounting, or unexpected private-verifier access.
+- USD cost may be absent; record it as unknown, never as zero.
 
-- `plans/subsystems/harness-lab-self-improvement-resumption-roadmap.md` §8
+The no-provider admission refusal caused by the nonexistent lane ancestor is
+recorded as a zero-request setup refusal and does not consume a live-model
+attempt. It exposed and led to the disk-probe correction described below.
 
-Repository baseline reviewed: `f86020a8bfef55e3cfae313f48e98cdd9ad772f7`
+## Attempt 1
 
-## 1. Executive finding
+Exact sanitized receipt: [`evidence/s013-live-attempt-01.json`](evidence/s013-live-attempt-01.json).
+The run used the frozen live manifest
+`dev/harness_lab/fixtures/agent_autonomy_s013_live/cases.jsonl`, the native
+ARM64 CodeGG binary, and source revision `e89ae1e2e602e894f2504ccce999fe924e6feec4`.
+The receipt separately records the Python working-tree patch digest present
+during this run.
 
-The user authorized an attempt to assess the improvements. S013 still requires
-a current independently reproduced CodeGG defect before any provider proposal.
-The fresh S011 trusted intake built the pinned ARM64 CodeGG binary and ran the
-controller-owned H007 native contract test in two distinct private lanes. Both
-completed with matching test and native-observation digests and no native
-contract red. The dossier records `defect_eligible: false`,
-`eligible_real_defects: 0`, and `live_authorized: false`.
+| Measure | Result |
+|---|---|
+| Agent terminal | `completed` |
+| Task outcome | `failed`; independent verifier exited 1 (5 tests, 1 failure and 1 error) |
+| Active horizon | 606,167 ms; not qualified for 30 minutes |
+| Provider admissions | 32 of 60 |
+| USD allowance reported | $0.019777 |
+| ACP observation | 43 starts, 43 terminals, zero event gaps |
+| Activity stall | Not triggered |
+| Boundary helper/report | Not created; probe outcomes are incomplete |
+| Delegated work at teardown | Two private-lane subagent runs and jobs still recorded `running` |
 
-Therefore the live campaign did not run. No model/provider call, candidate,
-patch, billed USD cost, or authorization consumption resulted. The user's
-high-level authorization does not waive the defect gate or supply S013's
-specific proposer/subject routes, endpoints, and pretransport limits. A future
-attempt needs a distinct eligible current defect and a fully frozen bounded
-campaign authorization.
+The agent made 43 tool calls, attempted both requested task delegations, and
+completed several test submissions and edits. It did not complete the Rust
+workspace, create the required helper/probe report, or show terminal status for
+both delegated runs. This is a task/model outcome, not sufficient evidence for
+a CodeGG task-execution defect. The lane database showed two nonterminal
+delegated runs after the parent turn ended and the harness stopped its private
+daemon. Whether that is an expected durable-run state or a teardown/observation
+defect remains unresolved; attempt 2 must require the agent to wait for each
+exact child ID and must record the terminal states.
 
-## 2. Requirement-to-evidence matrix
+The causal trace recorded valid `task` tool events as `unknown` because its
+bounded tool allowlist omitted `task`. The main receipt still identified the
+tool, but the causal diagnostic could not distinguish delegation. A narrow
+allowlist fix and regression were added.
 
-| Requirement | Evidence | Result |
-|---|---|---|
-| Current exact source and native binary | `s013-current-source-preflight.json`; source `f86020a8bfef55e3cfae313f48e98cdd9ad772f7`; ARM64 binary SHA-256 `96bbbcac84d2a7aaa60f4f52ab5090defd7e000acea49e7ca664452a58324cbb` | Pass |
-| Two independent trusted reproductions of the frozen native contract | `lane-a` and `lane-b`, both `completed`; same test SHA-256 `7e44498e1c642e6ff8d14df0438ccb77c2f2e9b1a2ab86a11084cfde40f89b60`; no failure signature | Pass; no defect found |
-| S013 defect eligibility | Dossier `current-codegg-fac83ef5840336fa0966`; `defect_eligible: false`; eligible count `0` | **Blocked** |
-| Live provider campaign and request admission | Not started because the defect eligibility precondition failed | Not run |
-| Candidate evaluation, held-out verifier and human review packet | No candidate was proposed or built | Not applicable |
-| Provider requests and spend | No provider requests; USD cost not applicable | Pass |
+## Correctives before attempt 2
 
-## 3. Verification executed
+1. Disk preflight now walks to the nearest existing ancestor before calling
+   `disk_usage`; this permits a fresh nested lane root while retaining fail
+   closed behavior if the filesystem probe itself fails. A focused regression
+   covers a not-yet-created lane.
+2. The causal trace now retains the allowlisted `task` tool name. A focused
+   regression confirms task events stay attributable without persisting
+   arguments or output.
 
-The first build diagnostic selected the x86_64 Homebrew Rust toolchain and
-failed its mixed-architecture link; that result was discarded and did not
-enter the dossier. The successful run pinned `rustc 1.98.1`, host
-`aarch64-apple-darwin`, ARM64 execution, offline Cargo, and MacPorts
-`pkg-config` paths. It ran from a clean temporary worktree at the reviewed
-baseline, leaving the user's two fixture edits untouched.
+Both focused tests passed:
 
-Successful command (paths identify the original temporary clean worktree and
-private cache used for this run):
-
-```bash
-/usr/bin/arch -arm64 /usr/bin/env \
-  PATH=/Users/davidbowman/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin:/Users/davidbowman/.cargo/bin:/opt/local/bin:/opt/local/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin \
-  RUSTUP_HOME=/Users/davidbowman/.rustup \
-  CARGO_HOME=/Users/davidbowman/.cargo \
-  CODEGG_HARNESS_INTAKE_TARGET_DIR=/tmp/codegg-verify-clean-20261031/target \
-  CARGO_NET_OFFLINE=true CARGO_BUILD_JOBS=2 CARGO_PROFILE_DEV_DEBUG=0 \
-  PKG_CONFIG=/opt/local/bin/pkg-config \
-  PKG_CONFIG_PATH=/opt/local/lib/pkgconfig \
-  PKG_CONFIG_LIBDIR=/opt/local/lib/pkgconfig \
-  python3 -m dev.harness_lab intake reproduce \
-    --repository /tmp/codegg-s013-intake-20261031 \
-    --defect-id s013-current-main-recheck-20261031 \
-    --output /tmp/codegg-s013-current-defect-20261031.json
+```text
+test_disk_preflight_uses_nearest_existing_ancestor_for_new_lane ... ok
+test_task_tool_is_preserved_for_delegation_diagnostics ... ok
 ```
 
-Result: `reproduction_validated: true`, `disposition: no_reproducible_defect`,
-`eligible_real_defects: 0`, `live_authorized: false`. The exact sanitized
-receipt is [`s013-current-source-preflight.json`](s013-current-source-preflight.json).
+## Remaining work
 
-## 4. Invariants and disposition
-
-No synthetic, historical, H007 task-quality, provider, or setup failure was
-promoted to a CodeGG defect. The S010/S011/S012 offline results remain valid;
-this result does not measure live-model self-improvement. S013 remains blocked
-until a distinct trusted current-source reproduction is eligible and a
-separately frozen live authorization supplies route, endpoint/account,
-proposer/subject request ceilings, time/iteration/retry bounds, disk floor,
-cancellation, retention, and cost-unknown treatment. S014 remains blocked on a
-positive accepted S013 result, a second distinct eligible defect, and separate
-authorization. `stable_live_evidenced` is not established.
-
-## 5. Cleanup
-
-The intake's private lane roots and temporary build output were owned by this
-run. They are removed after preserving the sanitized receipt. The temporary
-clean worktree and task-owned Cargo target are also removed; the user's two
-uncommitted fixture edits are not modified.
+Continue with separately receipted, one-at-a-time live runs up to the
+authorization limit. Prioritize valid tool and boundary observations, complete
+subagent lifecycle evidence, the actual dependent engineering task, and
+independent verification. Independently reproduce any suspected harness issue
+before a corrective; do not infer one from task failure, incomplete probes, or
+an unobserved child status. Keep task outcome and horizon qualification
+separate. Do not claim `stable_live_evidenced` unless the distinct-campaign
+requirements in S014 are later met.

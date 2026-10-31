@@ -348,6 +348,17 @@ def _directory_size_bytes(root: Path) -> int:
     return total
 
 
+def _nearest_existing_directory(path: Path) -> Path:
+    """Find an existing directory for a disk-usage probe of a not-yet-created lane."""
+    candidate = path
+    while not candidate.is_dir():
+        parent = candidate.parent
+        if parent == candidate:
+            return candidate
+        candidate = parent
+    return candidate
+
+
 _JOB_ID_PATTERN = re.compile(r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b", re.I)
 
 
@@ -953,7 +964,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
                                + json.dumps(admission.as_dict(), sort_keys=True))
         guard = budget.SpendGuard(budget_policy)
     lane_root = lane_root.resolve()
-    disk_probe = lane_root if lane_root.exists() else lane_root.parent
+    disk_probe = _nearest_existing_directory(lane_root)
     try:
         initial_free_bytes = shutil.disk_usage(disk_probe).free
     except OSError as error:
