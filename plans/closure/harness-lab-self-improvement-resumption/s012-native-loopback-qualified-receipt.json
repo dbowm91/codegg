@@ -1,0 +1,25 @@
+{
+  "binary_build_note": "The native binary is the private S010 synthetic correction of the seeded write fault. Its underlying src/ and crates/ trees at the build base were verified identical to origin/main.",
+  "binary_build_revision": "49297b22c3610fc6d5b8349c0932fd9c678258db",
+  "binary_sha256": "a0f3449a582c8d9cb6da3f4477bb3f60ca44784d5c791364ad4c306f88abc3c8",
+  "causal_trace": {
+    "daemon_generation": "adbe2e59-06c2-4d37-8b7a-d0421ac8222c",
+    "schema": "harness_causal_trace_v1",
+    "sha256": "7dc7f8aeb8df75d6090d9c6320d28e68841df60b9594544f74babd512ec911d8",
+    "state": "complete"
+  },
+  "continuation_observed": true,
+  "dependent_work_overlapped": true,
+  "event_gap_count": 0,
+  "exact_id_job_lifecycle": "running_to_completed",
+  "independent_verifier": {
+    "exit_code": 0,
+    "kind": "h007_native_test",
+    "tests_run": 1
+  },
+  "qualification_source_revision": "9659325264246418121ea61b6c049d398b16436b",
+  "repair_cycles": 2,
+  "source_revision": "9659325264246418121ea61b6c049d398b16436b",
+  "task_id": "h007-dependent-rust-and-exact-job",
+  "task_outcome": "passed"
+}

@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement S011 — Genuine Current-Defect Intake and Eligibility Authority
 
-Status: **active (offline)**. Primary class: **infrastructure**. Hard dependencies: S004 and S009 closures. Interface dependency: S010 frozen native subject/holdout receipt shape; implement independently and align before integration. Live campaigns remain operationally blocked.
+Status: **closed offline**. Primary class: **infrastructure**. Closure: `plans/closure/harness-lab-self-improvement-resumption/011-status.md`. The trusted current-source reproduction and validation completed in two private native lanes; the current source has zero eligible real defects. Live campaigns remain operationally blocked.
 
 Authority: `plans/000-long-term-specification.md` §§23–24, 26–29; `plans/001-terminology-and-domain-model.md`; `plans/003-planning-process.md`; accepted `plans/adrs/ADR-0040-evidence-based-agent-recovery-termination.md`; `plans/subsystems/harness-lab-self-improvement-resumption-roadmap.md`. Existing S001–S009 closure records are historical evidence, not re-opened milestones.
 

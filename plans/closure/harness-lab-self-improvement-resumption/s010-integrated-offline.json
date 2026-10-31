@@ -373,13 +373,53 @@
       "status": "ACCEPTED"
     }
   ],
-  "controller_revision": "49297b22c3610fc6d5b8349c0932fd9c678258db",
-  "controller_revision_note": "Implementation changes were in the measured worktree; final evidence commit SHA is recorded in 010-status.md.",
+  "campaigns_repeat_independently": true,
+  "controller_revision": "83adb19f927918756f70443d9efe16317d616817",
+  "controller_revision_committed_after_run": true,
+  "controller_revision_note": "The integrated campaign ran from a content-identical worktree; its controller and test changes were committed immediately afterward at this SHA.",
+  "cost_usd": "not_applicable_no_provider_requests",
   "crash_recovery_evidence": {
     "generic_optimizer_phase_sigkill_matrix": "existing tests cover six durable phases with resume/refusal and no duplicate proposal",
     "native_trial_composition": "not exercised; this remains the sole missing strict S010 acceptance gate"
   },
   "finished_unix_seconds": 1793401156.812408,
+  "fixture_classification": "private synthetic seeded write-contract regression; not a current CodeGG defect",
+  "gate_commands": {
+    "baseline_build": [
+      "cargo",
+      "build",
+      "--locked",
+      "--bin",
+      "codegg",
+      "--bin",
+      "codegg-sandbox-helper"
+    ],
+    "behavioral_verifier": "run_optimizer -> qualify_candidate -> evaluate -> native CodeGG ACP with frozen two-case suite and independent file assertions",
+    "candidate_build_and_independent_gates": [
+      [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      [
+        "cargo",
+        "build",
+        "--bin",
+        "codegg",
+        "--bin",
+        "codegg-sandbox-helper"
+      ],
+      [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ]
+    ]
+  },
   "host": {
     "execution_architecture": "arm64",
     "platform_machine": "arm64",
@@ -391,8 +431,11 @@
   "native_corrective_candidates_accepted": 2,
   "native_loopback_trials": 8,
   "native_noop_candidates_rejected": 2,
+  "platform_architecture": "aarch64-apple-darwin",
   "prolonged_resource_pressure": "completed",
+  "protected_control_expected_terminal": "assertion_failed",
   "provider_requests": 0,
+  "qualification_claim": "paired_native_optimizer_qualification_passed; strict S010 remains conditional on integrated SIGKILL during a native optimizer trial and restart",
   "qualification_command": "CODEGG_S010_NATIVE_INTEGRATION=1 python3 -m unittest dev.harness_lab.tests.test_improve.S010IntegratedNativeOptimizerTests.test_two_private_native_campaigns_reject_noop_and_accept_seeded_correction -v",
   "qualification_elapsed_seconds": 1488.285,
   "resource_pressure": {
