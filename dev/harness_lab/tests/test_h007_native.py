@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import shlex
@@ -100,6 +101,21 @@ class H007NativeJobSequenceTest(unittest.TestCase):
                              if os.environ.get("CODEGG_H007_SOURCE_ROOT") else None),
                 causal_trace_output=(pathlib.Path(os.environ["CODEGG_S012_TRACE_OUTPUT"])
                                      if os.environ.get("CODEGG_S012_TRACE_OUTPUT") else None))
+
+        intake_observation = os.environ.get("CODEGG_H007_INTAKE_OBSERVATION")
+        if intake_observation:
+            observation_path = pathlib.Path(intake_observation)
+            observation = {
+                "schema": "h007_native_intake_observation_v1",
+                "task_id": trial["task_id"],
+                "trial_returned": True,
+                "binary_sha256": trial["source_sha256"],
+                "tool_call_count": len(trial["tool_calls"]),
+                "event_gap_count": trial["event_gap_count"],
+                "native_terminal": trial["ledger_manifest"]["terminal"],
+            }
+            with observation_path.open("x", encoding="utf-8") as destination:
+                destination.write(json.dumps(observation, sort_keys=True) + "\n")
 
         self.assertTrue(trial["tool_receipt_created"])
         self.assertEqual(trial["event_gap_count"], 0)
