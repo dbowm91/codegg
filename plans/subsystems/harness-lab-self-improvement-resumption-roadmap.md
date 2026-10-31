@@ -169,4 +169,4 @@ The user authorized up to 20 sequential runs on `opencode_go/deepseek-v4.1-flash
 
 | Milestone | Primary class | Status | Evidence to close |
 |---|---|---|---|
-| **S016 — DeepSeek long-run corrective loop** | capability | **active** | One unchanged H007 run must pass the hidden verifier, 30-minute active-work threshold, activity-gap bound, both repair cycles, exact-ID job overlap/terminal, continuation, and complete event observation. If it fails, a distinct diagnostic run must localize a reproducible CodeGG defect before any narrow correction. All long and diagnostic runs consume the shared 20-run authorization. |
+| **S016 — DeepSeek long-run corrective loop** | capability | **active** | One H007 run must pass the unchanged hidden verifier, 30-minute active-work threshold, activity-gap bound, both repair cycles, exact-ID job overlap/terminal, continuation, and complete event observation. Evidence-backed prompt revisions may clarify existing criteria and improve job/edit sequencing without changing the fixture contract or verifier. A distinct diagnostic run attributes failures before correction. All runs share the 20-run authorization. |
