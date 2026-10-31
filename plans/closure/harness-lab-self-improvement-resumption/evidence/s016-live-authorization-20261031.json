@@ -521,8 +521,16 @@
       "horizon_outcome": "not_qualified",
       "horizon_reason": "job_lifecycle_missing",
       "exact_test_job_id": "1162a582-fb1a-45ee-a89e-1f0a7449af9b",
-      "exact_job_status_observations": ["failed", "failed", "failed", "failed"],
-      "subagent_run_statuses": ["queued", "completed"],
+      "exact_job_status_observations": [
+        "failed",
+        "failed",
+        "failed",
+        "failed"
+      ],
+      "subagent_run_statuses": [
+        "queued",
+        "completed"
+      ],
       "continuation_write_observed": true,
       "continuation_confirmed": false,
       "repair_cycles": 0,
@@ -576,7 +584,11 @@
       "horizon_outcome": "not_qualified",
       "horizon_reason": "measurement_incomplete",
       "repair_cycles": 0,
-      "test_job_ids": ["9ff61c3d-c79f-49a1-9011-fd09b4ded732", "e419a2a6-4de4-48b9-93c1-e588c5d5ddd7", "7bd9ef10-d4d1-4bb7-a363-c8398465cbcc"],
+      "test_job_ids": [
+        "9ff61c3d-c79f-49a1-9011-fd09b4ded732",
+        "e419a2a6-4de4-48b9-93c1-e588c5d5ddd7",
+        "7bd9ef10-d4d1-4bb7-a363-c8398465cbcc"
+      ],
       "exact_job_status_calls": 0,
       "continuation_job_id": "pending",
       "exact_job_running_and_terminal": false,
@@ -628,8 +640,23 @@
       "task_outcome": "failed",
       "horizon_outcome": "not_qualified",
       "horizon_reason": "job_lifecycle_missing",
-      "exact_test_job_ids": ["c20ecda3-a336-41b1-a749-0ae979261b69", "ab468d19-46dd-4f58-8f72-c78e4ca04ab7", "1f73f40b-e2cf-450c-a141-4fa5d5cbe47d"],
-      "test_job_terminal_observations": [["failed", "failed"], ["failed"], ["failed"]],
+      "exact_test_job_ids": [
+        "c20ecda3-a336-41b1-a749-0ae979261b69",
+        "ab468d19-46dd-4f58-8f72-c78e4ca04ab7",
+        "1f73f40b-e2cf-450c-a141-4fa5d5cbe47d"
+      ],
+      "test_job_terminal_observations": [
+        [
+          "failed",
+          "failed"
+        ],
+        [
+          "failed"
+        ],
+        [
+          "failed"
+        ]
+      ],
       "continuation_contains_exact_corpus_id": true,
       "continuation_updated_after_terminal": false,
       "repair_cycles": 0,
@@ -651,9 +678,9 @@
     {
       "run_index": 12,
       "run_kind": "long_qualification",
-      "status": "started",
+      "status": "request_cap_exhausted_horizon_not_qualified",
       "started_at_utc": "2026-10-31T22:32:31Z",
-      "controller_commit": "dc1045505f95d1a8e0addd1300f094c82fac0373",
+      "controller_commit": "905ec8ae2d8a06c16ac95ecb043487b2b9e1380e",
       "source_binary_commit": "94fc8d41ff61e5963adf5779475fd9ee08569493",
       "binary_sha256": "16481cc8bf0d8866db352c3aab90c35950bde37e5799be1458a43012d594fe2a",
       "binary_architecture": "arm64",
@@ -669,7 +696,57 @@
       "fixture_manifest": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v3/cases.jsonl",
       "fixture_manifest_sha256": "8aa4d4af9fc36334819a9e494d5f7f02d58437be9bed6fa1ad672b7d16f4f875",
       "fixture_source_contract_corpus_verifier_unchanged": true,
-      "prompt_revision": "H007 prompt v3: every test submission followed by exact-ID terminal poll; fake-ID probe before real jobs; one concise read-only subagent; all H007 criteria and verifier unchanged"
+      "prompt_revision": "H007 prompt v3: every test submission followed by exact-ID terminal poll; fake-ID probe before real jobs; one concise read-only subagent; all H007 criteria and verifier unchanged",
+      "terminal_observed_at_utc": "2026-10-31T22:42:57Z",
+      "terminal": "failed_request_cap",
+      "elapsed_seconds": 613.849,
+      "provider_requests": 60,
+      "provider_request_cap_exhausted": true,
+      "usd_cost": 0.049266,
+      "active_work_span_ms": 596001,
+      "repair_cycles": 2,
+      "continuation_confirmed": true,
+      "exact_job_running_and_terminal": false,
+      "productive_work_during_job": false,
+      "exact_test_job_observations": [
+        {
+          "job_id": "f246c2c8-80c6-4ee8-aa26-c4a7ef5c93e1",
+          "status": "failed"
+        },
+        {
+          "job_id": "4f1cd0fe-a74a-4b44-a522-712b01e5324d",
+          "status": "completed"
+        },
+        {
+          "job_id": "a9c174f5-4f28-4205-bf57-0a349e353edb",
+          "status": "failed"
+        },
+        {
+          "job_id": "9fd75518-5149-4d96-a525-09fecc488013",
+          "status": "completed"
+        },
+        {
+          "job_id": "e548e3ac-bdad-4320-9528-fd400eebd52d",
+          "status": "completed"
+        }
+      ],
+      "provider_body_eof_count": 60,
+      "provider_idle_timeout_count": 0,
+      "tool_calls": 53,
+      "event_gaps": 0,
+      "unpaired_tool_events": 0,
+      "dropped_causal_events": 0,
+      "horizon_outcome": "not_qualified",
+      "horizon_reason": "measurement_incomplete",
+      "hidden_verifier_ran": false,
+      "disk_floor_triggered": false,
+      "free_disk_bytes_minimum": 14497599488,
+      "free_disk_bytes_at_end": 26767138816,
+      "receipt_sha256": "276460fecaa99331c9794702ba499e9651aa368b297c63ef9f930a86f34e5a94",
+      "diagnostic_log_sha256": "4eb53cbe830bc326b5a4698ac99b9a1bb17d6a6a426dd81ee74195c876098ef",
+      "provider_admission_receipt_sha256": "e10cba4e84b8b3c65a9ebb2e6118e245a670d13fa79c4241cf0948ba1c1af6ea",
+      "causal_trace_sha256": "1b10e5df9c02598bbcfbfe5af3ccc40e685831a0b5e789a4578b24901a6b5250",
+      "summary_path": "plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-12-summary.json"
     }
   ],
   "active_qualification_fixture": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v3/cases.jsonl",
