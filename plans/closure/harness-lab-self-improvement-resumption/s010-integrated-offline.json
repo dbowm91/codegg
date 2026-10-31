@@ -380,9 +380,9 @@
   "cost_usd": "not_applicable_no_provider_requests",
   "crash_recovery_evidence": {
     "generic_optimizer_phase_sigkill_matrix": "existing tests cover six durable phases with resume/refusal and no duplicate proposal",
-    "native_trial_composition": "not exercised; this remains the sole missing strict S010 acceptance gate"
+    "native_trial_composition": "passed: native ACP write tool completed, provider response remained active, optimizer process group received SIGKILL, same checkpoint resumed once, no duplicate proposal or final ledger pair, private process group and daemons reaped"
   },
-  "finished_unix_seconds": 1793401156.812408,
+  "finished_unix_seconds": 1793416647.082839,
   "fixture_classification": "private synthetic seeded write-contract regression; not a current CodeGG defect",
   "gate_commands": {
     "baseline_build": [
@@ -426,16 +426,30 @@
     "rust_host": "aarch64-apple-darwin",
     "rustc": "1.98.1-aarch64-apple-darwin"
   },
-  "integrated_sigkill_restart": "not_qualified",
+  "integrated_sigkill_restart": "completed_resume_once",
   "live_provider_calls": 0,
   "native_corrective_candidates_accepted": 2,
+  "native_crash_recovery_elapsed_seconds": 196.0,
   "native_loopback_trials": 8,
   "native_noop_candidates_rejected": 2,
+  "native_trial_crash_recovery": {
+    "binary_sha256": "2ebd2f7c984b68130bf05dc7bb3ac8d7602431364c9c62b517c7cece41983ec7",
+    "candidate_trial_rows_after_resume": 1,
+    "controller_revision": "9f11fdfdc90b6a775b7f2142897f21558d6d2944",
+    "elapsed_seconds": 196.0,
+    "external_provider_requests": 0,
+    "local_fixture_only": true,
+    "optimizer_result": "NO_IMPROVEMENT",
+    "private_lane_daemons_reaped": true,
+    "proposal_count_across_restart": 1,
+    "receipt": "s010-native-trial-crash-recovery.json",
+    "subject_revision": "9f11fdfdc90b6a775b7f2142897f21558d6d2944"
+  },
   "platform_architecture": "aarch64-apple-darwin",
   "prolonged_resource_pressure": "completed",
   "protected_control_expected_terminal": "assertion_failed",
   "provider_requests": 0,
-  "qualification_claim": "paired_native_optimizer_qualification_passed; strict S010 remains conditional on integrated SIGKILL during a native optimizer trial and restart",
+  "qualification_claim": "strict_S010_offline_acceptance_passed: two paired native optimizer campaigns, prolonged pressure, and native-trial SIGKILL/restart/resume passed; stable_offline established with S011 intake gates",
   "qualification_command": "CODEGG_S010_NATIVE_INTEGRATION=1 python3 -m unittest dev.harness_lab.tests.test_improve.S010IntegratedNativeOptimizerTests.test_two_private_native_campaigns_reject_noop_and_accept_seeded_correction -v",
   "qualification_elapsed_seconds": 1488.285,
   "resource_pressure": {
