@@ -72,7 +72,7 @@
     },
     {
       "run_index": 3,
-      "status": "started",
+      "status": "completed_diagnostic_unqualified",
       "started_at_utc": "2026-10-31T17:27:38Z",
       "git_commit": "e99d3c1fe",
       "binary_sha256": "7d06fc68058e1963a7a81dee54a581c9bce01063b17a90bd62940b9857a99f92",
@@ -85,11 +85,29 @@
       "free_disk_bytes_at_start": 14632464384,
       "lane_root": "/private/tmp/s015-live03",
       "receipt_path": "/private/tmp/s015-attempt03.json",
-      "usd_cost": "unknown_pending",
+      "usd_cost": 0.018025,
       "fixture_manifest": "dev/harness_lab/fixtures/agent_autonomy_h007/cases.jsonl",
       "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
       "workload": "build-provenance-catalog",
-      "corrective": "120-second provider decoded-event idle bound"
+      "corrective": "120-second provider decoded-event idle bound",
+      "terminal_observed_at_utc": "2026-10-31T17:30:36Z",
+      "elapsed_seconds": 161.119,
+      "provider_requests": 28,
+      "provider_request_cap_exhausted": false,
+      "free_disk_bytes_minimum": 14568390656,
+      "free_disk_bytes_at_end": 14486200320,
+      "disk_floor_triggered": false,
+      "terminal": "completed",
+      "task_outcome": "failed",
+      "horizon_outcome": "not_qualified",
+      "horizon_reason": "job_lifecycle_missing",
+      "provider_idle_timeout_count": 0,
+      "receipt_sha256": "9d577c9bd4a69faca8d4e32b4677c9c4b4416ae96e01b8b81bde5aed98b1975c",
+      "diagnostic_log_path": "/private/tmp/s015-live03/case00/case/codegg_debug.log",
+      "diagnostic_log_sha256": "53008fd4bba0ac0aaa379f14198bd135a868d6209ba66c370bc72f90756107e2",
+      "provider_admission_receipt_path": "/private/tmp/s015-live03/case00/artifacts/provider-request-admissions.jsonl",
+      "provider_admission_receipt_sha256": "009412f1f1a05f016edab0037d3228a3ec843ebd24a674bbf5eacafca4c4297d",
+      "test_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358"
     }
   ]
 }
