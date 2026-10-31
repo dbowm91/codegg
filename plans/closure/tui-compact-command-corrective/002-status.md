@@ -194,18 +194,32 @@ to one key, `session.compaction_requested`.
 | `cargo fmt --all -- --check` | clean |
 | `CARGO_BUILD_JOBS=2 cargo check --workspace --all-targets --locked` | exit 0 |
 | `rustup run 1.99.0 cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0 (CI's toolchain) |
-| `cargo test --locked --test core_daemon -- c002` | 3 passed, 0 failed |
-| `cargo test --locked --test agent_loop -- compact` | see §4.2 |
-| `cargo test --locked --test tui_render -- compact` | see §4.2 |
-| `cargo test --locked -p codegg --lib -- compact` | see §4.2 |
+| `cargo test --locked -p codegg-core` | **990 passed, 0 failed** |
+| `cargo test --locked --test core_daemon` | **535 passed, 0 failed** |
+| `cargo test --locked --test agent_loop -- compact` | **73 passed, 0 failed** |
+| `cargo test --locked --test tui_render` | **1110 passed, 0 failed** |
+| `cargo test --locked -p codegg --lib -- compact` | **66 passed, 0 failed** |
+| `cargo test --locked --test tui_render -- compact` | **0 tests selected** — that family has no compaction-named member; the TUI's compaction members live in the library target, and the family's 1110 members all pass (§4.2) |
 | `python3 scripts/check_frontend_action_set.py` | `frontend-action set: clean` |
 | `python3 scripts/check_command_catalog_ownership.py` | `command catalog ownership: clean` |
 | `python3 scripts/check_authorization_matrix.py` | `All authorization matrix invariants verified.` |
 | `python3 scripts/check_adr_integrity.py` | `ADR integrity fixtures passed; active ADR IDs are unique and local paths resolve` |
 | `python3 scripts/check_audit_coverage.py` | `All audit coverage invariants verified.` |
 | `python3 scripts/check_audit_invariants.py` | `All audit foundation invariants verified.` |
-| `python3 scripts/check_comment_budget.py` | `comment budget guard passed` |
+| `python3 scripts/check_test_assertion_quality.py` | `check_test_assertion_quality: all checks pass` |
+| `python3 scripts/check_test_duplication.py` | `check_test_duplication: all checks pass` |
+| `python3 scripts/check_comment_budget.py` | `comment budget guard passed` (after the sanctioned `--bank`) |
 | `scripts/verify.sh quick` | see §4.4 |
+
+**One failure was observed and explained.** In the first full `core_daemon`
+run, `identity_m003_daemon_authorization::user_prompt_queue_advance_attempts_a_due_entry_on_an_idle_session`
+failed. It passed in isolation and in the family's re-run, and the re-run
+reported **535 passed, 0 failed**. It is recorded here rather than smoothed
+away: the family ran under a machine load above 20, and the member is
+time-sensitive. The three other failures in that run were **real** and are
+fixed: the catalog's form counts moved by one form (`compact` left the
+frontend effects), and `tests/core_daemon/command_catalog_m007d.inc` now
+records 125 daemon-effect forms and 42 frontend-effect forms.
 
 ### 4.2 The new tests
 
