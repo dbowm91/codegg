@@ -71,6 +71,10 @@ ACP_PROTOCOL_VERSION = 1
 VERIFIER_NOT_RUN = "not_run"
 H006_CASE_ID = "sustained-event-ledger"
 H007_CASE_ID = "build-provenance-catalog"
+H007_ALLOWED_MODEL_ROUTES = frozenset({
+    "opencode_go/muse-spark-1.3-contributor",
+    "opencode_go/deepseek-v4.1-flash",
+})
 H006_INSTALLATION_PREFLIGHT_TIMEOUT_SECONDS = 15.0
 H006_MIN_ACTIVE_DURATION_MS = 30 * 60 * 1000
 H006_MAX_ACTIVITY_GAP_MS = 5 * 60 * 1000
@@ -79,6 +83,7 @@ H007_MAX_ACTIVITY_GAP_MS = H006_MAX_ACTIVITY_GAP_MS
 
 __all__ = [
     "AUTONOMY_ROOT_RELPATH",
+    "H007_ALLOWED_MODEL_ROUTES",
     "build_transcript",
     "case_root",
     "compare_runs",
@@ -94,6 +99,12 @@ def _repo_root() -> Path:
 def case_root(repository: Path, case_id: str) -> Path:
     """Return the in-repo case root that holds ``fixture/`` and ``verifier/``."""
     return repository / AUTONOMY_ROOT_RELPATH / case_id
+
+
+def _validate_h007_model_route(model: str) -> None:
+    if model not in H007_ALLOWED_MODEL_ROUTES:
+        raise HarnessError(
+            "H007 model route is not in the explicit qualification allowlist")
 
 
 def _copy_tree(source: Path, destination: Path) -> None:
@@ -931,8 +942,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         if budget_policy.max_wallclock_seconds is None \
                 or budget_policy.max_wallclock_seconds > 3600:
             raise HarnessError("H007 requires an explicit wall-clock cap no greater than 3600 seconds")
-        if model != "opencode_go/muse-spark-1.3-contributor":
-            raise HarnessError("H007 is scoped to opencode_go/muse-spark-1.3-contributor")
+        _validate_h007_model_route(model)
         if timeout <= 0 or timeout > 3600:
             raise HarnessError("H007 timeout must be positive and no greater than 3600 seconds")
         if min_free_disk_bytes is None or min_free_disk_bytes < 10 * 1024**3:
