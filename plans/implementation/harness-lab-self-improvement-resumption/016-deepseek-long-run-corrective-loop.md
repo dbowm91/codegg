@@ -11,7 +11,7 @@ Primary class: capability
 
 ## 1. Objective
 
-Run the unchanged H007 five-crate Rust workload on `opencode_go/deepseek-v4.1-flash` to determine whether CodeGG can sustain a real long-horizon agent task after S015. If the long attempt fails, use a separate bounded live diagnostic run to identify whether the failure is a reproducible CodeGG harness defect, task/model behavior, or an unavailable provider route. Correct only a reproduced narrow CodeGG defect, verify it, and repeat the unchanged long run. Stop when H007's independent qualification passes or 20 total long/diagnostic runs have started.
+Run the H007 five-crate Rust workload on `opencode_go/deepseek-v4.1-flash` to determine whether CodeGG can sustain a real long-horizon agent task after S015. If a long attempt fails, use a separate bounded live diagnostic run to identify whether the failure is a reproducible CodeGG defect, task/prompt calibration, model behavior, or an unavailable provider route. Correct only an evidence-backed narrow issue, preserve the independent verifier and acceptance criteria, verify the correction, and retry qualification. Stop when the independent qualification passes or 20 total long/diagnostic runs have started.
 
 ## 2. Authorization and limits
 
@@ -22,13 +22,15 @@ The user explicitly authorized up to 20 runs on 2026-10-31 and specified DeepSee
 - Keep at least 10 GiB free disk; cancel immediately if the floor is crossed or disk state becomes unreadable.
 - Run sequentially. Cancel on operator request, cap exhaustion, sensitive-data exposure, or loss of provider-request admission observability.
 - Record provider-reported USD when available; otherwise record `unknown`. No separate USD ceiling was stated.
-- Use the existing CodeGG `opencode_go` path and the exact H007 manifest/verifier. No alternate route or hidden-verifier access.
+- Use the existing CodeGG `opencode_go` path, a recorded H007 manifest revision, and the exact unchanged H007 verifier. No alternate route or hidden-verifier access.
 
 Authorization ledger: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-live-authorization-20261031.json`.
 
 ## 3. Frozen qualification contract
 
-Use `dev/harness_lab/fixtures/agent_autonomy_h007/cases.jsonl` unchanged (SHA-256 `c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358`) and the existing isolated fixture/verifier pair. A qualifying run must pass the independent hidden verifier and show, at minimum:
+Runs 1–4 used `dev/harness_lab/fixtures/agent_autonomy_h007/cases.jsonl` (SHA-256 `c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358`). Diagnostics showed two task-calibration omissions: the prompt did not tell the model that qualification requires at least 30 minutes of substantive work, and the required corpus job completed in under eight seconds, before the model's next productive source edit. Run 5 onward uses the versioned corrective prompt at `dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v1/cases.jsonl` (SHA-256 `3bb3bcb6f802fcf317f064101bf116ca3b96111fa8d26984753a157350bb1df2`). The revision makes the existing horizon explicit, directs immediate continuation/status observation and preplanned source edits around the job, and adds the user's requested read-only subagents, small helper, and safe boundary probes. The five-crate Rust fixture, contract, corpus, public tests, hidden verifier, and qualification thresholds remain unchanged. The hidden verifier SHA-256 remains `13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c`.
+
+A qualifying run must pass the independent hidden verifier and show, at minimum:
 
 - at least 30 minutes of substantive active work with no measured activity gap above five minutes;
 - both distinct seeded failure/repair/check cycles;
@@ -41,7 +43,7 @@ Task correctness, provider stream health, and horizon status remain separate in 
 
 ## 4. Scope and invariants
 
-In scope: allowlist the single newly authorized H007 route without changing the fixture, verifier, caps, request-admission boundary, timeout correction, or provider integration; offline test the route policy; run the sequential long/diagnostic loop; and make evidence-supported local corrections only.
+In scope: allowlist the single newly authorized H007 route; offline test the route policy; run the sequential long/diagnostic loop; and make evidence-supported local corrections. Prompt calibration may make existing qualification requirements explicit, improve the ordering of already-required work, and add the user's requested safe tool-boundary probes. It must not change the verifier, acceptance criteria, source contract, public tests, or corpus.
 
 Out of scope: any other model/adapter, raw prompt or SSE logging, changing H007 acceptance thresholds, weakening the verifier, broad daemon/scheduler/ACP/job architecture changes without a reproduction, automated candidate promotion, or treating historical S013/S015 authorizations as transferable.
 
@@ -58,11 +60,11 @@ The S015 correction is the starting baseline: decoded-event idle timeout is 120 
 
 ### B. Run long qualification first
 
-Run the unchanged H007 case with the exact route, a 60-request/3,600-second policy, and 10 GiB disk floor. Preserve the full receipt, causal trace, safe provider lifecycle log, admission receipt, binary and manifest identities, task/verifier results, and disk minima.
+Run the current recorded H007 prompt revision against the unchanged five-crate source fixture, contract, corpus, public tests, and hidden verifier, using the exact route, a 60-request/3,600-second policy, and 10 GiB disk floor. Preserve the full receipt, causal trace, safe provider lifecycle log, admission receipt, binary and manifest identities, task/verifier results, and disk minima.
 
 ### C. Diagnose, correct, and repeat
 
-If a long run fails, record the failure class from evidence. Start a separate DeepSeek diagnostic run only when it can distinguish model/task behavior from a CodeGG boundary. If a current CodeGG defect is reproduced, write a failing-first regression, implement the narrow correction, run focused verification, commit it, then retry the unchanged long qualification. If no CodeGG defect is reproduced, retain that evidence and continue the authorized loop with the same task/model and criteria; do not invent a harness fix. All long and diagnostic runs consume the same 20-run ceiling.
+If a long run fails, record the failure class from evidence. Start a separate DeepSeek diagnostic run only when it can distinguish model/task behavior from a CodeGG boundary. If a current CodeGG defect is reproduced, write a failing-first regression, implement the narrow correction, run focused verification, commit it, then retry qualification. If no CodeGG defect is reproduced but task instructions or background-work duration prevent measuring an existing criterion, preserve the evidence, make a versioned prompt calibration without changing acceptance, and retry. Runs 1–4 established that provider streaming, ACP event pairing, job execution, and durable job status work; the model submitted the job but ended the turn without a terminal poll, while the short job completed before a source edit. The prompt correction is the current corrective. All long and diagnostic runs consume the same 20-run ceiling.
 
 ## 6. Required evidence and verification
 
@@ -76,8 +78,8 @@ If a long run fails, record the failure class from evidence. Start a separate De
 
 Stop immediately on any authorization/resource/safety cap, unobservable request admission, sensitive-data exposure, source/binary identity mismatch, or operator cancellation. Stop without a fix if the failure is attributable to task/model behavior or the provider route and no CodeGG defect is reproduced.
 
-Close positively only when one unchanged H007 run satisfies every frozen qualification criterion. Otherwise close at 20 started runs with an exact attribution summary and residual corrective owner; do not claim the harness is fully capable. S015's 16 unused diagnostic slots are not transferred into this authorization.
+Close positively only when one H007 run using a recorded manifest revision satisfies every frozen qualification criterion. Do not revise a manifest during a live run. Otherwise close at 20 started runs with an exact attribution summary and residual corrective owner; do not claim the harness is fully capable. S015's 16 unused diagnostic slots are not transferred into this authorization.
 
 ## 8. Initial operator handoff
 
-The currently available corrected ARM64 CodeGG binary is `/private/tmp/s015-target-arm64/aarch64-apple-darwin/debug/codegg` (SHA-256 `7d06fc68058e1963a7a81dee54a581c9bce01063b17a90bd62940b9857a99f92`), with its matching `codegg-sandbox-helper`. The most recent observed free disk was 16,932,916 KiB. Recheck immediately before each run. Do not build the Rust workspace unless necessary; current run can reuse this exact S015-qualified binary.
+The available ARM64 CodeGG binary is `/private/tmp/s016-bin-26ce84f/codegg` (SHA-256 `50a9ae92b7aac46f9fd9855612caa7b8fe98a505979fe23fd4578e55262d3ada`), with matching sibling helper SHA-256 `0f8db353fad3bf44ca9353aca6eab2162d933c4b8501748b05965bf7ff49f8b8`. Its Rust target cache was cleaned after preserving and verifying this pair. Recheck disk immediately before each run; free space recovered to about 39.9 GB after the owned cache cleanup. Rebuild only if a source correction requires it.
