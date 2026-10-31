@@ -121,6 +121,11 @@ impl DaemonRequestFamily {
             // git family. It is the one *write* the family owns, and it is
             // fenced by the C003 checkout writer fence.
             CoreRequest::GitRead { .. } | CoreRequest::GitRevert { .. } => Self::Git,
+            // M007-I (work package A): the daemon's own diff read joins the
+            // git family. It is a **read**: the daemon resolves the checkout
+            // from its own durable binding and reads the bytes through the
+            // read-only git fact layer.
+            CoreRequest::GitDiff { .. } => Self::Git,
             CoreRequest::SkillCatalogueList { .. } => Self::Skills,
             // M007-D: the daemon-owned command catalog and the daemon-effect
             // command executor. Both are project-scoped: the scope names the

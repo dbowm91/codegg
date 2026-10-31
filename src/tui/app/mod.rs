@@ -8248,11 +8248,10 @@ impl App {
             B::Diff => {
                 let path_arg = argument;
                 self.ui_state.command_mode = false;
-                if path_arg.is_empty() {
-                    self.handle_diff_command(None);
-                } else {
-                    self.handle_diff_command(Some(path_arg));
-                }
+                // M007-I (work package A): the daemon owns the read. The TUI
+                // no longer spawns `git` and no longer reads the working
+                // tree for this.
+                crate::tui::commands::diff::start_diff(self, path_arg.to_string());
             }
             B::Tests => {
                 let subcmd = argument;
@@ -11248,94 +11247,6 @@ impl App {
             self.messages_state
                 .toasts
                 .info("No recently edited file to open");
-        }
-    }
-
-    /// Show the diff for `path`, or the whole working tree when it is `None`.
-    ///
-    /// Returns whether a diff box was actually opened. Four of the paths below
-    /// return without mounting anything — no git root, no changes, a failed
-    /// `git diff` — and the caller needs to be able to say so. It used to
-    /// re-read `dock_target()` to find out, which is the inference this return
-    /// value replaces.
-    pub(crate) fn handle_diff_command(&mut self, path: Option<&str>) -> bool {
-        let project_dir = self.active_workspace_root().unwrap_or_default();
-        let git_root = match crate::worktree::find_git_root(&project_dir) {
-            Some(r) => r,
-            None => {
-                self.messages_state
-                    .toasts
-                    .info("Not in a git repository - showing text diff");
-                return false;
-            }
-        };
-
-        if let Some(file_path) = path {
-            let abs_path = if std::path::Path::new(file_path).is_absolute() {
-                std::path::PathBuf::from(file_path)
-            } else {
-                project_dir.join(file_path)
-            };
-
-            let show_argv: Vec<String> =
-                vec!["git".into(), "show".into(), format!("HEAD:{}", file_path)];
-            let old_content = crate::git_mutations::GitEnvPolicy::default()
-                .apply_sync(&show_argv, &git_root)
-                .ok()
-                .and_then(|mut command| command.output().ok())
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                .unwrap_or_default();
-
-            let new_content = std::fs::read_to_string(&abs_path).unwrap_or_default();
-
-            if old_content == new_content {
-                self.messages_state.toasts.info("No changes detected");
-                return false;
-            }
-
-            let title = format!("Diff: {}", file_path);
-            self.process_msg(TuiMsg::OpenDiffDialog {
-                old_content: old_content.into_boxed_str(),
-                new_content: new_content.into_boxed_str(),
-                title: title.into_boxed_str(),
-            });
-            true
-        } else {
-            let diff_argv: Vec<String> = vec!["git".into(), "diff".into()];
-            let output = crate::git_mutations::GitEnvPolicy::default()
-                .apply_sync(&diff_argv, &git_root)
-                .map_err(|outcome| std::io::Error::other(outcome.to_string()))
-                .and_then(|mut command| command.output());
-
-            match output {
-                Ok(o) if o.status.success() => {
-                    let diff_text = String::from_utf8_lossy(&o.stdout).to_string();
-                    if diff_text.is_empty() {
-                        self.messages_state.toasts.info("No changes detected");
-                        return false;
-                    }
-                    self.process_msg(TuiMsg::OpenDiffDialog {
-                        old_content: String::new().into_boxed_str(),
-                        new_content: diff_text.into_boxed_str(),
-                        title: "Repository Diff".to_string().into_boxed_str(),
-                    });
-                    true
-                }
-                Ok(o) => {
-                    let stderr = String::from_utf8_lossy(&o.stderr).to_string();
-                    self.messages_state
-                        .toasts
-                        .error(&format!("git diff failed: {}", stderr));
-                    false
-                }
-                Err(e) => {
-                    self.messages_state
-                        .toasts
-                        .error(&format!("Failed to run git diff: {}", e));
-                    false
-                }
-            }
         }
     }
 

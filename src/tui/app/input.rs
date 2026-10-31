@@ -1023,7 +1023,8 @@ impl App {
                 }
             }
             TuiMsg::ReviewOpenDiff { path } => {
-                self.handle_diff_command(Some(&path));
+                // M007-I (work package A): the daemon owns the diff read.
+                crate::tui::commands::diff::start_diff(self, path);
             }
             TuiMsg::ResearchOpenRun { run_id } => {
                 if let Some(ref tx) = self.tui_cmd_tx {

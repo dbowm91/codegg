@@ -141,6 +141,16 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::GitWrite),
         ),
+        // M007-I (work package A): the daemon's own diff read discloses the
+        // working tree's bytes against `HEAD`. It is a **read**: it asks for
+        // the read capability and not the write one, and it resolves through
+        // the same `DirectProject` scope the git read does. There is no write
+        // path behind this variant.
+        R::GitDiff { .. } => OperationDescriptor::new(
+            "git_diff",
+            ScopeKind::DirectProject,
+            Some(Capability::GitRead),
+        ),
         // Phase 3: the skill catalogue discloses a project's discoverable
         // skill metadata — names and descriptions, never bodies and never
         // paths. It is project-scoped inert metadata, so it takes the

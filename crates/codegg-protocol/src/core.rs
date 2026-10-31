@@ -2375,6 +2375,13 @@ pub enum CoreResponse {
     GitRevert {
         result: crate::git::GitRevertResultDto,
     },
+    /// The result of one daemon-executed diff read (M007-I, work package A).
+    ///
+    /// Carries the diff's own bytes, so the frontend renders the answer the
+    /// daemon produced instead of reading the working tree itself.
+    GitDiff {
+        result: crate::git::GitDiffResultDto,
+    },
     /// The skill catalogue discovered for one project (Phase 3).
     ///
     /// Carries skill metadata only: name, description, namespace, digest,
@@ -2666,6 +2673,15 @@ pub enum CoreRequest {
     /// spawns `git` for this.
     GitRevert {
         request: crate::git::GitRevertRequestDto,
+    },
+    /// M007-I (work package A): the daemon-executed diff read.
+    ///
+    /// The daemon owns the read: it resolves the checkout from its own
+    /// durable binding, reads the bytes through the read-only git fact
+    /// layer, and answers with the diff's own bytes. A frontend never
+    /// spawns `git` for this.
+    GitDiff {
+        request: crate::git::GitDiffRequestDto,
     },
     /// Phase 3: the skill catalogue for one project (`direct_project` +
     /// `project.read`).

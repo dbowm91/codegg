@@ -628,6 +628,28 @@ pub fn build_inner_request(
                 }
             })
         }
+        // M007-I (work package A): `/diff` reads the working tree against
+        // `HEAD`. The daemon owns the read: it resolves the checkout from
+        // its own durable binding and reads the bytes through the read-only
+        // git fact layer. The argument is the repository-relative path; the
+        // **empty** argument is the bare branch, which diffs the whole tree.
+        ("diff", "") => {
+            let path = argument.trim();
+            let path = if path.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!(path)
+            };
+            json!({
+                "type": "git_diff",
+                "request": {
+                    "project_id": project_id,
+                    "workspace_id": workspace_id,
+                    "session_id": session,
+                    "path": path,
+                }
+            })
+        }
         // M007-H (work package C): `/revert` restores paths in the
         // project's checkout. The daemon owns the write: it resolves the
         // checkout from its own durable binding, contains every path inside
@@ -1697,6 +1719,7 @@ mod tests {
         ("shell_rerun", "", "run-1"),
         // M007-H (work package C): the daemon's own `/revert`.
         ("revert", "", "src/lib.rs"),
+        ("diff", "", "src/lib.rs"),
         ("shell_show", "", "probe"),
         ("shell_expand", "", "probe"),
         ("shell_kill", "", "probe"),

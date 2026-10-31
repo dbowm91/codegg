@@ -917,6 +917,15 @@ pub enum TuiCommand {
         response: Option<CoreResponse>,
         error: Option<String>,
     },
+    /// Completion: the daemon's diff read finished.
+    ///
+    /// M007-I (work package A): the response is the daemon's own answer —
+    /// its typed refusal included. The TUI renders it and never reads the
+    /// working tree itself.
+    DiffFinished {
+        response: Option<CoreResponse>,
+        error: Option<String>,
+    },
     /// Completion: session state (todos + active goal) refreshed.
     SessionStateRefreshed {
         /// `Some` when the core produced an authoritative todo list. `None`

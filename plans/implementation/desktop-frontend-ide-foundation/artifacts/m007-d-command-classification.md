@@ -37,9 +37,9 @@ generate_m007d_command_classification.py --check
 | argument forms | 167 |
 | daemon-effect forms | 124 |
 | frontend-effect forms | 43 |
-| daemon-effect forms the daemon's effect table serves | 73 |
+| daemon-effect forms the daemon's effect table serves | 74 |
 | daemon-effect forms whose TUI arm issues a daemon request | 23 |
-| daemon-effect forms whose TUI arm issues no daemon request | 28 |
+| daemon-effect forms whose TUI arm issues no daemon request | 27 |
 | frontend-effect forms covered by the declared action set | 43 |
 
 The catalog, the declared frontend-action set and the daemon's effect table
@@ -150,14 +150,14 @@ it issues none.
 | `/goal` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:7233` | `CommandExecute`, `GoalCheckpoint`, `GoalClear`, `GoalDone`, `GoalFromFile`, `GoalPause`, … (9) |
 | `/plan` | `—` | daemon | Execution | daemon → published projection | `src/tui/app/mod.rs:7375` | — |
 | `/state` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:7418` | — |
-| `/diff` | `—` | daemon | GitReview | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8248` | — |
-| `/tests` | `—` | daemon | Execution | daemon → published projection | `src/tui/app/mod.rs:8257` | — |
-| `/test` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8262` | `CommandExecute`, `JobSubmit`, `WorkspaceRegister` |
-| `/revert` | `—` | daemon | GitReview | daemon → served | `src/tui/app/mod.rs:8275` | `CommandExecute` |
-| `/research` | `—` | daemon | Research | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8408` | — |
-| `/research-runs` | `—` | daemon | Research | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8419` | — |
-| `/research-open` | `—` | daemon | Research | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8423` | — |
-| `/research-show` | `—` | daemon | Research | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8434` | — |
+| `/diff` | `—` | daemon | GitReview | daemon → served | `src/tui/app/mod.rs:8248` | `CommandExecute` |
+| `/tests` | `—` | daemon | Execution | daemon → published projection | `src/tui/app/mod.rs:8256` | — |
+| `/test` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8261` | `CommandExecute`, `JobSubmit`, `WorkspaceRegister` |
+| `/revert` | `—` | daemon | GitReview | daemon → served | `src/tui/app/mod.rs:8274` | `CommandExecute` |
+| `/research` | `—` | daemon | Research | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8407` | — |
+| `/research-runs` | `—` | daemon | Research | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8418` | — |
+| `/research-open` | `—` | daemon | Research | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8422` | — |
+| `/research-show` | `—` | daemon | Research | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8433` | — |
 | `/search` | `—` | daemon | Research | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7468` | — |
 | `/doctor` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7489` | — |
 | `/logs` | `—` | frontend | System | frontend → `ShowLogs` | `src/tui/app/mod.rs:7502` | — |
@@ -190,36 +190,36 @@ it issues none.
 | `/lsp-cross-repair` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:8059` | `CommandExecute` |
 | `/lsp-call-neighbors` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:8096` | `CommandExecute` |
 | `/tool-backends` | `—` | frontend | Provider | frontend → `ShowToolBackends` | `src/tui/app/mod.rs:8227` | — |
-| `/security-review` | `—` | daemon | Agent | daemon → served | `src/tui/app/mod.rs:8472` | — |
-| `/security-review-show` | `—` | daemon | Agent | daemon → served | `src/tui/app/mod.rs:8547` | — |
-| `/security-review-cancel` | `—` | daemon | Agent | daemon → served | `src/tui/app/mod.rs:8557` | — |
-| `/shell-list` | `—` | frontend | Execution | frontend → `ShowShellRuns` | `src/tui/app/mod.rs:8637` | — |
-| `/shell-show` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8669` | — |
-| `/shell-include` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8561` | `HumanShellPromotionStage` |
-| `/shell-rerun` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8605` | — |
-| `/shell-kill` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8621` | `HumanShellRunCancel` |
-| `/shell-ask` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8964` | `HumanShellPromotionStage`, `SessionPromptSubmit` |
-| `/shell-expand` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8685` | — |
-| `/terminal` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8760` | `InteractiveProcessCreate` |
-| `/terminal-clear` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8794` | `InteractiveProcessInput`, `InteractiveProcessResize` |
-| `/terminal-create` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8715` | `InteractiveProcessCreate` |
-| `/terminal-list` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8729` | `CommandExecute` |
-| `/terminal-attach` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8732` | `CommandExecute` |
-| `/terminal-show` | `—` | frontend | Execution | frontend → `ShowTerminal` | `src/tui/app/mod.rs:8745` | — |
-| `/terminal-focus` | `—` | frontend | Execution | frontend → `FocusTerminal` | `src/tui/app/mod.rs:8821` | — |
-| `/terminal-send` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8830` | `InteractiveProcessInput`, `InteractiveProcessResize` |
-| `/terminal-resize` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8847` | `InteractiveProcessResize` |
-| `/terminal-resume` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8873` | `CommandExecute` |
-| `/terminal-detach` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8882` | `InteractiveProcessDetach` |
-| `/terminal-terminate` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8891` | `InteractiveProcessTerminate` |
-| `/terminal-remove` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8900` | `InteractiveProcessRemove` |
-| `/plugins` | `—` | frontend | System | frontend → `ShowPlugins` | `src/tui/app/mod.rs:8712` | — |
-| `/plugin-info` | `—` | frontend | System | frontend → `ShowPluginInfo` | `src/tui/app/mod.rs:8909` | — |
-| `/plugin-enable` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:8919` | `CommandExecute` |
-| `/plugin-disable` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:8929` | `CommandExecute` |
-| `/plugin-doctor` | `—` | frontend | System | frontend → `ShowPluginDoctor` | `src/tui/app/mod.rs:8939` | — |
-| `/plugin-remove` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:8944` | `CommandExecute` |
-| `/plugin-install` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:8954` | `CommandExecute` |
+| `/security-review` | `—` | daemon | Agent | daemon → served | `src/tui/app/mod.rs:8471` | — |
+| `/security-review-show` | `—` | daemon | Agent | daemon → served | `src/tui/app/mod.rs:8546` | — |
+| `/security-review-cancel` | `—` | daemon | Agent | daemon → served | `src/tui/app/mod.rs:8556` | — |
+| `/shell-list` | `—` | frontend | Execution | frontend → `ShowShellRuns` | `src/tui/app/mod.rs:8636` | — |
+| `/shell-show` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8668` | — |
+| `/shell-include` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8560` | `HumanShellPromotionStage` |
+| `/shell-rerun` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8604` | — |
+| `/shell-kill` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8620` | `HumanShellRunCancel` |
+| `/shell-ask` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8963` | `HumanShellPromotionStage`, `SessionPromptSubmit` |
+| `/shell-expand` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8684` | — |
+| `/terminal` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8759` | `InteractiveProcessCreate` |
+| `/terminal-clear` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8793` | `InteractiveProcessInput`, `InteractiveProcessResize` |
+| `/terminal-create` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8714` | `InteractiveProcessCreate` |
+| `/terminal-list` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8728` | `CommandExecute` |
+| `/terminal-attach` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8731` | `CommandExecute` |
+| `/terminal-show` | `—` | frontend | Execution | frontend → `ShowTerminal` | `src/tui/app/mod.rs:8744` | — |
+| `/terminal-focus` | `—` | frontend | Execution | frontend → `FocusTerminal` | `src/tui/app/mod.rs:8820` | — |
+| `/terminal-send` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8829` | `InteractiveProcessInput`, `InteractiveProcessResize` |
+| `/terminal-resize` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8846` | `InteractiveProcessResize` |
+| `/terminal-resume` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8872` | `CommandExecute` |
+| `/terminal-detach` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8881` | `InteractiveProcessDetach` |
+| `/terminal-terminate` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8890` | `InteractiveProcessTerminate` |
+| `/terminal-remove` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8899` | `InteractiveProcessRemove` |
+| `/plugins` | `—` | frontend | System | frontend → `ShowPlugins` | `src/tui/app/mod.rs:8711` | — |
+| `/plugin-info` | `—` | frontend | System | frontend → `ShowPluginInfo` | `src/tui/app/mod.rs:8908` | — |
+| `/plugin-enable` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:8918` | `CommandExecute` |
+| `/plugin-disable` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:8928` | `CommandExecute` |
+| `/plugin-doctor` | `—` | frontend | System | frontend → `ShowPluginDoctor` | `src/tui/app/mod.rs:8938` | — |
+| `/plugin-remove` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:8943` | `CommandExecute` |
+| `/plugin-install` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:8953` | `CommandExecute` |
 | `/collaborators` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6212` | `CommandExecute` |
 | `/collaborators` | `presence` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6212` | `CommandExecute` |
 | `/team` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:6228` | `ChatChannelPolicySet`, `ChatPolicyGet`, `ChatProjectPolicySet`, `CommandExecute`, `TeamMembershipAdd`, `TeamMembershipRevoke`, … (12) |
@@ -239,9 +239,9 @@ it issues none.
 | `/chat-action-task` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6479` | `ChatActionSubmit`, `ChatChannelEnsure` |
 | `/chat-action-review` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6515` | `ChatActionSubmit`, `ChatChannelEnsure` |
 | `/chat-action-list` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6550` | `ChatChannelEnsure`, `ChatHistory`, `CommandExecute` |
-| `/edit-undo` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8286` | `CommandExecute`, `EditCheckpointUndo` |
-| `/edit-reapply` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8332` | `CommandExecute`, `EditCheckpointReapply` |
-| `/edit-checkpoints` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8378` | `CommandExecute` |
+| `/edit-undo` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8285` | `CommandExecute`, `EditCheckpointUndo` |
+| `/edit-reapply` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8331` | `CommandExecute`, `EditCheckpointReapply` |
+| `/edit-checkpoints` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8377` | `CommandExecute` |
 | `/tool-contracts` | `—` | frontend | Provider | frontend → `ShowToolContracts` | `src/tui/app/mod.rs:7506` | — |
 | `/worktree` | `—` | frontend | System | frontend → `ShowWorktrees` | `src/tui/app/mod.rs:6771` | `WorktreeList` |
 
@@ -257,7 +257,7 @@ already carries, so the coverage list and the catalog cannot drift apart.
 | Collaboration | 17 | 16 | 1 | 9 | 7 | 0 |
 | Diagnostics | 28 | 27 | 1 | 17 | 1 | 9 |
 | Execution | 29 | 26 | 3 | 14 | 10 | 2 |
-| GitReview | 3 | 3 | 0 | 2 | 0 | 1 |
+| GitReview | 3 | 3 | 0 | 3 | 0 | 0 |
 | Memory | 12 | 11 | 1 | 5 | 2 | 4 |
 | Project | 6 | 1 | 5 | 1 | 0 | 0 |
 | Provider | 5 | 1 | 4 | 1 | 0 | 0 |
@@ -291,7 +291,6 @@ inventory of exactly this set.
 | `/skill-proposals` | `—` | Memory | — |
 | `/skill-proposal` | `—` | Memory | — |
 | `/plan` | `—` | Execution | — |
-| `/diff` | `—` | GitReview | — |
 | `/tests` | `—` | Execution | — |
 | `/research` | `—` | Research | — |
 | `/research-runs` | `—` | Research | — |
@@ -341,6 +340,7 @@ is the identifier, and the remainder is the payload.
 | `/collaborators` | `—` | `team_principal_list` |
 | `/collaborators` | `presence` | `presence_snapshot_get` |
 | `/control` | `—` | `session_control_get` |
+| `/diff` | `—` | `git_diff` |
 | `/edit-checkpoints` | `—` | `edit_checkpoint_list` |
 | `/edit-reapply` | `—` | `edit_checkpoint_reapply_latest` |
 | `/edit-undo` | `—` | `edit_checkpoint_undo_latest` |
@@ -544,14 +544,14 @@ request are one of three things:
 The forms whose TUI arm **does** issue a daemon request are classified in
 the second table below, under a different set of verdicts.
 
-**17 are misclassified, 2 are served by the
+**16 are misclassified, 2 are served by the
 daemon's published projection and 9 are real missing capability**,
-out of 28 daemon-effect forms whose TUI arm issues
+out of 27 daemon-effect forms whose TUI arm issues
 no daemon request.
 
 The kind correction is **not applied here**: a frontend-effect form needs a
 declared `FrontendAction`, and the declared set's model is a UI action the
-frontend performs. 13 new actions and 17 catalog
+frontend performs. 12 new actions and 16 catalog
 kind changes are their own change, recorded as a follow-up rather than
 smuggled into this milestone.
 
@@ -569,7 +569,6 @@ smuggled into this milestone.
 | `/skill-proposals` | Memory | misclassified | the TUI's own `SkillPromotionStore` on the local filesystem |
 | `/skill-proposal` | Memory | misclassified | the TUI's own `SkillPromotionStore` on the local filesystem |
 | `/plan` | Execution | published projection | the plan list is daemon-owned work-plan state; the daemon publishes it on the session projection and the arm reads that published plan |
-| `/diff` | GitReview | misclassified | the arm's effect is the frontend's own: one local `git` subprocess and one file read, with the git root read through the read-only `egggit` crate — no daemon-mediated process is driven |
 | `/tests` | Execution | published projection | the suite run is daemon-owned job state; the daemon publishes the session's test state on the session projection and the arm reads it |
 | `/research` | Research | missing capability | the research turn is daemon-owned agent-loop work |
 | `/research-runs` | Research | misclassified | the TUI's own `ResearchService` over the local filesystem; the catalog's kind is wrong and the corrected kind is `FrontendEffect` |
@@ -642,7 +641,7 @@ arm issues a daemon request anyway, are one of four things — the fifth,
 **3 mechanical, 18 not mechanical, 2 subsystem move**, out of 23 daemon-effect forms whose TUI arm issues a
 daemon request but which the daemon does not serve.
 
-The accounting is complete: **124 daemon-effect forms = 73 served + 23 mechanical-unserved + 28 with no daemon request**, and every one of them is named.
+The accounting is complete: **124 daemon-effect forms = 74 served + 23 mechanical-unserved + 27 with no daemon request**, and every one of them is named.
 
 | command | family | verdict | why |
 |---|---|---|---|

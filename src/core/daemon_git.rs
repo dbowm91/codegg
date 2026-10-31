@@ -14,13 +14,21 @@
 //! model's typed git tool takes; the fence's scope is the acting session's
 //! own run, resolved from durable state. **The record**: the revert is
 //! authorized as a `git.write` operation and audited as a file mutation.
+//!
+//! M007-I (work package A) adds the daemon's own **diff read** here too:
+//! `/diff` used to be a frontend that spawned `git show` and `git diff`
+//! itself, so the bytes a diff showed came from the frontend's own tree.
+//! The read now lives here, beside the write, and it is a **read** — no
+//! writer permit, no fence, no mutation.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use codegg_git::{GitOperation, RepoPath, RepoRoot};
 use codegg_protocol::core::{CoreRequest, CoreResponse};
-use codegg_protocol::git::{GitRevertRequestDto, GitRevertResultDto};
+use codegg_protocol::git::{
+    GitDiffRequestDto, GitDiffResultDto, GitRevertRequestDto, GitRevertResultDto,
+};
 
 use crate::core::writer_fence::DaemonWriterFenceFactory;
 use crate::tool::writer_fence::{
@@ -39,6 +47,13 @@ const REFUSAL_REVERT_FENCED: &str = "git_revert_fenced";
 /// The daemon refuses the revert when git itself refuses the operation.
 const REFUSAL_REVERT_FAILED: &str = "git_revert_failed";
 
+/// The daemon refuses the diff when the checkout cannot be resolved.
+const REFUSAL_DIFF_UNAVAILABLE: &str = "git_diff_unavailable";
+/// The daemon refuses the diff when a path leaves the checkout.
+const REFUSAL_DIFF_OUTSIDE_CHECKOUT: &str = "git_diff_outside_checkout";
+/// The daemon refuses the diff when git itself refuses the read.
+const REFUSAL_DIFF_FAILED: &str = "git_diff_failed";
+
 /// Serve the git family.
 ///
 /// The read half is served by the read-only git fact layer; the write half
@@ -50,8 +65,159 @@ pub(crate) async fn handle_git_family_request(
 ) -> Result<CoreResponse, crate::error::AppError> {
     match request {
         CoreRequest::GitRevert { request } => handle_git_revert(daemon, request, authority).await,
+        CoreRequest::GitDiff { request } => handle_git_diff(daemon, request).await,
         other => daemon.handle_git_request(other).await,
     }
+}
+
+/// The daemon's `/diff` read (M007-I, work package A).
+///
+/// The two branches stay mutually exclusive, exactly as the frontend's own
+/// read was. The `/diff <path>` branch reads **one** file's bytes at `HEAD`
+/// and **one** file's bytes from the working tree; the bare `/diff` branch
+/// reads the **one** whole-tree diff and no file. Neither branch writes, so
+/// neither takes a writer permit nor a fence.
+///
+/// The bytes come from the **read-only** fact layer — the same
+/// `GitEnvPolicy` the frontend's own path used — so the daemon reads the
+/// same tree the same way. The typed mutating crate is not involved.
+async fn handle_git_diff(
+    daemon: &crate::core::daemon::CoreDaemon,
+    request: GitDiffRequestDto,
+) -> Result<CoreResponse, crate::error::AppError> {
+    // The checkout comes from the daemon's own durable binding. The caller
+    // names a project, never a directory.
+    let root = match daemon
+        .resolve_project_repository_root(&request.project_id)
+        .await
+    {
+        Ok(root) => root,
+        Err(_) => {
+            return Ok(diff_error(
+                REFUSAL_DIFF_UNAVAILABLE,
+                "the project's checkout could not be resolved",
+            ))
+        }
+    };
+    let git_root = match codegg_core::worktree::find_git_root(&root) {
+        Some(found) => found,
+        None => {
+            return Ok(diff_error(
+                REFUSAL_DIFF_UNAVAILABLE,
+                "the project's checkout is not a git repository",
+            ))
+        }
+    };
+
+    let Some(path) = request.path.as_deref().map(str::trim).filter(|p| !p.is_empty()) else {
+        // The bare branch: one `git diff`, no file read.
+        let argv = vec!["git".to_string(), "diff".to_string()];
+        let output = match run_git_read(&argv, &git_root).await {
+            Ok(output) => output,
+            Err(message) => return Ok(diff_error(REFUSAL_DIFF_FAILED, &message)),
+        };
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            return Ok(diff_error(
+                REFUSAL_DIFF_FAILED,
+                &format!("git diff failed: {}", stderr.trim()),
+            ));
+        }
+        let diff_text = String::from_utf8_lossy(&output.stdout).to_string();
+        return Ok(CoreResponse::GitDiff {
+            result: GitDiffResultDto {
+                project_id: request.project_id,
+                workspace_id: request.workspace_id,
+                path: None,
+                old_content: String::new(),
+                new_content: diff_text,
+                title: "Repository Diff".to_string(),
+            },
+        });
+    };
+
+    // Containment: the path is resolved against the checkout the daemon
+    // owns, so a caller cannot name a tree the daemon does not hold.
+    let relative = match repo_relative_path(path) {
+        Ok(relative) => relative,
+        Err(message) => return Ok(diff_error(REFUSAL_DIFF_OUTSIDE_CHECKOUT, &message)),
+    };
+
+    // The `HEAD` side: one `git show HEAD:<path>`.
+    let show_argv = vec![
+        "git".to_string(),
+        "show".to_string(),
+        format!("HEAD:{relative}"),
+    ];
+    let old_content = match run_git_read(&show_argv, &git_root).await {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).to_string()
+        }
+        // A file that is not in `HEAD` has no old side. The frontend's own
+        // read produced the same empty string in that case.
+        Ok(_) => String::new(),
+        Err(message) => return Ok(diff_error(REFUSAL_DIFF_FAILED, &message)),
+    };
+
+    // The working-tree side: one file read.
+    let new_content = std::fs::read_to_string(git_root.join(&relative)).unwrap_or_default();
+
+    Ok(CoreResponse::GitDiff {
+        result: GitDiffResultDto {
+            project_id: request.project_id,
+            workspace_id: request.workspace_id,
+            path: Some(relative),
+            old_content,
+            new_content,
+            title: format!("Diff: {path}"),
+        },
+    })
+}
+
+/// The repository-relative form of a caller-supplied path.
+///
+/// The path is normalized against the checkout and refused when it would
+/// leave it, so the daemon never reads a tree it does not own.
+fn repo_relative_path(path: &str) -> Result<String, String> {
+    let candidate = Path::new(path);
+    if candidate.is_absolute() {
+        return Err(format!("{path} is not inside the checkout"));
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for component in candidate.components() {
+        match component {
+            std::path::Component::Normal(part) => parts.push(part.to_string_lossy().to_string()),
+            std::path::Component::CurDir => {}
+            // A `..` or a root component would leave the checkout.
+            _ => return Err(format!("{path} is not inside the checkout")),
+        }
+    }
+    if parts.is_empty() {
+        return Err(format!("{path} is not inside the checkout"));
+    }
+    Ok(parts.join("/"))
+}
+
+/// Run one read-only git invocation under the read-only fact layer.
+///
+/// The read is a **read**: the policy is the same one the frontend's own
+/// read used, so the object-reading allowlist and `GIT_OPTIONAL_LOCKS=0`
+/// apply unchanged.
+async fn run_git_read(
+    argv: &[String],
+    git_root: &Path,
+) -> Result<std::process::Output, String> {
+    let argv = argv.to_vec();
+    let git_root = git_root.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        crate::git_mutations::GitEnvPolicy::default()
+            .apply_sync(&argv, &git_root)
+            .map_err(|outcome| outcome.to_string())?
+            .output()
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("the git read could not be run: {error}"))?
 }
 
 /// The daemon's `/revert`.
@@ -250,8 +416,7 @@ async fn revert_run_id(
         .ok()?;
     let record = runs
         .into_iter()
-        .filter(|record| record.worktree_id.is_some())
-        .next_back()?;
+        .rfind(|record| record.worktree_id.is_some())?;
     Some(record.run_id.as_str().to_owned())
 }
 
@@ -267,6 +432,14 @@ async fn settle(permit: Option<WriterFencePermit>, outcome: WriterFenceOutcome) 
 
 /// A typed refusal, in the shape the frontend renders.
 fn revert_error(code: &str, message: &str) -> CoreResponse {
+    CoreResponse::Error {
+        code: code.to_string(),
+        message: message.to_string(),
+    }
+}
+
+/// A typed refusal for the diff read, in the shape the frontend renders.
+fn diff_error(code: &str, message: &str) -> CoreResponse {
     CoreResponse::Error {
         code: code.to_string(),
         message: message.to_string(),

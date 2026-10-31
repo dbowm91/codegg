@@ -875,6 +875,11 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     // git fact layer, and mutates nothing: there is no write path behind it
     // to audit. Denial *is* audited upstream by `authorize_request`.
     "git_read",
+    // M007-I (work package A): the daemon's own diff read. It discloses the
+    // working tree's bytes against `HEAD` through the read-only git fact
+    // layer and mutates nothing: there is no write path behind it to audit.
+    // Denial *is* audited upstream by `authorize_request`.
+    "git_diff",
     // Phase 3: the skill catalogue. It discloses a project's discoverable
     // skill metadata — names and descriptions, never bodies, never paths —
     // and mutates nothing. Denial *is* audited upstream by

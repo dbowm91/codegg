@@ -596,14 +596,12 @@ pub(crate) fn open_panel_box(app: &mut App, id: SidePanelId) -> PanelFill {
             crate::tui::commands::work_orders::open_task_view(app, "task");
             PanelFill::StillLoading
         }
-        // Reports for itself: a clean tree, a missing git root, and a failed
-        // `git diff` all return without opening anything.
+        // M007-I (work package A): the daemon owns the diff read, so the
+        // panel starts an async read and its box arrives from the reply —
+        // the same shape `P::Team` and `P::Control` use.
         P::Diff => {
-            if app.handle_diff_command(None) {
-                PanelFill::Filled
-            } else {
-                PanelFill::Cannot("no changes to show")
-            }
+            crate::tui::commands::diff::start_diff(app, String::new());
+            PanelFill::Loading
         }
         P::Review => {
             app.open_dialog(Dialog::Review);

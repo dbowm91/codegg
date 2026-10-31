@@ -1179,6 +1179,9 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::RevertFinished { response, error } => {
             crate::tui::commands::revert::apply_revert_finished(app, response, error);
         }
+        TuiCommand::DiffFinished { response, error } => {
+            crate::tui::commands::diff::apply_diff_finished(app, response, error);
+        }
         TuiCommand::SessionStateRefreshed {
             todos,
             active_goal,
