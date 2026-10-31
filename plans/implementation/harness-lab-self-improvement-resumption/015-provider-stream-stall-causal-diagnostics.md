@@ -32,7 +32,7 @@ Identify which boundary causes the repeated Muse Spark/opencode_go stream stalls
 
 ## 3. Current implementation evidence
 
-`src/agent/provider_turn.rs` applies a 90-second timeout between decoded `ChatEvent`s. `crates/codegg-providers/src/opencode_go.rs` awaits response headers and passes `response.bytes_stream()` into `crates/codegg-providers/src/wire.rs::shared_stream`. Existing request-admission receipts are recorded before transport and contain no response-header, body-chunk, decoder, finish, or EOF lifecycle. Existing timeout receipts therefore establish decoded-event silence, not its cause.
+`src/agent/provider_turn.rs` applied a 90-second timeout between decoded `ChatEvent`s. `crates/codegg-providers/src/opencode_go.rs` awaits response headers and passes `response.bytes_stream()` into `crates/codegg-providers/src/wire.rs::shared_stream`. The S015 diagnostic build adds body-free, attempt-correlated lifecycle logs at setup, response headers, body chunks, decoded events, EOF, and timeout. Run 2 observed response bytes at 30-second intervals while no decoded event emerged before the 90-second agent timeout. It therefore identifies the CodeGG timeout policy as the aborting boundary; it does not establish the semantics of those raw SSE bytes, which are intentionally not retained.
 
 S013 attempt 17's last request admission preceded the timeout by about 91 seconds; attempt 20 shows the same interval. Both receipts preserve the failure and remain unqualified. Do not rewrite their status or infer that the provider, transport, decoder, daemon, or ACP caused the stall.
 
@@ -41,7 +41,7 @@ S013 attempt 17's last request admission preceded the timeout by about 91 second
 - Only the CodeGG `opencode_go` provider and Muse Spark 1.3 Contributor are used for live attempts.
 - Do not log prompt/message bodies, tool arguments, credentials, authorization headers, raw SSE bytes, or secret-bearing URLs.
 - The provider request ceiling is enforced before transport; N+1 must remain refused without a network request.
-- Cancellation, existing retry/no-replay policy, stream idle timeout, and provider surface selection remain unchanged until evidence requires a narrow correction.
+- Cancellation, existing retry/no-replay policy, and provider surface selection remain unchanged. The stream idle bound may change only from recorded live latency evidence and must remain finite.
 - Preserve S013 receipts, authorization ledger, and closure text as historical evidence.
 - A provider timeout, model/task failure, verifier result, and harness defect are separate outcomes.
 - One live run at a time; stop if free disk falls below 10 GiB.
@@ -81,7 +81,7 @@ None. This plan does not introduce provider lifecycle events into the public pro
 
 Add a stable attempt correlation span at `provider_turn::stream_once`, carry it while polling the returned stream, and emit body-free lifecycle observations at the OpenCode Go request and decoded-stream boundary. Capture response status, elapsed durations, chunk/event counts, byte lengths, and terminal class only. The bounded live-lane environment must explicitly enable only the provider-turn and OpenCode Go diagnostic targets; the default `error` filter would otherwise suppress the new observations. All observations share attempt identity and never include bodies.
 
-At the 90-second idle terminal, report which stages advanced and their last-progress elapsed times. Distinguish setup timeout, no bytes, bytes/no decoded event, decoded event consumption, transport error, and cancellation without changing timeout behavior in the telemetry-only phase.
+At the event-idle terminal, report which stages advanced and their last-progress elapsed times. Distinguish setup timeout, no bytes, bytes/no decoded event, decoded event consumption, transport error, and cancellation. Keep raw response bodies and SSE data out of logs and receipts.
 
 ### Frontend or operator surface
 
@@ -111,9 +111,9 @@ Acceptance evidence: each started run has a complete sanitized terminal receipt;
 
 ### Work package C — Correct and requalify narrowly
 
-Intent: fix only the reproduced CodeGG failure mechanism.
+Intent: correct only the reproduced CodeGG timeout-policy mismatch and requalify it.
 
-Required changes: add a failing-first regression at the owning boundary, implement the minimum correction, run focused verification, then use up to two fresh runs within the original 20-run authorization to confirm the stage signature changes and no regression occurs. If no CodeGG defect is reproduced, make no behavioral change and close with a bounded inconclusive/external-cause finding.
+Required changes: the 90-second decoded-event timeout fired even though the same HTTP response continued delivering body chunks. The longest independently observed first decoded event in the diagnostic cohort took approximately 83 seconds. Increase the finite event-idle bound to 120 seconds, add tests that a delayed event is accepted and a silent stream still times out, run focused verification, then use fresh runs within the original 20-run authorization to check whether the previous timeout signature is avoided. This does not claim that body chunks are valid SSE heartbeats or that a stream active beyond 120 seconds is healthy; further evidence would be needed before changing the timeout model more broadly.
 
 Acceptance evidence: independent reproduction and post-fix confirmation receipts are linked, or a precise non-CodeGG boundary is identified with an honest incomplete result.
 
@@ -132,7 +132,7 @@ No persisted or wire schema changes are expected. If the sanitized receipt shape
 - Attempt ID remains attached across provider setup, response, byte chunks, decoded events, and terminal outcomes.
 - The diagnostic distinguishes no headers, no bytes, bytes without decoded events, decoded events, Finish, EOF, transport/decode error, and cancellation.
 - Body-free summaries expose only count/size/timing/status/type fields and exclude supplied sentinel prompt, tool-argument, auth-header, URL, and SSE-body values.
-- The 90-second idle error remains typed and unchanged until evidence justifies a behavioral correction.
+- A delayed event is accepted inside the corrected 120-second bound, and a silent stream still times out.
 
 ### Integration tests
 
