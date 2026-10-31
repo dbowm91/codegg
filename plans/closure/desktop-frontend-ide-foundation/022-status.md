@@ -45,7 +45,7 @@ than by a comment.
   together. There is no second request, and therefore no `pending` row that
   survives a failed one.
 
-**Two deviations are recorded rather than hidden** (§10): the daemon's diff
+**Two High findings are recorded rather than hidden** (§10): the daemon's diff
 answer is **unbounded**, and the old `/diff` arm's **text-diff fallback**
 outside a Git repository is **gone**. The **desktop's** consumption of the
 three moves (plan work package F) is **not** implemented — it is a separate
@@ -56,9 +56,11 @@ acceptance criteria names the desktop.
 
 ## 2. Requirement-to-evidence matrix
 
-Every criterion in the plan's §13, with the evidence that satisfies it. A
-criterion satisfied by a comment is not satisfied, so each row names a file
-and a line.
+Every criterion in the plan's §13, in the plan's own order and numbering,
+with the evidence that satisfies it. A criterion satisfied by a comment is
+not satisfied, so each row names a file and a line. Rows **1**–**13** are
+§13's thirteen, one for one; row **14** is plan §10.6, a **required test**
+that §13 does not name.
 
 | # | Criterion | Evidence |
 |---|---|---|
@@ -67,14 +69,15 @@ and a line.
 | 3 | The daemon's diff answer carries the same bytes the TUI's read produced, for both branches. | The test `tests/core_daemon/m007i_daemon_diff.inc::the_daemons_diff_answer_carries_the_frontends_own_bytes` compares the daemon's `old_content`/`new_content` against the frontend's **own** two reads (`git show HEAD:<path>` plus the working-tree file read for the path branch; one `git diff` for the bare branch). |
 | 4 | The promotion store has exactly **one** writer, and it is the daemon. | The store is `crates/codegg-core/src/session/skill_promotion.rs:161` (`SkillPromotionStore`), written only through `put` (`:174`), `compare_and_set_record` (`:290`) and `consume_request_into_proposal` (`:336`); the daemon's handler `src/core/daemon_skills.rs:65`; the tool `src/tool/skill_proposal.rs` writes through the same store. The file-backed store and its `flock` sidecar are **deleted** from `src/skills/promotion.rs`. The test `tests/core_daemon/m007i_daemon_promotion.inc::the_promotion_record_has_exactly_one_writer_and_it_is_the_daemon` drives both paths and asserts exactly one request row and one proposal row. |
 | 5 | The promotion namespace is keyed on the canonical `WorkspaceId`, and a promotion staged through the TUI is submitted successfully by the daemon tool. | The store's key is `(workspace_id, kind, id)` (`crates/codegg-core/src/session/skill_promotion.rs:161`, the migration's `PRIMARY KEY` at `crates/codegg-core/src/session/schema.rs:502`); the daemon's `Begin` stages under `request.workspace_id` (`src/core/daemon_skills.rs:144`); the tool looks the request up under the same workspace (`src/tool/skill_proposal.rs`). The test `a_promotion_staged_through_the_frontend_is_submitted_by_the_daemon_tool` stages through the daemon and submits through the tool. |
-| 6 | A proposal that cannot be migrated **fails loudly** rather than vanishing. | The legacy store keyed its file on a digest of a path string, so a legacy record cannot be mapped onto a workspace. `src/skills/legacy_promotion.rs:91` (`probe_legacy_promotions`) finds it and the daemon refuses with `skill_promotion_legacy_unmigrated` (`src/core/daemon_skills.rs`, the `REFUSAL_PROMOTION_LEGACY_UNMIGRATED` arm in `begin_request`), naming the record it will not drop. The test `a_legacy_proposal_that_cannot_be_migrated_fails_loudly` asserts the refusal, that the legacy file is still on disk, and that nothing was staged. |
-| 7 | The daemon publishes a skill to **both** the project scope and the global scope, and the manifest's `owner` names the daemon for both roots. | `src/core/daemon_skills.rs:538` (`publish_proposal`) resolves the project root and the global configuration root and publishes through `SkillPublicationService`; the manifest row `docs/writer-disposition.toml` `module.skills_publish` carries `owner = "CoreDaemon"` and a `locator` naming both roots. The test `the_daemon_publishes_to_both_scopes` publishes to each scope and asserts the file at `<workspace>/.codegg/skills/<name>/SKILL.md` and at `<config>/codegg/skills/<name>/SKILL.md`. |
-| 8 | A daemon-executed publication is **refused** by the C004 gate when the checkout is reserved by a live run, and the refusal is durable and attributable. | The new sink variant `src/core/checkout_mediation.rs:72` (`SkillPublish`) and `:94` (`as_str` → `"skill_publish"`); the gate call `src/core/daemon.rs:1154` (`root_write_target(CheckoutWriterSink::SkillPublish, …)`), reached from the same dispatch path as the existing sinks; the manifest row `module.skills_publish` carries `mediation = "checkout-gate"` and `mediation_markers = "CheckoutWriterSink::SkillPublish"`. The test `the_c004_gate_refuses_a_publication_into_a_reserved_checkout` asserts the typed `checkout_reserved` conflict **and** a `checkout_writer_refusal` row in the audit trail. |
-| 9 | The sink enum and the manifest agree in both directions: a declared sink no root claims fails, and a claimed marker no sink declares fails. | `scripts/check_writer_disposition.py` checks both directions (`declared - claimed` and `claimed - declared`) and its `--self-test` injects a defect to prove it is not vacuous. The test `the_sink_enum_and_the_manifest_agree_in_both_directions` re-derives the same two directions in-process from the enum's `as_str` mapping and the manifest's `mediation_markers` rows. |
-| 10 | The ask's stage-and-submit is **one** request, and a failed admission leaves **no** orphan `pending` row. | The single request `CoreRequest::SessionPromptSubmitWithHumanShellPromotions` (`crates/codegg-protocol/src/core.rs`); the daemon's handler `src/core/daemon_turns.rs:2107` (`submit_prompt_with_human_shell_promotions`) stages every promotion in **one** transaction and **expires** them when the admission fails (`codegg_core::session::HumanShellPromotionStore::expire_pending`). `CoreRequest::HumanShellPromotionStage` and the `human_shell_promotion_ids` payload are **gone** from the TUI's path. The test `the_ask_leaves_no_orphan_pending_row` asserts zero `pending` rows after a refused ask. |
-| 11 | The ask's evidence comes from the daemon's run bytes, and the redaction still applies. | `src/shell/daemon.rs:463` (`HumanShellRunService::evidence_text`) reads the daemon's **own** run bytes and renders the digest; the redaction stays in the daemon's staging path (`src/core/daemon_turns.rs`, `Redactor::default().redact(&sanitized)`), so the frontend performs no redaction of its own. The TUI-local `app.shell_store` read and `project_for_model` are no longer on the daemon path. The test `the_ask_reads_its_evidence_from_the_daemons_run_bytes` asserts the evidence carries the question and the run's own bytes. |
-| 12 | The frontend never executes a daemon-effect form directly, and no form's `kind` changed except through the daemon serving it — the catalog's **version** moves by **zero**. | The catalog's version constant is unchanged at `crates/codegg-core/src/command_catalog.rs:239` (`version: 3`), and the artifact's §1 counts show **124** daemon-effect forms and **43** frontend-effect forms both unchanged. `scripts/check_command_catalog_ownership.py` and `scripts/check_frontend_action_set.py` pass, and the frontend-action count is unchanged at **43**. The artifact is regenerated by its own generator (`plans/implementation/desktop-frontend-ide-foundation/artifacts/generate_m007d_command_classification.py`), and its `--check` and `--self-test` pass. |
+| 6 | The daemon publishes a skill to **both** the project scope and the global scope, and the manifest's `owner` names the daemon for both roots. | `src/core/daemon_skills.rs:538` (`publish_proposal`) resolves the project root and the global configuration root and publishes through `SkillPublicationService`; the manifest row `docs/writer-disposition.toml` `module.skills_publish` carries `owner = "CoreDaemon"` and a `locator` naming both roots. The test `the_daemon_publishes_to_both_scopes` publishes to each scope and asserts the file at `<workspace>/.codegg/skills/<name>/SKILL.md` and at `<config>/codegg/skills/<name>/SKILL.md`. |
+| 7 | A daemon-executed publication is **refused** by the C004 gate when the checkout is reserved by a live run, and the refusal is durable and attributable. | The new sink variant `src/core/checkout_mediation.rs:72` (`SkillPublish`) and `:94` (`as_str` → `"skill_publish"`); the gate call `src/core/daemon.rs:1154` (`root_write_target(CheckoutWriterSink::SkillPublish, …)`), reached from the same dispatch path as the existing sinks; the manifest row `module.skills_publish` carries `mediation = "checkout-gate"` and `mediation_markers = "CheckoutWriterSink::SkillPublish"`. The test `the_c004_gate_refuses_a_publication_into_a_reserved_checkout` asserts the typed `checkout_reserved` conflict **and** a `checkout_writer_refusal` row in the audit trail. |
+| 8 | The sink enum and the manifest agree in both directions: a declared sink no root claims fails, and a claimed marker no sink declares fails. | `scripts/check_writer_disposition.py` checks both directions (`declared - claimed` and `claimed - declared`) and its `--self-test` injects a defect to prove it is not vacuous. The test `the_sink_enum_and_the_manifest_agree_in_both_directions` re-derives the same two directions in-process from the enum's `as_str` mapping and the manifest's `mediation_markers` rows. |
+| 9 | The ask's stage-and-submit is **one** request, and a failed admission leaves **no** orphan `pending` row. | The single request `CoreRequest::SessionPromptSubmitWithHumanShellPromotions` (`crates/codegg-protocol/src/core.rs`); the daemon's handler `src/core/daemon_turns.rs:2107` (`submit_prompt_with_human_shell_promotions`) stages every promotion in **one** transaction and **expires** them when the admission fails (`codegg_core::session::HumanShellPromotionStore::expire_pending`). `CoreRequest::HumanShellPromotionStage` and the `human_shell_promotion_ids` payload are **gone** from the TUI's path. The test `the_ask_leaves_no_orphan_pending_row` asserts zero `pending` rows after a refused ask. |
+| 10 | The ask's evidence comes from the daemon's run bytes, and the redaction still applies. | `src/shell/daemon.rs:463` (`HumanShellRunService::evidence_text`) reads the daemon's **own** run bytes and renders the digest; the redaction stays in the daemon's staging path (`src/core/daemon_turns.rs`, `Redactor::default().redact(&sanitized)`), so the frontend performs no redaction of its own. The TUI-local `app.shell_store` read and `project_for_model` are no longer on the daemon path. The test `the_ask_reads_its_evidence_from_the_daemons_run_bytes` asserts the evidence carries the question and the run's own bytes. |
+| 11 | The frontend never executes a daemon-effect form directly, and no form's `kind` changed except through the daemon serving it — the catalog's **version** moves by **zero**. | The catalog's version constant is unchanged at `crates/codegg-core/src/command_catalog.rs:239` (`version: 3`), and the artifact's §1 counts show **124** daemon-effect forms and **43** frontend-effect forms both unchanged. `scripts/check_command_catalog_ownership.py` and `scripts/check_frontend_action_set.py` pass, and the frontend-action count is unchanged at **43**. |
+| 12 | The generated artifact is regenerated by its own generator and its §1 counts are derived from its §3 rows; no count in the artifact or in any prose about it is hand-written. | The artifact `plans/implementation/desktop-frontend-ide-foundation/artifacts/m007-d-command-classification.md` is written by `generate_m007d_command_classification.py` beside it, which reads the catalog, the declared frontend-action set, the daemon's effect table, the TUI's registry and the TUI's dispatcher, and computes §1's summary table from the §3 inventory it writes in the same run (`generate_m007d_command_classification.py:1758` — the eight measures, computed from `rows`). The generator's `--check` **passes** ("matches the tree") and its `--self-test` **passes**. The counts this record quotes in §3.7 are read from that artifact's §1 — the **after** column from the current artifact, the **before** column from the same artifact at the baseline commit `db8d75c79` — so no count in this record is hand-written either. |
 | 13 | Every command in §11 is run, or its omission is recorded with the reason — in particular the `scheduler_jobs` family. | §4 below. `cargo test --test scheduler_jobs` is **not run**, under **M008 §16**. |
+| 14 | A proposal that cannot be migrated **fails loudly** rather than vanishing. *(plan §10.6 — a required test that §13 does not name.)* | The legacy store keyed its file on a digest of a path string, so a legacy record cannot be mapped onto a workspace. `src/skills/legacy_promotion.rs:91` (`probe_legacy_promotions`) finds it and the daemon refuses with `skill_promotion_legacy_unmigrated` (`src/core/daemon_skills.rs`, the `REFUSAL_PROMOTION_LEGACY_UNMIGRATED` arm in `begin_request`), naming the record it will not drop. The test `a_legacy_proposal_that_cannot_be_migrated_fails_loudly` asserts the refusal, that the legacy file is still on disk, and that nothing was staged. |
 
 ---
 
@@ -91,7 +94,7 @@ and a line.
 | `crates/codegg-core/src/session/skill_promotion.rs` | **New.** The durable store: opaque bounded payload, per-workspace cap 64, `put`/`get`/`list`/`compare_and_set_record`/`consume_request_into_proposal`. |
 | `crates/codegg-core/src/session/schema.rs` | `migrate_v94` (`:502`) creates the `skill_promotion` table; the migration chain runs it. |
 | `crates/codegg-core/src/storage/mod.rs` | `STORAGE_LAYOUT_VERSION` 93 → **94**. |
-| `crates/codegg-core/src/authorization/policy.rs` | Three operation descriptors: `git_diff`, `skill_promotion`, `session_prompt_submit_with_human_shell_promotions`. |
+| `crates/codegg-core/src/authorization/policy.rs` | Three operation descriptors: `git_diff`, `skill_promotion`, `shell_ask_submit`. |
 | `crates/codegg-core/src/audit_instrumentation.rs` | `git_diff` is uninstrumented (a read); `skill_promotion` is instrumented as `file_mutate`. |
 | `src/core/daemon_git.rs` | The daemon's diff handler, `repo_relative_path` (`:186`) and `run_git_read` (`:211`). |
 | `src/core/daemon_skills.rs` | **New.** The daemon's promotion workflow (`:65`). |
@@ -224,14 +227,41 @@ derived from its §3 rows. The move's measured effect:
 |---|---|---|
 | daemon-effect forms | 124 | 124 |
 | frontend-effect forms | 43 | 43 |
-| daemon-effect forms the daemon's effect table serves | 74 | 74 |
+| daemon-effect forms the daemon's effect table serves | 73 | **74** |
 | daemon-effect forms whose TUI arm issues a daemon request | 23 | **25** |
-| daemon-effect forms whose TUI arm issues no daemon request | 27 | **25** |
+| daemon-effect forms whose TUI arm issues no daemon request | 28 | **25** |
 | frontend-effect forms covered by the declared action set | 43 | 43 |
 
-The two forms that moved are `/skill-promote` and `/skill-proposal`: they
-now issue a daemon request instead of keeping a local arm. The pinned counts
-in `tests/core_daemon/command_catalog_m007d.inc` (161 / 167 / 124 / 43) and
+Neither column is hand-written. The **after** column is the current
+artifact's §1, read from
+`plans/implementation/desktop-frontend-ide-foundation/artifacts/m007-d-command-classification.md`;
+the **before** column is the same artifact's §1 at the milestone's baseline
+commit (`db8d75c79`), read with `git show`. Both are generator output.
+
+The artifact's §1 counts are computed from the §3 inventory the same script
+writes (`generate_m007d_command_classification.py:1759`), so the two cannot
+drift. The generator partitions the **unserved** daemon-effect forms into
+the last two measures (`generate_m007d_command_classification.py:1694`):
+a form the daemon's effect table does not serve is counted as issuing a
+daemon request or as issuing none. Three forms moved, and the deltas above
+account for all of them:
+
+- `/diff` was unserved with a local TUI arm, and is now **served**: the
+  daemon's effect table gained the row, and the TUI arm issues
+  `CommandExecute` instead of constructing the read. It leaves the unserved
+  set entirely (**73 → 74** served, **28 → 27** issuing no request).
+- `/skill-proposal` and `/skill-proposals` were unserved with a local arm
+  that issued no request; their arms now issue `SkillPromotion` and their
+  route reads "the TUI arm issues a daemon request" (**28 → 26 → 25**
+  issuing no request, **23 → 24 → 25** issuing one).
+- `/skill-promote` was already unserved with a request-issuing arm, and
+  stays in that bucket; its arm's resolved request list is now
+  `SkillPromotion` alone, where before the same arm line
+  (`src/tui/app/mod.rs:6966`) resolved to a ten-request list.
+
+No form was added to or removed from the catalog, so the daemon-effect form
+count is **124** on both sides. The pinned counts in
+`tests/core_daemon/command_catalog_m007d.inc` (161 / 167 / 124 / 43) and
 in `src/tui/command_route_tests.rs` are **unchanged** and still hold, because
 no form's `kind` changed.
 
@@ -483,9 +513,11 @@ Stated as findings, not as excuses.
    the staged evidence in the same request, so the client never observes a
    stranded row — but a **process crash** between the two writes would leave
    a `pending` row that no turn will consume. The row is bounded (32
-   pending, 24-hour expiry) and the next `Begin` expires stale `pending`
-   rows, so it cannot accumulate. **Recommendation:** accept it, and record
-   it as a known limitation rather than a defect.
+   pending, 24-hour expiry) and the next **read** of the pending rows
+   (`HumanShellPromotionStore::list_pending`,
+   `crates/codegg-core/src/session/human_shell_promotion.rs:401`) expires the
+   stale ones, so it cannot accumulate. **Recommendation:** accept it, and
+   record it as a known limitation rather than a defect.
 6. **The publication's metadata write is not atomic with its file write.**
    The bytes are committed first and the record is written back under a
    compare-and-swap. A crash between the two leaves the file durable and the
