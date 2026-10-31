@@ -156,9 +156,13 @@ class H007NativeJobSequenceTest(unittest.TestCase):
         self.assertEqual(trial["source_sha256"].__len__(), 64)
         receipt_output = os.environ.get("CODEGG_S012_RECEIPT_OUTPUT")
         if trace_output and receipt_output:
+            source_root = pathlib.Path(os.environ["CODEGG_H007_SOURCE_ROOT"])
+            source_revision = subprocess.run(
+                ["git", "-C", str(source_root), "rev-parse", "HEAD"],
+                capture_output=True, text=True, check=True).stdout.strip()
             receipt = {
                 "task_id": trial["task_id"],
-                "source_revision": trial["ledger_manifest"]["subject"]["revision"],
+                "source_revision": source_revision,
                 "binary_sha256": trial["source_sha256"],
                 "causal_trace": {
                     "schema": trial["causal_trace"]["schema"],
