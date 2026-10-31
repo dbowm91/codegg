@@ -256,7 +256,9 @@ class AcpClient:
             command.extend(["--approval-mode", "yolo", "--sandbox", unattended_profile])
         self.process = subprocess.Popen(
             command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, cwd=cwd, env=env, start_new_session=(os.name == "posix"),
+            stderr=subprocess.PIPE, cwd=cwd, env=env,
+            start_new_session=(os.name == "posix"
+                               and env.get("CODEGG_HARNESS_INHERIT_PROCESS_GROUP") != "1"),
         )
         assert self.process.stdin and self.process.stdout
         self._selector = selectors.DefaultSelector()
@@ -932,7 +934,10 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                 return {key: bind_workspace(item) for key, item in value.items()}
             return value
         tool_sequence = bind_workspace(tool_sequence)
-        provider = FixtureProvider(tool_sequence, stall_after_tools=cancel_task or timeout_task,
+        s010_crash_marker = os.environ.get("CODEGG_HARNESS_S010_NATIVE_TRIAL_MARKER")
+        provider = FixtureProvider(tool_sequence,
+                                   stall_after_tools=(cancel_task or timeout_task
+                                                      or bool(s010_crash_marker)),
                                    require_context_text=context_text,
                                    fail_after_tools=fail_after_tools,
                                    fault_kind=fault_kind).start()
@@ -1001,7 +1006,59 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                 "codeggAgent": "build",
                 "prompt": [{"type": "text", "text": f"Complete this deterministic local task using the supplied tool sequence: {task_id}."}],
             }
-            if cancel_task:
+            if s010_crash_marker:
+                prompt_result: dict[str, Any] = {}
+                prompt_error: list[BaseException] = []
+
+                def submit_crash_trial_prompt() -> None:
+                    try:
+                        prompt_result.update(client.request(
+                            "session/prompt", prompt_params, timeout=timeout))
+                    except BaseException as error:
+                        prompt_error.append(error)
+
+                prompt_thread = __import__("threading").Thread(
+                    target=submit_crash_trial_prompt, daemon=True)
+                prompt_thread.start()
+                if not provider.stalled.wait(min(timeout, 15)):
+                    raise HarnessError(
+                        "S010 native trial did not reach the post-tool ACP response gate")
+                marker = Path(s010_crash_marker).expanduser().resolve()
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker_payload = json.dumps({
+                    "state": "native_tool_completed_provider_response_active",
+                    "controller_pid": os.getpid(),
+                    "acp_pid": client.process.pid,
+                    "provider_calls": provider.calls,
+                    "tool_calls": provider.emitted_calls,
+                    "completed_tool_terminals": [
+                        {"tool_call_id": update.get("toolCallId"),
+                         "status": update.get("status")}
+                        for notification in client.notifications
+                        for update in [notification.get("params", {}).get("update", {})]
+                        if isinstance(update, dict)
+                        and update.get("sessionUpdate") == "tool_call_update"
+                    ],
+                    "private_lane_root": str(root),
+                }, sort_keys=True) + "\n"
+                temporary_marker = marker.with_name(marker.name + ".tmp")
+                with temporary_marker.open("x", encoding="utf-8") as output:
+                    output.write(marker_payload)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(temporary_marker, marker)
+                # The S010 controller observes the durable marker and sends
+                # SIGKILL to its isolated process group. Reaching this wait
+                # proves a real native ACP turn executed the tool and remains
+                # live while the local fixture holds its next response.
+                prompt_thread.join(timeout=timeout)
+                if prompt_thread.is_alive():
+                    raise HarnessError("S010 crash gate outlived its bounded ACP prompt")
+                if prompt_error:
+                    raise HarnessError(
+                        "S010 crash-gated ACP prompt ended before the controller signal")
+                result = prompt_result
+            elif cancel_task:
                 prompt_result: dict[str, Any] = {}
                 prompt_error: list[BaseException] = []
                 def submit_prompt() -> None:
