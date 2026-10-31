@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "campaign_id": "s016-deepseek-long-run-corrective-loop-20261031",
+  "run_index": 11,
+  "run_kind": "diagnostic",
+  "run_status": "sequential_exact_id_terminal_observation_confirmed",
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "controller_commit": "dce6a57c1b9b01a819afab7d68762faa59d1c1b5",
+  "source_binary_commit": "94fc8d41ff61e5963adf5779475fd9ee08569493",
+  "binary_architecture": "arm64",
+  "binary_sha256": "16481cc8bf0d8866db352c3aab90c35950bde37e5799be1458a43012d594fe2a",
+  "sandbox_helper_sha256": "37ee6c8cd876d1e05bbd650c7a26520753fe55534ac821a52d9089712d751d43",
+  "fixture_manifest": "dev/harness_lab/fixtures/agent_autonomy_s016_job_sequence_diagnostic_v3/cases.jsonl",
+  "fixture_manifest_sha256": "98400e2cf5929d5ed18f52668c685f807b84d0e4d582f72da9bb26803936c2de",
+  "qualification_fixture_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "started_at_utc": "2026-10-31T22:29:05Z",
+  "terminal_observed_at_utc": "2026-10-31T22:30:21Z",
+  "elapsed_seconds": 41.208,
+  "case_duration_ms": 36226,
+  "active_work_span_ms": 19621,
+  "provider_requests": 10,
+  "request_cap": 20,
+  "provider_idle_timeout_count": 0,
+  "usd_cost": 0.005942,
+  "task": {
+    "agent_terminal": "completed",
+    "task_outcome": "failed",
+    "horizon_outcome": "not_qualified",
+    "horizon_reason": "job_lifecycle_missing",
+    "test_jobs": [
+      {
+        "phase": "catalog_format",
+        "job_id": "c20ecda3-a336-41b1-a749-0ae979261b69",
+        "status_observations": ["failed", "failed"]
+      },
+      {
+        "phase": "catalog_store",
+        "job_id": "ab468d19-46dd-4f58-8f72-c78e4ca04ab7",
+        "status_observations": ["failed"]
+      },
+      {
+        "phase": "catalog_index_corpus",
+        "job_id": "1f73f40b-e2cf-450c-a141-4fa5d5cbe47d",
+        "status_observations": ["failed"]
+      }
+    ],
+    "continuation_contains_exact_corpus_id": true,
+    "continuation_updated_after_terminal_observation": false,
+    "repair_cycles": 0,
+    "exact_job_running_and_terminal": false,
+    "productive_work_during_job": false,
+    "tool_calls": 8,
+    "tool_counts": {"test": 3, "job": 4, "write": 1}
+  },
+  "event_observation": {
+    "event_count": 26,
+    "tool_started_count": 8,
+    "tool_terminal_count": 8,
+    "event_gaps": 0,
+    "unpaired_tool_events": 0
+  },
+  "provider_stream_lifecycle": {
+    "transport_requests_started": 10,
+    "body_eof": 10,
+    "decoded_stream_eof": 10,
+    "idle_timeouts": 0,
+    "raw_sse_retained": false
+  },
+  "verification": {
+    "hidden_verifier_ran": false,
+    "reason": "focused diagnostic only; no implementation or qualification attempted"
+  },
+  "disk": {
+    "floor_bytes": 10737418240,
+    "floor_triggered": false,
+    "free_bytes_at_start": 20205469696,
+    "minimum_free_bytes": 19877728256,
+    "free_bytes_at_end": 22074769408
+  },
+  "interpretation": "The model tracked all three exact test-job IDs through sequential job-status calls and observed terminal failed states for the two repair tests and corpus test. The continuation written immediately after the corpus submission contained its exact ID; it accurately marked terminal confirmation as pending at that point. The agent then polled that exact ID and received failed. This confirms the test/job ID surface works across a short multi-job sequence. The diagnostic did not create a running overlap, repair source, or qualify H007. Run 10's missing ID and pending continuation therefore remain attributable to task-order/context-management behavior under the full prompt, not a reproduced job API failure. Prompt v3 will map every `test` call to its exact job status lifecycle, separate the fake-ID boundary probe from real IDs, reduce subagent overhead to one concise read-only task, and retain every frozen H007 requirement.",
+  "private_artifacts": {
+    "receipt_path": "/private/tmp/s016-attempt11.json",
+    "receipt_sha256": "e7c2c2decc8e63a2df7488c0d3ef1909404edd40926968bfd1f76bdaf091835d",
+    "diagnostic_log_path": "/private/tmp/s016-live11/case00/case/codegg_debug.log",
+    "diagnostic_log_sha256": "098c97eb3f2fb799e23663f222724e24c6eaebb5ad155a573fe2b671c0755a20",
+    "provider_admission_receipt_path": "/private/tmp/s016-live11/case00/artifacts/provider-request-admissions.jsonl",
+    "provider_admission_receipt_sha256": "f4107e69a6b999607ae238c3941d19815c8406b0896b765d7b60494835d46bf8",
+    "causal_trace_path": "/private/tmp/s016-live11/case00/private/causal-trace.jsonl",
+    "causal_trace_sha256": "9cfb5a34e3ebde7624240e14cafe64996bb56dba39ce12682e3c23033edd5d07"
+  }
+}
