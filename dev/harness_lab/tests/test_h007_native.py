@@ -119,6 +119,7 @@ class H007NativeJobSequenceTest(unittest.TestCase):
                 destination.write(json.dumps(observation, sort_keys=True) + "\n")
 
         self.assertTrue(trial["tool_receipt_created"])
+        self.assertIn("CONTINUATION.md", trial["workspace_revision_changed_paths"])
         self.assertEqual(trial["event_gap_count"], 0)
         self.assertEqual(trial["causal_trace"]["schema"], "harness_causal_trace_v1")
         self.assertEqual(trial["causal_trace"]["state"], "complete")
