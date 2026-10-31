@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement S010 — Integrated Native Offline Optimizer Qualification
 
-Status: **closed conditionally (offline)**. Primary class: **invariant**. Closure: `plans/closure/harness-lab-self-improvement-resumption/010-status.md`. The paired native optimizer and prolonged resource-pressure gates passed; integrated SIGKILL during a native optimizer trial and restart remains the single missing strict gate. `stable_offline` is not claimed.
+Status: **closed offline**. Primary class: **invariant**. Closure: `plans/closure/harness-lab-self-improvement-resumption/010-status.md`. Both paired native optimizer campaigns, prolonged resource pressure, and the real native ACP trial SIGKILL/restart gate passed. S011's trusted intake/refusal gates are also complete, establishing `stable_offline`; no live improvement claim is made.
 
 Authority: `plans/000-long-term-specification.md` §§23–24, 26–29; `plans/001-terminology-and-domain-model.md`; `plans/003-planning-process.md`; accepted `plans/adrs/ADR-0040-evidence-based-agent-recovery-termination.md`; `plans/subsystems/harness-lab-self-improvement-resumption-roadmap.md`. Existing S001–S009 closure records are historical evidence, not re-opened milestones.
 
