@@ -207,7 +207,7 @@ route a frontend actually takes.
 | `cargo test --locked --test tui_render` | **1110 passed, 0 failed** |
 | `cargo test --locked -p codegg --lib -- compact` | **67 passed, 0 failed** |
 | `cargo test --locked -p codegg-protocol` | **333 passed, 0 failed** |
-| `cargo test --locked --test tui_render -- compact` | **0 tests selected** — that family has no compaction-named member; the TUI's compaction members live in the library target, and the family's 1110 members all pass (§4.2) |
+| `cargo test --locked --test tui_render -- compact` | **0 tests selected** — that family has no compaction-named member; the TUI's compaction members live in the library target, and the family's 1110 members all pass (§4.2). This was the plan's earlier command: it proved nothing, so the plan and the ADR now name `cargo test --locked -p codegg --lib -- compact_command_tests` instead |
 | `python3 scripts/check_frontend_action_set.py` | `frontend-action set: clean` |
 | `python3 scripts/check_command_catalog_ownership.py` | `command catalog ownership: clean` |
 | `python3 scripts/check_authorization_matrix.py` | `All authorization matrix invariants verified.` |
@@ -218,12 +218,13 @@ route a frontend actually takes.
 | `python3 scripts/check_test_duplication.py` | `check_test_duplication: all checks pass` |
 | `python3 scripts/check_comment_budget.py` | `comment budget guard passed` (after the sanctioned `--bank`) |
 | `XDG_CACHE_HOME="$(mktemp -d)" cargo nextest run --workspace --locked --profile ci --no-fail-fast` | **16758 tests run, 16758 passed, 0 failed, 10 skipped** — the same sweep CI runs. nextest also reported **1 leaky** test: a resource-leak report, not a failure |
-| `scripts/verify.sh quick` | see §4.4 |
+| `scripts/verify.sh quick` | **passed** (`Quick verification passed.`) |
 
 **One failure was observed and explained.** In the first full `core_daemon`
 run, `identity_m003_daemon_authorization::user_prompt_queue_advance_attempts_a_due_entry_on_an_idle_session`
 failed. It passed in isolation and in the family's re-run, and the re-run
-reported **535 passed, 0 failed**. It is recorded here rather than smoothed
+reported **535 passed, 0 failed** — the count before this milestone's fourth
+daemon member was added. It is recorded here rather than smoothed
 away: the family ran under a machine load above 20, and the member is
 time-sensitive. The three other failures in that run were **real** and are
 fixed: the catalog's form counts moved by one form (`compact` left the
