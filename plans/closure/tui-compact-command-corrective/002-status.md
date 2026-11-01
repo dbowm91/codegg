@@ -278,10 +278,24 @@ merge. All three lanes ran on it and all three passed:
 | Desktop E2E | [41250188535](https://github.com/dbowm91/codegg/actions/runs/41250188535) | **success** |
 | Linux M004 process and IPC qualification | [41250188656](https://github.com/dbowm91/codegg/actions/runs/41250188656) | **success** |
 
-The **Windows** process-launcher lane does not run on this branch: its
-`branches:` are `main` and `work/windows-native-sandbox-foundation`, and its
-paths are Windows-specific. It runs on the merge to `main`, and its result is
-recorded with the merge's own receipts.
+The **Windows** process-launcher lane does not run for this change at all —
+not on the branch and not on the merge. Its trigger is `push` on `main` or
+`work/windows-native-sandbox-foundation`, **and** a path filter over the
+process-launcher surfaces (`src/managed_process/**`, `src/security/sandbox/**`,
+`src/tool/bash/process.rs`, `Cargo.toml`, and the Windows-specific fixtures).
+This milestone touches none of them: the diff against the baseline is the
+TUI, the daemon's session and turn surfaces, the agent loop, the compaction
+engine, the protocol and the catalog. The lane therefore has nothing to say
+about this change, and no receipt of it is claimed here.
+
+The merge itself, `e0b681a97`, was pushed to `main` and re-ran the same three
+lanes green: CI
+([41254442823](https://github.com/dbowm91/codegg/actions/runs/41254442823))
+reported **16830 tests run, 16830 passed, 11 skipped**; Desktop E2E
+([41254442816](https://github.com/dbowm91/codegg/actions/runs/41254442816))
+succeeded; and the Linux M004 qualification
+([41254442817](https://github.com/dbowm91/codegg/actions/runs/41254442817))
+succeeded.
 
 An earlier head, `6fe1f683a`, failed the CI lane at exactly one test —
 `tui::command_route::command_route_tests::a_frontend_effect_is_dispatched_from_the_declared_action`,
