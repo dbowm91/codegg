@@ -1,0 +1,60 @@
+{
+  "active_work_span_ms": 1477421,
+  "attempt": 30,
+  "binary_sha256": "4006935cb3d4ee5bd6daf026f3e031988459a9d38879f0f06f0801ccad274e67",
+  "campaign_id": "s016-deepseek-raised-cap-20261102",
+  "duration_ms": 1486110,
+  "event_gap": {
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "event_gaps": [],
+    "event_observation_state": "observed_complete",
+    "tool_started_count": 289,
+    "tool_terminal_count": 289,
+    "tool_unpaired_start_count": 0
+  },
+  "finding": "The 15% context headroom correctly prevented an unsafe retry, but the forced compaction retained too much history and could not fit below the provider limit. No request-cap exhaustion or event gap.",
+  "horizon_evidence": {
+    "active_work_span_ms": 1477443,
+    "continuation_confirmed": false,
+    "exact_job_running_and_terminal": false,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 28834,
+    "measurement_complete": false,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": false,
+    "repair_cycles": 0
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "measurement_incomplete",
+  "manifest_path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v8/cases.jsonl",
+  "manifest_sha256": "06296b94d6f95d773fc0708cdfbcfe3ca0ddeb4c13f136f5090f617ba0ce0613",
+  "minimum_free_disk_bytes_observed": 37337030656,
+  "model": "opencode_go/deepseek-v4.1-flash",
+  "provider_cost_source": "opencode_go_allowance_receipt",
+  "provider_cost_usd": 1.180546,
+  "provider_request_cap": 750,
+  "provider_requests": 447,
+  "receipt_path": "/private/tmp/s016-attempt30.json",
+  "receipt_sha256": "fcc7805463286bd3703bfd69ce5325da1aa39cc269e1d230abf74fc271e66754",
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "schema_version": 1,
+  "source_revision": "c6aa5f1447378761cba257ca93985912e385e000",
+  "terminal": "failed",
+  "terminal_failure": {
+    "category": "provider_api",
+    "kind": "HarnessTurnFailure",
+    "usage_reason": null
+  },
+  "tool_call_count": 289,
+  "tool_calls": {
+    "bash": 129,
+    "context_read": 20,
+    "job": 4,
+    "list": 2,
+    "read": 84,
+    "task": 47,
+    "write": 3
+  },
+  "verifier_contents_inspected": false
+}

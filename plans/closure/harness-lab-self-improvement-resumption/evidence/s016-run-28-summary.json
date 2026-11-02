@@ -1,0 +1,33 @@
+{
+  "active_work_span_ms": 0,
+  "attempt": 28,
+  "binary_sha256": null,
+  "campaign_id": "s016-deepseek-raised-cap-20261102",
+  "duration_ms": 15080,
+  "event_gap": null,
+  "finding": "H006 binary installation preflight timed out after 15.08 seconds. No provider request, lane, or agent activity occurred.",
+  "horizon_evidence": null,
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "preflight_refused",
+  "manifest_path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v8/cases.jsonl",
+  "manifest_sha256": "06296b94d6f95d773fc0708cdfbcfe3ca0ddeb4c13f136f5090f617ba0ce0613",
+  "minimum_free_disk_bytes_observed": null,
+  "model": "opencode_go/deepseek-v4.1-flash",
+  "provider_cost_source": null,
+  "provider_cost_usd": null,
+  "provider_request_cap": 750,
+  "provider_requests": 0,
+  "receipt_path": "/private/tmp/s016-attempt28.json",
+  "receipt_sha256": "83d2947853b1f745a0b6202f28e1ff25337534792457461a58e894248cb013ca",
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "schema_version": 1,
+  "source_revision": null,
+  "terminal": "refused",
+  "terminal_failure": {
+    "category": "harness_preflight",
+    "kind": "installation_timeout"
+  },
+  "tool_call_count": 0,
+  "tool_calls": {},
+  "verifier_contents_inspected": false
+}

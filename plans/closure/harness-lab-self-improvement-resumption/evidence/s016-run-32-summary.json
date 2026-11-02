@@ -1,0 +1,87 @@
+{
+  "active_work_span_ms": 404617,
+  "attempt": 32,
+  "binary_sha256": "25cdef11543d434d0e9f0fc20c154ee72f8ec16ad078af956da616cb4e329f10",
+  "campaign_id": "s016-deepseek-raised-cap-20261102",
+  "disk_floor": {
+    "lowest_observed_free_bytes": 35294404608,
+    "minimum_free_bytes": 10737418240,
+    "triggered": false
+  },
+  "duration_ms": 416620,
+  "elapsed_seconds": 439.038,
+  "event_gap": {
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "event_observation_state": "observed_complete",
+    "tool_started_count": 88,
+    "tool_terminal_count": 88,
+    "tool_unpaired_start_count": 0
+  },
+  "final_workspace_job": {
+    "exact_id": "48bd080f-8e58-4587-8f80-ca54f5f59d40",
+    "summary": "40 passed, exit code 0, duration 12.13 seconds",
+    "terminal_state": "completed"
+  },
+  "finding": "The S016 config correction avoided the 32k misclassification and per-turn compatibility compaction: the effective limit was 1,030,704 tokens and preflight compaction was not needed at 70k. The model completed four repair cycles, confirmed continuation, and its final workspace test passed, then ended normally after 7.3 minutes (95/750 requests). Qualification still failed because the exact priority job terminated before productive overlap and the unchanged verifier exited 1; this run did not reach the context-compaction threshold, so it does not yet qualify long-session recovery.",
+  "horizon_evidence": {
+    "active_work_span_ms": 404634,
+    "continuation_confirmed": true,
+    "exact_job_running_and_terminal": false,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 29167,
+    "measurement_complete": true,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": false,
+    "repair_cycles": 4
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "job_lifecycle_missing",
+  "manifest_path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v8/cases.jsonl",
+  "manifest_sha256": "06296b94d6f95d773fc0708cdfbcfe3ca0ddeb4c13f136f5090f617ba0ce0613",
+  "model": "opencode_go/deepseek-v4.1-flash",
+  "priority_job": {
+    "exact_id": "4020739d-1b29-483b-9b19-28f063b2f763",
+    "first_observed_state": "failed",
+    "note": "The background workspace test ended before two productive edits could overlap; the unchanged task prompt required recording the miss without resubmission.",
+    "productive_overlap": false,
+    "terminal_state": "failed"
+  },
+  "provider_cost_source": "opencode_go_allowance_receipt",
+  "provider_cost_usd": 0.06484,
+  "provider_request_cap": 750,
+  "provider_requests": 95,
+  "receipt_path": "/private/tmp/s016-attempt32.json",
+  "receipt_sha256": "16af5109abc5fe5c42898df290343bc8e0b15c61d8ffb6962696e5bb26490819",
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "run_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "sandbox_helper_sha256": "27723caa3dccd0e999055bc252468de5d4f72876524c7a873b761ab2157a7479",
+  "schema_version": 1,
+  "solved": false,
+  "source_revision": "0121ad150bdd6f66af2ab92d82a208f5e7ad0144",
+  "stop_reason": "end_turn",
+  "task_outcome": "failed",
+  "terminal": "completed",
+  "terminal_failure": null,
+  "tool_call_count": 88,
+  "tool_calls": {
+    "apply_patch": 1,
+    "bash": 20,
+    "config_preflight": 1,
+    "edit": 7,
+    "git_query": 1,
+    "goal_get": 1,
+    "job": 25,
+    "read": 6,
+    "task": 3,
+    "test": 8,
+    "write": 15
+  },
+  "verification": {
+    "contents_inspected": false,
+    "exit_code": 1,
+    "failure_summary": "(failures=3)",
+    "tests_run": 5,
+    "timed_out": false
+  }
+}

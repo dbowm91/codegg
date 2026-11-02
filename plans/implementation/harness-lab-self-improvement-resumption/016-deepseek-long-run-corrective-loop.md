@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement S016 — DeepSeek Long-Run Corrective Loop
 
-Status: **active under renewed authorization; cycles 1–4 used; prompt v8 ready for long attempt**
+Status: **active under renewed authorization; cycles 1–12 used; prompt v9 ready for the next long attempt**
 
 Repository baseline: `300cb4aba` (S015 timeout correction live-confirmed; S015 conditionally closed)
 
@@ -24,7 +24,7 @@ The user authorized 20 runs on 2026-10-31, which are fully recorded in the origi
 - Record provider-reported USD when available; otherwise record `unknown`. No separate USD ceiling was stated.
 - Use the existing CodeGG `opencode_go` path, a recorded H007 manifest revision, and the exact unchanged H007 verifier. No alternate route or hidden-verifier access.
 
-Authorization ledgers: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-live-authorization-20261031.json` (original, consumed) and `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-raised-cap-authorization-20261102.json` (renewed, four of 20 cycles recorded).
+Authorization ledgers: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-live-authorization-20261031.json` (original, consumed) and `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-raised-cap-authorization-20261102.json` (renewed, twelve of 20 cycles recorded).
 
 ## 3. Frozen qualification contract
 
@@ -160,4 +160,12 @@ Close positively only when one H007 run using a recorded manifest revision satis
 
 ## 8. Initial operator handoff
 
-The available ARM64 CodeGG binary is `/private/tmp/s016-bin-26ce84f/codegg` (SHA-256 `50a9ae92b7aac46f9fd9855612caa7b8fe98a505979fe23fd4578e55262d3ada`), with matching sibling helper SHA-256 `0f8db353fad3bf44ca9353aca6eab2162d933c4b8501748b05965bf7ff49f8b8`. Its Rust target cache was cleaned after preserving and verifying this pair. Recheck disk immediately before each run; free space recovered to about 39.9 GB after the owned cache cleanup. Rebuild only if a source correction requires it.
+The available ARM64 corrective binary is `/private/tmp/s016-bin-32/codegg` (SHA-256 `25cdef11543d434d0e9f0fc20c154ee72f8ec16ad078af956da616cb4e329f10`), with matching sibling helper SHA-256 `27723caa3dccd0e999055bc252468de5d4f72876524c7a873b761ab2157a7479`. Its Rust target cache is in the workspace; free space was 35 GiB after the build. Recheck disk immediately before each run and retain the 10 GiB floor.
+
+## 9. Renewed campaign update (2026-11-02)
+
+- User authorization remains active for up to 20 sequential cycles. Attempts 21–32 consume 12 cycles; eight remain.
+- Attempts 25–31 repeatedly overflowed the provider's 1,048,576-token context below the 750-request limit. Attempt 31's request 284 had 1,051,297 input tokens. Forced Hybrid/Balanced compaction created a candidate but retained 354 messages and increased the local estimate from 970,845 to 973,976, so durable installation was refused.
+- Source and trace inspection identified the route-profile/config mismatch: DeepSeek inherited a 32k local-model context on the cloud OpenCode Go route; the H007 launcher omitted `compaction.auto`, so the loop selected non-durable compatibility compaction. Commit `0121ad1` binds H007 to the observed route limit and explicitly enables durable Hybrid/Balanced compaction with a 0.65 threshold. Python syntax, rustfmt, ARM64 build, doctor, and binary preflight passed; no repository test suite was run for that commit.
+- Attempt 32 used the exact binary SHA `25cdef11543d434d0e9f0fc20c154ee72f8ec16ad078af956da616cb4e329f10`, helper SHA `27723caa3dccd0e999055bc252468de5d4f72876524c7a873b761ab2157a7479`, and v8 manifest SHA `06296b94d6f95d773fc0708cdfbcfe3ca0ddeb4c13f136f5090f617ba0ce0613`. It made 95 requests, had zero event gaps, reached a 404.634-second active span, recorded four repair cycles and continuation, and completed the final workspace test (40 passing tests). It did not show productive overlap; the hidden verifier exited 1 after five tests. The model ended normally without meeting the 30-minute criterion.
+- Prompt v9 changes only priority-job ordering, so the workspace job runs after the implementation and seeded repairs rather than against query/CLI placeholders. The H007 task, frozen fixture, verifier, acceptance, route, and live limits remain unchanged.

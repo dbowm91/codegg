@@ -1,6 +1,6 @@
 # Harness Lab Milestone S016 — Closure Status
 
-Status: **active under renewed authorization; cycles 1–4 used, no qualification**
+Status: **active under renewed authorization; cycles 1–12 used, no qualification**
 
 Source implementation plan:
 
@@ -21,7 +21,7 @@ Implementation commits or pull requests:
 
 ## 1. Executive finding
 
-The original 20-run authorization was consumed, but the user issued a separate renewed authorization on 2026-11-02 for up to 20 additional DeepSeek run/fix cycles with a 750-request ceiling. Cycle 1 (attempt 21) ran for 39.6 minutes and exposed a CodeGG defect: request 435 was rejected because the prompt exceeded DeepSeek's 1,048,576-token context limit by 807 tokens, while compaction omitted assistant tool-call arguments and tool definitions. Follow-up swallowed the provider error and published a successful `completed` terminal. Commit `e15be6c9` counts those inputs and propagates provider failures. Cycle 2 (attempt 22) showed no provider rejection or event loss, but the model used 100/750 requests, only read/bash tools, made no source changes, and ended normally. Cycle 3 selected the default seven-case manifest instead of the intended diagnostic due to a root-level manifest path. Cycle 4 used the correctly selected tool-surface diagnostic and showed native task/write/edit/test/job tools work with paired events and no tool errors. H007 still did not qualify; the latest evidence points to model/task execution after the context corrective rather than a reproduced tool execution failure.
+The original 20-run authorization was consumed, but the user issued a separate renewed authorization on 2026-11-02 for up to 20 additional DeepSeek run/fix cycles with a 750-request ceiling. Attempt 21 exposed a CodeGG context-accounting/false-success defect, corrected at `e15be6c9`. Attempts 25–31 then repeatedly reached the provider's 1,048,576-token ceiling well below the 750-request cap. Attempt 31 showed why: the OpenCode Go DeepSeek route inherited a 32k “local model” profile, and the live runner omitted automatic compaction, causing non-durable compatibility compaction on nearly every turn. The forced emergency path could not reduce the accumulated history enough to retry. Commit `0121ad1` binds the H007 route to the observed provider limit and enables early durable hybrid compaction. Attempt 32 validated the config path (effective preflight limit 1,030,704 tokens, no per-turn compaction churn), completed four repair cycles and the final workspace test, then ended normally after 7.3 minutes and 95/750 requests. Qualification still failed: the priority background test terminated before productive overlap, and the unchanged hidden verifier exited 1. There were no event gaps, activity stalls, or disk-floor events in attempts 25–32.
 
 `stable_live_evidenced` remains unestablished. The renewed authorization remains active; the narrow context-accounting and failure-propagation correction is being verified before the next sequential long attempt.
 
@@ -41,7 +41,7 @@ The original 20-run authorization was consumed, but the user issued a separate r
 
 ## 3. Production implementation evidence
 
-The ARM64 campaign binary for attempt 21 includes the pair-safe `DropMiddleMessages` correction from `94fc8d41` and request-cap correction from `d6b6364c`; attempt 22 onward used the ARM64 binary built from corrective commit `e15be6c9`. The frozen H007 fixture, verifier, and acceptance criteria remain unchanged. Prompt v8 is a separately versioned execution-order calibration and does not change task scope or acceptance.
+The ARM64 attempt 32 binary SHA-256 is `25cdef11543d434d0e9f0fc20c154ee72f8ec16ad078af956da616cb4e329f10`; its sibling sandbox helper SHA-256 is `27723caa3dccd0e999055bc252468de5d4f72876524c7a873b761ab2157a7479`. Corrective `0121ad1` adds provider-context recovery and an H007 run configuration with the observed context limit and explicit durable Hybrid/Balanced compaction. The frozen H007 fixture, verifier, and acceptance criteria remain unchanged. Prompt v9 changes only the ordering of the already-required priority background job so it is not launched against placeholder query/CLI code.
 
 ## 4. Verification executed
 
@@ -85,10 +85,10 @@ The fixed route, request ceiling, time limit, disk floor, fixture workspace, and
 
 ## 9. Documentation and operations
 
-- Per-run summaries exist for all original 20 entries and renewed attempts 21–24; renewed summaries reference their private receipt hashes and telemetry.
+- Per-run summaries exist for all original 20 entries and renewed attempts 21–32; renewed summaries reference their private receipt hashes and telemetry.
 - Append-only campaign ledger: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-live-authorization-20261031.json`.
 - Prompt revisions: S016 v1–v6; run 20 used prompt v6, which explicitly requested the fixture workdir and background test mode.
-- Current operational status: renewed campaign `s016-deepseek-raised-cap-20261102` has 16 of 20 cycles remaining. Route, frozen source fixture, verifier, and acceptance remain unchanged; prompt v8 only narrows discovery and foregrounds ordered implementation/job steps.
+- Current operational status: renewed campaign `s016-deepseek-raised-cap-20261102` has 8 of 20 cycles remaining. Route, frozen source fixture, verifier, and acceptance remain unchanged. Prompt v9 changes only the placement of the priority job and its existing required overlap edits.
 
 ## 10. Unresolved findings
 
@@ -101,7 +101,15 @@ The fixed route, request ceiling, time limit, disk floor, fixture workspace, and
 
 ## 11. Roadmap disposition
 
-S016 is active under renewed authorization. The context overflow/false-success defect is corrected. Attempt 22 did not reproduce it and showed no harness execution failure; the model ended after exploratory read/bash work. Attempt 24 proved that a short prompt can elicit native delegated, write, test, and job calls with no event loss. Prompt v8 now constrains discovery and requests immediate ordered action while preserving acceptance. The next long attempt will determine whether that calibration helps. `stable_live_not_established` remains in force.
+S016 remains active under renewed authorization. The context overflow/false-success defect is corrected at `e15be6c9`; the model-profile/automatic-compaction misconfiguration is corrected at `0121ad1` and exercised in attempt 32. Attempt 32 completed its five implementation phases and final workspace test quickly, but did not meet the sustained horizon or exact-ID productive-overlap requirement. This is evidence against request-limit exhaustion and against an ACP event-gap failure; the current open questions are whether the prompt's job ordering can produce the required overlap and whether the frozen task can naturally exercise a 30-minute horizon without padding. Prompt v9 makes that ordering change without changing acceptance. `stable_live_not_established` remains in force.
+
+## 13. Attempts 25–32 and corrective disposition (2026-11-02)
+
+Attempts 25–30 repeatedly stopped at provider context overflow between 284 and 447 requests, with all ACP tool starts paired and no activity-stall or disk-floor event. Attempt 28 was a preflight-only timeout with zero provider requests. Attempt 31 reproduced the provider's exact 1,048,576-token maximum: it rejected 1,051,297 tokens at request 284. The emergency Hybrid/Balanced path created a continuation candidate but kept 354 messages and increased the local estimate from 970,845 to 973,976; checkpoint validation refused installation because the result remained above the send budget. The request cap was not the cause.
+
+Source inspection and attempt 31 telemetry isolated a separate configuration defect: the DeepSeek model-name heuristic assigned a 32k local profile to the cloud OpenCode Go route, while the autonomy launcher wrote only `{"model": ...}` and therefore left `compaction.auto` unset. The turn runtime consequently took `auto=false` compatibility compaction repeatedly, retained the context, and accumulated preserved control reminders. Commit `0121ad1` provides an H007-scoped model-profile override at the observed provider limit and explicitly enables Hybrid/Balanced auto compaction with 35% headroom before that limit. Attempt 32's preflight logs showed an effective 1,030,704-token context limit and `compaction_needed=false` at 70k estimated history, confirming the run config applied. The run ended before reaching the compaction threshold, so long-session compaction recovery itself remains unqualified.
+
+Attempt 32 used 95/750 requests, lasted 439.038 seconds (404.634 seconds active span), had 88/88 paired tool events and zero gaps, and stayed above 32 GiB free disk. The receipt records four repair cycles and continuation. The model's final workspace test completed with 40 passing tests. The exact priority job `4020739d-1b29-483b-9b19-28f063b2f763` failed before productive edits could overlap; the model recorded the miss and did not resubmit it. The unchanged hidden verifier exited 1 (five tests run; three failures); its source was not inspected. The agent then ended normally (`end_turn`) rather than reaching the 30-minute requirement. Prompt v9 moves the existing priority job after the five phases and seeded repairs, while keeping the acceptance criteria, contract, verifier, and route unchanged.
 
 ## 12. Registry updates
 
