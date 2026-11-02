@@ -1585,8 +1585,7 @@ impl AgentLoop {
                 }
             }
 
-            self.compact_if_needed(&mut request.messages, &model_profile)
-                .await;
+            self.compact_if_needed(&mut request, &model_profile).await;
             // Phase 5: observe after compaction opportunity and immediately before provider call.
             self.observe_context_pack(
                 &request,
@@ -2403,8 +2402,7 @@ impl AgentLoop {
             }
 
             // Compact after tool results to prevent context overflow from large outputs
-            self.compact_if_needed(&mut request.messages, &model_profile)
-                .await;
+            self.compact_if_needed(&mut request, &model_profile).await;
             // Phase 5: observe after tool results + post-tool compaction.
             self.observe_context_pack(
                 &request,
@@ -2468,7 +2466,7 @@ impl AgentLoop {
         }
 
         self.drain_follow_up(&mut request, &mut all_events, &mut processor)
-            .await;
+            .await?;
         // M003 ordinary turn-scoped WorkPlan close: only after the host
         // arbiter passes, never on budget expiry. Goal-bound plans close
         // through Goal verification, not here. Remaining state is preserved
@@ -2556,14 +2554,14 @@ impl AgentLoop {
                 }
             }
         }
-        self.publish_agent_finished(&all_events);
         self.account_goal_for_turn().await;
         // After draining queued follow-ups and accounting, decide
         // whether to autonomously continue the active goal (long-
         // horizon continuation loop). Mirrors codex's
         // `maybe_start_goal_continuation_turn`.
         self.maybe_continue_goal(&mut request, &mut all_events, &mut processor)
-            .await;
+            .await?;
+        self.publish_agent_finished(&all_events);
         // After continuation, so the stored reply is the whole turn rather
         // than its first provider pass.
         self.persist_turn_transcript(&all_events).await;

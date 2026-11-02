@@ -62,6 +62,13 @@ impl ContextTracker {
         estimate_tokens_sync(text, None)
     }
 
+    /// Estimate provider-facing text with the tokenizer selected for a model.
+    /// Callers that account for non-message request fields (such as tool
+    /// definitions) must use the same model hint as message accounting.
+    pub fn estimate_text_tokens(text: &str, model: Option<&str>) -> usize {
+        estimate_tokens_sync(text, model)
+    }
+
     fn estimate_tokens_model(&self, text: &str) -> usize {
         estimate_tokens_sync(text, self.model.as_deref())
     }
@@ -76,13 +83,22 @@ impl ContextTracker {
                     _ => 0,
                 })
                 .sum(),
-            Message::Assistant { content, .. } => content
-                .iter()
-                .map(|p| match p {
-                    ContentPart::Text { text } => self.estimate_tokens_model(text),
-                    _ => 0,
-                })
-                .sum(),
+            Message::Assistant {
+                content,
+                tool_calls,
+            } => {
+                let content_tokens = content
+                    .iter()
+                    .map(|p| match p {
+                        ContentPart::Text { text } => self.estimate_tokens_model(text),
+                        _ => 0,
+                    })
+                    .sum::<usize>();
+                let tool_call_tokens = serde_json::to_string(tool_calls)
+                    .map(|serialized| self.estimate_tokens_model(&serialized))
+                    .unwrap_or(0);
+                content_tokens.saturating_add(tool_call_tokens)
+            }
             Message::Tool { content, .. } => self.estimate_tokens_model(content),
         };
         self.message_token_counts.push(tokens);
@@ -167,13 +183,22 @@ impl ContextTracker {
                         _ => 0,
                     })
                     .sum(),
-                Message::Assistant { content, .. } => content
-                    .iter()
-                    .map(|p| match p {
-                        ContentPart::Text { text } => self.estimate_tokens_model(text),
-                        _ => 0,
-                    })
-                    .sum(),
+                Message::Assistant {
+                    content,
+                    tool_calls,
+                } => {
+                    let content_tokens = content
+                        .iter()
+                        .map(|p| match p {
+                            ContentPart::Text { text } => self.estimate_tokens_model(text),
+                            _ => 0,
+                        })
+                        .sum::<usize>();
+                    let tool_call_tokens = serde_json::to_string(tool_calls)
+                        .map(|serialized| self.estimate_tokens_model(&serialized))
+                        .unwrap_or(0);
+                    content_tokens.saturating_add(tool_call_tokens)
+                }
                 Message::Tool { content, .. } => self.estimate_tokens_model(content),
             };
         }
