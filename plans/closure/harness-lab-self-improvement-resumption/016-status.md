@@ -1,6 +1,6 @@
 # Harness Lab Milestone S016 — Closure Status
 
-Status: **active under renewed authorization; cycles 1–15 used, no qualification**
+Status: **active under renewed authorization; cycles 1–16 used, no qualification**
 
 Source implementation plan:
 
@@ -137,3 +137,10 @@ The six remaining cycles are still bounded by the existing authorization. Prompt
 Attempt 35 used v11, admitted 88 provider requests, and ended with normal `end_turn` after 603.686 seconds (598.481 active). ACP observation was complete (79 starts and terminals, zero gaps); maximum activity gap was 95.619 seconds. Disk stayed above 210 GiB. The model did not finish the task: its agent-authored continuation record had no completed phases and named `durable_import` as the next phase; it had not reached the priority workspace job. The unchanged hidden verifier exited nonzero and its contents were not inspected. The exact task tool had most recently returned child status `running`; the private lane database still held that run as `running` after the parent turn and harness daemon teardown. No terminal child result was observed in the transcript.
 
 This run did not stop for a CodeGG provider, stream, ACP-event, request-cap, or disk failure. The actionable finding is model follow-through: the v11 prompt stacked several large property/recovery matrices and two staged child reviews, and the model ended before phase 2 rather than completing or polling the child. Attempt 34 showed the same model/route can complete the base five phases and productive exact-ID job overlap. Prompt v12 removes v11's oversized additions and makes the completion gate explicit. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-35-summary.json`; receipt SHA-256 `cc9880aca692e1617dc731ab55083927b0fd20876d6162dbd1e981e5b7ed8c3d`.
+
+
+## 17. Attempt 36 and next workload correction (2026-11-02)
+
+Attempt 36 used v12 and ran for 845.327 seconds (819.503 active). It admitted 151 provider requests, recorded 146/146 tool start/terminal pairs, zero event gaps, and a 66.757-second maximum activity gap. Free disk bottomed at 230,305,292,288 bytes. The model completed the five original stages, the added v10 robustness checks, all four repair cycles, a 48-test final workspace suite, and the read-only child lifecycle. Its exact priority job was observed running during productive edits and then terminal. It ended normally below 30 minutes; the unchanged hidden verifier returned failure status, and its contents were not inspected. This run does not show a provider, context, event, job-lifecycle, disk, or stall defect. The bounded workload itself is still too short for the required horizon.
+
+Prompt v13 adds one dependent feature stage: a local `catalog-bundle` crate and CLI support for deterministic snapshot bundle creation, verification, and atomic import. This is substantive scoped Rust work and does not change H007's original contract or acceptance. If it still completes below 30 minutes, use the remaining three authorized cycles only for useful workload calibration; do not reopen stable runtime architecture without a reproduction. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-36-summary.json`.
