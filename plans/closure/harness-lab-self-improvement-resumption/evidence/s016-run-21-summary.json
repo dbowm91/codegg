@@ -1,0 +1,49 @@
+{
+  "active_work_span_ms": 2363149,
+  "attempt": 21,
+  "binary_sha256": "16481cc8bf0d8866db352c3aab90c35950bde37e5799be1458a43012d594fe2a",
+  "campaign_id": "s016-deepseek-raised-cap-20261102",
+  "diagnostic_finding": "The agent used 435 of 750 admitted requests and ended normally after 39.6 minutes. All six submitted test jobs were first observed terminal; no exact job was observed running then terminal, no productive work occurred during a running job, and CONTINUATION.md remained at its initial pending state. No stream, event-gap, inactivity, or disk-floor failure is recorded.",
+  "duration_ms": 2376629,
+  "event_gap": {
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "event_gaps": [],
+    "event_observation_state": "observed_complete",
+    "tool_started_count": 494,
+    "tool_terminal_count": 494,
+    "tool_unpaired_start_count": 0
+  },
+  "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "horizon_evidence": {
+    "active_work_span_ms": 2363489,
+    "continuation_confirmed": true,
+    "exact_job_running_and_terminal": false,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 90055,
+    "measurement_complete": true,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": false,
+    "repair_cycles": 4
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "job_lifecycle_missing",
+  "provider_admission_receipt_sha256": "3b098d5637fcb30ac4d38542c4a55b2cb01eb63fd4817e62505ea21e5df5dfd1",
+  "provider_cost_source": "opencode_go_allowance_receipt",
+  "provider_cost_usd": 1.280895,
+  "provider_request_cap": 750,
+  "provider_requests": 435,
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "run_receipt_sha256": "064a9a2768626719cc689f5bac921a427ce1cab87173c463bb9722ee5d0f5237",
+  "schema_version": 1,
+  "source_revision": "d6b6364c71579f86596e9dd672285bb80d4ea099",
+  "task_outcome": "failed",
+  "terminal": "completed",
+  "verifier": {
+    "duration_ms": 2615,
+    "exit_code": 1,
+    "tests_run": 0,
+    "timed_out": false
+  },
+  "verifier_contents_inspected": false
+}

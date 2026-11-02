@@ -11,9 +11,36 @@
   "qualification_manifest": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v7/cases.jsonl",
   "qualification_manifest_sha256": "5e6769ba13c361ed7681b39162078a9457b4b8adc9a3f8f1843c10f4296038f5",
   "run_index": 1,
+  "runs": [
+    {
+      "attempt": 21,
+      "elapsed_seconds": 2380.248,
+      "event_gaps": 0,
+      "exact_job_running_and_terminal": false,
+      "horizon_outcome": "not_qualified",
+      "horizon_reason": "job_lifecycle_missing",
+      "maximum_activity_gap_ms": 90055,
+      "minimum_free_disk_bytes": 10737418240,
+      "productive_work_during_job": false,
+      "provider_requests": 435,
+      "receipt": "/private/tmp/s016-attempt21.json",
+      "repair_cycles": 4,
+      "request_ceiling": 750,
+      "route": "opencode_go/deepseek-v4.1-flash",
+      "run_index": 1,
+      "run_kind": "long_qualification",
+      "status": "completed_long_run_failed_qualification",
+      "task_outcome": "failed",
+      "terminal": "completed",
+      "usd_cost": 1.280895,
+      "verifier_exit_code": 1,
+      "verifier_tests_run": 0,
+      "wall_clock_ceiling_seconds": 3600
+    }
+  ],
   "schema_version": 1,
   "source_revision": "81e477691678db949837051192443ad53cc42675",
   "stall_cancellation_seconds": 300,
-  "status": "authorized_not_started",
+  "status": "active_with_first_run_failed",
   "usd_cost": "record provider-reported cost when available; otherwise unknown; no separate USD ceiling was stated"
 }
