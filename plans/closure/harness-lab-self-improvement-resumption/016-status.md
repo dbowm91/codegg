@@ -1,6 +1,6 @@
 # Harness Lab Milestone S016 — Closure Status
 
-Status: **active under renewed authorization; cycles 1–18 used, no qualification**
+Status: **active under renewed authorization; cycles 1–19 used, no qualification**
 
 Source implementation plan:
 
@@ -158,3 +158,10 @@ Prompt v14 corrects the sequencing: it places a fresh offline release workspace 
 Attempt 38 used v14 and completed all seven implementation phases, twelve repair cycles, the read-only task, and the final workspace tests. It ended normally after 1,104.120 seconds (1,086.836 active), using 179/750 provider requests. All 174 tool calls paired with zero event gaps; the maximum activity gap was 107.353 seconds; free disk stayed above 212 GiB. The priority job was not admitted: its command chained `cargo clean && cargo test`, and CodeGG correctly refused shell metacharacters in the native test tool. The model recorded the exact refusal, did not retry the denied action, and completed the substantive work. No provider, context, request-cap, ACP, stall, or disk failure occurred. H007 remains unqualified because there was no exact-ID priority-job lifecycle or productive overlap and the active span was under 30 minutes. The private verifier returned failure status; its contents were not inspected.
 
 Prompt v15 now uses only the allowed single `cargo test --offline --locked --release --workspace` command and explicitly prohibits shell chaining. It starts the catalog-delta feature before the first poll of that exact job. It deepens the workload with a 100,000-package indexed graph check and an eighth, substantive three-way catalog-merge feature. Two cycles remain under the current authorization. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-38-summary.json`; receipt SHA-256 `65e71a0a297e662837d6c7e4c6f0e7e273fa742ad50f4e8496d75434fa2087ce`.
+
+
+## 20. Attempt 39 and first-poll sequencing (2026-11-02)
+
+Attempt 39 used v15 and completed nine feature/qualification phases, twelve repair cycles, the 100,000-package scale test, the read-only child, and the final 53-test workspace sweep. It ended normally after 828.233 seconds (816.723 active), using 150/750 requests. Event observation was complete (145/145 pairs, zero gaps), maximum activity gap 62.615 seconds, and disk stayed above 212 GiB. The priority workspace test was accepted and completed in 5.24 seconds. The model inserted a continuation write before its first status poll, which occurred about 10.3 seconds after job submission; it observed only terminal, with no productive overlap. The horizon remained below 30 minutes. No request, provider, context, ACP, inactivity, or disk failure occurred; the private verifier failed and was not inspected.
+
+The final authorized attempt uses v16. Its first `job status` call must immediately follow the exact workspace-job submission, before any continuation write or other tool call. If the job is still running, the agent then begins a real replication implementation edit and records that same job through terminal. The new ninth feature is resumable, checksummed, paginated catalog replication with atomic complete-feed application. The scale check rises to 250,000 packages to keep the workspace verification substantive. One cycle remains under authorization. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-39-summary.json`; receipt SHA-256 `8edcffb0d91d01f96236ad6b59fd25587fe12a342c640dcecf3cf8dcccc32d88`.
