@@ -1,6 +1,6 @@
 # Harness Lab Milestone S016 — Closure Status
 
-Status: **active under renewed authorization; cycles 1–17 used, no qualification**
+Status: **active under renewed authorization; cycles 1–18 used, no qualification**
 
 Source implementation plan:
 
@@ -151,3 +151,10 @@ Prompt v13 adds one dependent feature stage: a local `catalog-bundle` crate and 
 Attempt 37 used prompt v13 and ended normally after 1,079.304 seconds (1,045.124 seconds active), with 196/750 provider requests, 191/191 paired tool events, zero event gaps, and a 96.781-second maximum activity gap. Disk stayed above 212 GiB. The agent completed all six stages and ten repair cycles, but its priority release workspace job completed in 5.64 seconds before the first state observation; no productive edits overlapped it. The horizon gate reports `job_lifecycle_missing`, and the hidden verifier failed; its output was not inspected. This was not a request, provider, event-delivery, context, stall, or disk failure. The prompt placed the job after all implementation and left only two small test edits as possible overlap; the job was over before useful work could start. The active span was still below 30 minutes.
 
 Prompt v14 corrects the sequencing: it places a fresh offline release workspace check after the six existing stages but before a substantive seventh `catalog-delta` feature, begins that feature before the first job poll, and records the exact same job ID through terminal. It also adds deterministic delta creation/verification/atomic-application semantics as a real dependent feature. H007's original acceptance and verifier remain unchanged. Three cycles remain under the existing authorization. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-37-summary.json`; receipt SHA-256 `b3104731702f49cfedf5fab54aac8f04cc9edecd04acc4aab66012d1aee1ff61`.
+
+
+## 19. Attempt 38 and tool-policy correction (2026-11-02)
+
+Attempt 38 used v14 and completed all seven implementation phases, twelve repair cycles, the read-only task, and the final workspace tests. It ended normally after 1,104.120 seconds (1,086.836 active), using 179/750 provider requests. All 174 tool calls paired with zero event gaps; the maximum activity gap was 107.353 seconds; free disk stayed above 212 GiB. The priority job was not admitted: its command chained `cargo clean && cargo test`, and CodeGG correctly refused shell metacharacters in the native test tool. The model recorded the exact refusal, did not retry the denied action, and completed the substantive work. No provider, context, request-cap, ACP, stall, or disk failure occurred. H007 remains unqualified because there was no exact-ID priority-job lifecycle or productive overlap and the active span was under 30 minutes. The private verifier returned failure status; its contents were not inspected.
+
+Prompt v15 now uses only the allowed single `cargo test --offline --locked --release --workspace` command and explicitly prohibits shell chaining. It starts the catalog-delta feature before the first poll of that exact job. It deepens the workload with a 100,000-package indexed graph check and an eighth, substantive three-way catalog-merge feature. Two cycles remain under the current authorization. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-38-summary.json`; receipt SHA-256 `65e71a0a297e662837d6c7e4c6f0e7e273fa742ad50f4e8496d75434fa2087ce`.
