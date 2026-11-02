@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "attempt": 40,
+  "campaign_id": "s016-deepseek-raised-cap-20261102",
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "source_revision": "f56784c0a224241b92464eaa48c209152ab88faf",
+  "binary_sha256": "25cdef11543d434d0e9f0fc20c154ee72f8ec16ad078af956da616cb4e329f10",
+  "manifest_path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v16/cases.jsonl",
+  "manifest_sha256": "8e86e274065e698509a788c1d7c17c6928c1e16c3ebe80fa45cd93d2c567b20a",
+  "run_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "receipt_path": "/private/tmp/s016-attempt40.json",
+  "receipt_sha256": "df4d05af7ceb7f12b914fbcd34fff1475a3b0953153a081d7362e64eda9d1f31",
+  "provider_request_cap": 750,
+  "provider_requests": 202,
+  "provider_cost_usd": 0.114215,
+  "duration_ms": 1264062,
+  "active_work_span_ms": 1249024,
+  "terminal": "completed",
+  "stop_reason": "end_turn",
+  "task_outcome": "failed",
+  "solved": false,
+  "event_gap": {
+    "state": "observed_complete",
+    "tool_started_count": 197,
+    "tool_terminal_count": 197,
+    "unpaired_count": 0,
+    "event_gap_count": 0
+  },
+  "horizon_evidence": {
+    "active_work_span_ms": 1249293,
+    "maximum_activity_gap_ms": 47439,
+    "minimum_active_duration_ms": 1800000,
+    "repair_cycles": 25,
+    "continuation_confirmed": true,
+    "exact_job_running_and_terminal": true,
+    "productive_work_during_job": true
+  },
+  "disk_floor": {
+    "minimum_free_bytes": 10737418240,
+    "lowest_observed_free_bytes": 229756100608,
+    "last_free_bytes": 231915724800,
+    "triggered": false
+  },
+  "verification": {
+    "exit_code": 1,
+    "failure_summary": "(failures=3)",
+    "contents_inspected": false
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "activity_span_short",
+  "finding": "The immediate exact-ID poll correction worked: the priority workspace job was observed running immediately after submission, the agent made productive catalog-delta edits while it ran, then observed the same ID completed. It completed all nine stages, 25 repair cycles, resumable replication, and an 80-test final workspace suite. It nevertheless ended normally at 1,249.024 seconds active (20.8 minutes), below the 30-minute threshold. It used 202/750 requests; all 197 ACP starts paired with terminals with zero gaps; maximum activity gap was 47.439 seconds; disk remained above 214 GiB. No provider, context, cap, event, stall, or disk failure was observed. The private verifier exited nonzero (three failures) and its contents were not inspected. The model completed its assigned engineering task; the remaining failure is that this workload does not produce 30 minutes of substantive activity, not an identified CodeGG runtime defect.",
+  "priority_job": {
+    "job_id": "ab2def1b-dd62-48b9-8b99-46826a24ff74",
+    "first_observed_state": "running",
+    "productive_work_overlap": "catalog-delta edits began while the job was running",
+    "terminal_state": "completed",
+    "summary": "53 passed, exit 0, 12.29s"
+  }
+}
