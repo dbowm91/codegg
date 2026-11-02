@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "attempt": 38,
+  "campaign_id": "s016-deepseek-raised-cap-20261102",
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "source_revision": "a62f237dd4e7b208a8760834fb14a5f2f3b08408",
+  "binary_sha256": "25cdef11543d434d0e9f0fc20c154ee72f8ec16ad078af956da616cb4e329f10",
+  "manifest_path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v14/cases.jsonl",
+  "manifest_sha256": "477a42ba16fa048af42abc6b0fe6d7141e1df8c4eaad7d97f185af09e8e79b2e",
+  "run_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "receipt_path": "/private/tmp/s016-attempt38.json",
+  "receipt_sha256": "65e71a0a297e662837d6c7e4c6f0e7e273fa742ad50f4e8496d75434fa2087ce",
+  "provider_request_cap": 750,
+  "provider_requests": 179,
+  "provider_cost_usd": 0.083723,
+  "duration_ms": 1104120,
+  "active_work_span_ms": 1086836,
+  "terminal": "completed",
+  "stop_reason": "end_turn",
+  "task_outcome": "failed",
+  "solved": false,
+  "event_gap": {
+    "state": "observed_complete",
+    "tool_started_count": 174,
+    "tool_terminal_count": 174,
+    "unpaired_count": 0,
+    "event_gap_count": 0
+  },
+  "horizon_evidence": {
+    "active_work_span_ms": 1086852,
+    "maximum_activity_gap_ms": 107353,
+    "minimum_active_duration_ms": 1800000,
+    "repair_cycles": 12,
+    "continuation_confirmed": true,
+    "exact_job_running_and_terminal": false,
+    "productive_work_during_job": false
+  },
+  "disk_floor": {
+    "minimum_free_bytes": 10737418240,
+    "lowest_observed_free_bytes": 228521156608,
+    "last_free_bytes": 228541280256,
+    "triggered": false
+  },
+  "verification": {
+    "exit_code": 1,
+    "failure_summary": "(failures=3)",
+    "contents_inspected": false
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "job_lifecycle_missing",
+  "finding": "The model completed all seven stages, twelve repair cycles, the read-only child, and the final workspace suites. The v14 priority job never started: its command chained cargo clean and cargo test with &&, which the native test tool safety validator correctly rejected because shell metacharacters are not allowed. The model did not retry that denied action and completed the substantive feature work, but exact-ID priority-job lifecycle and productive overlap were therefore absent. It ended normally after 18.1 minutes active, below the 30-minute horizon. All 174 tool starts paired with terminals with zero gaps; maximum activity gap was 107.353 seconds, disk remained above 212 GiB, and 179/750 requests were used. This is a prompt/tool-contract mismatch plus insufficient task duration, not an ACP, provider, context, request-cap, stall, or disk failure."
+}
