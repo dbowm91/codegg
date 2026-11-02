@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "attempt": 34,
+  "campaign_id": "s016-deepseek-raised-cap-20261102",
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "source_revision": "5776361238dbc44b0b1a57701cd47233d71b314f",
+  "binary_sha256": "25cdef11543d434d0e9f0fc20c154ee72f8ec16ad078af956da616cb4e329f10",
+  "manifest_path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v10/cases.jsonl",
+  "manifest_sha256": "9c43897ed7f9dea4cc14e43b5420e0aefcad0bc2272f7615a7f7a68dc433969b",
+  "run_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "receipt_path": "/private/tmp/s016-attempt34.json",
+  "receipt_sha256": "c226f00a82f4b20be390a9e16700435d05f21bb14055c9653885c1dae3ad8769",
+  "provider_request_cap": 750,
+  "provider_requests": 118,
+  "provider_cost_usd": 0.052612,
+  "duration_ms": 569843,
+  "active_work_span_ms": 554751,
+  "terminal": "completed",
+  "stop_reason": "end_turn",
+  "task_outcome": "failed",
+  "solved": false,
+  "event_gap": {
+    "state": "observed_complete",
+    "tool_started_count": 113,
+    "tool_terminal_count": 113,
+    "unpaired_count": 0,
+    "event_gap_count": 0
+  },
+  "horizon_evidence": {
+    "active_work_span_ms": 554751,
+    "maximum_activity_gap_ms": 115795,
+    "minimum_active_duration_ms": 1800000,
+    "repair_cycles": 3,
+    "continuation_confirmed": true,
+    "exact_job_running_and_terminal": true,
+    "productive_work_during_job": true
+  },
+  "priority_job": {
+    "exact_id": "9ecaa815-7ff7-4ec4-b527-a41c8f29c935",
+    "terminal_state": "completed",
+    "productive_overlap": true
+  },
+  "disk_floor": {
+    "minimum_free_bytes": 10737418240,
+    "lowest_observed_free_bytes": 38180364288,
+    "last_free_bytes": 228619943936,
+    "triggered": false
+  },
+  "verification": {
+    "exit_code": 1,
+    "tests_run": 5,
+    "contents_inspected": false
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "activity_span_short",
+  "finding": "The run completed the H007 phases plus deterministic scale/recovery checks and bounded boundary probes in about 9.5 minutes. The later exact-ID background job was observed running during productive edits and terminal, proving the job overlap path works in this run. ACP tool events paired with zero gaps; no request, activity-stall, context, or disk failure. The model ended normally below the 30-minute horizon; hidden verifier returned failure status and was not inspected."
+}
