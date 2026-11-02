@@ -101,7 +101,10 @@ moved the handler out of `src/tui/commands/tasks.rs` and removed
 `FrontendAction::CompactSession`. Each surviving anchor now names the line it
 claims; where C002 removed the symbol an anchor named, the anchor names the
 file instead. No decision, claim or test count changed: this is a pointer
-repair.
+repair. PR **#227**, merged as `86d534349`; the **Linux M004 process and IPC
+qualification** ([41471962533](https://github.com/dbowm91/codegg/actions/runs/41471962533))
+succeeded on the branch head `b602f3c8e`. The merge is `plans/**`-only, so
+the CI workflow's `paths-ignore` skips it by design.
 
 ## 5. What this line must not do
 
