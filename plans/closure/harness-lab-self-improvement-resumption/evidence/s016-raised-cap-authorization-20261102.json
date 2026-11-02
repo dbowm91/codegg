@@ -1,0 +1,19 @@
+{
+  "authorization_source": "User authorized up to 20 additional run/fix cycles on the DeepSeek 4.1 Flash route and directed the next run to proceed after raising the request limit.",
+  "authorized_route": "opencode_go/deepseek-v4.1-flash",
+  "campaign_id": "s016-deepseek-raised-cap-20261102",
+  "cancellation": "operator request, request ceiling, 60-minute wall clock, disk below or unavailable at 10 GiB floor, 5-minute ACP inactivity, or provider admission/accounting becomes unobservable",
+  "execution": "sequential long qualification, exact run/job evidence, narrow evidence-backed harness correction after failure, then retry until qualification or 20 cycles exhausted",
+  "max_started_cycles": 20,
+  "minimum_free_disk_bytes": 10737418240,
+  "per_run_provider_request_ceiling": 750,
+  "per_run_wall_clock_seconds": 3600,
+  "qualification_manifest": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v7/cases.jsonl",
+  "qualification_manifest_sha256": "5e6769ba13c361ed7681b39162078a9457b4b8adc9a3f8f1843c10f4296038f5",
+  "run_index": 1,
+  "schema_version": 1,
+  "source_revision": "81e477691678db949837051192443ad53cc42675",
+  "stall_cancellation_seconds": 300,
+  "status": "authorized_not_started",
+  "usd_cost": "record provider-reported cost when available; otherwise unknown; no separate USD ceiling was stated"
+}
