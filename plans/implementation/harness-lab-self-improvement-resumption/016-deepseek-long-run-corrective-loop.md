@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement S016 — DeepSeek Long-Run Corrective Loop
 
-Status: **active under renewed authorization; cycles 1–12 used; prompt v9 ready for the next long attempt**
+Status: **active under renewed authorization; cycles 1–13 used; prompt v10 ready for the next long attempt**
 
 Repository baseline: `300cb4aba` (S015 timeout correction live-confirmed; S015 conditionally closed)
 
@@ -24,7 +24,7 @@ The user authorized 20 runs on 2026-10-31, which are fully recorded in the origi
 - Record provider-reported USD when available; otherwise record `unknown`. No separate USD ceiling was stated.
 - Use the existing CodeGG `opencode_go` path, a recorded H007 manifest revision, and the exact unchanged H007 verifier. No alternate route or hidden-verifier access.
 
-Authorization ledgers: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-live-authorization-20261031.json` (original, consumed) and `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-raised-cap-authorization-20261102.json` (renewed, twelve of 20 cycles recorded).
+Authorization ledgers: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-live-authorization-20261031.json` (original, consumed) and `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-raised-cap-authorization-20261102.json` (renewed, thirteen of 20 cycles recorded).
 
 ## 3. Frozen qualification contract
 
@@ -164,8 +164,14 @@ The available ARM64 corrective binary is `/private/tmp/s016-bin-32/codegg` (SHA-
 
 ## 9. Renewed campaign update (2026-11-02)
 
-- User authorization remains active for up to 20 sequential cycles. Attempts 21–32 consume 12 cycles; eight remain.
+- User authorization remains active for up to 20 sequential cycles. Attempts 21–33 consume 13 cycles; seven remain.
 - Attempts 25–31 repeatedly overflowed the provider's 1,048,576-token context below the 750-request limit. Attempt 31's request 284 had 1,051,297 input tokens. Forced Hybrid/Balanced compaction created a candidate but retained 354 messages and increased the local estimate from 970,845 to 973,976, so durable installation was refused.
 - Source and trace inspection identified the route-profile/config mismatch: DeepSeek inherited a 32k local-model context on the cloud OpenCode Go route; the H007 launcher omitted `compaction.auto`, so the loop selected non-durable compatibility compaction. Commit `0121ad1` binds H007 to the observed route limit and explicitly enables durable Hybrid/Balanced compaction with a 0.65 threshold. Python syntax, rustfmt, ARM64 build, doctor, and binary preflight passed; no repository test suite was run for that commit.
 - Attempt 32 used the exact binary SHA `25cdef11543d434d0e9f0fc20c154ee72f8ec16ad078af956da616cb4e329f10`, helper SHA `27723caa3dccd0e999055bc252468de5d4f72876524c7a873b761ab2157a7479`, and v8 manifest SHA `06296b94d6f95d773fc0708cdfbcfe3ca0ddeb4c13f136f5090f617ba0ce0613`. It made 95 requests, had zero event gaps, reached a 404.634-second active span, recorded four repair cycles and continuation, and completed the final workspace test (40 passing tests). It did not show productive overlap; the hidden verifier exited 1 after five tests. The model ended normally without meeting the 30-minute criterion.
 - Prompt v9 changes only priority-job ordering, so the workspace job runs after the implementation and seeded repairs rather than against query/CLI placeholders. The H007 task, frozen fixture, verifier, acceptance, route, and live limits remain unchanged.
+
+## 10. Attempt 33 finding and next corrective (2026-11-02)
+
+Attempt 33 used prompt v9, the ARM64 binary above, and the unchanged H007 source fixture and verifier. It admitted 130/750 provider requests, ran for 573.762 seconds with 560.603 seconds of active work, completed seven repair cycles, confirmed continuation, and ended normally (`end_turn`). ACP observation was complete: 125 tool starts, 125 terminals, zero gaps. Maximum activity gap was 58.739 seconds and minimum observed free disk was 36,264,079,360 bytes. No provider failure, request-cap exhaustion, activity stall, or disk-floor event occurred. The harness-observed exact priority job completed after 3.62 seconds; the model's later productive edits followed its terminal state. The model completed the five Rust phases and final workspace testing in about 9.6 minutes, below the 30-minute horizon. The automatic verifier returned failure status; its private output was not inspected. See `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-33-summary.json` and receipt hash `f324d41e5bd014e680f5d21baf4f07d15a0442aca43fdfe9ee51064a98103a0d`.
+
+This is a task/horizon mismatch, not evidence of a CodeGG runtime defect: the prompt directs the agent to stop once its substantive work ends, while qualification separately requires 30 minutes. The H007 task, contract, public tests, corpus, verifier, and acceptance remain frozen. Prompt v10 adds substantive deterministic scale/correctness checks and two additional bounded tool-refusal probes, as requested by the user, without adding idle work or changing qualification. Its SHA-256 is `9c43897ed7f9dea4cc14e43b5420e0aefcad0bc2272f7615a7f7a68dc433969b`. The next cycle will test whether that additional real engineering and harness interrogation sustains work; if it still ends early, stop repeating H007 prompt variants and assign workload redesign to a successor plan rather than claim a harness defect.

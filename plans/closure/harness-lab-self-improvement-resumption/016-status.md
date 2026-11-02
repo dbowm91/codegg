@@ -1,6 +1,6 @@
 # Harness Lab Milestone S016 — Closure Status
 
-Status: **active under renewed authorization; cycles 1–12 used, no qualification**
+Status: **active under renewed authorization; cycles 1–13 used, no qualification**
 
 Source implementation plan:
 
@@ -23,7 +23,7 @@ Implementation commits or pull requests:
 
 The original 20-run authorization was consumed, but the user issued a separate renewed authorization on 2026-11-02 for up to 20 additional DeepSeek run/fix cycles with a 750-request ceiling. Attempt 21 exposed a CodeGG context-accounting/false-success defect, corrected at `e15be6c9`. Attempts 25–31 then repeatedly reached the provider's 1,048,576-token ceiling well below the 750-request cap. Attempt 31 showed why: the OpenCode Go DeepSeek route inherited a 32k “local model” profile, and the live runner omitted automatic compaction, causing non-durable compatibility compaction on nearly every turn. The forced emergency path could not reduce the accumulated history enough to retry. Commit `0121ad1` binds the H007 route to the observed provider limit and enables early durable hybrid compaction. Attempt 32 validated the config path (effective preflight limit 1,030,704 tokens, no per-turn compaction churn), completed four repair cycles and the final workspace test, then ended normally after 7.3 minutes and 95/750 requests. Qualification still failed: the priority background test terminated before productive overlap, and the unchanged hidden verifier exited 1. There were no event gaps, activity stalls, or disk-floor events in attempts 25–32.
 
-`stable_live_evidenced` remains unestablished. The renewed authorization remains active; the narrow context-accounting and failure-propagation correction is being verified before the next sequential long attempt.
+`stable_live_evidenced` remains unestablished. Attempt 33 validated complete tool-event observation and exercised the H007 auto-compaction configuration without reaching its threshold. The agent completed the work in about 9.6 minutes and stopped normally. This is not a reproduced turn, stream, ACP, request-cap, or disk failure: the current task says to stop when substantive work is complete while the horizon gate requires 30 minutes. Prompt v10 therefore retains H007's frozen contract and acceptance, and adds bounded, substantive scale/correctness work plus the user's requested safe tool-surface probes. The renewed authorization remains active with seven cycles available.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -33,9 +33,9 @@ The original 20-run authorization was consumed, but the user issued a separate r
 | Keep the H007 task, contract, corpus, public tests, verifier, and acceptance fixed | Fixture hashes in each run summary; verifier SHA-256 `13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c` | pass | Only versioned agent prompt/diagnostic manifests changed. Private verifier content was not inspected. |
 | Enforce per-run request ceiling, 3,600 seconds, and 10 GiB free disk | Original and renewed ledgers/receipts | pass | Original campaign used 60 requests; renewed campaign uses 750. Attempt 21 admitted 435 requests, stayed above the disk floor, and stopped after provider context overflow. |
 | Continuous provider streams and complete ACP tool-event pairs | Run 20 summary: 60/60 response bodies reached EOF; 52/52 tool starts paired; zero gaps | pass | No idle timeout or activity-stall cancellation occurred. |
-| Exact-ID background job lifecycle with productive overlap | Run 20 receipt, transcript, causal trace, and durable job rows | fail | Two exact IDs were observed `running` then `failed`; a third was left at `running` in the model transcript and later failed in the durable store. All three jobs ran for 1.588–2.591 seconds. No productive edit overlapped actual job execution; the priority release-workspace job was never submitted. |
+| Exact-ID background job lifecycle with productive overlap | Attempts 32–33 receipts and exact-ID traces | fail | Attempt 33 observed the exact priority ID terminal after 3.62 seconds; productive edits came afterward. No ACP event loss or job-ID projection failure was reproduced. |
 | Two seeded failure/repair cycles and five dependent implementation phases | Run 20 horizon receipt and tool trace | fail | Zero repair cycles; work remained on repeated `catalog-format` checks and did not reach `catalog-store` or the priority overlap phase. |
-| At least 30 minutes of substantive active work, with gap ≤5 minutes | Run 20 horizon receipt | fail | Active work was 228.790 seconds; maximum measured gap was 31.027 seconds. The 60-request cap ended the attempt after 231.199 seconds of case time. |
+| At least 30 minutes of substantive active work, with gap ≤5 minutes | Attempt 33 horizon receipt | fail | Active work was 560.603 seconds; maximum measured gap was 58.739 seconds. The model completed all five phases and ended normally; the frozen prompt directs honest early completion and forbids padding. |
 | Continuation and independent verifier | Attempt 21 receipt | fail | Continuation remained pending; unchanged verifier exited 1 with zero tests recorded. Its source and contents were not inspected. |
 | Stop after qualification or renewed 20-cycle cap | Renewed authorization ledger | active | Four of 20 renewed cycles are recorded: attempts 21–24. Two were long qualification runs; two were diagnostics, and attempt 23 selected the wrong manifest. |
 
@@ -116,3 +116,10 @@ Attempt 32 used 95/750 requests, lasted 439.038 seconds (404.634 seconds active 
 - Keep S016 **active under renewed authorization** in `plans/registry.md` and the Harness Lab roadmap.
 - Link this closure record from the registry and roadmap.
 - Keep `stable_live_not_established`; use only the recorded renewed authorization and stop at its 20-cycle ceiling.
+
+
+## 14. Attempt 33 and task/horizon diagnosis (2026-11-02)
+
+Attempt 33 used v9 and the same ARM64 binary as attempt 32. It completed 130 provider requests, had zero event gaps and complete ACP start/terminal pairing, recorded seven repair cycles and continuation, and kept at least 36.2 GB free. The model ended normally after 9.6 minutes. Its exact-ID workspace job completed in 3.62 seconds, before the subsequent productive edits. The hidden verifier failed; its private output was not inspected. These data do not support request-cap exhaustion, stream/ACP loss, disk pressure, or an unfinished CodeGG turn as the cause of the short horizon. The prompt said to stop when substantive work ended, so the agent's early `end_turn` is consistent with its instructions. The correction is task calibration, not a forced continuation after a completed turn. Prompt v10 adds substantive scale/correctness tasks and bounded harness probes; the H007 verifier and acceptance remain frozen. The next attempt will establish whether those tasks expose a reproducible harness defect or show that this fixture still does not sustain 30 minutes.
+
+Per-run metadata: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-33-summary.json`. Private receipt `/private/tmp/s016-attempt33.json`, SHA-256 `f324d41e5bd014e680f5d21baf4f07d15a0442aca43fdfe9ee51064a98103a0d`. Renewed authorization ledger now records 13 of 20 cycles; seven remain.
