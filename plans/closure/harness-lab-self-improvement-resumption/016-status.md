@@ -1,6 +1,6 @@
 # Harness Lab Milestone S016 — Closure Status
 
-Status: **active under renewed authorization; cycles 1–19 used, no qualification**
+Status: **renewed authorization exhausted (20/20 cycles); no H007 qualification**
 
 Source implementation plan:
 
@@ -165,3 +165,10 @@ Prompt v15 now uses only the allowed single `cargo test --offline --locked --rel
 Attempt 39 used v15 and completed nine feature/qualification phases, twelve repair cycles, the 100,000-package scale test, the read-only child, and the final 53-test workspace sweep. It ended normally after 828.233 seconds (816.723 active), using 150/750 requests. Event observation was complete (145/145 pairs, zero gaps), maximum activity gap 62.615 seconds, and disk stayed above 212 GiB. The priority workspace test was accepted and completed in 5.24 seconds. The model inserted a continuation write before its first status poll, which occurred about 10.3 seconds after job submission; it observed only terminal, with no productive overlap. The horizon remained below 30 minutes. No request, provider, context, ACP, inactivity, or disk failure occurred; the private verifier failed and was not inspected.
 
 The final authorized attempt uses v16. Its first `job status` call must immediately follow the exact workspace-job submission, before any continuation write or other tool call. If the job is still running, the agent then begins a real replication implementation edit and records that same job through terminal. The new ninth feature is resumable, checksummed, paginated catalog replication with atomic complete-feed application. The scale check rises to 250,000 packages to keep the workspace verification substantive. One cycle remains under authorization. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-39-summary.json`; receipt SHA-256 `8edcffb0d91d01f96236ad6b59fd25587fe12a342c640dcecf3cf8dcccc32d88`.
+
+
+## 21. Attempt 40 and campaign conclusion (2026-11-02)
+
+Attempt 40 used the last cycle in the renewed authorization. It ended normally after 1,264.062 seconds (1,249.024 active), using 202/750 provider requests. The immediate exact-ID observation correction worked: the priority workspace job was observed `running` by the next tool call, productive catalog-delta edits occurred during the same job, and that exact ID was later observed `completed`. The agent completed all nine implementation stages, 25 repair cycles, the resumable replication feature, and an 80-test final workspace suite. Continuation was confirmed. ACP observation was complete (197/197 pairs, zero gaps); maximum activity gap was 47.439 seconds; disk stayed above 214 GiB.
+
+H007 remains unqualified. The model ended normally at 20.8 minutes, below the required 30-minute substantive activity span. The hidden verifier returned failure status with three failures; its contents were not inspected. No provider, context, request-cap, ACP/event, inactivity, or disk failure was observed. Across attempts 37–40 the model completed increasingly substantial catalog tasks in about 13.6–20.8 minutes; attempt 40 proves the exact-ID job overlap works when polled immediately. The remaining measured failure is task/horizon calibration: the agent finishes the substantive work before 30 minutes. Raising the request cap further is not supported by these results (attempt 40 used 202/750). The renewed authorization is exhausted at 20/20; any new live effort requires fresh explicit authorization and a workload designed to exceed 30 minutes through substantive work. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-40-summary.json`; receipt SHA-256 `df4d05af7ceb7f12b914fbcd34fff1475a3b0953153a081d7362e64eda9d1f31`.
