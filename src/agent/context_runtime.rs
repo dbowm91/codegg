@@ -867,6 +867,86 @@ impl AgentLoop {
         request: &mut ChatRequest,
         model_profile: &crate::model_profile::types::ResolvedModelProfile,
     ) {
+        self.compact_if_needed_with_force(request, model_profile, false)
+            .await;
+    }
+
+    /// A provider-reported context overflow is authoritative evidence that
+    /// the configured estimate/limit did not fit the actual route. Narrow
+    /// the turn's context limit to the provider's reported maximum, then run
+    /// the normal durable compaction path unconditionally before one replay.
+    pub(super) async fn compact_after_provider_context_overflow(
+        &mut self,
+        request: &mut ChatRequest,
+        model_profile: &crate::model_profile::types::ResolvedModelProfile,
+        provider_context_limit: usize,
+    ) -> bool {
+        // Provider-side tokenization can materially exceed CodeGG's local
+        // message estimator (attempt 29 measured ~5.5% more tokens upstream).
+        // Compact to a conservative operating target so the corrective
+        // request does not merely land a few tokens below the hard ceiling.
+        const PROVIDER_CONTEXT_HEADROOM_PERCENT: usize = 15;
+        let compaction_target =
+            provider_context_limit.saturating_mul(100 - PROVIDER_CONTEXT_HEADROOM_PERCENT) / 100;
+        if let Some(policy) = self.services.execution_policy.as_mut() {
+            // The provider's explicit rejection carries better context-size
+            // evidence than a conservative family profile (for example, an
+            // OpenCode route for an open-weight model). Keep the hard maximum
+            // for diagnostics, but use a headroom-adjusted target for this
+            // turn and future preflights.
+            policy.context_window = compaction_target;
+            self.services.context_tracker.set_limit(compaction_target);
+        } else {
+            return false;
+        }
+        tracing::warn!(
+            session_id = %self.session_id,
+            provider_context_limit,
+            compaction_target,
+            headroom_percent = PROVIDER_CONTEXT_HEADROOM_PERCENT,
+            "provider rejected context size; compacting to the observed provider limit"
+        );
+        self.compact_if_needed_with_force(request, model_profile, true)
+            .await;
+        let Some(policy) = self.services.execution_policy.as_ref() else {
+            return false;
+        };
+        let tool_definition_tokens = request
+            .tools
+            .as_ref()
+            .and_then(|tools| serde_json::to_string(tools).ok())
+            .map(|serialized| {
+                crate::context::compaction::ContextTracker::estimate_text_tokens(
+                    &serialized,
+                    Some(model_profile.model.as_str()),
+                )
+            })
+            .unwrap_or(0);
+        let estimated_tokens = crate::context::compaction::context_tokens(
+            &request.messages,
+            Some(model_profile.model.as_str()),
+        )
+        .saturating_add(tool_definition_tokens);
+        let available = compaction_target.saturating_sub(policy.reserved_output_tokens);
+        let fits = estimated_tokens <= available;
+        tracing::info!(
+            session_id = %self.session_id,
+            provider_context_limit,
+            compaction_target,
+            estimated_tokens,
+            available,
+            fits,
+            "provider context recovery compaction result"
+        );
+        fits
+    }
+
+    async fn compact_if_needed_with_force(
+        &mut self,
+        request: &mut ChatRequest,
+        model_profile: &crate::model_profile::types::ResolvedModelProfile,
+        force: bool,
+    ) {
         let tool_definition_tokens = request
             .tools
             .as_ref()
@@ -885,23 +965,48 @@ impl AgentLoop {
         // Tool definitions are provider-facing input too. Reserve their
         // estimated size before deciding whether the message history fits.
         let context_limit = policy.context_window.saturating_sub(tool_definition_tokens);
-        let threshold = policy.compaction_threshold;
+        // The forced path is only entered after the provider has rejected
+        // the unchanged context. A zero threshold makes the canonical
+        // compactor reduce the history even when the local tokenizer still
+        // estimates it below the reported provider maximum.
+        let threshold = if force {
+            0.0
+        } else {
+            policy.compaction_threshold
+        };
         let reserved_output_tokens = policy.reserved_output_tokens;
-        let max_tool_result_tokens = policy.max_tool_result_tokens;
+        let max_tool_result_tokens = if force {
+            // A context-overflow rejection can arrive after hundreds of
+            // valid tool pairs have accumulated. Retaining every pair is
+            // necessary for provider history validity, but retaining each
+            // full result is not: shrink those recoverable results to the
+            // emergency excerpt size before compiling the durable frame.
+            // The full output remains available through the logged artifact
+            // path/read tool.
+            policy.max_tool_result_tokens.min(200)
+        } else {
+            policy.max_tool_result_tokens
+        };
         let auto = self
             .services
             .config
             .compaction
             .as_ref()
             .and_then(|config| config.auto)
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || force;
         let prune = self
             .services
             .config
             .compaction
             .as_ref()
             .and_then(|config| config.prune)
-            .unwrap_or(false);
+            // Tool results are the most common unbounded source in a long
+            // run. Keep the recoverable artifact hint and trim oversized
+            // results by default once context compaction is active; users
+            // can still explicitly opt out with compaction.prune=false.
+            .unwrap_or(true)
+            || force;
 
         if self.cancel_rx.as_ref().is_some_and(|rx| *rx.borrow()) {
             tracing::info!("Skipping context compaction after cancellation");
@@ -915,15 +1020,28 @@ impl AgentLoop {
             .compaction_requested
             .as_ref()
             .is_some_and(|requested| requested.swap(false, std::sync::atomic::Ordering::AcqRel));
-        if !requested
-            && !needs_context_compaction(
-                messages,
-                context_limit,
-                threshold,
-                reserved_output_tokens,
-                Some(model_profile.model.as_str()),
-            )
-        {
+        let should_compact = force || requested;
+        let estimated_message_tokens = context_tokens(messages, Some(model_profile.model.as_str()));
+        let compaction_needed = needs_context_compaction(
+            messages,
+            context_limit,
+            threshold,
+            reserved_output_tokens,
+            Some(model_profile.model.as_str()),
+        );
+        tracing::debug!(
+            session_id = %self.session_id,
+            model = %model_profile.model,
+            estimated_message_tokens,
+            tool_definition_tokens,
+            effective_context_limit = context_limit,
+            reserved_output_tokens,
+            threshold,
+            force,
+            compaction_needed,
+            "provider context preflight"
+        );
+        if !should_compact && !compaction_needed {
             return;
         }
 

@@ -55,10 +55,44 @@ impl ProviderTurnAdapter {
 
     pub(super) async fn receive_with_retry_context(
         loop_: &mut AgentLoop,
-        request: &ChatRequest,
+        request: &mut ChatRequest,
         retry: Option<RetryContext>,
     ) -> Result<Vec<ChatEvent>, AppError> {
-        stream_with_retry(loop_, request, retry).await
+        let first = stream_with_retry_inner(loop_, request, retry).await;
+        let result = match first {
+            Err(error) => {
+                if let Some(provider_context_limit) = provider_context_limit(&error) {
+                    let model_profile =
+                        crate::model_profile::ModelProfileResolver::new(&loop_.services.config)
+                            .resolve(&request.model);
+                    let fits = loop_
+                        .compact_after_provider_context_overflow(
+                            request,
+                            &model_profile,
+                            provider_context_limit,
+                        )
+                        .await;
+                    if !fits {
+                        Err(error)
+                    } else {
+                        // The provider rejected the old context. This one
+                        // bounded remediation attempt sends a changed request;
+                        // provider admission still enforces the caller's cap.
+                        stream_with_retry_inner(
+                            loop_,
+                            request,
+                            Some(RetryContext::new(1, Duration::from_secs(120))),
+                        )
+                        .await
+                    }
+                } else {
+                    Err(error)
+                }
+            }
+            Ok(events) => Ok(events),
+        };
+        report_credential_outcome(loop_, &result);
+        result
     }
 }
 
@@ -86,6 +120,39 @@ async fn stream_with_retry(
     // and never blocks or retries the turn.
     report_credential_outcome(loop_, &result);
     result
+}
+
+/// Return a provider's explicit hard context maximum for a rejected request.
+/// Other invalid requests remain permanent and are never automatically
+/// retried.
+fn provider_context_limit(error: &AppError) -> Option<usize> {
+    let AppError::Provider(ProviderError::Api { message, .. }) = error else {
+        return None;
+    };
+    let lowered = message.to_ascii_lowercase();
+    let marker = ["maximum context length is ", "maximum context window is "]
+        .iter()
+        .find_map(|marker| lowered.find(marker).map(|index| index + marker.len()))
+        .or_else(|| {
+            // OpenCode Go forwards the upstream DeepSeek error as:
+            // `context_length_exceeded ... Input too long: X input tokens, limit is Y for this model`.
+            // Only accept this generic `limit is` form when the message also
+            // identifies a context-length rejection, so unrelated API limits
+            // cannot trigger a context rewrite and replay.
+            (lowered.contains("context_length_exceeded") || lowered.contains("input too long"))
+                .then(|| {
+                    lowered
+                        .find("limit is ")
+                        .map(|index| index + "limit is ".len())
+                })
+                .flatten()
+        })?;
+    let digits: String = lowered[marker..]
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    let limit = digits.parse::<usize>().ok()?;
+    (limit > 0 && limit <= 16_777_216).then_some(limit)
 }
 
 /// Feed the terminal credential implication of this turn into connection

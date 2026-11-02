@@ -1083,7 +1083,38 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
 
     config_path = Path(env["CODEGG_TUI_CONFIG"])
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(json.dumps({"model": model}), encoding="utf-8")
+    run_config: dict[str, Any] = {"model": model}
+    if case.case_id == H007_CASE_ID:
+        # The DeepSeek OpenCode Go route is cloud-hosted, but the generic
+        # model-profile heuristic classifies "deepseek" as a local model
+        # with a 32k context. Attempt 31 observed the provider's actual
+        # 1,048,576-token limit and showed that the omitted compaction config
+        # selects the non-durable compatibility path on every turn. The
+        # resulting repeated compaction/reminder cycle grows history until
+        # the provider rejects it. Bind this qualification to the observed
+        # route limit and enable the durable hybrid path early enough to
+        # leave room for tokenizer-estimator variance.
+        model_id = model.rsplit("/", 1)[-1]
+        run_config["model_profile"] = {
+            model_id: {"context_window": 1_048_576},
+        }
+        run_config["compaction"] = {
+            "enabled": True,
+            "auto": True,
+            "mode": "hybrid",
+            "policy": "balanced",
+            "prune": True,
+            "threshold": 0.65,
+            "reserved": 16_000,
+            "max_tool_output_tokens": 1_000,
+            "max_summary_tokens": 800,
+            "max_events": 50,
+            "keep_recent_messages": 4,
+            "validate": True,
+            "preserve_evidence": True,
+            "inject_context_frame": True,
+        }
+    config_path.write_text(json.dumps(run_config), encoding="utf-8")
 
     # A declared fault is applied to the lane's own copy of the fixture before
     # the prompt is submitted, so the agent meets a deterministic failure at
