@@ -1,6 +1,6 @@
 # Harness Lab Milestone S016 — Closure Status
 
-Status: **active under renewed authorization; cycles 1–16 used, no qualification**
+Status: **active under renewed authorization; cycles 1–17 used, no qualification**
 
 Source implementation plan:
 
@@ -144,3 +144,10 @@ This run did not stop for a CodeGG provider, stream, ACP-event, request-cap, or 
 Attempt 36 used v12 and ran for 845.327 seconds (819.503 active). It admitted 151 provider requests, recorded 146/146 tool start/terminal pairs, zero event gaps, and a 66.757-second maximum activity gap. Free disk bottomed at 230,305,292,288 bytes. The model completed the five original stages, the added v10 robustness checks, all four repair cycles, a 48-test final workspace suite, and the read-only child lifecycle. Its exact priority job was observed running during productive edits and then terminal. It ended normally below 30 minutes; the unchanged hidden verifier returned failure status, and its contents were not inspected. This run does not show a provider, context, event, job-lifecycle, disk, or stall defect. The bounded workload itself is still too short for the required horizon.
 
 Prompt v13 adds one dependent feature stage: a local `catalog-bundle` crate and CLI support for deterministic snapshot bundle creation, verification, and atomic import. This is substantive scoped Rust work and does not change H007's original contract or acceptance. If it still completes below 30 minutes, use the remaining three authorized cycles only for useful workload calibration; do not reopen stable runtime architecture without a reproduction. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-36-summary.json`.
+
+
+## 18. Attempt 37 and priority-job scheduling correction (2026-11-02)
+
+Attempt 37 used prompt v13 and ended normally after 1,079.304 seconds (1,045.124 seconds active), with 196/750 provider requests, 191/191 paired tool events, zero event gaps, and a 96.781-second maximum activity gap. Disk stayed above 212 GiB. The agent completed all six stages and ten repair cycles, but its priority release workspace job completed in 5.64 seconds before the first state observation; no productive edits overlapped it. The horizon gate reports `job_lifecycle_missing`, and the hidden verifier failed; its output was not inspected. This was not a request, provider, event-delivery, context, stall, or disk failure. The prompt placed the job after all implementation and left only two small test edits as possible overlap; the job was over before useful work could start. The active span was still below 30 minutes.
+
+Prompt v14 corrects the sequencing: it places a fresh offline release workspace check after the six existing stages but before a substantive seventh `catalog-delta` feature, begins that feature before the first job poll, and records the exact same job ID through terminal. It also adds deterministic delta creation/verification/atomic-application semantics as a real dependent feature. H007's original acceptance and verifier remain unchanged. Three cycles remain under the existing authorization. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-run-37-summary.json`; receipt SHA-256 `b3104731702f49cfedf5fab54aac8f04cc9edecd04acc4aab66012d1aee1ff61`.
