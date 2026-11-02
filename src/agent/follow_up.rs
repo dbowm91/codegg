@@ -452,7 +452,7 @@ impl AgentLoop {
         request: &mut ChatRequest,
         all_events: &mut Vec<ChatEvent>,
         processor: &mut EventProcessor,
-    ) {
+    ) -> Result<(), crate::error::AppError> {
         let model_profile = crate::model_profile::ModelProfileResolver::new(&self.services.config)
             .resolve(&request.model);
         loop {
@@ -465,11 +465,11 @@ impl AgentLoop {
                 Err(mpsc::error::TryRecvError::Empty) => {
                     // No follow-up queued, return immediately without blocking
                     tracing::debug!("No follow-up queued, skipping drain");
-                    return;
+                    return Ok(());
                 }
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     tracing::info!("Follow-up channel disconnected");
-                    return;
+                    return Ok(());
                 }
             };
 
@@ -485,8 +485,7 @@ impl AgentLoop {
             let mut just_executed_tools = false;
             loop {
                 self.lifecycle.set_phase(TurnPhase::ContextPreparation);
-                self.compact_if_needed(&mut request.messages, &model_profile)
-                    .await;
+                self.compact_if_needed(request, &model_profile).await;
                 // Phase 5: observe in follow-up loop after compaction and before provider call.
                 self.observe_context_pack(
                     request,
@@ -511,8 +510,8 @@ impl AgentLoop {
                     {
                         Ok(events) => events,
                         Err(e) => {
-                            tracing::error!("Follow-up stream error: {}", e);
-                            return;
+                            tracing::error!(error = %e, "Follow-up stream failed");
+                            return Err(e);
                         }
                     };
 
@@ -623,7 +622,7 @@ impl AgentLoop {
                         Err(e) => {
                             tracing::error!("Tool execution error: {}", e);
                             processor.reset();
-                            return;
+                            return Ok(());
                         }
                     },
                 };

@@ -33,6 +33,15 @@
   "provider_cost_usd": 1.280895,
   "provider_request_cap": 750,
   "provider_requests": 435,
+  "provider_failure": {
+    "http_status": 400,
+    "input_tokens_requested": 1049383,
+    "model_context_limit": 1048576,
+    "overflow_tokens": 807,
+    "request_index": 435,
+    "request_body_recorded": false,
+    "error_propagated_to_run_terminal": false
+  },
   "route": "opencode_go/deepseek-v4.1-flash",
   "run_receipt_sha256": "064a9a2768626719cc689f5bac921a427ce1cab87173c463bb9722ee5d0f5237",
   "schema_version": 1,
