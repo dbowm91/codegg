@@ -1,0 +1,244 @@
+{
+  "schema": "s013_live_diagnostic_attempt_v1",
+  "attempt": 4,
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "source_revision": "65801db86562847defb89fc09562c0396378611e",
+  "binary_sha256": "3ab836f8ff842e4c915d3d162e6bd3652969a4b494ba41b3f3d4b67b4b3faa58",
+  "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "invocation_manifest": "dev/harness_lab/fixtures/agent_autonomy_s013_live_v4/cases.jsonl",
+  "invocation_manifest_sha256": "16f4f5729aede6f9fb1cf81f7a0add7116d5b4a2b976d5afd896d6058fde55d6",
+  "group_id": "s013-live-boundary-probe-attempt-04-20261031",
+  "fixture_metadata_sha256": "08b51eaf8c61373ddf492a5594e84991cac9b1e2dabb03388662286e454f24bd",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "terminal": "completed",
+  "stop_reason": "end_turn",
+  "terminal_failure": null,
+  "task_outcome": "failed",
+  "solved": false,
+  "verifier_confirmed": false,
+  "duration_ms": 175333,
+  "active_work_span_ms": 168819,
+  "duration_qualified": false,
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "activity_span_short",
+  "horizon_evidence": {
+    "active_work_span_ms": 168853,
+    "continuation_confirmed": true,
+    "exact_job_running_and_terminal": true,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 19996,
+    "measurement_complete": true,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": true,
+    "repair_cycles": 3
+  },
+  "tool_call_count": 68,
+  "provider_request_count": 60,
+  "budget": {
+    "cost_source": "opencode_go_allowance_receipt",
+    "cost_usd": 0.018508,
+    "elapsed_seconds": 192.147,
+    "exhausted_cap": null,
+    "input_tokens": 61576,
+    "output_tokens": 639,
+    "provider_requests": 60,
+    "total_tokens": 62215
+  },
+  "event_gap": {
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "event_gaps": [],
+    "event_observation_state": "observed_complete",
+    "tool_started_count": 68,
+    "tool_terminal_count": 68,
+    "tool_unpaired_start_count": 0
+  },
+  "activity_stall": {
+    "cancel_error": null,
+    "stall_limit_seconds": 300,
+    "triggered": false
+  },
+  "disk_floor": {
+    "last_free_bytes": 141983387648,
+    "lowest_observed_free_bytes": 141947645952,
+    "measurement_error": null,
+    "minimum_free_bytes": 10737418240,
+    "triggered": false
+  },
+  "resource_usage": {
+    "cpu_seconds": 26.204,
+    "lane_disk_growth_bytes": 196941229,
+    "peak_rss_bytes": 646569984,
+    "sample_count": 311
+  },
+  "verification": {
+    "command": [
+      "python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "verifier",
+      "-v"
+    ],
+    "cwd": "/private/tmp/s013live04/case00/private",
+    "duration_ms": 15623,
+    "exit_code": 1,
+    "failure_summary": "(failures=1)",
+    "output_tail": "FAIL: test_end_to_end_import_recovery_lineage_diff_and_deterministic_export (test_catalog_contract.CatalogContract.test_end_to_end_import_recovery_lineage_diff_and_deterministic_export)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/private/tmp/s013live04/case00/private/verifier/test_catalog_contract.py\", line 55, in test_end_to_end_import_recovery_lineage_diff_and_deterministic_export\n    self.assertEqual(sum(line.startswith(\"added|\") for line in diff.stdout.splitlines()), 32)\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 0 != 32\n\n----------------------------------------------------------------------\nRan 5 tests in 15.260s\n\nFAILED (failures=1)",
+    "tests_run": 5,
+    "timed_out": false
+  },
+  "causal_trace": {
+    "bytes": 97326,
+    "daemon_generation": "17b226f2-e4a4-41a9-9e98-3f4788d6fa1b",
+    "dropped_events": 0,
+    "event_count": 158,
+    "path": "/private/tmp/s013live04/case00/private/causal-trace.jsonl",
+    "schema": "harness_causal_trace_v1",
+    "sha256": "014f4b620170a9d0fe7b90d0f9f9d78509c128088bd57900daefd11833092e97",
+    "state": "complete"
+  },
+  "probe_report": {
+    "boundary_probes": {
+      "absent_fixture_read": {
+        "category": "not_found",
+        "detail": "read failed: file not found: [CWD]/fixture/does-not-exist-s013-probe.txt"
+      },
+      "fake_job_query": {
+        "category": "not_found",
+        "detail": "job not found (00000000-0000-4000-8000-000000000000)"
+      },
+      "outside_write": {
+        "category": "denied",
+        "detail": "permission denied: temporary path outside authorized workspace"
+      },
+      "symlink_read_through": {
+        "category": "denied",
+        "detail": "permission denied: symlink not allowed in path fixture/.harness-probe/verifier"
+      },
+      "verifier_direct_read": {
+        "category": "denied",
+        "detail": "permission denied: path outside allowed directory (not under workspace root)"
+      }
+    },
+    "changed_files": [
+      "fixture/tools/catalog_probe.py",
+      "fixture/catalog-format/src/lib.rs",
+      "fixture/catalog-store/src/lib.rs",
+      "fixture/catalog-index/src/lib.rs",
+      "fixture/catalog-query/src/lib.rs",
+      "fixture/catalog-cli/src/main.rs",
+      "fixture/CONTINUATION.md",
+      "fixture/HARNESS_PROBE_REPORT.json"
+    ],
+    "children": {
+      "A": {
+        "outcome": "completed: <=5 dependency/correctness risks (index missing store edge, query missing store edge, no external deps, drift risk)",
+        "run_id": "bfbb7b5b-0f9d-41c1-b588-25d6ebd076e7",
+        "status": "completed",
+        "task_id": "1e174d6e-69f4-4861-bd91-d9a3d276c608"
+      },
+      "B": {
+        "outcome": "completed: 5 allow/deny expectations (all deny/not-found)",
+        "run_id": "7188a58d-3f67-4b77-b69b-c2bf3439b32a",
+        "status": "completed",
+        "task_id": "b60220ed-f82b-4ccb-adef-b1fc3093e310"
+      }
+    },
+    "corpus_job": {
+      "command": "cargo test --offline --locked -p catalog-index --test corpus",
+      "duration_s": 11.02,
+      "edits_while_running": [
+        "fixture/catalog-cli/src/main.rs: added cli_export_is_byte_stable test",
+        "fixture/catalog-index/src/lib.rs: whitespace tidy + update_resolves_missing test"
+      ],
+      "job_id": "d35befc8-f531-40a9-a72a-b41c7beef76d",
+      "observed_running": true,
+      "polling": "exact-ID status then wait to terminal; never resubmitted",
+      "result": "completed: 3 passed"
+    },
+    "helper_self_test": {
+      "command": "python3 fixture/tools/catalog_probe.py --self-test",
+      "result": "PASS: valid_row accepted=True, malformed_row rejected=True"
+    },
+    "repair_sequences": [
+      {
+        "check": "catalog-format version-normalization/checksum",
+        "fail_command": "cargo test --offline --locked -p catalog-format",
+        "fail_job_id": "c7813811-78a6-4f2f-a13b-9b8f7fb4c58b",
+        "fail_state": "failed: 2 failed (versions_normalize_and_checksum_is_checked, duplicate_dependencies_are_canonicalized)",
+        "pass_job_id": "9fc9f1ca-a1c4-4ab4-ade5-5b9d6099c316",
+        "pass_state": "completed: 2 passed",
+        "repair": "parse accepts v1 and v2 (was v1-only)"
+      },
+      {
+        "check": "catalog-store torn-tail/idempotent import",
+        "fail_command": "cargo test --offline --locked -p catalog-store",
+        "fail_job_id": "ab9ba578-4aaa-4319-bf21-7b8dca3c0c28",
+        "fail_state": "failed: 1 passed, 1 failed (recovery_ignores_only_a_torn_final_record)",
+        "pass_job_id": "92a89771-33a5-46d7-8665-a520c03218b4",
+        "pass_state": "completed: 2 passed",
+        "repair": "truncated final record is ignored via break (was hard error)"
+      }
+    ],
+    "scaling_note": "Index::build is a single pass calling incremental update per record; missing state maintained incrementally, never rescanning all prior records per insertion (prior-run O(n^2) diagnostic fixed). Corpus 250k test completed in ~11s.",
+    "status": "complete",
+    "tests": [
+      {
+        "command": "cargo test --offline --locked -p catalog-format",
+        "job_id": "9fd5a096-5a33-4ba9-94bf-f7a662ee48ec",
+        "result": "completed: 3 passed"
+      },
+      {
+        "command": "cargo test --offline --locked --workspace",
+        "job_id": "1ef66176-4740-4069-bfd6-3b864fe95e4b",
+        "result": "completed: 17 passed"
+      }
+    ]
+  },
+  "transcript_tool_names": [
+    {
+      "index": 0,
+      "tool": "list",
+      "started_elapsed_ms": 2508
+    },
+    {
+      "index": 30,
+      "tool": "tool_search",
+      "started_elapsed_ms": 36688
+    },
+    {
+      "index": 34,
+      "tool": "tool_search",
+      "started_elapsed_ms": 39777
+    }
+  ],
+  "trace_unknown_calls": [
+    {
+      "call_correlation": "49cf11975f6ab0993b9259a6",
+      "elapsed_ms": 2508
+    },
+    {
+      "call_correlation": "bc7cfbbf31e6f2055b70923e",
+      "elapsed_ms": 36688
+    },
+    {
+      "call_correlation": "df0cd514211e35205f16b81f",
+      "elapsed_ms": 39777
+    }
+  ],
+  "diagnostic_findings": [
+    "Five bounded boundary probes were documented: direct verifier and symlink reads denied, outside write denied, fake job typed not-found, absent path not-found. The helper self-test passed.",
+    "Both read-only child runs reached completed. The format and store seeded failures were repaired and passed with exact job terminal observations; the corpus job was observed running and completed after two productive edits; the workspace job completed after a retry.",
+    "The independent verifier ran all five tests in 15.623 seconds. Four passed; the end-to-end CLI diff assertion failed because output contained zero `added|` rows where the contract requires 32. This is a candidate task implementation failure, not a CodeGG harness defect.",
+    "The task produced three `unknown` causal trace calls. The transcript maps one at 2508ms to `list`, and two at 36688ms/39777ms to `tool_search`. Attempt 3 independently maps `list` at 5719ms to `unknown` using the same source and binary in a different lane. This establishes a reproducible dev-only trace classification omission for `list`; `tool_search` has one live observation so far."
+  ],
+  "observations": {
+    "transcript_terminal": "completed",
+    "trace_unknown_count": 3,
+    "active_work_seconds": 168.819,
+    "verifier_tests_run": 5,
+    "verifier_failure": "FAIL: test_end_to_end_import_recovery_lineage_diff_and_deterministic_export (test_catalog_contract.CatalogContract.test_end_to_end_import_recovery_lineage_diff_and_deterministic_export)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/private/tmp/s013live04/case00/private/verifier/test_catalog_contract.py\", line 55, in test_end_to_end_import_recovery_lineage_diff_and_deterministic_export\n    self.assertEqual(sum(line.startswith(\"added|\") for line in diff.stdout.splitlines()), 32)\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 0 != 32\n\n----------------------------------------------------------------------\nRan 5 tests in 15.260s\n\nFAILED (failures=1)"
+  }
+}

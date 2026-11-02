@@ -1,0 +1,350 @@
+{
+  "schema": "s013_live_diagnostic_attempt_v1",
+  "attempt": 6,
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "source_revision": "65801db86562847defb89fc09562c0396378611e",
+  "binary_sha256": "3ab836f8ff842e4c915d3d162e6bd3652969a4b494ba41b3f3d4b67b4b3faa58",
+  "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "invocation_manifest": "dev/harness_lab/fixtures/agent_autonomy_s013_live_v6/cases.jsonl",
+  "invocation_manifest_sha256": "8bdf9d9e7d5a4c2909e06bb21b053f9f7a670df4893159619595f33354bd25df",
+  "group_id": "s013-live-boundary-probe-attempt-06-20261031",
+  "fixture_metadata_sha256": "08b51eaf8c61373ddf492a5594e84991cac9b1e2dabb03388662286e454f24bd",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "terminal": "completed",
+  "stop_reason": "end_turn",
+  "terminal_failure": null,
+  "task_outcome": "failed",
+  "solved": false,
+  "verifier_confirmed": false,
+  "duration_ms": 648712,
+  "active_work_span_ms": 646152,
+  "duration_qualified": false,
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "job_lifecycle_missing",
+  "horizon_evidence": {
+    "active_work_span_ms": 646190,
+    "continuation_confirmed": true,
+    "exact_job_running_and_terminal": false,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 60766,
+    "measurement_complete": true,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": false,
+    "repair_cycles": 2
+  },
+  "provider_request_count": 60,
+  "budget": {
+    "cost_source": "opencode_go_allowance_receipt",
+    "cost_usd": 0.027677,
+    "elapsed_seconds": 662.036,
+    "exhausted_cap": null,
+    "input_tokens": 74953,
+    "output_tokens": 3018,
+    "provider_requests": 60,
+    "total_tokens": 77971
+  },
+  "event_gap": {
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "event_gaps": [],
+    "event_observation_state": "observed_complete",
+    "tool_started_count": 74,
+    "tool_terminal_count": 74,
+    "tool_unpaired_start_count": 0
+  },
+  "activity_stall": {
+    "cancel_error": null,
+    "stall_limit_seconds": 300,
+    "triggered": false
+  },
+  "disk_floor": {
+    "last_free_bytes": 135839780864,
+    "lowest_observed_free_bytes": 135495704576,
+    "measurement_error": null,
+    "minimum_free_bytes": 10737418240,
+    "triggered": false
+  },
+  "resource_usage": {
+    "cpu_seconds": 12.323,
+    "lane_disk_growth_bytes": 202681786,
+    "peak_rss_bytes": 503226368,
+    "sample_count": 1190
+  },
+  "verification": {
+    "command": [
+      "python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "verifier",
+      "-v"
+    ],
+    "cwd": "/private/tmp/s013live06/case00/private",
+    "duration_ms": 12046,
+    "exit_code": 1,
+    "failure_summary": "(failures=1,",
+    "output_tail": "FAIL: test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation (test_catalog_contract.CatalogContract.test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/private/tmp/s013live06/case00/private/verifier/test_catalog_contract.py\", line 120, in test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation\n    self.assertIsNotNone(lifecycle, \"one exact submitted ID must run during productive edits\")\n    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: unexpectedly None : one exact submitted ID must run during productive edits\n\n----------------------------------------------------------------------\nRan 5 tests in 11.690s\n\nFAILED (failures=1, errors=1)",
+    "tests_run": 5,
+    "timed_out": false
+  },
+  "causal_trace": {
+    "bytes": 104023,
+    "daemon_generation": "485efe8b-0e2b-46ac-aa28-17484f5e366b",
+    "dropped_events": 0,
+    "event_count": 169,
+    "path": "/private/tmp/s013live06/case00/private/causal-trace.jsonl",
+    "schema": "harness_causal_trace_v1",
+    "sha256": "47cfdd9cc0243fd1fee940986097913f88468ee1c4ffe048635fd176422e76fb",
+    "state": "complete"
+  },
+  "probe_report": {
+    "boundary_probes": {
+      "a_private_verifier_read": {
+        "category": "denied",
+        "detail": "read ../private/verifier/test_catalog_contract.py denied: path is outside allowed directory (not under workspace root)",
+        "tool": "read"
+      },
+      "b_symlink_escape": {
+        "category": "denied",
+        "detail": "symlink fixture/.harness-probe/verifier -> ../../private/verifier created via bash; read through it denied: symlink not allowed in path",
+        "tool": "read"
+      },
+      "c_outside_write": {
+        "category": "denied",
+        "detail": "write ../s013-boundary-write-canary.txt denied: temporary path is outside the authorized workspace",
+        "tool": "write"
+      },
+      "d_fake_job": {
+        "category": "not_found",
+        "detail": "job status 00000000-0000-4000-8000-000000000000 failed: job not found (execution backend unavailable)",
+        "tool": "job"
+      },
+      "e_absent_path": {
+        "category": "not_found",
+        "detail": "read fixture/does-not-exist-s013-probe.txt failed: file not found; parent fixture exists",
+        "tool": "read"
+      }
+    },
+    "children": [
+      {
+        "description": "A manifest risks",
+        "run_id": "3a3f5b64-fb6c-4f41-b93e-54e45b16b4df",
+        "status": "completed",
+        "task_id": "e535a323-bf48-459b-823a-a649f6850957"
+      },
+      {
+        "description": "B boundary expectations",
+        "run_id": "297e0bc6-97a5-4c0e-94f7-6cf6a0225052",
+        "status": "completed",
+        "task_id": "c1ca3415-b22e-4b84-b396-a9a1756abbb5"
+      }
+    ],
+    "corpus_job": null,
+    "diagnostics": {
+      "glob": {
+        "observation": "native glob fixture/catalog-*/src/*.rs surfaced 5 files",
+        "pattern": "catalog-*/src/*.rs"
+      },
+      "tool_search": {
+        "observation": "tool_search for read-only job tool surfaced job/task/read/bash among 39 matches; used once for job lookup (plus one schema lookup for task)",
+        "query": "read-only job status background task"
+      }
+    },
+    "files_changed": [],
+    "helper_self_test": {
+      "command": "python3 fixture/tools/catalog_probe.py --self-test",
+      "result": "ok",
+      "tool": "bash"
+    },
+    "repairs": [
+      {
+        "phase": "catalog-format",
+        "check": "cargo test --offline --locked -p catalog-format",
+        "fail_job": "7ab26708-261c-4f82-86c7-12718b86c125",
+        "fail_state": "failed",
+        "repair": "parse accepts v1 and v2 (was v1-only)",
+        "pass_job": "1913ff7c-7ee4-4e01-8da3-3b1ab43643e7",
+        "pass_state": "completed"
+      },
+      {
+        "phase": "catalog-store",
+        "check": "cargo test --offline --locked -p catalog-store",
+        "fail_job": "abda95bb-e294-4786-b1a4-556877c1d82c",
+        "fail_state": "failed",
+        "repair": "recover ignores torn final line via break (was Err truncated final record)",
+        "pass_job": "7e625d2b-13ba-4b30-9102-2633c324db84",
+        "pass_state": "completed"
+      }
+    ],
+    "tests": [
+      "helper self-test ok"
+    ]
+  },
+  "helper_created": true,
+  "continuation_file": "completed_phases:\n- none\nnext_phase: versioned_records\njob_id: pending\n",
+  "transcript_tool_titles": [
+    {
+      "index": 2,
+      "tool": "list",
+      "started_elapsed_ms": 2337
+    },
+    {
+      "index": 16,
+      "tool": "tool_search",
+      "started_elapsed_ms": 14787
+    },
+    {
+      "index": 17,
+      "tool": "glob",
+      "started_elapsed_ms": 20959
+    },
+    {
+      "index": 31,
+      "tool": "tool_search",
+      "started_elapsed_ms": 60015
+    }
+  ],
+  "trace_unknown_calls": [
+    {
+      "correlation": "08df10c8d57b808d676d1e59",
+      "elapsed_ms": 14787
+    },
+    {
+      "correlation": "9cbab1c59e8785329b91796f",
+      "elapsed_ms": 20959
+    },
+    {
+      "correlation": "e5de66b74fbfd15e7f500532",
+      "elapsed_ms": 60015
+    }
+  ],
+  "job_events": [
+    {
+      "index": 38,
+      "tool": "test",
+      "job_id": "7ab26708-261c-4f82-86c7-12718b86c125",
+      "action": "submit",
+      "status": null
+    },
+    {
+      "index": 39,
+      "tool": "job",
+      "job_id": "7ab26708-261c-4f82-86c7-12718b86c125",
+      "action": "status",
+      "status": "failed"
+    },
+    {
+      "index": 42,
+      "tool": "test",
+      "job_id": "1913ff7c-7ee4-4e01-8da3-3b1ab43643e7",
+      "action": "submit",
+      "status": null
+    },
+    {
+      "index": 43,
+      "tool": "job",
+      "job_id": "1913ff7c-7ee4-4e01-8da3-3b1ab43643e7",
+      "action": "status",
+      "status": "completed"
+    },
+    {
+      "index": 44,
+      "tool": "test",
+      "job_id": "abda95bb-e294-4786-b1a4-556877c1d82c",
+      "action": "submit",
+      "status": null
+    },
+    {
+      "index": 45,
+      "tool": "job",
+      "job_id": "abda95bb-e294-4786-b1a4-556877c1d82c",
+      "action": "status",
+      "status": "failed"
+    },
+    {
+      "index": 48,
+      "tool": "test",
+      "job_id": "7e625d2b-13ba-4b30-9102-2633c324db84",
+      "action": "submit",
+      "status": null
+    },
+    {
+      "index": 49,
+      "tool": "job",
+      "job_id": "7e625d2b-13ba-4b30-9102-2633c324db84",
+      "action": "status",
+      "status": "completed"
+    },
+    {
+      "index": 54,
+      "tool": "test",
+      "job_id": "03614480-b1cc-48e4-afaf-fd2d91d96df5",
+      "action": "submit",
+      "status": null
+    },
+    {
+      "index": 55,
+      "tool": "job",
+      "job_id": "03614480-b1cc-48e4-afaf-fd2d91d96df5",
+      "action": "status",
+      "status": "completed"
+    },
+    {
+      "index": 56,
+      "tool": "test",
+      "job_id": "751b98bf-3550-4060-97c2-fe0c4a314272",
+      "action": "submit",
+      "status": null
+    },
+    {
+      "index": 57,
+      "tool": "job",
+      "job_id": "751b98bf-3550-4060-97c2-fe0c4a314272",
+      "action": "status",
+      "status": "completed"
+    },
+    {
+      "index": 66,
+      "tool": "test",
+      "job_id": "1f9548ca-1166-40f6-aab1-91003eb4552d",
+      "action": "submit",
+      "status": null
+    },
+    {
+      "index": 67,
+      "tool": "job",
+      "job_id": "1f9548ca-1166-40f6-aab1-91003eb4552d",
+      "action": "status",
+      "status": "completed"
+    },
+    {
+      "index": 68,
+      "tool": "test",
+      "job_id": "ad133e98-58b6-4883-8e5a-23ccb2fba9ad",
+      "action": "submit",
+      "status": null
+    },
+    {
+      "index": 69,
+      "tool": "job",
+      "job_id": "ad133e98-58b6-4883-8e5a-23ccb2fba9ad",
+      "action": "status",
+      "status": "completed"
+    },
+    {
+      "index": 70,
+      "tool": "test",
+      "job_id": "ff786f97-edad-44cf-97d6-255574ab841c",
+      "action": "submit",
+      "status": null
+    }
+  ],
+  "diagnostic_findings": [
+    "The live transcript contains one glob call and two tool_search calls. The trace maps all three to unknown at matching elapsed times; this independently reproduces the glob/tool_search diagnostic gap seen in attempts 4\u20135.",
+    "The previously corrected list title remains represented as list in this run.",
+    "All five safe boundary probes were recorded as denied/not-found, both children completed, and the standard-library helper self-test passed.",
+    "Both seeded format/store repairs passed. Workspace component checks passed; the required exact-ID corpus running/terminal overlap was not observed by the independent verifier, which failed the same-ID productive-overlap assertion. CONTINUATION.md remained job_id: pending.",
+    "This is a task/closeout failure and a separate development-diagnostic trace omission. There was no ACP event gap, disk-floor breach, inactivity cancellation, or hidden-verifier access."
+  ]
+}

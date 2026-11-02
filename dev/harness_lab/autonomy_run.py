@@ -39,11 +39,12 @@ import shutil
 import subprocess
 import threading
 import time
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Optional
 
-from . import autonomy, budget, event_observation, faults, h007_results, scoring, supervisor
+from . import autonomy, budget, causal_trace, event_observation, faults, h007_results, scoring, supervisor
 
 from .autonomy import AutonomyCase, AutonomySuite, verify_isolation
 from .pilot import _prepare_lane_home, opencode_go_credential
@@ -345,6 +346,17 @@ def _directory_size_bytes(root: Path) -> int:
             except OSError:
                 continue
     return total
+
+
+def _nearest_existing_directory(path: Path) -> Path:
+    """Find an existing directory for a disk-usage probe of a not-yet-created lane."""
+    candidate = path
+    while not candidate.is_dir():
+        parent = candidate.parent
+        if parent == candidate:
+            return candidate
+        candidate = parent
+    return candidate
 
 
 _JOB_ID_PATTERN = re.compile(r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b", re.I)
@@ -952,7 +964,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
                                + json.dumps(admission.as_dict(), sort_keys=True))
         guard = budget.SpendGuard(budget_policy)
     lane_root = lane_root.resolve()
-    disk_probe = lane_root if lane_root.exists() else lane_root.parent
+    disk_probe = _nearest_existing_directory(lane_root)
     try:
         initial_free_bytes = shutil.disk_usage(disk_probe).free
     except OSError as error:
@@ -1028,6 +1040,10 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         f"autonomy-{case.case_id}", binary, agent_root, lane_root, repository,
         provider_request_limit=provider_request_limit,
     )
+    trace_recorder = causal_trace.Recorder(
+        private_root / "causal-trace.jsonl", run_id=uuid.uuid4().hex,
+        case_id=case.case_id, source_sha256=spec.revision,
+        binary_sha256=spec.binary_sha256)
     env = spec.environment()
     env.pop("CODEGG_HARNESS_DISABLE_PLACEMENT_ADVISOR", None)
     if disable_placement_advisor:
@@ -1077,6 +1093,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
                                f"honour: {error}") from error
 
     client = AcpClient(binary, env, agent_root, timeout, profile)
+    client.notification_observer = trace_recorder.observe
     started = time.monotonic()
     terminal = "failed"
     stop_reason: Optional[str] = None
@@ -1100,6 +1117,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         session_id = opened.get("sessionId")
         if not isinstance(session_id, str) or not session_id:
             raise HarnessError("ACP did not return a session id for the autonomy case")
+        trace_recorder.bind_daemon_generation(supervisor._metadata(spec, timeout).get("generation"))
         resource_sampler = _ProcessTreeSampler(client.process.pid)
         policy_receipt = opened.get("codeggPolicy")
         if case.case_id in {H006_CASE_ID, H007_CASE_ID}:
@@ -1136,6 +1154,8 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     except HarnessTurnFailure as error:
         failure = {"kind": type(error).__name__, "category": error.category,
                    "usage_reason": error.usage_unavailable_reason}
+        if error.category == "provider_timeout":
+            trace_recorder.record("provider_timeout")
         # A cancelled turn is a terminal of its own, not a generic failure.
         terminal = "cancelled" if error.category == "cancelled" else "failed"
     except HarnessTimeout as error:
@@ -1153,6 +1173,10 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
             event_observer_drained = True
         except (HarnessError, OSError, subprocess.SubprocessError):
             pass
+        if terminal == "cancelled":
+            cause = "disk_floor" if disk_watcher is not None and disk_watcher.triggered else \
+                "activity_stall" if stall_watcher is not None and stall_watcher.triggered else "user"
+            trace_recorder.record("cancel_requested", detail=cause)
         if infrastructure_watcher is not None:
             infrastructure_watcher.stop()
         if applied_fault is not None:
@@ -1177,6 +1201,8 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
             "cancel_error": infrastructure_watcher.cancel_error,
         }
     tool_calls = _observed_tool_calls(client)
+    if _h007_continuation_confirmed(tool_calls):
+        trace_recorder.record("continuation", elapsed_ms=duration_ms)
     observation_receipt = event_observation.observe_notifications(
         client.notifications, drained=event_observer_drained
     )
@@ -1223,8 +1249,13 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     verifier_env[TRANSCRIPT_ENV] = str(transcript_path)
     verifier_timeout = _verifier_timeout(
         case.case_id, timeout, guard.remaining_wallclock_seconds())
+    trace_recorder.record("verifier_started", elapsed_ms=duration_ms)
     verification = _run_verifier(list(case.verifier["command"]), private_root,
                                  verifier_env, verifier_timeout)
+    trace_recorder.record("verifier_terminal", elapsed_ms=verification.get("duration_ms"),
+                          detail=("passed" if verification.get("exit_code") == 0 else
+                                  "failed" if isinstance(verification.get("exit_code"), int) else "unknown"))
+    trace_receipt = trace_recorder.finish()
 
     raw_usage = result.get("codeggUsage") if isinstance(result, dict) else None
     usage = None
@@ -1356,6 +1387,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         "repeated_identical_failure": _repeated_identical_failure(tool_calls),
         "fault": fault_receipt,
         "event_gap": observation_receipt,
+        "causal_trace": trace_receipt,
         "attempt_id": f"{case.case_id}:0",
         "measurement_failures": observation_receipt["event_gap_count"],
         "measurement_retry_state": (

@@ -1,6 +1,6 @@
 # Harness Lab — Autonomous Self-Improvement Resumption Roadmap
 
-Status: **S001–S009 have closure records; S005/S008 offline fault matrix complete, `stable_offline` not established**. S001/S002/S004/S007/S009 closed; S003 closed as `no_reproducible_defect`; S005/S008 close their named offline matrix with a synthetic optimizer qualification boundary; S006 is `stable_live_not_established`. No provider-backed campaign was authorized or run for S007–S009.
+Status: **S001–S013 closed at their recorded scopes; `stable_offline` established; `stable_live_not_established`; S014 blocked**. S001/S002/S004/S007/S009 retain their historical dispositions; S003 and the original S011 intake found no eligible defect in the cases they tested. S013 then consumed its separate 20-run authorization, discovered and corrected a delegated usage-attribution persistence defect, and closed as an observed diagnostic/corrective cycle. It did not qualify the sustained horizon or establish `stable_live_evidenced`. S014 remains blocked pending a different independently reproduced defect and fresh authorization.
 
 Reviewed baseline: `main@99cecc050ed1ae418af62d2d10e6d34d791513e1` (2026-10-30), merge commit for H007 PR #217. All seven H007 receipts are on main. Recheck source and exact resulting-mainline CI at implementation; PR #219 is the active planning handoff, not implementation evidence.
 
@@ -106,3 +106,49 @@ Primary risks: H007's summarized receipts are insufficient for causal attributio
 If attribution reveals no reproducible CodeGG defect, S001/S004 do not invent one. S002/S005 can still establish instrument integrity; S003 may close as a correctly refused/no-defect campaign but **cannot** report an accepted real improvement. S006 must keep the live-stability verdict conditional until multiple distinct genuine current fixes are independently evidenced. If extending runtime, tool policy or provider interface becomes necessary, stop and open a narrow finding in that owning subsystem; do not expand this roadmap speculatively.
 
 Closure records belong to `plans/closure/harness-lab-self-improvement-resumption/001-status.md` through `006-status.md`, with implementation SHA, passing/failing tests, immutable evidence IDs, negative cases, explicit budget truth and residual severity. Register each milestone status only after evidence is gathered. No canonical long-term files or accepted ADRs are changed.
+
+## 8. Successor qualification milestones S010–S014 (registered 2026-10-30)
+
+S001–S009 historical closures and their immutable receipts remain in force; this section registers **new handoffs rather than rewriting old results**. S005/S008 retain their historical conditional closure labels, and S006's historical live disposition remains `stable_live_not_established`. The later S010/S011 evidence now satisfies the offline operational-readiness standard in S006; it does not create live-model authorization or imply that an eligible current defect exists. The user wants stable autonomous **harness self-improvement**, not a 30-minute gating condition, a public release or an additional provider integration.
+
+### 8.1 Dependency graph
+
+```text
+S002 + S005/S007/S008 (closed, offline evidence)
+                    |
+                    v
+S010 — real optimizer + paired native ACP offline test (ready)
+                    |                                  S001/H007 (closed)
+S004 + S009 (closed) |                                        |
+          |          |                                        v
+          v          |                              S012 — causal trace (ready)
+S011 — trusted real-defect intake (ready)                    |
+          |          |                                        |
+          +----------+----------------------------------------+
+                                 |
+                                 v
+              S013 — live diagnostic campaign
+                     + independent defect intake if an issue is observed
+                                 |
+                                 v
+              S014 — second independent eligible real defect
+                     + fresh authorization + rejected control
+```
+
+S010, S011 and S012 have completed their offline implementations and evidence. S010's integrated native-trial SIGKILL/restart gate passed, so the offline operational-readiness criteria are now met; the original S011 fixed-source intake found zero eligible current defects; S012 provides the causal trace and attribution report. The S013 preflight at `f86020a8b` did not run a live model and was not evidence that emergent live defects were absent. The subsequently authorized S013 campaign consumed 20 Muse Spark 1.3 attempts through CodeGG's existing `opencode_go` adapter. It closed with complete receipts and one narrow live-confirmed usage-attribution corrective; the closure records that a separate S011 dossier command was not run before the patch. S013 did not qualify the 30-minute horizon. S014 remains blocked on a different defect, its independent repeatability and corrective cycle, a rejected/no-defect control, and fresh authorization. No external proposer route, credential disclosure, automated source promotion or work outside private lanes is authorized here.
+
+| Milestone | Primary class | Status | Evidence to close |
+|---|---|---|---|
+| **S010 — Integrated native offline optimizer** | invariant | **closed offline** | Two complete actual paired `run_optimizer` campaigns, prolonged resource pressure, and the resumed native ACP trial after an observed SIGKILL passed. See `plans/closure/harness-lab-self-improvement-resumption/010-status.md` and its crash/recovery receipt. |
+| **S011 — Current real-defect intake authority** | infrastructure | **closed offline** | Two private native current-source reproductions and fresh dossier validation passed; `eligible_real_defects=0`, and synthetic/historical inputs remain ineligible. See `011-status.md`. |
+| **S012 — Redacted causal trace** | infrastructure | **closed offline** | Fresh 67-event native ACP trace passed boundedness, correlation, repair, continuation, and attribution checks; see `012-status.md`. |
+| **S013 — First authorized causal campaign** | capability | **closed — observed diagnostic/corrective cycle; sustained horizon not qualified** | Twenty bounded native Muse Spark 1.3 attempts were receipted; two live lanes reproduced the delegated usage-attribution FK defect, the narrow correction passed a focused ARM64 unit test, and a patched live run confirmed attribution. Full handoff and the S011 process deviation are recorded in `013-status.md`. No 30-minute qualification or `stable_live_evidenced` claim. |
+| **S014 — Independent live repeatability** | capability | **blocked** | Two **new** accepted, distinct real current-defect campaigns plus correctly rejected/no-defect control; complete receipts and manual review; limited `stable_live_evidenced` label only if actually met |
+
+Plan handoffs: `plans/implementation/harness-lab-self-improvement-resumption/010-*.md` through `014-*.md`. Closure records: `plans/closure/harness-lab-self-improvement-resumption/010-status.md` through `014-status.md` **only after execution**, never created as fake closures by the planning branch.
+
+### 8.2 Promotion standards, out-of-scope and risk
+
+`stable_offline` is established from the S005/S008 matrix, S010's composed paired native campaign/crash-restart/prolonged-pressure evidence, and S011's trusted current-source intake/refusal gates. This label is offline operational readiness, not a measured real-model improvement rate. `stable_live_evidenced` remains unestablished: it requires two independently accepted **genuine current** CodeGG fixes and a rejection/no-defect control as defined in S006, S013 and S014. The candidate does not merge or push itself. For this S013 diagnostic, the provider-request ceiling is enforced at the CodeGG `opencode_go` subject boundary. Preserve unknown cost/usage, exact source/binary identities, explicit Deny, default daemon isolation and full test/verifier integrity.
+
+H007's 30-minute sustained horizon remains **independent** in `plans/subsystems/harness-lab-mainline-and-long-horizon-qualification-addendum.md`; S013 uses its realistic dependent Rust task as a live diagnostic surface without changing the task/horizon scoring distinction. Keep a single CodeGG `opencode_go` adapter; upstream route choice is a separately approved experiment, not integration of multiple CodeGG providers. No new VM requirement, new scheduler, Rust rewrite, remote resource scheduler, always-on autonomous service or automatic Git promotion. Risk: native Rust builds and parallel lanes exhaust disk/CPU, and incomplete causal data can misattribute task/model failure to CodeGG; stop or close conditionally rather than weakening guards.

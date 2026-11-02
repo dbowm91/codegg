@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -93,6 +94,20 @@ def _parser() -> argparse.ArgumentParser:
     _add_budget_arguments(evaluate)
     report = commands.add_parser("report", help="summarize a frozen ledger without provider calls")
     report.add_argument("--ledger", type=Path, required=True)
+    attribution = commands.add_parser("attribution", help="classify one bounded causal trace without provider calls")
+    attribution.add_argument("--trace", type=Path, required=True)
+    attribution.add_argument("--receipt", type=Path, required=True)
+    intake = commands.add_parser("intake", help="trusted offline current-defect intake")
+    intake_commands = intake.add_subparsers(dest="intake_action", required=True)
+    intake_reproduce = intake_commands.add_parser("reproduce", help="run the allowlisted native test in two private lanes")
+    intake_reproduce.add_argument("--repository", type=Path, default=Path.cwd())
+    intake_reproduce.add_argument("--defect-id", required=True)
+    intake_reproduce.add_argument("--output", type=Path, required=True)
+    intake_validate = intake_commands.add_parser("validate", help="rerun trusted reproduction and validate a dossier")
+    intake_validate.add_argument("--repository", type=Path, default=Path.cwd())
+    intake_validate.add_argument("--dossier", type=Path, required=True)
+    intake_report = intake_commands.add_parser("report", help="render a compact stored dossier report")
+    intake_report.add_argument("--dossier", type=Path, required=True)
     replay = commands.add_parser("replay", help="re-run a deterministic verifier from captured artifacts")
     replay.add_argument("--ledger", type=Path, required=True)
     replay.add_argument("--run-id", required=True)
@@ -271,6 +286,63 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "report":
             print(json.dumps(ledger.report(args.ledger), sort_keys=True))
+            return 0
+        if args.command == "attribution":
+            from . import causal_trace
+            rows = causal_trace.read_trace(args.trace)
+            receipt = json.loads(args.receipt.read_text(encoding="utf-8"))
+            if not isinstance(receipt, dict):
+                raise HarnessError("causal attribution receipt must be a JSON object")
+            trace_identity = {(row.get("run_id"), row.get("case_id"), row.get("source_sha256"),
+                               row.get("binary_sha256")) for row in rows}
+            if len(trace_identity) > 1:
+                raise HarnessError("causal trace mixes run or subject identities")
+            if not rows:
+                raise HarnessError("causal trace is empty")
+            _run_id, case_id, source_sha, binary_sha = next(iter(trace_identity))
+            receipt_case = receipt.get("case_id", receipt.get("task_id"))
+            manifest = receipt.get("ledger_manifest")
+            manifest_subject = manifest.get("subject") if isinstance(manifest, dict) else None
+            receipt_source = receipt.get("source_revision")
+            if receipt_source is None and isinstance(manifest_subject, dict):
+                receipt_source = manifest_subject.get("revision")
+            receipt_binary = receipt.get("binary_sha256")
+            if receipt_binary is None and receipt.get("task_id") is not None:
+                # The deterministic supervisor's legacy field is named
+                # source_sha256 but carries the executable digest.
+                receipt_binary = receipt.get("source_sha256")
+            if receipt_case != case_id:
+                raise HarnessError("causal trace case identity does not match its receipt")
+            if receipt_source is not None and receipt_source != source_sha:
+                raise HarnessError("causal trace source identity does not match its receipt")
+            if receipt_binary is not None and receipt_binary != binary_sha:
+                raise HarnessError("causal trace binary identity does not match its receipt")
+            trace_receipt = receipt.get("causal_trace")
+            if isinstance(trace_receipt, dict):
+                digest = hashlib.sha256(args.trace.read_bytes()).hexdigest()
+                if trace_receipt.get("sha256") != digest:
+                    raise HarnessError("causal trace bytes do not match the receipt digest")
+            print(json.dumps(causal_trace.attribution_report(rows, receipt), sort_keys=True))
+            return 0
+        if args.command == "intake":
+            from . import current_defect_intake
+            if args.intake_action == "reproduce":
+                dossier = current_defect_intake.reproduce_current_defect(
+                    args.repository, defect_id=args.defect_id)
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(json.dumps(dossier, sort_keys=True, indent=2) + "\n",
+                                       encoding="utf-8")
+                print(json.dumps(current_defect_intake.report_dossier(dossier), sort_keys=True))
+                return 0
+            dossier = json.loads(args.dossier.read_text(encoding="utf-8"))
+            if not isinstance(dossier, dict):
+                raise HarnessError("current-defect dossier must be a JSON object")
+            if args.intake_action == "report":
+                report = current_defect_intake.report_dossier(dossier)
+            else:
+                report = current_defect_intake.validate_dossier(
+                    args.repository, dossier)
+            print(json.dumps(report, sort_keys=True))
             return 0
         if args.command == "replay":
             print(json.dumps(ledger.replay(args.ledger, args.run_id), sort_keys=True))

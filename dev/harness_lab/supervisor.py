@@ -256,7 +256,9 @@ class AcpClient:
             command.extend(["--approval-mode", "yolo", "--sandbox", unattended_profile])
         self.process = subprocess.Popen(
             command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, cwd=cwd, env=env, start_new_session=(os.name == "posix"),
+            stderr=subprocess.PIPE, cwd=cwd, env=env,
+            start_new_session=(os.name == "posix"
+                               and env.get("CODEGG_HARNESS_INHERIT_PROCESS_GROUP") != "1"),
         )
         assert self.process.stdin and self.process.stdout
         self._selector = selectors.DefaultSelector()
@@ -879,7 +881,9 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                    agent_steps: int | None = None,
                    workspace_snapshot: Path | None = None,
                    external_verifier: Path | None = None,
-                   rustc_executable: Path | None = None) -> dict[str, Any]:
+                   rustc_executable: Path | None = None,
+                   source_root: Path | None = None,
+                   causal_trace_output: Path | None = None) -> dict[str, Any]:
     """Run one native ACP turn against a local deterministic OpenAI wire fixture."""
     from .provider_fixture import FixtureProvider
     import shlex
@@ -889,6 +893,14 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
     binary = binary.resolve()
     with tempfile.TemporaryDirectory(prefix="codegg-harness-tool-"):
         root = private_dir(lane_root("tool-" + uuid.uuid4().hex[:8]))
+        lane_tracker = os.environ.get("CODEGG_HARNESS_S010_PRIVATE_LANE_TRACKER")
+        if lane_tracker:
+            tracker_path = Path(lane_tracker).expanduser().resolve()
+            tracker_path.parent.mkdir(parents=True, exist_ok=True)
+            with tracker_path.open("a", encoding="utf-8") as tracker:
+                tracker.write(str(root) + "\n")
+                tracker.flush()
+                os.fsync(tracker.fileno())
         workspace = root / "workspace"
         workspace.mkdir()
         target = (workspace / expected_file).resolve(strict=False)
@@ -930,11 +942,15 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                 return {key: bind_workspace(item) for key, item in value.items()}
             return value
         tool_sequence = bind_workspace(tool_sequence)
-        provider = FixtureProvider(tool_sequence, stall_after_tools=cancel_task or timeout_task,
+        s010_crash_marker = os.environ.get("CODEGG_HARNESS_S010_NATIVE_TRIAL_MARKER")
+        provider = FixtureProvider(tool_sequence,
+                                   stall_after_tools=(cancel_task or timeout_task
+                                                      or bool(s010_crash_marker)),
                                    require_context_text=context_text,
                                    fail_after_tools=fail_after_tools,
                                    fault_kind=fault_kind).start()
-        spec = SubjectSpec.create("tool-trial", binary, workspace, root, Path.cwd())
+        spec = SubjectSpec.create("tool-trial", binary, workspace, root,
+                                  source_root or Path.cwd())
         env = spec.environment()
         if rustc_executable is not None:
             rustc_path = rustc_executable.resolve(strict=True)
@@ -963,9 +979,15 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps(config), encoding="utf-8")
         client = AcpClient(binary, env, workspace, timeout, profile)
+        from . import causal_trace
+        causal_recorder = causal_trace.Recorder(
+            root / "artifacts" / "causal-trace.jsonl", run_id=uuid.uuid4().hex,
+            case_id=task_id, source_sha256=spec.revision,
+            binary_sha256=spec.binary_sha256)
         completed_call_revisions: dict[str, str | None] = {}
 
         def observe_tool_completion(notification: dict[str, Any]) -> None:
+            causal_recorder.observe(notification)
             params = notification.get("params", {})
             update = params.get("update", {}) if isinstance(params, dict) else {}
             if isinstance(update, dict) and update.get("sessionUpdate") == "tool_call_update":
@@ -982,6 +1004,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             session_id = opened.get("sessionId")
             if not isinstance(session_id, str):
                 raise HarnessError("ACP fixture did not create a session")
+            causal_recorder.bind_daemon_generation(_metadata(spec, timeout).get("generation"))
             receipt = opened.get("codeggPolicy")
             if not isinstance(receipt, dict) or receipt.get("effective", {}).get("sandbox") != profile.replace("-", "_"):
                 raise HarnessError("native fixture policy receipt did not match the requested profile")
@@ -991,7 +1014,59 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                 "codeggAgent": "build",
                 "prompt": [{"type": "text", "text": f"Complete this deterministic local task using the supplied tool sequence: {task_id}."}],
             }
-            if cancel_task:
+            if s010_crash_marker:
+                prompt_result: dict[str, Any] = {}
+                prompt_error: list[BaseException] = []
+
+                def submit_crash_trial_prompt() -> None:
+                    try:
+                        prompt_result.update(client.request(
+                            "session/prompt", prompt_params, timeout=timeout))
+                    except BaseException as error:
+                        prompt_error.append(error)
+
+                prompt_thread = __import__("threading").Thread(
+                    target=submit_crash_trial_prompt, daemon=True)
+                prompt_thread.start()
+                if not provider.stalled.wait(min(timeout, 15)):
+                    raise HarnessError(
+                        "S010 native trial did not reach the post-tool ACP response gate")
+                marker = Path(s010_crash_marker).expanduser().resolve()
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker_payload = json.dumps({
+                    "state": "native_tool_completed_provider_response_active",
+                    "controller_pid": os.getpid(),
+                    "acp_pid": client.process.pid,
+                    "provider_calls": provider.calls,
+                    "tool_calls": provider.emitted_calls,
+                    "completed_tool_terminals": [
+                        {"tool_call_id": update.get("toolCallId"),
+                         "status": update.get("status")}
+                        for notification in client.notifications
+                        for update in [notification.get("params", {}).get("update", {})]
+                        if isinstance(update, dict)
+                        and update.get("sessionUpdate") == "tool_call_update"
+                    ],
+                    "private_lane_root": str(root),
+                }, sort_keys=True) + "\n"
+                temporary_marker = marker.with_name(marker.name + ".tmp")
+                with temporary_marker.open("x", encoding="utf-8") as output:
+                    output.write(marker_payload)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(temporary_marker, marker)
+                # The S010 controller observes the durable marker and sends
+                # SIGKILL to its isolated process group. Reaching this wait
+                # proves a real native ACP turn executed the tool and remains
+                # live while the local fixture holds its next response.
+                prompt_thread.join(timeout=timeout)
+                if prompt_thread.is_alive():
+                    raise HarnessError("S010 crash gate outlived its bounded ACP prompt")
+                if prompt_error:
+                    raise HarnessError(
+                        "S010 crash-gated ACP prompt ended before the controller signal")
+                result = prompt_result
+            elif cancel_task:
                 prompt_result: dict[str, Any] = {}
                 prompt_error: list[BaseException] = []
                 def submit_prompt() -> None:
@@ -1097,9 +1172,15 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                            and bool(provider.request_summaries)
                            and provider.request_summaries[-1].get("toolless_final")
                            and len(finishes) < len(tool_sequence))
+            # A completed tool call that failed is still an observed task
+            # outcome. When failure was not expected, classify it through
+            # the verifier (or the explicit failed-turn status) below; do not
+            # turn it into an infrastructure error merely because it missed
+            # the fixture's expected failure count. Infrastructure means the
+            # native observation was incomplete, not that the agent's work
+            # failed.
             if not deny_bash and (not starts or (len(finishes) < len(tool_sequence)
-                                                 and not bounded_stall and not budget_stop)
-                                  or not failure_count_matched):
+                                                 and not bounded_stall and not budget_stop)):
                 raise HarnessError(f"native broker did not complete the deterministic tool call; stop_reason={result.get('stopReason')!r}; started={len(starts)} finished={len(finishes)} failures={failures}; tool_updates={tool_updates[-6:]!r}; receipt_exists={exists}")
             observed_terminal = result.get("stopReason")
             accepted_stops = {"cancelled", "canceled"} if expected_terminal == "cancelled" else {"end_turn"}
@@ -1107,6 +1188,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                 raise HarnessError(f"fixture turn ended with unexpected stop reason {observed_terminal!r}")
             verification = None
             if external_verifier is not None:
+                causal_recorder.record("verifier_started")
                 verifier_path = external_verifier.resolve(strict=True)
                 if verifier_path.is_relative_to(workspace.resolve()):
                     raise HarnessError("external verifier must remain outside the agent workspace")
@@ -1117,12 +1199,37 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                 verification = {"returncode": verified.returncode,
                                 "stdout": verified.stdout[-4096:],
                                 "stderr": verified.stderr[-4096:]}
+                causal_recorder.record("verifier_terminal",
+                                       detail="passed" if verified.returncode == 0 else "failed")
                 if verified.returncode:
                     raise HarnessError(f"hidden verifier failed: {verified.stdout[-1000:]} {verified.stderr[-1000:]}")
             context_recovered = any(item.get("context_read_used") and item.get("context_recovered")
                                     for item in provider.request_summaries)
             if context_text is not None and not context_recovered:
                 raise HarnessError("fixture did not recover projected output through context_read")
+            failed_tool_indexes = [index for index, call in enumerate(observed_tool_calls)
+                                   if call.get("status") == "failed"]
+            successful_test_indexes = [index for index, call in enumerate(observed_tool_calls)
+                                       if call.get("tool") == "test"
+                                       and call.get("status") == "completed"]
+            repair_cycles = [index for index in failed_tool_indexes
+                             if any(success > index for success in successful_test_indexes)]
+            for _cycle in repair_cycles:
+                causal_recorder.record("repair_cycle", detail="failed")
+                causal_recorder.record("repair_cycle", detail="passed")
+            continuation_requested = any(
+                item.get("name") == "write"
+                and item.get("arguments", {}).get("path") == expected_file
+                and isinstance(item.get("arguments", {}).get("content"), str)
+                and expected_text is not None
+                and expected_text in item["arguments"]["content"]
+                for item in tool_sequence)
+            if (task_id == "h007-dependent-rust-and-exact-job"
+                    and expected_file == "CONTINUATION.md" and observed_exists
+                    and continuation_requested):
+                causal_recorder.record("continuation", detail="passed")
+                causal_recorder.record("checkpoint", detail="passed")
+            causal_receipt = causal_recorder.finish()
             result = {
                 "ok": True,
                 "task_id": task_id,
@@ -1158,6 +1265,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                 "hard_budget_stop": budget_stop,
                 "event_gap_count": event_gap_count,
                 "event_observation_state": "measured_no_gap",
+                "causal_trace": causal_receipt,
                 "workspace_revision_sha256": workspace_revision_after,
                 "permission_request_notifications": 0,
                 "workspace": str(workspace),
@@ -1192,6 +1300,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                 )
             return result
         except (HarnessError, OSError, subprocess.TimeoutExpired) as error:
+            causal_receipt = causal_recorder.finish()
             client.close()
             log = spec.root / "acp.stderr"
             tail = log.read_text(encoding="utf-8", errors="replace")[-8192:] if log.exists() else ""
@@ -1214,6 +1323,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                         item.get("params", {}).get("update", {}).get("status") == "failed"
                         for item in client.notifications),
                     "failure_type": type(error).__name__,
+                    "causal_trace": causal_receipt,
                 }
                 if isinstance(error, HarnessTurnFailure):
                     # The native adapter projects a redacted category and the
@@ -1256,6 +1366,17 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             provider.close()
             if _owned_daemon_pids(spec):
                 raise HarnessError("verified subject daemon remains after cleanup")
+            if causal_trace_output is not None:
+                trace_path = root / "artifacts" / "causal-trace.jsonl"
+                if not trace_path.is_file():
+                    raise HarnessError("native run did not produce its requested causal trace")
+                destination = causal_trace_output.expanduser()
+                if destination.exists() or destination.is_symlink():
+                    raise HarnessError("refusing to overwrite an existing causal trace artifact")
+                if destination.resolve().is_relative_to(root.resolve()):
+                    raise HarnessError("causal trace artifact must be outside the disposable lane")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(trace_path, destination)
             shutil.rmtree(root, ignore_errors=True)
 
 

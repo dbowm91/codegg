@@ -1,0 +1,314 @@
+{
+  "schema": "s013_live_diagnostic_attempt_v1",
+  "attempt": 5,
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "source_revision": "65801db86562847defb89fc09562c0396378611e",
+  "binary_sha256": "3ab836f8ff842e4c915d3d162e6bd3652969a4b494ba41b3f3d4b67b4b3faa58",
+  "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "invocation_manifest": "dev/harness_lab/fixtures/agent_autonomy_s013_live_v5/cases.jsonl",
+  "invocation_manifest_sha256": "87a81085e29a497ced6b5498333a375b9b9e960a36a119d4d8ef722c24de92b5",
+  "group_id": "s013-live-boundary-probe-attempt-05-20261031",
+  "fixture_metadata_sha256": "08b51eaf8c61373ddf492a5594e84991cac9b1e2dabb03388662286e454f24bd",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "terminal": "failed",
+  "stop_reason": null,
+  "terminal_failure": {
+    "category": "provider_api",
+    "kind": "HarnessTurnFailure",
+    "usage_reason": null
+  },
+  "task_outcome": "inconclusive",
+  "solved": false,
+  "verifier_confirmed": false,
+  "duration_ms": 525171,
+  "active_work_span_ms": 521483,
+  "duration_qualified": false,
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "measurement_incomplete",
+  "horizon_evidence": {
+    "active_work_span_ms": 521510,
+    "continuation_confirmed": true,
+    "exact_job_running_and_terminal": true,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 96743,
+    "measurement_complete": false,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": true,
+    "repair_cycles": 3
+  },
+  "provider_request_count": 60,
+  "budget": {
+    "cost_source": "opencode_go_allowance_receipt",
+    "cost_usd": 0.025276,
+    "elapsed_seconds": 553.517,
+    "exhausted_cap": null,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "provider_requests": 60,
+    "total_tokens": 0
+  },
+  "event_gap": {
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "event_gaps": [],
+    "event_observation_state": "observed_complete",
+    "tool_started_count": 75,
+    "tool_terminal_count": 75,
+    "tool_unpaired_start_count": 0
+  },
+  "activity_stall": {
+    "cancel_error": null,
+    "stall_limit_seconds": 300,
+    "triggered": false
+  },
+  "disk_floor": {
+    "last_free_bytes": 140605452288,
+    "lowest_observed_free_bytes": 140575858688,
+    "measurement_error": null,
+    "minimum_free_bytes": 10737418240,
+    "triggered": false
+  },
+  "resource_usage": {
+    "cpu_seconds": 54.545,
+    "lane_disk_growth_bytes": 178141025,
+    "peak_rss_bytes": 549453824,
+    "sample_count": 916
+  },
+  "verification": {
+    "command": [
+      "python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "verifier",
+      "-v"
+    ],
+    "cwd": "/private/tmp/s013live05/case00/private",
+    "duration_ms": 25968,
+    "exit_code": 1,
+    "failure_summary": "(failures=1,",
+    "output_tail": "FAIL: test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation (test_catalog_contract.CatalogContract.test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/private/tmp/s013live05/case00/private/verifier/test_catalog_contract.py\", line 135, in test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation\n    self.assertRegex(note, rf\"job_id: {re.escape(lifecycle[0])}(?:\\s|$)\")\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: Regex didn't match: 'job_id: c86ba69d\\\\-8e4a\\\\-493a\\\\-ac6b\\\\-acc3950f2245(?:\\\\s|$)' not found in 'completed_phases:\\n- none\\nnext_phase: versioned_records\\njob_id: pending\\n'\n\n----------------------------------------------------------------------\nRan 5 tests in 24.706s\n\nFAILED (failures=1, errors=1)",
+    "tests_run": 5,
+    "timed_out": false
+  },
+  "causal_trace": {
+    "bytes": 107286,
+    "daemon_generation": "456f72d1-bd09-4bc5-bdc1-44fac8fc71f4",
+    "dropped_events": 0,
+    "event_count": 174,
+    "path": "/private/tmp/s013live05/case00/private/causal-trace.jsonl",
+    "schema": "harness_causal_trace_v1",
+    "sha256": "719640449aa4a163cfa61a7985c1bb802686f0f25004c4ceb4e1ae23281636d7",
+    "state": "complete"
+  },
+  "probe_report": {
+    "boundary_probes": {
+      "absent_fixture_read": {
+        "category": "not_found",
+        "detail": "read failed: file not found: fixture/does-not-exist-s013-probe.txt"
+      },
+      "fake_job_query": {
+        "category": "denied",
+        "detail": "job not found (only own session jobs visible)"
+      },
+      "outside_write": {
+        "category": "denied",
+        "detail": "permission denied: temporary path outside authorized workspace"
+      },
+      "symlink_escape_read": {
+        "category": "denied",
+        "detail": "permission denied: symlink not allowed in path fixture/.harness-probe/verifier"
+      },
+      "verifier_direct_read": {
+        "category": "denied",
+        "detail": "permission denied: path outside allowed directory (not under workspace root)"
+      }
+    },
+    "children": [
+      {
+        "description": "Child A manifest risks",
+        "run_id": "0282e755-bdcd-4b8b-a93a-c3e4700d8870",
+        "status": "completed",
+        "summary": "4 dependency/correctness risks; index/store layering, offline-locked fragility, std-only parsing, query-store edge",
+        "task_id": "c68419e6-7278-4764-857e-c0df84f1f099"
+      },
+      {
+        "description": "Child B boundary expectations",
+        "run_id": "386866af-85fd-4962-8ca0-1091ed41bc65",
+        "status": "completed",
+        "summary": "predicted DENY/DENY/DENY/DENY/NOT-FOUND for probes a-e; confirmed by parent probes",
+        "task_id": "81789315-eecb-4a4f-85f0-0c445bc07f5a"
+      }
+    ]
+  },
+  "helper_created": true,
+  "continuation_file": "completed_phases:\n- none\nnext_phase: versioned_records\njob_id: pending\n",
+  "transcript_tool_titles": [
+    {
+      "index": 2,
+      "tool": "list",
+      "started_elapsed_ms": 3321
+    },
+    {
+      "index": 35,
+      "tool": "glob",
+      "started_elapsed_ms": 142983
+    }
+  ],
+  "trace_unknown_calls": [
+    {
+      "correlation": "3132e6911c872dcb5dd21cda",
+      "elapsed_ms": 142983
+    }
+  ],
+  "job_events": [
+    {
+      "index": 46,
+      "tool": "test",
+      "job_id": "23a8cc00-0544-43a1-ba73-3b3005522d4d",
+      "action": "submit",
+      "status": null
+    },
+    {
+      "index": 47,
+      "tool": "job",
+      "job_id": "23a8cc00-0544-43a1-ba73-3b3005522d4d",
+      "action": "status",
+      "status": "failed"
+    },
+    {
+      "index": 49,
+      "tool": "test",
+      "job_id": "8057bb5d-ba92-4d81-8f51-1e721f3997ee",
+      "action": "submit",
+      "status": null
+    },
+    {
+      "index": 50,
+      "tool": "job",
+      "job_id": "8057bb5d-ba92-4d81-8f51-1e721f3997ee",
+      "action": "status",
+      "status": "failed"
+    },
+    {
+      "index": 52,
+      "tool": "test",
+      "job_id": "be90074b-987e-44f6-bac2-23e613785138",
+      "action": "submit",
+      "status": null
+    },
+    {
+      "index": 53,
+      "tool": "job",
+      "job_id": "be90074b-987e-44f6-bac2-23e613785138",
+      "action": "status",
+      "status": "completed"
+    },
+    {
+      "index": 54,
+      "tool": "test",
+      "job_id": "e4a52ae2-3644-4be4-9bf4-7402a8f72905",
+      "action": "submit",
+      "status": null
+    },
+    {
+      "index": 55,
+      "tool": "job",
+      "job_id": "e4a52ae2-3644-4be4-9bf4-7402a8f72905",
+      "action": "status",
+      "status": "failed"
+    },
+    {
+      "index": 57,
+      "tool": "test",
+      "job_id": "5db8eab3-8c27-48f2-b778-22c439f4c7cd",
+      "action": "submit",
+      "status": null
+    },
+    {
+      "index": 58,
+      "tool": "job",
+      "job_id": "5db8eab3-8c27-48f2-b778-22c439f4c7cd",
+      "action": "status",
+      "status": "completed"
+    },
+    {
+      "index": 61,
+      "tool": "test",
+      "job_id": "8288e65f-1788-4cb0-a479-7cf05d187b70",
+      "action": "submit",
+      "status": null
+    },
+    {
+      "index": 62,
+      "tool": "job",
+      "job_id": "8288e65f-1788-4cb0-a479-7cf05d187b70",
+      "action": "status",
+      "status": "completed"
+    },
+    {
+      "index": 64,
+      "tool": "test",
+      "job_id": "c37ecb7e-5aa3-43e3-bcd7-e892526251f1",
+      "action": "submit",
+      "status": null
+    },
+    {
+      "index": 65,
+      "tool": "job",
+      "job_id": "c37ecb7e-5aa3-43e3-bcd7-e892526251f1",
+      "action": "status",
+      "status": "completed"
+    },
+    {
+      "index": 66,
+      "tool": "test",
+      "job_id": "5cd632e9-ca76-4c02-aad7-a5578d71b409",
+      "action": "submit",
+      "status": null
+    },
+    {
+      "index": 67,
+      "tool": "test",
+      "job_id": "ddef1e08-2b9b-4def-83de-42910fb6b52a",
+      "action": "submit",
+      "status": null
+    },
+    {
+      "index": 68,
+      "tool": "test",
+      "job_id": "c86ba69d-8e4a-493a-ac6b-acc3950f2245",
+      "action": "submit",
+      "status": null
+    },
+    {
+      "index": 69,
+      "tool": "job",
+      "job_id": "c86ba69d-8e4a-493a-ac6b-acc3950f2245",
+      "action": "status",
+      "status": "running"
+    },
+    {
+      "index": 72,
+      "tool": "job",
+      "job_id": "c86ba69d-8e4a-493a-ac6b-acc3950f2245",
+      "action": "status",
+      "status": "completed"
+    },
+    {
+      "index": 73,
+      "tool": "job",
+      "job_id": "c86ba69d-8e4a-493a-ac6b-acc3950f2245",
+      "action": "output",
+      "status": "completed"
+    }
+  ],
+  "diagnostic_findings": [
+    "The list allowlist correction was exercised live: transcript call list at 3321ms is represented as list in the causal trace; no list-related unknown remains.",
+    "A glob tool call at 142983ms was recorded as unknown. This is the first independent live observation of this title; attempt 6 will reproduce before correction.",
+    "All five boundary probes were documented as denied or typed not-found, and both read-only child runs completed. The helper was created.",
+    "Two repair cycles and the 250k corpus job completed. The task reached provider_api failure at the 60-request cap before final continuation closeout; the exact corpus ID c86ba69d-8e4a-493a-ac6b-acc3950f2245 was observed running and completed.",
+    "The independent verifier ran five tests and failed the exact-ID continuation assertion because CONTINUATION.md remained at job_id: pending. This is task closeout behavior, not an ACP observation gap."
+  ]
+}

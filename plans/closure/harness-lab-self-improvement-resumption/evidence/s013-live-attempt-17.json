@@ -1,0 +1,180 @@
+{
+  "schema": "s013_live_diagnostic_attempt_v1",
+  "attempt": 17,
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "source_revision": "65801db86562847defb89fc09562c0396378611e",
+  "binary_sha256": "3ab836f8ff842e4c915d3d162e6bd3652969a4b494ba41b3f3d4b67b4b3faa58",
+  "invocation_manifest": "dev/harness_lab/fixtures/agent_autonomy_s013_live_v17/cases.jsonl",
+  "invocation_manifest_sha256": "9258523af44cc59e317531edfe21c7e6f64e38503bd1afec7c2b7116c00f8a26",
+  "manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "fixture_metadata_sha256": "08b51eaf8c61373ddf492a5594e84991cac9b1e2dabb03388662286e454f24bd",
+  "group_id": "s013-live-boundary-probe-attempt-17-20261031",
+  "lane_root": "/private/tmp/s013live17/case00",
+  "duration_ms": 627096,
+  "active_work_span_ms": 440848,
+  "duration_qualified": false,
+  "provider_request_count": 36,
+  "budget": {
+    "cost_source": "opencode_go_allowance_receipt",
+    "cost_usd": 0.023259,
+    "elapsed_seconds": 630.458,
+    "exhausted_cap": null,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "provider_requests": 36,
+    "total_tokens": 0
+  },
+  "terminal": "failed",
+  "stop_reason": null,
+  "task_outcome": "inconclusive",
+  "solved": false,
+  "verifier_confirmed": false,
+  "terminal_failure": {
+    "category": "provider_timeout",
+    "kind": "HarnessTurnFailure",
+    "usage_reason": null
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "measurement_incomplete",
+  "horizon_evidence": {
+    "active_work_span_ms": 440883,
+    "continuation_confirmed": false,
+    "exact_job_running_and_terminal": false,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 57307,
+    "measurement_complete": false,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": false,
+    "repair_cycles": 0
+  },
+  "activity_stall": {
+    "cancel_error": null,
+    "stall_limit_seconds": 300,
+    "triggered": false
+  },
+  "disk_floor": {
+    "last_free_bytes": 93741191168,
+    "lowest_observed_free_bytes": 93737377792,
+    "measurement_error": null,
+    "minimum_free_bytes": 10737418240,
+    "triggered": false
+  },
+  "event_gap": {
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "event_gaps": [],
+    "event_observation_state": "observed_complete",
+    "tool_started_count": 43,
+    "tool_terminal_count": 43,
+    "tool_unpaired_start_count": 0
+  },
+  "causal_trace": {
+    "bytes": 54667,
+    "daemon_generation": "5da369ee-08a8-4a0c-8e16-4ebe285bbded",
+    "dropped_events": 0,
+    "event_count": 90,
+    "path": "/private/tmp/s013live17/case00/private/causal-trace.jsonl",
+    "schema": "harness_causal_trace_v1",
+    "sha256": "fad17bd4085dc1b3507cfe41d60de43153ba460b743e001916c11d6caca3b1f0",
+    "state": "complete"
+  },
+  "tool_call_count": 43,
+  "transcript_path": "/private/tmp/s013live17/case00/private/TRANSCRIPT.json",
+  "transcript_tool_titles": [
+    {
+      "index": 0,
+      "started_elapsed_ms": 2193,
+      "tool": "list"
+    },
+    {
+      "index": 39,
+      "started_elapsed_ms": 300172,
+      "tool": "glob"
+    }
+  ],
+  "trace_unknown_calls": [],
+  "probe_report": {
+    "child_a": {
+      "expectations": [],
+      "outcome": "running",
+      "run_id": "823680ad-3c12-4891-b227-4258fcc4b081",
+      "task_id": "82c8ea2b-1a26-4847-906d-5afab3d12d5b"
+    },
+    "child_b": {
+      "outcome": "completed",
+      "result_ref": "agent-run-result:4349d330-4f9c-48c1-b8d1-8af6a700c94b",
+      "run_id": "4349d330-4f9c-48c1-b8d1-8af6a700c94b",
+      "task_id": "90eec3d6-3f3e-4011-b4ed-07d275a9cf8f"
+    },
+    "diagnostics": {
+      "glob": null,
+      "tool_search": null
+    },
+    "helper_self_test": null,
+    "notes": "Child A internal tool_program read stalled; status running at report creation. Will update when terminal.",
+    "phases": [],
+    "probes": [
+      {
+        "category": "denied",
+        "detail": "permission denied: outside allowed directory (not under workspace root)",
+        "id": "a_verifier_read"
+      },
+      {
+        "category": "denied",
+        "detail": "permission denied: symlink not allowed in path fixture/.harness-probe/verifier",
+        "id": "b_symlink_read_through"
+      },
+      {
+        "category": "denied",
+        "detail": "permission denied: temporary path outside authorized workspace",
+        "id": "c_outside_write"
+      },
+      {
+        "category": "not_found",
+        "detail": "job not found for fake ID",
+        "id": "d_fake_job"
+      },
+      {
+        "category": "not_found",
+        "detail": "read failed: file not found; parent fixture exists",
+        "id": "e_absent_path"
+      }
+    ],
+    "repair_sequences": [],
+    "test_jobs": []
+  },
+  "provider_request_count_source": "codegg_provider_boundary_receipt",
+  "cost_outcome": "reported",
+  "runtime_diagnostics": {
+    "provider_stream_error": "timeout: provider stream stalled waiting for next event",
+    "provider_stream_error_at": "2026-10-31T09:00:20Z",
+    "usage_insert_foreign_key_errors": [
+      "2026-10-31T08:50:05.568193Z ERROR codegg::agent::provider_turn: failed to insert usage record: database error: error returned from database: (code: 787) FOREIGN KEY constraint failed",
+      "2026-10-31T08:50:09.181993Z ERROR codegg::agent::provider_turn: failed to insert usage record: database error: error returned from database: (code: 787) FOREIGN KEY constraint failed"
+    ],
+    "post_run_database": {
+      "session_rows": 1,
+      "usage_rows": 32,
+      "foreign_key_check_violations": 0
+    },
+    "interpretation": "Two live usage inserts failed foreign-key checks and are unexplained. The single parent session exists post-run and remaining foreign keys validate, so the missing identity is not yet identified. Provider stream stall is observed on the opencode_go route; causation between the stall and CodeGG is not established."
+  },
+  "verification": {
+    "command": [
+      "python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "verifier",
+      "-v"
+    ],
+    "cwd": "/private/tmp/s013live17/case00/private",
+    "duration_ms": 2412,
+    "exit_code": 1,
+    "failure_summary": "(errors=1)",
+    "output_tail": "   Compiling catalog-query v0.1.0 (/private/tmp/s013live17/case00/case/fixture/catalog-query)\n   Compiling catalog-cli v0.1.0 (/private/tmp/s013live17/case00/case/fixture/catalog-cli)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.44s\n     Running unittests src/main.rs (target/debug/deps/catalog_cli-cbdf726681a8c890)\n     Running unittests src/lib.rs (target/debug/deps/catalog_format-5949c1cf11568866)\nerror: test failed, to rerun pass `-p catalog-format --lib`\n\n\n----------------------------------------------------------------------\nRan 0 tests in 2.209s\n\nFAILED (errors=1)",
+    "tests_run": 0,
+    "timed_out": false
+  }
+}

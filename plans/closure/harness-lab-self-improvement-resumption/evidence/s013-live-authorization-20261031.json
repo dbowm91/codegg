@@ -1,0 +1,34 @@
+{
+  "attempts_started": 20,
+  "authorized_at": "2026-10-31",
+  "authorized_by": "user",
+  "billed_usd_reported": 0.551751,
+  "campaign_policy": "run one attempt at a time and inspect its receipt before deciding whether to continue; never exceed 20 attempts",
+  "cancellation": [
+    "user request",
+    "provider request ceiling reached before transport",
+    "300 seconds without observed agent/tool activity",
+    "60-minute hard stop",
+    "free disk below 10 GiB",
+    "unresolved request admission, event stream, or exact run/job identity",
+    "unexpected access to the private verifier"
+  ],
+  "cost": {
+    "basis": "user authorized up to 20 Muse Spark 1.3 runs without a budget concern",
+    "unavailable_usd_treatment": "record unknown; do not infer zero",
+    "usd_cap": null,
+    "accounting_note": "Cumulative reported USD is recomputed from per-attempt evidence receipts; unavailable cost remains unknown."
+  },
+  "max_attempts": 20,
+  "per_attempt": {
+    "inactivity_cancel_seconds": 300,
+    "max_provider_requests": 60,
+    "max_wallclock_seconds": 3600,
+    "minimum_free_disk_bytes": 10737418240,
+    "profile": "workspace-write"
+  },
+  "provider_requests_admitted": 1134,
+  "provider_route": "opencode_go/muse-spark-1.3-contributor",
+  "route_restriction": "Muse Spark 1.3 through the existing CodeGG opencode_go adapter only; no external proposer or other model route",
+  "schema": "harness_live_diagnostic_authorization_v1"
+}

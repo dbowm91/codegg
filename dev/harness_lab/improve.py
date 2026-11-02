@@ -1132,7 +1132,8 @@ def authorize_binary_fingerprint(checkpoint: Checkpoint, binary_digest: str) -> 
 CANDIDATE_GATE_SEQUENCE: tuple[tuple[str, ...], ...] = (
     ("cargo", "fmt", "--all", "--", "--check"),
     ("cargo", "build", "--bin", "codegg", "--bin", "codegg-sandbox-helper"),
-    ("cargo", "test", "-p", "codegg", "--test", "acp_stdio"),
+    ("cargo", "test", "-p", "codegg", "--test", "ide_protocols", "--",
+     "acp_stdio", "--test-threads=1"),
 )
 
 

@@ -1,0 +1,7 @@
+[package]
+name = "catalog-query"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+catalog-format = { path = "../catalog-format" }
+catalog-index = { path = "../catalog-index" }
