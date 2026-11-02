@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement S016 — DeepSeek Long-Run Corrective Loop
 
-Status: **active under renewed authorization; cycles 1–14 used; prompt v11 ready for the next long attempt**
+Status: **active under renewed authorization; cycles 1–15 used; prompt v12 ready for the next long attempt**
 
 Repository baseline: `300cb4aba` (S015 timeout correction live-confirmed; S015 conditionally closed)
 
@@ -164,7 +164,7 @@ The available ARM64 corrective binary is `/private/tmp/s016-bin-32/codegg` (SHA-
 
 ## 9. Renewed campaign update (2026-11-02)
 
-- User authorization remains active for up to 20 sequential cycles. Attempts 21–34 consume 14 cycles; six remain.
+- User authorization remains active for up to 20 sequential cycles. Attempts 21–35 consume 15 cycles; five remain.
 - Attempts 25–31 repeatedly overflowed the provider's 1,048,576-token context below the 750-request limit. Attempt 31's request 284 had 1,051,297 input tokens. Forced Hybrid/Balanced compaction created a candidate but retained 354 messages and increased the local estimate from 970,845 to 973,976, so durable installation was refused.
 - Source and trace inspection identified the route-profile/config mismatch: DeepSeek inherited a 32k local-model context on the cloud OpenCode Go route; the H007 launcher omitted `compaction.auto`, so the loop selected non-durable compatibility compaction. Commit `0121ad1` binds H007 to the observed route limit and explicitly enables durable Hybrid/Balanced compaction with a 0.65 threshold. Python syntax, rustfmt, ARM64 build, doctor, and binary preflight passed; no repository test suite was run for that commit.
 - Attempt 32 used the exact binary SHA `25cdef11543d434d0e9f0fc20c154ee72f8ec16ad078af956da616cb4e329f10`, helper SHA `27723caa3dccd0e999055bc252468de5d4f72876524c7a873b761ab2157a7479`, and v8 manifest SHA `06296b94d6f95d773fc0708cdfbcfe3ca0ddeb4c13f136f5090f617ba0ce0613`. It made 95 requests, had zero event gaps, reached a 404.634-second active span, recorded four repair cycles and continuation, and completed the final workspace test (40 passing tests). It did not show productive overlap; the hidden verifier exited 1 after five tests. The model ended normally without meeting the 30-minute criterion.
