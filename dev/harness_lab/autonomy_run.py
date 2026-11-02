@@ -938,7 +938,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         if budget_policy.max_provider_requests is None:
             raise HarnessError("H007 requires a fresh explicit provider request cap")
         if budget_policy.max_provider_requests > int(case.budget["max_provider_requests"]):
-            raise HarnessError("H007 provider request cap exceeds its frozen 60-request ceiling")
+            raise HarnessError("H007 provider request cap exceeds this case manifest ceiling")
         if budget_policy.max_wallclock_seconds is None \
                 or budget_policy.max_wallclock_seconds > 3600:
             raise HarnessError("H007 requires an explicit wall-clock cap no greater than 3600 seconds")

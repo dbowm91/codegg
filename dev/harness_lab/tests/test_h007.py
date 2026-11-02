@@ -208,7 +208,7 @@ class H007CaseAndResultTests(unittest.TestCase):
         from dev.harness_lab import autonomy_run, budget
         policy = budget.BudgetPolicy(max_provider_requests=61, max_wallclock_seconds=3600)
         with tempfile.TemporaryDirectory() as temporary:
-            with self.assertRaisesRegex(autonomy_run.HarnessError, "60-request ceiling"):
+            with self.assertRaisesRegex(autonomy_run.HarnessError, "case manifest ceiling"):
                 autonomy_run.run_case(
                     REPO_ROOT / "target/debug/codegg", case,
                     "opencode_go/muse-spark-1.3-contributor", budget_policy=policy,
