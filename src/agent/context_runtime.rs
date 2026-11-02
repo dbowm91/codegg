@@ -864,13 +864,27 @@ impl AgentLoop {
 
     pub(super) async fn compact_if_needed(
         &mut self,
-        messages: &mut Vec<Message>,
+        request: &mut ChatRequest,
         model_profile: &crate::model_profile::types::ResolvedModelProfile,
     ) {
+        let tool_definition_tokens = request
+            .tools
+            .as_ref()
+            .and_then(|tools| serde_json::to_string(tools).ok())
+            .map(|serialized| {
+                crate::context::compaction::ContextTracker::estimate_text_tokens(
+                    &serialized,
+                    Some(model_profile.model.as_str()),
+                )
+            })
+            .unwrap_or(0);
+        let messages = &mut request.messages;
         let Some(policy) = self.services.execution_policy.as_ref() else {
             return;
         };
-        let context_limit = policy.context_window;
+        // Tool definitions are provider-facing input too. Reserve their
+        // estimated size before deciding whether the message history fits.
+        let context_limit = policy.context_window.saturating_sub(tool_definition_tokens);
         let threshold = policy.compaction_threshold;
         let reserved_output_tokens = policy.reserved_output_tokens;
         let max_tool_result_tokens = policy.max_tool_result_tokens;
@@ -910,7 +924,8 @@ impl AgentLoop {
                     input: serde_json::json!({
                         "messages": messages,
                         "context_limit": context_limit,
-                        "current_tokens": context_tokens(messages, Some(model_profile.model.as_str())),
+                        "current_tokens": context_tokens(messages, Some(model_profile.model.as_str()))
+                            .saturating_add(tool_definition_tokens),
                         "reserved_output_tokens": reserved_output_tokens,
                         "strategy": if auto { "auto_compact" } else { "drop_middle" },
                     }),

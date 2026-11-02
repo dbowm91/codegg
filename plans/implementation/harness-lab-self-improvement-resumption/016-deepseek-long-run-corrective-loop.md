@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement S016 — DeepSeek Long-Run Corrective Loop
 
-Status: **conditionally closed**
+Status: **active under renewed authorization; request-context corrective in progress**
 
 Repository baseline: `300cb4aba` (S015 timeout correction live-confirmed; S015 conditionally closed)
 
@@ -15,20 +15,22 @@ Run the H007 five-crate Rust workload on `opencode_go/deepseek-v4.1-flash` to de
 
 ## 2. Authorization and limits
 
-The user explicitly authorized up to 20 runs on 2026-10-31 and specified DeepSeek 4.1 Flash. The route is `opencode_go/deepseek-v4.1-flash`. This authorization covers the sequence of long and diagnostic runs in this plan; it does not authorize another model or provider adapter.
+The user authorized 20 runs on 2026-10-31, which are fully recorded in the original ledger. On 2026-11-02, the user separately authorized up to 20 additional DeepSeek run/fix cycles after raising the request ceiling. The renewed route is `opencode_go/deepseek-v4.1-flash`; it does not authorize another model or provider adapter. Attempt 21 is cycle 1 of the renewed authorization.
 
-- Maximum 20 started live runs total; long and diagnostic runs both count.
-- Maximum 60 provider requests and 3,600 seconds per run.
+- Maximum 20 started live run/fix cycles under the renewed authorization; each long or diagnostic run counts as one started cycle.
+- Maximum 750 provider requests and 3,600 seconds per live run.
 - Keep at least 10 GiB free disk; cancel immediately if the floor is crossed or disk state becomes unreadable.
 - Run sequentially. Cancel on operator request, cap exhaustion, sensitive-data exposure, or loss of provider-request admission observability.
 - Record provider-reported USD when available; otherwise record `unknown`. No separate USD ceiling was stated.
 - Use the existing CodeGG `opencode_go` path, a recorded H007 manifest revision, and the exact unchanged H007 verifier. No alternate route or hidden-verifier access.
 
-Authorization ledger: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-live-authorization-20261031.json`.
+Authorization ledgers: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-live-authorization-20261031.json` (original, consumed) and `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-raised-cap-authorization-20261102.json` (renewed, cycle 1 of 20 recorded).
 
 ## 3. Frozen qualification contract
 
 Runs 1–4 used `dev/harness_lab/fixtures/agent_autonomy_h007/cases.jsonl` (SHA-256 `c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358`). Diagnostics showed two task-calibration omissions: the prompt did not tell the model that qualification requires at least 30 minutes of substantive work, and the required corpus job completed in under eight seconds, before the model's next productive source edit. Runs 5–9 used the versioned corrective prompt at `dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v1/cases.jsonl` (SHA-256 `3bb3bcb6f802fcf317f064101bf116ca3b96111fa8d26984753a157350bb1df2`). Run 10 used prompt v2 at `dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v2/cases.jsonl` (SHA-256 `a23b374f06c06e1f3318f7d4033b2856430288d034bd0f41f034deb9be3eed93`). Run 12 onward uses prompt v3 at `dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v3/cases.jsonl` (SHA-256 `8aa4d4af9fc36334819a9e494d5f7f02d58437be9bed6fa1ad672b7d16f4f875`). V3 maps every asynchronous `test` call to exact-ID terminal polling, separates the one fake-ID boundary probe from real test IDs, explicitly retains all four safe probes, and reduces the pre-implementation subagent work to one concise read-only task. It leaves the five-crate Rust fixture, contract, corpus, public tests, hidden verifier, and qualification thresholds unchanged. The hidden verifier SHA-256 remains `13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c`.
+
+Renewed attempt 21 used the existing v7 manifest unchanged (SHA-256 recorded in its run summary). At request 435, DeepSeek rejected the prompt at 1,049,383 tokens against its 1,048,576-token limit. The provider error was swallowed by `drain_follow_up`, and `publish_agent_finished` ran before autonomous goal continuation, yielding a false `completed` run terminal. The message estimator also omitted assistant tool-call arguments and provider tool definitions. The production corrective is limited to those accounting and error-propagation paths; the workload and verifier remain frozen.
 
 A qualifying run must pass the independent hidden verifier and show, at minimum:
 
