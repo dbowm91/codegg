@@ -1,0 +1,49 @@
+{
+  "active_work_span_ms": 479235,
+  "attempt": 22,
+  "binary_sha256": "4f867b6c318cdf1aca3fce1b4fa6f12412bc3848bad84317fa086f014a1a6c43",
+  "campaign_id": "s016-deepseek-raised-cap-20261102",
+  "diagnostic_finding": "The long run ended normally after 495 seconds and 100 of 750 admitted requests. There were no provider errors, event gaps, failed tool calls, activity stalls, or disk-floor events. The model made only read and bash calls, with no native write/edit/test/job/task calls and no source changes; it completed the turn with stop_reason=end_turn before any seeded repair cycle, continuation update, or exact-ID job lifecycle. The unchanged verifier failed; its contents were not inspected. This run does not reproduce a harness execution failure and does not qualify the sustained task.",
+  "duration_ms": 489026,
+  "event_gap": {
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "event_observation_state": "observed_complete",
+    "tool_started_count": 100,
+    "tool_terminal_count": 100,
+    "tool_unpaired_start_count": 0
+  },
+  "fixture_manifest_sha256": "5e6769ba13c361ed7681b39162078a9457b4b8adc9a3f8f1843c10f4296038f5",
+  "horizon_evidence": {
+    "active_work_span_ms": 479235,
+    "continuation_confirmed": false,
+    "exact_job_running_and_terminal": false,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 17688,
+    "measurement_complete": true,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": false,
+    "repair_cycles": 0
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "job_lifecycle_missing",
+  "provider_cost_source": "opencode_go_allowance_receipt",
+  "provider_cost_usd": 0.284426,
+  "provider_failure": null,
+  "provider_request_cap": 750,
+  "provider_requests": 100,
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "run_receipt_sha256": "da862dc15d208765b0ae124fdeb247c215c07d0718d318e7dc312f9336786231",
+  "schema_version": 1,
+  "source_revision": "e15be6c95a8d6545db25d0b4f3e40c06c6352eb6",
+  "task_outcome": "failed",
+  "terminal": "completed",
+  "terminal_failure": null,
+  "stop_reason": "end_turn",
+  "verifier": {
+    "contents_inspected": false,
+    "exit_code": 1,
+    "tests_run": 0,
+    "timed_out": false
+  }
+}

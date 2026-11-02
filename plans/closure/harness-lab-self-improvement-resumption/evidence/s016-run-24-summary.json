@@ -1,0 +1,60 @@
+{
+  "attempt": 24,
+  "binary_sha256": "4f867b6c318cdf1aca3fce1b4fa6f12412bc3848bad84317fa086f014a1a6c43",
+  "campaign_id": "s016-deepseek-raised-cap-20261102",
+  "diagnostic_finding": "The correctly selected short diagnostic demonstrated that the existing CodeGG tool surface is available: the model used task, write, edit, test and job tools, all observed tool events paired, and no tool call failed. The run ended normally without the H007 repair/overlap criteria and is diagnostic evidence only. The hidden verifier exited 1 with zero tests recorded; its contents were not inspected.",
+  "duration_ms": 421066,
+  "event_gap": {
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "event_observation_state": "observed_complete",
+    "tool_started_count": 43,
+    "tool_terminal_count": 43,
+    "tool_unpaired_start_count": 0
+  },
+  "h007_qualification": false,
+  "horizon_evidence": {
+    "active_work_span_ms": 404903,
+    "continuation_confirmed": false,
+    "exact_job_running_and_terminal": false,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 49448,
+    "measurement_complete": true,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": false,
+    "repair_cycles": 0
+  },
+  "manifest_path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v7/tools_diagnostic_v1/cases.jsonl",
+  "manifest_sha256": "b5dfc2e767bf162f361f9b5cc2c83f6c2eafad0eab6a5dc8cfa079e384e17837",
+  "model": "opencode_go/deepseek-v4.1-flash",
+  "provider_cost_source": "opencode_go_allowance_receipt",
+  "provider_cost_usd": 0.115567,
+  "provider_failure": null,
+  "provider_request_cap": 100,
+  "provider_requests": 50,
+  "receipt_sha256": "061dc3c0a49f934ff0713a9a41f0fc71197eb4f6c700d8ea698f9a3412305c53",
+  "schema_version": 1,
+  "source_revision": "e15be6c95a8d6545db25d0b4f3e40c06c6352eb6",
+  "task_outcome": "failed",
+  "terminal": "completed",
+  "terminal_failure": null,
+  "stop_reason": "end_turn",
+  "tool_calls": {
+    "bash": 1,
+    "edit": 5,
+    "git_query": 1,
+    "glob": 1,
+    "job": 2,
+    "list": 2,
+    "read": 13,
+    "task": 14,
+    "test": 2,
+    "write": 2
+  },
+  "verifier": {
+    "contents_inspected": false,
+    "exit_code": 1,
+    "tests_run": 0,
+    "timed_out": false
+  }
+}
