@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement S016 — DeepSeek Long-Run Corrective Loop
 
-Status: **active under renewed authorization; request-context corrective in progress**
+Status: **active under renewed authorization; cycles 1–4 used; prompt v8 ready for long attempt**
 
 Repository baseline: `300cb4aba` (S015 timeout correction live-confirmed; S015 conditionally closed)
 
@@ -11,7 +11,7 @@ Primary class: capability
 
 ## 1. Objective
 
-Run the H007 five-crate Rust workload on `opencode_go/deepseek-v4.1-flash` to determine whether CodeGG can sustain a real long-horizon agent task after S015. If a long attempt fails, use a separate bounded live diagnostic run to identify whether the failure is a reproducible CodeGG defect, task/prompt calibration, model behavior, or an unavailable provider route. Correct only an evidence-backed narrow issue, preserve the independent verifier and acceptance criteria, verify the correction, and retry qualification. Stop when the independent qualification passes or 20 total long/diagnostic runs have started.
+Run the H007 five-crate Rust workload on `opencode_go/deepseek-v4.1-flash` to determine whether CodeGG can sustain a real long-horizon agent task after S015. If a long attempt fails, use a separate bounded live diagnostic run to identify whether the failure is a reproducible CodeGG defect, task/prompt calibration, model behavior, or an unavailable provider route. Correct only an evidence-backed narrow issue, preserve the independent verifier and acceptance criteria, verify the correction, and retry qualification. The renewed authorization allows up to 20 additional long/diagnostic cycles.
 
 ## 2. Authorization and limits
 
@@ -24,13 +24,15 @@ The user authorized 20 runs on 2026-10-31, which are fully recorded in the origi
 - Record provider-reported USD when available; otherwise record `unknown`. No separate USD ceiling was stated.
 - Use the existing CodeGG `opencode_go` path, a recorded H007 manifest revision, and the exact unchanged H007 verifier. No alternate route or hidden-verifier access.
 
-Authorization ledgers: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-live-authorization-20261031.json` (original, consumed) and `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-raised-cap-authorization-20261102.json` (renewed, cycle 1 of 20 recorded).
+Authorization ledgers: `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-live-authorization-20261031.json` (original, consumed) and `plans/closure/harness-lab-self-improvement-resumption/evidence/s016-raised-cap-authorization-20261102.json` (renewed, four of 20 cycles recorded).
 
 ## 3. Frozen qualification contract
 
 Runs 1–4 used `dev/harness_lab/fixtures/agent_autonomy_h007/cases.jsonl` (SHA-256 `c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358`). Diagnostics showed two task-calibration omissions: the prompt did not tell the model that qualification requires at least 30 minutes of substantive work, and the required corpus job completed in under eight seconds, before the model's next productive source edit. Runs 5–9 used the versioned corrective prompt at `dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v1/cases.jsonl` (SHA-256 `3bb3bcb6f802fcf317f064101bf116ca3b96111fa8d26984753a157350bb1df2`). Run 10 used prompt v2 at `dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v2/cases.jsonl` (SHA-256 `a23b374f06c06e1f3318f7d4033b2856430288d034bd0f41f034deb9be3eed93`). Run 12 onward uses prompt v3 at `dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v3/cases.jsonl` (SHA-256 `8aa4d4af9fc36334819a9e494d5f7f02d58437be9bed6fa1ad672b7d16f4f875`). V3 maps every asynchronous `test` call to exact-ID terminal polling, separates the one fake-ID boundary probe from real test IDs, explicitly retains all four safe probes, and reduces the pre-implementation subagent work to one concise read-only task. It leaves the five-crate Rust fixture, contract, corpus, public tests, hidden verifier, and qualification thresholds unchanged. The hidden verifier SHA-256 remains `13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c`.
 
 Renewed attempt 21 used the existing v7 manifest unchanged (SHA-256 recorded in its run summary). At request 435, DeepSeek rejected the prompt at 1,049,383 tokens against its 1,048,576-token limit. The provider error was swallowed by `drain_follow_up`, and `publish_agent_finished` ran before autonomous goal continuation, yielding a false `completed` run terminal. The message estimator also omitted assistant tool-call arguments and provider tool definitions. The production corrective is limited to those accounting and error-propagation paths; the workload and verifier remain frozen.
+
+Attempt 22 used the same v7 manifest and the ARM64 corrective binary. It ended normally after 100/750 requests and 479 seconds of active work, with no provider error, event gap, failed tool call, source edit, or native test/job/task call. Attempt 23 was an invocation mistake: a root-level manifest path caused the canonical seven-case default suite to load; it is excluded from H007 evidence. Attempt 24 used a bounded single-case tool-surface diagnostic and confirmed that native `task`, `write`, `edit`, `test`, and `job` calls execute with complete event pairing. The H007 short run therefore remains a model/task execution failure after the context corrective. Prompt v8 at `dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v8/cases.jsonl` shortens and sequences the existing instructions, requires bounded discovery and an early implementation action, and preserves every task and qualification criterion.
 
 A qualifying run must pass the independent hidden verifier and show, at minimum:
 
@@ -62,7 +64,7 @@ The S015 correction is the starting baseline: decoded-event idle timeout is 120 
 
 ### B. Run long qualification first
 
-Run the current recorded H007 prompt revision against the unchanged five-crate source fixture, contract, corpus, public tests, and hidden verifier, using the exact route, a 60-request/3,600-second policy, and 10 GiB disk floor. Preserve the full receipt, causal trace, safe provider lifecycle log, admission receipt, binary and manifest identities, task/verifier results, and disk minima.
+Run the current recorded H007 prompt revision against the unchanged five-crate source fixture, contract, corpus, public tests, and hidden verifier, using the exact route, a 750-request/3,600-second policy, and 10 GiB disk floor. Preserve the full receipt, causal trace, safe provider lifecycle log, admission receipt, binary and manifest identities, task/verifier results, and disk minima.
 
 ### C. Diagnose, correct, and repeat
 
