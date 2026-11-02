@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "attempt": 37,
+  "campaign_id": "s016-deepseek-raised-cap-20261102",
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "source_revision": "e5412c2464622b72683448aff96c502d98f03b42",
+  "binary_sha256": "25cdef11543d434d0e9f0fc20c154ee72f8ec16ad078af956da616cb4e329f10",
+  "manifest_path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v13/cases.jsonl",
+  "manifest_sha256": "7ee64914231e3ad09c4147e045bb15e6a1783056faa35b1b49c9c38b5a482d9f",
+  "run_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "receipt_path": "/private/tmp/s016-attempt37.json",
+  "receipt_sha256": "b3104731702f49cfedf5fab54aac8f04cc9edecd04acc4aab66012d1aee1ff61",
+  "provider_request_cap": 750,
+  "provider_requests": 196,
+  "provider_cost_usd": 0.098206,
+  "duration_ms": 1060574,
+  "active_work_span_ms": 1045124,
+  "terminal": "completed",
+  "stop_reason": "end_turn",
+  "task_outcome": "failed",
+  "solved": false,
+  "event_gap": {
+    "state": "observed_complete",
+    "tool_started_count": 191,
+    "tool_terminal_count": 191,
+    "unpaired_count": 0,
+    "event_gap_count": 0
+  },
+  "horizon_evidence": {
+    "active_work_span_ms": 1045133,
+    "maximum_activity_gap_ms": 96781,
+    "minimum_active_duration_ms": 1800000,
+    "repair_cycles": 10,
+    "continuation_confirmed": true,
+    "exact_job_running_and_terminal": false,
+    "productive_work_during_job": false
+  },
+  "disk_floor": {
+    "minimum_free_bytes": 10737418240,
+    "lowest_observed_free_bytes": 227916574720,
+    "last_free_bytes": 237457756160,
+    "triggered": false
+  },
+  "verification": {
+    "exit_code": 1,
+    "failure_summary": "(failures=3)",
+    "contents_inspected": false
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "job_lifecycle_missing",
+  "finding": "The agent completed all six implementation phases and ten repair cycles, but the priority workspace job completed in 5.64 seconds before productive edits began; no exact-ID running observation or productive overlap occurred. The model ended normally after 17.43 minutes active. All 191 ACP tool starts paired with terminals with zero gaps; maximum activity gap was 96.8 seconds, disk stayed far above the 10 GiB floor, and the 750-request cap was not approached. The hidden verifier failed and its output was not inspected. This is a workload scheduling/overlap design gap plus an active horizon still below 30 minutes, not a provider/request/event/disk/stall failure."
+}
