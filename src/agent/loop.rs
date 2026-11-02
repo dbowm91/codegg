@@ -1821,7 +1821,7 @@ impl AgentLoop {
             let events =
                 match crate::agent::provider_turn::ProviderTurnAdapter::receive_with_retry_context(
                     self,
-                    &request,
+                    &mut request,
                     Some(turn_retry),
                 )
                 .await
