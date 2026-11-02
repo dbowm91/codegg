@@ -25,8 +25,11 @@ The command reaches **one** handler, and both of its surfaces reach it. The
 TUI's own palette entry (`/compact` → `BuiltinSlashAction::Compact`,
 `src/tui/command.rs:628`) and the daemon's catalog form (`compact` →
 `FrontendAction::CompactSession`,
-`crates/codegg-core/src/frontend_action.rs:393`) now land on the same
-function, so the two cannot drift apart again.
+`crates/codegg-core/src/frontend_action.rs`) now land on the same
+function, so the two cannot drift apart again. C002 later **removed**
+`FrontendAction::CompactSession` and made `compact` a daemon effect
+(`crates/codegg-core/src/command_catalog.rs:586`); the handler moved with
+it, to `src/tui/commands/compaction.rs:17`.
 
 **Shape B was taken, and Shape A was not.** Shape A needs a new
 `CoreRequest` variant, and that authority question is the owner's (§10,
@@ -43,9 +46,9 @@ no session scope.
 
 | # | Plan requirement | Where | Evidence |
 |---|---|---|---|
-| 1 | `/compact` never reports an effect that did not happen | §3.1 | `src/tui/commands/tasks.rs:710` — the handler's only outcomes are the policy's shape and the observed count |
+| 1 | `/compact` never reports an effect that did not happen | §3.1 | `src/tui/commands/compaction.rs:17` — the handler's only outcomes are the daemon's answer and the observed count; neither claims an effect that did not happen |
 | 2 | The command's outcome is derived from what the product actually did | §3.1 | the count is `session_state.compaction_count`, incremented only by a real `AppEvent::CompactionTriggered` (`src/tui/runtime/app_events.rs:531`) |
-| 3 | The daemon's automatic compaction path, threshold and tracker are unchanged | §3.3 | no file under `src/agent/` or `src/context/` is touched; `compact_if_needed` is untouched (`src/agent/context_runtime.rs:865`) |
+| 3 | The daemon's automatic compaction path, threshold and tracker are unchanged | §3.3 | no file under `src/agent/` or `src/context/` is touched; `compact_if_needed` is untouched (`src/agent/context_runtime.rs:865`) — unchanged **by C001**; C002 later added the forced path to the same function |
 | 4 | The TUI's handling of `AppEvent::CompactionTriggered` is unchanged | §3.3 | `src/tui/runtime/app_events.rs` is untouched |
 | 5 | No new protocol variant lands without the owner's decision | §3.2 | `crates/codegg-protocol/` is untouched; the variant is reported in §10.1 |
 | 6 | `scripts/verify.sh quick` is green, and fmt and workspace clippy with `-D warnings` are clean | §4 | the runs in §4.1 |
@@ -65,8 +68,9 @@ no session scope.
 
 ### 3.1 One truthful handler
 
-`src/tui/commands/tasks.rs:710` — `handle_compact_session` — is the whole
-change. It has two paths and both are true:
+`src/tui/commands/compaction.rs:17` — `handle_compact_session` — is the whole
+change (C001 put it in `src/tui/commands/tasks.rs`; C002 moved it here). It
+has two paths and both are true:
 
 - **A session is bound** (`session_state.session.is_some()`): "Compaction is
   automatic: the daemon compacts when its context threshold is crossed.
@@ -80,13 +84,13 @@ two of the three were false or unguaranteed:
 | Surface | Before | After |
 |---|---|---|
 | the TUI's palette entry (`B::Compact`) | "Compaction triggered - reducing context" — **false**: nothing was triggered | one of the two outcomes above |
-| the catalog's declared action (`TuiCommand::CompactSession`) | "Compaction will occur at end of current turn" — **unguaranteed**: the daemon compacts only when its threshold is crossed (`src/agent/context_runtime.rs:896`) | the same handler, the same outcome |
+| the catalog's declared action (`TuiCommand::CompactSession`) | "Compaction will occur at end of current turn" — **unguaranteed**: the daemon compacts only when its threshold is crossed (`src/agent/context_runtime.rs:905`) | the same handler, the same outcome |
 | the desktop | "`/compact` is a frontend effect; the desktop does not implement it yet" — **honest**, and unchanged | unchanged (§3.4) |
 
 The second surface was not obviously a false report, but it promised an
 effect the daemon does not guarantee: `compact_if_needed` returns without
 compacting unless `needs_context_compaction(...)` holds
-(`src/agent/context_runtime.rs:896`), and the turn's end is not a threshold
+(`src/agent/context_runtime.rs:905`), and the turn's end is not a threshold
 crossing. Both surfaces now land on one function.
 
 ### 3.2 No new protocol variant
@@ -113,7 +117,7 @@ Not touched: `crates/codegg-core/src/command_catalog.rs`,
 | Surface | Path | Disposition |
 |---|---|---|
 | the TUI's palette | `/compact` → `BuiltinSlashAction::Compact` (`src/tui/command.rs:628`) → `B::Compact` (`src/tui/app/mod.rs:6046`) | **corrected** — it reaches the handler |
-| the catalog's declared action | `compact` → `FrontendAction::CompactSession` (`crates/codegg-core/src/frontend_action.rs:393`) → `TuiCommand::CompactSession` → `handle_compact_session` | **corrected** — it already reached the handler, and it now produces the same truthful outcome |
+| the catalog's declared action | `compact` → `FrontendAction::CompactSession` (`crates/codegg-core/src/frontend_action.rs`) → `TuiCommand::CompactSession` → `handle_compact_session` | **corrected** — it already reached the handler, and it now produces the same truthful outcome. C002 later removed that frontend action and made `compact` a daemon effect (`crates/codegg-core/src/command_catalog.rs:586`) |
 | the desktop | the catalog's form → `apps/desktop/src/commands/frontendActions.ts:320` — the action is **not** among the nine the desktop carries, so it falls to the default arm | **not a false-reporting surface** — it reports "`/compact` is a frontend effect; the desktop does not implement it yet" (`apps/desktop/src/App.tsx:1510`). Recorded in §10.3 |
 
 The TUI's two surfaces are pinned to agree by

@@ -28,7 +28,7 @@ Planning basis:
   the command's behaviour silently. The owner-visible decision is *this*
   milestone's, so until it lands, `/compact`'s behaviour stays exactly as it
   is.
-- `plans/002-long-term-roadmap.md:899` — "Avoid accumulating incompatible local
+- `plans/002-long-term-roadmap.md:900` — "Avoid accumulating incompatible local
   meanings in phase plans." A command that reports a local effect it cannot
   produce is that failure in the command surface.
 
@@ -59,7 +59,8 @@ Make `/compact` **truthful**, and give the command a sender.
 
 ### The defect, exactly
 
-`src/tui/app/mod.rs:5989`:
+`src/tui/app/mod.rs:6046` — the `B::Compact` arm, in the form it had when this
+plan was written:
 
 ```rust
 B::Compact => {
@@ -76,10 +77,10 @@ is a message with no sender: it narrates an effect that never happened.
 
 - Compaction is **automatic and policy-driven**: `src/agent/policy.rs:16`
   carries `compaction_threshold`; `src/context/compaction.rs:23` is the
-  `ContextTracker`; `src/agent/loop.rs:1145` sets the tracker's threshold, and
+  `ContextTracker`; `src/agent/loop.rs:1161` sets the tracker's threshold, and
   the daemon applies the policy in `src/agent/context_runtime.rs:865`
   (`compact_if_needed`) — the threshold is read at `:874` and the compaction
-  decision is made at `:896`.
+  decision is made at `:905`.
 - The daemon reports each compaction back as `AppEvent::CompactionTriggered`,
   and the TUI already renders and counts it
   (`src/tui/runtime/app_events.rs:531`).

@@ -7,17 +7,18 @@ Status: closed (opened 2026-10-25 by the owner's direction; C001 and C002 closed
 A **corrective** line for one defect: the TUI's `/compact` command **claims
 work it never did**.
 
-`src/tui/app/mod.rs:5958` handles `B::Compact` by showing one toast —
-"Compaction triggered - reducing context" — and sending **nothing**. No
-request leaves the TUI, the daemon is not asked, and no compaction happens.
-The message is false on every invocation.
+Before this line closed, `src/tui/app/mod.rs:6046` handled `B::Compact` by
+showing one toast — "Compaction triggered - reducing context" — and sending
+**nothing**. No request left the TUI, the daemon was not asked, and no
+compaction happened. The message was false on every invocation. The arm now
+asks the daemon and reports its answer (§3, §4).
 
 Compaction itself is real and works: it is **automatic and policy-driven** in
 the daemon (`src/agent/policy.rs:16` carries `compaction_threshold`;
 `src/context/compaction.rs:23` is the `ContextTracker`;
-`src/agent/loop.rs:913` sets the tracker's threshold, and the daemon applies
-the policy in `src/agent/context_runtime.rs:827` (`compact_if_needed`) — the
-threshold is read at `:836` and the compaction decision is made at `:858`), and
+`src/agent/loop.rs:1161` sets the tracker's threshold, and the daemon applies
+the policy in `src/agent/context_runtime.rs:865` (`compact_if_needed`) — the
+threshold is read at `:874` and the compaction decision is made at `:905`), and
 the daemon reports each one back as `AppEvent::CompactionTriggered`, which the TUI
 already counts (`src/tui/runtime/app_events.rs:531`). **The defect is not
 that compaction is missing — it is that the command lies about having caused
@@ -74,8 +75,9 @@ palette's builtin arm toasted "Compaction triggered" and the catalog's
 declared action promised "Compaction will occur at end of current turn",
 which the daemon does not guarantee (`compact_if_needed` returns without
 compacting unless the threshold is crossed,
-`src/agent/context_runtime.rs:896`). Both now reach
-`src/tui/commands/tasks.rs:710`.
+`src/agent/context_runtime.rs:905`). Both then reached one handler,
+`src/tui/commands/tasks.rs`, which C002 moved to
+`src/tui/commands/compaction.rs:17`.
 
 The desktop is the line's **third** surface: it did not carry the
 `compact_session` action, so `/compact` there reported that it did not
@@ -90,6 +92,16 @@ the daemon performs the compaction through `compact_context`, the canonical
 engine, at its next compaction opportunity for the session, and the frontend
 reports the daemon's answer. The desktop's third surface is therefore closed
 by consequence: its palette routes a daemon-served form to the daemon.
+
+**Reconciled 2026-11-02.** Every `path:line` anchor in this roadmap, in the
+line's two plans, in its two closure records and in its registry rows was
+re-measured against the tree after `origin/main` moved on — the delegated
+usage-attribution change added lines to `src/agent/loop.rs` — and after C002
+moved the handler out of `src/tui/commands/tasks.rs` and removed
+`FrontendAction::CompactSession`. Each surviving anchor now names the line it
+claims; where C002 removed the symbol an anchor named, the anchor names the
+file instead. No decision, claim or test count changed: this is a pointer
+repair.
 
 ## 5. What this line must not do
 
