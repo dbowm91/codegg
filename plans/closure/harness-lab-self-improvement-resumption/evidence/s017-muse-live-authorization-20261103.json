@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "campaign_id": "s017-muse-v17-20261103",
+  "authorized_at": "2026-11-03",
+  "authorization_source": "explicit user authorization in conversation",
+  "maximum_started_runs": 20,
+  "route": "opencode_go/muse-spark-1.3-contributor",
+  "case_id": "build-provenance-catalog",
+  "manifest_path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v17/cases.jsonl",
+  "manifest_sha256": "402b3c1981a3ba5a53a4331a20825e5f6a7fd8479a5de6cae399aa0e618ba4bc",
+  "per_run_limits": {
+    "max_provider_requests": 750,
+    "max_wallclock_seconds": 3600,
+    "minimum_free_disk_bytes": 10737418240,
+    "maximum_activity_stall_seconds": 300,
+    "maximum_tool_stall_seconds": 300
+  },
+  "cancellation": [
+    "operator request",
+    "request or wall-clock cap reached",
+    "free-disk floor crossed or unreadable",
+    "300-second activity stall",
+    "provider-request admission becomes unobservable",
+    "sensitive-data exposure"
+  ],
+  "usd_cost_when_unreported": "unknown",
+  "sequential": true,
+  "runs_started": 0,
+  "runs": []
+}

@@ -54,6 +54,20 @@ class H007CaseAndResultTests(unittest.TestCase):
         self.assertTrue((case_root / "verifier").is_dir(), "the independent verifier is missing")
         self.assertEqual(files(packaged_fixture), files(STARTER))
 
+    def test_frozen_hashes_match_starter_and_leave_workspace_manifests_editable(self):
+        metadata = json.loads((BASE.parent / "build_provenance_catalog.case.json").read_text())
+        frozen = metadata["frozen_sha256"]
+        mutable_workspace_manifests = {
+            "Cargo.toml", "Cargo.lock", "catalog-cli/Cargo.toml",
+        }
+        self.assertTrue(mutable_workspace_manifests.isdisjoint(frozen))
+        self.assertTrue(frozen)
+        for label, root in (("starter", STARTER), ("reference", REFERENCE)):
+            for relative, expected in frozen.items():
+                path = root / relative
+                self.assertTrue(path.is_file(), f"missing frozen {label} input: {relative}")
+                self.assertEqual(_sha(path), expected, f"stale frozen {label} digest: {relative}")
+
     def test_h007_task_and_horizon_truth_table_is_independent(self):
         calls = [
             {"tool": "test", "started_elapsed_ms": 0, "finished_elapsed_ms": 10,
