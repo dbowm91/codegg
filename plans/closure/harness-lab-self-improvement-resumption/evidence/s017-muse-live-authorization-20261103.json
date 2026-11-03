@@ -25,7 +25,7 @@
   ],
   "usd_cost_when_unreported": "unknown",
   "sequential": true,
-  "runs_started": 7,
+  "runs_started": 8,
   "runs": [
     {
       "attempt": 1,
@@ -300,6 +300,51 @@
       "final_workspace_job_id": null,
       "final_workspace_passed_tests": null,
       "finding": "Attempt 7 exceeded 30 minutes active, but did not qualify. The priority full-workspace job failed before compilation because Cargo.lock was stale under --locked. A package check refreshed it; no full locked workspace rerun or verifier result followed. The agent left next_phase=verify_workspace and continuation false. The overall run then terminated with provider_timeout after repeated 120-second OpenCode Go stream stalls; it was not a task-completion pass or a hidden-verifier failure. Public stderr established the stale-lock cause; no private verifier source/output was accessed."
+    },
+    {
+      "attempt": 8,
+      "campaign_id": "s017-muse-v17-20261103",
+      "route": "opencode_go/muse-spark-1.3-contributor",
+      "manifest_path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v24/cases.jsonl",
+      "manifest_sha256": "84771c106cb08a9c75ead9b6b7eed7c0b8ba572b5c720e42bf4d434d0927419c",
+      "fixture_canonical_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+      "source_revision": "74763b598553125e4e2f6c81c0d8f9eaae2e7818",
+      "binary_sha256": "25cdef11543d434d0e9f0fc20c154ee72f8ec16ad078af956da616cb4e329f10",
+      "provider_requests": 364,
+      "request_cap": 750,
+      "duration_ms": 1102967,
+      "active_work_span_ms": 1093518,
+      "terminal": "completed",
+      "stop_reason": "end_turn",
+      "task_outcome": "failed",
+      "solved": false,
+      "verifier_exit_code": 1,
+      "verifier_tests_run": 5,
+      "verifier_failure_summary": "(failures=1)",
+      "verifier_duration_ms": 33531,
+      "verifier_output": "sealed; not inspected",
+      "horizon_outcome": "not_qualified",
+      "horizon_reason": "activity_span_short",
+      "exact_job_running_and_terminal": true,
+      "productive_work_during_job": true,
+      "repair_cycles": 15,
+      "continuation_confirmed": true,
+      "maximum_activity_gap_ms": 89415,
+      "event_gaps": 0,
+      "tool_started": 371,
+      "tool_terminal": 371,
+      "tool_unpaired_start": 0,
+      "minimum_free_disk_bytes": 220616421376,
+      "disk_floor_triggered": false,
+      "provider_cost_usd": 0.176098,
+      "provider_cost_when_unreported": "unknown",
+      "receipt_path": "/private/tmp/s017-muse-runs/attempt08.json",
+      "receipt_sha256": "90c66a92b42dec8b6fd6cdcce6573f6d426cbb49ddbb08c5ad419da351bf21a3",
+      "priority_job_id": "7d4b0d0e-6ed3-40be-ac0a-5da771a2fad6",
+      "priority_job_passed_tests": 19,
+      "final_workspace_job_id": "6de28a51-26d5-4f08-9546-4bbff8f6e597",
+      "final_workspace_passed_tests": 42,
+      "finding": "Attempt 8 demonstrates that the task was not completed successfully: the agent ended normally after 18m13s active, but the verifier reported one failure among five tests. It did complete all fifteen recorded phases, the exact priority job (19 tests with two edits while running), and a locked final workspace sweep (42 tests), with continuation complete. The hidden failure identity remains unknown because output is sealed. Therefore this was not early successful completion and did not qualify the 30-minute horizon. The corrected lockfile sequence is verified. The next diagnostic prompt adds a public acceptance matrix and edge-case audit without reading hidden verifier material."
     }
   ],
   "manifest_revisions": [
@@ -357,6 +402,14 @@
       "revision": 24,
       "path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v24/cases.jsonl",
       "sha256": "84771c106cb08a9c75ead9b6b7eed7c0b8ba572b5c720e42bf4d434d0927419c",
+      "used_by_attempts": [
+        8
+      ]
+    },
+    {
+      "revision": 25,
+      "path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v25/cases.jsonl",
+      "sha256": "a563b246b9fd0d2ac8a7596988e622dcc373d46e7c0a3e0cc1632832a58f0573",
       "used_by_attempts": []
     }
   ]
