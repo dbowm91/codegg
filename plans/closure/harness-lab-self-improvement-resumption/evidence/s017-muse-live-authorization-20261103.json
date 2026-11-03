@@ -25,6 +25,60 @@
   ],
   "usd_cost_when_unreported": "unknown",
   "sequential": true,
-  "runs_started": 0,
-  "runs": []
+  "runs_started": 1,
+  "runs": [
+    {
+      "attempt": 1,
+      "campaign_id": "s017-muse-v17-20261103",
+      "route": "opencode_go/muse-spark-1.3-contributor",
+      "manifest_path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v17/cases.jsonl",
+      "manifest_sha256": "402b3c1981a3ba5a53a4331a20825e5f6a7fd8479a5de6cae399aa0e618ba4bc",
+      "source_revision": "e9421e05ba784332f006ded0dd79457ce84f6162",
+      "binary_sha256": "25cdef11543d434d0e9f0fc20c154ee72f8ec16ad078af956da616cb4e329f10",
+      "provider_requests": 233,
+      "request_cap": 750,
+      "duration_ms": 1611575,
+      "active_work_span_ms": 1596475,
+      "terminal": "completed",
+      "stop_reason": "end_turn",
+      "task_outcome": "failed",
+      "solved": false,
+      "verifier_exit_code": 1,
+      "verifier_tests_run": 5,
+      "verifier_failure_summary": "(failures=1)",
+      "horizon_outcome": "not_qualified",
+      "horizon_reason": "activity_span_short",
+      "exact_job_running_and_terminal": true,
+      "productive_work_during_job": true,
+      "repair_cycles": 18,
+      "continuation_confirmed": true,
+      "maximum_activity_gap_ms": 59759,
+      "measurement_failures": 0,
+      "event_gaps": 0,
+      "tool_started": 242,
+      "tool_terminal": 242,
+      "tool_unpaired_start": 0,
+      "minimum_free_disk_bytes": 220531945472,
+      "disk_floor_triggered": false,
+      "provider_cost_usd": 0.106883,
+      "provider_cost_when_unreported": "unknown",
+      "receipt_path": "/private/tmp/s017-muse-runs/attempt01.json",
+      "receipt_sha256": "aacb6ac63f301d6a96b385dfba10f761977c9b7199aea7452d88e9e079dc88e9",
+      "finding": "The lane fixture contained the stale README from dev/autonomy_fixtures, not the synchronized H007 starter. The output README hash exactly matched that pre-run stale runtime source, while the frozen metadata expected the current README hash. The single verifier failure is likely this fixture-staging mismatch; verifier output was not inspected."
+    }
+  ],
+  "manifest_revisions": [
+    {
+      "path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v17/cases.jsonl",
+      "sha256": "402b3c1981a3ba5a53a4331a20825e5f6a7fd8479a5de6cae399aa0e618ba4bc",
+      "used_by_attempts": [
+        1
+      ]
+    },
+    {
+      "path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v18/cases.jsonl",
+      "sha256": "2558b3d03f0adc9b272462c2aae27e07bae4d4e292a8091996fb8646e0485589",
+      "used_by_attempts": []
+    }
+  ]
 }

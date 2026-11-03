@@ -55,6 +55,8 @@ class H007CaseAndResultTests(unittest.TestCase):
         self.assertEqual(files(packaged_fixture), files(STARTER))
 
     def test_frozen_hashes_match_starter_and_leave_workspace_manifests_editable(self):
+        from dev.harness_lab import autonomy_run
+
         metadata = json.loads((BASE.parent / "build_provenance_catalog.case.json").read_text())
         frozen = metadata["frozen_sha256"]
         mutable_workspace_manifests = {
@@ -62,7 +64,9 @@ class H007CaseAndResultTests(unittest.TestCase):
         }
         self.assertTrue(mutable_workspace_manifests.isdisjoint(frozen))
         self.assertTrue(frozen)
-        for label, root in (("starter", STARTER), ("reference", REFERENCE)):
+        runtime_fixture = autonomy_run.case_root(REPO_ROOT, "build-provenance-catalog") / "fixture"
+        for label, root in (("starter", STARTER), ("runtime", runtime_fixture),
+                            ("reference", REFERENCE)):
             for relative, expected in frozen.items():
                 path = root / relative
                 self.assertTrue(path.is_file(), f"missing frozen {label} input: {relative}")
