@@ -25,7 +25,7 @@
   ],
   "usd_cost_when_unreported": "unknown",
   "sequential": true,
-  "runs_started": 6,
+  "runs_started": 7,
   "runs": [
     {
       "attempt": 1,
@@ -256,6 +256,50 @@
       "final_workspace_job_id": "7d431548-5bca-41e9-a031-ad974c5371a2",
       "final_workspace_passed_tests": 45,
       "finding": "Attempt 6 qualified the sustained horizon and job gates: 53m49s active, 22 repair cycles, exact priority job running->completed with two edits while running, continuation, and complete event capture. The independent verifier still exited after 240408 ms with zero tests and one error; private output remains uninspected. A public fresh debug workspace run passed all preceding targets, then remained at full CPU in the frozen catalog-query impact_scale target for over seven minutes; operator-cancelled. Targeted release query/scale runs passed. This makes a debug-path runtime timeout in verifier setup likely, not confirmed."
+    },
+    {
+      "attempt": 7,
+      "campaign_id": "s017-muse-v17-20261103",
+      "route": "opencode_go/muse-spark-1.3-contributor",
+      "manifest_path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v23/cases.jsonl",
+      "manifest_sha256": "c644badea0601ace04765acf3ed7bfc9e8628dfed40532535f1d93b9150d842e",
+      "fixture_canonical_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+      "source_revision": "74763b598553125e4e2f6c81c0d8f9eaae2e7818",
+      "binary_sha256": "25cdef11543d434d0e9f0fc20c154ee72f8ec16ad078af956da616cb4e329f10",
+      "provider_requests": 107,
+      "request_cap": 750,
+      "duration_ms": 2351534,
+      "active_work_span_ms": 2103030,
+      "terminal": "failed",
+      "stop_reason": null,
+      "task_outcome": "inconclusive",
+      "solved": false,
+      "verifier_exit_code": null,
+      "verifier_tests_run": null,
+      "verifier_failure_summary": "not run; task remained at verify_workspace",
+      "verifier_duration_ms": null,
+      "horizon_outcome": "not_qualified",
+      "horizon_reason": "measurement_incomplete",
+      "exact_job_running_and_terminal": true,
+      "productive_work_during_job": true,
+      "repair_cycles": 3,
+      "continuation_confirmed": false,
+      "maximum_activity_gap_ms": 210258,
+      "event_gaps": 0,
+      "tool_started": 107,
+      "tool_terminal": 107,
+      "tool_unpaired_start": 0,
+      "minimum_free_disk_bytes": 220197535744,
+      "disk_floor_triggered": false,
+      "provider_cost_usd": 0.065766,
+      "provider_cost_when_unreported": "unknown",
+      "receipt_path": "/private/tmp/s017-muse-runs/attempt07.json",
+      "receipt_sha256": "88d5172a19415c067a80ac2bf85d7643f11da5d295a651a593a5180541803e5b",
+      "priority_job_id": "aae97a76-2103-4975-9bb7-d02fef2a5d4b",
+      "priority_job_passed_tests": null,
+      "final_workspace_job_id": null,
+      "final_workspace_passed_tests": null,
+      "finding": "Attempt 7 exceeded 30 minutes active, but did not qualify. The priority full-workspace job failed before compilation because Cargo.lock was stale under --locked. A package check refreshed it; no full locked workspace rerun or verifier result followed. The agent left next_phase=verify_workspace and continuation false. The overall run then terminated with provider_timeout after repeated 120-second OpenCode Go stream stalls; it was not a task-completion pass or a hidden-verifier failure. Public stderr established the stale-lock cause; no private verifier source/output was accessed."
     }
   ],
   "manifest_revisions": [
@@ -305,6 +349,14 @@
       "revision": 23,
       "path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v23/cases.jsonl",
       "sha256": "c644badea0601ace04765acf3ed7bfc9e8628dfed40532535f1d93b9150d842e",
+      "used_by_attempts": [
+        7
+      ]
+    },
+    {
+      "revision": 24,
+      "path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v24/cases.jsonl",
+      "sha256": "84771c106cb08a9c75ead9b6b7eed7c0b8ba572b5c720e42bf4d434d0927419c",
       "used_by_attempts": []
     }
   ]

@@ -1,6 +1,6 @@
 # S017 — Muse Spark v17 H007 requalification
 
-Status: **authorized; 1 of 20 runs started**
+Status: **authorized; 7 of 20 runs started**
 
 ## Objective
 
@@ -50,3 +50,10 @@ The corrective now aligns stall detection with the qualification metric by count
 Attempt 6 is the first run to meet the sustained horizon and exact-job gates together: 53m49s active, 22 repairs, the designated job completed with two productive edits during its running state, full continuation, and no event gaps. The final release workspace suite passed 45 tests. The independent verifier still exited at 240,408 ms with zero tests and one error; its private output was not inspected. A fresh public debug workspace sweep remained in the frozen impact-scale test for over seven minutes before operator cancellation, while the task's targeted release scale run passed. A verifier debug setup timeout is likely but unconfirmed.
 
 Prompt v23 directs the model to profile and optimize the public impact-view implementation so the unchanged frozen debug workspace suite can complete within the observed verifier window, without changing tests or verifier. Manifest SHA-256: `c644badea0601ace04765acf3ed7bfc9e8628dfed40532535f1d93b9150d842e`.
+
+
+## Attempt 7 result and next prompt revision
+
+Attempt 7 exceeded the 30-minute active-work threshold, but did not qualify. The exact public failure was a stale Cargo.lock at the priority `cargo test --offline --locked --workspace` job. After a non-locked package check refreshed the lock, the model did not rerun the full locked workspace suite; it left `next_phase: verify_workspace`. The independent verifier did not run. The session later ended on four 120-second OpenCode Go stream-idle failures and retry-chain expiry, with no native-activity stall and complete event capture. Do not classify this as a successful implementation or verifier failure.
+
+Prompt v24 explicitly has the model generate the lockfile offline after all local workspace members/dependencies are registered, run focused and unlocked workspace checks, freeze manifests/lockfile, then execute and observe the designated locked workspace job. It forbids changing manifests after job submission. Provider diagnostics are recorded, but no production provider timeout is widened: the measured stall was upstream and the retry/300-second activity bounds behaved as configured. Continue within the same 20-run authorization, only on the Muse Spark route.

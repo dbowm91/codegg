@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "attempt": 7,
+  "campaign_id": "s017-muse-v17-20261103",
+  "route": "opencode_go/muse-spark-1.3-contributor",
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "manifest_path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v23/cases.jsonl",
+  "manifest_sha256": "c644badea0601ace04765acf3ed7bfc9e8628dfed40532535f1d93b9150d842e",
+  "fixture_canonical_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "source_revision": "74763b598553125e4e2f6c81c0d8f9eaae2e7818",
+  "binary_sha256": "25cdef11543d434d0e9f0fc20c154ee72f8ec16ad078af956da616cb4e329f10",
+  "receipt_path": "/private/tmp/s017-muse-runs/attempt07.json",
+  "receipt_sha256": "88d5172a19415c067a80ac2bf85d7643f11da5d295a651a593a5180541803e5b",
+  "session_id": "dbf3d24a-42aa-4ccd-aba6-4fc46586ae1d",
+  "duration_ms": 2351534,
+  "active_work_span_ms": 2103030,
+  "first_activity_elapsed_ms": 3551,
+  "last_activity_elapsed_ms": 2106581,
+  "task_outcome": "inconclusive",
+  "solved": false,
+  "agent_terminal": "failed",
+  "verifier_ran": false,
+  "verifier_confirmed": false,
+  "priority_job": {
+    "id": "aae97a76-2103-4975-9bb7-d02fef2a5d4b",
+    "terminal": "failed",
+    "failure": "Cargo.lock needed updating while --locked was passed; public stderr recorded before compilation"
+  },
+  "later_package_checks": [
+    {
+      "command": "cargo test --offline -p catalog-bundle",
+      "outcome": "passed; lockfile refreshed without --locked"
+    },
+    {
+      "command": "cargo test --offline --locked -p catalog-query",
+      "outcome": "passed"
+    }
+  ],
+  "full_locked_workspace_rerun_after_lock_refresh": false,
+  "continuation_confirmed": false,
+  "next_phase_recorded": "verify_workspace",
+  "implementation_phases_listed": 15,
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "measurement_incomplete",
+  "duration_qualified": true,
+  "exact_job_running_and_terminal": true,
+  "productive_work_during_job": true,
+  "repair_cycles": 3,
+  "maximum_activity_gap_ms": 210258,
+  "maximum_activity_gap_limit_ms": 300000,
+  "activity_stall_triggered": false,
+  "provider_terminal_failure": "provider_timeout",
+  "provider_diagnostics": "Four stream attempts logged zero decoded events and reached the 120-second stream idle timeout; the bounded retry chain then expired. The safe case debug log records provider_stream_idle_timeout and provider retry chain deadline reached.",
+  "provider_requests": 107,
+  "request_cap": 750,
+  "provider_cost_usd": 0.065766,
+  "provider_cost_when_unreported": "unknown",
+  "minimum_free_disk_bytes": 220197535744,
+  "disk_floor_triggered": false,
+  "causal_trace": {
+    "state": "complete",
+    "event_count": 245,
+    "dropped_events": 0,
+    "sha256": "7c381e968bbc1611e2beaf363f6bd83e9ff65459b9bd676a00d393ed7a6ed46a"
+  },
+  "native_tool_started": 107,
+  "native_tool_terminal": 107,
+  "event_gaps": 0,
+  "unpaired_tool_starts": 0,
+  "finding": "Attempt 7 exceeded 30 minutes active, but did not qualify. The priority full-workspace job failed before compilation because Cargo.lock was stale under --locked. A package check refreshed it; no full locked workspace rerun or verifier result followed. The agent left next_phase=verify_workspace and continuation false. The overall run then terminated with provider_timeout after repeated 120-second OpenCode Go stream stalls; it was not a task-completion pass or a hidden-verifier failure."
+}

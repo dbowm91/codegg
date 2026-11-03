@@ -1,6 +1,6 @@
 # S017 status — Muse Spark v17 H007 requalification
 
-Status: **authorized; 1 of 20 runs started**
+Status: **authorized; 7 of 20 runs started**
 
 The user authorized up to 20 sequential runs on `opencode_go/muse-spark-1.3-contributor`. Per-run limits: 750 requests, 3,600 seconds, 10 GiB free disk, and cancellation at a 300-second activity stall. USD cost is recorded when available and `unknown` otherwise. Initial v17 SHA-256: `402b3c1981a3ba5a53a4331a20825e5f6a7fd8479a5de6cae399aa0e618ba4bc`; v18 SHA-256: `2558b3d03f0adc9b272462c2aae27e07bae4d4e292a8091996fb8646e0485589`. Authorization ledger: `plans/closure/harness-lab-self-improvement-resumption/evidence/s017-muse-live-authorization-20261103.json`.
 
@@ -52,3 +52,14 @@ Attempt 6 used v22 and qualified the active-work horizon after 53m49s, with 22 r
 The independent verifier again exited after 240,408 ms with zero tests and one error. Private verifier output remains uninspected. A separate fresh public debug workspace run passed its earlier targets and then stayed at full CPU in the frozen `catalog-query/tests/impact_scale.rs` test for over seven minutes; that local run was operator-cancelled. This makes debug-path runtime in the verifier setup a likely cause, not a confirmed one. The run used 738/750 requests, reported $0.390768, and retained at least 222,916,632,576 bytes free. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s017-run-06-summary.json`.
 
 Prompt v23 asks the agent to profile and reduce debug-path impact-view cost while preserving the frozen scale test and all correctness properties. Manifest SHA-256: `c644badea0601ace04765acf3ed7bfc9e8628dfed40532535f1d93b9150d842e`.
+
+
+## Attempt 7
+
+Attempt 7 used v23 and ran for 39m11s, with a 35m03s active-work span. It used 107/750 provider requests, reported $0.065766, retained at least 220,197,535,744 bytes free, and captured all 107 native tool starts and terminals with no event gaps. Maximum activity gap was 210,258 ms. The duration and exact-job gates were observed, with productive work during a running job and three repair cycles, but horizon measurement was incomplete and continuation was false. The receipt is `task_outcome=inconclusive`, `solved=false`; this is not a task or qualification pass.
+
+The public `CONTINUATION.md` listed fifteen implementation phases but remained at `next_phase: verify_workspace`. The priority full-workspace job (`aae97a76-2103-4975-9bb7-d02fef2a5d4b`) failed before compilation because the locked Cargo invocation required a lockfile update. Its public stderr stated that `Cargo.lock` needed updating while `--locked` was passed. A later package test without `--locked` passed and refreshed the lockfile, and a locked package-scoped query test passed, but no full locked workspace sweep was recorded after the refresh. The independent verifier did not run.
+
+The run then terminated with `provider_timeout`. Safe CodeGG diagnostics show four OpenCode Go streams with zero decoded events reaching the 120-second stream idle timeout, followed by retry-chain expiry. The 300-second native-activity stall guard did not trigger. This is an upstream stream timeout observed by the harness, while the immediate task-corrective is to refresh and freeze `Cargo.lock` before submitting the locked workspace gate. No provider/model switch or timeout expansion is justified by this evidence. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s017-run-07-summary.json`.
+
+Prompt v24 preserves the task and qualification gates, explicitly requires offline lockfile generation before the locked workspace job, and forbids manifest/lockfile edits after that job starts. Manifest SHA-256: `84771c106cb08a9c75ead9b6b7eed7c0b8ba572b5c720e42bf4d434d0927419c`.
