@@ -25,7 +25,7 @@
   ],
   "usd_cost_when_unreported": "unknown",
   "sequential": true,
-  "runs_started": 3,
+  "runs_started": 4,
   "runs": [
     {
       "attempt": 1,
@@ -143,6 +143,52 @@
       "receipt_path": "/private/tmp/s017-muse-runs/attempt03.json",
       "receipt_sha256": "95807b4e1954b189a6353aa318158997856bd752cee68c345115d56490bd2c11",
       "finding": "All recorded phases and the final 49-test workspace sweep completed, but the designated overlap job was deferred until the end and had no productive edit between running and completion. Public-code review found that catalog-query::diff changed the established added/removed row format compared with the passing v18 output/reference; this is the likely cause of the single hidden verifier failure, not confirmed by private output."
+    },
+    {
+      "attempt": 4,
+      "campaign_id": "s017-muse-v17-20261103",
+      "route": "opencode_go/muse-spark-1.3-contributor",
+      "manifest_path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v20/cases.jsonl",
+      "manifest_sha256": "b56d958281992f3079b40f055445adde940e6cd6e5f7e91f40448248806e4e4b",
+      "source_revision": "9bfca5a3469d5199537da7372c15fbc566a0bb32",
+      "binary_sha256": "25cdef11543d434d0e9f0fc20c154ee72f8ec16ad078af956da616cb4e329f10",
+      "provider_requests": 147,
+      "request_cap": 750,
+      "duration_ms": 2075307,
+      "active_work_span_ms": 2061707,
+      "terminal": "completed",
+      "stop_reason": "end_turn",
+      "task_outcome": "failed",
+      "solved": false,
+      "verifier_exit_code": 1,
+      "verifier_tests_run": 0,
+      "verifier_failure_summary": "(errors=1)",
+      "horizon_outcome": "not_qualified",
+      "horizon_reason": "job_lifecycle_missing",
+      "exact_job_running_and_terminal": false,
+      "productive_work_during_job": false,
+      "repair_cycles": 14,
+      "continuation_confirmed": true,
+      "maximum_activity_gap_ms": 300138,
+      "measurement_failures": 0,
+      "event_gaps": 0,
+      "tool_started": 154,
+      "tool_terminal": 154,
+      "tool_unpaired_start": 0,
+      "minimum_free_disk_bytes": 218441805824,
+      "disk_floor_triggered": false,
+      "provider_cost_usd": 0.071682,
+      "provider_cost_when_unreported": "unknown",
+      "receipt_path": "/private/tmp/s017-muse-runs/attempt04.json",
+      "receipt_sha256": "221f363dab1ed924a22aea2d9c70ccc161a6665e09bd917a1f8daeceb5e80d87",
+      "fixture_canonical_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+      "priority_job_id": "6cda90e1-3d74-49b1-8ac6-27c6b05d594d",
+      "priority_job_terminal": "failed",
+      "blocking_wait_job_id": "fcf8f8ac-d58c-4f89-a0f8-74f256bfa532",
+      "blocking_wait_duration_ms": 300138,
+      "final_workspace_job_id": "d30e871e-9ce2-42d8-87b3-fdbde052f8d0",
+      "final_workspace_passed_tests": 44,
+      "finding": "18 task phases completed; final workspace suite passed 44 tests. Priority job was observed running, had two productive edits during execution, then failed 20 passed/1 failed. A blocking job wait lasted 300138 ms and caused max activity gap 300138 ms, 138 ms over the bound. The independent verifier exited after 240465 ms with 0 tests and 1 error; private output was not inspected. No provider, disk, or event-capture fault occurred. The actual campaign manifest was v20 SHA b56d958281992f3079b40f055445adde940e6cd6e5f7e91f40448248806e4e4b; the runner receipt field manifest_sha256 instead reports fixture canonical hash c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358."
     }
   ],
   "manifest_revisions": [
@@ -168,6 +214,14 @@
     {
       "path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v20/cases.jsonl",
       "sha256": "b56d958281992f3079b40f055445adde940e6cd6e5f7e91f40448248806e4e4b",
+      "used_by_attempts": [
+        4
+      ]
+    },
+    {
+      "revision": 21,
+      "path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v21/cases.jsonl",
+      "sha256": "11370f39d0acc75b90363ad340b116ab0f9dd7bf9760b91faae2e76e3cb070f6",
       "used_by_attempts": []
     }
   ]
