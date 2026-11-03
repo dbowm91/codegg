@@ -467,7 +467,7 @@ class _ActivityStallWatcher:
         while not self.stop_event.wait(self.poll_seconds):
             notifications = self.client.notifications
             for notification in notifications[self._absorbed:]:
-                if notification.get("method") == "session/update":
+                if self._is_tool_activity(notification):
                     self._last_activity = time.monotonic()
                 self._absorbed += 1
             if time.monotonic() - self._last_activity < self.stall_seconds:
@@ -478,6 +478,22 @@ class _ActivityStallWatcher:
             except (HarnessError, OSError, BrokenPipeError) as error:
                 self.cancel_error = type(error).__name__
             return
+
+    @staticmethod
+    def _is_tool_activity(notification: dict[str, Any]) -> bool:
+        """Count only tool-call boundaries as activity for sustained work.
+
+        Message chunks and other session updates can continue while the agent
+        makes no tool progress. Resetting the stall clock for those updates
+        allowed a silent tool gap to exceed the same limit used by qualification.
+        """
+        if notification.get("method") != "session/update":
+            return False
+        params = notification.get("params", {})
+        update = params.get("update", {}) if isinstance(params, dict) else {}
+        return isinstance(update, dict) and update.get("sessionUpdate") in {
+            "tool_call", "tool_call_update"
+        }
 
 
 def _observed_tool_calls(client: AcpClient) -> list[dict[str, Any]]:
@@ -653,10 +669,7 @@ def _duration_qualified(case_id: str, duration_ms: int,
     first_activity_ms = min(activity_times)
     last_activity_ms = max(activity_times)
     active_work_span_ms = last_activity_ms - first_activity_ms
-    maximum_activity_gap_ms = max(
-        (later - earlier for earlier, later in zip(activity_times, activity_times[1:])),
-        default=0,
-    )
+    maximum_activity_gap_ms = _maximum_activity_gap_ms(duration_ms, tool_calls)
     minimum = (H007_MIN_ACTIVE_DURATION_MS if case_id == H007_CASE_ID
                else H006_MIN_ACTIVE_DURATION_MS)
     maximum_gap = (H007_MAX_ACTIVITY_GAP_MS if case_id == H007_CASE_ID
@@ -675,6 +688,18 @@ def _activity_elapsed_ms(tool_calls: list[dict[str, Any]]) -> list[int]:
         for elapsed_ms in (call.get("started_elapsed_ms"), call.get("finished_elapsed_ms"))
         if isinstance(elapsed_ms, int) and not isinstance(elapsed_ms, bool)
     )
+
+
+def _maximum_activity_gap_ms(duration_ms: int,
+                             tool_calls: list[dict[str, Any]]) -> int:
+    """Measure gaps between tool events, including inactivity at turn end."""
+    activity_times = _activity_elapsed_ms(tool_calls)
+    if not activity_times:
+        return 0
+    gaps = [later - earlier for earlier, later in zip(activity_times, activity_times[1:])]
+    if duration_ms > activity_times[-1]:
+        gaps.append(duration_ms - activity_times[-1])
+    return max(gaps, default=0)
 
 
 def _active_work_span_ms(tool_calls: list[dict[str, Any]]) -> int:
@@ -1347,11 +1372,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     first_activity_elapsed_ms = min(activity_times) if activity_times else None
     last_activity_elapsed_ms = max(activity_times) if activity_times else None
     active_work_span_ms = _active_work_span_ms(tool_calls)
-    activity_times = _activity_elapsed_ms(tool_calls)
-    maximum_activity_gap_ms = max(
-        (later - earlier for earlier, later in zip(activity_times, activity_times[1:])),
-        default=0,
-    )
+    maximum_activity_gap_ms = _maximum_activity_gap_ms(duration_ms, tool_calls)
     duration_qualified = _duration_qualified(case.case_id, duration_ms, tool_calls)
     solved = bool(verifier_confirmed and terminal == "completed" and not case.protected
                   and (case.case_id == H007_CASE_ID or duration_qualified))

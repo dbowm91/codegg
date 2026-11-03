@@ -25,7 +25,7 @@
   ],
   "usd_cost_when_unreported": "unknown",
   "sequential": true,
-  "runs_started": 4,
+  "runs_started": 5,
   "runs": [
     {
       "attempt": 1,
@@ -189,6 +189,29 @@
       "final_workspace_job_id": "d30e871e-9ce2-42d8-87b3-fdbde052f8d0",
       "final_workspace_passed_tests": 44,
       "finding": "18 task phases completed; final workspace suite passed 44 tests. Priority job was observed running, had two productive edits during execution, then failed 20 passed/1 failed. A blocking job wait lasted 300138 ms and caused max activity gap 300138 ms, 138 ms over the bound. The independent verifier exited after 240465 ms with 0 tests and 1 error; private output was not inspected. No provider, disk, or event-capture fault occurred. The actual campaign manifest was v20 SHA b56d958281992f3079b40f055445adde940e6cd6e5f7e91f40448248806e4e4b; the runner receipt field manifest_sha256 instead reports fixture canonical hash c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358."
+    },
+    {
+      "attempt": 5,
+      "campaign_id": "s017-muse-v17-20261103",
+      "route": "opencode_go/muse-spark-1.3-contributor",
+      "manifest_path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v21/cases.jsonl",
+      "manifest_sha256": "11370f39d0acc75b90363ad340b116ab0f9dd7bf9760b91faae2e76e3cb070f6",
+      "source_revision": "8f15e587cc30230f635146317a0cd6c3f9d3ff37",
+      "binary_sha256": "25cdef11543d434d0e9f0fc20c154ee72f8ec16ad078af956da616cb4e329f10",
+      "provider_request_number_at_cancel": 745,
+      "request_cap": 750,
+      "terminal": "cancelled",
+      "task_outcome": "inconclusive",
+      "verifier_ran": false,
+      "tool_active_span_ms": 2609261,
+      "tool_started": 636,
+      "tool_terminal": 636,
+      "tool_unpaired_start": 0,
+      "event_gaps": 0,
+      "minimum_free_disk_bytes": 218081300480,
+      "disk_floor_triggered": false,
+      "receipt_path": null,
+      "finding": "The ACP request remained blocked in session/prompt after the last native tool event; provider request admissions continued to request 745/750 while no tool event occurred for more than the authorized 300-second stall bound. The harness did not cancel because its stall watcher reset on every session/update, including streamed message chunks. The attempt was interrupted with SIGINT after the bound, producing KeyboardInterrupt in the ACP selector; no final receipt or verifier result exists. There were 636 completed tool calls with no unpaired event and over 43 minutes of observed tool work before the final stall, but qualification cannot be claimed."
     }
   ],
   "manifest_revisions": [
@@ -222,6 +245,14 @@
       "revision": 21,
       "path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v21/cases.jsonl",
       "sha256": "11370f39d0acc75b90363ad340b116ab0f9dd7bf9760b91faae2e76e3cb070f6",
+      "used_by_attempts": [
+        5
+      ]
+    },
+    {
+      "revision": 22,
+      "path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v22/cases.jsonl",
+      "sha256": "ccbe0d8585c3bd6a965ad0a0a89c8e1e34c9681758e9856817bca6b760b4b128",
       "used_by_attempts": []
     }
   ]

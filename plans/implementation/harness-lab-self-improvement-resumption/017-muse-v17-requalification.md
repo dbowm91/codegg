@@ -40,3 +40,8 @@ Attempt 4 used v20 and exceeded 30 minutes of active work, but did not qualify: 
 The receipt also exposed an evidence attribution gap: `manifest_sha256` names the fixture's canonical H007 manifest instead of the selected campaign manifest. The runner now adds `requested_manifest_sha256`, propagated from the loaded suite. Focused provenance and refusal tests pass.
 
 Prompt v21 bans blocking job waits, requires nonblocking status polls, requires known test failures to be repaired before the one qualifying job, and explicitly records the prior verifier setup error as unresolved. Manifest SHA-256: `11370f39d0acc75b90363ad340b116ab0f9dd7bf9760b91faae2e76e3cb070f6`.
+
+
+Attempt 5 used v21 and made over 43 minutes of tool progress, with 636 complete calls and no event gaps. It then continued to admit provider requests through request 745/750 while making no native tool calls for more than 300 seconds. I cancelled the blocked ACP turn under the authorized stall rule. The runner's watcher had treated all `session/update` notifications as activity, so streamed assistant text hid the tool stall. The verifier did not run; task outcome is inconclusive.
+
+The corrective now aligns stall detection with the qualification metric by counting only native tool start/terminal events, and qualification measures the final silent interval as well. Focused watcher and trailing-gap regressions pass. Prompt v22 makes this tool-progress boundary explicit. Manifest SHA-256: `ccbe0d8585c3bd6a965ad0a0a89c8e1e34c9681758e9856817bca6b760b4b128`.
