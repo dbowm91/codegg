@@ -1,6 +1,6 @@
 # S017 status — Muse Spark v17 H007 requalification
 
-Status: **authorized; 7 of 20 runs started**
+Status: **authorized; 8 of 20 runs started**
 
 The user authorized up to 20 sequential runs on `opencode_go/muse-spark-1.3-contributor`. Per-run limits: 750 requests, 3,600 seconds, 10 GiB free disk, and cancellation at a 300-second activity stall. USD cost is recorded when available and `unknown` otherwise. Initial v17 SHA-256: `402b3c1981a3ba5a53a4331a20825e5f6a7fd8479a5de6cae399aa0e618ba4bc`; v18 SHA-256: `2558b3d03f0adc9b272462c2aae27e07bae4d4e292a8091996fb8646e0485589`. Authorization ledger: `plans/closure/harness-lab-self-improvement-resumption/evidence/s017-muse-live-authorization-20261103.json`.
 
@@ -63,3 +63,12 @@ The public `CONTINUATION.md` listed fifteen implementation phases but remained a
 The run then terminated with `provider_timeout`. Safe CodeGG diagnostics show four OpenCode Go streams with zero decoded events reaching the 120-second stream idle timeout, followed by retry-chain expiry. The 300-second native-activity stall guard did not trigger. This is an upstream stream timeout observed by the harness, while the immediate task-corrective is to refresh and freeze `Cargo.lock` before submitting the locked workspace gate. No provider/model switch or timeout expansion is justified by this evidence. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s017-run-07-summary.json`.
 
 Prompt v24 preserves the task and qualification gates, explicitly requires offline lockfile generation before the locked workspace job, and forbids manifest/lockfile edits after that job starts. Manifest SHA-256: `84771c106cb08a9c75ead9b6b7eed7c0b8ba572b5c720e42bf4d434d0927419c`.
+
+
+## Attempt 8
+
+Attempt 8 used v24 and ended normally after 18m23s elapsed / 18m13s active. The lockfile correction worked: priority job `7d4b0d0e-6ed3-40be-ac0a-5da771a2fad6` completed with 19 tests after two source edits while running, and final locked workspace job `6de28a51-26d5-4f08-9546-4bbff8f6e597` completed with 42 tests. The continuation recorded all fifteen phases and `next_phase: none`; 15 repair cycles were recorded. Event capture was complete (371/371), with no event gaps and a maximum gap of 89,415 ms. It used 364/750 requests, reported $0.176098, and retained at least 220,616,421,376 bytes free.
+
+The independent verifier ran five tests and returned one failure. Its output remains sealed and uninspected. Therefore `task_outcome=failed`, `solved=false`; the implementation is not qualified even though the workspace suite and continuation passed. Active work was only 18m13s, so the 30-minute horizon was not observed. This is a task failure, not an early successful completion. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s017-run-08-summary.json`.
+
+Prompt v25 makes the next live run a diagnostic/corrective pass: it requires a public acceptance matrix mapping every frozen contract and added capability to implementation and assertion-bearing tests, without accessing private verifier material. Manifest SHA-256: `a563b246b9fd0d2ac8a7596988e622dcc373d46e7c0a3e0cc1632832a58f0573`.

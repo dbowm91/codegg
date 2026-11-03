@@ -1,6 +1,6 @@
 # S017 — Muse Spark v17 H007 requalification
 
-Status: **authorized; 7 of 20 runs started**
+Status: **authorized; 8 of 20 runs started**
 
 ## Objective
 
@@ -57,3 +57,10 @@ Prompt v23 directs the model to profile and optimize the public impact-view impl
 Attempt 7 exceeded the 30-minute active-work threshold, but did not qualify. The exact public failure was a stale Cargo.lock at the priority `cargo test --offline --locked --workspace` job. After a non-locked package check refreshed the lock, the model did not rerun the full locked workspace suite; it left `next_phase: verify_workspace`. The independent verifier did not run. The session later ended on four 120-second OpenCode Go stream-idle failures and retry-chain expiry, with no native-activity stall and complete event capture. Do not classify this as a successful implementation or verifier failure.
 
 Prompt v24 explicitly has the model generate the lockfile offline after all local workspace members/dependencies are registered, run focused and unlocked workspace checks, freeze manifests/lockfile, then execute and observe the designated locked workspace job. It forbids changing manifests after job submission. Provider diagnostics are recorded, but no production provider timeout is widened: the measured stall was upstream and the retry/300-second activity bounds behaved as configured. Continue within the same 20-run authorization, only on the Muse Spark route.
+
+
+## Attempt 8 result and diagnostic follow-up
+
+Attempt 8 confirms the lockfile correction: the designated priority job passed 19 tests with the two required edits during its running state, and the final locked workspace sweep passed 42. All fifteen phase labels and `next_phase: none` were recorded. The task still failed its independent verifier (one failure among five tests; output sealed) and ended after only 18m13s of active work. It did not qualify and was not a successful early finish.
+
+No verifier-specific cause is inferred. Prompt v25 asks for a public acceptance matrix covering each frozen README/contract item and every added capability, mapping requirements to implementation and assertion-bearing tests; it preserves frozen inputs and hidden-verifier isolation. Continue within the original authorization.
