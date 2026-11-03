@@ -43,3 +43,12 @@ Attempt 5 was cancelled after the authorized 300-second tool-activity stall. It 
 The stall watcher reset on every `session/update`, including streamed assistant message chunks, while the qualification gap metric counts only native tool-call boundaries. Provider traffic could therefore keep the watcher alive during a tool-free gap. The watcher now resets only on `tool_call` and `tool_call_update`; qualification also includes trailing silence from the last tool event to turn termination. Focused production-shaped regressions pass.
 
 Prompt v22 explains that streamed text and provider traffic do not count as productive activity and retains nonblocking exact-ID job polling. Manifest SHA-256: `ccbe0d8585c3bd6a965ad0a0a89c8e1e34c9681758e9856817bca6b760b4b128`.
+
+
+## Attempt 6
+
+Attempt 6 used v22 and qualified the active-work horizon after 53m49s, with 22 repair cycles, complete event capture, and continuation evidence. The priority workspace job (`52fe9651-feb2-4532-8fda-7e759aa81e74`) was observed running and completed with 41 tests while two edits occurred; the final release workspace sweep passed 45 tests, and targeted release query/scale checks passed.
+
+The independent verifier again exited after 240,408 ms with zero tests and one error. Private verifier output remains uninspected. A separate fresh public debug workspace run passed its earlier targets and then stayed at full CPU in the frozen `catalog-query/tests/impact_scale.rs` test for over seven minutes; that local run was operator-cancelled. This makes debug-path runtime in the verifier setup a likely cause, not a confirmed one. The run used 738/750 requests, reported $0.390768, and retained at least 222,916,632,576 bytes free. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s017-run-06-summary.json`.
+
+Prompt v23 asks the agent to profile and reduce debug-path impact-view cost while preserving the frozen scale test and all correctness properties. Manifest SHA-256: `c644badea0601ace04765acf3ed7bfc9e8628dfed40532535f1d93b9150d842e`.

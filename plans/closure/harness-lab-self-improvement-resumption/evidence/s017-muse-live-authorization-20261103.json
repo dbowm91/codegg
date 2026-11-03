@@ -25,7 +25,7 @@
   ],
   "usd_cost_when_unreported": "unknown",
   "sequential": true,
-  "runs_started": 5,
+  "runs_started": 6,
   "runs": [
     {
       "attempt": 1,
@@ -212,6 +212,50 @@
       "disk_floor_triggered": false,
       "receipt_path": null,
       "finding": "The ACP request remained blocked in session/prompt after the last native tool event; provider request admissions continued to request 745/750 while no tool event occurred for more than the authorized 300-second stall bound. The harness did not cancel because its stall watcher reset on every session/update, including streamed message chunks. The attempt was interrupted with SIGINT after the bound, producing KeyboardInterrupt in the ACP selector; no final receipt or verifier result exists. There were 636 completed tool calls with no unpaired event and over 43 minutes of observed tool work before the final stall, but qualification cannot be claimed."
+    },
+    {
+      "attempt": 6,
+      "campaign_id": "s017-muse-v17-20261103",
+      "route": "opencode_go/muse-spark-1.3-contributor",
+      "manifest_path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v22/cases.jsonl",
+      "manifest_sha256": "ccbe0d8585c3bd6a965ad0a0a89c8e1e34c9681758e9856817bca6b760b4b128",
+      "fixture_canonical_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+      "source_revision": "77abdfa04b6e28ea2a92afdd3eb87877bc89646b",
+      "binary_sha256": "25cdef11543d434d0e9f0fc20c154ee72f8ec16ad078af956da616cb4e329f10",
+      "provider_requests": 738,
+      "request_cap": 750,
+      "duration_ms": 3243122,
+      "active_work_span_ms": 3229340,
+      "terminal": "completed",
+      "stop_reason": "end_turn",
+      "task_outcome": "failed",
+      "solved": false,
+      "verifier_exit_code": 1,
+      "verifier_tests_run": 0,
+      "verifier_failure_summary": "(errors=1)",
+      "verifier_duration_ms": 240408,
+      "horizon_outcome": "qualified",
+      "horizon_reason": null,
+      "exact_job_running_and_terminal": true,
+      "productive_work_during_job": true,
+      "repair_cycles": 22,
+      "continuation_confirmed": true,
+      "maximum_activity_gap_ms": 132472,
+      "event_gaps": 0,
+      "tool_started": 747,
+      "tool_terminal": 747,
+      "tool_unpaired_start": 0,
+      "minimum_free_disk_bytes": 222916632576,
+      "disk_floor_triggered": false,
+      "provider_cost_usd": 0.390768,
+      "provider_cost_when_unreported": "unknown",
+      "receipt_path": "/private/tmp/s017-muse-runs/attempt06.json",
+      "receipt_sha256": "39cc3b473c11f42bdeda49cf51f4e0cd52e3a7df3294603b573e6faa29b4304e",
+      "priority_job_id": "52fe9651-feb2-4532-8fda-7e759aa81e74",
+      "priority_job_passed_tests": 41,
+      "final_workspace_job_id": "7d431548-5bca-41e9-a031-ad974c5371a2",
+      "final_workspace_passed_tests": 45,
+      "finding": "Attempt 6 qualified the sustained horizon and job gates: 53m49s active, 22 repair cycles, exact priority job running->completed with two edits while running, continuation, and complete event capture. The independent verifier still exited after 240408 ms with zero tests and one error; private output remains uninspected. A public fresh debug workspace run passed all preceding targets, then remained at full CPU in the frozen catalog-query impact_scale target for over seven minutes; operator-cancelled. Targeted release query/scale runs passed. This makes a debug-path runtime timeout in verifier setup likely, not confirmed."
     }
   ],
   "manifest_revisions": [
@@ -253,6 +297,14 @@
       "revision": 22,
       "path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v22/cases.jsonl",
       "sha256": "ccbe0d8585c3bd6a965ad0a0a89c8e1e34c9681758e9856817bca6b760b4b128",
+      "used_by_attempts": [
+        6
+      ]
+    },
+    {
+      "revision": 23,
+      "path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v23/cases.jsonl",
+      "sha256": "c644badea0601ace04765acf3ed7bfc9e8628dfed40532535f1d93b9150d842e",
       "used_by_attempts": []
     }
   ]
