@@ -905,6 +905,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
              credential: Optional[str] = None,
              guard: Optional[budget.SpendGuard] = None,
              min_free_disk_bytes: Optional[int] = None,
+             requested_manifest_sha256: Optional[str] = None,
              disable_placement_advisor: bool = False) -> dict[str, Any]:
     """Run one taxonomy case against a live provider route and return a receipt.
 
@@ -1389,6 +1390,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         "placement_advisor_enabled": not disable_placement_advisor,
         "binary_sha256": spec.binary_sha256,
         "source_revision": spec.revision,
+        "requested_manifest_sha256": requested_manifest_sha256,
         "session_id": session_id,
         "terminal": terminal,
         "agent_terminal": agent_terminal,
@@ -1516,7 +1518,8 @@ def run_suite(binary: Path, suite: AutonomySuite, model: str, *,
                                lane_root=case_lane, repository=repository,
                                profile=profile, timeout=timeout, agent=agent,
                                credential=credential, guard=guard,
-                               min_free_disk_bytes=min_free_disk_bytes)
+                               min_free_disk_bytes=min_free_disk_bytes,
+                               requested_manifest_sha256=suite.suite_sha256)
         except (HarnessError, budget.BudgetExhausted) as error:
             receipt = {"case_id": case_id, "terminal": "refused", "ok": False,
                        "error": str(error), "solved": False, "protected": case.protected}
@@ -1586,6 +1589,7 @@ def run_paired_comparison(baseline_binary: Path, candidate_binary: Path,
                     binary, case, model, budget_policy=budget_policy,
                     lane_root=trial_lane, repository=repository,
                     profile=profile, timeout=timeout, guard=guard,
+                    requested_manifest_sha256=suite.suite_sha256,
                     disable_placement_advisor=(
                         case.case_id.startswith("a005-") and arm == "baseline"))
             except (HarnessError, budget.BudgetExhausted) as error:
@@ -1689,6 +1693,7 @@ def resume_paired_comparison(checkpoint_path: Path, baseline_binary: Path,
                 baseline_binary if row["arm"] == "baseline" else candidate_binary,
                 case, model, budget_policy=budget_policy, lane_root=lane_root /
                 f"trial{row['ordinal']:02d}", profile=profile, timeout=timeout, guard=guard,
+                requested_manifest_sha256=suite.suite_sha256,
                 disable_placement_advisor=(case.case_id.startswith("a005-")
                                            and row["arm"] == "baseline"))
         except (HarnessError, budget.BudgetExhausted) as error:

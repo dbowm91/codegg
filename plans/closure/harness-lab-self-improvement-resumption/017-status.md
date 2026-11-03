@@ -21,3 +21,16 @@ Prompt v19 adds reverse-impact analysis and digest-bound read-only policy evalua
 Attempt 3 used v19 and completed normally after 28m56s active. The hidden verifier failed one of five tests. Frozen inputs matched. The agent completed 14 phases and a 49-test release workspace suite, but the designated job was deferred until the end; the safe trace showed `running` then `completed` without an intervening productive edit. Horizon reason was `job_lifecycle_missing`; active span was 1,735,972 ms, 64 seconds short of 30 minutes. Event pairing was complete (196/196), maximum gap 226,616 ms, minimum free disk 223,228,329,984 bytes; it used 176/750 requests and reported $0.079510.
 
 Public code review found a likely task regression in the existing `diff` output: v19 adds revision fields to `added` and `removed` rows, unlike the v18/reference form. The private verifier output remains uninspected. Prompt v20 locks the original row shapes, moves the priority job before delta and requires productive edits during the observed running state. It adds incremental bounded impact views. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s017-run-03-summary.json`.
+
+
+## Attempt 4
+
+Attempt 4 used v20 and completed normally after 34m21s of measured active work. It completed 18 phases, 14 repair cycles, and continuation evidence. The final workspace job passed 44 tests. The priority job (`6cda90e1-3d74-49b1-8ac6-27c6b05d594d`) was observed running while two source edits occurred, but it terminated failed (20 passed, 1 failed); later repairs and the final sweep passed.
+
+A blocking `job wait` on repair job `fcf8f8ac-d58c-4f89-a0f8-74f256bfa532` lasted 300,138 ms, matching the measured maximum activity gap of 300,138 ms (138 ms over the limit). The runner did not cancel at that boundary, but complete event capture remained available (154/154, no gaps). The run therefore did not qualify.
+
+The independent verifier exited after 240,465 ms with `tests_run=0` and `(errors=1)`. Its private output remains uninspected; the cause is unknown. Provider usage was 147/750 requests; reported allowance was $0.071682; minimum free disk was 218,441,805,824 bytes.
+
+The run receipt's `manifest_sha256` identifies the fixture's canonical H007 manifest, not the selected v20 campaign manifest. The S017 evidence records the selected SHA separately. The runner now records `requested_manifest_sha256` from the selected suite so future receipts preserve both identities.
+
+Prompt v21 bans blocking `job wait`, requires nonblocking exact-ID status checks for all jobs, moves the priority job until after known test failures are repaired, and records the prior verifier setup error without exposing private output. Manifest SHA-256: `11370f39d0acc75b90363ad340b116ab0f9dd7bf9760b91faae2e76e3cb070f6`. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s017-run-04-summary.json`.

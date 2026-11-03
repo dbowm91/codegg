@@ -534,6 +534,27 @@ class RunCaseRefusalTests(unittest.TestCase):
             self.assertIn("sun_path", str(caught.exception))
 
 
+class RequestedManifestProvenanceTests(unittest.TestCase):
+    def test_run_suite_passes_exact_selected_manifest_digest_to_receipt(self) -> None:
+        manifest_root = REPO_ROOT / "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v20"
+        suite = autonomy.load_autonomy_suite(manifest_root)
+        case = suite.case("build-provenance-catalog")
+        policy = budget.BudgetPolicy(max_provider_requests=5)
+        with tempfile.TemporaryDirectory() as temp:
+            with mock.patch.object(
+                    autonomy_run, "run_case",
+                    return_value={"case_id": case.case_id, "terminal": "completed",
+                                  "solved": False}) as run_case:
+                autonomy_run.run_suite(
+                    pathlib.Path("/unused/codegg"), suite,
+                    "opencode_go/muse-spark-1.3-contributor",
+                    budget_policy=policy, lane_root=pathlib.Path(temp),
+                    case_ids=[case.case_id])
+
+        self.assertEqual(run_case.call_args.kwargs["requested_manifest_sha256"],
+                         suite.suite_sha256)
+
+
 class H007ModelRouteTests(unittest.TestCase):
     def test_authorized_deepseek_route_is_accepted_and_other_routes_are_refused(self) -> None:
         self.assertIn("opencode_go/deepseek-v4.1-flash",
