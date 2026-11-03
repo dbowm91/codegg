@@ -34,3 +34,12 @@ The independent verifier exited after 240,465 ms with `tests_run=0` and `(errors
 The run receipt's `manifest_sha256` identifies the fixture's canonical H007 manifest, not the selected v20 campaign manifest. The S017 evidence records the selected SHA separately. The runner now records `requested_manifest_sha256` from the selected suite so future receipts preserve both identities.
 
 Prompt v21 bans blocking `job wait`, requires nonblocking exact-ID status checks for all jobs, moves the priority job until after known test failures are repaired, and records the prior verifier setup error without exposing private output. Manifest SHA-256: `11370f39d0acc75b90363ad340b116ab0f9dd7bf9760b91faae2e76e3cb070f6`. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s017-run-04-summary.json`.
+
+
+## Attempt 5
+
+Attempt 5 was cancelled after the authorized 300-second tool-activity stall. It had 636 completed tool calls, no unpaired starts, and over 43 minutes of observed tool work before its last tool event. Provider request admission reached request 745 of 750 while the ACP `session/prompt` call remained open and no native tool event arrived for more than five minutes. No verifier ran and no final receipt was produced. Minimum sampled free disk remained above 218 GiB. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s017-run-05-summary.json`.
+
+The stall watcher reset on every `session/update`, including streamed assistant message chunks, while the qualification gap metric counts only native tool-call boundaries. Provider traffic could therefore keep the watcher alive during a tool-free gap. The watcher now resets only on `tool_call` and `tool_call_update`; qualification also includes trailing silence from the last tool event to turn termination. Focused production-shaped regressions pass.
+
+Prompt v22 explains that streamed text and provider traffic do not count as productive activity and retains nonblocking exact-ID job polling. Manifest SHA-256: `ccbe0d8585c3bd6a965ad0a0a89c8e1e34c9681758e9856817bca6b760b4b128`.

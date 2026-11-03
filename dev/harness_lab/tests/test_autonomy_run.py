@@ -175,6 +175,64 @@ class H006DeadlineTests(unittest.TestCase):
         self.assertEqual(autonomy_run._turn_timeout(
             "ordinary-case", 3600.0, 3600.0, 3600.0), 1200.0)
 
+    def test_trailing_tool_silence_counts_toward_the_activity_gap(self) -> None:
+        calls = [{"started_elapsed_ms": elapsed,
+                  "finished_elapsed_ms": elapsed + 1}
+                 for elapsed in range(0, 1_800_001, 300_000)]
+        self.assertTrue(autonomy_run._duration_qualified(
+            "build-provenance-catalog", 2_100_001, calls))
+        self.assertFalse(autonomy_run._duration_qualified(
+            "build-provenance-catalog", 2_100_002, calls))
+
+
+class ActivityStallWatcherTests(unittest.TestCase):
+    class _Client:
+        def __init__(self, notifications: list[dict]) -> None:
+            self.notifications = notifications
+            self.calls: list[tuple[str, dict]] = []
+
+        def notify(self, method: str, params: dict) -> None:
+            self.calls.append((method, params))
+
+    class _OneIterationStop:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def wait(self, _timeout: float) -> bool:
+            self.calls += 1
+            return self.calls > 1
+
+    @staticmethod
+    def _notification(kind: str) -> dict:
+        return {"method": "session/update",
+                "params": {"update": {"sessionUpdate": kind}}}
+
+    def test_streamed_message_does_not_hide_a_tool_activity_stall(self) -> None:
+        client = self._Client([self._notification("agent_message_chunk")])
+        watcher = autonomy_run._ActivityStallWatcher(
+            client, "session-1", stall_seconds=1, poll_seconds=0)
+        watcher._last_activity = autonomy_run.time.monotonic() - 2
+        watcher.stop_event = self._OneIterationStop()
+
+        watcher._run()
+
+        self.assertTrue(watcher.triggered)
+        self.assertEqual(client.calls, [("session/cancel", {"sessionId": "session-1"})])
+
+    def test_tool_start_and_terminal_updates_reset_the_stall_clock(self) -> None:
+        for kind in ("tool_call", "tool_call_update"):
+            with self.subTest(kind=kind):
+                client = self._Client([self._notification(kind)])
+                watcher = autonomy_run._ActivityStallWatcher(
+                    client, "session-1", stall_seconds=1, poll_seconds=0)
+                watcher._last_activity = autonomy_run.time.monotonic() - 2
+                watcher.stop_event = self._OneIterationStop()
+
+                watcher._run()
+
+                self.assertFalse(watcher.triggered)
+                self.assertEqual(client.calls, [])
+
 
 class ProviderRequestAccountingTests(unittest.TestCase):
     def test_a005_unavailable_checkout_refusal_is_a_declared_negative_control(self) -> None:
