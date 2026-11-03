@@ -25,7 +25,7 @@
   ],
   "usd_cost_when_unreported": "unknown",
   "sequential": true,
-  "runs_started": 8,
+  "runs_started": 9,
   "runs": [
     {
       "attempt": 1,
@@ -345,6 +345,51 @@
       "final_workspace_job_id": "6de28a51-26d5-4f08-9546-4bbff8f6e597",
       "final_workspace_passed_tests": 42,
       "finding": "Attempt 8 demonstrates that the task was not completed successfully: the agent ended normally after 18m13s active, but the verifier reported one failure among five tests. It did complete all fifteen recorded phases, the exact priority job (19 tests with two edits while running), and a locked final workspace sweep (42 tests), with continuation complete. The hidden failure identity remains unknown because output is sealed. Therefore this was not early successful completion and did not qualify the 30-minute horizon. The corrected lockfile sequence is verified. The next diagnostic prompt adds a public acceptance matrix and edge-case audit without reading hidden verifier material."
+    },
+    {
+      "attempt": 9,
+      "campaign_id": "s017-muse-v17-20261103",
+      "route": "opencode_go/muse-spark-1.3-contributor",
+      "manifest_path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v25/cases.jsonl",
+      "manifest_sha256": "a563b246b9fd0d2ac8a7596988e622dcc373d46e7c0a3e0cc1632832a58f0573",
+      "fixture_canonical_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+      "source_revision": "548cf20ecdc9d4dd1727682a47c5085b25428cd0",
+      "binary_sha256": "25cdef11543d434d0e9f0fc20c154ee72f8ec16ad078af956da616cb4e329f10",
+      "provider_requests": 181,
+      "request_cap": 750,
+      "duration_ms": 1587546,
+      "active_work_span_ms": 1552141,
+      "terminal": "completed",
+      "stop_reason": "end_turn",
+      "task_outcome": "failed",
+      "solved": false,
+      "verifier_exit_code": 1,
+      "verifier_tests_run": 5,
+      "verifier_failure_summary": "(failures=2)",
+      "verifier_duration_ms": 15253,
+      "verifier_output": "sealed; not inspected",
+      "horizon_outcome": "not_qualified",
+      "horizon_reason": "activity_span_short",
+      "exact_job_running_and_terminal": true,
+      "productive_work_during_job": true,
+      "repair_cycles": 10,
+      "continuation_confirmed": true,
+      "maximum_activity_gap_ms": 134607,
+      "event_gaps": 0,
+      "tool_started": 187,
+      "tool_terminal": 187,
+      "tool_unpaired_start": 0,
+      "minimum_free_disk_bytes": 218588561408,
+      "disk_floor_triggered": false,
+      "provider_cost_usd": 0.074363,
+      "provider_cost_when_unreported": "unknown",
+      "receipt_path": "/private/tmp/s017-muse-runs/attempt09.json",
+      "receipt_sha256": "8fe3873af80bdc5e9fac8e5e5c501df25d69904c98849869130ea7f56a8d3361",
+      "priority_job_id": "a7d89382-5fe7-40a6-9289-9268dec79a56",
+      "priority_job_passed_tests": 42,
+      "final_workspace_job_id": "53085b34-f7a4-4476-9f54-dc8e8401212e",
+      "final_workspace_passed_tests": 42,
+      "finding": "Attempt 9 ended normally after 25m52s active. The priority workspace job and final locked workspace sweep each passed 42 tests; the continuation listed all fifteen phases and next_phase=none. The independent verifier still reported two failures among five tests (output sealed). The active span was under 30 minutes, so it did not qualify. The public audit surfaced two concrete incomplete prompt requirements: incremental ImpactView mutation at 250k scale and real reconcile restart/idempotence verification. Their relation to the sealed failures is plausible, not confirmed."
     }
   ],
   "manifest_revisions": [
@@ -410,6 +455,14 @@
       "revision": 25,
       "path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v25/cases.jsonl",
       "sha256": "a563b246b9fd0d2ac8a7596988e622dcc373d46e7c0a3e0cc1632832a58f0573",
+      "used_by_attempts": [
+        9
+      ]
+    },
+    {
+      "revision": 26,
+      "path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v26/cases.jsonl",
+      "sha256": "c5ea59a66c02d65ef4bded1ad41d128745e026cfcfa5fb8cbabdb3f88836cb14",
       "used_by_attempts": []
     }
   ]

@@ -1,6 +1,6 @@
 # S017 — Muse Spark v17 H007 requalification
 
-Status: **authorized; 8 of 20 runs started**
+Status: **authorized; 9 of 20 runs started**
 
 ## Objective
 
@@ -64,3 +64,10 @@ Prompt v24 explicitly has the model generate the lockfile offline after all loca
 Attempt 8 confirms the lockfile correction: the designated priority job passed 19 tests with the two required edits during its running state, and the final locked workspace sweep passed 42. All fifteen phase labels and `next_phase: none` were recorded. The task still failed its independent verifier (one failure among five tests; output sealed) and ended after only 18m13s of active work. It did not qualify and was not a successful early finish.
 
 No verifier-specific cause is inferred. Prompt v25 asks for a public acceptance matrix covering each frozen README/contract item and every added capability, mapping requirements to implementation and assertion-bearing tests; it preserves frozen inputs and hidden-verifier isolation. Continue within the original authorization.
+
+
+## Attempt 9 result and corrective scope
+
+Attempt 9's independent verifier reported two failures among five tests; output remains sealed. The task ended normally after 25m52s active and therefore missed the horizon. Priority and final locked workspace jobs both passed 42 tests, all phases and continuation were recorded, and event/disk/request gates were healthy.
+
+The public acceptance audit identified two concrete unmet prompt requirements: `ImpactView` still snapshots and lacks incremental upsert/removal against fresh rebuilds at the required 250k mixed sequence; reconcile uses a tautological resume assertion and does not prove restart after every page/checkpoint boundary. These are evidence-based corrective targets, not confirmed names of the hidden failing tests. Prompt v26 targets these gaps and preserves the independent verifier boundary.

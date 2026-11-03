@@ -1,6 +1,6 @@
 # S017 status — Muse Spark v17 H007 requalification
 
-Status: **authorized; 8 of 20 runs started**
+Status: **authorized; 9 of 20 runs started**
 
 The user authorized up to 20 sequential runs on `opencode_go/muse-spark-1.3-contributor`. Per-run limits: 750 requests, 3,600 seconds, 10 GiB free disk, and cancellation at a 300-second activity stall. USD cost is recorded when available and `unknown` otherwise. Initial v17 SHA-256: `402b3c1981a3ba5a53a4331a20825e5f6a7fd8479a5de6cae399aa0e618ba4bc`; v18 SHA-256: `2558b3d03f0adc9b272462c2aae27e07bae4d4e292a8091996fb8646e0485589`. Authorization ledger: `plans/closure/harness-lab-self-improvement-resumption/evidence/s017-muse-live-authorization-20261103.json`.
 
@@ -72,3 +72,12 @@ Attempt 8 used v24 and ended normally after 18m23s elapsed / 18m13s active. The 
 The independent verifier ran five tests and returned one failure. Its output remains sealed and uninspected. Therefore `task_outcome=failed`, `solved=false`; the implementation is not qualified even though the workspace suite and continuation passed. Active work was only 18m13s, so the 30-minute horizon was not observed. This is a task failure, not an early successful completion. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s017-run-08-summary.json`.
 
 Prompt v25 makes the next live run a diagnostic/corrective pass: it requires a public acceptance matrix mapping every frozen contract and added capability to implementation and assertion-bearing tests, without accessing private verifier material. Manifest SHA-256: `a563b246b9fd0d2ac8a7596988e622dcc373d46e7c0a3e0cc1632832a58f0573`.
+
+
+## Attempt 9
+
+Attempt 9 used v25 and ended normally after 25m52s active. It completed the priority workspace job (`a7d89382-5fe7-40a6-9289-9268dec79a56`, 42 tests) with two source edits during its running state and a final locked workspace sweep (`53085b34-f7a4-4476-9f54-dc8e8401212e`, 42 tests). `CONTINUATION.md` listed all fifteen phases and `next_phase: none`; ten repairs were recorded. Event capture was complete (187/187) with no gaps; maximum activity gap was 134,607 ms. The run used 181/750 requests, reported $0.074363, and retained at least 218,588,561,408 bytes free.
+
+The independent verifier ran five tests and reported two failures. Its output remains sealed. The task is therefore failed, not a success; active work was only 25m52s, so the 30-minute horizon also did not qualify. The public audit and source review established two incomplete prompt requirements without identifying the verifier's sealed failure names: `ImpactView` has no incremental upsert/remove behavior and does not exercise the required fixed-seed 250k mixed mutation sequence; reconcile's resume assertion is vacuous and restart recovery after each page/checkpoint boundary is unproven. These are plausible explanations, not confirmed mappings to the verifier failures. Evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s017-run-09-summary.json`.
+
+Prompt v26 asks for those two narrow capability corrections and assertion-bearing tests, preserving all frozen inputs and verifier isolation. Manifest SHA-256: `c5ea59a66c02d65ef4bded1ad41d128745e026cfcfa5fb8cbabdb3f88836cb14`.
