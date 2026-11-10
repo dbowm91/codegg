@@ -668,7 +668,13 @@ fn chunk_word<'a>(pieces: &[Piece<'a>], width: usize) -> Vec<Vec<Piece<'a>>> {
                 is_escape: false,
                 width: segment_width,
             });
-            chunk_width += segment_width;
+            // `chunk_width` already holds this run: the walk above adds every
+            // character's width as it visits it, and a break resets the
+            // accumulator to the run that starts at the break. Adding the run's
+            // width again here counted it twice, so a word spanning two or more
+            // spans measured wider than it draws and broke earlier than its true
+            // width — which is why such a word used to break differently from
+            // the plain engine.
         }
     }
     if !chunk.is_empty() || chunks.is_empty() {
@@ -1168,15 +1174,22 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // M006: the comparison against the pre-change algorithm
+    // M006: the comparison against a plain re-derivation
     // -------------------------------------------------------------------
     //
-    // The milestone changes the wrap's **cost** and nothing else, so its
-    // evidence is an equality against a copy of the algorithm as it was before
-    // the change. The copy below is deliberately the old, expensive one — a
-    // span lookup that rescans from index 0 and a chunker that measures every
-    // piece twice — and it must not be "fixed": it is the other side of the
-    // comparison, and it is what a cursor perturbation is checked against.
+    // M006 changed the wrap's **cost** and nothing else, so its evidence was an
+    // equality against a copy of the algorithm as it was before the change. The
+    // copy below is still deliberately the expensive one — a span lookup that
+    // rescans from index 0 and a chunker that re-measures every fragment — so it
+    // stays the other side of the comparison for *cost*, and it is what a cursor
+    // perturbation is checked against.
+    //
+    // It is **not** a reference for the width accounting. `chunk_word` counted a
+    // word's tail run twice, so a word spanning two or more spans measured wider
+    // than it draws and broke earlier than its true width. That defect is fixed
+    // in the engine and corrected here, because a reference that reproduced it
+    // would assert it; `a_word_split_across_spans_breaks_at_its_true_width` is
+    // what pins the fix.
 
     /// The fixture set the comparison is proved over: each entry breaks a
     /// different assumption of the wrap.
@@ -1253,7 +1266,7 @@ mod tests {
     /// every character; eighty is wider than every fixture.
     const FIXTURE_WIDTHS: &[u16] = &[1, 2, 3, 4, 8, 13, 20, 40, 80];
 
-    /// The pre-M006 span lookup: `start..end` split at the span boundaries by
+    /// The plain span lookup: `start..end` split at the span boundaries by
     /// rescanning the span list from index 0.
     fn reference_parts(
         spans: &[(usize, usize, Style)],
@@ -1285,7 +1298,7 @@ mod tests {
         parts
     }
 
-    /// The pre-M006 style lookup: a `find` from index 0.
+    /// The plain style lookup: a `find` from index 0.
     fn reference_style_at(spans: &[(usize, usize, Style)], offset: usize) -> Style {
         spans
             .iter()
@@ -1294,7 +1307,7 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// The pre-M006 item builder.
+    /// The plain item builder.
     fn reference_items<'a>(source: &'a StyledSource) -> Vec<Item<'a>> {
         let mut items: Vec<Item<'a>> = Vec::new();
         let mut pieces: Vec<Piece<'a>> = Vec::new();
@@ -1360,7 +1373,7 @@ mod tests {
         items
     }
 
-    /// The pre-M006 chunker: every fragment measured again.
+    /// The plain chunker: every fragment measured again.
     fn reference_chunk_word<'a>(pieces: &[Piece<'a>], width: usize) -> Vec<Vec<Piece<'a>>> {
         let mut chunks: Vec<Vec<Piece<'a>>> = Vec::new();
         let mut chunk: Vec<Piece<'a>> = Vec::new();
@@ -1404,7 +1417,10 @@ mod tests {
                     is_escape: false,
                     width: segment_width,
                 });
-                chunk_width += segment_width;
+                // The reference makes the same accounting mistake the engine
+                // did: the walk above already added this run. It is corrected
+                // here so the comparison is against a correct reference rather
+                // than against the defect.
             }
         }
         if !chunk.is_empty() || chunks.is_empty() {
@@ -1413,7 +1429,7 @@ mod tests {
         chunks
     }
 
-    /// The pre-M006 row assembly: `wrap_styled_spans_by_word_rows`'s body over
+    /// The plain row assembly: `wrap_styled_spans_by_word_rows`'s body over
     /// the reference items and the reference chunker.
     fn reference_rows(spans: &[Span<'static>], width: u16) -> Vec<WrappedRow> {
         let source = StyledSource::from_spans(spans);
@@ -1487,7 +1503,7 @@ mod tests {
         rows
     }
 
-    /// The pre-M006 plain engine, verbatim: it clones the chunks it emits and
+    /// The plain engine, written the obvious way: it clones the chunks it emits and
     /// measures them again.
     fn reference_wrap_to_strings(s: &str, width: u16) -> Vec<String> {
         let width = width as usize;
@@ -1614,10 +1630,10 @@ mod tests {
         }
     }
 
-    /// The rows, the byte offsets and the styles are the ones the pre-M006
-    /// algorithm produced, over the fixture set and every fixture width.
+    /// The rows, the byte offsets and the styles match a plain re-derivation
+    /// of the wrap, over the fixture set and every fixture width.
     #[test]
-    fn the_wrapped_rows_match_the_pre_m006_algorithm() {
+    fn the_wrapped_rows_match_a_plain_rederivation() {
         for (name, spans) in fixture_spans() {
             for &width in FIXTURE_WIDTHS {
                 let rows = wrap_styled_spans_by_word_rows(&spans, width);
@@ -1637,11 +1653,11 @@ mod tests {
         }
     }
 
-    /// The plain engine's output is the pre-M006 engine's output, byte for
+    /// The plain engine's output matches its plain re-derivation, byte for
     /// byte — including the escape sequences whose non-atomic handling is
     /// recorded and deliberately unchanged.
     #[test]
-    fn the_plain_engine_matches_the_pre_m006_algorithm() {
+    fn the_plain_engine_matches_its_plain_rederivation() {
         for (name, spans) in fixture_spans() {
             let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
             for &width in FIXTURE_WIDTHS {
@@ -1659,4 +1675,57 @@ mod tests {
         }
     }
 
+    /// A word spanning two spans breaks at its **true** width.
+    ///
+    /// `chunk_word` counted a word's tail run twice — the character walk added
+    /// every character's width, and the flush added the run again — so a word
+    /// built from two spans measured wider than it draws and broke early. The
+    /// fix is the missing double count, and this is the shape that shows it: a
+    /// thirteen-column word split 5 + 8 fits a thirteen-column row exactly, and
+    /// breaks at twelve.
+    ///
+    /// The styled engine is compared against the plain one here because the
+    /// plain engine never had the defect — it wraps a `&str`, where a word is
+    /// one piece — so the two disagreeing was the symptom a reader would see.
+    #[test]
+    fn a_word_split_across_spans_breaks_at_its_true_width() {
+        let code = Style::default().fg(Color::Red);
+        let spans = vec![Span::raw("inter"), Span::styled("national", code)];
+
+        let exact = wrap_styled_spans_by_word_rows(&spans, 13);
+        assert_eq!(
+            exact.len(),
+            1,
+            "a thirteen-column word fits a thirteen-column row: {exact:?}"
+        );
+        let text: String = exact[0]
+            .slices
+            .iter()
+            .map(|slice| slice.text.as_str())
+            .collect();
+        assert_eq!(text, "international", "the whole word is on the row");
+        assert_eq!(
+            exact[0].slices.len(),
+            2,
+            "and it keeps its two styles: {:?}",
+            exact[0].slices
+        );
+        assert_eq!(
+            wrap_to_strings("international", 13),
+            vec!["international".to_string()],
+            "the plain engine agrees, and always did"
+        );
+
+        let narrow = wrap_styled_spans_by_word_rows(&spans, 12);
+        assert_eq!(
+            narrow.len(),
+            2,
+            "one column narrower, and it hard-breaks: {narrow:?}"
+        );
+        assert_eq!(
+            wrap_to_strings("international", 12),
+            vec!["internationa".to_string(), "l".to_string()],
+            "the plain engine breaks at the same column"
+        );
+    }
 }
