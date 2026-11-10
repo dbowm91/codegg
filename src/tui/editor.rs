@@ -5530,6 +5530,45 @@ pub struct EditorViewport {
     pub visible_lines: u16,
 }
 
+/// The horizontal clamp's memo (M005).
+///
+/// `resolve_viewport` asks for the widest visible line on every frame in
+/// order to clamp the horizontal scroll, and that measurement is a content
+/// read of every visible row — the *second* read of the window, immediately
+/// before the draw reads the same rows again. The answer cannot change
+/// unless one of four values does, so those four are the key:
+///
+/// * the document's **revision** — the only thing that says the bytes moved;
+/// * the **first visible line** — a different window measures different
+///   lines;
+/// * the **visible line count** — the window is longer or shorter;
+/// * the drawn **width** — a resize re-resolves the viewport wholesale, and
+///   a clamp left over from another pane's width is a view that can scroll
+///   past content.
+///
+/// It holds an **integer**: the widest visible line, in columns. It is not a
+/// copy of any text, and it is not a cache of a document — ADR-0011 — and it
+/// is dropped with the presentation it lives on, so closing a document drops
+/// it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClampCache {
+    revision: u64,
+    first_line: usize,
+    visible_lines: u16,
+    width: u16,
+    widest: usize,
+}
+
+impl ClampCache {
+    /// Whether this memo answers for exactly these inputs.
+    fn covers(&self, revision: u64, first_line: usize, visible_lines: u16, width: u16) -> bool {
+        self.revision == revision
+            && self.first_line == first_line
+            && self.visible_lines == visible_lines
+            && self.width == width
+    }
+}
+
 /// Resolve the viewport so the cursor is on screen, keeping the line-to-row
 /// mapping one-to-one (hard wrap) and clamping the horizontal scroll to the
 /// longest visible line.
@@ -5582,8 +5621,28 @@ pub fn resolve_viewport(
             column = cursor_column + 1 - text_columns as usize;
         }
     }
-    let max_column = longest_visible_width(snapshot, first, visible_lines as usize)
-        .saturating_sub(text_columns as usize);
+    let max_column = {
+        // The clamp is measured once per (revision, window, width) and read
+        // on every other frame. See [`ClampCache`].
+        let revision = snapshot.revision().get();
+        let widest = match presentation.clamp_cache {
+            Some(cached) if cached.covers(revision, first, visible_lines, text_columns) => {
+                cached.widest
+            }
+            _ => {
+                let widest = longest_visible_width(snapshot, first, visible_lines as usize);
+                presentation.clamp_cache = Some(ClampCache {
+                    revision,
+                    first_line: first,
+                    visible_lines,
+                    width: text_columns,
+                    widest,
+                });
+                widest
+            }
+        };
+        widest.saturating_sub(text_columns as usize)
+    };
     column = column.min(max_column);
 
     presentation.viewport_line = first;
@@ -5630,7 +5689,13 @@ pub fn bounded_display_width(
 /// Longest display width among the visible lines, in terminal columns.
 ///
 /// C002: each line contributes at most its 32 KiB prefix, and measurement
-/// stops once the frame total reaches 256 KiB. Lines past the frame budget
+/// stops once the frame total reaches 256 KiB. The one producer of the
+/// horizontal clamp: [`resolve_viewport`] memoizes its answer in a
+/// [`ClampCache`], so an unchanged viewport measures nothing.
+///
+/// This is a content read of **every visible row**, so it is also the
+/// producer that makes a frame's read count visible: a frame that measures
+/// the window *and* draws it reads each row twice. Lines past the frame budget
 /// contribute nothing further; use [`frame_truncated_lines`] for the honest
 /// truncation signal shown in the UI.
 pub fn longest_visible_width(
@@ -5653,6 +5718,7 @@ pub fn longest_visible_width(
         let end = line_content_end(snapshot, line).unwrap_or(start);
         let window_end = bounded_prefix_end(snapshot, start, end);
         examined = examined.saturating_add(window_end.saturating_sub(start));
+        crate::tui::render_cost::count_editor_row_read(window_end.saturating_sub(start));
         widest = widest.max(display_width(snapshot, start..window_end));
     }
     widest
@@ -7833,6 +7899,68 @@ mod tests {
         let max = longest_visible_width(&snapshot, viewport.first_line, 5)
             - viewport.text_columns as usize;
         assert_eq!(viewport.column, max, "scroll clamps at the buffer edge");
+    }
+
+    /// The clamp's memo answers with the value the measurement produced.
+    ///
+    /// A cache that answered with anything else would move the horizontal
+    /// scroll, which is a rendering difference — so the memo's value and a
+    /// fresh measurement have to agree, and the second frame has to perform
+    /// no measurement at all.
+    #[test]
+    fn the_clamp_memo_holds_the_measured_width() {
+        let long = "x".repeat(400);
+        let snapshot = snapshot_of(&long);
+        let mut presentation = presentation_at(0);
+
+        let before = crate::tui::render_cost::snapshot();
+        let cold = resolve_viewport(&mut presentation, &snapshot, 40, 5);
+        let cold_cost = crate::tui::render_cost::snapshot().since(&before);
+        // A file with no trailing newline is two rope lines: the content and
+        // the empty line after it, so two lines are measured.
+        assert_eq!(
+            cold_cost.editor_row_reads,
+            snapshot.len_lines().min(5) as u64,
+            "the cold frame measures every visible line"
+        );
+
+        let before = crate::tui::render_cost::snapshot();
+        let warm = resolve_viewport(&mut presentation, &snapshot, 40, 5);
+        let warm_cost = crate::tui::render_cost::snapshot().since(&before);
+
+        assert_eq!(cold, warm, "a memoized clamp resolves the same viewport");
+        assert_eq!(
+            warm_cost.editor_row_reads, 0,
+            "nothing the clamp depends on moved, so nothing is measured"
+        );
+        assert_eq!(
+            presentation.clamp_cache.map(|cache| cache.widest),
+            Some(longest_visible_width(&snapshot, cold.first_line, 5)),
+            "the memo holds the width the measurement produced"
+        );
+    }
+
+    /// The clamp's memo is dropped when a document opens.
+    ///
+    /// A fresh attachment is revision zero, so a memo left over from the
+    /// previous document would answer for it — and clamp the new document's
+    /// scroll to the old one's width.
+    #[test]
+    fn resetting_for_an_open_drops_the_clamp_memo() {
+        let snapshot = snapshot_of(&"x".repeat(400));
+        let mut presentation = presentation_at(0);
+        let _ = resolve_viewport(&mut presentation, &snapshot, 40, 5);
+        assert!(
+            presentation.clamp_cache.is_some(),
+            "the fixture must have measured something"
+        );
+
+        presentation.reset_for_open();
+
+        assert!(
+            presentation.clamp_cache.is_none(),
+            "opening a document must not inherit the previous one's width"
+        );
     }
 
     #[test]

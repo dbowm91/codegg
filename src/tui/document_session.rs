@@ -23,8 +23,8 @@ use codegg_protocol::document::DocumentScope;
 use crate::core::CoreClient;
 
 use super::editor::{
-    EditorCommand, EditorMode, EditorPoint, EditorPrefix, EditorUndoEntry, FindMotion, FindNote,
-    MatchNote, ParagraphNote, SelectionMotion,
+    ClampCache, EditorCommand, EditorMode, EditorPoint, EditorPrefix, EditorUndoEntry, FindMotion,
+    FindNote, MatchNote, ParagraphNote, SelectionMotion,
 };
 use super::helix_selection::Selection;
 
@@ -170,6 +170,15 @@ pub struct TuiDocumentPresentation {
     pub keymap_overlay: bool,
     /// Horizontal scroll in display columns.
     pub viewport_column: usize,
+    /// The horizontal clamp's memo (M005).
+    ///
+    /// An **integer** — the widest visible line, in columns — and nothing
+    /// else: no text, no cached document, no second buffer. See
+    /// [`ClampCache`](super::editor::ClampCache) for its key and why each part
+    /// of it is there. It is dropped with this record, which is what makes
+    /// closing a document drop it; nothing outside the viewport resolver
+    /// writes it.
+    pub clamp_cache: Option<ClampCache>,
     /// Buffer edit mode.
     pub mode: EditorMode,
     /// The multi-key grammar the editor is waiting on.
@@ -287,6 +296,11 @@ impl TuiDocumentPresentation {
         self.clear_selections();
         self.viewport_line = 0;
         self.viewport_column = 0;
+        // A memo of the previous document's widest line is the one piece of
+        // measured state that could survive an open at the *same* revision —
+        // a fresh attachment is revision zero — and clamp this document's
+        // scroll to the previous one's width.
+        self.clamp_cache = None;
         self.mode = EditorMode::Normal;
         self.desired_column = None;
         self.disarm_prefix();

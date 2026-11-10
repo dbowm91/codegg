@@ -2388,6 +2388,13 @@ fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) -> bool {
     // The forward transaction is retained for redo; both directions are
     // bounded by the same depth/byte caps.
     let forward = transaction.clone();
+    // Where the edit landed, for the highlighter's prefix check. The edits
+    // are sorted, so the **first** one starts at a byte above which this
+    // transaction changed nothing — which is exactly what makes it a safe
+    // seed. It is resolved to a line against the post-edit snapshot below,
+    // because an edit that inserts lines above itself moves every later
+    // line index.
+    let first_edit_byte = transaction.edits.first().map(|edit| edit.range.start);
     let Some(session) = state.session.as_ref() else {
         return false;
     };
@@ -2397,6 +2404,11 @@ fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) -> bool {
         Ok(_) => {
             // Clamp against the post-edit text, not the pre-edit snapshot.
             let after = controller.try_snapshot().map(|(snapshot, _)| snapshot);
+            if let (Some(byte), Some(snapshot)) = (first_edit_byte, after.as_ref()) {
+                state
+                    .highlight
+                    .note_edit_from(editor::cursor_line(snapshot, byte));
+            }
             let Some(session) = state.session.as_mut() else {
                 return false;
             };
@@ -2724,12 +2736,23 @@ fn traverse_history(state: &mut EditorState, step: HistoryStep, report: bool) {
         HistoryStep::Earlier => entry.inverse.clone(),
         HistoryStep::Later => entry.forward.clone(),
     };
+    // Undo and redo are edits too: the highlighter has to be told where this
+    // one landed, or the next frame re-reads the whole scanned prefix to
+    // discover a change it could have been pointed at. The seed is resolved
+    // against the post-edit snapshot for the same reason `submit_edit`
+    // resolves it there.
+    let first_edit_byte = transaction.edits.first().map(|edit| edit.range.start);
     let controller = session.controller();
     if let Err(error) = controller.apply_local(transaction) {
         state.set_notice(EditorNotice::from_error(&error));
         return;
     }
     let after = controller.try_snapshot().map(|(snapshot, _)| snapshot);
+    if let (Some(byte), Some(snapshot)) = (first_edit_byte, after.as_ref()) {
+        state
+            .highlight
+            .note_edit_from(editor::cursor_line(snapshot, byte));
+    }
     let Some(session) = state.session.as_mut() else {
         return;
     };
@@ -8583,6 +8606,45 @@ mod tests {
         assert_eq!(normal(&mut state, KeyCode::Char('j')), BufferKey::Consumed);
         assert_eq!(cursor(&state), 4, "`j` still moves on a read-only buffer");
         assert!(state.notice.is_none(), "movement is not a refused edit");
+    }
+
+    /// An accepted edit tells the highlighter where it landed.
+    ///
+    /// The highlighter's prefix check finds the first row whose content
+    /// differs from the scan it holds. Without this seed it starts at line 0
+    /// and re-reads every scanned row on every keystroke; with it, the check
+    /// starts at the edit. The line is resolved against the **post-edit**
+    /// snapshot, because an edit that inserts lines above itself moves every
+    /// later line index.
+    #[tokio::test]
+    async fn an_accepted_edit_tells_the_highlighter_where_it_landed() {
+        let (mut state, _daemon) = opened_writer("one\ntwo\nthree\n").await;
+        // Put the cursor on line 2 (`two`) so the edit is on a row a stale
+        // seed of 0 would not distinguish from the top.
+        state
+            .session
+            .as_mut()
+            .expect("open")
+            .presentation_mut()
+            .cursor_byte = 6;
+        let snapshot = snapshot_of(&state);
+        let edit = editor::insert_text(&snapshot, 6, "X").expect("an insertion");
+        assert!(submit_edit(&mut state, edit), "the edit must be accepted");
+
+        assert_eq!(
+            state.highlight.pending_edit_from(),
+            Some(1),
+            "the highlighter must be told the line the edit landed on"
+        );
+
+        // Undo is an edit too, and it lands on the same row.
+        state.highlight.reset();
+        editor_undo(&mut state);
+        assert_eq!(
+            state.highlight.pending_edit_from(),
+            Some(1),
+            "undo must be placed the same way an edit is"
+        );
     }
 
     #[tokio::test]
