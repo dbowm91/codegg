@@ -3144,12 +3144,29 @@ impl StreamingTailCache {
             .last()
             .map(|block| block.start_line)
             .unwrap_or(1);
+        // A block's *meaning* can depend on the block **before** it, not only on
+        // text that comes after it. A table's delimiter row reinterprets the
+        // paragraph above it as the header, and a setext underline reinterprets
+        // the paragraph above it as a heading; both arrive as a block of their
+        // own first. Re-parsing only the last block therefore leaves the earlier
+        // one committed to the wrong shape and the table can never form — which
+        // is what a bare `---` at a chunk boundary did to a streamed table.
+        //
+        // Backing up one block costs one extra block re-parse per tick, which is
+        // bounded by a block rather than by the response.
+        let previous = self
+            .blocks
+            .iter()
+            .rev()
+            .nth(1)
+            .map(|block| block.start_line)
+            .unwrap_or(last);
         self.blocks
             .iter()
             .find(|block| block.has_reference)
             .map(|block| block.start_line)
-            .unwrap_or(last)
-            .min(last)
+            .unwrap_or(previous)
+            .min(previous)
     }
 
     /// Rebuild the line offsets from the whole text.

@@ -395,12 +395,14 @@ const FIXTURES: &[&str] = &[
 
 /// The fixtures whose incremental parse reproduces a one-shot parse.
 ///
-/// The table is **not** here: see
-/// [`a_table_whose_delimiter_arrives_after_a_bare_break_is_not_a_table_known_defect`].
+/// The table belongs here: its delimiter row reinterprets the paragraph above
+/// it, so it is the fixture that proves `reparse_start_line` backs up far
+/// enough — see [`a_table_forms_when_its_delimiter_arrives_after_a_bare_break`].
 const INCREMENTAL_FIXTURES: &[&str] = &[
     "a single paragraph of prose",
     "# A heading\n\nthe paragraph under it",
     "- one\n- two\n- three",
+    "| a | b |\n|---|---|\n| 1 | 2 |",
     "```rust\nfn main() {\n    let value = 1;\n}\n```",
     "```\nplain code without a language\nand a second line\n```",
     "日本語のテキストがここにあります。折り返しの境界も同じでなければなりません。",
@@ -471,21 +473,21 @@ fn every_fixture_draws_the_rows_its_one_parse_produced() {
     }
 }
 
-/// A table whose delimiter arrives after a bare `---` is not a table (known
-/// defect).
+/// A table forms when its delimiter arrives after a bare `---`.
 ///
-/// The tail's cache re-parses from the start line of its **last** block. When a
+/// The tail's cache re-parses from the start line of its **last** block, and a
+/// block's *meaning* can depend on the block **before** it. When a
 /// three-character chunk boundary leaves `---` as the document's last block, the
-/// parser has already made it a thematic break — a block of its own — so the
-/// re-parse starts *after* the table's header row and the table can never form.
-/// The rendered difference is the literal pipe row: the incremental tail draws
-/// `| 1 | 2 |` as text where the one-shot parse draws the table.
+/// parser has already made it a block of its own; re-parsing only that block
+/// left the table's header row committed as a paragraph, so the table could
+/// never form and the body row drew as literal text.
 ///
-/// M004 did not touch the incremental parse, the block model or the re-parse
-/// rule (the plan puts all three out of scope), so the behaviour is recorded
-/// rather than repaired.
+/// `reparse_start_line` now backs up one block. That costs one extra block
+/// re-parse per tick — bounded by a block, not by the response — and the table
+/// is in `INCREMENTAL_FIXTURES`, so the every-prefix comparison covers it rather
+/// than this one trajectory.
 #[test]
-fn a_table_whose_delimiter_arrives_after_a_bare_break_is_not_a_table_known_defect() {
+fn a_table_forms_when_its_delimiter_arrives_after_a_bare_break() {
     let text = "| a | b |\n|---|---|\n| 1 | 2 |";
     let mut streamed = widget();
     for chunk in text.chars().collect::<Vec<_>>().chunks(3) {
@@ -499,17 +501,13 @@ fn a_table_whose_delimiter_arrives_after_a_bare_break_is_not_a_table_known_defec
     let fresh_rows = drawn_rows(&draw(&fresh));
 
     assert!(
-        streamed_rows.iter().any(|row| row.contains("| 1 | 2 |")),
-        "the incremental tail leaves the table's body row as literal text: \
-         {streamed_rows:?}"
+        !streamed_rows.iter().any(|row| row.contains("| 1 | 2 |")),
+        "the incremental tail draws the table's body as a table row, not as \
+         literal text: {streamed_rows:?}"
     );
-    assert!(
-        !fresh_rows.iter().any(|row| row.contains("| 1 | 2 |")),
-        "the one-shot parse draws it as a table row instead: {fresh_rows:?}"
-    );
-    assert_ne!(
+    assert_eq!(
         streamed_rows, fresh_rows,
-        "the two renders differ; the defect is that they do"
+        "the streamed table is the table a one-shot parse draws"
     );
 }
 
