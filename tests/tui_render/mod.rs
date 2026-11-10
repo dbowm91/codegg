@@ -112,6 +112,9 @@ pub mod tui_transcript_cost;
 #[path = "tui_editor_cost.inc"]
 pub mod tui_editor_cost;
 
+#[path = "tui_wrap_cost.inc"]
+pub mod tui_wrap_cost;
+
 #[path = "tui_info_dialog_panel_chrome.inc"]
 pub mod tui_info_dialog_panel_chrome;
 
