@@ -248,13 +248,16 @@ fn a_message_parts_markdown_is_parsed_once() {
     let theme = Arc::new(Theme::dark());
     let mut widget = MessagesWidget::new(theme);
     widget.set_width(40);
-    // Five parts: three paragraphs and two reasoning blocks. The thinking
-    // tags are what split the body into parts.
-    widget.add_assistant_text(
-        "first paragraph\n\n<thinking>first thought</thinking>\n\nsecond paragraph\n\n\
-         <thinking>second thought</thinking>\n\nthird paragraph\n\n"
-            .to_string(),
-    );
+    // Five parts: three paragraphs and two reasoning blocks. They are built as
+    // parts rather than as one body carrying thinking tags, because
+    // `find_any_tag` requires a non-alphanumeric character after the tag — the
+    // tag form yields **one** part, so the test would have measured a
+    // single-part message while claiming five.
+    widget.add_assistant_text("first paragraph\n\n".to_string());
+    widget.add_reasoning("first thought".to_string());
+    widget.add_assistant_text("second paragraph\n\n".to_string());
+    widget.add_reasoning("second thought".to_string());
+    widget.add_assistant_text("third paragraph\n\n".to_string());
     widget.add_streaming_token("x");
     // The first draw parses the message's parts and the tail.
     let _rows = messages_buffer(&widget);

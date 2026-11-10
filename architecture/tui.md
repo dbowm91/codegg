@@ -1743,6 +1743,11 @@ it. Its contract:
 A `width` of zero returns the source as one unwrapped row, and an empty source
 returns one empty row, so the row count is never zero for a non-empty buffer.
 
+The contract above is **unchanged by M006**, which changed only the wrap's
+internal cost: the rows, the byte offsets, the styles and the escape handling
+are the same, and an OSC-8 opener and closer still travel whole. What became
+linear is recorded under "The render path's caches (C006)".
+
 **Which paths use it.** The model-authored text — the assistant prose, the
 reasoning body and the streaming tail — reaches the renderer through the
 markdown path (`wrap_markdown_spans` → `wrap_styled_spans_by_word`), and every
@@ -1883,12 +1888,19 @@ from the tree — the row's remaining width is the only ceiling.
 **The hidden-output count moves into the header.** A collapsed call shows
 ` (+N lines)` between the summary and the affordance, and the **expanded**
 header drops it: with the content visible, the count of hidden lines is noise.
-The count comes from the **drawn body** — the same `output_line_count` the
-rows are built from — so it describes the content that *would* be drawn rather
-than the raw output. (`read` is the one exception: it renders its own
-numbered code, so its count comes from the raw output.) While the call is
-collapsed the daemon-side summary's own `output_lines` entry is suppressed, so
-a row never shows two line counts.
+The count describes the body that *would* be drawn rather than the raw output,
+which is what makes it a count of what there is to expand. (`read` is the one
+exception: it renders its own numbered code, so its count comes from the raw
+output.) While the call is collapsed the daemon-side summary's own
+`output_lines` entry is suppressed, so a row never shows two line counts.
+
+**The collapsed case is the cheap one.** The body is built only under the
+`expanded` test, so a collapsed call — the default — builds no body: no payload
+parse for a body, no formatted rows, no wrapped preview. Its count comes from a
+count-only read of the payload that produces neither a formatted row nor a
+pretty-printed string, which is what keeps the number identical without building
+what is not drawn. An expanded call parses once and draws the body it built, and
+that body's own length is the count.
 
 **Reasoning blocks default to collapsed.** Every construction site of a
 reasoning part sets `collapsed: true` — four in
@@ -3284,7 +3296,66 @@ something finer keeps work it must not.
 | The composer's wrapped layout | the buffer's revision and the wrap width | a change to the text or to the width |
 | A message part's Markdown | the message, the part, the part's length and the width | a transcript change that is not an append |
 | The streaming tail's Markdown | the tail's blocks, the text's epoch and the width | a replacement of the text, a width change, a theme change |
+| The streaming tail's **assembled rows** (M004) | there is no second key: the blocks are the assembly's whole input, and every mutation of the block set ends in one re-assembly from the first block it could have changed | a block change — one re-assembly of the suffix, so a token does not re-fold the whole response — served by borrow until the next one; a text replacement, a width change and a palette change move the epoch and drop the cache |
 | The editor's syntax highlight | the path, the theme and the **content** of each scanned line | a change to the content, the language or the palette |
+| The editor's horizontal clamp (M005) | the document's **revision**, the first visible line, the visible line count and the drawn width | a difference in any of those: a scroll is a different first line, a resize is a different width, and a document change moves the revision. It holds an **integer** — the widest visible line, in columns — and no text, and it is dropped with the presentation, so opening a document drops it |
+| The Session panel's populated projection (M001) | the projection stream and its `event_seq`, the active project and session, and every session-derived value the population copies | a difference in any of those, compared against the rows the sidebar already holds; a session teardown |
+| The tasks overlay's rows (M001) | the frame's todo list and the active projection snapshot | the end of the frame |
+| The file tree's rows — the `Ctrl+T` pane's and the `/files` box's (M002) | the listing's revision and that surface's own filter | a change to either; the listing that replaces the previous one, and the project reset that drops the tree |
+| The project chat's rows — the docked panel's and the `/chat` box's (M003) | the reducer's `sequence` (the applied-snapshot revision, for `/chat`), the unread count the divider and badge are drawn from, the active channel, the wrap width, the cursor and the theme | a difference in any of those, compared against the rows already held; a channel switch, a project rebind and a session teardown, each of which drops the model outright |
+| The change review's parsed hunks (M003) | there is no key: the review state already owns the patch | nothing is cached. The render borrows `&patch.hunks` through `DiffViewer::render_hunks_in`, so a frame copies no hunks and there is no state to invalidate |
+
+The chat cache holds **message bodies**, including redacted ones, so its key is
+also a security boundary. The reducer's `sequence` moves when a redaction or an
+edit is applied and the count it renders moves the unread divider; a key
+missing either would serve a body the daemon withdrew, which is the milestone's
+stop condition rather than a stale pixel. Dropping `sequence` from the key is
+the perturbation the redaction test is demonstrated against.
+
+Two M004 entries are about **how** a cached value is handed back rather than
+what is memoized, and both are keys on the same argument:
+
+- The streaming tail keeps its **assembled rows** beside its blocks. The branch
+  that says the rows are already rendered now serves them, where it used to
+  re-assemble the block set — a deep copy of every block's every row, on every
+  rebuild of the streaming message, including the rebuilds a token did not
+  cause. The assembly has no key of its own: the block set is its whole input,
+  so the only correct invalidation is the one that replaces the blocks, and the
+  cache has one place that does it. A cached tail whose blocks changed but
+  whose rows did not is a tail that draws text the response no longer contains.
+  The assembly is also **incremental in the same way the parse is**: the rule
+  is a fold over the line list, so a change re-folds from the first block it
+  could have touched, and the rows of the blocks before it are the rows they
+  were. A token therefore copies the block it grew, not the whole response.
+- A message part's rows are handed back as a **borrow** the caller extends
+  from, so a hit is one copy into the row index rather than two — the cache's
+  clone and the caller's own — and three under a search match, which rebuilt
+  the whole row list to recolour one row. A search now rebuilds that one row and
+  appends the rest from the borrow.
+
+`scripts/check_tui_render_cost.py` pins both shapes: the fast path may not call
+the assembler, and the tool-call body build — the payload parse included — must
+sit behind an `expanded` test.
+
+M005 adds two entries, one a cache and one an invalidation:
+
+- The **horizontal clamp** is memoized on `(revision, first_line,
+  visible_lines, width)`. The width is in the key although the measured value
+  does not depend on it: a resize re-resolves the viewport wholesale, and a
+  clamp left over from another pane's width is a view that can no longer reach
+  the end of its own lines. The cost of that coarser key is one measurement
+  after a resize, and the cost of dropping it is a stale edge.
+- The highlight cache's **prefix check is seeded from the edit**. The check's
+  question is "which is the first row whose content differs from the scan?",
+  and a seed says nothing above the edit changed — so the check starts at the
+  edit's line and stops at the first difference. Every accepted edit places
+  one, on the *post-edit* snapshot (an edit that inserts lines above itself
+  moves every later index), and several edits between two frames combine by
+  `min`. A change **nothing** placed — a daemon-side edit, a reload — has no
+  seed, and the check falls back to line 0. That fallback is the direction the
+  cache's correctness rests on: a missed change above the scan colours rows
+  from a context that no longer exists, and the cache is the only source of a
+  row's spans.
 
 Three things the caches must not change:
 
@@ -3300,6 +3371,20 @@ Three things the caches must not change:
   conditionally-closed conditions stand: C006 changes what is *cached*, not
   how anything is wrapped, and the recorded search defects and the
   escape-atomicity invariant are untouched.
+
+M006 made the wrap's **internal** work linear without touching that
+contract. The item builder resolves a word's span parts, and a separator's
+style, through one cursor that advances with `tokenize`'s segments — which
+`tokenize` emits in source order — so a wrap examines the span list
+`O(spans + words)` times instead of rescanning it from the front for every
+word and every separator. `chunk_word` accumulates each fragment's width from
+the character walk it already performs instead of measuring it again, and the
+plain engine chunks a word by byte range instead of allocating a `Vec` and a
+`String` per word. `wrap_span_rescans` and `wrap_width_measures` count the
+first two. The wrap's own **input copy remains**: the styled primitive takes
+`&[Span<'static>]`, so the text is still copied once per wrap, and removing
+that copy would change the primitive's signature — C006's partly-met criterion
+is therefore unchanged by this milestone.
 - **The row count.** The transcript's rows come from one producer — the
   layout cache — and the scrollbar's row count and the drawn rows are the
   same rows. A cache that changed which rows exist would move the scroll
@@ -3308,8 +3393,55 @@ Three things the caches must not change:
 
 The counters that make the cost measurable live in
 `src/tui/render_cost.rs`: they count the wraps, the Markdown parses, the
-highlight scans and the task rows the overlay copies, so a test can assert
-on *how many* of them a frame did rather than on how long it took.
+highlight scans, the task rows the overlay copies, and — from M001 — the
+frame-buffer retentions, sidebar populations and line builds, subagent-tab
+clones, composer-hint builds, status summaries, full task-list builds and
+watermark scans, so a test can assert on *how many* of them a frame did
+rather than on how long it took. M005 adds the editor's row reads and the
+bytes they examined, the steps its semantic-token scan took, and the lines the
+highlight cache's prefix check re-read; a frame that measures the window and
+then draws it reads each row twice, which is what the first two separate.
+
+M002 adds two more, and they are a pair on purpose. `file_tree_row_builds`
+counts one **flatten** of a listing into its row list; `file_tree_filter_passes`
+counts one application of a surface's filter to a row list. A surface can
+filter rows it did not flatten — the `/files` box filters the structure the
+authority handed it — so neither count implies the other, and a frame that
+changed nothing must show neither.
+
+M003 adds four. `chat_row_builds` counts one miss of a chat surface's row
+cache, which is one full re-wrap of the channel; `chat_wrap_passes` counts one
+**body** a build wraps, so a build of `n` messages is `1` row build and `n`
+wrap passes (a redacted body is not wrapped); `chat_unread_scans` counts one
+derivation of the unread count by scanning the window, which the memo makes a
+per-window-change event rather than a per-draw one; and `review_hunk_copies`
+counts one copied `DiffHunk`. That last producer is attached to the type's
+`Clone` rather than to a call site, so a render path that reintroduces
+`patch.hunks.clone()` is measured without a second place to forget it.
+
+M004 adds four. `tail_row_copies` counts one assembly of the streaming tail's
+rows: its producer sits in the cache's **assembly**, not at the call site that
+materializes the rows into the row index, so an unchanged tail reads zero and a
+block change reads one — one fold of the suffix the change could have touched,
+not one per row of the response. `part_row_copies` counts one copy per
+part a message rebuild appends, which is the floor — the cache owns its rows and
+the transcript owns its own — so the counter catches the *second* copy coming
+back. `tool_body_builds` counts one tool-call **body** built for the transcript,
+which a collapsed call performs none of; the collapsed header's count-only read
+is deliberately not this counter, because it builds no formatted rows — for a
+structured payload that read *is* a parse, so the collapsed path is body-free
+rather than parse-free, and the counter is named for what it measures.
+`code_block_spans` counts the spans the code-block
+wrapper emitted — one per style run per row where it was one per character.
+
+The M001 caches are the frame composition's rather than any one surface's:
+the Session panel's population is skipped when neither the projection
+revision nor any session-derived input moved, and the overlay's row list is
+derived once and read by both the height reservation and the painter. The
+footer's summary is deliberately **not** in this table: its value reads
+across the whole `App` (including a time predicate for the undo prompt), so
+a key that named every field would be as wide as the derivation. M001 leaves
+that derivation in place and records it as deferred.
 
 #### The transcript's retention
 
@@ -3508,6 +3640,16 @@ intent — `FilesDescend`, `FilesAscend`, `FilesSelect` — resolved against the
 authority by `commands::file_tree`. `h` resolves "the parent of this row"
 against the **unfiltered** row set, because that is a structural question and
 the surface's own filtered view cannot answer it.
+
+The structure is **already flattened**: `FileTreeState` owns the one row
+vocabulary — the flatten of the listing and the pane's own filter over it —
+and rebuilds it when its revision moves, so `structure()` hands each surface
+the *unfiltered* rows and no surface re-derives the tree. The `/files` box
+narrows that copy with its own filter and **does not re-flatten**: it caches
+its filtered rows against `(view revision, filter)` and the render path reads
+the cached slice. A box that flattened the tree itself would be a second
+producer of the rows, and the two surfaces' filters would drift apart by
+construction.
 
 The structure reaches every mounted surface through one refresh, in
 `App::render`, ahead of the tree pane, the side panel and the modal dialog.
@@ -4297,6 +4439,20 @@ on the newest message and keeps following arrivals. `k` unpins (history stops
 moving under the user), `j` past the newest re-pins, `G` re-pins. `sync` runs
 on every render and every snapshot, not just on navigation, so a message
 arriving while the user is pinned moves them with it.
+
+**One producer of the rows.** `ChatBrowser::rows` is the only producer of
+`ChatRow`s. It caches the whole model against `(sequence, unread, channel,
+width, cursor, theme)` — `sequence` is the reducer's own counter on the panel
+and the applied-snapshot revision in the window — and hands both surfaces a
+borrow of it plus the viewport anchor it derived when the model was built.
+Both surfaces draw through `window_lines`, which **borrows** the cached text:
+`Paragraph` needs an owned `Vec<Line>`, so a draw materializes the visible
+window once, but it allocates no `String`. A frame that changed nothing
+therefore wraps nothing, rebuilds nothing and reverse-scans nothing, while a
+redaction or an edit — which moves the sequence without changing the window's
+length, the marker, the width or the cursor — is re-rendered on the next
+frame. The two surfaces keep **separate** caches because each browser owns its
+own cursor; a shared cache would serve one surface's selection to the other.
 
 **Contextual keys above the input.** `SidePanel::composer_hints` returns the
 verbs the active panel owns; `App::composer_hint_text` prefers an armed seed
@@ -7717,6 +7873,14 @@ line; `line_slice`/`line_spans` read at most the 32 KiB prefix window;
 instead of scanning a multi-megabyte line. `measure_frame_cost` mirrors the
 render loop exactly so tests assert deterministic budgets rather than
 wall-clock time.
+
+M005 leaves that bound in place and tightens it. `measure_frame_cost`'s
+accounting is unchanged — a row is still charged its `MAX_RENDER_LINE_BYTES`
+prefix against the frame budget — while the bytes actually read fall: the
+horizontal clamp is measured once per `(revision, first line, height, width)`
+rather than once per frame, and a row's read is its column window's bytes
+rather than its line's. A cursor at the far end of a multi-megabyte line still
+costs a bounded prefix; it is now a smaller one, and it is read once.
 
 A line past the per-line budget renders its prefix as plain text (no
 per-token spans, which would cost the whole line) with a warning-styled

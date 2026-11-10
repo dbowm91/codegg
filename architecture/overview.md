@@ -596,9 +596,24 @@ fifth reconciliations recorded. The full reconciliation is in
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 360 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Integration test files | 366 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
 | Guard scripts (all) | 105 | `scripts/check_*` — every guard the repository ships |
 | CI guard scripts | 71 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs guards CI does not |
+
+### Count reconciliation — the TUI render-cost milestones (2026-11-10)
+
+The `tui-render-cost` milestones added six integration-test **modules** and no
+test target: `tests/tui_render/tui_frame_cost.inc` (M001),
+`tui_file_tree_cost.inc` (M002), `tui_chat_cost.inc` (M003),
+`tui_transcript_cost.inc` (M004), `tui_editor_cost.inc` (M005) and
+`tui_wrap_cost.inc` (M006). Each is a member of the existing `tui_render`
+family, so the root package's **test-target** count did **not** move.
+
+- *Integration test files* is **366** — re-measured from the tree, not
+  incremented (`tests/*.rs` + `tests/*/*.inc`, the `tests/common/` helper
+  tree excluded).
+
+Every other row was confirmed unchanged by measurement.
 
 ### Count reconciliation — the daemon's compaction request (2026-10-31)
 

@@ -365,6 +365,17 @@ fn the_composer_hint_is_built_once_per_frame() {
     working.session_state.session_status = codegg::tui::app::SessionStatus::Working;
     cases.push(("working", working));
 
+    // Resize mode outranks every surface hint, so it is the arm whose text is
+    // built by a different branch than the panel and key hints below it. The
+    // other branches (an armed chat seed, the editor route, an active panel)
+    // are not separately constructed: the build happens at **one** call site
+    // before the dispatch, so the branch cannot change how many builds a frame
+    // performs — only which string is built, and that is the render comparison's
+    // business rather than the counter's.
+    let mut resizing = test_app();
+    resizing.panel_host.set_resizing(true);
+    cases.push(("resize mode", resizing));
+
     for (branch, mut app) in cases {
         // Warm the frame so the measurement is of a steady state.
         render(&mut app);

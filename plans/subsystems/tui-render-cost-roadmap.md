@@ -455,8 +455,8 @@ The roadmap's §11 completion definition is met:
 2. Every counter this workstream added has a producer on the render path and an
    assertion in the `tui_render` family, and each assertion was shown failing
    against the code before its change.
-3. `scripts/check_tui_render_cost.py` grew from 7 checks and 7 injections to **27**
-   checks and **34** injections, each injection proving its check is not vacuous.
+3. `scripts/check_tui_render_cost.py` grew from 7 checks and 7 injections to **28**
+   checks and **35** injections, each injection proving its check is not vacuous.
 4. `architecture/tui.md` §"The render path's caches (C006)" names every cache
    this workstream introduced, with its key and its invalidation.
 5. A frame with an unchanged state performs no deep clone of the terminal buffer,
@@ -474,6 +474,36 @@ milestone, because both are properties of the tree: `docs/comment-budget.toml`
 was banked (the guard was red with 54 R4 violations, 39 of them from M001–M004),
 and a `field_reassign_with_default` warning in M003's test was fixed so that
 `clippy -D warnings` is clean.
+
+### The corrective pass of 2026-11-10
+
+A review of the pre-existing defects and residual risks this roadmap recorded
+rather than fixed produced five fixes and one guard hardening. They are recorded
+in the affected milestones' closure records, not as a new milestone, because
+three of them are one-line corrections to code this roadmap already touched and
+two are test-or-guard work.
+
+- **The streamed table** (M004): `reparse_start_line` now backs up one block,
+  because a block's meaning can depend on the block before it. The defect test
+  became a positive test and the table joined `INCREMENTAL_FIXTURES`.
+- **The suppressed reasoning header** (M004): the search arm's
+  `prev_was_reasoning` reset is unconditional.
+- **The wrap's trailing-run double count** (M006): `chunk_word` no longer adds a
+  run's width twice, so a multi-span word breaks at its true width. This changes
+  where rows break, so it is the one fix that is a visible rendering change.
+- **The `(rN)` marker** (M003): the body wraps at the width minus the marker and
+  the selection padding reserves the marker's columns, so an edited message
+  cannot look unedited at sidebar width. The owner chose the narrowing trade-off.
+- **The file tree's `pub` row inputs** (M002): a new
+  `file-tree-row-input-write` guard rejects a direct write through
+  `file_tree_state.` from outside the authority, and the retargeted
+  `tasks-whole-list-clone` injection is a genuine deep clone again.
+- **Coverage**: `a_message_parts_markdown_is_parsed_once` now really builds five
+  parts, and the composer-hint test covers resize mode.
+
+Two items were reported as defects and are **not** defects: the two plan
+"links" a link-check flags in `plans/registry.md` are a `../gorouter`
+sibling-repository path and a filename **pattern** (`ADR-NNNN-….md`) in prose.
 
 ### The tree-level verification, recorded once
 
@@ -501,7 +531,7 @@ Beyond `quick`, at this closure:
 - `cargo test --test tui_render` — **1189 passed, 0 failed**, the family with all
   six cost members bound.
 - `cargo clippy -p codegg --lib --tests -- -D warnings` — clean.
-- `python3 scripts/check_tui_render_cost.py` and `--self-test` — passes, **34**
+- `python3 scripts/check_tui_render_cost.py` and `--self-test` — passes, **35**
   injections all rejected.
 - `python3 scripts/check_comment_budget.py` and `--self-test` — passes.
 - `python3 scripts/rust_test_scan.py --validate` — all checks pass.
