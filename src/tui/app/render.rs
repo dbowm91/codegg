@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::tui::app::state::subagents::SubagentRow;
-use crate::tui::app::state::tasks::{bounded as bounded_task_rows, is_live_state, TaskRow};
+use crate::tui::app::state::tasks::{is_live_state, TaskRow};
 use crate::tui::panels::{PanelPlacement, SidePanelId};
 use ratatui::style::Color;
 
@@ -200,11 +200,18 @@ impl App {
 
         let todo_rows = self.todo_strip_height();
         let max_prompt_height = (area.height * 40 / 100).max(3);
+        // The hint line is built **once** for the frame. Its only use at this
+        // point is `is_some()` — does the row need reserving — and the same
+        // string is then carried to the draw site below. The hint chunk is a
+        // vertical split of the prompt chunk, so its width is the pane's
+        // width; the budget is therefore already known here.
+        let hint_budget = usize::from(pane_area.width).saturating_sub(4);
+        let composer_hint = self.composer_hint_text_bounded(hint_budget);
         // Reserve the strip's row *inside* the prompt allocation so the input
         // box keeps the height it asked for and the chat viewport absorbs the
         // difference. Carving it back out of the prompt chunk instead would
         // silently shrink the input whenever a todo list exists.
-        let hint_rows = u16::from(self.composer_hint_text().is_some());
+        let hint_rows = u16::from(composer_hint.is_some());
         // The unified tasks overlay reserves from the prompt allocation for
         // the same reason the todo strip does. It is added
         // *after* the todo strip because the overlay renders directly beneath
@@ -236,6 +243,10 @@ impl App {
         // all. The input box is unaffected either way, which was the only
         // reason to reserve it in the first place.
         let tab_rows = self.subagent_tab_strip_height().min(spare_rows);
+        // The overlay's rows are derived **once** for the frame: the height
+        // below and the painter further down are two readers of one build.
+        // `tasks_strip_height` reads this cache instead of deriving again.
+        self.frame_task_rows = self.build_frame_task_rows();
         let tasks_rows = self
             .tasks_strip_height()
             .min(spare_rows.saturating_sub(tab_rows));
@@ -380,9 +391,12 @@ impl App {
         // drawn and leave the view claiming a run is live.
         self.sync_subagent_rows_from_projection();
 
-        self.render_composer_hints(frame, hint_chunk);
+        self.render_composer_hints(frame, hint_chunk, composer_hint.as_deref());
         self.render_todo_strip(frame, todo_chunk);
-        self.render_tasks_strip(frame, tasks_chunk);
+        // Hand the painter the rows the height already derived, and clear the
+        // per-frame cache so a reader between frames cannot see a stale list.
+        let frame_task_rows = self.frame_task_rows.take();
+        self.render_tasks_strip(frame, tasks_chunk, frame_task_rows.as_ref());
         self.render_prompt(frame, prompt_chunk);
         self.render_footer(frame, session_chunks[3]);
 
@@ -399,6 +413,31 @@ impl App {
         // panel that is no longer painted — which is what would otherwise let
         // a click focus a column that has moved or closed.
         self.panel_areas.clear();
+        // One population for the whole frame, and only when the Session panel
+        // is actually on screen. It used to run at the top of
+        // `render_panel_at`, which meant once per occupied panel — including
+        // when the occupied panel was not the Session panel at all.
+        let session_panel_visible = regions.occupied().any(|(placement, rect)| {
+            rect.width > 0
+                && rect.height > 0
+                && self.panel_host.panel_at(placement) == SidePanelId::Session
+        });
+        if session_panel_visible {
+            // The population used to sit inside `render_panel_at`, under the
+            // per-panel `catch_unwind`. It is hoisted now, so it keeps a
+            // containment of its own: a panic in a setter is recorded like
+            // any other component panic instead of taking the frame down.
+            let population = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.populate_session_panel_if_needed();
+            }));
+            if let Err(err) = population {
+                let msg = Self::extract_panic_message(&err);
+                tracing::error!("Sidebar population panic: {msg}");
+                self.ui_state
+                    .diagnostics
+                    .record_component_render_panic("sidebar");
+            }
+        }
         for (placement, rect) in regions.occupied() {
             if rect.width == 0 || rect.height == 0 {
                 continue;
@@ -527,6 +566,12 @@ impl App {
     /// Apply the live text selection over the finished frame, then retain
     /// the frame so a drag can later be resolved to real text.
     ///
+    /// The buffer is retained **only while a selection is live**. Its one
+    /// reader, [`Self::copy_selection_to_clipboard`],
+    /// returns early with no selection, so a copy made on every other frame
+    /// is work no interaction can spend — and `clear_selection` drops the
+    /// copy when the interaction ends.
+    ///
     /// This runs last, after every overlay (dialogs, completions, toasts),
     /// so a selection reads as a single continuous band over the whole
     /// window rather than being partially overpainted. Mutating the buffer
@@ -557,8 +602,7 @@ impl App {
                 }
             }
             self.last_frame_buffer = Some(buffer.clone());
-        } else {
-            self.last_frame_buffer = Some(frame.buffer_mut().clone());
+            crate::tui::render_cost::count_frame_buffer_clone();
         }
     }
 
@@ -1391,19 +1435,35 @@ impl App {
     /// omitted entirely. Every line is ellipsized to the available width
     /// rather than wrapped, so a long description can never change the
     /// overlay's height and reflow the transcript underneath it.
-    fn render_tasks_strip(&mut self, frame: &mut Frame, area: Option<Rect>) {
+    fn render_tasks_strip(
+        &mut self,
+        frame: &mut Frame,
+        area: Option<Rect>,
+        frame_rows: Option<&crate::tui::app::FrameTaskRows>,
+    ) {
         let Some(area) = area else { return };
         if area.width == 0 || area.height == 0 {
             return;
         }
 
         let theme = self.ui_state.theme.clone();
-        // The rows are bounded in place: the overlay draws at most twelve of
-        // them, and deep-cloning the whole list to throw most of it away
-        // cost the whole task list twice per frame.
-        let all_rows = self.task_rows();
-        let rows = bounded_task_rows(&all_rows);
-        let selected = self.selected_task_row_index(&rows);
+        // One build of the rows serves the height and the painter. The
+        // fallback exists only for a caller outside a frame; the render path
+        // always hands in the list it already derived.
+        let fallback;
+        let built = match frame_rows {
+            Some(rows) => rows,
+            None => {
+                fallback = self.build_frame_task_rows().unwrap_or(FrameTaskRows {
+                    all: Vec::new(),
+                    bounded: Vec::new(),
+                });
+                &fallback
+            }
+        };
+        let all_rows = built.all.as_slice();
+        let rows = built.bounded.as_slice();
+        let selected = self.selected_task_row_index(rows);
 
         let mut lines: Vec<Line> = Vec::new();
         if rows.is_empty() {
@@ -1578,7 +1638,11 @@ impl App {
     /// adapter hardcodes `progress: None`, so an invented "working on step
     /// 3" line would be a lie the user acts on.
     fn render_subagent_view(&mut self, frame: &mut Frame, area: Rect) {
-        let Some(tab) = self.ui_state.subagents.active_tab().cloned() else {
+        // Borrow the tab rather than cloning it. The clone this replaced
+        // copied the tab's row and both transcript windows (up to two
+        // 512-entry caches) so a view that paints roughly forty rows could
+        // read them. The borrow ends before the scroll write-back below.
+        let Some(tab) = self.ui_state.subagents.active_tab() else {
             return;
         };
         if area.width == 0 || area.height == 0 {
@@ -1696,7 +1760,7 @@ impl App {
         // the system does not know.
         let overflow_index = lines.len();
         lines.push(Line::default());
-        lines.extend(self.delegated_transcript_lines(&tab));
+        lines.extend(self.delegated_transcript_lines(tab));
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
             " Esc returns to the main buffer".to_string(),
@@ -2176,7 +2240,15 @@ impl App {
     /// its verbs once and they appear next to the input they modify. Kept out
     /// of each panel's own chrome: inside the panel they described the
     /// panel, while the keys actually operate on the shared composer.
-    fn render_composer_hints(&mut self, frame: &mut Frame, chunk: Option<Rect>) {
+    ///
+    /// `text` is the frame's **one** build of the line, made where the row's
+    /// height was decided. This function only draws it.
+    fn render_composer_hints(
+        &mut self,
+        frame: &mut Frame,
+        chunk: Option<Rect>,
+        text: Option<&str>,
+    ) {
         let Some(area) = chunk else {
             return;
         };
@@ -2184,10 +2256,7 @@ impl App {
             return;
         }
         let budget = usize::from(area.width).saturating_sub(4);
-        // The row is built to fit the budget, not merely truncated to it: the
-        // composer's own row is a list of keys, and a key cut in half names a
-        // key that does not exist.
-        let Some(text) = self.composer_hint_text_bounded(budget) else {
+        let Some(text) = text else {
             return;
         };
         let theme = &self.ui_state.theme;
@@ -2199,7 +2268,7 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                crate::tui::wrap::ellipsize_to_width(&text, budget),
+                crate::tui::wrap::ellipsize_to_width(text, budget),
                 Style::default().fg(theme.muted),
             ),
         ]);
@@ -2594,6 +2663,7 @@ impl App {
     }
 
     pub fn build_status_summary(&self) -> TuiStatusSummary {
+        crate::tui::render_cost::count_status_summary_build();
         let mut primary = String::from("idle");
         let mut activity: Vec<String> = Vec::new();
 
@@ -2782,7 +2852,6 @@ impl App {
     /// driving", which shows up as a panel that renders unfocused while the badge
     /// claims it is focused.
     fn render_panel_at(&mut self, frame: &mut Frame, placement: PanelPlacement, area: Rect) {
-        self.populate_session_panel();
         let mut ctx = crate::tui::panels::PanelCtx {
             theme: Arc::clone(&self.ui_state.theme),
             // `now_ms` is display-only (composing expiry); no I/O.
@@ -2810,11 +2879,109 @@ impl App {
             .render_at(placement, &mut ctx, frame.buffer_mut(), area);
     }
 
+    /// Populate the Session panel, once per frame and only when it moved.
+    ///
+    /// The population step is a copy of the projection and of the session's
+    /// own sidebar-visible state. It runs when **either** the projection
+    /// revision **or** one of those session-derived inputs differs from what
+    /// the sidebar already holds. A frame that changed neither does no work;
+    /// a projection that arrives is always reflected, because its
+    /// `(stream_id, event_seq)` is the first half of the test.
+    fn populate_session_panel_if_needed(&mut self) {
+        if self.sidebar_projection_is_current() && self.sidebar_inputs_are_current() {
+            return;
+        }
+        self.populate_session_panel();
+    }
+
+    /// Whether the sidebar's projection-derived rows match the live snapshot.
+    fn sidebar_projection_is_current(&self) -> bool {
+        match self.sidebar_projection_revision.as_ref() {
+            Some(SidebarProjectionRevision::NoSnapshot) => {
+                self.projection_client.active_snapshot().is_none()
+            }
+            Some(SidebarProjectionRevision::Snapshot {
+                stream_id,
+                event_seq,
+            }) => self.projection_client.active_snapshot().is_some_and(
+                |(current_stream, snapshot)| {
+                    current_stream.as_str() == stream_id.as_str()
+                        && snapshot.event_seq == *event_seq
+                },
+            ),
+            None => false,
+        }
+    }
+
+    /// Whether the session-derived inputs match the rows already copied.
+    fn sidebar_inputs_are_current(&self) -> bool {
+        use crate::tui::components::sidebar::SidebarPopulationInputs;
+
+        let project_scope = self.active_project_id();
+        let session = self.session_state.session.as_ref();
+        let current_agent = &self.agent_state.agents[self.agent_state.current_agent];
+        let provider = self
+            .agent_state
+            .current_model
+            .split('/')
+            .next()
+            .unwrap_or("");
+        let derived = &self.session_state_derived;
+        let git = session.map(|_| &self.session_state.git_sidebar);
+        let git_fallback_root = session.map(|session| session.project_id.as_str());
+        let inputs = SidebarPopulationInputs {
+            project_scope,
+            session,
+            agent: &current_agent.name,
+            provider,
+            model: &self.agent_state.current_model,
+            mcp_servers: &self.session_state.mcp_servers,
+            file_changes: &self.session_state.changed_files,
+            git,
+            git_fallback_root,
+            goal: derived.goal.as_deref(),
+            plan: derived.plan.as_ref(),
+            live_work_status: self.sidebar_live_work_status(),
+        };
+        self.sidebar.population_is_current(&inputs)
+    }
+
+    /// The sidebar's live-work badge, derived from the projection's status.
+    fn sidebar_live_work_status(
+        &self,
+    ) -> Option<crate::tui::components::sidebar::SidebarLiveWorkStatus> {
+        use crate::tui::app::state::projection_client::PrimaryProjectionStatus;
+        use crate::tui::components::sidebar::SidebarLiveWorkStatus;
+
+        match self.projection_client.primary_status() {
+            Some(PrimaryProjectionStatus::Loading) => Some(SidebarLiveWorkStatus::Loading),
+            Some(PrimaryProjectionStatus::Unavailable(_)) => {
+                Some(SidebarLiveWorkStatus::Unavailable)
+            }
+            Some(PrimaryProjectionStatus::Authoritative) | None => None,
+        }
+    }
+
+    /// Record the revision the population just read.
+    fn record_sidebar_projection_revision(&mut self) {
+        self.sidebar_projection_revision = Some(match self.projection_client.active_snapshot() {
+            Some((stream_id, snapshot)) => SidebarProjectionRevision::Snapshot {
+                stream_id: stream_id.to_string(),
+                event_seq: snapshot.event_seq,
+            },
+            None => SidebarProjectionRevision::NoSnapshot,
+        });
+    }
+
     /// Push session projection into the Session panel's widget.
     ///
     /// Split out of `render_panel_at` so the sidebar's field population is
     /// readable on its own; it performs no I/O and reads only cached state.
     fn populate_session_panel(&mut self) {
+        crate::tui::render_cost::count_sidebar_population();
+        // One focus reconciliation for the whole population, rather than one
+        // per row setter.
+        self.sidebar.begin_population();
         // The Workspace route no longer forces this panel. It selects the
         // Chat panel through the host instead (see
         // `workspace_dashboard::open_workspace`), which keeps the previous
@@ -2881,18 +3048,7 @@ impl App {
         self.sidebar.set_goal(derived.goal.clone());
         self.sidebar.set_plan(derived.plan.clone());
         self.sidebar
-            .set_live_work_status(match self.projection_client.primary_status() {
-            Some(crate::tui::app::state::projection_client::PrimaryProjectionStatus::Loading) => {
-                Some(crate::tui::components::sidebar::SidebarLiveWorkStatus::Loading)
-            }
-            Some(
-                crate::tui::app::state::projection_client::PrimaryProjectionStatus::Unavailable(_),
-            ) => Some(crate::tui::components::sidebar::SidebarLiveWorkStatus::Unavailable),
-            Some(
-                crate::tui::app::state::projection_client::PrimaryProjectionStatus::Authoritative,
-            )
-            | None => None,
-        });
+            .set_live_work_status(self.sidebar_live_work_status());
 
         // Derive the subagent rows first and let the snapshot borrow end
         // here: the sidebar writes below all need `&mut self`, so holding the
@@ -2938,20 +3094,31 @@ impl App {
                     })
                     .collect(),
             );
-            self.sidebar
-                .set_run_groups(snapshot.run_groups.iter().cloned().collect());
-            self.sidebar.set_agent_tree(
+            self.sidebar.set_run_groups(
                 snapshot
-                    .active_turn
-                    .as_ref()
-                    .map(|turn| turn.agent_tree.iter().cloned().collect())
-                    .or_else(|| {
-                        snapshot
-                            .recent_turns
-                            .front()
-                            .map(|turn| turn.agent_tree.iter().cloned().collect())
-                    })
-                    .unwrap_or_default(),
+                    .run_groups
+                    .iter()
+                    .take(crate::tui::components::sidebar::MAX_SIDEBAR_RUN_GROUPS)
+                    .cloned()
+                    .collect(),
+            );
+            let agent_tree = snapshot
+                .active_turn
+                .as_ref()
+                .map(|turn| turn.agent_tree.iter())
+                .or_else(|| {
+                    snapshot
+                        .recent_turns
+                        .front()
+                        .map(|turn| turn.agent_tree.iter())
+                });
+            self.sidebar.set_agent_tree(
+                agent_tree
+                    .into_iter()
+                    .flatten()
+                    .take(crate::tui::components::sidebar::MAX_SIDEBAR_AGENT_TREE_NODES)
+                    .cloned()
+                    .collect(),
             );
             self.sidebar.set_convergences(
                 snapshot
@@ -2978,11 +3145,20 @@ impl App {
             // overlay uses, so "jobs this session is waiting on" means one
             // thing across both surfaces rather than two rules that drift the
             // first time a producer invents a new state token.
-            self.sidebar.set_jobs(
-                snapshot
-                    .jobs
-                    .iter()
-                    .filter(|job| is_live_state(&job.state))
+            //
+            // The total is read off the filtered references *before* a row is
+            // cloned: the bound truncates what is displayed, never what the
+            // header counts.
+            let live_jobs: Vec<_> = snapshot
+                .jobs
+                .iter()
+                .filter(|job| is_live_state(&job.state))
+                .collect();
+            let job_total = live_jobs.len();
+            self.sidebar.set_jobs_with_total(
+                live_jobs
+                    .into_iter()
+                    .take(crate::tui::components::sidebar::MAX_SIDEBAR_JOB_ROWS)
                     .map(|job| SidebarJob {
                         job_id: job.job_id.clone(),
                         kind: job.kind.clone(),
@@ -2991,6 +3167,7 @@ impl App {
                         error_class: job.error_class.clone(),
                     })
                     .collect(),
+                job_total,
             );
         } else {
             self.sidebar.set_tool_programs(Vec::new());
@@ -3013,8 +3190,10 @@ impl App {
             // they are three renderings of one vector, not three independent
             // reads that could disagree. `label()` supplies the same
             // name-else-agent-type fallback the overlay uses.
-            self.sidebar.set_subagents(
+            let subagent_total = rows.len();
+            self.sidebar.set_subagents_with_total(
                 rows.iter()
+                    .take(crate::tui::components::sidebar::MAX_SIDEBAR_SUBAGENT_ROWS)
                     .map(|row| crate::tui::components::sidebar::SidebarSubagent {
                         task_id: row.task_id.clone(),
                         child_instance_id: row.child_instance_id.clone(),
@@ -3024,9 +3203,12 @@ impl App {
                         profile: row.descriptor().map(str::to_string),
                     })
                     .collect(),
+                subagent_total,
             );
             self.apply_subagent_rows(rows);
         }
+        self.sidebar.end_population();
+        self.record_sidebar_projection_revision();
     }
 
     /// Project the snapshot's agent tree into the main buffer's subagent rows.

@@ -321,6 +321,38 @@ impl RenderPanicInjection {
     }
 }
 
+/// The one projection snapshot a sidebar population was built from.
+///
+/// `NoSnapshot` is a populated state too: the population clears the
+/// projection-derived sections when there is no snapshot, and that clear must
+/// not be repeated every frame for the same absence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SidebarProjectionRevision {
+    NoSnapshot,
+    Snapshot { stream_id: String, event_seq: u64 },
+}
+
+/// One frame's tasks-overlay rows: the full list and the bounded rows the
+/// overlay draws.
+///
+/// Built once in `render` because the height needs the bounded count and the
+/// painter needs both the bounded rows and the full list (each group header's
+/// "N more" needs its group's total). Two builders meant two full
+/// derivations per frame.
+pub(crate) struct FrameTaskRows {
+    pub all: Vec<crate::tui::app::state::tasks::TaskRow>,
+    pub bounded: Vec<crate::tui::app::state::tasks::TaskRow>,
+}
+
+/// The snapshot and tab set a transcript watermark scan last ran for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WatermarkScanKey {
+    stream_id: String,
+    event_seq: u64,
+    tab_count: usize,
+    active_tab: Option<String>,
+}
+
 pub struct App {
     pub ui_state: UiState,
     pub session_state: SessionState,
@@ -452,7 +484,20 @@ pub struct App {
     /// resolved to the exact glyphs the user saw. Mouse reporting is on,
     /// so the terminal's own drag-select is unavailable; this is the
     /// replacement.
+    ///
+    /// Set only while [`Self::selection_anchor`] and [`Self::selection_focus`]
+    /// are both live; `clear_selection` drops it with them.
     pub last_frame_buffer: Option<ratatui::buffer::Buffer>,
+    /// The projection revision the Session panel's rows were last populated
+    /// from. `None` until the first population.
+    sidebar_projection_revision: Option<SidebarProjectionRevision>,
+    /// The tasks overlay's rows, built once for the current frame.
+    ///
+    /// `Some` only between the height reservation and the painter inside
+    /// [`Self::render`], so a reader outside a frame cannot see a stale list.
+    frame_task_rows: Option<FrameTaskRows>,
+    /// The snapshot and tab set the transcript watermark scan last ran for.
+    watermark_scan_key: Option<WatermarkScanKey>,
     pub context_hint: String,
     pub event_rx: Option<mpsc::Receiver<ChatEvent>>,
     pub tui_cmd_tx: Option<mpsc::Sender<TuiCommand>>,
@@ -1213,6 +1258,9 @@ impl App {
             selection_anchor: None,
             selection_focus: None,
             last_frame_buffer: None,
+            sidebar_projection_revision: None,
+            frame_task_rows: None,
+            watermark_scan_key: None,
             context_hint: String::new(),
             event_rx: None,
             tui_cmd_tx: None,
@@ -1808,6 +1856,9 @@ impl App {
             selection_anchor: None,
             selection_focus: None,
             last_frame_buffer: None,
+            sidebar_projection_revision: None,
+            frame_task_rows: None,
+            watermark_scan_key: None,
             context_hint: String::new(),
             event_rx: None,
             tui_cmd_tx: None,
@@ -9101,6 +9152,11 @@ impl App {
     pub fn clear_selection(&mut self) {
         self.selection_anchor = None;
         self.selection_focus = None;
+        // The retained frame existed to resolve a drag. With no selection
+        // there is no reader for it (`copy_selection_to_clipboard` returns
+        // early), so keeping it would retain a full terminal buffer for an
+        // interaction that has ended.
+        self.last_frame_buffer = None;
     }
 
     /// Copy the current selection if there is one. Returns whether a copy
@@ -13167,6 +13223,7 @@ impl App {
     /// own row: it is a list of keys, and a key cut in half names a key that
     /// does not exist, so the row drops whole keys instead.
     pub fn composer_hint_text_bounded(&mut self, budget: usize) -> Option<String> {
+        crate::tui::render_cost::count_composer_hint_build();
         // Resize mode owns the frame, so it outranks every surface hint: the
         // keys that just changed meaning are `h/j/k/l`, and a reader who sees
         // "j/k scroll" while resize mode is armed has been told something
@@ -14995,6 +15052,51 @@ impl App {
         crate::tui::app::state::tasks::bounded(self.task_rows())
     }
 
+    /// Build both row lists the tasks overlay reads, once for a frame.
+    ///
+    /// `None` when the overlay is collapsed: there is no height to reserve
+    /// and nothing to paint, so the list is not derived at all.
+    pub(crate) fn build_frame_task_rows(&self) -> Option<FrameTaskRows> {
+        if !self.tasks_expanded {
+            return None;
+        }
+        let all = self.task_rows();
+        let bounded = crate::tui::app::state::tasks::bounded(&all);
+        Some(FrameTaskRows { all, bounded })
+    }
+
+    /// The snapshot and tab set the watermark scan last ran for.
+    pub(crate) fn watermark_scan_is_current(&self, stream_id: &str, event_seq: u64) -> bool {
+        let Some(key) = self.watermark_scan_key.as_ref() else {
+            return false;
+        };
+        key.stream_id == stream_id
+            && key.event_seq == event_seq
+            && key.tab_count == self.ui_state.subagents.tabs.len()
+            && key.active_tab.as_deref()
+                == self
+                    .ui_state
+                    .subagents
+                    .tabs
+                    .active_tab_id()
+                    .map(|id| id.as_str())
+    }
+
+    /// Record that the watermark scan ran for this snapshot and tab set.
+    pub(crate) fn record_watermark_scan(&mut self, stream_id: &str, event_seq: u64) {
+        self.watermark_scan_key = Some(WatermarkScanKey {
+            stream_id: stream_id.to_string(),
+            event_seq,
+            tab_count: self.ui_state.subagents.tabs.len(),
+            active_tab: self
+                .ui_state
+                .subagents
+                .tabs
+                .active_tab_id()
+                .map(|id| id.to_string()),
+        });
+    }
+
     /// Move the overlay's selection cursor by `offset` rows.
     ///
     /// Returns whether the cursor moved. The cursor visits body rows only —
@@ -15314,6 +15416,13 @@ impl App {
         if !self.tasks_expanded {
             return 0;
         }
+        // Inside a frame the rows were already built by `render`, so the
+        // height is a read. The fallback keeps a direct caller (a test, or a
+        // gesture that asks before a frame) correct at the cost of building
+        // the list it needs; the render path never takes it.
+        if let Some(frame) = self.frame_task_rows.as_ref() {
+            return frame.bounded.len().max(1) as u16;
+        }
         self.bounded_task_rows().len().max(1) as u16
     }
 
@@ -15321,6 +15430,7 @@ impl App {
     /// Nothing here synthesizes a row or mints a name; this only selects and
     /// formats what the authorized projection already vouches for.
     pub fn task_rows(&self) -> Vec<crate::tui::app::state::tasks::TaskRow> {
+        crate::tui::render_cost::count_task_list_build();
         let todos: Vec<crate::tui::app::state::tasks::TodoLike> = self
             .todos
             .iter()
@@ -15364,7 +15474,14 @@ impl App {
                             work.run_id.as_deref() == run_id.as_deref()
                                 || (run_id.is_none()
                                     && work.child_instance_id.is_none()
-                                    && work.key == format!("task:{task_id}"))
+                                    // The selector's key for a legacy child is
+                                    // exactly `task:<task_id>`; comparing the
+                                    // suffix avoids building that string for
+                                    // every candidate considered.
+                                    && work
+                                        .key
+                                        .strip_prefix("task:")
+                                        .is_some_and(|key_task| key_task == task_id.as_str()))
                         }
                     })
                     .and_then(|work| work.job_id.clone());
