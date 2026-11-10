@@ -652,9 +652,20 @@ fn build_rows(view: &ChatView<'_>, cursor: usize, width: u16, theme: &Theme) -> 
         // author from the body, so continuation lines are indented under the
         // first body column instead of the marker column.
         let prefix_cols = 2 + display_width(&message.author_principal);
-        let body_width = width
-            .saturating_sub(u16::try_from(prefix_cols).unwrap_or(u16::MAX))
-            .max(8);
+        let available = width.saturating_sub(u16::try_from(prefix_cols).unwrap_or(u16::MAX));
+        // The revision marker is appended to the message's **last** row, so that
+        // row has to leave room for it. A row already at `available` pushed the
+        // marker past the drawn columns and ratatui clipped it, which left an
+        // edited message looking unedited in the side panel. Narrowing the whole
+        // message is the cost of always showing it, and only a revised message
+        // pays it.
+        let revision_marker = (message.revision > 1).then(|| format!(" (r{})", message.revision));
+        let body_width = match revision_marker.as_deref() {
+            Some(revision_marker) => available
+                .saturating_sub(u16::try_from(display_width(revision_marker)).unwrap_or(u16::MAX))
+                .max(8),
+            None => available.max(8),
+        };
         let chunks = if message.redacted {
             vec!["[redacted]".to_string()]
         } else {
@@ -685,12 +696,24 @@ fn build_rows(view: &ChatView<'_>, cursor: usize, width: u16, theme: &Theme) -> 
             };
             // Pad the final row out to the viewport so the selection reads as
             // a full-width bar rather than a highlight that stops mid-sentence.
+            //
+            // The revision marker is appended **after** the padding, so the row
+            // it lands on has to reserve its columns. Without that the padded
+            // row filled the width and pushed the marker past the drawn columns,
+            // where ratatui clipped it — the marker disappeared on exactly the
+            // rows a reader was looking at.
             if selected {
                 let used: usize = spans
                     .iter()
                     .map(|s| display_width(s.content.as_ref()))
                     .sum();
-                let pad = width.saturating_sub(u16::try_from(used).unwrap_or(u16::MAX));
+                let is_marker_row = line_index + 1 == chunks.len();
+                let reserved = if is_marker_row {
+                    revision_marker.as_deref().map_or(0, display_width)
+                } else {
+                    0
+                };
+                let pad = width.saturating_sub(u16::try_from(used + reserved).unwrap_or(u16::MAX));
                 spans.push(Span::styled(" ".repeat(usize::from(pad)), style));
             }
             out.push(ChatRow {
@@ -699,10 +722,10 @@ fn build_rows(view: &ChatView<'_>, cursor: usize, width: u16, theme: &Theme) -> 
             });
             emitted += 1;
         }
-        if message.revision > 1 && emitted > 0 {
+        if let Some(revision_marker) = revision_marker.as_deref().filter(|_| emitted > 0) {
             let last = out.len().saturating_sub(1);
             out[last].line.spans.push(Span::styled(
-                format!(" (r{})", message.revision),
+                revision_marker.to_string(),
                 Style::default().fg(theme.muted),
             ));
         }
@@ -1337,6 +1360,57 @@ mod tests {
         (after.chat_row_builds, after.chat_wrap_passes)
     }
 
+    /// A revised message leaves room on its last row for the marker.
+    ///
+    /// The marker is appended to the message's last row, so a row that already
+    /// filled the width pushed it past the drawn columns and ratatui clipped it
+    /// — an edited message then looked unedited in the side panel. The body now
+    /// wraps at the width minus the marker, which shortens every row of a
+    /// revised message and is the cost of always showing it.
+    #[test]
+    fn a_revised_message_leaves_room_for_its_marker() {
+        const WIDTH: u16 = 26;
+        let theme = Arc::new(Theme::dark());
+        let mut revised = message("m1", 2, "alice", "a body long enough to wrap at this width");
+        revised.revision = 2;
+        let messages = VecDeque::from(vec![revised]);
+        let channels = vec![channel()];
+        let revised_view = view(&messages, &channels);
+        let rows = build_rows(&revised_view, 0, WIDTH, &theme);
+
+        let last = rows.last().expect("the message draws at least one row");
+        let drawn: usize = last
+            .line
+            .spans
+            .iter()
+            .map(|span| display_width(&span.content))
+            .sum();
+        assert!(
+            drawn <= usize::from(WIDTH),
+            "the last row fits the width so the marker is not clipped: {drawn} \
+             columns in {WIDTH}"
+        );
+        assert!(
+            last.line
+                .spans
+                .iter()
+                .any(|span| span.content.contains("(r2)")),
+            "and the marker is on it: {:?}",
+            last.line.spans
+        );
+        // The narrowing is paid only by a revised message: the same body at
+        // revision 1 keeps the wider wrap.
+        let plain = message("m1", 2, "alice", "a body long enough to wrap at this width");
+        let messages = VecDeque::from(vec![plain]);
+        let plain_view = view(&messages, &channels);
+        let plain_rows = build_rows(&plain_view, 0, WIDTH, &theme);
+        assert!(
+            plain_rows.len() <= rows.len(),
+            "an unrevised message wraps no narrower than a revised one: {} vs {}",
+            plain_rows.len(),
+            rows.len()
+        );
+    }
 
     fn rows_request<'a>(sequence: u64, width: u16, theme: &'a Arc<Theme>) -> ChatRowsRequest<'a> {
         ChatRowsRequest {
