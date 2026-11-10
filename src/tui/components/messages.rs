@@ -2290,14 +2290,12 @@ impl MessagesWidget {
                     self.extend_markdown_part_rows(
                         msg_idx, part_idx, content, self.width, matched, &mut lines,
                     );
-                    // A searched part leaves this flag as it was — the search
-                    // arm used to `continue` past the reset — and the flag
-                    // decides whether the reasoning block after it draws its
-                    // header. The rendering is unchanged on purpose; see the
-                    // recorded search defects.
-                    if matched.is_none() {
-                        prev_was_reasoning = false;
-                    }
+                    // A text part always ends a reasoning run, whether or not a
+                    // search match landed on it. The search arm used to skip
+                    // this reset — it `continue`d before the flag was cleared —
+                    // so a searched prose part silently suppressed the header of
+                    // the reasoning block after it.
+                    prev_was_reasoning = false;
                 }
                 MsgPart::Reasoning { content, collapsed } => {
                     // The header is shared with a reasoning block that
@@ -7016,21 +7014,20 @@ mod tests {
         );
     }
 
-    /// A searched prose part suppresses the next reasoning block's header
-    /// (known defect).
+    /// A searched prose part still draws the next reasoning block's header.
     ///
     /// The search arm used to `continue` past the reset of `prev_was_reasoning`
     /// — the flag that says the reasoning header has already been drawn — so a
-    /// text part that *is* the searched part left the flag set and the
+    /// text part that *was* the searched part left the flag set and the
     /// reasoning block after it drew no header: one row fewer than the same
-    /// transcript without a search. The fixture is the shape that exposes it —
-    /// a reasoning block, the searched prose, then a second reasoning block.
-    /// M004 preserved the behaviour, because the rendered output has to be
-    /// byte-identical and the search path's defects belong to the
-    /// text-rendering line rather than to a cost milestone. The test records it
-    /// so a fix cannot land unnoticed.
+    /// transcript without a search. M004 preserved the behaviour because its
+    /// rendered output had to be byte-identical; the defect was recorded here so
+    /// a fix could not land unnoticed, and this is that fix. The fixture is the
+    /// shape that exposed it — a reasoning block, the searched prose, then a
+    /// second reasoning block — and the search now changes a row's colour, never
+    /// whether the row exists.
     #[test]
-    fn a_searched_prose_part_suppresses_the_next_reasoning_header_known_defect() {
+    fn a_searched_prose_part_still_draws_the_next_reasoning_header() {
         fn widget() -> MessagesWidget {
             let mut widget = MessagesWidget::default();
             widget.set_width(40);
@@ -7079,14 +7076,14 @@ mod tests {
         );
         assert_eq!(
             headers(&searched_rows),
-            1,
-            "the searched transcript loses the header *after* the match: \
-             {searched_rows:?}"
+            2,
+            "a search recolours rows, it does not drop the header *after* the \
+             match: {searched_rows:?}"
         );
         assert_eq!(
-            searched.total_lines() + 1,
+            searched.total_lines(),
             plain.total_lines(),
-            "the suppressed header is exactly one row"
+            "a search adds and drops no row"
         );
     }
 

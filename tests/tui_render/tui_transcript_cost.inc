@@ -287,11 +287,11 @@ fn a_search_match_does_not_add_a_third_copy() {
     );
 
     // The highlighted part occupies the rows it occupied without a search: a
-    // highlight recolours a row, it does not add or drop one. The comparison is
-    // a single prose part on purpose — a *message* whose searched prose is
-    // followed by a reasoning block draws one row fewer today, which is a
-    // recorded search defect and not this milestone's to change (see
-    // `a_searched_prose_part_suppresses_the_next_reasoning_header_known_defect`).
+    // highlight recolours a row, it does not add or drop one. A single prose
+    // part keeps this comparison about the highlight alone; the reasoning-header
+    // direction — a searched prose part followed by a reasoning block — has its
+    // own test in `components::messages`
+    // (`a_searched_prose_part_still_draws_the_next_reasoning_header`).
     let mut highlighted = widget_with(vec![MsgPart::Text {
         content: "alpha beta gamma".to_string(),
     }]);
