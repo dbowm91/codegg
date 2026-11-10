@@ -1260,7 +1260,8 @@ mod tests {
             root.path().to_path_buf(),
             listing
         ));
-        app.file_tree_state.expanded.insert("src".to_string());
+        // The verb, so the authority's row cache moves with the expansion.
+        app.file_tree_state.expand_and_select("src");
 
         ascend(&mut app);
         assert!(

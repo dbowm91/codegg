@@ -100,6 +100,9 @@ pub mod tui_formatted_json_detail_view;
 #[path = "tui_frame_cost.inc"]
 pub mod tui_frame_cost;
 
+#[path = "tui_file_tree_cost.inc"]
+pub mod tui_file_tree_cost;
+
 #[path = "tui_info_dialog_panel_chrome.inc"]
 pub mod tui_info_dialog_panel_chrome;
 

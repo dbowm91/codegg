@@ -188,6 +188,38 @@ pub enum PeekUp {
     None,
 }
 
+/// The file tree's **row vocabulary**, built on a mutation rather than on a
+/// read.
+///
+/// Flattening the listing clones two `String`s per row and filtering it
+/// clones the whole vector again, and both used to happen once per consumer
+/// per frame: the `Ctrl+T` pane rebuilt the vocabulary on every draw and the
+/// `/files` box re-filtered its adopted listing three to four times. The
+/// cache is the vocabulary's **only** producer, and it holds **paths** — so
+/// it carries the milestone's load-bearing obligation: a path the listing no
+/// longer holds must be gone from the cache at the same moment it is gone
+/// from the tree.
+///
+/// The key names exactly what the rows depend on — the state's `revision`
+/// (which every render-changing mutation bumps) and the panel's `filter` —
+/// and [`FileTreeState::rebuild_rows_if_stale`] is the only writer.
+///
+/// Crate-visible because the field that holds it is: the public struct's
+/// fields are public so a caller can write `visible` and friends through
+/// `..FileTreeState::default()`, and a `pub(crate)` field may not name a
+/// narrower type.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RowCache {
+    /// The revision the rows were built at.
+    revision: u64,
+    /// The filter the rows were narrowed with.
+    filter: String,
+    /// Every row the listing holds, ignoring the panel's filter.
+    unfiltered: Vec<TreeRow>,
+    /// [`Self::unfiltered`] narrowed by [`Self::filter`].
+    filtered: Vec<TreeRow>,
+}
+
 /// The single authority for the navigator's tree.
 ///
 /// ## The ownership split
@@ -202,6 +234,16 @@ pub enum PeekUp {
 ///
 /// Every other surface owns its own: the `/files` box keeps its **box-local**
 /// filter, insert mode, scroll offset and viewport height.
+///
+/// ## The row cache is maintained by the mutation verbs
+///
+/// `rows` and `all_rows` borrow [`RowCache`] instead of rebuilding the
+/// vocabulary, and the cache is rebuilt inside `bump` and nowhere else. The
+/// row-affecting fields stay public because a surface constructs and reads
+/// them, but a **mutation** goes through a verb: a direct write to `nodes`,
+/// `expanded` or `filter` would leave the cache describing the previous
+/// listing. Every production path uses the verbs, and the unit tests that
+/// need a bare write call `bump` themselves.
 #[derive(Debug, Clone, Default)]
 pub struct FileTreeState {
     /// Bumped by every mutation that changes what a surface would render.
@@ -275,15 +317,25 @@ pub struct FileTreeState {
     /// `commands::file_tree::complete_editor_open_handoff`, which only hands
     /// over if this is still the document that was opened.
     pub pending_editor_handoff: Option<String>,
+    /// The row vocabulary every surface draws from. See [`RowCache`].
+    ///
+    /// Rebuilt by `bump` and written nowhere else. It is deliberately more
+    /// private than the fields it is derived from: the inputs are public so a
+    /// surface can read them and a constructor can set them, and the derived
+    /// value is not, so it has exactly one writer.
+    pub(crate) row_cache: RowCache,
 }
 
 impl FileTreeState {
     /// The structure a surface renders from.
     ///
-    /// The one place a [`FileTreeStructure`] is built.
+    /// The one place a [`FileTreeStructure`] is built. The rows are a copy of
+    /// the cache's **unfiltered** rows: each surface applies its own filter,
+    /// and the copy is gated on [`Self::revision`] by the caller, so it never
+    /// happens on an unchanged frame.
     pub fn structure(&self) -> FileTreeStructure {
         FileTreeStructure {
-            rows: self.all_rows(),
+            rows: self.all_rows().to_vec(),
             selected: self.selected.clone(),
             root: self.root.clone(),
             scope: self.root_prefix().to_string(),
@@ -294,24 +346,53 @@ impl FileTreeState {
 
     /// Record that the tree changed in a way a surface would render
     /// differently.
+    ///
+    /// This is the **single choke point** for the row cache: every mutation
+    /// that changes the rendered result calls it, so rebuilding here covers
+    /// nodes, expansions, selection and the filter in one place — and a
+    /// mutation cannot rebuild the revision without rebuilding the rows.
     fn bump(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+        self.rebuild_rows_if_stale();
+    }
+
+    /// Rebuild the cached row vocabulary when its key moved.
+    ///
+    /// The key is `(revision, filter)` and nothing else: the rows depend on
+    /// the listing, the expansion set (both carried by the revision) and the
+    /// panel's filter. Dropping either half serves the **previous** listing
+    /// to the next read, which is a stale path — so the check is written as
+    /// a key comparison rather than assumed from the call site.
+    fn rebuild_rows_if_stale(&mut self) {
+        if self.row_cache.revision == self.revision && self.row_cache.filter == self.filter {
+            return;
+        }
+        crate::tui::render_cost::count_file_tree_row_build();
+        let mut unfiltered = Vec::new();
+        visible_rows(&self.nodes, &self.expanded, &mut unfiltered);
+        let filtered = filter_rows(&unfiltered, &self.filter);
+        self.row_cache = RowCache {
+            revision: self.revision,
+            filter: self.filter.clone(),
+            unfiltered,
+            filtered,
+        };
     }
 
     /// Every row the listing holds, ignoring the panel's filter.
     ///
-    /// The expansion set decides which rows exist at all.
-    pub fn all_rows(&self) -> Vec<TreeRow> {
-        let mut rows = Vec::new();
-        visible_rows(&self.nodes, &self.expanded, &mut rows);
-        rows
+    /// The expansion set decides which rows exist at all. Served from the
+    /// row cache: the listing is flattened by [`Self::bump`], not here.
+    pub fn all_rows(&self) -> &[TreeRow] {
+        &self.row_cache.unfiltered
     }
 
     /// Rows the user can currently move between.
     ///
     /// The listing the daemon returned, narrowed by the panel's live filter.
-    pub fn rows(&self) -> Vec<TreeRow> {
-        filter_rows(&self.all_rows(), &self.filter)
+    /// Served from the row cache; a read costs no allocation at all.
+    pub fn rows(&self) -> &[TreeRow] {
+        &self.row_cache.filtered
     }
 
     /// Whether `row` survives the panel's live filter.
@@ -329,26 +410,39 @@ impl FileTreeState {
     /// The filter can hide the selected row; the cursor then falls back to
     /// the first row that survives.
     pub fn reanchor_selection(&mut self) {
-        let rows = self.rows();
-        let Some(first) = rows.first() else {
-            self.selected = None;
-            self.bump();
-            return;
+        // The replacement is computed from a borrow that ends before the
+        // assignment: `rows` borrows `self` and `self.selected` writes to it.
+        let replacement = {
+            let rows = self.rows();
+            match rows.first() {
+                None => Some(None),
+                Some(first) => {
+                    let still_shown = self
+                        .selected
+                        .as_deref()
+                        .is_some_and(|path| rows.iter().any(|row| row.path == path));
+                    (!still_shown).then(|| Some(first.path.clone()))
+                }
+            }
         };
-        if self
-            .selected
-            .as_deref()
-            .is_some_and(|path| rows.iter().any(|row| row.path == path))
-        {
-            return;
+        if let Some(selection) = replacement {
+            self.selected = selection;
+            self.bump();
         }
-        self.selected = Some(first.path.clone());
-        self.bump();
     }
 
     /// Index of the selected row within [`Self::rows`].
     pub fn selected_index(&self) -> Option<usize> {
-        let rows = self.rows();
+        self.selected_index_in(self.rows())
+    }
+
+    /// Index of the selected row within `rows`, which is the surface's own
+    /// slice of [`Self::rows`].
+    ///
+    /// A surface that already holds the slice calls this rather than
+    /// [`Self::selected_index`], so the answer and the rows drawn come from
+    /// the same borrow.
+    pub fn selected_index_in(&self, rows: &[TreeRow]) -> Option<usize> {
         if rows.is_empty() {
             return None;
         }
@@ -363,21 +457,24 @@ impl FileTreeState {
     /// The selected row, if any.
     pub fn selected_row(&self) -> Option<TreeRow> {
         let index = self.selected_index()?;
-        self.rows().into_iter().nth(index)
+        self.rows().get(index).cloned()
     }
 
     /// Move the selection by `delta` rows, clamped to the visible range.
     pub fn move_selection(&mut self, delta: isize) {
-        let rows = self.rows();
-        if rows.is_empty() {
+        if self.rows().is_empty() {
             self.selected = None;
             self.bump();
             return;
         }
-        let current = self.selected_index().unwrap_or(0) as isize;
-        let next = (current + delta).clamp(0, rows.len() as isize - 1) as usize;
-        self.selected = Some(rows[next].path.clone());
-        self.reveal_selected(next, rows.len());
+        let (path, next, total) = {
+            let rows = self.rows();
+            let current = self.selected_index_in(rows).unwrap_or(0) as isize;
+            let next = (current + delta).clamp(0, rows.len() as isize - 1) as usize;
+            (rows[next].path.clone(), next, rows.len())
+        };
+        self.selected = Some(path);
+        self.reveal_selected(next, total);
         self.bump();
     }
 
@@ -486,7 +583,7 @@ impl FileTreeState {
     /// the filter decides what the pane *shows*, and a path the filter
     /// happens to hide is still a directory the daemon listed.
     pub fn peek_into(&self, path: &str) -> PeekStep {
-        let Some(row) = self.all_rows().into_iter().find(|row| row.path == path) else {
+        let Some(row) = self.all_rows().iter().find(|row| row.path == path) else {
             return PeekStep::None;
         };
         if row.kind != TreeNodeKind::Directory {
@@ -494,17 +591,17 @@ impl FileTreeState {
                 path: row.path.clone(),
             };
         }
-        if self.relative_depth(&row) >= 2 {
+        if self.relative_depth(row) >= 2 {
             // The directory's children are a level past the window, so the
             // scope slides to its grandparent: the shallowest scope in which
             // those children fit back inside the window.
             return PeekStep::Slide {
                 scope: parent_path(&parent_path(&row.path)),
-                directory: row.path,
+                directory: row.path.clone(),
             };
         }
         PeekStep::Enter {
-            directory: row.path,
+            directory: row.path.clone(),
         }
     }
 
@@ -556,8 +653,13 @@ impl FileTreeState {
     /// once the directory is expanded and the rows are re-read.
     pub fn expand_and_enter(&mut self, directory: &str) {
         self.expanded.insert(directory.to_string());
-        self.enter_directory(directory);
+        // Rebuild **before** `enter_directory` reads the rows: the expansion
+        // is what makes the directory's first child a row, and a read served
+        // from the pre-expansion cache would put the cursor on the directory
+        // itself. An expansion that also moves the cursor therefore builds
+        // twice, which is the honest cost of the one coarse key.
         self.bump();
+        self.enter_directory(directory);
     }
 
     /// Move the cursor into `directory`: onto its first child when one is
@@ -567,16 +669,20 @@ impl FileTreeState {
     /// selection at a path nothing shows would leave the pane with no
     /// highlighted row at all.
     pub fn enter_directory(&mut self, directory: &str) {
-        let rows = self.rows();
-        let Some(index) = rows.iter().position(|row| row.path == directory) else {
-            return;
-        };
-        match rows.get(index + 1) {
-            Some(next) if next.depth > rows[index].depth => {
-                self.selected = Some(next.path.clone());
+        // The target is read through a borrow that ends before the
+        // assignment: the rows are borrowed from the cache, and the cursor
+        // lives in the same value.
+        let next = {
+            let rows = self.rows();
+            let Some(index) = rows.iter().position(|row| row.path == directory) else {
+                return;
+            };
+            match rows.get(index + 1) {
+                Some(next) if next.depth > rows[index].depth => next.path.clone(),
+                _ => directory.to_string(),
             }
-            _ => self.selected = Some(directory.to_string()),
-        }
+        };
+        self.selected = Some(next);
         self.bump();
     }
 
@@ -876,13 +982,25 @@ impl FileTreeState {
         // cannot leave the tree holding a path it will never match again.
         let present = collect_directory_paths(&self.nodes);
         self.expanded.retain(|path| present.contains(path));
-        let rows = self.rows();
-        if self
-            .selected
-            .as_deref()
-            .is_none_or(|s| !rows.iter().any(|row| row.path == s))
-        {
-            self.selected = rows.first().map(|row| row.path.clone());
+        // **Before** anything below reads the rows. The selection fix-up and
+        // the reveal both read the row list, and the cache is rebuilt by the
+        // bump: a read placed above this line would be served the *previous*
+        // listing — the stale path this milestone exists to forbid.
+        self.bump();
+        // The replacement selection is computed from a borrow that ends
+        // before the assignment. `None` means the cursor is still on a row
+        // the new listing holds; `Some(None)` means the listing is empty and
+        // the cursor goes with it.
+        let replacement = {
+            let rows = self.rows();
+            let still_shown = self
+                .selected
+                .as_deref()
+                .is_some_and(|s| rows.iter().any(|row| row.path == s));
+            (!still_shown).then(|| rows.first().map(|row| row.path.clone()))
+        };
+        if let Some(selection) = replacement {
+            self.selected = selection;
         }
         // A scope slide knows where the cursor goes only once the relist
         // lands: the directory the user entered is a row of the *new*
@@ -890,7 +1008,9 @@ impl FileTreeState {
         if let Some(target) = self.take_pending_cursor() {
             self.enter_directory(&target);
         }
-        self.reveal_selected(self.selected_index().unwrap_or(0), rows.len());
+        let index = self.selected_index().unwrap_or(0);
+        let total = self.rows().len();
+        self.reveal_selected(index, total);
         self.bump();
         true
     }
@@ -1023,6 +1143,7 @@ fn matches_filter(row: &TreeRow, needle: &str) -> bool {
 /// rows with it and the `/files` box narrows its own view's rows with it. An
 /// empty filter keeps every row.
 pub fn filter_rows(rows: &[TreeRow], filter: &str) -> Vec<TreeRow> {
+    crate::tui::render_cost::count_file_tree_filter_pass();
     if filter.is_empty() {
         return rows.to_vec();
     }
@@ -1120,6 +1241,34 @@ mod tests {
             "the listing belongs to the scope it was asked for"
         );
         state
+    }
+
+    /// Expand `path` the way a navigation verb does.
+    ///
+    /// `expanded` is a public field, but the row cache is rebuilt by
+    /// [`FileTreeState::bump`] and nowhere else: a test that wrote the field
+    /// directly would read the rows of the *previous* expansion. This helper
+    /// is what a verb does, without the cursor move the test does not want.
+    fn expand(state: &mut FileTreeState, path: &str) {
+        state.expanded.insert(path.to_string());
+        state.bump();
+    }
+
+    /// Set the whole filter text the way typing it would.
+    ///
+    /// Same reason as [`expand`]: the filter is half the row cache's key, so
+    /// the write has to invalidate the cache.
+    fn set_filter(state: &mut FileTreeState, filter: &str) {
+        state.filter.clear();
+        state.filter.push_str(filter);
+        state.bump();
+    }
+
+    /// The operations `work` performed on the render cost counters.
+    fn cost_of(work: impl FnOnce()) -> crate::tui::render_cost::RenderCost {
+        let before = crate::tui::render_cost::snapshot();
+        work();
+        crate::tui::render_cost::snapshot().since(&before)
     }
 
     /// The worked example from the peek design:
@@ -1354,7 +1503,7 @@ mod tests {
         write(root.path(), "dir/a.txt");
 
         let mut state = state_with(root.path());
-        state.expanded.insert("dir".to_string());
+        expand(&mut state, "dir");
         assert_eq!(state.selected.as_deref(), Some("dir"));
 
         // At the workspace root there is no scope to slide to, so `h`
@@ -1370,8 +1519,8 @@ mod tests {
         write(root.path(), "dir/nested/deep.txt");
 
         let mut state = state_with(root.path());
-        state.expanded.insert("dir".to_string());
-        state.expanded.insert("dir/nested".to_string());
+        expand(&mut state, "dir");
+        expand(&mut state, "dir/nested");
         state.selected = Some("dir/nested/deep.txt".to_string());
 
         // From a nested file, `h` moves to the parent row and collapses the
@@ -1476,7 +1625,7 @@ mod tests {
 
         let mut state = state_with(root.path());
         state.selected = Some("docs".to_string());
-        state.expanded.insert("docs".to_string());
+        expand(&mut state, "docs");
         let paths = |state: &FileTreeState| {
             state
                 .rows()
@@ -1495,24 +1644,24 @@ mod tests {
             "no filter yet"
         );
 
-        state.filter = "main".to_string();
+        set_filter(&mut state, "main");
         assert_eq!(
             paths(&state),
             vec!["Main.rs".to_string()],
             "the name, case-folded"
         );
 
-        state.filter = "DOCS/".to_string();
+        set_filter(&mut state, "DOCS/");
         assert_eq!(
             paths(&state),
             vec!["docs/readme.md".to_string()],
             "the path, case-folded"
         );
 
-        state.filter = "readme".to_string();
+        set_filter(&mut state, "readme");
         assert_eq!(paths(&state), vec!["docs/readme.md".to_string()]);
 
-        state.filter = "nothing-matches-this".to_string();
+        set_filter(&mut state, "nothing-matches-this");
         assert!(state.rows().is_empty());
     }
 
@@ -1527,7 +1676,7 @@ mod tests {
         let mut state = state_with(root.path());
         assert_eq!(state.selected.as_deref(), Some("Main.rs"));
 
-        state.filter = "other".to_string();
+        set_filter(&mut state, "other");
         state.reanchor_selection();
         assert_eq!(
             state.selected.as_deref(),
@@ -1614,7 +1763,7 @@ mod tests {
         write(second.path(), "c.txt");
 
         let mut state = state_with(first.path());
-        state.expanded.insert("a".to_string());
+        expand(&mut state, "a");
         assert!(state.expanded.contains("a"));
         assert!(state.set_root_prefix("a"));
         assert_eq!(state.root_prefix(), "a");
@@ -1734,7 +1883,7 @@ mod tests {
         let root = temp();
         write(root.path(), "gone/inner.txt");
         let mut state = state_with(root.path());
-        state.expanded.insert("gone".to_string());
+        expand(&mut state, "gone");
         assert!(state.expanded.contains("gone"));
 
         std::fs::remove_dir_all(root.path().join("gone")).expect("rm");
@@ -1920,7 +2069,7 @@ mod tests {
 
         let mut state = state_with(root.path());
         state.selected = Some("dir".to_string());
-        state.expanded.insert("dir".to_string());
+        expand(&mut state, "dir");
         assert!(
             state.rows().iter().any(|row| row.path == "dir/nested"),
             "expanding a directory adds its children as rows"
@@ -1978,8 +2127,8 @@ mod tests {
     fn peeking_into_a_directory_at_the_window_edge_slides_the_scope() {
         let root = temp();
         let mut state = state_with_listing(root.path(), worked_example_listing());
-        state.expanded.insert("src".to_string());
-        state.expanded.insert("src/tui".to_string());
+        expand(&mut state, "src");
+        expand(&mut state, "src/tui");
         state.selected = Some("src/tui/app".to_string());
 
         assert_eq!(
@@ -2050,8 +2199,8 @@ mod tests {
     fn leaving_a_directory_moves_to_the_parent_row_and_collapses_it() {
         let root = temp();
         let mut state = state_with_listing(root.path(), worked_example_listing());
-        state.expanded.insert("src".to_string());
-        state.expanded.insert("src/tui".to_string());
+        expand(&mut state, "src");
+        expand(&mut state, "src/tui");
         state.selected = Some("src/tui/editor.rs".to_string());
 
         assert_eq!(
@@ -2099,7 +2248,7 @@ mod tests {
     fn leaving_a_top_level_row_at_the_workspace_root_collapses_in_place() {
         let root = temp();
         let mut state = state_with_listing(root.path(), worked_example_listing());
-        state.expanded.insert("src".to_string());
+        expand(&mut state, "src");
         state.selected = Some("src".to_string());
 
         assert_eq!(
@@ -2179,7 +2328,428 @@ mod tests {
         );
     }
 
-    /// The selection is a **path**, so it does not depend on a filter or on
+    // ── M002: the row cache ────────────────────────────────────────────
+    //
+    // The cache holds **paths**, so it is the one piece of derived state in
+    // this module whose invalidation is a correctness obligation rather than
+    // a cost one. The matrix below is per invalidation source: each test
+    // asserts that the *next read* does not hold a path the tree no longer
+    // does — the stale path C006 stopped short of, and the reason this
+    // milestone exists.
+
+    /// A read is not a build: the second and later reads of an unchanged
+    /// state reuse the cache.
+    #[test]
+    fn a_second_read_with_an_unchanged_key_builds_nothing() {
+        let root = temp();
+        write(root.path(), "a.txt");
+        write(root.path(), "b.txt");
+        let state = state_with(root.path());
+
+        let cost = cost_of(|| {
+            for _ in 0..5 {
+                assert_eq!(state.rows().len(), 2, "the rows are the listing");
+                assert_eq!(state.all_rows().len(), 2);
+            }
+        });
+
+        assert_eq!(
+            cost.file_tree_row_builds, 0,
+            "a read of an unchanged state rebuilt the row vocabulary"
+        );
+        assert_eq!(
+            cost.file_tree_filter_passes, 0,
+            "a read of an unchanged state filtered the row list"
+        );
+    }
+
+    /// An expansion changes which rows exist, so it rebuilds — once.
+    #[test]
+    fn an_expansion_change_rebuilds_once() {
+        let root = temp();
+        write(root.path(), "dir/a.txt");
+        let mut state = state_with(root.path());
+
+        let cost = cost_of(|| state.expand_and_select("dir"));
+
+        assert_eq!(
+            cost.file_tree_row_builds, 1,
+            "an expansion rebuilds the row vocabulary exactly once"
+        );
+        assert_eq!(
+            cost.file_tree_filter_passes, 1,
+            "the rebuild narrows the fresh rows through the filter exactly once"
+        );
+        assert!(
+            state.rows().iter().any(|row| row.path == "dir/a.txt"),
+            "the expansion's children are rows of the next read"
+        );
+    }
+
+    /// The selection is rendered, so moving it moves the revision and the
+    /// rows are rebuilt with it — the plan's expected cost of one coarse key.
+    #[test]
+    fn a_selection_change_rebuilds_once() {
+        let root = temp();
+        write(root.path(), "a.txt");
+        write(root.path(), "b.txt");
+        let mut state = state_with(root.path());
+
+        let cost = cost_of(|| assert!(state.select("b.txt")));
+
+        assert_eq!(
+            cost.file_tree_row_builds, 1,
+            "a rendered selection change rebuilds the row vocabulary"
+        );
+    }
+
+    /// A per-frame layout write must not rebuild: the pane publishes its
+    /// viewport during the render, and an unchanged height is not a change.
+    #[test]
+    fn an_unchanged_viewport_height_write_does_not_rebuild() {
+        let root = temp();
+        write(root.path(), "a.txt");
+        let mut state = state_with(root.path());
+        state.set_viewport_rows(10);
+
+        let cost = cost_of(|| state.set_viewport_rows(10));
+
+        assert_eq!(
+            cost.file_tree_row_builds, 0,
+            "an unchanged viewport height rebuilt the row vocabulary on a frame"
+        );
+    }
+
+    /// The filter is half the key: typing narrows the rows on the write.
+    #[test]
+    fn a_filter_change_rebuilds_once() {
+        let root = temp();
+        write(root.path(), "alpha.txt");
+        write(root.path(), "beta.txt");
+        let mut state = state_with(root.path());
+
+        let cost = cost_of(|| state.filter_push('b'));
+
+        assert_eq!(cost.file_tree_row_builds, 1);
+        assert_eq!(cost.file_tree_filter_passes, 1);
+        assert_eq!(
+            state
+                .rows()
+                .iter()
+                .map(|row| row.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["beta.txt"],
+            "the next read is the narrowed listing"
+        );
+    }
+
+    /// The selection lookup reads rows, it does not produce them.
+    #[test]
+    fn selected_index_does_not_rebuild_the_row_list() {
+        let root = temp();
+        write(root.path(), "a.txt");
+        write(root.path(), "b.txt");
+        let mut state = state_with(root.path());
+        assert!(state.select("b.txt"));
+
+        let cost = cost_of(|| {
+            for _ in 0..3 {
+                assert_eq!(state.selected_index(), Some(1));
+                assert_eq!(
+                    state.selected_row().map(|row| row.path),
+                    Some("b.txt".to_string())
+                );
+            }
+        });
+
+        assert_eq!(
+            cost.file_tree_row_builds, 0,
+            "the selection lookup rebuilt the row list it was looking in"
+        );
+        assert_eq!(cost.file_tree_filter_passes, 0);
+    }
+
+    /// The structure a surface adopts is a copy of the cache, not a rebuild.
+    #[test]
+    fn the_structure_accessor_does_not_rebuild_the_row_list() {
+        let root = temp();
+        write(root.path(), "a.txt");
+        let state = state_with(root.path());
+
+        let cost = cost_of(|| {
+            let structure = state.structure();
+            assert_eq!(structure.rows.len(), 1);
+        });
+
+        assert_eq!(
+            cost.file_tree_row_builds, 0,
+            "the structure re-derived the listing the cache already holds"
+        );
+    }
+
+    /// **Removed.** A file the new listing does not hold is absent from the
+    /// very next read.
+    #[test]
+    fn a_removed_path_is_absent_from_the_next_read() {
+        let root = temp();
+        let mut state = state_with_listing(
+            root.path(),
+            vec![node("gone.txt", 1, TreeNodeKind::File, None)],
+        );
+        assert!(state.rows().iter().any(|row| row.path == "gone.txt"));
+
+        let listing = crate::tui::file_tree::TreeListing {
+            prefix: String::new(),
+            nodes: vec![node("stays.txt", 1, TreeNodeKind::File, None)],
+            truncated: false,
+            truncated_reason: None,
+            examined: 1,
+        };
+        let (generation, request_id) = state.begin_rebuild(root.path().to_path_buf());
+        assert!(state.apply_listing(generation, request_id, root.path().to_path_buf(), listing));
+
+        assert!(
+            !state.rows().iter().any(|row| row.path == "gone.txt"),
+            "a removed path survived in the row cache"
+        );
+        assert!(state.rows().iter().any(|row| row.path == "stays.txt"));
+        assert!(state.all_rows().iter().all(|row| row.path != "gone.txt"));
+    }
+
+    /// **Renamed.** The old name is gone; the new one is a row.
+    #[test]
+    fn a_renamed_path_is_read_under_its_new_name() {
+        let root = temp();
+        let mut state = state_with_listing(
+            root.path(),
+            vec![node("before.txt", 1, TreeNodeKind::File, None)],
+        );
+
+        let listing = crate::tui::file_tree::TreeListing {
+            prefix: String::new(),
+            nodes: vec![node("after.txt", 1, TreeNodeKind::File, None)],
+            truncated: false,
+            truncated_reason: None,
+            examined: 1,
+        };
+        let (generation, request_id) = state.begin_rebuild(root.path().to_path_buf());
+        assert!(state.apply_listing(generation, request_id, root.path().to_path_buf(), listing));
+
+        assert!(
+            !state.rows().iter().any(|row| row.path == "before.txt"),
+            "the pre-rename path survived in the row cache"
+        );
+        assert!(state.rows().iter().any(|row| row.path == "after.txt"));
+    }
+
+    /// **Collapsed.** A collapsed directory's children leave the row set on
+    /// the same call that collapses it.
+    #[test]
+    fn a_collapsed_directory_hides_its_children_on_the_next_read() {
+        let root = temp();
+        let mut state = state_with_listing(
+            root.path(),
+            vec![node(
+                "dir",
+                1,
+                TreeNodeKind::Directory,
+                Some(vec![node("dir/child.txt", 2, TreeNodeKind::File, None)]),
+            )],
+        );
+        expand(&mut state, "dir");
+        assert!(
+            state.rows().iter().any(|row| row.path == "dir/child.txt"),
+            "the premise: the child is a row"
+        );
+
+        state.collapse("dir");
+
+        assert!(
+            !state.rows().iter().any(|row| row.path == "dir/child.txt"),
+            "a collapsed directory's child survived in the row cache"
+        );
+        assert!(state.rows().iter().any(|row| row.path == "dir"));
+    }
+
+    /// **Re-scoped.** A scope change replaces the listing, and no path from
+    /// the previous scope survives it.
+    #[test]
+    fn a_path_from_the_previous_scope_is_absent_after_a_scope_change() {
+        let root = temp();
+        let mut state = state_with_listing(
+            root.path(),
+            vec![node("root-only.txt", 1, TreeNodeKind::File, None)],
+        );
+        assert!(state.rows().iter().any(|row| row.path == "root-only.txt"));
+
+        assert!(state.set_root_prefix("dir"));
+
+        assert!(
+            state.rows().is_empty(),
+            "a scope change must not leave the previous scope's rows on screen"
+        );
+        assert!(
+            state.all_rows().is_empty(),
+            "the previous scope's rows survived the reset"
+        );
+
+        let listing = crate::tui::file_tree::TreeListing {
+            prefix: "dir".to_string(),
+            nodes: vec![node("scoped.txt", 1, TreeNodeKind::File, None)],
+            truncated: false,
+            truncated_reason: None,
+            examined: 1,
+        };
+        let (generation, request_id) = state.begin_rebuild(root.path().to_path_buf());
+        assert!(state.apply_listing(generation, request_id, root.path().to_path_buf(), listing));
+
+        assert!(
+            !state.rows().iter().any(|row| row.path == "root-only.txt"),
+            "a path from the previous scope was read under the new one"
+        );
+        assert!(state.rows().iter().any(|row| row.path == "scoped.txt"));
+    }
+
+    /// **Replaced listing.** A new revision replaces the whole row set.
+    #[test]
+    fn a_replaced_listing_replaces_every_row() {
+        let root = temp();
+        let mut state = state_with_listing(
+            root.path(),
+            vec![
+                node("first.txt", 1, TreeNodeKind::File, None),
+                node("second.txt", 1, TreeNodeKind::File, None),
+            ],
+        );
+
+        let listing = crate::tui::file_tree::TreeListing {
+            prefix: String::new(),
+            nodes: vec![node("third.txt", 1, TreeNodeKind::File, None)],
+            truncated: false,
+            truncated_reason: None,
+            examined: 1,
+        };
+        let (generation, request_id) = state.begin_rebuild(root.path().to_path_buf());
+        assert!(state.apply_listing(generation, request_id, root.path().to_path_buf(), listing));
+
+        assert_eq!(
+            state
+                .rows()
+                .iter()
+                .map(|row| row.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["third.txt"],
+            "the replacement listing must be the whole row set"
+        );
+    }
+
+    /// **Filter change.** Narrowing and un-narrowing both read the current
+    /// row set, never the previous filter's.
+    #[test]
+    fn a_filter_change_replaces_the_rows_it_shows() {
+        let root = temp();
+        let mut state = state_with_listing(
+            root.path(),
+            vec![
+                node("alpha.txt", 1, TreeNodeKind::File, None),
+                node("beta.txt", 1, TreeNodeKind::File, None),
+            ],
+        );
+
+        set_filter(&mut state, "alpha");
+        assert_eq!(
+            state
+                .rows()
+                .iter()
+                .map(|row| row.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha.txt"]
+        );
+
+        for _ in 0.."alpha".len() {
+            state.filter_pop();
+        }
+
+        assert_eq!(
+            state
+                .rows()
+                .iter()
+                .map(|row| row.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha.txt", "beta.txt"],
+            "removing the filter must restore the rows it hid"
+        );
+    }
+
+    /// **Project switch.** The reset drops the listing *and* the rows derived
+    /// from it, so a path from the previous project cannot be displayed.
+    #[test]
+    fn a_project_switch_drops_the_rows() {
+        let root = temp();
+        let mut state = state_with_listing(
+            root.path(),
+            vec![node("previous-project.txt", 1, TreeNodeKind::File, None)],
+        );
+        assert!(!state.rows().is_empty());
+
+        state.reset_for_project();
+
+        assert!(
+            state.rows().is_empty(),
+            "the previous project's rows survived the reset"
+        );
+        assert!(state
+            .all_rows()
+            .iter()
+            .all(|row| row.path != "previous-project.txt"));
+    }
+
+    /// The cache is owned by the state, not by the module: two states never
+    /// share rows, so a path from one session's listing cannot be read under
+    /// another's.
+    #[test]
+    fn two_states_never_share_a_row_list() {
+        let root = temp();
+        let first = state_with_listing(
+            root.path(),
+            vec![node("one.txt", 1, TreeNodeKind::File, None)],
+        );
+        let mut second = state_with_listing(
+            root.path(),
+            vec![node("two.txt", 1, TreeNodeKind::File, None)],
+        );
+
+        assert_eq!(
+            first
+                .rows()
+                .iter()
+                .map(|row| row.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["one.txt"]
+        );
+        assert_eq!(
+            second
+                .rows()
+                .iter()
+                .map(|row| row.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["two.txt"]
+        );
+
+        // A mutation of one is invisible to the other.
+        expand(&mut second, "two.txt");
+        assert_eq!(
+            first
+                .rows()
+                .iter()
+                .map(|row| row.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["one.txt"],
+            "one state's mutation reached another state's rows"
+        );
+    }
+
+    /// /// The selection is a **path**, so it does not depend on a filter or on
     /// two copies agreeing about an index.
     #[test]
     fn the_selection_names_a_path_and_an_unknown_path_is_refused() {
@@ -2213,11 +2783,11 @@ mod tests {
     fn peek_up_resolves_the_parent_against_the_unfiltered_row_set() {
         let root = temp();
         let mut state = state_with_listing(root.path(), worked_example_listing());
-        state.expanded.insert("src".to_string());
-        state.expanded.insert("src/tui".to_string());
+        expand(&mut state, "src");
+        expand(&mut state, "src/tui");
 
         // The filter hides the parent row entirely.
-        state.filter = "editor".to_string();
+        set_filter(&mut state, "editor");
         assert_eq!(
             state.rows().len(),
             1,
@@ -2238,7 +2808,7 @@ mod tests {
     fn the_structure_carries_the_unfiltered_rows_and_the_selected_path() {
         let root = temp();
         let mut state = state_with_listing(root.path(), worked_example_listing());
-        state.expanded.insert("src".to_string());
+        expand(&mut state, "src");
         state.select("src/tui");
 
         let structure = state.structure();
