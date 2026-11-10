@@ -34,6 +34,7 @@
 //!   channel. The panel renders at most [`MAX_CHAT_DISPLAY_MESSAGES`]
 //!   rows with per-message display truncation.
 
+use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 
 use crate::protocol::core::{ChatChannelDto, ChatComposingDto, ChatMessageDto};
@@ -202,6 +203,30 @@ pub struct ProjectChat {
     pub actions: Vec<crate::protocol::core::ChatActionDto>,
     /// M003: last action-submit failure (secret-free, display-truncated).
     pub last_action_error: Option<String>,
+    /// M003: the last unread count derived, with the key it was derived at.
+    ///
+    /// [`Self::unread_count`] answers a question whose answer changes only
+    /// when a message is applied or the read marker advances, and the chat
+    /// panel asked it on every draw. This holds the answer keyed on exactly
+    /// those inputs, so a frame that applied nothing performs no scan. It
+    /// holds a count, never a message: there is no content here for the
+    /// window's own bound to fail to cover.
+    unread_memo: Cell<Option<UnreadMemo>>,
+}
+
+/// The key and value of [`ProjectChat::unread_count`]'s memo.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct UnreadMemo {
+    /// The reducer's sequence for this project.
+    sequence: u64,
+    /// The daemon-confirmed read marker the count is relative to.
+    last_read_seq: u64,
+    /// The retained window's length — the one message-set change that does
+    /// not move the sequence (a capability revocation clears the window in
+    /// place).
+    messages: usize,
+    /// The count derived at that key.
+    unread: usize,
 }
 
 impl ProjectChat {
@@ -229,6 +254,7 @@ impl ProjectChat {
             sequence: 0,
             actions: Vec::new(),
             last_action_error: None,
+            unread_memo: Cell::new(None),
         }
     }
 
@@ -243,14 +269,39 @@ impl ProjectChat {
     /// Number of retained messages newer than the daemon read marker.
     /// Zero when the marker is unknown (fail closed: no unread badge
     /// without an authoritative marker).
+    ///
+    /// Memoized on the window's sequence, its length and the read marker,
+    /// which are exactly the inputs the answer depends on: an applied page or
+    /// event moves the sequence, a marker advance moves `last_read_seq`, and
+    /// the one message-set change that moves neither (a capability
+    /// revocation clearing the window) moves the length. The scan happens on
+    /// a memo miss only, so a draw with nothing applied performs none.
     pub fn unread_count(&self) -> usize {
         if !self.read_marker_known {
             return 0;
         }
-        self.messages
+        let key = UnreadMemo {
+            sequence: self.sequence,
+            last_read_seq: self.last_read_seq,
+            messages: self.messages.len(),
+            unread: 0,
+        };
+        if let Some(memo) = self.unread_memo.get() {
+            if memo.sequence == key.sequence
+                && memo.last_read_seq == key.last_read_seq
+                && memo.messages == key.messages
+            {
+                return memo.unread;
+            }
+        }
+        crate::tui::render_cost::count_chat_unread_scan();
+        let unread = self
+            .messages
             .iter()
             .filter(|m| m.seq > self.last_read_seq)
-            .count()
+            .count();
+        self.unread_memo.set(Some(UnreadMemo { unread, ..key }));
+        unread
     }
 
     /// Composing entries whose lease has not expired at `now_ms`.
@@ -1993,6 +2044,55 @@ mod tests {
         // Wrong channel is ignored.
         state.apply_read_marker("p", "other", 99);
         assert_eq!(state.get("p").unwrap().unread_count(), 0);
+    }
+
+    /// M003: the unread count is derived once per window change, not once per
+    /// draw — and a marker advance is a window change.
+    #[test]
+    fn the_unread_count_is_not_recomputed_by_a_draw_that_changed_nothing() {
+        let mut state = ChatState::new();
+        state.set_capability(true);
+        ready_window(&mut state, "p", "ch", 3);
+        state.apply_read_marker("p", "ch", 1);
+        assert_eq!(state.get("p").unwrap().unread_count(), 2);
+
+        let before = crate::tui::render_cost::snapshot();
+        for _ in 0..4 {
+            assert_eq!(state.get("p").unwrap().unread_count(), 2);
+        }
+        let draws = crate::tui::render_cost::snapshot().since(&before);
+        assert_eq!(
+            draws.chat_unread_scans, 0,
+            "a draw that applied nothing scanned the message window"
+        );
+
+        state.apply_read_marker("p", "ch", 2);
+        let before = crate::tui::render_cost::snapshot();
+        assert_eq!(state.get("p").unwrap().unread_count(), 1);
+        let advanced = crate::tui::render_cost::snapshot().since(&before);
+        assert_eq!(
+            advanced.chat_unread_scans, 1,
+            "a read-marker advance must re-derive the count it moved"
+        );
+    }
+
+    /// The memo cannot outlive the window it counts: a capability revocation
+    /// clears the messages **without** moving the sequence, so the length is
+    /// part of the key.
+    #[test]
+    fn a_revocation_that_clears_the_window_recomputes_the_unread_count() {
+        let mut state = ChatState::new();
+        state.set_capability(true);
+        ready_window(&mut state, "p", "ch", 3);
+        state.apply_read_marker("p", "ch", 1);
+        assert_eq!(state.get("p").unwrap().unread_count(), 2);
+
+        state.set_capability(false);
+        assert_eq!(
+            state.get("p").unwrap().unread_count(),
+            0,
+            "the memo kept counting messages the reduction had just withdrawn"
+        );
     }
 
     #[test]

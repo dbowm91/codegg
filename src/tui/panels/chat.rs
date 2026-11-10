@@ -336,6 +336,9 @@ impl SidePanel for ChatPanel {
         let Some(view) = self.view(ctx) else {
             return;
         };
+        // The row model is keyed on the reducer's sequence, so it has to read
+        // the projection the view borrows rather than a copy of it.
+        let sequence = self.entry(ctx).map_or(0, |entry| entry.sequence);
         Paragraph::new(self.header(&view, &theme)).render(rows[0], buf);
 
         // Reconcile the cursor with the freshly read window *before*
@@ -346,8 +349,15 @@ impl SidePanel for ChatPanel {
         self.browser.sync(&view);
 
         let body_height = usize::from(rows[1].height);
-        let lines = chat_browser::rows(&view, self.cursor(), rows[1].width, &theme);
-        if lines.is_empty() {
+        let model = self.browser.rows(
+            &view,
+            chat_browser::ChatRowsRequest {
+                sequence,
+                width: rows[1].width,
+                theme: &theme,
+            },
+        );
+        if model.rows.is_empty() {
             Paragraph::new(Line::from(Span::styled(
                 match view.status {
                     crate::tui::app::state::chat::ChatStatus::Unavailable => " chat unavailable",
@@ -359,10 +369,8 @@ impl SidePanel for ChatPanel {
             )))
             .render(rows[1], buf);
         } else {
-            let selected_end = chat_browser::selected_row_end(&lines, self.cursor());
-            let range = chat_browser::window(lines.len(), selected_end, body_height);
-            let window: Vec<Line> = range.map(|index| lines[index].line.clone()).collect();
-            Paragraph::new(window).render(rows[1], buf);
+            let range = chat_browser::window(model.rows.len(), model.selected_end, body_height);
+            Paragraph::new(chat_browser::window_lines(model.rows, range)).render(rows[1], buf);
         }
 
         Paragraph::new(self.target_line(ctx, &theme)).render(rows[2], buf);

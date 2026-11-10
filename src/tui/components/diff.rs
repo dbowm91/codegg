@@ -23,13 +23,35 @@ pub struct DiffLine {
     pub tag: ChangeTag,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DiffHunk {
     pub old_start: usize,
     pub old_count: usize,
     pub new_start: usize,
     pub new_count: usize,
     pub lines: Vec<DiffLine>,
+}
+
+/// Cloning a hunk is a **whole-patch copy**, which is the cost the change
+/// review paid on every frame before M003.
+///
+/// The impl is written out rather than derived so the counter is attached to
+/// the operation itself: a render path that reintroduces
+/// `patch.hunks.clone()` is measured without a second call site anybody has
+/// to remember, and a hunk list that is moved or borrowed — the shape the
+/// review uses now — counts nothing. The change review borrows its state's
+/// parsed patch through [`DiffViewer::render_hunks_in`].
+impl Clone for DiffHunk {
+    fn clone(&self) -> Self {
+        crate::tui::render_cost::count_review_hunk_copy();
+        Self {
+            old_start: self.old_start,
+            old_count: self.old_count,
+            new_start: self.new_start,
+            new_count: self.new_count,
+            lines: self.lines.clone(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -283,7 +305,27 @@ impl DiffViewer {
 /// handed and renders byte-identically, so `ChangeReview` keeps its layout and
 /// the cache goes away.
 impl DiffViewer {
+    /// Draw the viewer's own hunks into `area`.
     pub fn render_in(&self, area: Rect, buf: &mut ratatui::prelude::Buffer, theme: &Theme) {
+        self.render_hunks_in(&self.hunks, area, buf, theme);
+    }
+
+    /// Draw `hunks` into `area` for **this viewer's** mode, scroll and title.
+    ///
+    /// The borrowed path, added by M003 so the change review stops cloning its
+    /// parsed patch: the review state already owns the hunks, and a
+    /// `Vec<DiffHunk>` built here would copy up to
+    /// `MAX_REVIEW_PATCH_BYTES` on every frame. Scrolling, the side-by-side
+    /// toggle and the theme are read exactly as [`Self::render_in`] reads
+    /// them — that method delegates here with its own list — so the two paths
+    /// cannot draw different pictures.
+    pub fn render_hunks_in(
+        &self,
+        hunks: &[DiffHunk],
+        area: Rect,
+        buf: &mut ratatui::prelude::Buffer,
+        theme: &Theme,
+    ) {
         if area.height < 7 {
             return;
         }
@@ -342,7 +384,7 @@ impl DiffViewer {
         let scroll_offset = self.scroll.get();
         let mut y = 0u16;
 
-        for hunk in &self.hunks {
+        for hunk in hunks {
             for line in hunk.lines.iter().skip(scroll_offset) {
                 if y as usize >= visible_lines {
                     break;
@@ -385,5 +427,99 @@ impl DiffViewer {
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::render_cost;
+    use ratatui::buffer::Buffer;
+
+    fn area() -> Rect {
+        Rect::new(0, 0, 60, 14)
+    }
+
+    /// A viewer over two hunks: an edit and an insertion.
+    fn viewer() -> DiffViewer {
+        DiffViewer::new(
+            "alpha\nbravo\ncharlie\ndelta\n".into(),
+            "alpha\nBRAVO\ncharlie\ninserted\ndelta\n".into(),
+            "demo.rs".into(),
+        )
+    }
+
+    fn draw(render: impl FnOnce(&mut Buffer)) -> Buffer {
+        let mut buffer = Buffer::empty(area());
+        render(&mut buffer);
+        buffer
+    }
+
+    /// The borrowed path draws byte-identically to the owned one, in both
+    /// modes and at every scroll offset the review can reach.
+    ///
+    /// This is the property M003 must not trade away: the review stopped
+    /// copying its patch, not stopped rendering it.
+    #[test]
+    fn the_borrowed_render_draws_what_the_owned_one_draws() {
+        let theme = Theme::dark();
+        let source = viewer();
+        assert!(!source.hunks.is_empty(), "the fixture must have hunks");
+
+        for mode in [DiffMode::Inline, DiffMode::SideBySide] {
+            for scroll in [0, 1, 3, 50] {
+                let mut owned = source.clone();
+                owned.mode = mode.clone();
+                owned.scroll.set(scroll);
+                let hunks: Vec<DiffHunk> = owned.hunks.clone();
+
+                let mut borrowed = DiffViewer::new(
+                    String::new().into_boxed_str(),
+                    String::new().into_boxed_str(),
+                    "demo.rs".into(),
+                );
+                borrowed.mode = mode.clone();
+                borrowed.scroll.set(scroll);
+
+                let expected = draw(|buffer| owned.render_in(area(), buffer, &theme));
+                let actual =
+                    draw(|buffer| borrowed.render_hunks_in(&hunks, area(), buffer, &theme));
+                assert_eq!(
+                    expected, actual,
+                    "the borrowed render differs from the owned one in {mode:?} at scroll {scroll}"
+                );
+            }
+        }
+    }
+
+    /// The borrowed render copies nothing: `review_hunk_copies` stays put.
+    #[test]
+    fn the_borrowed_render_copies_no_hunks() {
+        let viewer = viewer();
+        let before = render_cost::snapshot();
+        let buffer = draw(|buffer| {
+            viewer.render_hunks_in(&viewer.hunks, area(), buffer, &Theme::dark());
+        });
+        let cost = render_cost::snapshot().since(&before);
+        assert!(buffer.area.width > 0, "the viewer drew something");
+        assert_eq!(
+            cost.review_hunk_copies, 0,
+            "rendering a borrowed patch copied hunks"
+        );
+    }
+
+    /// The counter is produced by the copy itself, so a reintroduced
+    /// whole-patch clone cannot go unmeasured.
+    #[test]
+    fn copying_a_hunk_moves_the_review_copy_counter() {
+        let viewer = viewer();
+        let before = render_cost::snapshot();
+        let copy = viewer.hunks.clone();
+        let cost = render_cost::snapshot().since(&before);
+        assert_eq!(
+            cost.review_hunk_copies,
+            copy.len() as u64,
+            "one count per copied hunk"
+        );
     }
 }

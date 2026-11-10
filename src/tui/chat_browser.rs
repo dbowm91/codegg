@@ -34,6 +34,7 @@
 //! guards stay where they already are.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -44,6 +45,7 @@ use ratatui::{
 use crate::protocol::core::{ChatChannelDto, ChatMessageDto};
 use crate::tui::app::state::chat::ChatStatus;
 use crate::tui::app::TuiMsg;
+use crate::tui::render_cost;
 use crate::tui::theme::Theme;
 use crate::tui::wrap::wrap_to_strings;
 
@@ -191,6 +193,15 @@ pub struct ChatBrowser {
     /// *oldest* messages — a live channel looked empty because the only rows
     /// on screen were from before the user arrived.
     follow_tail: bool,
+    /// The wrapped row model, built once per key and read by the surface.
+    ///
+    /// The browser owns it because the browser owns row rendering: both
+    /// surfaces ask this one place, so neither can build `ChatRow`s beside
+    /// it. The cache is **per surface** because the browser is: the panel's
+    /// cursor and the window's cursor are different, and the key carries the
+    /// cursor, so a shared cache would serve one surface's selection to the
+    /// other.
+    rows: ChatRowCache,
 }
 
 impl Default for ChatBrowser {
@@ -201,6 +212,7 @@ impl Default for ChatBrowser {
             redact_armed: None,
             show_help: false,
             follow_tail: true,
+            rows: ChatRowCache::default(),
         }
     }
 }
@@ -233,7 +245,9 @@ impl ChatBrowser {
     /// Drop every piece of per-view state.
     ///
     /// Called on project change and revocation so nothing composed against one
-    /// projection survives into another.
+    /// projection survives into another. The cached row model goes with it:
+    /// the cache holds message bodies, so it may not outlive the projection
+    /// that produced them.
     pub fn reset(&mut self) {
         *self = Self::default();
     }
@@ -475,8 +489,151 @@ pub struct ChatRow {
     pub line: Line<'static>,
 }
 
+/// What a cached chat row model depends on, as a frame can state it.
+///
+/// The key is deliberately **coarse**: the whole `Vec<ChatRow>` is cached
+/// against it rather than each message's wrapped chunks. It is bounded,
+/// correct and sufficient — during streaming the cursor does not move, so the
+/// cache hits at frame rate, and a scroll or a channel switch rebuilds at
+/// human speed.
+///
+/// Only the inputs a [`ChatView`] cannot state live here. The message window,
+/// the unread count and the active channel come from the view the model is
+/// built from, so a caller cannot describe one window and draw another; the
+/// cursor lives on the browser for the same reason.
+#[derive(Debug, Clone, Copy)]
+pub struct ChatRowsRequest<'a> {
+    /// The reducer's own monotonic sequence for the project — the value it
+    /// bumps when it applies a page or a live event. The `/chat` window,
+    /// which is handed a bounded snapshot rather than reading the reducer,
+    /// passes its applied-snapshot revision here instead: both mean "the
+    /// content moved", which is the only thing this key needs to know.
+    pub sequence: u64,
+    /// The column width the bodies wrap to.
+    pub width: u16,
+    /// The theme the rows are styled with. The whole value is the identity —
+    /// a theme whose colours changed while its `id` stayed the same still
+    /// invalidates, and comparing it allocates nothing.
+    pub theme: &'a Arc<Theme>,
+}
+
+/// The cached row model a surface draws, and its viewport anchor.
+#[derive(Debug, Clone, Copy)]
+pub struct ChatRowModel<'a> {
+    /// The wrapped display rows.
+    pub rows: &'a [ChatRow],
+    /// Last row belonging to the selected message, computed when the model
+    /// was built. The frame reads it rather than reverse-scanning every row.
+    pub selected_end: usize,
+}
+
+/// The row model's cache: the rows, the anchor, and the key that produced them.
+#[derive(Debug, Clone, Default)]
+struct ChatRowCache {
+    /// `None` until the first build, and after an invalidation.
+    key: Option<ChatRowsKey>,
+    rows: Vec<ChatRow>,
+    selected_end: usize,
+}
+
+/// The owned form of [`ChatRowsRequest`], plus the cursor.
+#[derive(Debug, Clone)]
+struct ChatRowsKey {
+    sequence: u64,
+    unread: usize,
+    channel_id: Option<String>,
+    width: u16,
+    cursor: usize,
+    theme: Arc<Theme>,
+}
+
+impl ChatRowsKey {
+    /// Whether this key already describes the requested frame.
+    ///
+    /// Written as an explicit comparison rather than a derived `PartialEq` so
+    /// the channel is compared as a `&str` — the view borrows it — and so
+    /// every input of the row model is named in one place. Dropping any one
+    /// of them serves a stale model: without `sequence` a redaction or an
+    /// edit applies to the messages and never reaches the screen, without
+    /// `unread` the divider stays where the old marker put it, and without
+    /// `channel_id` one channel's rows are drawn under another's name.
+    fn covers(&self, request: &ChatRowsRequest<'_>, view: &ChatView<'_>, cursor: usize) -> bool {
+        self.sequence == request.sequence
+            && self.unread == view.unread
+            && self.channel_id.as_deref() == view.active_channel_id
+            && self.width == request.width
+            && self.cursor == cursor
+            && self.theme.as_ref() == request.theme.as_ref()
+    }
+}
+
+impl ChatBrowser {
+    /// The row model for `view`, rebuilt only when its key moved.
+    ///
+    /// This is the **only** producer of `ChatRow`s: both surfaces call it and
+    /// draw what it returns. A hit costs a key comparison and no allocation;
+    /// a miss wraps every retained body once and derives the viewport anchor,
+    /// which is the work the frame used to do unconditionally.
+    pub fn rows<'a>(
+        &'a mut self,
+        view: &ChatView<'_>,
+        request: ChatRowsRequest<'_>,
+    ) -> ChatRowModel<'a> {
+        let cursor = self.cursor;
+        let hit = self
+            .rows
+            .key
+            .as_ref()
+            .is_some_and(|key| key.covers(&request, view, cursor));
+        if !hit {
+            render_cost::count_chat_row_build();
+            let rows = build_rows(view, cursor, request.width, request.theme);
+            self.rows.selected_end = selected_row_end(&rows, cursor);
+            self.rows.key = Some(ChatRowsKey {
+                sequence: request.sequence,
+                unread: view.unread,
+                channel_id: view.active_channel_id.map(str::to_string),
+                width: request.width,
+                cursor,
+                theme: Arc::clone(request.theme),
+            });
+            self.rows.rows = rows;
+        }
+        ChatRowModel {
+            rows: &self.rows.rows,
+            selected_end: self.rows.selected_end,
+        }
+    }
+}
+
+/// The `range` rows of a cached model, as lines that **borrow** them.
+///
+/// `ratatui`'s `Paragraph` needs an owned `Vec<Line>`, so a draw materializes
+/// the visible window. What it must not do is clone every row's `String`
+/// content as well: the window is contiguous and the cache outlives the
+/// frame, so each span borrows the cached text and a draw allocates only the
+/// per-row span vectors. That is the difference between one viewport-bounded
+/// copy and a full rebuild plus a copy.
+pub fn window_lines(rows: &[ChatRow], range: std::ops::Range<usize>) -> Vec<Line<'_>> {
+    range
+        .map(|index| {
+            Line::from(
+                rows[index]
+                    .line
+                    .spans
+                    .iter()
+                    .map(|span| Span::styled(span.content.as_ref(), span.style))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect()
+}
+
 /// Flatten the message window into wrapped display rows.
-pub fn rows(view: &ChatView<'_>, cursor: usize, width: u16, theme: &Theme) -> Vec<ChatRow> {
+///
+/// Private on purpose: [`ChatBrowser::rows`] is the producer, and a second
+/// caller here would be a second producer of the row model.
+fn build_rows(view: &ChatView<'_>, cursor: usize, width: u16, theme: &Theme) -> Vec<ChatRow> {
     let width = width.max(12);
     let mut out: Vec<ChatRow> = Vec::new();
     let unread_from = unread_boundary(view).unwrap_or(usize::MAX);
@@ -501,6 +658,7 @@ pub fn rows(view: &ChatView<'_>, cursor: usize, width: u16, theme: &Theme) -> Ve
         let chunks = if message.redacted {
             vec!["[redacted]".to_string()]
         } else {
+            render_cost::count_chat_wrap_pass();
             wrap_to_strings(&message.body, body_width)
         };
         let mut emitted = 0usize;
@@ -999,7 +1157,7 @@ mod tests {
         let theme = Theme::dark();
         let (messages, channels) = seed();
         let view = view(&messages, &channels);
-        let rows = rows(&view, 2, 30, &theme);
+        let rows = build_rows(&view, 2, 30, &theme);
         let selected = rows
             .iter()
             .find(|row| row.message_index == 2)
@@ -1021,7 +1179,7 @@ mod tests {
         let theme = Theme::dark();
         let (messages, channels) = seed();
         let view = view(&messages, &channels);
-        let rows = rows(&view, 2, 30, &theme);
+        let rows = build_rows(&view, 2, 30, &theme);
         let other = rows.iter().find(|row| row.message_index == 0).expect("row");
         assert_eq!(other.line.spans[2].style.fg, Some(theme.foreground));
         assert_eq!(other.line.spans[1].style.fg, Some(theme.primary));
@@ -1032,7 +1190,7 @@ mod tests {
         let theme = Theme::light();
         let (messages, channels) = seed();
         let view = view(&messages, &channels);
-        let rows = rows(&view, 0, 30, &theme);
+        let rows = build_rows(&view, 0, 30, &theme);
         let selected = rows.iter().find(|row| row.message_index == 0).expect("row");
         // Light themes define `selection` as a near-white wash; using it as a
         // foreground on a light background is the same bug in reverse.
@@ -1050,7 +1208,7 @@ mod tests {
         ]);
         let channels = seed().1;
         let view = view(&messages, &channels);
-        let rows = rows(&view, 1, 30, &Theme::dark());
+        let rows = build_rows(&view, 1, 30, &Theme::dark());
         let selected_end = selected_row_end(&rows, 1);
         let window = window(rows.len(), selected_end, 20);
         assert_eq!(window.end - window.start, 20);
@@ -1103,7 +1261,7 @@ mod tests {
             unread: 2,
             ..view(&messages, &channels)
         };
-        let rows = rows(&view, 2, 30, &Theme::dark());
+        let rows = build_rows(&view, 2, 30, &Theme::dark());
         let separator = rows
             .iter()
             .position(|r| r.line.spans[0].content.contains("unread"))
@@ -1164,8 +1322,402 @@ mod tests {
         let (messages, channels) = seed();
         let view = view(&messages, &channels);
         // A 1-column viewport must not panic or produce an empty window.
-        let rows = rows(&view, 0, 1, &theme);
+        let rows = build_rows(&view, 0, 1, &theme);
         let end = selected_row_end(&rows, 0);
         let _ = window(rows.len(), end, 1);
+    }
+
+    // ── M003: the row model is built once per content change ──────────
+
+    /// What one cached read cost, on this thread.
+    fn rows_cost(work: impl FnOnce()) -> (u64, u64) {
+        let before = render_cost::snapshot();
+        work();
+        let after = render_cost::snapshot().since(&before);
+        (after.chat_row_builds, after.chat_wrap_passes)
+    }
+
+
+    fn rows_request<'a>(sequence: u64, width: u16, theme: &'a Arc<Theme>) -> ChatRowsRequest<'a> {
+        ChatRowsRequest {
+            sequence,
+            width,
+            theme,
+        }
+    }
+
+    fn model_text(model: ChatRowModel<'_>) -> String {
+        model
+            .rows
+            .iter()
+            .flat_map(|row| row.line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    /// A second read with an unchanged key rebuilds nothing at all.
+    #[test]
+    fn a_second_read_with_an_unchanged_key_rebuilds_nothing() {
+        let theme = Arc::new(Theme::dark());
+        let (messages, channels) = seed();
+        let view = view(&messages, &channels);
+        let mut browser = ChatBrowser::default();
+        browser.sync(&view);
+
+        let _ = browser.rows(&view, rows_request(7, 30, &theme));
+        let (builds, wraps) = rows_cost(|| {
+            let _ = browser.rows(&view, rows_request(7, 30, &theme));
+        });
+
+        assert_eq!(builds, 0, "an unchanged key rebuilt the whole row model");
+        assert_eq!(wraps, 0, "an unchanged key wrapped every body again");
+    }
+
+    /// A new message moves the reducer's sequence, so the next read rebuilds
+    /// — once — and wraps every retained body.
+    #[test]
+    fn a_new_message_rebuilds_the_rows_once() {
+        let theme = Arc::new(Theme::dark());
+        let (messages, channels) = seed();
+        let view = view(&messages, &channels);
+        let mut browser = ChatBrowser::default();
+        browser.sync(&view);
+        let _ = browser.rows(&view, rows_request(7, 30, &theme));
+
+        let (builds, wraps) = rows_cost(|| {
+            let _ = browser.rows(&view, rows_request(8, 30, &theme));
+        });
+
+        assert_eq!(builds, 1, "an applied event must rebuild the model once");
+        assert_eq!(
+            wraps, 3,
+            "a rebuild wraps every retained body, which is why the key is coarse"
+        );
+    }
+
+    /// A read-marker advance moves the unread divider without moving the
+    /// sequence, so the count is part of the key.
+    #[test]
+    fn a_read_marker_advance_rebuilds_the_unread_divider() {
+        let theme = Arc::new(Theme::dark());
+        let (messages, channels) = seed();
+        let current = ChatView {
+            unread: 2,
+            ..view(&messages, &channels)
+        };
+        let mut browser = ChatBrowser::default();
+        browser.sync(&current);
+        let before = model_text(browser.rows(&current, rows_request(7, 40, &theme)));
+        assert!(
+            before.contains("2 unread"),
+            "the premise: the divider names the unread count, got {before:?}"
+        );
+
+        // The marker reached the tail: the same window, the same sequence,
+        // the same cursor — only the count the divider draws moved.
+        let advanced = ChatView {
+            unread: 0,
+            ..view(&messages, &channels)
+        };
+        let (builds, _) = rows_cost(|| {
+            let _ = browser.rows(&advanced, rows_request(7, 40, &theme));
+        });
+        assert_eq!(
+            builds, 1,
+            "the read marker moved the divider and the sequence did not"
+        );
+        let after = model_text(browser.rows(&advanced, rows_request(7, 40, &theme)));
+        assert!(
+            !after.contains("unread"),
+            "the divider must be gone once the marker reached the tail, got {after:?}"
+        );
+    }
+
+    /// The wrap width is an input: a resize rebuilds, the same width does not.
+    #[test]
+    fn a_width_change_rebuilds_and_the_same_width_does_not() {
+        let theme = Arc::new(Theme::dark());
+        let (messages, channels) = seed();
+        let view = view(&messages, &channels);
+        let mut browser = ChatBrowser::default();
+        browser.sync(&view);
+        let _ = browser.rows(&view, rows_request(7, 30, &theme));
+
+        let (same, _) = rows_cost(|| {
+            let _ = browser.rows(&view, rows_request(7, 30, &theme));
+        });
+        assert_eq!(same, 0, "the same width must not rebuild");
+
+        let (narrower, _) = rows_cost(|| {
+            let _ = browser.rows(&view, rows_request(7, 24, &theme));
+        });
+        assert_eq!(narrower, 1, "a narrower body column re-wraps the bodies");
+    }
+
+    /// The cursor styles the selected message's rows, so it is part of the key.
+    #[test]
+    fn a_cursor_move_rebuilds_the_styled_rows() {
+        let theme = Arc::new(Theme::dark());
+        let (messages, channels) = seed();
+        let view = view(&messages, &channels);
+        let mut browser = ChatBrowser::default();
+        browser.sync(&view);
+        let _ = browser.rows(&view, rows_request(7, 30, &theme));
+
+        browser.handle_key(key(KeyCode::Char('k')), &view);
+        let (builds, _) = rows_cost(|| {
+            let _ = browser.rows(&view, rows_request(7, 30, &theme));
+        });
+
+        assert_eq!(builds, 1, "the selection marker moved to another message");
+    }
+
+    /// The theme styles every row, so it is part of the key too.
+    #[test]
+    fn a_theme_change_rebuilds_the_rows() {
+        let dark = Arc::new(Theme::dark());
+        let light = Arc::new(Theme::light());
+        let (messages, channels) = seed();
+        let view = view(&messages, &channels);
+        let mut browser = ChatBrowser::default();
+        browser.sync(&view);
+        let _ = browser.rows(&view, rows_request(7, 30, &dark));
+
+        let (builds, _) = rows_cost(|| {
+            let _ = browser.rows(&view, rows_request(7, 30, &light));
+        });
+
+        assert_eq!(
+            builds, 1,
+            "the rows carry the palette they were styled with"
+        );
+    }
+
+    /// The load-bearing redaction direction: a body that becomes redacted is
+    /// drawn as `[redacted]` on the next read, never served from the rows the
+    /// previous read produced.
+    ///
+    /// The reducer's `sequence` is what carries this: a redaction applies to
+    /// the window without changing its length, the read marker, the width, the
+    /// cursor or the theme. Dropping `sequence` from `ChatRowsKey::covers`
+    /// makes this test fail; that perturbation is recorded in the milestone's
+    /// evidence and was reverted.
+    #[test]
+    fn a_body_that_becomes_redacted_is_re_rendered_on_the_next_read() {
+        let theme = Arc::new(Theme::dark());
+        let (mut messages, channels) = seed();
+        // One browser, as a surface has: a second browser would start with an
+        // empty cache and prove nothing about the key.
+        let mut browser = ChatBrowser::default();
+        {
+            let view = view(&messages, &channels);
+            browser.sync(&view);
+            let text = model_text(browser.rows(&view, rows_request(7, 40, &theme)));
+            assert!(text.contains("second"), "the premise: the body is drawn");
+        }
+
+        // Same message, same id, same length, same cursor, same marker — only
+        // the reducer's sequence moved, because a redaction was applied.
+        messages[1].redacted = true;
+        let view = view(&messages, &channels);
+        browser.sync(&view);
+        let text = model_text(browser.rows(&view, rows_request(8, 40, &theme)));
+
+        assert!(
+            !text.contains("second"),
+            "a redacted body was served from the pre-redaction rows: {text:?}"
+        );
+        assert!(
+            text.contains("[redacted]"),
+            "the redaction must be visible on the next read: {text:?}"
+        );
+    }
+
+    /// An edited body (`revision` bumped, same `message_id`) re-renders.
+    #[test]
+    fn an_edited_body_is_re_rendered_on_the_next_read() {
+        let theme = Arc::new(Theme::dark());
+        let (mut messages, channels) = seed();
+        // One browser: the edit has to be observed *by the cache*, not by a
+        // freshly built one.
+        let mut browser = ChatBrowser::default();
+        {
+            let view = view(&messages, &channels);
+            browser.sync(&view);
+            let text = model_text(browser.rows(&view, rows_request(7, 40, &theme)));
+            assert!(text.contains("second"), "the premise: the body is drawn");
+        }
+
+        messages[1].body = "revised wording".to_string();
+        messages[1].revision = 2;
+        let view = view(&messages, &channels);
+        browser.sync(&view);
+        let text = model_text(browser.rows(&view, rows_request(8, 40, &theme)));
+
+        assert!(
+            text.contains("revised wording"),
+            "the edit must reach the screen: {text:?}"
+        );
+        assert!(
+            !text.contains("second"),
+            "the replaced body must be gone: {text:?}"
+        );
+        assert!(
+            text.contains("(r2)"),
+            "the revision marker follows the new body: {text:?}"
+        );
+    }
+
+    /// One channel's rows are never served to another: the channel is part of
+    /// the key, so even a caller that kept the sequence would rebuild.
+    #[test]
+    fn another_channels_rows_are_never_served_from_the_cache() {
+        let theme = Arc::new(Theme::dark());
+        let (messages, channels) = seed();
+        let current = view(&messages, &channels);
+        let mut browser = ChatBrowser::default();
+        browser.sync(&current);
+        let first = model_text(browser.rows(&current, rows_request(7, 40, &theme)));
+        assert!(first.contains("third"), "the premise: channel one is drawn");
+
+        // The same window presented as another channel's: the sequence, the
+        // width, the unread count, the cursor and the theme are all unchanged,
+        // so only the channel can force the rebuild.
+        let other = ChatView {
+            active_channel_id: Some("ch-2"),
+            ..view(&messages, &channels)
+        };
+        let (builds, _) = rows_cost(|| {
+            let _ = browser.rows(&other, rows_request(7, 40, &theme));
+        });
+
+        assert_eq!(
+            builds, 1,
+            "a model built for one channel was read under another: the channel \
+             is not in the key"
+        );
+    }
+
+    /// A reset (project switch, revocation, session teardown) drops the model
+    /// with everything else the browser holds.
+    #[test]
+    fn a_reset_drops_the_cached_rows() {
+        let theme = Arc::new(Theme::dark());
+        let (messages, channels) = seed();
+        let view = view(&messages, &channels);
+        let mut browser = ChatBrowser::default();
+        browser.sync(&view);
+        let _ = browser.rows(&view, rows_request(7, 30, &theme));
+
+        browser.reset();
+        browser.sync(&view);
+        let (builds, _) = rows_cost(|| {
+            let _ = browser.rows(&view, rows_request(7, 30, &theme));
+        });
+
+        assert_eq!(builds, 1, "a reset must drop the rows it was holding");
+    }
+
+    /// The cache is a memo of the builder, not a second producer: for every
+    /// fixture the cached model is exactly what the uncached build produces.
+    #[test]
+    fn the_cached_rows_are_the_rows_the_builder_produces() {
+        let theme = Arc::new(Theme::dark());
+        let mut fixtures: Vec<(VecDeque<ChatMessageDto>, Vec<ChatChannelDto>, usize, usize)> =
+            Vec::new();
+        let (messages, channels) = seed();
+        fixtures.push((messages.clone(), channels.clone(), 2, 0));
+        fixtures.push((VecDeque::new(), channels.clone(), 0, 0));
+        fixtures.push((
+            VecDeque::from(vec![message("m1", 1, "alice", &"word ".repeat(80))]),
+            channels.clone(),
+            0,
+            0,
+        ));
+        fixtures.push((
+            VecDeque::from(vec![message("m1", 1, "bob", "héllo 日本語 wörld")]),
+            channels.clone(),
+            0,
+            0,
+        ));
+        let mut redacted = message("m1", 1, "alice", "withdrawn");
+        redacted.redacted = true;
+        fixtures.push((VecDeque::from(vec![redacted]), channels.clone(), 0, 0));
+
+        for (messages, channels, cursor, unread) in fixtures {
+            let view = ChatView {
+                unread,
+                ..view(&messages, &channels)
+            };
+            let mut browser = ChatBrowser {
+                cursor,
+                ..ChatBrowser::default()
+            };
+            let cached = browser.rows(&view, rows_request(3, 26, &theme));
+            let expected = build_rows(&view, cursor, 26, &theme);
+            assert_eq!(
+                row_signature(cached.rows),
+                row_signature(&expected),
+                "the cache's rows differ from the builder's"
+            );
+            assert_eq!(
+                cached.selected_end,
+                selected_row_end(&expected, cursor),
+                "the cached viewport anchor differs from the uncached scan"
+            );
+        }
+    }
+
+    /// The borrowed window draws exactly what cloning each row drew: every
+    /// span's text and style, in order.
+    #[test]
+    fn the_borrowed_window_draws_what_cloning_the_rows_drew() {
+        let theme = Theme::dark();
+        let (messages, channels) = seed();
+        let view = view(&messages, &channels);
+        let rows = build_rows(&view, 2, 30, &theme);
+        let range = window(rows.len(), selected_row_end(&rows, 2), 4);
+
+        let cloned: Vec<Vec<(String, Style)>> = range
+            .clone()
+            .map(|index| {
+                rows[index]
+                    .line
+                    .clone()
+                    .spans
+                    .iter()
+                    .map(|span| (span.content.to_string(), span.style))
+                    .collect()
+            })
+            .collect();
+        let borrowed: Vec<Vec<(String, Style)>> = window_lines(&rows, range)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| (span.content.to_string(), span.style))
+                    .collect()
+            })
+            .collect();
+
+        assert_eq!(
+            cloned, borrowed,
+            "the borrowed window must draw the rows the clone drew"
+        );
+    }
+
+    fn row_signature(rows: &[ChatRow]) -> Vec<(usize, Vec<(String, Style)>)> {
+        rows.iter()
+            .map(|row| {
+                (
+                    row.message_index,
+                    row.line
+                        .spans
+                        .iter()
+                        .map(|span| (span.content.to_string(), span.style))
+                        .collect(),
+                )
+            })
+            .collect()
     }
 }
