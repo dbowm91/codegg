@@ -1,8 +1,10 @@
 # Harness Lab Self-Improvement Resumption S050 — Event Measurement Cause Projection
 
-Status: **active**
+Status: **closed at event-measurement diagnosis scope; attempt 62 unqualified**
 
 Repository baseline: `26c0aebcfa5168b015491b9ef4254f945feec124`
+
+Implementation commit: `6ee1e1a1ec1a279125a26c646f949cbf4a428b92`
 
 Source roadmap:
 

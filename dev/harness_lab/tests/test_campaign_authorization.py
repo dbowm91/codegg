@@ -9,6 +9,7 @@ import unittest
 from dev.harness_lab.campaign_authorization import (
     CampaignLedgerError,
     _safe_event_measurement_diagnostic,
+    _safe_required_success_jobs,
     preflight_campaign_run_start,
     reconcile_campaign_run_start,
     safe_campaign_run_fields,
@@ -68,6 +69,34 @@ def _run(**overrides: object) -> dict:
 
 
 class CampaignAuthorizationTests(unittest.TestCase):
+    def test_required_success_job_projection_fails_closed_for_missing_or_bad_status(self) -> None:
+        projected = _safe_required_success_jobs({
+            "workspace_tests": {
+                "submitted_once": True,
+                "documented_completed": True,
+                "observed_terminal_status": "running",
+                "completed": True,
+                "job_id": "PRIVATE_JOB_ID",
+            },
+            "unapproved_job": {"completed": True},
+        })
+
+        self.assertEqual(projected, {
+            "clippy": {
+                "submitted_once": None,
+                "documented_completed": None,
+                "observed_terminal_status": "unavailable",
+                "completed": False,
+            },
+            "workspace_tests": {
+                "submitted_once": True,
+                "documented_completed": True,
+                "observed_terminal_status": "unavailable",
+                "completed": False,
+            },
+        })
+        self.assertNotIn("PRIVATE_JOB_ID", json.dumps(projected))
+
     def test_preflight_previews_start_without_mutating_campaign_ledger(self) -> None:
         ledger = _ledger()
         before = copy.deepcopy(ledger)
@@ -264,6 +293,24 @@ class CampaignAuthorizationTests(unittest.TestCase):
                 "required_review_observed": False,
                 "release_overlap_confirmed": True,
                 "all_public_artifacts_present": False,
+                "required_success_jobs": {
+                    "workspace_tests": {
+                        "submitted_once": True,
+                        "documented_completed": True,
+                        "observed_terminal_status": "unobserved",
+                        "completed": False,
+                        "job_id": "PRIVATE_WORKSPACE_TEST_ID",
+                        "command": "PRIVATE_TEST_COMMAND",
+                    },
+                    "clippy": {
+                        "submitted_once": True,
+                        "documented_completed": True,
+                        "observed_terminal_status": "completed",
+                        "completed": True,
+                    },
+                    "private_job": {"completed": True},
+                },
+                "incomplete_required_success_jobs": ["workspace_tests", "private_job"],
                 "note_body": "PRIVATE NOTE",
                 "tool_arguments": "PRIVATE TOOL ARGUMENTS",
             },
@@ -289,6 +336,24 @@ class CampaignAuthorizationTests(unittest.TestCase):
         self.assertEqual(diagnostic["continuation"]["stage_complete_count"], 1)
         self.assertEqual(diagnostic["continuation"]["first_missing_stage"], "durable_import")
         self.assertEqual(diagnostic["continuation"]["incomplete_gates"], ["durable_import"])
+        self.assertEqual(diagnostic["continuation"]["required_success_jobs"], {
+            "clippy": {
+                "submitted_once": True,
+                "documented_completed": True,
+                "observed_terminal_status": "completed",
+                "completed": True,
+            },
+            "workspace_tests": {
+                "submitted_once": True,
+                "documented_completed": True,
+                "observed_terminal_status": "unobserved",
+                "completed": False,
+            },
+        })
+        self.assertEqual(
+            diagnostic["continuation"]["incomplete_required_success_jobs"],
+            ["workspace_tests"],
+        )
         self.assertEqual(
             diagnostic["verifier_public_reconciliation"]["failure_domain_counts"],
             {"continuation_boundary": 1},
@@ -333,6 +398,7 @@ class CampaignAuthorizationTests(unittest.TestCase):
             "PRIVATE TOOL ARGUMENTS", "PRIVATE PROMPT", "PRIVATE TRANSCRIPT",
             "private_stage_text", "PRIVATE CHECK DETAIL", "PRIVATE DOMAIN",
             "PRIVATE_EVENT_SOURCE", "PRIVATE_TOOL_ID",
+            "PRIVATE_WORKSPACE_TEST_ID", "PRIVATE_TEST_COMMAND", "private_job",
         ):
             self.assertNotIn(private_marker, encoded)
         self.assertEqual(run, run_before)

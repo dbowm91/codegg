@@ -616,7 +616,7 @@ def summarize_continuation_line_layout(text: str | None) -> dict[str, Any]:
             "raw_note_retained": False,
         }
     progress_keys = (
-        "completed_phases", "completed_contract_phases", "required_stages", "gates",
+        "completed_phases", "contract_phases", "required_stages", "gates",
     )
     pointer_keys = ("next_phase", "next_contract_phase", "next_stage", "next_gate")
     positions = {
