@@ -1712,6 +1712,96 @@ class H007CaseAndResultTests(unittest.TestCase):
         self.assertEqual(incomplete["task_outcome"], "passed")
         self.assertEqual(incomplete["horizon_reason"], "measurement_incomplete")
 
+    def test_event_measurement_requires_drain_zero_gaps_and_terminal_call_pairs(self):
+        calls = [
+            {"tool": "read", "status": "completed"},
+            {"tool": "write", "status": "failed"},
+        ]
+        complete = h007_results.summarize_event_measurement({
+            "event_observation_state": "observed_complete",
+            "event_gap_count": 0, "event_gap_dropped": 0,
+            "tool_started_count": 2, "tool_terminal_count": 2,
+            "tool_unpaired_start_count": 0,
+            "event_gaps": [{"source": "PRIVATE_SOURCE", "dropped": 99}],
+        }, calls)
+        self.assertTrue(complete["measurement_complete"])
+        self.assertEqual(complete["unknown_terminal_tool_call_count"], 0)
+        self.assertNotIn("event_gaps", complete)
+        self.assertNotIn("PRIVATE_SOURCE", json.dumps(complete))
+
+        gap = h007_results.summarize_event_measurement({
+            "event_observation_state": "unmeasured_gap",
+            "event_gap_count": 1, "event_gap_dropped": 2,
+            "tool_started_count": 2, "tool_terminal_count": 2,
+            "tool_unpaired_start_count": 0,
+        }, calls)
+        undrained = h007_results.summarize_event_measurement({
+            "event_observation_state": "not_instrumented",
+            "event_gap_count": 0, "event_gap_dropped": 0,
+            "tool_started_count": 2, "tool_terminal_count": 2,
+            "tool_unpaired_start_count": 0,
+        }, calls)
+        unknown_call = h007_results.summarize_event_measurement({
+            "event_observation_state": "observed_complete",
+            "event_gap_count": 0, "event_gap_dropped": 0,
+            "tool_started_count": 2, "tool_terminal_count": 1,
+            "tool_unpaired_start_count": 1,
+        }, [calls[0], {"tool": "write", "status": "unknown"}])
+        self.assertFalse(gap["measurement_complete"])
+        self.assertFalse(undrained["measurement_complete"])
+        self.assertFalse(unknown_call["measurement_complete"])
+        self.assertEqual(unknown_call["unknown_terminal_tool_call_count"], 1)
+        mismatched_event_counts = h007_results.summarize_event_measurement({
+            "event_observation_state": "observed_complete",
+            "event_gap_count": 0, "event_gap_dropped": 0,
+            "tool_started_count": 2, "tool_terminal_count": 3,
+            "tool_unpaired_start_count": 0,
+        }, calls)
+        self.assertFalse(mismatched_event_counts["measurement_complete"])
+
+        unsafe_measurement = {
+            **undrained,
+            "event_gaps": [{"source": "PRIVATE_SOURCE"}],
+            "tool_call_id": "PRIVATE_TOOL_ID",
+        }
+        projection = h007_results.project_result(
+            terminal="completed", verifier_ran=True, verifier_exit_code=0,
+            duration_ms=1_800_000, tool_calls=[], measurement_complete=True,
+            continuation_confirmed=True, repair_cycles=2,
+            event_measurement_diagnostic=unsafe_measurement)
+        self.assertEqual(projection["horizon_reason"], "measurement_incomplete")
+        self.assertFalse(projection["horizon_evidence"]["event_measurement_complete"])
+        encoded_projection = json.dumps(projection)
+        self.assertNotIn("PRIVATE_SOURCE", encoded_projection)
+        self.assertNotIn("PRIVATE_TOOL_ID", encoded_projection)
+
+        completion = h007_results.summarize_task_completion(
+            terminal="completed", task_outcome="failed",
+            verifier_outcome="assertion_failures",
+            continuation={"present": True, "document_valid": True},
+            horizon_evidence={"event_measurement_diagnostic": gap},
+        )
+        self.assertEqual(
+            completion["verifier_public_reconciliation"]["event_measurement_diagnostic"],
+            gap,
+        )
+
+        malformed = h007_results.summarize_event_measurement({
+            "event_observation_state": "PRIVATE_STATE",
+            "event_gap_count": True, "event_gap_dropped": 1_601,
+            "tool_started_count": "private", "tool_terminal_count": 0,
+            "tool_unpaired_start_count": None,
+        }, calls)
+        self.assertEqual(malformed["event_observation_state"], "unobserved")
+        self.assertIsNone(malformed["event_gap_count"])
+        self.assertIsNone(malformed["event_gap_dropped_count"])
+        self.assertFalse(malformed["measurement_complete"])
+        self.assertNotIn("PRIVATE_STATE", json.dumps(malformed))
+        unhashable_state = h007_results.summarize_event_measurement({
+            "event_observation_state": ["PRIVATE_STATE"],
+        }, calls)
+        self.assertEqual(unhashable_state["event_observation_state"], "unobserved")
+
     def test_lifecycle_without_productive_overlap_is_reported_as_distinct_evidence(self):
         calls = [
             {"tool": "test", "started_elapsed_ms": 0, "finished_elapsed_ms": 1,

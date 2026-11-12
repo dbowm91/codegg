@@ -192,6 +192,9 @@ _PUBLIC_REPAIR_COUNTS = frozenset({
 _PUBLIC_JOB_CORRELATION_STATES = frozenset({
     "matched", "mismatched", "unobserved", "not_applicable",
 })
+_PUBLIC_EVENT_OBSERVATION_STATES = frozenset({
+    "observed_complete", "unmeasured_gap", "not_instrumented", "unobserved",
+})
 _PUBLIC_JOB_ACTIONS = frozenset({
     "submit", "status", "wait", "output", "cancel", "spawn", "unknown",
 })
@@ -324,6 +327,37 @@ def _safe_unbound_call_state_counts(value: Any) -> dict[str, int]:
         count = _safe_count(raw_count)
         if count is not None and count > 0:
             result[key] = count
+    return result
+
+
+def _safe_event_measurement_diagnostic(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping) or value.get("schema") != "h007_event_measurement_v1":
+        return None
+    state = value.get("event_observation_state")
+    if not isinstance(state, str) or state not in _PUBLIC_EVENT_OBSERVATION_STATES:
+        return None
+    result: dict[str, Any] = {
+        "schema": "h007_event_measurement_v1",
+        "event_observation_state": state,
+    }
+    for name in (
+        "event_gap_count", "event_gap_dropped_count", "tool_started_count",
+        "tool_terminal_count", "projected_tool_call_count", "tool_unpaired_start_count",
+        "unknown_terminal_tool_call_count",
+    ):
+        result[name] = _safe_count(value.get(name), maximum=1_600)
+    result["measurement_complete"] = (
+        state == "observed_complete"
+        and result["event_gap_count"] == 0
+        and result["event_gap_dropped_count"] == 0
+        and result["tool_started_count"] is not None
+        and result["tool_terminal_count"] is not None
+        and result["projected_tool_call_count"] is not None
+        and result["tool_started_count"] == result["projected_tool_call_count"]
+        and result["tool_terminal_count"] == result["projected_tool_call_count"]
+        and result["tool_unpaired_start_count"] == 0
+        and result["unknown_terminal_tool_call_count"] == 0
+    )
     return result
 
 
@@ -531,6 +565,11 @@ def _safe_h007_completion_projection(case_receipt: Mapping[str, Any] | None) -> 
                 reconciliation.get("failed_job_status_error_class_counts"),
                 SAFE_JOB_STATUS_ERROR_CLASSES, maximum=1_600),
         }
+        event_measurement = _safe_event_measurement_diagnostic(
+            reconciliation.get("event_measurement_diagnostic")
+        )
+        if event_measurement is not None:
+            verifier_projection["event_measurement_diagnostic"] = event_measurement
 
     timeout_projection = _safe_timeout_diagnostic(
         case_receipt.get("turn_timeout_diagnostic")
