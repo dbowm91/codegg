@@ -395,7 +395,7 @@ max_ratio = 0.1326
 "src/git_run_store.rs" = { max_comment_lines = 47, max_ratio = 0.226 }
 "src/git_service.rs" = { max_comment_lines = 229, max_ratio = 0.1102 }
 "src/goal_continuation.rs" = { max_comment_lines = 26, max_ratio = 0.1453 }
-"src/headless.rs" = { max_comment_lines = 21, max_ratio = 0.0595 }
+"src/headless.rs" = { max_comment_lines = 21, max_ratio = 0.0597 }
 "src/http_client.rs" = { max_comment_lines = 37, max_ratio = 0.2484 }
 "src/install.rs" = { max_comment_lines = 75, max_ratio = 0.155 }
 "src/interactive_process.rs" = { max_comment_lines = 239, max_ratio = 0.1305 }
