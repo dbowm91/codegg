@@ -289,6 +289,50 @@ impl RunControlService {
         Err(RunControlError::Unauthorized)
     }
 
+    /// Authorize read-only observations of a durable child run.
+    ///
+    /// A top-level session owns the runs it spawned for the lifetime of that
+    /// session, even after the spawning turn has ended. Status, bounded wait,
+    /// and journal reads therefore use the durable session principal for a
+    /// root run. A delegated run still observes only its direct children.
+    /// Mutating controls continue to use [`Self::authorize`] and remain
+    /// turn-scoped for top-level sessions.
+    pub async fn authorize_observation(
+        &self,
+        actor: &ControlActor,
+        target: &AgentRunId,
+    ) -> Result<AgentRunRecord, RunControlError> {
+        let target_run = self
+            .runs
+            .get_run(target)
+            .await
+            .map_err(|e| RunControlError::RunStore(e.to_string()))?
+            .ok_or_else(|| RunControlError::RunNotFound(target.to_string()))?;
+        let task = self
+            .runs
+            .get_task(&target_run.task_id)
+            .await
+            .map_err(|e| RunControlError::RunStore(e.to_string()))?
+            .ok_or_else(|| RunControlError::RunNotFound(target.to_string()))?;
+
+        if let Some(actor_run_id) = actor.run_id.as_ref() {
+            if target_run.parent_run_id.as_ref() == Some(actor_run_id)
+                && target_run.run_id != *actor_run_id
+            {
+                return Ok(target_run);
+            }
+            return Err(RunControlError::Unauthorized);
+        }
+
+        if actor.session_id.as_deref().is_some_and(|session_id| {
+            task.originating_session_id == session_id && target_run.parent_run_id.is_none()
+        }) {
+            return Ok(target_run);
+        }
+
+        Err(RunControlError::Unauthorized)
+    }
+
     /// Rule every denial case out for a continuation request, before any
     /// provider entry.
     ///
@@ -586,7 +630,7 @@ impl RunControlService {
         target: AgentRunId,
     ) -> Result<ControlOutcome, RunControlError> {
         Ok(ControlOutcome::Status(
-            self.authorize(actor, &target).await?,
+            self.authorize_observation(actor, &target).await?,
         ))
     }
 
@@ -602,7 +646,7 @@ impl RunControlService {
         target: AgentRunId,
         timeout: Duration,
     ) -> Result<ControlOutcome, RunControlError> {
-        let initial = self.authorize(actor, &target).await?;
+        let initial = self.authorize_observation(actor, &target).await?;
         let timeout = timeout.min(Duration::from_millis(MAX_WAIT_MS));
         if initial.status.is_terminal() {
             return Ok(ControlOutcome::Wait {
@@ -612,7 +656,7 @@ impl RunControlService {
         }
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            let current = self.authorize(actor, &target).await?;
+            let current = self.authorize_observation(actor, &target).await?;
             if current.status.is_terminal() {
                 return Ok(ControlOutcome::Wait {
                     run: current,
@@ -636,7 +680,7 @@ impl RunControlService {
         after_sequence: u64,
         limit: usize,
     ) -> Result<Vec<AgentRunJournalEvent>, RunControlError> {
-        self.authorize(actor, &target).await?;
+        self.authorize_observation(actor, &target).await?;
         Ok(self
             .controls
             .list_events(&target, after_sequence, limit)
@@ -1143,6 +1187,62 @@ mod tests {
         assert!(
             matches!(outcome, ControlOutcome::Wait { timed_out: false, run } if run.status == AgentRunStatus::Completed)
         );
+    }
+
+    #[tokio::test]
+    async fn session_owner_can_observe_root_run_across_turns_without_gaining_control() {
+        let runs: Arc<dyn AgentRunStore> =
+            Arc::new(codegg_core::agent_run::InMemoryAgentRunStore::new());
+        let run = running_run(&runs, "owner-session").await;
+        let service = RunControlService::in_memory(runs.clone());
+        let later_turn = ControlActor {
+            session_id: Some("owner-session".into()),
+            turn_id: Some("later-turn".into()),
+            run_id: None,
+        };
+
+        assert!(matches!(
+            service.status(&later_turn, run.run_id.clone()).await,
+            Ok(ControlOutcome::Status(observed)) if observed.run_id == run.run_id
+        ));
+        assert!(matches!(
+            service
+                .wait(&later_turn, run.run_id.clone(), Duration::from_millis(1))
+                .await,
+            Ok(ControlOutcome::Wait { timed_out: true, run: observed }) if observed.run_id == run.run_id
+        ));
+        assert!(service
+            .journal(&later_turn, run.run_id.clone(), 0, 16)
+            .await
+            .is_ok());
+
+        // The durable session principal is sufficient for read-only
+        // observation, but it does not widen turn-scoped control authority.
+        assert!(matches!(
+            service.authorize(&later_turn, &run.run_id).await,
+            Err(RunControlError::Unauthorized)
+        ));
+        let other_session = ControlActor {
+            session_id: Some("other-session".into()),
+            turn_id: Some("owner-turn".into()),
+            run_id: None,
+        };
+        assert!(matches!(
+            service.status(&other_session, run.run_id.clone()).await,
+            Err(RunControlError::Unauthorized)
+        ));
+
+        // A delegated run in the same session cannot use the session fallback
+        // to observe a root run; it must own the target through parent lineage.
+        let unrelated_run_actor = ControlActor {
+            session_id: Some("owner-session".into()),
+            turn_id: Some("owner-turn".into()),
+            run_id: Some(AgentRunId::new()),
+        };
+        assert!(matches!(
+            service.status(&unrelated_run_actor, run.run_id).await,
+            Err(RunControlError::Unauthorized)
+        ));
     }
 
     #[tokio::test]

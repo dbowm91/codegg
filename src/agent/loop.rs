@@ -52,6 +52,26 @@ pub(super) use super::tool_inspect::{
 
 const FOLLOW_UP_CHANNEL_CAPACITY: usize = 32;
 
+fn cancellation_token_from_turn_receiver(
+    mut receiver: tokio::sync::watch::Receiver<bool>,
+) -> tokio_util::sync::CancellationToken {
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let watcher = cancellation.clone();
+    tokio::spawn(async move {
+        if *receiver.borrow() {
+            watcher.cancel();
+            return;
+        }
+        while receiver.changed().await.is_ok() {
+            if *receiver.borrow_and_update() {
+                watcher.cancel();
+                return;
+            }
+        }
+    });
+    cancellation
+}
+
 /// The most tool outcomes one run retains.
 ///
 /// A memory bound, not a transcript bound: the durable store applies its own
@@ -282,6 +302,9 @@ pub struct AgentLoop {
     pub(super) max_tool_calls: Option<usize>,
     pub(super) goal_wall_clock: std::sync::Mutex<crate::goal::runtime::GoalWallClock>,
     pub(super) cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
+    /// Cancellation token passed into brokered tools so an ACP turn cancel
+    /// reaches an in-flight managed process or foreground scheduler wait.
+    pub(super) tool_cancellation: tokio_util::sync::CancellationToken,
     pub(super) steer_rx: Option<mpsc::Receiver<String>>,
     pub(super) pending_steer: Option<String>,
     pub(super) local_paths: (Option<String>, Option<String>),
@@ -624,6 +647,7 @@ impl AgentLoop {
             reviewer_denial_counts: HashMap::new(),
             goal_wall_clock: std::sync::Mutex::new(crate::goal::runtime::GoalWallClock::default()),
             cancel_rx: None,
+            tool_cancellation: tokio_util::sync::CancellationToken::new(),
             steer_rx: None,
             local_paths,
             pending_steer: None,
@@ -1216,6 +1240,7 @@ impl AgentLoop {
     }
 
     pub fn set_cancel_receiver(&mut self, rx: tokio::sync::watch::Receiver<bool>) {
+        self.tool_cancellation = cancellation_token_from_turn_receiver(rx.clone());
         self.cancel_rx = Some(rx);
     }
 
@@ -2676,6 +2701,21 @@ impl AgentLoop {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn turn_cancel_receiver_cancels_tool_execution_token() {
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        let cancellation = super::cancellation_token_from_turn_receiver(receiver);
+        assert!(!cancellation.is_cancelled());
+
+        sender
+            .send(true)
+            .expect("turn cancellation receiver remains open");
+        tokio::time::timeout(std::time::Duration::from_secs(1), cancellation.cancelled())
+            .await
+            .expect("tool cancellation token follows the turn cancel");
+        assert!(cancellation.is_cancelled());
+    }
+
     #[test]
     fn delegated_usage_attribution_preserves_private_session_identity() {
         let workspace = tempfile::tempdir().expect("temporary workspace");

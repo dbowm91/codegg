@@ -4,16 +4,9 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-/// # Compaction Invariant
-/// All compaction strategies must uphold the following invariants:
-/// 1. No orphan `Message::Tool`: every tool result must have a corresponding assistant tool call
-///    with matching `tool_call_id` in the retained messages.
-/// 2. No assistant tool-call message may exist without all its required tool results in the retained
-///    transcript, unless the provider-specific serializer can safely handle missing results.
-/// 3. The relative order of assistant tool calls and their matching tool results must be preserved.
-/// 4. Truncation of tool outputs must preserve the `tool_call_id` field unchanged.
-/// 5. Multi-tool pairs (assistant with multiple tool calls + matching tool results) must preserve
-///    all IDs and their original order.
+/// Compaction preserves tool-call/result pairing, IDs, and order. It leaves no
+/// orphan results or calls unless the provider serializer explicitly supports
+/// missing results; truncating output never changes its call ID.
 pub use eggcontext::TokenizerType;
 
 fn estimate_tokens_sync(text: &str, model: Option<&str>) -> usize {

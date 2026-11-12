@@ -881,10 +881,8 @@ impl AgentLoop {
         model_profile: &crate::model_profile::types::ResolvedModelProfile,
         provider_context_limit: usize,
     ) -> bool {
-        // Provider-side tokenization can materially exceed CodeGG's local
-        // message estimator (attempt 29 measured ~5.5% more tokens upstream).
-        // Compact to a conservative operating target so the corrective
-        // request does not merely land a few tokens below the hard ceiling.
+        // Provider tokenization can exceed the local estimate. Keep headroom
+        // so the corrective request does not sit at the hard ceiling.
         const PROVIDER_CONTEXT_HEADROOM_PERCENT: usize = 15;
         let compaction_target =
             provider_context_limit.saturating_mul(100 - PROVIDER_CONTEXT_HEADROOM_PERCENT) / 100;
@@ -976,13 +974,8 @@ impl AgentLoop {
         };
         let reserved_output_tokens = policy.reserved_output_tokens;
         let max_tool_result_tokens = if force {
-            // A context-overflow rejection can arrive after hundreds of
-            // valid tool pairs have accumulated. Retaining every pair is
-            // necessary for provider history validity, but retaining each
-            // full result is not: shrink those recoverable results to the
-            // emergency excerpt size before compiling the durable frame.
-            // The full output remains available through the logged artifact
-            // path/read tool.
+            // Keep tool-call history, but shorten recoverable results before
+            // framing; full output remains available through artifact reads.
             policy.max_tool_result_tokens.min(200)
         } else {
             policy.max_tool_result_tokens
@@ -1073,14 +1066,9 @@ impl AgentLoop {
             }
         }
 
-        // M004 transactional rollover, step A: capture authoritative source
-        // revisions/state before running the canonical engine. The baseline
-        // (M002) is assembled from host-owned Goal/todo/ledger/origin/plan
-        // plus the latest installed checkpoint for lineage; storage lookups
-        // stay in this adapter while the pure assembler takes loaded values.
-        // A checkpoint identity is allocated before evidence writes so
-        // `ctx://evidence/...` handles can be verified before the payload
-        // digest is final; the row stays `Prepared` until install commits.
+        // M004 step A captures host-owned state and the installed checkpoint
+        // before compaction; the prepared row remains non-authoritative until
+        // its evidence and payload digest are verified and installation commits.
         let previous_installed = self.load_usable_installed_checkpoint().await;
         let previous_installed_id = previous_installed.as_ref().map(|c| c.id.clone());
         let baseline_bundle = {
@@ -1190,10 +1178,8 @@ impl AgentLoop {
             captured_revisions,
             _work_plan_guard,
         ) = baseline_bundle;
-        // Allocate the candidate checkpoint identity before evidence writes
-        // (M004 §6.2 sequencing variant). The row remains `Prepared` until
-        // the atomic install commits; an abandoned candidate stays
-        // `Prepared`/`Aborted` and is never resume authority.
+        // Allocate identity before evidence writes; only committed installs
+        // can become resume authority.
         let candidate_checkpoint_id = uuid::Uuid::new_v4().to_string();
         let original_len = messages.len();
         let original_user = self.current_user_prompt.clone();
@@ -1265,10 +1251,8 @@ impl AgentLoop {
             CompactionStatus::Compacted => {}
         }
 
-        // M004 transactional rollover, steps C-I. `result.messages` is the
-        // replacement candidate; `messages` (borrowed) is still the active
-        // history and must not be mutated before durable verification.
-        // Decompose the owned result now; `result` is consumed here.
+        // M004 steps C-I: verify the owned replacement before mutating the
+        // active history.
         let crate::context::compaction::ContextCompactionResult {
             tokens_before,
             tokens_after,
@@ -1443,11 +1427,8 @@ impl AgentLoop {
                 .await;
             return;
         }
-        // Step G: revalidate authoritative source revisions needed for
-        // install. Compare the captured revisions against current state for
-        // goal/plan/todo/parent fields that would make the checkpoint
-        // misleading. One bounded rebuild is allowed; otherwise keep history
-        // with a typed stale/retry diagnostic (no livelock under steering).
+        // Step G revalidates goal/plan/todo/parent revisions. Rebuild once on
+        // staleness; otherwise retain history with a typed diagnostic.
         let current_plan_digest = {
             // Re-read the plan digest cheaply from the baseline snapshot's
             // plan digest (captured) vs current goal state below. The full
@@ -1539,10 +1520,8 @@ impl AgentLoop {
                 tracing::info!("stale rebuild skipped after cancellation");
                 return;
             }
-            // Rebuild once: reassemble baseline from fresh state and rerun
-            // the canonical engine with a new candidate identity. To bound
-            // work, reuse the already-loaded current revisions and run a
-            // single additional `compact_context` pass inline.
+            // Rebuild once from fresh state and reuse current revisions to
+            // keep retry work bounded.
             let retry_id = uuid::Uuid::new_v4().to_string();
             // Reassemble a fresh baseline quickly (goal/todo/ledger/previous).
             let fresh_previous = self.load_usable_installed_checkpoint().await;
@@ -2349,13 +2328,11 @@ mod tests {
             .observe_only
             .unwrap_or(true));
 
-        // Prepare a request whose System content contains the exact marker string that the (now removed)
-        // active-mode branch used to search for and use as replacement trigger: "Current session context:"
+        // Keep the legacy frame marker in the system prompt; packing must not replace it.
         let original_system_text = "You are a helpful assistant.
 
 Current session context: [old frame here that would have been clobbered]";
-        // Construct ChatRequest manually: the type (from codegg-providers) does not implement Default,
-        // and Message::System content is Arc<String>.
+        // ChatRequest has no Default implementation.
         let request = ChatRequest {
             model: "test-model".to_string(),
             messages: vec![Message::System {
@@ -2374,9 +2351,7 @@ Current session context: [old frame here that would have been clobbered]";
 
         let original_system_content = original_system_text.to_string();
 
-        // Run the packer path (candidate building + the call to packer::pack) exactly as the block in AgentLoop::run does.
-        // This exercises the code that the enabled block in run() executes for diagnostics (build_all, pack, result handling, omitted iteration).
-        // Budget calc and pack call are exercised here (mirroring the production site; the site inside run() is unchanged per instructions).
+        // Exercise candidate building and packing as the run loop does.
         let model_key = request.model.clone();
         let builder =
             crate::context::ContextBlockBuilder::new("test-session-for-packer-phase1", &model_key);
@@ -2418,11 +2393,7 @@ Current session context: [old frame here that would have been clobbered]";
             }
         }
 
-        // CRITICAL ASSERTION (Phase 1 acceptance):
-        // request.messages (esp. the System content) is *completely unchanged*.
-        // There must be no replacement of the system prompt.
-        // We compare length + the actual system text content (Message does not implement PartialEq
-        // because it is defined in the codegg-providers crate).
+        // Packing leaves the message list and original system text unchanged.
         assert_eq!(
             request.messages.len(),
             1,
@@ -2460,10 +2431,7 @@ Current session context: [old frame here that would have been clobbered]";
             ..Default::default()
         };
 
-        // Build a minimal AgentLoop via the test-friendly constructor path used elsewhere.
-        // We don't need a full provider; the observe path only reads self.services.config/state and request.
-        // Use the existing Phase1 test pattern but invoke the helper (which is private) via compute + direct call simulation.
-        // Since helpers are not pub, we exercise the same logic the helper uses (build + pack) and assert request unchanged.
+        // Exercise the observe inputs without constructing a provider or AgentLoop.
         let original_system_text = "System prompt here. No packer marker.";
         let request = ChatRequest {
             model: "test-model-obs".to_string(),
@@ -2481,9 +2449,7 @@ Current session context: [old frame here that would have been clobbered]";
             context: Default::default(),
         };
 
-        // Simulate what observe would do (it calls compute which calls build_packer_candidates).
-        // We cannot call private observe without making it pub(crate) for test; instead we call the pure compute entry
-        // and verify the request bytes/content are untouched (the contract the helper must obey).
+        // The pure compute entry must leave request content untouched.
         let original_len = request.messages.len();
         let original_sys = if let Message::System { content } = &request.messages[0] {
             content.as_str().to_string()
@@ -2491,9 +2457,7 @@ Current session context: [old frame here that would have been clobbered]";
             String::new()
         };
 
-        // Directly exercise the internal candidate builder logic by calling the same build_all sequence
-        // that compute_context_pack_result would (without constructing a full AgentLoop).
-        // This keeps the test minimal while proving "no mutation" for the code the helper will run.
+        // Build candidates directly and verify there is no mutation.
         let model_key = request.model.clone();
         let builder = crate::context::ContextBlockBuilder::new("obs-test-sess", &model_key);
         let _cands = builder.build_all(
@@ -2538,9 +2502,7 @@ Current session context: [old frame here that would have been clobbered]";
         assert_eq!(stats.models().len(), 2);
     }
 
-    // Phase 5 test: exercising compute_context_pack_result before/after appending a tool result shows volatile delta.
-    // We construct synthetic requests and use the public ContextBlockBuilder + pack directly (the same path the private
-    // compute helper uses) to keep the test self-contained without needing a full AgentLoop instance.
+    // Appending a tool result must not decrease the volatile estimate.
     #[test]
     fn context_packer_volatile_estimate_grows_after_tool_result() {
         use crate::provider::{ChatRequest, Message};
@@ -2617,8 +2579,7 @@ Current session context: [old frame here that would have been clobbered]";
         let r1 = crate::context::packer::pack(c1, &budget);
         let volatile1 = r1.volatile_tokens;
 
-        // After a tool result the volatile estimate should be >= the initial (more volatile content present).
-        // In practice the frame/control may contribute, but the test asserts non-decrease as a minimal "different" signal.
+        // Frame/control accounting may vary; only non-decrease is required.
         assert!(volatile1 >= volatile0, "volatile tokens should not decrease after appending tool result (initial={}, after={})", volatile0, volatile1);
     }
 

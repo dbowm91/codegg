@@ -619,7 +619,7 @@ impl AgentLoop {
             // to config — the same `None` means "no session model" contract
             // as `session_id: None` for legacy callers.
             session_model: None,
-            cancellation: None,
+            cancellation: Some(self.tool_cancellation.clone()),
             deadline: None,
             // M014-A2: Populate the real accepted decision fields.
             // These are the actual permission/path-policy decision

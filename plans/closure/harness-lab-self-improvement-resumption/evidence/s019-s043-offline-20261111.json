@@ -1,0 +1,92 @@
+{
+  "attempt53_preprovider_failure": {
+    "authorization_start_consumed": false,
+    "cause_code": "budget_policy_file_missing",
+    "exit_code": 2,
+    "provider_requests_observed": 0,
+    "raw_log_inspected": false,
+    "safe_evidence": "plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt53-launch-failure-20261111.json",
+    "status": "launch_failed_before_provider"
+  },
+  "authorization_grant_id": "s019-supplemental-20261111-04",
+  "external_billed_usd": "unknown_when_unreported",
+  "fixture_case_count": 1,
+  "fixture_manifest_sha256": "e87faea3f5da93ae300f2ae21ec46e6ff1f899cff0fdf6c1b9e860c97ffe57ee",
+  "fixture_version": "v97",
+  "grant_starts_consumed_before_start": 9,
+  "grant_starts_remaining_before_start": 31,
+  "implementation_file_sha256": {
+    "dev/harness_lab/autonomy_run.py": "1d191814333e635cefaa1091029ffe2fb49ec807da31fa10c07756ef2c3b9487",
+    "dev/harness_lab/diagnostics.py": "b06a79d496c72570f01e235e454f549eb345832516ede7cc0d4256987f30aa4d",
+    "dev/harness_lab/h007_results.py": "64f9c207685e95ccdc1200748347a006275b5904f5ee7f5bb6a8fc2ecdd3d0c1",
+    "dev/harness_lab/tests/test_autonomy_run.py": "96a2109bc8150935b0b3fab098034bd636e5775d2ed6f8073f0e4506a7f4f50c",
+    "dev/harness_lab/tests/test_h007.py": "3c667d1a0c39a90bd57c5f773e4fcf54bea90c3a0591b69a0a58a5dc6fe36552",
+    "plans/implementation/harness-lab-self-improvement-resumption/043-job-request-correlation-and-transcript-audit.md": "8fc46a3fe7bd6e6f073ac8470ab5dbc92f49a5b7d9d21fba0798a0899e05883d",
+    "src/acp.rs": "a48810b1bad714d20852efd613529de879dbc90728b48bd3b5c5443271850bf7"
+  },
+  "model": "muse-spark-1.3-contributor",
+  "next_preflight": {
+    "attempt": 54,
+    "budget_policy_caps": {
+      "max_provider_requests": 1200,
+      "max_wallclock_seconds": 3600
+    },
+    "budget_policy_sha256": "925a64ca1060f906a0b36649615470b7d8a5dc9b5662550ba34ae140b067663e",
+    "free_disk_bytes": 82314067968,
+    "manifest_sha256": "e87faea3f5da93ae300f2ae21ec46e6ff1f899cff0fdf6c1b9e860c97ffe57ee",
+    "provider_requests_observed": 0,
+    "start_number": 54,
+    "status": "preflight_passed"
+  },
+  "paired_arm64_binary_sha256": {
+    "codegg": "1bd4442ce7228b75e38703b407627b83d87dad09ca9d54a374c1ec66bfa64bc4",
+    "codegg_sandbox_helper": "a65554f9baad92586016a89a9b75946001027e73d20a56422e0b41eee3364967"
+  },
+  "plan": "S043 job request correlation and transcript audit",
+  "preflight_free_disk_bytes": 80271171584,
+  "preflight_reserve_bytes": 32212254720,
+  "provider": "opencode_go",
+  "raw_prompt_transcript_tool_data_and_verifier_output_inspected": false,
+  "recorded_at_utc": "2026-11-11T20:12:40+00:00",
+  "repository_head": "ac584c886f03847ff6b829f8509667637e42a052",
+  "runtime_disk_floor_bytes": 10737418240,
+  "schema": "s019_s043_offline_preflight_v1",
+  "start_number": 54,
+  "status": "offline_prerequisites_passed_attempt54_preflight_ready",
+  "task_and_verifier_changed": false,
+  "verification": [
+    {
+      "command": "python3 -m unittest dev.harness_lab.tests.test_autonomy_run.JobIdArgumentTelemetryTests dev.harness_lab.tests.test_autonomy_run.SerializedTranscriptAuditTests dev.harness_lab.tests.test_h007.H007CaseAndResultTests",
+      "result": "passed",
+      "tests": 65
+    },
+    {
+      "command": "python3 scripts/check_test_assertion_quality.py",
+      "result": "passed"
+    },
+    {
+      "command": "python3 scripts/check_test_duplication.py",
+      "result": "passed"
+    },
+    {
+      "command": "cargo fmt --check",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    },
+    {
+      "command": "focused ARM64 acp::tests::job_id_argument_digest_is_action_scoped_and_never_exposes_the_id",
+      "result": "passed",
+      "target": "aarch64-apple-darwin",
+      "tests": 1,
+      "toolchain": "Rust 1.89"
+    },
+    {
+      "command": "cargo build --release --offline --locked -p codegg --bin codegg --bin codegg-sandbox-helper --target aarch64-apple-darwin",
+      "profile": "release",
+      "result": "passed"
+    }
+  ]
+}

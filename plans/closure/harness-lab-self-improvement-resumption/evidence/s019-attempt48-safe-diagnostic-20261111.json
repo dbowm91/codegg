@@ -1,0 +1,203 @@
+{
+  "attempt_number": 48,
+  "authorization": {
+    "combined_starts_consumed": 49,
+    "combined_starts_remaining": 151,
+    "grant_id": "s019-supplemental-20261111-04",
+    "supplemental_starts_consumed": 5,
+    "supplemental_starts_remaining": 35
+  },
+  "continuation_public_gates": {
+    "completed_gate_count": null,
+    "completed_stage_count": 7,
+    "exact_job_running_and_terminal": true,
+    "incomplete_gate_count": 0,
+    "incomplete_stage_count": 0,
+    "present_public_artifact_count": 3,
+    "productive_work_during_job": true,
+    "repair_cycle_count": 1,
+    "repair_pairs": {
+      "catalog_format": {
+        "productive_change_between_failure_and_rerun": true,
+        "qualified": true,
+        "repair_cycle_correlated": true,
+        "repair_terminal_observed": true
+      },
+      "catalog_store": {
+        "productive_change_between_failure_and_rerun": false,
+        "qualified": false,
+        "repair_cycle_correlated": false,
+        "repair_terminal_observed": false
+      }
+    },
+    "required_artifacts_present": true,
+    "required_gate_count": 12,
+    "required_public_artifact_count": 3,
+    "required_repair_pair_count": 2,
+    "required_review_observed": false,
+    "required_stage_count": 7,
+    "required_success_jobs": {
+      "clippy": {
+        "completed": true,
+        "documented_completed": true,
+        "observed_terminal_status": "completed",
+        "submitted_once": true
+      },
+      "workspace_tests": {
+        "completed": false,
+        "documented_completed": false,
+        "observed_terminal_status": "unobserved",
+        "submitted_once": false
+      }
+    },
+    "test_job_submissions": 10,
+    "test_job_terminals": 10
+  },
+  "disk": {
+    "disk_floor_triggered": false,
+    "disk_reserve_dipped_during_run": true,
+    "external_hard_stop": false,
+    "external_watcher_minimum_bytes": 29543522304,
+    "free_disk_bytes_at_completion": 37989367808,
+    "free_disk_bytes_before": 39353475072,
+    "free_disk_bytes_minimum": 28439916544,
+    "preflight_reserve_bytes": 32212254720,
+    "run_disk_watcher_last_free_bytes": 38036140032,
+    "runtime_floor_bytes": 10737418240
+  },
+  "event_measurement": {
+    "complete": false,
+    "dropped_events": 0,
+    "event_gap_count": 0,
+    "tool_started_count": 253,
+    "tool_terminal_count": 252,
+    "tool_unpaired_start_count": 1,
+    "unbound_job_tool_call_count": 1,
+    "unpaired_tool_events": [
+      {
+        "action": "invoke",
+        "finished_elapsed_ms": null,
+        "started_elapsed_ms": 2572719,
+        "tool_class": "bash"
+      }
+    ]
+  },
+  "fixture_manifest_sha256": "5e653cebcc26dc57ac13cade8ea60e6a209a08e1f752696bd62522648e61a2f2",
+  "fixture_version": 94,
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "horizon": {
+    "active_work_span_ms": 3288055,
+    "continuation_confirmed": false,
+    "duration_ms": 3299880,
+    "duration_qualified": true,
+    "exact_job_running_and_terminal": true,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": null,
+    "minimum_active_duration_ms": 1800000,
+    "outcome": "not_qualified",
+    "productive_work_during_job": true,
+    "reason": "measurement_incomplete",
+    "repair_cycles": 1,
+    "tool_call_count": 253
+  },
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "outcome": {
+    "active_work_span_ms": 3288055,
+    "agent_terminal": "timeout",
+    "duration_ms": 3299880,
+    "duration_qualified": true,
+    "horizon_outcome": "not_qualified",
+    "horizon_reason": "measurement_incomplete",
+    "stop_reason": "turn_timeout",
+    "task": "failed",
+    "task_completion_reasons": [
+      "agent_terminal_incomplete",
+      "continuation_not_confirmed",
+      "required_success_jobs_incomplete",
+      "required_review_unobserved",
+      "independent_verifier_failures"
+    ],
+    "task_completion_state": "agent_incomplete",
+    "terminal": "timeout",
+    "verifier_exit_code": 1,
+    "verifier_failure_domain_counts": {
+      "continuation_boundary": 1,
+      "transcript_job_lifecycle": 1
+    },
+    "verifier_outcome": "assertion_failures",
+    "verifier_passed_count": 3,
+    "verifier_tests_run": 5
+  },
+  "privacy": {
+    "prompt_text_retained": false,
+    "raw_job_ids_retained": false,
+    "raw_provider_text_retained": false,
+    "raw_tool_arguments_retained": false,
+    "raw_tool_outputs_retained": false,
+    "raw_verifier_text_retained": false
+  },
+  "private_receipt_sha256": "05dd3890fb642b1af4be139e7d4937ce552c76a1af3d162186138c7823875f43",
+  "provider": {
+    "external_billed_usd": "unknown",
+    "first_response_event_timeout_count": 0,
+    "provider_allowance_usd": 0.321957,
+    "provider_attempts_failed": 0,
+    "provider_attempts_started": 232,
+    "provider_attempts_succeeded": 231,
+    "provider_request_limit": 1200,
+    "provider_requests": 232,
+    "unreported_usd_treatment": "unknown",
+    "unresolved_provider_attempt_count": 1
+  },
+  "reviewer_schedule": {
+    "due_prompt_count": 0,
+    "first_due_active_work_span_ms": null,
+    "remaining_parent_prompt_work_ms_after_reviewer_terminal": 2912390,
+    "reviewer_action_counts": {
+      "continue": 0,
+      "get": 1,
+      "spawn": 1,
+      "status": 4,
+      "wait": 0
+    },
+    "reviewer_completed_get_count": 1,
+    "reviewer_elapsed_ms": 43098,
+    "reviewer_failure_class": null,
+    "reviewer_run_status": "completed",
+    "reviewer_spawn_and_get_positions": [
+      {
+        "action": "spawn",
+        "finished_elapsed_ms": 340653,
+        "started_elapsed_ms": 340608,
+        "tool_class": "task"
+      },
+      {
+        "action": "get",
+        "finished_elapsed_ms": 387490,
+        "started_elapsed_ms": 387479,
+        "tool_class": "task"
+      }
+    ],
+    "reviewer_spawn_count": 1,
+    "reviewer_task_status": "completed",
+    "start_threshold_active_ms": 900000
+  },
+  "route": "opencode_go",
+  "runner": {
+    "elapsed_seconds": 3323.447,
+    "external_hard_stop": false,
+    "finished_at_utc": "2026-11-11T10:55:16+00:00",
+    "receipt_present": true,
+    "runner_exit_code": 2,
+    "trigger": null
+  },
+  "schema": "s019_attempt_safe_diagnostic_v1",
+  "source_revision": "ac584c886f03847ff6b829f8509667637e42a052",
+  "start_number": 49,
+  "turn_timeout": {
+    "last_request_elapsed_ms": 124453,
+    "remaining_wallclock_seconds_at_timeout": 299.991,
+    "state": "observed",
+    "verifier_reserve_seconds": 300.0
+  }
+}

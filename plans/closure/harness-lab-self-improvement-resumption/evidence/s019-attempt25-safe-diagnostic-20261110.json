@@ -1,0 +1,162 @@
+{
+  "attempt": 25,
+  "attribution": "task and repair-order failure; no observed provider, daemon, scheduler, ACP, event-loss, inactivity, or disk-floor failure",
+  "binary_sha256": "ac6687258c7dbb20f3059a836280f9629fa020e69378a18d748182f3406aa204",
+  "continuation": {
+    "all_public_artifacts_present": true,
+    "completed_phase_count": 7,
+    "contract_phase_count": 5,
+    "document_valid": false,
+    "gate_count": 12,
+    "incomplete_gate_count": 0,
+    "incomplete_stage_count": 0,
+    "present": true,
+    "release_overlap_confirmed": true,
+    "required_review_observed": true,
+    "required_success_jobs": {
+      "clippy": {
+        "completed": true,
+        "documented_completed": true,
+        "observed_terminal_status": "completed",
+        "submitted_once": true
+      },
+      "workspace_tests": {
+        "completed": true,
+        "documented_completed": true,
+        "observed_terminal_status": "completed",
+        "submitted_once": true
+      }
+    },
+    "stage_count": 7,
+    "test_job_lifecycle": {
+      "all_terminal_observed": true,
+      "raw_job_arguments_retained": false,
+      "raw_job_ids_retained": false,
+      "submission_count": 25,
+      "terminal_observed_count": 25,
+      "terminal_status_counts": {
+        "completed": 17,
+        "failed": 8
+      },
+      "unique_submitted_job_count": 25,
+      "unobserved_count": 0,
+      "unobserved_status_counts": {}
+    }
+  },
+  "event_observation": {
+    "causal_trace_dropped_events": 0,
+    "causal_trace_event_count": 960,
+    "causal_trace_state": "complete",
+    "dropped_events": 0,
+    "event_gap_count": 0,
+    "maximum_causal_event_gap_ms": 77625,
+    "state": "observed_complete",
+    "tool_started_count": 404,
+    "tool_terminal_count": 404,
+    "unpaired_start_count": 0
+  },
+  "excluded_material": {
+    "continuation_text": false,
+    "credential_value": false,
+    "hidden_verifier_output_or_source": false,
+    "provider_content": false,
+    "raw_job_arguments": false,
+    "raw_job_ids": false,
+    "transcript": false
+  },
+  "execution": {
+    "active_work_span_ms": 3291041,
+    "autonomous_followup_count": 11,
+    "continuation_stop_reason": "turn_timeout",
+    "duration_ms": 3300068,
+    "duration_qualified": true,
+    "native_tool_call_limit": 1600,
+    "native_tool_calls": 404,
+    "prompt_work_limit_seconds": 3300,
+    "provider_request_limit": 1200,
+    "provider_request_source": "codegg_provider_boundary_receipt",
+    "provider_requests": 359,
+    "stop_reason": "end_turn",
+    "terminal": "timeout",
+    "wallclock_limit_seconds": 3600
+  },
+  "fixture_metadata_sha256": "14c22072e7881e61486433d476f7ec742f9ad81f1cc5fff364a4dfd424c35593",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "provider_cost": {
+    "cap_usd": null,
+    "source": "opencode_go_allowance_receipt",
+    "usd": 0.154382,
+    "when_unreported": "unknown"
+  },
+  "receipt_sha256": "afc23af36c8910a8d1509f74a151c7dea8b76ae8da5095365a079ac9e2513d2d",
+  "recorded_at_utc": "2026-11-10T08:51:28Z",
+  "repair_diagnostic": {
+    "documented_count_matches_observed": false,
+    "documented_repair_cycle_count": 2,
+    "generic_trace_count_matches": true,
+    "groups": {
+      "catalog_format": {
+        "documented_states_match_observations": true,
+        "failed_job_status_called_immediately": true,
+        "failed_job_submitted_once": true,
+        "failed_terminal_observed": true,
+        "job_ids_are_distinct": true,
+        "productive_change_between_failure_and_rerun": false,
+        "qualified": false,
+        "repair_followed_failure": false,
+        "repair_job_status_called_immediately": true,
+        "repair_job_submitted_once": true,
+        "repair_terminal_observed": true
+      },
+      "catalog_store": {
+        "documented_states_match_observations": true,
+        "failed_job_status_called_immediately": true,
+        "failed_job_submitted_once": true,
+        "failed_terminal_observed": true,
+        "job_ids_are_distinct": true,
+        "productive_change_between_failure_and_rerun": false,
+        "qualified": false,
+        "repair_followed_failure": false,
+        "repair_job_status_called_immediately": true,
+        "repair_job_submitted_once": true,
+        "repair_terminal_observed": true
+      }
+    },
+    "named_pair_ids_unique": true,
+    "observed_generic_pair_count": 6,
+    "persisted_correlated_pair_count": 6,
+    "qualified_named_pair_count": 0,
+    "raw_job_arguments_included": false,
+    "raw_job_ids_included": false,
+    "required_named_pair_count": 2
+  },
+  "requested_manifest_sha256": "fce6c3396c29e647f3904381c84fc4bbaaa728dc6c644f1fcc8f0df164ef5be9",
+  "resolved_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "resources": {
+    "activity_stall_limit_seconds": 300,
+    "activity_stall_triggered": false,
+    "disk_floor_triggered": false,
+    "hard_floor_bytes": 10737418240,
+    "lowest_observed_free_disk_bytes": 185068064768,
+    "preflight_free_disk_bytes": 194527211520,
+    "preflight_reserve_bytes": 32212254720
+  },
+  "route": "opencode_go",
+  "sandbox_helper_sha256": "f82a711ea11001ce46476d36db17e283737aefa25745dfb8352aaeba0dce5074",
+  "schema_version": 1,
+  "status": "completed_unqualified",
+  "task": {
+    "completion_reasons": [
+      "agent_terminal_incomplete",
+      "continuation_not_confirmed"
+    ],
+    "completion_state": "agent_incomplete",
+    "horizon_outcome": "not_qualified",
+    "horizon_reason": "task_not_passed",
+    "outcome": "failed",
+    "solved": false,
+    "verifier_confirmed": false,
+    "verifier_outcome": "assertion_failures"
+  }
+}

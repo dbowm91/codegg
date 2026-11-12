@@ -1,0 +1,77 @@
+{
+  "schema": "s019-attempt-safe-diagnostic-v1",
+  "attempt": 19,
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "route": "opencode_go/muse-spark-1.3-contributor",
+  "manifest_sha256": "0c425422097ee205846bfdd73be0f4c64bf2c4e12bc27a18d943d661e4a8fa29",
+  "parent_manifest_sha256": "5cec9aa071dee5cc5fcafb9e5ac2927d905e0bb525655d4cc4225337071788a5",
+  "preflight_path": "evidence/s019-attempt19-preflight-20261109.json",
+  "preflight_all_checks_passed": true,
+  "counted_as_start": true,
+  "result": "cancelled_before_horizon_unqualified",
+  "stop_reason": "operator_cancelled_after_rapid_disk_drop_near_authorized_floor",
+  "cancellation_at_utc": "2026-11-09T22:41:47+00:00",
+  "first_safe_monitor_observation_at_utc": "2026-11-09T22:20:28+00:00",
+  "billed_usd_when_unreported": "unknown",
+  "provider_request_limit": 1200,
+  "provider_requests_observed": 113,
+  "provider_request_log_physical_lines": 225,
+  "native_tool_call_limit": 1600,
+  "native_tool_calls_observed": 143,
+  "causal_trace": {
+    "event_count": 343,
+    "tool_started": 143,
+    "tool_terminal": 143,
+    "unpaired_starts": 0,
+    "active_calls_at_stop": 0,
+    "maximum_activity_gap_ms": 130906,
+    "trace_span_ms": 1271400,
+    "stall_triggered": false
+  },
+  "background_jobs": {
+    "test_job_submissions": 18,
+    "terminal_observations": 18,
+    "terminal_status_counts": {
+      "completed": 13,
+      "failed": 5
+    },
+    "unobserved_terminal_count": 0
+  },
+  "horizon": {
+    "required_active_work_seconds": 1800,
+    "observed_trace_span_seconds": 1271.4,
+    "reached": false,
+    "independent_verifier_ran": false,
+    "task_correctness": "not_assessed",
+    "qualification": "not_qualified"
+  },
+  "disk": {
+    "preflight_free_bytes": 42488332288,
+    "authorized_floor_bytes": 10737418240,
+    "lowest_observed_bytes": 15323021312,
+    "post_cancel_observed_bytes": 20941742080,
+    "post_cleanup_available_bytes": 78149181440,
+    "attempt_lane_bytes": 106954752,
+    "current_paired_build_bytes_approx_gib": 3.1,
+    "stale_rebuildable_target_dirs_removed": [
+      {
+        "path": "/private/tmp/s018-aarch64-build",
+        "approx_gib": 25
+      },
+      {
+        "path": "/private/tmp/s018-arm64-verify",
+        "approx_gib": 21
+      },
+      {
+        "path": "/private/tmp/s017-arm64-target",
+        "approx_gib": 9.5
+      }
+    ],
+    "availability_swing_fully_explained": false
+  },
+  "hidden_verifier_source_or_output_inspected": false,
+  "transcript_or_task_result_inspected": false,
+  "raw_provider_content_inspected": false,
+  "raw_receipt_preserved": false,
+  "next_action": "Retry unchanged v75 after fresh preflight confirms at least 30 GiB available; retain 10-GiB hard floor and stop before it if free space is falling rapidly."
+}

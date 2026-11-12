@@ -2208,6 +2208,9 @@ impl JobExecutor for SubagentJobExecutor {
                 .map(|context| context.depth as usize)
                 .unwrap_or(1),
             max_tool_calls: max_tool_calls.map(|m| m as usize),
+            max_wall_clock_secs: durable_context
+                .as_ref()
+                .and_then(|context| context.max_wall_clock_secs),
             parent_model: model,
             workspace_root: Some(workspace_root),
             default_working_directory,

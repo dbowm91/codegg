@@ -4717,6 +4717,9 @@ async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
         )
         .await;
 
+    daemon.shutdown_jobs().await;
+    drop(daemon);
+
     // Cleanup: drop pid, Unix socket, and metadata (in that order so observers
     // never see socket-gone + PID-present). Windows pipe names are not files;
     // dropping the listener closes the kernel object. Guard removes metadata.
@@ -4816,6 +4819,7 @@ async fn run_core_stdio() -> Result<(), AppError> {
         stdout.write_all(b"\n").await.map_err(AppError::Io)?;
         stdout.flush().await.map_err(AppError::Io)?;
     }
+    core.shutdown_jobs().await;
     Ok(())
 }
 
@@ -4926,9 +4930,10 @@ async fn cmd_server(host: &str, port: u16, standalone_core: bool) -> Result<(), 
     // generation left in flight.
     daemon.reconcile_git_index_publications().await;
 
-    codegg::server::run_server(host, port, Some(daemon))
-        .await
-        .map_err(|e| AppError::Other(anyhow::anyhow!("Server error: {}", e)))
+    let serve_result = codegg::server::run_server(host, port, Some(Arc::clone(&daemon))).await;
+    daemon.shutdown_jobs().await;
+    drop(daemon);
+    serve_result.map_err(|e| AppError::Other(anyhow::anyhow!("Server error: {}", e)))
 }
 
 #[cfg(feature = "server")]

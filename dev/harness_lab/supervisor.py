@@ -31,6 +31,7 @@ FAILURE_CATEGORIES = (
     "provider_rate_limit",
     "provider_timeout",
     "provider_api",
+    "provider_request_budget",
     "cancelled",
     "daemon_restarted",
     "agent_internal",

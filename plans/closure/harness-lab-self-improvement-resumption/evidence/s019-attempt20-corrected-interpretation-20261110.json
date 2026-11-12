@@ -1,0 +1,103 @@
+{
+  "active_work_span_ms": 3291988,
+  "activity_stall_triggered": false,
+  "agent_terminal": "timeout",
+  "attempt": 20,
+  "billed_usd_when_unreported": "unknown",
+  "causal_events": {
+    "count": 782,
+    "dropped": 0,
+    "state": "complete"
+  },
+  "continuation": {
+    "contract_phase_order_matches": true,
+    "document_valid": false,
+    "incomplete_gate_count": 1,
+    "public_artifacts_present": true,
+    "release_overlap_confirmed": true,
+    "required_review_observed": false,
+    "stage_order_matches": true
+  },
+  "disk": {
+    "hard_floor_bytes": 10737418240,
+    "lowest_free_bytes": 46212972544,
+    "triggered": false
+  },
+  "duration_ms": 3299958,
+  "horizon_outcome": "not_qualified",
+  "independent_verifier": {
+    "assertion_operation_counts": {
+      "equality": 1,
+      "pattern": 1,
+      "truthiness": 1
+    },
+    "exit_code": 1,
+    "failed": 3,
+    "failure_state": "assertion_failures",
+    "passed": 2,
+    "tests_run": 5,
+    "timed_out": false
+  },
+  "interpretation": {
+    "primary_harness_defect": "The 30-minute reviewer instruction was gated on both final jobs being complete, so no due marker was emitted until the reviewer was spawned at about active minute 49.7. This left roughly five minutes before the 55-minute prompt-work limit.",
+    "reviewer_tool_behavior": "Every observed reviewer get returned running; 25 were duplicate gets. Exact status calls also consistently returned running. The prompt prohibited task wait but did not explicitly prohibit get while running. This is not evidence of ACP, daemon, scheduler, or transport loss.",
+    "task_result": "The unchanged independent verifier ran to completion and failed three of five checks. The task did not qualify; no hidden verifier source, raw output, test identifiers, assertion text, task result body, job identifiers, or tool arguments were inspected."
+  },
+  "manifest_sha256": "0c425422097ee205846bfdd73be0f4c64bf2c4e12bc27a18d943d661e4a8fa29",
+  "maximum_activity_gap_ms": null,
+  "minimum_active_duration_ms": 1800000,
+  "model": "muse-spark-1.3-contributor",
+  "model_route": "opencode_go/muse-spark-1.3-contributor",
+  "native_calls": {
+    "limit": 1600,
+    "observed": 337,
+    "started": 337,
+    "terminal": 337,
+    "unpaired_starts": 0
+  },
+  "provider_requests": {
+    "exhausted_cap": null,
+    "limit": 280,
+    "observed": 280
+  },
+  "provider_route": "opencode_go",
+  "receipt_sha256": "19fd0c752d3e4ced3caf1a9301e2c39b203e91e2d46d61b5db9737f2cd384080",
+  "reported_provider_allowance_usd": 0.164072,
+  "required_final_jobs": {
+    "clippy": {
+      "completed": true,
+      "observed_status": "completed"
+    },
+    "workspace_tests": {
+      "completed": true,
+      "observed_status": "completed"
+    }
+  },
+  "reviewer": {
+    "completed_result_observed": false,
+    "due_prompt_count": 0,
+    "duplicate_get_calls": 25,
+    "failure_class": null,
+    "final_status": "running",
+    "get_calls": 26,
+    "nonterminal_get_calls": 26,
+    "spawn_count": 1,
+    "spawn_elapsed_ms": 2982282,
+    "status_observations": 5,
+    "threshold_active_ms": 1800000
+  },
+  "schema": "s019_attempt_safe_interpretation_v1",
+  "status": "completed_unqualified",
+  "stop_reason": "end_turn",
+  "task_outcome": "failed",
+  "terminal": "timeout",
+  "test_jobs": {
+    "submitted": 24,
+    "terminal_observed": 24,
+    "terminal_status_counts": {
+      "completed": 19,
+      "failed": 5
+    },
+    "unobserved": 0
+  }
+}

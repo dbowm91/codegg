@@ -1,0 +1,109 @@
+{
+  "active_work_minutes": 42.697,
+  "active_work_seconds": 2561.805,
+  "agent_terminal": "completed",
+  "attempt": 18,
+  "billed_usd_when_unreported": "unknown",
+  "causal_trace": {
+    "dropped_events": 0,
+    "event_count": 659,
+    "event_gap_count": 0,
+    "maximum_activity_gap_ms": null,
+    "stall_triggered": false,
+    "tool_started": 292,
+    "tool_terminal": 292,
+    "unpaired_starts": 0
+  },
+  "continuation": {
+    "completed_contract_phase_count": 5,
+    "completed_stage_count": 7,
+    "document_valid": true,
+    "final_success_jobs": {
+      "clippy": {
+        "completed": true,
+        "observed_terminal_status": "completed",
+        "submitted_once": true
+      },
+      "workspace_tests": {
+        "completed": true,
+        "observed_terminal_status": "completed",
+        "submitted_once": true
+      }
+    },
+    "incomplete_gate_count": 0,
+    "incomplete_stage_count": 0,
+    "productive_work_during_overlap": true,
+    "public_artifacts": {
+      "HARNESS_PROBE_REPORT.json": true,
+      "PUBLIC_ACCEPTANCE_AUDIT.md": true,
+      "tools/catalog_probe.py": true
+    },
+    "release_overlap_confirmed": true,
+    "repair_cycles": 3,
+    "test_job_count": 22,
+    "test_job_status_counts": {
+      "completed": 19,
+      "failed": 3
+    },
+    "test_jobs_terminal_observed": 22
+  },
+  "continuation_stop_reason": "continuation_complete",
+  "disk": {
+    "lowest_observed_bytes": 47650213888,
+    "minimum_bytes": 10737418240,
+    "triggered": false
+  },
+  "duration_seconds": 2587.539,
+  "hidden_verifier_source_or_output_inspected": false,
+  "horizon_outcome": "not_qualified",
+  "manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "native_tool_call_limit": null,
+  "native_tool_calls": 292,
+  "preflight_path": "evidence/s019-attempt18-preflight-retry2-20261109.json",
+  "preflight_refusals": 2,
+  "preflight_requests_admitted": 0,
+  "profile": "workspace-write",
+  "provider_allowance_usd": 0.011005,
+  "provider_request_limit": 232,
+  "provider_requests": 232,
+  "receipt_path": "/private/tmp/s019-muse-runs/attempt18.json",
+  "receipt_sha256": "fb2d9e55568f75d8f76613ced89bd2d7744a6777165f79efc4e63eb4d4115b99",
+  "review_schedule": {
+    "due_prompt_count": 1,
+    "first_due_active_work_span_ms": 2442568,
+    "threshold_active_ms": 1800000
+  },
+  "reviewer": {
+    "completed_review_result_observed": true,
+    "compliant_status_then_get": true,
+    "duplicate_get_count": 0,
+    "final_status": "completed",
+    "spawn_count": 1,
+    "task_tool_call_count": 13
+  },
+  "route": "opencode_go/muse-spark-1.3-contributor",
+  "schema": "s019-attempt-safe-diagnostic-v1",
+  "stop_reason": "end_turn",
+  "task_outcome": "failed",
+  "transcript_or_task_result_inspected": false,
+  "verification": {
+    "assertion_text_retained": false,
+    "diagnostic_detail_complete": true,
+    "errors": 0,
+    "exit_code": 1,
+    "failures": 2,
+    "passed": 3,
+    "raw_output_retained": false,
+    "safe_failure_categories": [
+      {
+        "count": 2,
+        "exception_class": "AssertionError",
+        "kind": "assertion_message"
+      }
+    ],
+    "test_names_retained": false,
+    "tests_run": 5,
+    "timed_out": false
+  }
+}

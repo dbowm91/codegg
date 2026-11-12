@@ -1,0 +1,3409 @@
+{
+  "schema": "s019_attempt_safe_diagnostic_v1",
+  "attempt_number": 42,
+  "start_number": 43,
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "route": "opencode_go",
+  "source_revision": "ac584c886f03847ff6b829f8509667637e42a052",
+  "fixture_manifest_sha256": "1d7914eec515c161a683b6ef8bc2464760638ee91c2871d6b953db6e1f2a086e",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "private_receipt_sha256": "cdba6b70d4d0c0e8e0c3ac5fffd1c702ecd12086e6bfe2b7b91ae1de4098615b",
+  "authorization": {
+    "combined_starts_consumed": 43,
+    "combined_starts_remaining": 117,
+    "supplemental_starts_consumed": 5,
+    "supplemental_starts_remaining": 35,
+    "grant_id": "s019-supplemental-20261110-03"
+  },
+  "outcome": {
+    "task": "inconclusive",
+    "task_completion_state": "agent_incomplete",
+    "task_completion_reasons": [
+      "agent_terminal_incomplete",
+      "continuation_not_confirmed",
+      "required_stages_incomplete",
+      "required_gates_incomplete",
+      "required_success_jobs_incomplete",
+      "required_review_unobserved",
+      "required_artifacts_missing"
+    ],
+    "verifier_outcome": "setup_error",
+    "duration_ms": 3299840,
+    "active_work_span_ms": 3252830,
+    "agent_terminal": "timed_out",
+    "stop_reason": "turn_timeout",
+    "continuation_stop_reason": "turn_timeout",
+    "verifier_tests_observed": false,
+    "turn_timeout_diagnostic": {
+      "prompt_request_count": 6,
+      "autonomous_followup_count": 5,
+      "last_request_elapsed_ms": 180447,
+      "last_request_timeout_seconds": null,
+      "remaining_wallclock_seconds_at_prompt_start": null,
+      "remaining_wallclock_seconds_at_timeout": null,
+      "verifier_reserve_seconds": null,
+      "state": "observed",
+      "exception_text_retained": false,
+      "provider_text_retained": false
+    },
+    "turn_terminal_class": "timed_out",
+    "prompt_work_limit_seconds": 3300,
+    "prompt_work_cap_reached": true,
+    "prompt_work_remaining_ms_at_stop": 160
+  },
+  "horizon": {
+    "active_work_span_ms": 3252830,
+    "minimum_active_duration_ms": 1800000,
+    "duration_qualified": true,
+    "maximum_activity_gap_ms": 98013,
+    "maximum_activity_gap_limit_ms": 300000,
+    "tool_call_count": 234,
+    "tool_call_limit": 1600,
+    "tool_call_cap_exceeded": false,
+    "exact_job_running_and_terminal": true,
+    "productive_work_during_job": false,
+    "repair_cycles": 4,
+    "continuation_confirmed": false,
+    "event_measurement_complete": true,
+    "measurement_complete": true,
+    "outcome": "not_qualified",
+    "release_overlap_confirmed": false
+  },
+  "verifier_aggregate": {
+    "state": "setup_error",
+    "exit_code": 1,
+    "tests_run": 0,
+    "passed_count": 0,
+    "skipped_count": 0,
+    "failure_counts": {
+      "failures": 0,
+      "errors": 1
+    },
+    "failure_domain_counts": {
+      "task_behavior": 1
+    },
+    "failure_domain_details": {
+      "task_behavior": {
+        "failure_count": 1,
+        "assertion_operations": {
+          "unclassified": 1
+        },
+        "exception_classes": {
+          "AssertionError": 1
+        },
+        "message_categories": {
+          "assertion_message": 1
+        }
+      }
+    },
+    "pattern_signatures": [],
+    "diagnostic_detail_complete": true,
+    "input_truncated": false,
+    "timed_out": false,
+    "failed_test_identities_retained": false,
+    "verifier_text_retained": false,
+    "assertion_text_retained": false,
+    "raw_output_retained": false,
+    "traceback_retained": false,
+    "setup_exception_class": null,
+    "setup_failure_reason": "workspace_build_failure"
+  },
+  "verifier_signature_diagnostics": {
+    "count": 0,
+    "patterns": [],
+    "test_identities_retained": false,
+    "assertion_text_retained": false
+  },
+  "continuation_public_gates": {
+    "present": true,
+    "document_valid": false,
+    "completed_phases": [],
+    "contract_phases": {},
+    "stages": {
+      "acceptance_audit": "pending",
+      "cli_contract": "pending",
+      "dependency_index": "pending",
+      "durable_import": "pending",
+      "provenance_queries": "pending",
+      "versioned_records": "pending",
+      "workspace_qualification": "pending"
+    },
+    "gates": {
+      "acceptance_audit": "pending",
+      "bounded_probes": "pending",
+      "cli_contract": "pending",
+      "dependency_index": "pending",
+      "durable_import": "pending",
+      "independent_review": "pending",
+      "provenance_queries": "pending",
+      "release_scale_overlap": "pending",
+      "starter_repair_format": "completed",
+      "starter_repair_store": "completed",
+      "versioned_records": "pending",
+      "workspace_qualification": "pending"
+    },
+    "incomplete_stages": [
+      "versioned_records",
+      "durable_import",
+      "dependency_index",
+      "provenance_queries",
+      "cli_contract",
+      "acceptance_audit",
+      "workspace_qualification"
+    ],
+    "incomplete_gates": [
+      "versioned_records",
+      "durable_import",
+      "dependency_index",
+      "release_scale_overlap",
+      "provenance_queries",
+      "cli_contract",
+      "acceptance_audit",
+      "bounded_probes",
+      "workspace_qualification",
+      "independent_review"
+    ],
+    "phase_order_matches": false,
+    "contract_phase_order_matches": false,
+    "stage_order_matches": true,
+    "next_phase": "versioned_records",
+    "next_stage": "versioned_records",
+    "next_gate": "versioned_records",
+    "all_public_artifacts_present": false,
+    "public_artifact_status": {
+      "HARNESS_PROBE_REPORT.json": false,
+      "PUBLIC_ACCEPTANCE_AUDIT.md": false,
+      "tools/catalog_probe.py": false
+    },
+    "release_overlap_confirmed": false,
+    "required_review_observed": false,
+    "required_success_jobs": {
+      "clippy": {
+        "status": "unknown",
+        "completed": false,
+        "successful": null
+      },
+      "workspace_tests": {
+        "status": "unknown",
+        "completed": false,
+        "successful": null
+      }
+    },
+    "test_job_lifecycle": {
+      "submission_count": 12,
+      "unique_submitted_job_count": 12,
+      "terminal_observed_count": 12,
+      "terminal_status_counts": {
+        "completed": 7,
+        "failed": 5
+      },
+      "unobserved_count": 0,
+      "all_terminal_observed": true,
+      "raw_job_ids_retained": false,
+      "raw_job_arguments_retained": false
+    },
+    "repair_job_diagnostic": {
+      "required_pair_count": 2,
+      "qualified_pair_count": 2,
+      "observed_repair_cycle_count": 4,
+      "documented_repair_cycle_count": 4,
+      "repair_cycle_count_matches": true,
+      "job_ids_unique_across_groups": true,
+      "groups": {
+        "catalog_format": {
+          "failed_terminal_observed": true,
+          "productive_change_between_failure_and_rerun": true,
+          "repair_terminal_observed": true,
+          "qualified": true,
+          "repair_cycle_correlated": true,
+          "failed_job_status_called_immediately": true,
+          "repair_job_status_called_immediately": true
+        },
+        "catalog_store": {
+          "failed_terminal_observed": true,
+          "productive_change_between_failure_and_rerun": true,
+          "repair_terminal_observed": true,
+          "qualified": true,
+          "repair_cycle_correlated": true,
+          "failed_job_status_called_immediately": true,
+          "repair_job_status_called_immediately": true
+        }
+      },
+      "raw_job_ids_retained": false,
+      "raw_job_arguments_retained": false
+    },
+    "raw_job_ids_retained": false,
+    "raw_job_arguments_retained": false,
+    "raw_note_retained": false
+  },
+  "job_lifecycle_sequence": {
+    "schema": "s019_safe_job_lifecycle_sequence_v1",
+    "events": [
+      {
+        "call_index": 26,
+        "tool": "test",
+        "job_label": "J01",
+        "job_id_present": true,
+        "action": "submit",
+        "job_state": "unknown",
+        "tool_status": "completed",
+        "started_elapsed_ms": 124393,
+        "finished_elapsed_ms": 124530
+      },
+      {
+        "call_index": 27,
+        "tool": "job",
+        "job_label": "J01",
+        "job_id_present": true,
+        "action": "status",
+        "job_state": "running",
+        "tool_status": "completed",
+        "started_elapsed_ms": 127318,
+        "finished_elapsed_ms": 127365
+      },
+      {
+        "call_index": 28,
+        "tool": "job",
+        "job_label": "J01",
+        "job_id_present": true,
+        "action": "status",
+        "job_state": "failed",
+        "tool_status": "failed",
+        "started_elapsed_ms": 135515,
+        "finished_elapsed_ms": 135536
+      },
+      {
+        "call_index": 29,
+        "tool": "job",
+        "job_label": "J01",
+        "job_id_present": true,
+        "action": "output",
+        "job_state": "failed",
+        "tool_status": "failed",
+        "started_elapsed_ms": 139347,
+        "finished_elapsed_ms": 139372
+      },
+      {
+        "call_index": 31,
+        "tool": "test",
+        "job_label": "J02",
+        "job_id_present": true,
+        "action": "submit",
+        "job_state": "unknown",
+        "tool_status": "completed",
+        "started_elapsed_ms": 161933,
+        "finished_elapsed_ms": 161975
+      },
+      {
+        "call_index": 32,
+        "tool": "job",
+        "job_label": "J02",
+        "job_id_present": true,
+        "action": "status",
+        "job_state": "running",
+        "tool_status": "completed",
+        "started_elapsed_ms": 170129,
+        "finished_elapsed_ms": 170185
+      },
+      {
+        "call_index": 33,
+        "tool": "job",
+        "job_label": "J02",
+        "job_id_present": true,
+        "action": "wait",
+        "job_state": "completed",
+        "tool_status": "completed",
+        "started_elapsed_ms": 173785,
+        "finished_elapsed_ms": 173803
+      },
+      {
+        "call_index": 34,
+        "tool": "test",
+        "job_label": "J03",
+        "job_id_present": true,
+        "action": "submit",
+        "job_state": "unknown",
+        "tool_status": "completed",
+        "started_elapsed_ms": 192043,
+        "finished_elapsed_ms": 192091
+      },
+      {
+        "call_index": 35,
+        "tool": "job",
+        "job_label": "J03",
+        "job_id_present": true,
+        "action": "status",
+        "job_state": "running",
+        "tool_status": "completed",
+        "started_elapsed_ms": 194311,
+        "finished_elapsed_ms": 194330
+      },
+      {
+        "call_index": 36,
+        "tool": "job",
+        "job_label": "J03",
+        "job_id_present": true,
+        "action": "wait",
+        "job_state": "failed",
+        "tool_status": "failed",
+        "started_elapsed_ms": 196789,
+        "finished_elapsed_ms": 197999
+      },
+      {
+        "call_index": 38,
+        "tool": "test",
+        "job_label": "J04",
+        "job_id_present": true,
+        "action": "submit",
+        "job_state": "unknown",
+        "tool_status": "completed",
+        "started_elapsed_ms": 229615,
+        "finished_elapsed_ms": 229640
+      },
+      {
+        "call_index": 39,
+        "tool": "job",
+        "job_label": "J04",
+        "job_id_present": true,
+        "action": "status",
+        "job_state": "completed",
+        "tool_status": "completed",
+        "started_elapsed_ms": 233090,
+        "finished_elapsed_ms": 233130
+      },
+      {
+        "call_index": 43,
+        "tool": "job",
+        "job_label": "J04",
+        "job_id_present": true,
+        "action": "output",
+        "job_state": "completed",
+        "tool_status": "completed",
+        "started_elapsed_ms": 295962,
+        "finished_elapsed_ms": 295995
+      },
+      {
+        "call_index": 46,
+        "tool": "test",
+        "job_label": "J05",
+        "job_id_present": true,
+        "action": "submit",
+        "job_state": "unknown",
+        "tool_status": "completed",
+        "started_elapsed_ms": 488144,
+        "finished_elapsed_ms": 488200
+      },
+      {
+        "call_index": 47,
+        "tool": "job",
+        "job_label": "J05",
+        "job_id_present": true,
+        "action": "status",
+        "job_state": "failed",
+        "tool_status": "failed",
+        "started_elapsed_ms": 492393,
+        "finished_elapsed_ms": 492560
+      },
+      {
+        "call_index": 48,
+        "tool": "job",
+        "job_label": "J05",
+        "job_id_present": true,
+        "action": "output",
+        "job_state": "failed",
+        "tool_status": "failed",
+        "started_elapsed_ms": 502310,
+        "finished_elapsed_ms": 502342
+      },
+      {
+        "call_index": 53,
+        "tool": "test",
+        "job_label": "J06",
+        "job_id_present": true,
+        "action": "submit",
+        "job_state": "unknown",
+        "tool_status": "completed",
+        "started_elapsed_ms": 572625,
+        "finished_elapsed_ms": 572652
+      },
+      {
+        "call_index": 54,
+        "tool": "job",
+        "job_label": "J06",
+        "job_id_present": true,
+        "action": "status",
+        "job_state": "completed",
+        "tool_status": "completed",
+        "started_elapsed_ms": 577713,
+        "finished_elapsed_ms": 577728
+      },
+      {
+        "call_index": 55,
+        "tool": "job",
+        "job_label": "J06",
+        "job_id_present": true,
+        "action": "output",
+        "job_state": "completed",
+        "tool_status": "completed",
+        "started_elapsed_ms": 633427,
+        "finished_elapsed_ms": 633462
+      },
+      {
+        "call_index": 78,
+        "tool": "test",
+        "job_label": "J07",
+        "job_id_present": true,
+        "action": "submit",
+        "job_state": "unknown",
+        "tool_status": "completed",
+        "started_elapsed_ms": 783727,
+        "finished_elapsed_ms": 783778
+      },
+      {
+        "call_index": 79,
+        "tool": "job",
+        "job_label": "J07",
+        "job_id_present": true,
+        "action": "status",
+        "job_state": "running",
+        "tool_status": "completed",
+        "started_elapsed_ms": 785175,
+        "finished_elapsed_ms": 785185
+      },
+      {
+        "call_index": 84,
+        "tool": "job",
+        "job_label": "J07",
+        "job_id_present": true,
+        "action": "status",
+        "job_state": "completed",
+        "tool_status": "completed",
+        "started_elapsed_ms": 812793,
+        "finished_elapsed_ms": 812816
+      },
+      {
+        "call_index": 85,
+        "tool": "job",
+        "job_label": "J07",
+        "job_id_present": true,
+        "action": "output",
+        "job_state": "completed",
+        "tool_status": "completed",
+        "started_elapsed_ms": 815851,
+        "finished_elapsed_ms": 815876
+      },
+      {
+        "call_index": 95,
+        "tool": "test",
+        "job_label": "J08",
+        "job_id_present": true,
+        "action": "submit",
+        "job_state": "unknown",
+        "tool_status": "completed",
+        "started_elapsed_ms": 1226144,
+        "finished_elapsed_ms": 1226207
+      },
+      {
+        "call_index": 96,
+        "tool": "job",
+        "job_label": "J08",
+        "job_id_present": true,
+        "action": "status",
+        "job_state": "completed",
+        "tool_status": "completed",
+        "started_elapsed_ms": 1228871,
+        "finished_elapsed_ms": 1228906
+      },
+      {
+        "call_index": 97,
+        "tool": "job",
+        "job_label": "J08",
+        "job_id_present": true,
+        "action": "output",
+        "job_state": "completed",
+        "tool_status": "completed",
+        "started_elapsed_ms": 1230459,
+        "finished_elapsed_ms": 1230479
+      },
+      {
+        "call_index": 114,
+        "tool": "test",
+        "job_label": "J09",
+        "job_id_present": true,
+        "action": "submit",
+        "job_state": "unknown",
+        "tool_status": "completed",
+        "started_elapsed_ms": 1341626,
+        "finished_elapsed_ms": 1341655
+      },
+      {
+        "call_index": 115,
+        "tool": "job",
+        "job_label": "J09",
+        "job_id_present": true,
+        "action": "status",
+        "job_state": "failed",
+        "tool_status": "failed",
+        "started_elapsed_ms": 1344747,
+        "finished_elapsed_ms": 1344774
+      },
+      {
+        "call_index": 116,
+        "tool": "test",
+        "job_label": "J10",
+        "job_id_present": true,
+        "action": "submit",
+        "job_state": "unknown",
+        "tool_status": "completed",
+        "started_elapsed_ms": 1368333,
+        "finished_elapsed_ms": 1368376
+      },
+      {
+        "call_index": 117,
+        "tool": "job",
+        "job_label": "J10",
+        "job_id_present": true,
+        "action": "status",
+        "job_state": "failed",
+        "tool_status": "failed",
+        "started_elapsed_ms": 1374997,
+        "finished_elapsed_ms": 1375036
+      },
+      {
+        "call_index": 118,
+        "tool": "job",
+        "job_label": "J09",
+        "job_id_present": true,
+        "action": "output",
+        "job_state": "failed",
+        "tool_status": "failed",
+        "started_elapsed_ms": 1382029,
+        "finished_elapsed_ms": 1382051
+      },
+      {
+        "call_index": 119,
+        "tool": "job",
+        "job_label": "J10",
+        "job_id_present": true,
+        "action": "output",
+        "job_state": "failed",
+        "tool_status": "failed",
+        "started_elapsed_ms": 1388691,
+        "finished_elapsed_ms": 1388709
+      },
+      {
+        "call_index": 121,
+        "tool": "test",
+        "job_label": "J11",
+        "job_id_present": true,
+        "action": "submit",
+        "job_state": "unknown",
+        "tool_status": "completed",
+        "started_elapsed_ms": 1450061,
+        "finished_elapsed_ms": 1450087
+      },
+      {
+        "call_index": 122,
+        "tool": "job",
+        "job_label": "J11",
+        "job_id_present": true,
+        "action": "status",
+        "job_state": "running",
+        "tool_status": "completed",
+        "started_elapsed_ms": 1451515,
+        "finished_elapsed_ms": 1451591
+      },
+      {
+        "call_index": 126,
+        "tool": "job",
+        "job_label": "J11",
+        "job_id_present": true,
+        "action": "status",
+        "job_state": "completed",
+        "tool_status": "completed",
+        "started_elapsed_ms": 1500762,
+        "finished_elapsed_ms": 1500780
+      },
+      {
+        "call_index": 127,
+        "tool": "job",
+        "job_label": "J11",
+        "job_id_present": true,
+        "action": "output",
+        "job_state": "completed",
+        "tool_status": "completed",
+        "started_elapsed_ms": 1559226,
+        "finished_elapsed_ms": 1559264
+      },
+      {
+        "call_index": 129,
+        "tool": "test",
+        "job_label": "J12",
+        "job_id_present": true,
+        "action": "submit",
+        "job_state": "unknown",
+        "tool_status": "completed",
+        "started_elapsed_ms": 1624247,
+        "finished_elapsed_ms": 1624302
+      },
+      {
+        "call_index": 130,
+        "tool": "job",
+        "job_label": "J12",
+        "job_id_present": true,
+        "action": "status",
+        "job_state": "running",
+        "tool_status": "completed",
+        "started_elapsed_ms": 1625981,
+        "finished_elapsed_ms": 1626010
+      },
+      {
+        "call_index": 133,
+        "tool": "job",
+        "job_label": "J12",
+        "job_id_present": true,
+        "action": "status",
+        "job_state": "completed",
+        "tool_status": "completed",
+        "started_elapsed_ms": 1645559,
+        "finished_elapsed_ms": 1645586
+      },
+      {
+        "call_index": 134,
+        "tool": "job",
+        "job_label": "J12",
+        "job_id_present": true,
+        "action": "output",
+        "job_state": "completed",
+        "tool_status": "completed",
+        "started_elapsed_ms": 1647687,
+        "finished_elapsed_ms": 1647707
+      }
+    ],
+    "unique_job_labels": 12,
+    "job_tool_call_count": 40,
+    "unbound_job_tool_call_count": 0,
+    "sequence_truncated": false,
+    "raw_job_ids_retained": false,
+    "raw_arguments_retained": false,
+    "raw_outputs_retained": false
+  },
+  "task_lifecycle_sequence": {
+    "events": [
+      {
+        "call_index": 179,
+        "action": "spawn",
+        "call_status": "completed",
+        "run_status": "queued",
+        "started_elapsed_ms": 2474032,
+        "finished_elapsed_ms": 2474101
+      }
+    ],
+    "raw_task_ids_retained": false,
+    "raw_result_bodies_retained": false
+  },
+  "reviewer_lifecycle": {
+    "reviewer_spawn_count": 1,
+    "reviewer_event_count": 1,
+    "explicit_terminal_observation_count": 0,
+    "get_count": 0,
+    "get_after_terminal_status_count": 0,
+    "completed_get_result_observed_count": 0,
+    "ordered_completed_get_result_count": 0,
+    "duplicate_get_count": 0,
+    "get_nonterminal_count": 0,
+    "final_status": "unknown",
+    "final_failure_class": null,
+    "completed_review_result_observed": false,
+    "compliant_status_then_get_lifecycle": false,
+    "task_action_counts": {
+      "spawn": 1
+    },
+    "events": [
+      {
+        "index": 179,
+        "action": "spawn",
+        "call_status": "completed",
+        "run_status": "queued",
+        "started_elapsed_ms": 2474032,
+        "finished_elapsed_ms": 2474101
+      }
+    ],
+    "raw_task_arguments_retained": false,
+    "task_result_body_retained": false,
+    "task_transcript_retained": false
+  },
+  "reviewer_durable_state": {
+    "state": "observed",
+    "task_status": "completed",
+    "run_status": "completed",
+    "matched_task_count": 1,
+    "matched_run_count": 1,
+    "raw_identifiers_retained": false,
+    "task_result_body_retained": false,
+    "transcript_retained": false
+  },
+  "reviewer_schedule": {
+    "due_prompt_count": 1,
+    "first_due_active_work_span_ms": null,
+    "first_due_followup_number": 3,
+    "reviewer_spawn_count": 1,
+    "start_threshold_active_ms": null,
+    "task_tool_call_count": 1,
+    "task_tool_requested_by_case": null
+  },
+  "prompt_boundary_timeline": {
+    "count": 6,
+    "entries": [
+      {
+        "request_index": 1,
+        "started_elapsed_ms": 250,
+        "request_elapsed_ms": 633207,
+        "request_timeout_ms": 1500000,
+        "remaining_wallclock_start_ms": 3599361,
+        "active_work_span_start_ms": 0,
+        "active_work_span_end_ms": 628897,
+        "tool_call_count_start": 0,
+        "tool_call_count_end": 56,
+        "stop_class": "end_turn",
+        "continuation_decision": "continue",
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": false,
+        "exception_text_retained": false,
+        "prompt_text_retained": false,
+        "provider_text_retained": false,
+        "raw_tool_arguments_retained": false
+      },
+      {
+        "request_index": 2,
+        "started_elapsed_ms": 633517,
+        "request_elapsed_ms": 627682,
+        "request_timeout_ms": 1500000,
+        "remaining_wallclock_start_ms": 2966095,
+        "active_work_span_start_ms": 628897,
+        "active_work_span_end_ms": 1256639,
+        "tool_call_count_start": 56,
+        "tool_call_count_end": 99,
+        "stop_class": "end_turn",
+        "continuation_decision": "continue",
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": false,
+        "exception_text_retained": false,
+        "prompt_text_retained": false,
+        "provider_text_retained": false,
+        "raw_tool_arguments_retained": false
+      },
+      {
+        "request_index": 3,
+        "started_elapsed_ms": 1261256,
+        "request_elapsed_ms": 606173,
+        "request_timeout_ms": 1500000,
+        "remaining_wallclock_start_ms": 2338356,
+        "active_work_span_start_ms": 1256639,
+        "active_work_span_end_ms": 1862864,
+        "tool_call_count_start": 99,
+        "tool_call_count_end": 152,
+        "stop_class": "end_turn",
+        "continuation_decision": "continue",
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": true,
+        "exception_text_retained": false,
+        "prompt_text_retained": false,
+        "provider_text_retained": false,
+        "raw_tool_arguments_retained": false
+      },
+      {
+        "request_index": 4,
+        "started_elapsed_ms": 1867489,
+        "request_elapsed_ms": 606607,
+        "request_timeout_ms": 1432122,
+        "remaining_wallclock_start_ms": 1732122,
+        "active_work_span_start_ms": 1862864,
+        "active_work_span_end_ms": 2469536,
+        "tool_call_count_start": 152,
+        "tool_call_count_end": 180,
+        "stop_class": "end_turn",
+        "continuation_decision": "continue",
+        "reviewer_due_marker_received": true,
+        "reviewer_due_marker_sent_next": false,
+        "exception_text_retained": false,
+        "prompt_text_retained": false,
+        "provider_text_retained": false,
+        "raw_tool_arguments_retained": false
+      },
+      {
+        "request_index": 5,
+        "started_elapsed_ms": 2474162,
+        "request_elapsed_ms": 644913,
+        "request_timeout_ms": 825449,
+        "remaining_wallclock_start_ms": 1125449,
+        "active_work_span_start_ms": 2469536,
+        "active_work_span_end_ms": 3114507,
+        "tool_call_count_start": 180,
+        "tool_call_count_end": 215,
+        "stop_class": "end_turn",
+        "continuation_decision": "continue",
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": false,
+        "exception_text_retained": false,
+        "prompt_text_retained": false,
+        "provider_text_retained": false,
+        "raw_tool_arguments_retained": false
+      },
+      {
+        "request_index": 6,
+        "started_elapsed_ms": 3119168,
+        "request_elapsed_ms": 180447,
+        "request_timeout_ms": 180444,
+        "remaining_wallclock_start_ms": 480444,
+        "active_work_span_start_ms": 3114507,
+        "active_work_span_end_ms": 3252830,
+        "tool_call_count_start": 215,
+        "tool_call_count_end": 234,
+        "stop_class": "turn_timeout",
+        "continuation_decision": "turn_timeout",
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": null,
+        "exception_text_retained": false,
+        "prompt_text_retained": false,
+        "provider_text_retained": false,
+        "raw_tool_arguments_retained": false
+      }
+    ],
+    "prompt_text_retained": false,
+    "provider_text_retained": false,
+    "raw_tool_arguments_retained": false
+  },
+  "provider": {
+    "requests": 162,
+    "request_limit": 1200,
+    "native_tool_call_limit": 1600,
+    "prompt_work_limit_seconds": 3300,
+    "wallclock_limit_seconds": 3600,
+    "activity_stall_seconds": 300,
+    "followup_limit": 100,
+    "attempts_started": 162,
+    "attempts_succeeded": 161,
+    "attempts_failed": 0,
+    "unresolved_attempts": 1,
+    "attempt_accounting_consistent": true,
+    "retry_scheduled_count": 0,
+    "setup_timeout_count": 0,
+    "stream_idle_timeout_count": 0,
+    "billed_usd": 0.203787,
+    "billed_usd_treatment": "reported",
+    "raw_log_retained": false,
+    "provider_text_retained": false,
+    "attempt_ids_retained": false
+  },
+  "provider_attempt_diagnostic": {
+    "state": "observed",
+    "recognized_events": 1297,
+    "provider_attempts_started": 162,
+    "provider_attempts_succeeded": 161,
+    "provider_attempts_failed": 0,
+    "unresolved_provider_attempt_count": 1,
+    "attempt_accounting_consistent": true,
+    "retry_scheduled_count": 0,
+    "setup_timeout_count": 0,
+    "stream_idle_timeout_count": 0,
+    "first_response_event_timeout_count": 0,
+    "later_stream_timeout_count": 0,
+    "retry_chain_deadline_count": 0,
+    "input_truncated": false
+  },
+  "tool_call_diagnostic": {
+    "tool_call_count": 234,
+    "category_counts": {
+      "job": 28,
+      "other": 5,
+      "read": 145,
+      "shell": 2,
+      "task": 1,
+      "test": 12,
+      "tool_search": 24,
+      "write": 17
+    },
+    "failed_call_category_counts": {
+      "job": 9,
+      "read": 8,
+      "write": 1
+    },
+    "terminal_status_counts": {
+      "completed": 216,
+      "failed": 18
+    },
+    "test_job_action_state_counts": {
+      "job.output.completed": 6,
+      "job.output.failed": 4,
+      "job.status.completed": 6,
+      "job.status.failed": 4,
+      "job.status.running": 6,
+      "job.wait.completed": 1,
+      "job.wait.failed": 1,
+      "test.submit.unobserved": 12
+    },
+    "identifiers_retained": false,
+    "raw_arguments_retained": false,
+    "raw_outputs_retained": false
+  },
+  "event_measurement": {
+    "trace_state": "complete",
+    "event_count": 515,
+    "dropped_events": 0,
+    "event_observation_state": "observed_complete",
+    "explicit_event_gaps": 0,
+    "event_gap_dropped": 0,
+    "tool_started": 234,
+    "tool_terminal": 234,
+    "unpaired_starts": 0,
+    "correlated_repair_cycles": 4,
+    "raw_job_ids_retained": false
+  },
+  "disk": {
+    "current_free_bytes": 86344736768,
+    "minimum_free_bytes": 71083831296,
+    "floor_bytes": 10737418240,
+    "elapsed_seconds": 3306.614,
+    "external_hard_stop": false,
+    "trigger": "none"
+  },
+  "resource_usage": {
+    "cpu_seconds": 11.295,
+    "lane_disk_growth_bytes": 114719851,
+    "peak_rss_bytes": 292986880,
+    "sample_count": 5916
+  },
+  "runner": {
+    "exit_code": 2,
+    "external_hard_stop": false,
+    "disk_samples": 661,
+    "trigger": "none",
+    "elapsed_seconds": 3306.614
+  },
+  "billed_usd": 0.203787,
+  "billed_usd_treatment": "reported",
+  "raw_job_ids_retained": false,
+  "raw_job_arguments_retained": false,
+  "raw_output_retained": false,
+  "prompt_text_retained": false,
+  "provider_text_retained": false,
+  "verifier_text_retained": false,
+  "task_completion": {
+    "state": "agent_incomplete",
+    "reasons": [
+      "agent_terminal_incomplete",
+      "continuation_not_confirmed",
+      "required_stages_incomplete",
+      "required_gates_incomplete",
+      "required_success_jobs_incomplete",
+      "required_review_unobserved",
+      "required_artifacts_missing"
+    ],
+    "verifier_outcome": "setup_error",
+    "verifier_tests_observed": false,
+    "verifier_public_reconciliation": {
+      "classification": {
+        "task_behavior": "unmapped_failure_domain"
+      },
+      "public_domain_states": {},
+      "assertion_text_retained": false,
+      "raw_output_retained": false,
+      "raw_job_ids_retained": false
+    }
+  },
+  "ordered_tool_activity": {
+    "schema": "s019_safe_tool_activity_v1",
+    "events": [
+      {
+        "call_index": 0,
+        "tool": "read",
+        "action": null,
+        "call_status": "failed",
+        "started_elapsed_ms": 4541,
+        "finished_elapsed_ms": 4565,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 1,
+        "tool": "read",
+        "action": null,
+        "call_status": "failed",
+        "started_elapsed_ms": 4543,
+        "finished_elapsed_ms": 4565,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 2,
+        "tool": "read",
+        "action": null,
+        "call_status": "failed",
+        "started_elapsed_ms": 4543,
+        "finished_elapsed_ms": 4565,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 3,
+        "tool": "list",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 4543,
+        "finished_elapsed_ms": 4565,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 4,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 6804,
+        "finished_elapsed_ms": 6811,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 5,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 6805,
+        "finished_elapsed_ms": 6811,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 6,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 6805,
+        "finished_elapsed_ms": 6811,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 7,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 6806,
+        "finished_elapsed_ms": 6811,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 8,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 9413,
+        "finished_elapsed_ms": 9457,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 9,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 9414,
+        "finished_elapsed_ms": 9457,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 10,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 9414,
+        "finished_elapsed_ms": 9458,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 11,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 9414,
+        "finished_elapsed_ms": 9458,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 12,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 9414,
+        "finished_elapsed_ms": 9458,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 13,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 9414,
+        "finished_elapsed_ms": 9458,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 14,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 22342,
+        "finished_elapsed_ms": 22366,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 15,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 24292,
+        "finished_elapsed_ms": 24301,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 16,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 27092,
+        "finished_elapsed_ms": 27124,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 17,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 32858,
+        "finished_elapsed_ms": 32889,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 18,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 64550,
+        "finished_elapsed_ms": 64577,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 19,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 64551,
+        "finished_elapsed_ms": 64577,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 20,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 64551,
+        "finished_elapsed_ms": 64577,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 21,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 64551,
+        "finished_elapsed_ms": 64577,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 22,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 64551,
+        "finished_elapsed_ms": 64578,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 23,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 64551,
+        "finished_elapsed_ms": 64578,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 24,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 79389,
+        "finished_elapsed_ms": 79410,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 25,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 89061,
+        "finished_elapsed_ms": 89088,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 26,
+        "tool": "test",
+        "action": "submit",
+        "call_status": "completed",
+        "started_elapsed_ms": 124393,
+        "finished_elapsed_ms": 124530,
+        "job_label": "J01",
+        "job_state": null
+      },
+      {
+        "call_index": 27,
+        "tool": "job",
+        "action": "status",
+        "call_status": "completed",
+        "started_elapsed_ms": 127318,
+        "finished_elapsed_ms": 127365,
+        "job_label": "J01",
+        "job_state": "running"
+      },
+      {
+        "call_index": 28,
+        "tool": "job",
+        "action": "status",
+        "call_status": "failed",
+        "started_elapsed_ms": 135515,
+        "finished_elapsed_ms": 135536,
+        "job_label": "J01",
+        "job_state": "failed"
+      },
+      {
+        "call_index": 29,
+        "tool": "job",
+        "action": "output",
+        "call_status": "failed",
+        "started_elapsed_ms": 139347,
+        "finished_elapsed_ms": 139372,
+        "job_label": "J01",
+        "job_state": "failed"
+      },
+      {
+        "call_index": 30,
+        "tool": "edit",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 142231,
+        "finished_elapsed_ms": 142268,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 31,
+        "tool": "test",
+        "action": "submit",
+        "call_status": "completed",
+        "started_elapsed_ms": 161933,
+        "finished_elapsed_ms": 161975,
+        "job_label": "J02",
+        "job_state": null
+      },
+      {
+        "call_index": 32,
+        "tool": "job",
+        "action": "status",
+        "call_status": "completed",
+        "started_elapsed_ms": 170129,
+        "finished_elapsed_ms": 170185,
+        "job_label": "J02",
+        "job_state": "running"
+      },
+      {
+        "call_index": 33,
+        "tool": "job",
+        "action": "wait",
+        "call_status": "completed",
+        "started_elapsed_ms": 173785,
+        "finished_elapsed_ms": 173803,
+        "job_label": "J02",
+        "job_state": "completed"
+      },
+      {
+        "call_index": 34,
+        "tool": "test",
+        "action": "submit",
+        "call_status": "completed",
+        "started_elapsed_ms": 192043,
+        "finished_elapsed_ms": 192091,
+        "job_label": "J03",
+        "job_state": null
+      },
+      {
+        "call_index": 35,
+        "tool": "job",
+        "action": "status",
+        "call_status": "completed",
+        "started_elapsed_ms": 194311,
+        "finished_elapsed_ms": 194330,
+        "job_label": "J03",
+        "job_state": "running"
+      },
+      {
+        "call_index": 36,
+        "tool": "job",
+        "action": "wait",
+        "call_status": "failed",
+        "started_elapsed_ms": 196789,
+        "finished_elapsed_ms": 197999,
+        "job_label": "J03",
+        "job_state": "failed"
+      },
+      {
+        "call_index": 37,
+        "tool": "edit",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 218704,
+        "finished_elapsed_ms": 218724,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 38,
+        "tool": "test",
+        "action": "submit",
+        "call_status": "completed",
+        "started_elapsed_ms": 229615,
+        "finished_elapsed_ms": 229640,
+        "job_label": "J04",
+        "job_state": null
+      },
+      {
+        "call_index": 39,
+        "tool": "job",
+        "action": "status",
+        "call_status": "completed",
+        "started_elapsed_ms": 233090,
+        "finished_elapsed_ms": 233130,
+        "job_label": "J04",
+        "job_state": "completed"
+      },
+      {
+        "call_index": 40,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 261496,
+        "finished_elapsed_ms": 261515,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 41,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 261497,
+        "finished_elapsed_ms": 261515,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 42,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 261497,
+        "finished_elapsed_ms": 261515,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 43,
+        "tool": "job",
+        "action": "output",
+        "call_status": "completed",
+        "started_elapsed_ms": 295962,
+        "finished_elapsed_ms": 295995,
+        "job_label": "J04",
+        "job_state": "completed"
+      },
+      {
+        "call_index": 44,
+        "tool": "write",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 346109,
+        "finished_elapsed_ms": 346136,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 45,
+        "tool": "write",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 429255,
+        "finished_elapsed_ms": 429282,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 46,
+        "tool": "test",
+        "action": "submit",
+        "call_status": "completed",
+        "started_elapsed_ms": 488144,
+        "finished_elapsed_ms": 488200,
+        "job_label": "J05",
+        "job_state": null
+      },
+      {
+        "call_index": 47,
+        "tool": "job",
+        "action": "status",
+        "call_status": "failed",
+        "started_elapsed_ms": 492393,
+        "finished_elapsed_ms": 492560,
+        "job_label": "J05",
+        "job_state": "failed"
+      },
+      {
+        "call_index": 48,
+        "tool": "job",
+        "action": "output",
+        "call_status": "failed",
+        "started_elapsed_ms": 502310,
+        "finished_elapsed_ms": 502342,
+        "job_label": "J05",
+        "job_state": "failed"
+      },
+      {
+        "call_index": 49,
+        "tool": "glob",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 513513,
+        "finished_elapsed_ms": 513543,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 50,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 515642,
+        "finished_elapsed_ms": 515669,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 51,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 515643,
+        "finished_elapsed_ms": 515670,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 52,
+        "tool": "edit",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 540006,
+        "finished_elapsed_ms": 540041,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 53,
+        "tool": "test",
+        "action": "submit",
+        "call_status": "completed",
+        "started_elapsed_ms": 572625,
+        "finished_elapsed_ms": 572652,
+        "job_label": "J06",
+        "job_state": null
+      },
+      {
+        "call_index": 54,
+        "tool": "job",
+        "action": "status",
+        "call_status": "completed",
+        "started_elapsed_ms": 577713,
+        "finished_elapsed_ms": 577728,
+        "job_label": "J06",
+        "job_state": "completed"
+      },
+      {
+        "call_index": 55,
+        "tool": "job",
+        "action": "output",
+        "call_status": "completed",
+        "started_elapsed_ms": 633427,
+        "finished_elapsed_ms": 633462,
+        "job_label": "J06",
+        "job_state": "completed"
+      },
+      {
+        "call_index": 56,
+        "tool": "read",
+        "action": null,
+        "call_status": "failed",
+        "started_elapsed_ms": 635782,
+        "finished_elapsed_ms": 635820,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 57,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 637934,
+        "finished_elapsed_ms": 637958,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 58,
+        "tool": "list",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 639245,
+        "finished_elapsed_ms": 639273,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 59,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 644911,
+        "finished_elapsed_ms": 644953,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 60,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 644912,
+        "finished_elapsed_ms": 644953,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 61,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 644912,
+        "finished_elapsed_ms": 644953,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 62,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 644913,
+        "finished_elapsed_ms": 644953,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 63,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 644915,
+        "finished_elapsed_ms": 644954,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 64,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 650071,
+        "finished_elapsed_ms": 650097,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 65,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 650072,
+        "finished_elapsed_ms": 650098,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 66,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 650075,
+        "finished_elapsed_ms": 650098,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 67,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 650078,
+        "finished_elapsed_ms": 650098,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 68,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 650078,
+        "finished_elapsed_ms": 650098,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 69,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 654826,
+        "finished_elapsed_ms": 654842,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 70,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 656611,
+        "finished_elapsed_ms": 656642,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 71,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 668219,
+        "finished_elapsed_ms": 668249,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 72,
+        "tool": "edit",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 686774,
+        "finished_elapsed_ms": 686952,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 73,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 694688,
+        "finished_elapsed_ms": 694720,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 74,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 694689,
+        "finished_elapsed_ms": 694720,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 75,
+        "tool": "list",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 719404,
+        "finished_elapsed_ms": 719566,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 76,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 740092,
+        "finished_elapsed_ms": 740133,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 77,
+        "tool": "git",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 761070,
+        "finished_elapsed_ms": 761446,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 78,
+        "tool": "test",
+        "action": "submit",
+        "call_status": "completed",
+        "started_elapsed_ms": 783727,
+        "finished_elapsed_ms": 783778,
+        "job_label": "J07",
+        "job_state": null
+      },
+      {
+        "call_index": 79,
+        "tool": "job",
+        "action": "status",
+        "call_status": "completed",
+        "started_elapsed_ms": 785175,
+        "finished_elapsed_ms": 785185,
+        "job_label": "J07",
+        "job_state": "running"
+      },
+      {
+        "call_index": 80,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 803948,
+        "finished_elapsed_ms": 803988,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 81,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 803953,
+        "finished_elapsed_ms": 803988,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 82,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 803953,
+        "finished_elapsed_ms": 803988,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 83,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 803960,
+        "finished_elapsed_ms": 803990,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 84,
+        "tool": "job",
+        "action": "status",
+        "call_status": "completed",
+        "started_elapsed_ms": 812793,
+        "finished_elapsed_ms": 812816,
+        "job_label": "J07",
+        "job_state": "completed"
+      },
+      {
+        "call_index": 85,
+        "tool": "job",
+        "action": "output",
+        "call_status": "completed",
+        "started_elapsed_ms": 815851,
+        "finished_elapsed_ms": 815876,
+        "job_label": "J07",
+        "job_state": "completed"
+      },
+      {
+        "call_index": 86,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 835846,
+        "finished_elapsed_ms": 835879,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 87,
+        "tool": "list",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 883022,
+        "finished_elapsed_ms": 883053,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 88,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 960340,
+        "finished_elapsed_ms": 960377,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 89,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1002707,
+        "finished_elapsed_ms": 1002735,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 90,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1016040,
+        "finished_elapsed_ms": 1016064,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 91,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1018188,
+        "finished_elapsed_ms": 1018212,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 92,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1045459,
+        "finished_elapsed_ms": 1045495,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 93,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1045459,
+        "finished_elapsed_ms": 1045496,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 94,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1129701,
+        "finished_elapsed_ms": 1129740,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 95,
+        "tool": "test",
+        "action": "submit",
+        "call_status": "completed",
+        "started_elapsed_ms": 1226144,
+        "finished_elapsed_ms": 1226207,
+        "job_label": "J08",
+        "job_state": null
+      },
+      {
+        "call_index": 96,
+        "tool": "job",
+        "action": "status",
+        "call_status": "completed",
+        "started_elapsed_ms": 1228871,
+        "finished_elapsed_ms": 1228906,
+        "job_label": "J08",
+        "job_state": "completed"
+      },
+      {
+        "call_index": 97,
+        "tool": "job",
+        "action": "output",
+        "call_status": "completed",
+        "started_elapsed_ms": 1230459,
+        "finished_elapsed_ms": 1230479,
+        "job_label": "J08",
+        "job_state": "completed"
+      },
+      {
+        "call_index": 98,
+        "tool": "edit",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1261166,
+        "finished_elapsed_ms": 1261204,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 99,
+        "tool": "read",
+        "action": null,
+        "call_status": "failed",
+        "started_elapsed_ms": 1264279,
+        "finished_elapsed_ms": 1264321,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 100,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1266523,
+        "finished_elapsed_ms": 1266546,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 101,
+        "tool": "list",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1268506,
+        "finished_elapsed_ms": 1268531,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 102,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1272705,
+        "finished_elapsed_ms": 1272737,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 103,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1272705,
+        "finished_elapsed_ms": 1272737,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 104,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1272706,
+        "finished_elapsed_ms": 1272737,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 105,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1272706,
+        "finished_elapsed_ms": 1272738,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 106,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1272706,
+        "finished_elapsed_ms": 1272738,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 107,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1272707,
+        "finished_elapsed_ms": 1272738,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 108,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1280189,
+        "finished_elapsed_ms": 1280230,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 109,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1280189,
+        "finished_elapsed_ms": 1280230,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 110,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1280189,
+        "finished_elapsed_ms": 1280231,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 111,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1302799,
+        "finished_elapsed_ms": 1302827,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 112,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1311315,
+        "finished_elapsed_ms": 1311327,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 113,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1328127,
+        "finished_elapsed_ms": 1328155,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 114,
+        "tool": "test",
+        "action": "submit",
+        "call_status": "completed",
+        "started_elapsed_ms": 1341626,
+        "finished_elapsed_ms": 1341655,
+        "job_label": "J09",
+        "job_state": null
+      },
+      {
+        "call_index": 115,
+        "tool": "job",
+        "action": "status",
+        "call_status": "failed",
+        "started_elapsed_ms": 1344747,
+        "finished_elapsed_ms": 1344774,
+        "job_label": "J09",
+        "job_state": "failed"
+      },
+      {
+        "call_index": 116,
+        "tool": "test",
+        "action": "submit",
+        "call_status": "completed",
+        "started_elapsed_ms": 1368333,
+        "finished_elapsed_ms": 1368376,
+        "job_label": "J10",
+        "job_state": null
+      },
+      {
+        "call_index": 117,
+        "tool": "job",
+        "action": "status",
+        "call_status": "failed",
+        "started_elapsed_ms": 1374997,
+        "finished_elapsed_ms": 1375036,
+        "job_label": "J10",
+        "job_state": "failed"
+      },
+      {
+        "call_index": 118,
+        "tool": "job",
+        "action": "output",
+        "call_status": "failed",
+        "started_elapsed_ms": 1382029,
+        "finished_elapsed_ms": 1382051,
+        "job_label": "J09",
+        "job_state": "failed"
+      },
+      {
+        "call_index": 119,
+        "tool": "job",
+        "action": "output",
+        "call_status": "failed",
+        "started_elapsed_ms": 1388691,
+        "finished_elapsed_ms": 1388709,
+        "job_label": "J10",
+        "job_state": "failed"
+      },
+      {
+        "call_index": 120,
+        "tool": "edit",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1417051,
+        "finished_elapsed_ms": 1417089,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 121,
+        "tool": "test",
+        "action": "submit",
+        "call_status": "completed",
+        "started_elapsed_ms": 1450061,
+        "finished_elapsed_ms": 1450087,
+        "job_label": "J11",
+        "job_state": null
+      },
+      {
+        "call_index": 122,
+        "tool": "job",
+        "action": "status",
+        "call_status": "completed",
+        "started_elapsed_ms": 1451515,
+        "finished_elapsed_ms": 1451591,
+        "job_label": "J11",
+        "job_state": "running"
+      },
+      {
+        "call_index": 123,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1470424,
+        "finished_elapsed_ms": 1470467,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 124,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1470428,
+        "finished_elapsed_ms": 1470467,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 125,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1470428,
+        "finished_elapsed_ms": 1470472,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 126,
+        "tool": "job",
+        "action": "status",
+        "call_status": "completed",
+        "started_elapsed_ms": 1500762,
+        "finished_elapsed_ms": 1500780,
+        "job_label": "J11",
+        "job_state": "completed"
+      },
+      {
+        "call_index": 127,
+        "tool": "job",
+        "action": "output",
+        "call_status": "completed",
+        "started_elapsed_ms": 1559226,
+        "finished_elapsed_ms": 1559264,
+        "job_label": "J11",
+        "job_state": "completed"
+      },
+      {
+        "call_index": 128,
+        "tool": "edit",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1607721,
+        "finished_elapsed_ms": 1607762,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 129,
+        "tool": "test",
+        "action": "submit",
+        "call_status": "completed",
+        "started_elapsed_ms": 1624247,
+        "finished_elapsed_ms": 1624302,
+        "job_label": "J12",
+        "job_state": null
+      },
+      {
+        "call_index": 130,
+        "tool": "job",
+        "action": "status",
+        "call_status": "completed",
+        "started_elapsed_ms": 1625981,
+        "finished_elapsed_ms": 1626010,
+        "job_label": "J12",
+        "job_state": "running"
+      },
+      {
+        "call_index": 131,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1627922,
+        "finished_elapsed_ms": 1627944,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 132,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1627922,
+        "finished_elapsed_ms": 1627944,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 133,
+        "tool": "job",
+        "action": "status",
+        "call_status": "completed",
+        "started_elapsed_ms": 1645559,
+        "finished_elapsed_ms": 1645586,
+        "job_label": "J12",
+        "job_state": "completed"
+      },
+      {
+        "call_index": 134,
+        "tool": "job",
+        "action": "output",
+        "call_status": "completed",
+        "started_elapsed_ms": 1647687,
+        "finished_elapsed_ms": 1647707,
+        "job_label": "J12",
+        "job_state": "completed"
+      },
+      {
+        "call_index": 135,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1663598,
+        "finished_elapsed_ms": 1663621,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 136,
+        "tool": "apply_patch",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1686227,
+        "finished_elapsed_ms": 1686253,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 137,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1717638,
+        "finished_elapsed_ms": 1717687,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 138,
+        "tool": "apply_patch",
+        "action": null,
+        "call_status": "failed",
+        "started_elapsed_ms": 1748756,
+        "finished_elapsed_ms": 1748779,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 139,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1760832,
+        "finished_elapsed_ms": 1760861,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 140,
+        "tool": "edit",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1772229,
+        "finished_elapsed_ms": 1772261,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 141,
+        "tool": "git",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1785193,
+        "finished_elapsed_ms": 1785377,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 142,
+        "tool": "list",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1798731,
+        "finished_elapsed_ms": 1798775,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 143,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1809553,
+        "finished_elapsed_ms": 1809575,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 144,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1809554,
+        "finished_elapsed_ms": 1809575,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 145,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1809554,
+        "finished_elapsed_ms": 1809577,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 146,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1809554,
+        "finished_elapsed_ms": 1809577,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 147,
+        "tool": "glob",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1830402,
+        "finished_elapsed_ms": 1830472,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 148,
+        "tool": "glob",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1830403,
+        "finished_elapsed_ms": 1830473,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 149,
+        "tool": "glob",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1830403,
+        "finished_elapsed_ms": 1830473,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 150,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1830403,
+        "finished_elapsed_ms": 1830473,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 151,
+        "tool": "edit",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1867387,
+        "finished_elapsed_ms": 1867429,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 152,
+        "tool": "read",
+        "action": null,
+        "call_status": "failed",
+        "started_elapsed_ms": 1869421,
+        "finished_elapsed_ms": 1869468,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 153,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1870961,
+        "finished_elapsed_ms": 1870982,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 154,
+        "tool": "list",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1877800,
+        "finished_elapsed_ms": 1877828,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 155,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1889022,
+        "finished_elapsed_ms": 1889260,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 156,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1889024,
+        "finished_elapsed_ms": 1889261,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 157,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1889024,
+        "finished_elapsed_ms": 1889261,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 158,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1889025,
+        "finished_elapsed_ms": 1889261,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 159,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1889026,
+        "finished_elapsed_ms": 1889267,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 160,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1889036,
+        "finished_elapsed_ms": 1889268,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 161,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1898599,
+        "finished_elapsed_ms": 1898633,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 162,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1902963,
+        "finished_elapsed_ms": 1902990,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 163,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1913063,
+        "finished_elapsed_ms": 1913099,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 164,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1913066,
+        "finished_elapsed_ms": 1913100,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 165,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1913066,
+        "finished_elapsed_ms": 1913100,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 166,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1962217,
+        "finished_elapsed_ms": 1962260,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 167,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 1985328,
+        "finished_elapsed_ms": 1985347,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 168,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2005120,
+        "finished_elapsed_ms": 2005165,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 169,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2045497,
+        "finished_elapsed_ms": 2045527,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 170,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2045498,
+        "finished_elapsed_ms": 2045528,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 171,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2045498,
+        "finished_elapsed_ms": 2045528,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 172,
+        "tool": "edit",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2117505,
+        "finished_elapsed_ms": 2117567,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 173,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2168538,
+        "finished_elapsed_ms": 2168571,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 174,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2245533,
+        "finished_elapsed_ms": 2245579,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 175,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2274721,
+        "finished_elapsed_ms": 2274755,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 176,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2308416,
+        "finished_elapsed_ms": 2308453,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 177,
+        "tool": "glob",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2336165,
+        "finished_elapsed_ms": 2336257,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 178,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2375988,
+        "finished_elapsed_ms": 2376019,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 179,
+        "tool": "task",
+        "action": "spawn",
+        "call_status": "completed",
+        "started_elapsed_ms": 2474032,
+        "finished_elapsed_ms": 2474101,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 180,
+        "tool": "read",
+        "action": null,
+        "call_status": "failed",
+        "started_elapsed_ms": 2479703,
+        "finished_elapsed_ms": 2479730,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 181,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2481229,
+        "finished_elapsed_ms": 2481258,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 182,
+        "tool": "list",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2483564,
+        "finished_elapsed_ms": 2483604,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 183,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2486529,
+        "finished_elapsed_ms": 2486547,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 184,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2486532,
+        "finished_elapsed_ms": 2486547,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 185,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2486533,
+        "finished_elapsed_ms": 2486548,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 186,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2486533,
+        "finished_elapsed_ms": 2486548,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 187,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2486535,
+        "finished_elapsed_ms": 2486548,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 188,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2494902,
+        "finished_elapsed_ms": 2494936,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 189,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2494903,
+        "finished_elapsed_ms": 2494936,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 190,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2494908,
+        "finished_elapsed_ms": 2494936,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 191,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2494910,
+        "finished_elapsed_ms": 2494936,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 192,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2530948,
+        "finished_elapsed_ms": 2530977,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 193,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2530952,
+        "finished_elapsed_ms": 2530978,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 194,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2530952,
+        "finished_elapsed_ms": 2530978,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 195,
+        "tool": "list",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2554391,
+        "finished_elapsed_ms": 2554436,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 196,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2587632,
+        "finished_elapsed_ms": 2587704,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 197,
+        "tool": "glob",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2587632,
+        "finished_elapsed_ms": 2587704,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 198,
+        "tool": "glob",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2587632,
+        "finished_elapsed_ms": 2587704,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 199,
+        "tool": "glob",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2587637,
+        "finished_elapsed_ms": 2587704,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 200,
+        "tool": "edit",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2639380,
+        "finished_elapsed_ms": 2639445,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 201,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2681901,
+        "finished_elapsed_ms": 2681958,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 202,
+        "tool": "edit",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2688944,
+        "finished_elapsed_ms": 2688989,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 203,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2736359,
+        "finished_elapsed_ms": 2736394,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 204,
+        "tool": "unknown",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2752317,
+        "finished_elapsed_ms": 2752342,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 205,
+        "tool": "list",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2796735,
+        "finished_elapsed_ms": 2796797,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 206,
+        "tool": "list",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2844294,
+        "finished_elapsed_ms": 2844524,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 207,
+        "tool": "bash",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2844297,
+        "finished_elapsed_ms": 2844525,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 208,
+        "tool": "unknown",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2870186,
+        "finished_elapsed_ms": 2870350,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 209,
+        "tool": "unknown",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2918647,
+        "finished_elapsed_ms": 2918756,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 210,
+        "tool": "bash",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2928363,
+        "finished_elapsed_ms": 2929608,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 211,
+        "tool": "edit",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 2997561,
+        "finished_elapsed_ms": 2997600,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 212,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 3016631,
+        "finished_elapsed_ms": 3016666,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 213,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 3048820,
+        "finished_elapsed_ms": 3048841,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 214,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 3119009,
+        "finished_elapsed_ms": 3119072,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 215,
+        "tool": "read",
+        "action": null,
+        "call_status": "failed",
+        "started_elapsed_ms": 3121968,
+        "finished_elapsed_ms": 3122016,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 216,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 3124512,
+        "finished_elapsed_ms": 3124539,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 217,
+        "tool": "list",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 3128018,
+        "finished_elapsed_ms": 3128047,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 218,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 3132980,
+        "finished_elapsed_ms": 3133016,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 219,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 3132982,
+        "finished_elapsed_ms": 3133016,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 220,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 3132982,
+        "finished_elapsed_ms": 3133017,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 221,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 3132982,
+        "finished_elapsed_ms": 3133017,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 222,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 3132982,
+        "finished_elapsed_ms": 3133017,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 223,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 3136533,
+        "finished_elapsed_ms": 3136572,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 224,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 3136536,
+        "finished_elapsed_ms": 3136573,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 225,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 3136538,
+        "finished_elapsed_ms": 3136575,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 226,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 3136538,
+        "finished_elapsed_ms": 3136576,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 227,
+        "tool": "glob",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 3151586,
+        "finished_elapsed_ms": 3151661,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 228,
+        "tool": "read",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 3174809,
+        "finished_elapsed_ms": 3174833,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 229,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 3197041,
+        "finished_elapsed_ms": 3197079,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 230,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 3211407,
+        "finished_elapsed_ms": 3211442,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 231,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 3223018,
+        "finished_elapsed_ms": 3223133,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 232,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 3257362,
+        "finished_elapsed_ms": 3257395,
+        "job_label": null,
+        "job_state": null
+      },
+      {
+        "call_index": 233,
+        "tool": "tool_search",
+        "action": null,
+        "call_status": "completed",
+        "started_elapsed_ms": 3257364,
+        "finished_elapsed_ms": 3257395,
+        "job_label": null,
+        "job_state": null
+      }
+    ],
+    "event_count": 234,
+    "raw_job_ids_retained": false,
+    "raw_arguments_retained": false,
+    "raw_outputs_retained": false,
+    "task_ids_retained": false
+  },
+  "productive_overlap_diagnostic": {
+    "submitted_job_count": 12,
+    "exact_running_to_completed_job_count": 4,
+    "jobs": [
+      {
+        "job_label": "J02",
+        "running_call_index": 32,
+        "terminal_call_index": 33,
+        "productive_call_count_between": 0,
+        "productive_tool_categories_between": []
+      },
+      {
+        "job_label": "J07",
+        "running_call_index": 79,
+        "terminal_call_index": 84,
+        "productive_call_count_between": 0,
+        "productive_tool_categories_between": []
+      },
+      {
+        "job_label": "J11",
+        "running_call_index": 122,
+        "terminal_call_index": 126,
+        "productive_call_count_between": 0,
+        "productive_tool_categories_between": []
+      },
+      {
+        "job_label": "J12",
+        "running_call_index": 130,
+        "terminal_call_index": 133,
+        "productive_call_count_between": 0,
+        "productive_tool_categories_between": []
+      }
+    ],
+    "productive_work_during_any_job": false,
+    "matches_horizon_projection": true,
+    "productive_tools": [
+      "write",
+      "edit",
+      "apply_patch",
+      "bash",
+      "test"
+    ],
+    "raw_job_ids_retained": false
+  }
+}

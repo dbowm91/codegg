@@ -399,6 +399,13 @@ pub fn build_session_tool_registry(
                 .as_ref()
                 .and_then(|s| s.max_depth)
                 .unwrap_or(3) as u32,
+        )
+        .with_max_wall_clock_secs(
+            config
+                .subagent
+                .as_ref()
+                .map(crate::config::schema::SubagentConfig::effective_wall_clock_timeout_secs)
+                .unwrap_or(crate::config::schema::DEFAULT_SUBAGENT_WALL_CLOCK_TIMEOUT_SECS),
         );
         let task_tool = if let Some(submission) = submission {
             task_tool
