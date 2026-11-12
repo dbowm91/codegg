@@ -1,5 +1,6 @@
 pub mod adapter;
 pub mod capability;
+pub mod inline;
 pub mod policy;
 pub mod resolve;
 pub mod types;
@@ -10,5 +11,6 @@ pub use capability::{
     to_neutral_thinking_capability, CapabilityResolution, CapabilitySource,
     ReasoningCapabilityDecision, ReasoningCapabilityRefusal, RejectedCapabilitySource,
 };
+pub use inline::InlineModelProfile;
 pub use resolve::*;
 pub use types::*;

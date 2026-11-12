@@ -22,6 +22,7 @@ pub mod error;
 pub mod fallback;
 pub mod gitlab;
 pub mod google;
+pub mod inline;
 pub mod openai;
 pub mod openai_compatible;
 pub mod opencode_go;
@@ -57,7 +58,13 @@ pub use eggpool::{
     EggpoolProbe, EggpoolProbeError, EggpoolProbeOptions, EggpoolProbeReasonCode,
     EggpoolProbeSummary, CREDENTIAL_PROBE_MAX_TOKENS, EGGPOOL_DEFAULT_PORT,
 };
-pub use error::{ProviderError, RetryDisposition, StorageError, MAX_RETRY_AFTER_HINT};
+pub use error::{
+    ProviderError, ProviderErrorClass, RetryDisposition, StorageError, MAX_RETRY_AFTER_HINT,
+};
+pub use inline::{
+    register_inline_provider, InlineCredential, InlineModel, InlineProviderDescriptor,
+    InlineProviderError, ProviderHeader, ProviderHeaders,
+};
 pub use opencode_go::{qualify_models, unresolved_models, OpenCodeGoProvider};
 // C001 capture seam. Only compiled under `cfg(test)` or the opt-in
 // `capture-test-support` feature; absent from the shipped binary.

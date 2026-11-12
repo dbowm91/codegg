@@ -1,5 +1,6 @@
 use crate::auth_types::Credential;
 use crate::error::ProviderError;
+use crate::inline::ProviderHeaders;
 use crate::{
     create_http_client, ChatRequest, ContentPart, EventStream, Message, ModelInfo, Provider,
     ReasoningVisibility,
@@ -88,11 +89,25 @@ pub(crate) fn discovery_failed(
 }
 
 #[derive(Clone)]
+enum DeclaredHeader {
+    Fixed { name: HeaderName, value: String },
+    SessionAffinity { name: HeaderName },
+}
+
+impl DeclaredHeader {
+    fn name(&self) -> &HeaderName {
+        match self {
+            Self::Fixed { name, .. } | Self::SessionAffinity { name } => name,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct OpenAiCompatibleProvider {
     pub id: String,
     pub name: String,
     pub config: OpenAiCompatibleConfig,
-    session_affinity_header: Option<HeaderName>,
+    declared_headers: Vec<DeclaredHeader>,
     client: eggfetch_core::Client,
 }
 
@@ -102,7 +117,7 @@ impl OpenAiCompatibleProvider {
             id: id.to_string(),
             name: name.to_string(),
             config,
-            session_affinity_header: None,
+            declared_headers: Vec::new(),
             client: create_http_client(),
         }
     }
@@ -137,14 +152,75 @@ impl OpenAiCompatibleProvider {
         )
     }
 
+    pub fn with_provider_headers(
+        mut self,
+        headers: ProviderHeaders,
+    ) -> Result<Self, ProviderError> {
+        headers.validate().map_err(|error| {
+            ProviderError::api(
+                "invalid_header",
+                format!("configured request header: {error}"),
+            )
+        })?;
+        for header in headers.iter() {
+            let name = HeaderName::from_bytes(header.name.as_bytes()).map_err(|_| {
+                ProviderError::api(
+                    "invalid_header",
+                    "configured request header name is invalid",
+                )
+            })?;
+            self.declare(DeclaredHeader::Fixed {
+                name,
+                value: header.value.clone(),
+            })?;
+        }
+        Ok(self)
+    }
+
     /// Require one request-context session identity under a provider-owned
     /// transport header. The name is configuration, never caller input.
     pub fn with_session_affinity_header(mut self, name: &str) -> Result<Self, ProviderError> {
-        self.session_affinity_header =
-            Some(HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
-                ProviderError::api("invalid_header", "session-affinity header name is invalid")
-            })?);
+        let name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
+            ProviderError::api("invalid_header", "session-affinity header name is invalid")
+        })?;
+        self.declare(DeclaredHeader::SessionAffinity { name })?;
         Ok(self)
+    }
+
+    fn declare(&mut self, header: DeclaredHeader) -> Result<(), ProviderError> {
+        if self.declared_headers.len() >= 17 {
+            return Err(ProviderError::api(
+                "invalid_header",
+                "too many declared request headers",
+            ));
+        }
+        if self.transport_reserved_headers().contains(header.name()) {
+            return Err(ProviderError::api(
+                "reserved_header_collision",
+                "configured extra header collides with a transport-owned header",
+            ));
+        }
+        if self
+            .declared_headers
+            .iter()
+            .any(|existing| existing.name() == header.name())
+        {
+            return Err(ProviderError::api(
+                "reserved_header_collision",
+                "configured extra header is declared more than once",
+            ));
+        }
+        self.declared_headers.push(header);
+        Ok(())
+    }
+
+    fn transport_reserved_headers(&self) -> Vec<HeaderName> {
+        let mut reserved = vec![HeaderName::from_static("content-type")];
+        reserved.push(HeaderName::from_static("user-agent"));
+        if let Ok(auth_name) = HeaderName::from_bytes(self.config.auth_header.as_bytes()) {
+            reserved.push(auth_name);
+        }
+        reserved
     }
 
     fn request_builder(
@@ -171,8 +247,9 @@ impl OpenAiCompatibleProvider {
         })?;
 
         let mut reserved = vec![auth_name.clone(), HeaderName::from_static("content-type")];
-        if let Some(name) = &self.session_affinity_header {
-            reserved.push(name.clone());
+        reserved.push(HeaderName::from_static("user-agent"));
+        for declared in &self.declared_headers {
+            reserved.push(declared.name().clone());
         }
 
         let auth_value = auth_value.to_str().map_err(|_| {
@@ -209,26 +286,45 @@ impl OpenAiCompatibleProvider {
             builder = builder.header(header_name.as_str(), header_value);
         }
 
-        if let Some(session_header) = &self.session_affinity_header {
-            let session_id = request.context.session_id.as_deref().ok_or_else(|| {
-                ProviderError::api(
-                    "missing_session_context",
-                    "provider requires a canonical session context",
-                )
-            })?;
-            let session_value = HeaderValue::from_str(session_id).map_err(|_| {
-                ProviderError::api(
-                    "invalid_session_context",
-                    "session context is not a valid HTTP header value",
-                )
-            })?;
-            let session_value = session_value.to_str().map_err(|_| {
-                ProviderError::api(
-                    "invalid_session_context",
-                    "session context is not a valid HTTP header value",
-                )
-            })?;
-            builder = builder.header(session_header.as_str(), session_value);
+        for declared in &self.declared_headers {
+            match declared {
+                DeclaredHeader::Fixed { name, value } => {
+                    let header_value = HeaderValue::from_str(value).map_err(|_| {
+                        ProviderError::api(
+                            "invalid_header",
+                            "configured request header value is invalid",
+                        )
+                    })?;
+                    let header_value = header_value.to_str().map_err(|_| {
+                        ProviderError::api(
+                            "invalid_header",
+                            "configured request header value is invalid",
+                        )
+                    })?;
+                    builder = builder.header(name.as_str(), header_value);
+                }
+                DeclaredHeader::SessionAffinity { name } => {
+                    let session_id = request.context.session_id.as_deref().ok_or_else(|| {
+                        ProviderError::api(
+                            "missing_session_context",
+                            "provider requires a canonical session context",
+                        )
+                    })?;
+                    let session_value = HeaderValue::from_str(session_id).map_err(|_| {
+                        ProviderError::api(
+                            "invalid_session_context",
+                            "session context is not a valid HTTP header value",
+                        )
+                    })?;
+                    let session_value = session_value.to_str().map_err(|_| {
+                        ProviderError::api(
+                            "invalid_session_context",
+                            "session context is not a valid HTTP header value",
+                        )
+                    })?;
+                    builder = builder.header(name.as_str(), session_value);
+                }
+            }
         }
 
         builder
@@ -1045,6 +1141,64 @@ mod tests {
         assert!(
             matches!(error, ProviderError::Api { ref code, .. } if code == "reserved_header_collision")
         );
+    }
+
+    #[tokio::test]
+    async fn one_declared_header_reaches_the_request_verbatim() {
+        use crate::inline::{ProviderHeader, ProviderHeaders};
+        let (base_url, rx, server) = spawn_capture_server(1);
+        let headers = ProviderHeaders::new(vec![ProviderHeader {
+            name: "x-tenant".to_string(),
+            value: "alpha".to_string(),
+        }])
+        .expect("valid header");
+        let provider = OpenAiCompatibleProvider::simple("inline", "Inline", "test-key", &base_url)
+            .with_provider_headers(headers)
+            .expect("declare header");
+
+        let _stream = provider.stream(&request(None)).await.expect("request");
+        let captured = rx.recv().expect("captured request");
+        server.join().expect("capture server");
+        assert_eq!(header_values(&captured, "x-tenant"), vec!["alpha"]);
+        assert!(header_values(&captured, "x-second").is_empty());
+    }
+
+    #[tokio::test]
+    async fn two_declared_headers_reach_the_request_verbatim() {
+        use crate::inline::{ProviderHeader, ProviderHeaders};
+        let (base_url, rx, server) = spawn_capture_server(1);
+        let headers = ProviderHeaders::new(vec![
+            ProviderHeader {
+                name: "x-tenant".to_string(),
+                value: "alpha".to_string(),
+            },
+            ProviderHeader {
+                name: "x-routing-hint".to_string(),
+                value: "beta".to_string(),
+            },
+        ])
+        .expect("valid headers");
+        let provider = OpenAiCompatibleProvider::simple("inline", "Inline", "test-key", &base_url)
+            .with_provider_headers(headers)
+            .expect("declare headers");
+
+        let _stream = provider.stream(&request(None)).await.expect("request");
+        let captured = rx.recv().expect("captured request");
+        server.join().expect("capture server");
+        assert_eq!(header_values(&captured, "x-tenant"), vec!["alpha"]);
+        assert_eq!(header_values(&captured, "x-routing-hint"), vec!["beta"]);
+    }
+
+    #[test]
+    fn crlf_header_value_is_refused_before_any_io() {
+        use crate::inline::{ProviderHeader, ProviderHeaders};
+        let error = ProviderHeaders::new(vec![ProviderHeader {
+            name: "x-tenant".to_string(),
+            value: "alpha\r\nx-injected: yes".to_string(),
+        }])
+        .expect_err("CR/LF must be refused");
+        assert!(error.to_string().contains("headers[0].value"));
+        assert!(!error.to_string().contains("alpha"));
     }
 
     fn spawn_models_server(status: u16, body: String) -> (String, thread::JoinHandle<()>) {

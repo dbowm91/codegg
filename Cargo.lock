@@ -831,6 +831,7 @@ dependencies = [
  "codegg-core",
  "codegg-document",
  "codegg-git",
+ "codegg-host-protocol",
  "codegg-protocol",
  "codegg-providers",
  "comrak",
@@ -1014,6 +1015,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "codegg-host-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "codegg-protocol"
 version = "0.1.0"
 dependencies = [
@@ -1054,6 +1063,17 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "codegg-sdk"
+version = "0.1.0"
+dependencies = [
+ "codegg-host-protocol",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
