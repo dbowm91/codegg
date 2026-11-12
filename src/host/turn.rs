@@ -12,7 +12,7 @@ use crate::host::session::{Session, TurnAdmission};
 use crate::host::FrameWriter;
 use crate::provider::{
     ChatEvent, ChatRequest, ContentPart, Message, ProviderError, ProviderErrorClass,
-    ProviderRequestContext, TokenUsage,
+    ProviderRequestContext,
 };
 use std::sync::atomic::Ordering;
 
@@ -350,6 +350,7 @@ async fn write_done<W>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::TokenUsage;
     use std::sync::Arc;
 
     fn text_event(session: &str) -> AppEvent {
