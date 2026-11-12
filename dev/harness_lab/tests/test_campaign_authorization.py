@@ -189,6 +189,11 @@ class CampaignAuthorizationTests(unittest.TestCase):
                         },
                         "private_domain": {"private_check": "PRIVATE DOMAIN"},
                     },
+                    "failed_job_status_error_class_counts": {
+                        "job_not_found": 2, "unobserved": 1,
+                        "PRIVATE_ERROR_CLASS": 9, "unclassified": 1_601,
+                        "tool_execution_failed": True,
+                    },
                     "assertion_text_retained": False,
                     "raw_output_retained": False,
                     "raw_job_ids_retained": False,
@@ -250,6 +255,11 @@ class CampaignAuthorizationTests(unittest.TestCase):
                     "job_tool_calls_bound_to_id": True,
                 },
             },
+        )
+        self.assertEqual(
+            diagnostic["verifier_public_reconciliation"][
+                "failed_job_status_error_class_counts"],
+            {"job_not_found": 2, "unobserved": 1},
         )
         encoded = json.dumps(projected, sort_keys=True)
         for private_marker in (

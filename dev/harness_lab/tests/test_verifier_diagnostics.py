@@ -153,6 +153,31 @@ class VerifierDiagnosticTests(unittest.TestCase):
         self.assertNotIn("PRIVATE_ERROR_CLASS", encoded)
         self.assertNotIn("tool execution failed:", encoded)
 
+    def test_failed_job_status_error_classes_are_allowlisted_and_count_bounded(self) -> None:
+        result = diagnostics.summarize_job_tool_sequence([
+            {"index": 1, "tool": "job", "status": "failed",
+             "job_status_error_class": "job_not_found",
+             "job": {"job_id": None, "action": "status", "status": None}},
+            {"index": 2, "tool": "job", "status": "failed",
+             "job_status_error_class": "PRIVATE_ERROR_CLASS",
+             "job": {"job_id": None, "action": "status", "status": None}},
+            {"index": 3, "tool": "job", "status": "failed",
+             "job_status_error_class": "unclassified",
+             "job": {"job_id": None, "action": "status", "status": None}},
+            {"index": 4, "tool": "job", "status": "completed",
+             "job_status_error_class": "job_not_found",
+             "job": {"job_id": None, "action": "status", "status": "running"}},
+        ])
+
+        self.assertEqual(result["failed_job_status_error_class_counts"], {
+            "job_not_found": 1, "unclassified": 1, "unobserved": 1,
+        })
+        self.assertEqual([event["job_status_error_class"] for event in result["events"]], [
+            "job_not_found", "unobserved", "unclassified", None,
+        ])
+        encoded = json.dumps(result)
+        self.assertNotIn("PRIVATE_ERROR_CLASS", encoded)
+
     def test_ordered_tool_activity_proves_or_rejects_productive_overlap_without_bodies(self) -> None:
         first_id = "11111111-1111-4111-8111-111111111111"
         second_id = "22222222-2222-4222-8222-222222222222"

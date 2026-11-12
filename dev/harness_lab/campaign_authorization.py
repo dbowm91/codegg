@@ -12,6 +12,8 @@ import re
 from collections.abc import Mapping, MutableMapping
 from typing import Any
 
+from .diagnostics import SAFE_JOB_STATUS_ERROR_CLASSES
+
 
 class CampaignLedgerError(ValueError):
     """The authorization ledger cannot safely admit or reconcile a run."""
@@ -296,12 +298,14 @@ def _safe_count(value: Any, *, maximum: int = _MAX_PUBLIC_DIAGNOSTIC_COUNT) -> i
     return None
 
 
-def _safe_named_counts(value: Any, names: frozenset[str]) -> dict[str, int]:
+def _safe_named_counts(
+    value: Any, names: frozenset[str], *, maximum: int = _MAX_PUBLIC_DIAGNOSTIC_COUNT
+) -> dict[str, int]:
     if not isinstance(value, Mapping) or len(value) > _MAX_PUBLIC_PROGRESS_ITEMS:
         return {}
     return {
         name: count for name in names
-        if (count := _safe_count(value.get(name))) is not None and count > 0
+        if (count := _safe_count(value.get(name), maximum=maximum)) is not None and count > 0
     }
 
 
@@ -523,6 +527,9 @@ def _safe_h007_completion_projection(case_receipt: Mapping[str, Any] | None) -> 
                 reconciliation.get("unbound_call_state_counts")),
             "job_id_request_result_correlation": _safe_job_id_correlation(
                 reconciliation.get("job_id_request_result_correlation")),
+            "failed_job_status_error_class_counts": _safe_named_counts(
+                reconciliation.get("failed_job_status_error_class_counts"),
+                SAFE_JOB_STATUS_ERROR_CLASSES, maximum=1_600),
         }
 
     timeout_projection = _safe_timeout_diagnostic(

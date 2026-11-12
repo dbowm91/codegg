@@ -89,6 +89,9 @@ SAFE_TEST_SUBMIT_ERROR_CLASSES = frozenset({
     "shared_process_denied", "execution_backend_unavailable", "io_error",
     "network_error", "unclassified",
 })
+SAFE_JOB_STATUS_ERROR_CLASSES = SAFE_TEST_SUBMIT_ERROR_CLASSES | frozenset({
+    "job_not_found", "unobserved",
+})
 _JOB_ID = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
 )
@@ -276,6 +279,7 @@ def summarize_job_tool_sequence(
     unbound_calls = 0
     unbound_states: Counter[str] = Counter()
     failed_submit_error_classes: Counter[str] = Counter()
+    failed_job_status_error_classes: Counter[str] = Counter()
     id_correlation_states: Counter[str] = Counter()
     id_correlation_instrumented = False
     total = 0
@@ -304,6 +308,7 @@ def summarize_job_tool_sequence(
         call_status = (call_status if isinstance(call_status, str)
                        and call_status in _TOOL_STATUSES else "unknown")
         tool_error_class: str | None = None
+        job_status_error_class: str | None = None
         if tool == "test" and action == "submit" and call_status == "failed":
             candidate_class = call.get("tool_error_class")
             tool_error_class = (
@@ -311,6 +316,13 @@ def summarize_job_tool_sequence(
                 and candidate_class in SAFE_TEST_SUBMIT_ERROR_CLASSES else "unobserved"
             )
             failed_submit_error_classes[tool_error_class] += 1
+        if tool == "job" and action == "status" and call_status == "failed":
+            candidate_class = call.get("job_status_error_class")
+            job_status_error_class = (
+                candidate_class if isinstance(candidate_class, str)
+                and candidate_class in SAFE_JOB_STATUS_ERROR_CLASSES else "unobserved"
+            )
+            failed_job_status_error_classes[job_status_error_class] += 1
         argument_state = call.get("job_id_argument_state")
         argument_state = (argument_state if isinstance(argument_state, str) and argument_state in {
             "invalid_json", "not_object", "missing", "non_string", "empty_string", "string",
@@ -345,6 +357,7 @@ def summarize_job_tool_sequence(
             "job_status": job_status,
             "call_status": call_status,
             "tool_error_class": tool_error_class,
+            "job_status_error_class": job_status_error_class,
             "started_elapsed_ms": started if isinstance(started, int)
             and not isinstance(started, bool) and 0 <= started <= MAX_JOB_ELAPSED_MS else None,
             "finished_elapsed_ms": finished if isinstance(finished, int)
@@ -361,6 +374,9 @@ def summarize_job_tool_sequence(
         "unbound_call_state_counts": dict(sorted(unbound_states.items())),
         "failed_test_submit_error_class_counts": dict(
             sorted(failed_submit_error_classes.items())
+        ),
+        "failed_job_status_error_class_counts": dict(
+            sorted(failed_job_status_error_classes.items())
         ),
         "job_id_request_result_correlation": {
             "applicable_call_count": sum(id_correlation_states.values()),
@@ -924,6 +940,43 @@ def extract_task_failure_class(output: Any) -> str | None:
             candidate = line[len(prefix):].strip()
             return candidate if candidate in _SAFE_FAILURE_CLASSES else None
     return None
+
+
+def classify_job_status_error(output: Any) -> str | None:
+    """Project a failed job-status output to one fixed, content-free class.
+
+    ``None`` means no string output was observed. Any unrecognized string is
+    deliberately collapsed to ``unclassified``; the text itself is never
+    returned or retained.
+    """
+    if not isinstance(output, str):
+        return None
+    text = output.strip()
+    if text.startswith("Error: "):
+        text = text[len("Error: "):].lstrip()
+    lowered = text.casefold()
+    if lowered == "job not found":
+        return "job_not_found"
+    execution_prefix = "tool execution failed:"
+    if lowered.startswith(execution_prefix):
+        detail = lowered[len(execution_prefix):].strip()
+        return "job_not_found" if detail == "job not found" else "tool_execution_failed"
+    known_prefixes = (
+        ("tool not found:", "tool_not_found"),
+        ("tool timeout:", "tool_timeout"),
+        ("permission denied:", "permission_denied"),
+        ("tool formatting failed:", "tool_formatting_failed"),
+        ("tool disabled:", "tool_disabled"),
+        ("no workspace root was resolved", "missing_workspace_root"),
+        ("refusing to start a ", "shared_process_denied"),
+        ("execution backend unavailable:", "execution_backend_unavailable"),
+        ("i/o error:", "io_error"),
+        ("network error:", "network_error"),
+    )
+    for prefix, error_class in known_prefixes:
+        if lowered.startswith(prefix):
+            return error_class
+    return "unclassified"
 
 
 def summarize_unittest_output(

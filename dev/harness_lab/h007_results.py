@@ -12,7 +12,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .diagnostics import SAFE_TEST_SUBMIT_ERROR_CLASSES
+from .diagnostics import SAFE_JOB_STATUS_ERROR_CLASSES, SAFE_TEST_SUBMIT_ERROR_CLASSES
 
 H007_RESULT_SCHEMA_VERSION = 3
 H007_MIN_ACTIVE_DURATION_MS = 30 * 60 * 1000
@@ -1199,6 +1199,11 @@ def _verifier_public_reconciliation(
     )
     if not isinstance(failed_submit_error_class_counts, Mapping):
         failed_submit_error_class_counts = {}
+    failed_job_status_error_class_counts = job_sequence.get(
+        "failed_job_status_error_class_counts"
+    )
+    if not isinstance(failed_job_status_error_class_counts, Mapping):
+        failed_job_status_error_class_counts = {}
     id_correlation = job_sequence.get("job_id_request_result_correlation")
     if not isinstance(id_correlation, Mapping):
         id_correlation = {}
@@ -1294,6 +1299,12 @@ def _verifier_public_reconciliation(
             key: count for key, count in failed_submit_error_class_counts.items()
             if key in SAFE_TEST_SUBMIT_ERROR_CLASSES
             and isinstance(count, int) and not isinstance(count, bool) and count > 0
+        },
+        "failed_job_status_error_class_counts": {
+            key: count for key, count in failed_job_status_error_class_counts.items()
+            if key in SAFE_JOB_STATUS_ERROR_CLASSES
+            and isinstance(count, int) and not isinstance(count, bool)
+            and 0 < count <= MAX_PUBLIC_JOB_CORRELATION_CALLS
         },
         "classification": reconciliation,
         "assertion_text_retained": False,

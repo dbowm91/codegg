@@ -103,6 +103,47 @@ class JobIdArgumentTelemetryTests(unittest.TestCase):
         self.assertNotIn("private error details", encoded)
         self.assertNotIn("private-job-id", encoded)
 
+    def test_failed_job_status_projects_only_fixed_error_classes(self) -> None:
+        private_id = "5a4c2d88-29a7-4ea7-b617-1833bcb6c80b"
+        digest = hashlib.sha256(private_id.encode("utf-8")).hexdigest()
+        projector = autonomy_run._ToolCallProjector()
+        outputs = (
+            ("not_found", "Error: tool execution failed: job not found"),
+            ("generic", "Error: tool execution failed: PRIVATE_DETAIL"),
+            ("unknown", "PRIVATE_UNRECOGNIZED_OUTPUT"),
+            ("missing", None),
+        )
+        for index, (call_id, raw_output) in enumerate(outputs):
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": 10 + index,
+                              "params": {"update": {
+                                  "sessionUpdate": "tool_call", "toolCallId": call_id,
+                                  "title": "job", "codeggAction": "status",
+                                  "codeggJobIdArgumentState": "string",
+                                  "codeggJobIdArgumentSha256": digest,
+                                  "codeggArgumentsSha256": "a" * 64,
+                              }}})
+            update = {"sessionUpdate": "tool_call_update", "toolCallId": call_id,
+                      "status": "failed"}
+            if raw_output is not None:
+                update["rawOutput"] = raw_output
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": 20 + index,
+                              "params": {"update": update}})
+
+        calls = projector.calls()
+        self.assertEqual([call.get("job_status_error_class") for call in calls], [
+            "job_not_found", "tool_execution_failed", "unclassified", None,
+        ])
+        summary = autonomy_run.diagnostics.summarize_job_tool_sequence(calls)
+        self.assertEqual(summary["failed_job_status_error_class_counts"], {
+            "job_not_found": 1,
+            "tool_execution_failed": 1,
+            "unclassified": 1,
+            "unobserved": 1,
+        })
+        encoded = json.dumps({"calls": calls, "summary": summary})
+        for private_value in (private_id, digest, "PRIVATE_DETAIL", "PRIVATE_UNRECOGNIZED_OUTPUT"):
+            self.assertNotIn(private_value, encoded)
+
     def test_failed_background_test_submit_keeps_only_allowlisted_error_class(self) -> None:
         projector = autonomy_run._ToolCallProjector()
         for call_id, error_class in (

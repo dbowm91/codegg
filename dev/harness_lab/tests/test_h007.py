@@ -1979,6 +1979,10 @@ class H007CaseAndResultTests(unittest.TestCase):
                 "failed_test_submit_error_class_counts": {
                     "tool_execution_failed": 1, "PRIVATE_CLASS": 9,
                 },
+                "failed_job_status_error_class_counts": {
+                    "job_not_found": 2, "unobserved": 1, "PRIVATE_CLASS": 9,
+                    "unclassified": 1_601, "tool_execution_failed": True,
+                },
                 "job_id_request_result_correlation": {
                     "instrumentation_observed": True,
                     "applicable_call_count": 3,
@@ -1994,6 +1998,9 @@ class H007CaseAndResultTests(unittest.TestCase):
                          "complete")
         self.assertEqual(correlated["failed_test_submit_error_class_counts"], {
             "tool_execution_failed": 1,
+        })
+        self.assertEqual(correlated["failed_job_status_error_class_counts"], {
+            "job_not_found": 2, "unobserved": 1,
         })
         self.assertEqual(correlated["job_id_request_result_correlation"], {
             "instrumentation_observed": True,
