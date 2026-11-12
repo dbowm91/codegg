@@ -1,6 +1,6 @@
 # CodeGG Embedding Host Roadmap
 
-Status: proposed
+Status: delivered — E001–E004 closed
 
 Long-term references:
 
@@ -313,7 +313,7 @@ accepted.
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| E001 inline provider descriptor | proposed | `plans/implementation/codegg-embedding-host/001-inline-provider-descriptor.md` | — | none |
-| E002 headless host protocol v1 | proposed | `plans/implementation/codegg-embedding-host/002-headless-host-protocol.md` | — | E001; ADR for wire stability |
-| E003 SDK crate and conformance | proposed | `plans/implementation/codegg-embedding-host/003-sdk-crate-and-conformance.md` | — | E002 |
-| E004 integration evidence and closure | proposed | `plans/implementation/codegg-embedding-host/004-integration-evidence-and-closure.md` | — | E003 |
+| E001 inline provider descriptor | **closed** | `plans/implementation/codegg-embedding-host/001-inline-provider-descriptor.md` | `plans/closure/codegg-embedding-host/001-status.md` | none |
+| E002 headless host protocol v1 | **closed** | `plans/implementation/codegg-embedding-host/002-headless-host-protocol.md` | `plans/closure/codegg-embedding-host/002-status.md` | none; ADR-0060 accepted |
+| E003 SDK crate and conformance | **closed** | `plans/implementation/codegg-embedding-host/003-sdk-crate-and-conformance.md` | `plans/closure/codegg-embedding-host/003-status.md` | none |
+| E004 integration evidence and closure | **closed** | `plans/implementation/codegg-embedding-host/004-integration-evidence-and-closure.md` | `plans/closure/codegg-embedding-host/004-status.md` | none |

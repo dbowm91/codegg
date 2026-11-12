@@ -12,7 +12,7 @@ use crate::host::session::{Session, TurnAdmission};
 use crate::host::FrameWriter;
 use crate::provider::{
     ChatEvent, ChatRequest, ContentPart, Message, ProviderError, ProviderErrorClass,
-    ProviderRequestContext,
+    ProviderRequestContext, TokenUsage,
 };
 use std::sync::atomic::Ordering;
 
@@ -88,7 +88,14 @@ pub(crate) fn map_stop_reason(raw: Option<&str>) -> StopReason {
 }
 
 pub(crate) fn usage_from_snapshot(snapshot: &RunUsageSnapshot) -> Usage {
-    if snapshot.provider_responses == 0 {
+    // A response that reported no counters is not zero usage: zero is a real
+    // value, and a host that budgets against it would be misled. This upstream
+    // shape (a response with every counter at zero) is reported as absent.
+    let all_zero = snapshot.input_tokens == 0
+        && snapshot.output_tokens == 0
+        && snapshot.cached_tokens.is_none()
+        && snapshot.reasoning_tokens.is_none();
+    if snapshot.provider_responses == 0 || all_zero {
         return Usage::absent();
     }
     Usage {
@@ -98,6 +105,25 @@ pub(crate) fn usage_from_snapshot(snapshot: &RunUsageSnapshot) -> Usage {
         cached_tokens: snapshot.cached_tokens.map(to_u64),
         reasoning_tokens: snapshot.reasoning_tokens.map(to_u64),
     }
+}
+
+/// The usage a completed turn's own terminal event carries. `None` when the
+/// provider reported no counters, which is the absent shape rather than zero.
+fn usage_from_events(events: &[ChatEvent]) -> Option<Usage> {
+    let usage = events.iter().rev().find_map(|event| match event {
+        ChatEvent::Finish { usage, .. } => Some(usage.clone()),
+        _ => None,
+    })?;
+    if usage.input_tokens == 0 && usage.output_tokens == 0 && usage.cached_tokens.is_none() {
+        return None;
+    }
+    Some(Usage {
+        reported: true,
+        input_tokens: Some(to_u64(usage.input_tokens)),
+        output_tokens: Some(to_u64(usage.output_tokens)),
+        cached_tokens: usage.cached_tokens.map(to_u64),
+        reasoning_tokens: (usage.reasoning_tokens > 0).then(|| to_u64(usage.reasoning_tokens)),
+    })
 }
 
 fn to_u64(value: usize) -> u64 {
@@ -229,7 +255,14 @@ pub(crate) fn spawn<W>(
             emit(&writer, &event, &session_id, &turn_id).await;
         }
 
-        let usage = usage_from_snapshot(&loop_instance.run_usage());
+        // The success path reports the last provider response's own usage, the
+        // same source `exec` uses; the run aggregate covers a failure, where
+        // there is no terminal response to read.
+        let usage = match &result {
+            Ok(events) => usage_from_events(events)
+                .unwrap_or_else(|| usage_from_snapshot(&loop_instance.run_usage())),
+            Err(_) => usage_from_snapshot(&loop_instance.run_usage()),
+        };
         let cancelled =
             cancelled.load(Ordering::SeqCst) || matches!(&result, Err(AppError::Cancelled));
         let terminal = match result {
@@ -374,6 +407,42 @@ mod tests {
     }
 
     #[test]
+    fn an_all_zero_response_reports_absent_usage_rather_than_zero() {
+        let snapshot = RunUsageSnapshot {
+            provider_responses: 1,
+            input_tokens: 0,
+            output_tokens: 0,
+            cached_tokens: None,
+            reasoning_tokens: None,
+        };
+        assert_eq!(usage_from_snapshot(&snapshot), Usage::absent());
+        let zero_finish = vec![ChatEvent::Finish {
+            stop_reason: Arc::new("end_turn".to_owned()),
+            usage: Default::default(),
+        }];
+        assert_eq!(usage_from_events(&zero_finish), None);
+    }
+
+    #[test]
+    fn the_terminal_response_usage_wins_over_the_run_aggregate() {
+        let events = vec![ChatEvent::Finish {
+            stop_reason: Arc::new("end_turn".to_owned()),
+            usage: TokenUsage {
+                input_tokens: 812,
+                output_tokens: 96,
+                total_tokens: 908,
+                reasoning_tokens: 0,
+                cached_tokens: Some(640),
+            },
+        }];
+        let usage = usage_from_events(&events).expect("reported");
+        assert!(usage.reported);
+        assert_eq!(usage.input_tokens, Some(812));
+        assert_eq!(usage.output_tokens, Some(96));
+        assert_eq!(usage.cached_tokens, Some(640));
+    }
+
+    #[test]
     fn finish_reasons_map_to_the_wire_vocabulary() {
         assert_eq!(map_stop_reason(Some("end_turn")), StopReason::EndTurn);
         assert_eq!(map_stop_reason(Some("max_tokens")), StopReason::MaxTokens);
@@ -416,13 +485,13 @@ mod tests {
 
         let reported = usage_from_snapshot(&RunUsageSnapshot {
             provider_responses: 1,
-            input_tokens: 0,
-            output_tokens: 0,
-            cached_tokens: None,
+            input_tokens: 812,
+            output_tokens: 96,
+            cached_tokens: Some(640),
             reasoning_tokens: None,
         });
         assert!(reported.reported);
-        assert_eq!(reported.input_tokens, Some(0));
-        assert_eq!(reported.output_tokens, Some(0));
+        assert_eq!(reported.input_tokens, Some(812));
+        assert_eq!(reported.output_tokens, Some(96));
     }
 }

@@ -402,13 +402,19 @@ async fn handshake_open_stream_tools_usage_and_close() {
     assert_eq!(done["method"], "turn/done");
     assert_eq!(done["params"]["stopReason"], "end_turn");
     assert_eq!(done["params"]["usage"], {
-        json!({
+        // The terminal frame repeats the usage payload exactly; an optional
+        // counter the provider did not report is absent, not null.
+        let mut expected = json!({
             "reported": true,
             "inputTokens": usage["params"]["inputTokens"],
             "outputTokens": usage["params"]["outputTokens"],
-            "cachedTokens": usage["params"]["cachedTokens"],
-            "reasoningTokens": usage["params"]["reasoningTokens"],
-        })
+        });
+        for optional in ["cachedTokens", "reasoningTokens"] {
+            if let Some(value) = usage["params"].get(optional) {
+                expected[optional] = value.clone();
+            }
+        }
+        expected
     });
 
     host.send(json!({
