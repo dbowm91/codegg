@@ -384,3 +384,12 @@ reason = "Experiment-only M001 measurement owns one bounded rustc --version iden
 path = "crates/codegg-providers/src/opencode_go.rs"
 owner = "test_only"
 reason = "OpenCode Go request-cap unit test re-executes its own test binary to isolate the provider budget environment; no production process-spawn path"
+
+# ---------------------------------------------------------------------
+# Embedding host (ADR-0061)
+# ---------------------------------------------------------------------
+
+[[site]]
+path = "crates/codegg-sdk/src/lib.rs"
+owner = "standalone_compat"
+reason = "The SDK client spawns the embedding host process (`codegg host --stdio`) a host program owns. It is outside the daemon singleton guarantee by construction: one host process, one session, no daemon, and the child is killed when the client drops."

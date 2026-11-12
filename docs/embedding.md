@@ -2,7 +2,7 @@
 
 `codegg host --stdio` runs one agent session in one process, driven by a
 program that is not the TUI: an editor, a desktop app, a local server delegating
-coding work, or a CI job. This document is the contract. [`plans/adrs/ADR-0060`](../plans/adrs/ADR-0060-embedding-host-wire-as-a-public-contract.md)
+coding work, or a CI job. This document is the contract. [`plans/adrs/ADR-0061`](../plans/adrs/ADR-0061-embedding-host-wire-as-a-public-contract.md)
 makes it a public surface with the stability policy in
 [Versioning](#versioning); the line's plans are
 [`plans/subsystems/codegg-embedding-host-roadmap.md`](../plans/subsystems/codegg-embedding-host-roadmap.md).

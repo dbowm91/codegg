@@ -15,7 +15,7 @@ Long-term requirements:
 
 Applicable ADRs:
 
-- ADR-0060 (accepted) — the embedding wire is a public contract.
+- ADR-0061 (accepted) — the embedding wire is a public contract.
 
 Primary class: infrastructure
 

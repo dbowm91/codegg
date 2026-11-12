@@ -15,7 +15,7 @@ Long-term requirements:
 
 Applicable ADRs:
 
-- ADR-0060 (accepted) — the embedding wire is a public contract with its own
+- ADR-0061 (accepted) — the embedding wire is a public contract with its own
   stability policy. This plan implements that decision.
 
 Primary class: capability

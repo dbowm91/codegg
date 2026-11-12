@@ -196,6 +196,16 @@ root = "src"
 lib-test-target = "codegg"
 
 [[members]]
+name = "codegg-host-protocol"
+root = "crates/codegg-host-protocol/src"
+lib-test-target = "codegg_host_protocol"
+
+[[members]]
+name = "codegg-sdk"
+root = "crates/codegg-sdk/src"
+lib-test-target = "codegg_sdk"
+
+[[members]]
 name = "codegg-client"
 root = "crates/codegg-client/src"
 lib-test-target = "codegg_client"
@@ -1003,3 +1013,11 @@ dependent = "codegg"
 member = "eggsentry"
 dependent = "codegg-core"
 
+
+[[dependencies]]
+member = "codegg-host-protocol"
+dependent = "codegg"
+
+[[dependencies]]
+member = "codegg-host-protocol"
+dependent = "codegg-sdk"

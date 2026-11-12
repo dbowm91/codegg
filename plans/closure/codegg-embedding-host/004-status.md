@@ -3,7 +3,7 @@
 Status: **closed**.
 
 Plan: [004-integration-evidence-and-closure](../../implementation/codegg-embedding-host/004-integration-evidence-and-closure.md).
-Stability policy: [ADR-0060](../../adrs/ADR-0060-embedding-host-wire-as-a-public-contract.md).
+Stability policy: [ADR-0060](../../adrs/ADR-0061-embedding-host-wire-as-a-public-contract.md).
 Commit: `089f9479c` plus the follow-up commit on `feat/codegg-embedding-host`.
 
 The host used for this evidence is a real program that speaks only the documented

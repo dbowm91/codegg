@@ -189,8 +189,14 @@ impl HeadlessRuntime {
         let (search_runtime, _report) =
             crate::search_backend::bootstrap::bootstrap_search_runtime(&config).await;
         let mcp_service = search_runtime.mcp();
-        let tool_registry =
-            crate::tool::ToolRegistry::with_config_and_search_runtime(&config, search_runtime);
+        // A workspace-scoped tool refuses a call that carries no root, so the
+        // registry must be built for this session's workspace, exactly as
+        // `exec` builds it for its own.
+        let tool_registry = crate::tool::ToolRegistry::with_config_and_search_runtime_for_workspace(
+            &config,
+            search_runtime,
+            Some(options.workspace_root.clone()),
+        );
 
         let raw_session_id = options
             .session_id

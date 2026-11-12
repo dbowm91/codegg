@@ -10,7 +10,7 @@ Long-term references:
 
 Related ADRs:
 
-- ADR-0060 (accepted) — the embedding host wire is a public contract with its own stability policy. It governs E002, E003 and E004.
+- ADR-0061 (accepted) — the embedding host wire is a public contract with its own stability policy. It governs E002, E003 and E004.
 
 Research record: `research/codegg-embedding-host-2026-11-12.md`.
 
@@ -314,6 +314,6 @@ accepted.
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | E001 inline provider descriptor | **closed** | `plans/implementation/codegg-embedding-host/001-inline-provider-descriptor.md` | `plans/closure/codegg-embedding-host/001-status.md` | none |
-| E002 headless host protocol v1 | **closed** | `plans/implementation/codegg-embedding-host/002-headless-host-protocol.md` | `plans/closure/codegg-embedding-host/002-status.md` | none; ADR-0060 accepted |
+| E002 headless host protocol v1 | **closed** | `plans/implementation/codegg-embedding-host/002-headless-host-protocol.md` | `plans/closure/codegg-embedding-host/002-status.md` | none; ADR-0061 accepted |
 | E003 SDK crate and conformance | **closed** | `plans/implementation/codegg-embedding-host/003-sdk-crate-and-conformance.md` | `plans/closure/codegg-embedding-host/003-status.md` | none |
 | E004 integration evidence and closure | **closed** | `plans/implementation/codegg-embedding-host/004-integration-evidence-and-closure.md` | `plans/closure/codegg-embedding-host/004-status.md` | none |

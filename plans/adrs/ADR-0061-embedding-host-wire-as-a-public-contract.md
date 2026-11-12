@@ -1,4 +1,4 @@
-# ADR-0060: The Embedding Host Wire Is a Public Contract
+# ADR-0061: The Embedding Host Wire Is a Public Contract
 
 Status: accepted
 

@@ -415,6 +415,7 @@ mod tests {
             output_tokens: 0,
             cached_tokens: None,
             reasoning_tokens: None,
+            provider_allowance_micros: None,
         };
         assert_eq!(usage_from_snapshot(&snapshot), Usage::absent());
         let zero_finish = vec![ChatEvent::Finish {
@@ -434,6 +435,7 @@ mod tests {
                 total_tokens: 908,
                 reasoning_tokens: 0,
                 cached_tokens: Some(640),
+                provider_allowance_micros: None,
             },
         }];
         let usage = usage_from_events(&events).expect("reported");
@@ -490,6 +492,7 @@ mod tests {
             output_tokens: 96,
             cached_tokens: Some(640),
             reasoning_tokens: None,
+            provider_allowance_micros: None,
         });
         assert!(reported.reported);
         assert_eq!(reported.input_tokens, Some(812));
