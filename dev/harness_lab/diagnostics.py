@@ -469,6 +469,21 @@ def audit_serialized_transcript(
         }
 
     serialized_calls = parsed["tool_calls"]
+    raw_terminal = parsed.get("terminal")
+    terminal_values = {
+        "completed", "failed", "timeout", "cancelled", "infrastructure_error",
+    }
+    terminal_state = (raw_terminal if isinstance(raw_terminal, str)
+                      and raw_terminal in terminal_values
+                      else "other" if isinstance(raw_terminal, str) else "unavailable")
+    raw_stop_reason = parsed.get("stop_reason")
+    stop_reason_values = {
+        "end_turn", "cancelled", "turn_timeout", "provider_timeout",
+        "request_failure", "other",
+    }
+    stop_reason_state = (raw_stop_reason if isinstance(raw_stop_reason, str)
+                         and raw_stop_reason in stop_reason_values
+                         else "other" if isinstance(raw_stop_reason, str) else "unavailable")
     source_jobs = summarize_job_tool_sequence(expected_tool_calls)
     serialized_jobs = summarize_job_tool_sequence(serialized_calls)
     source_activity = summarize_ordered_tool_activity(expected_tool_calls)
@@ -483,6 +498,11 @@ def audit_serialized_transcript(
         "state": "observed",
         "failure_class": None,
         "serialized_bytes": len(encoded),
+        "transcript_terminal_state": terminal_state,
+        "transcript_stop_reason": stop_reason_state,
+        "transcript_terminal_completed": (
+            raw_terminal == "completed" if isinstance(raw_terminal, str) else None
+        ),
         "case_id_matches": case_matches,
         "schema_version_matches": schema_matches,
         "tool_call_count": len(serialized_calls),

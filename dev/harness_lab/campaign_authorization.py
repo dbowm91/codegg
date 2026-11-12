@@ -174,6 +174,7 @@ _PUBLIC_VERIFIER_CHECKS = {
         "exact_job_running_and_terminal", "productive_work_during_job",
         "event_measurement_complete", "job_tool_calls_bound_to_id",
         "job_request_result_ids_match", "serialized_transcript_projection_matches",
+        "agent_transcript_completed",
     }),
 }
 _PUBLIC_RECONCILIATION_CLASSES = frozenset({
@@ -431,6 +432,34 @@ def _safe_line_layout(value: Any) -> dict[str, Any]:
     return result
 
 
+def _safe_agent_transcript_terminal(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {"state": "unavailable", "terminal_state": "unavailable",
+                "stop_reason": "unavailable", "completed": None}
+    state = value.get("state")
+    if not isinstance(state, str) or state not in {"observed", "unavailable"}:
+        state = "unavailable"
+    terminal = value.get("terminal_state")
+    if not isinstance(terminal, str) or terminal not in {
+        "completed", "failed", "timeout", "cancelled", "infrastructure_error",
+        "other", "unavailable",
+    }:
+        terminal = "unavailable"
+    stop_reason = value.get("stop_reason")
+    if not isinstance(stop_reason, str) or stop_reason not in {
+        "end_turn", "cancelled", "turn_timeout", "provider_timeout",
+        "request_failure", "other", "unavailable",
+    }:
+        stop_reason = "unavailable"
+    completed = terminal == "completed" if state == "observed" else None
+    return {
+        "state": state,
+        "terminal_state": terminal,
+        "stop_reason": stop_reason,
+        "completed": completed,
+    }
+
+
 def _safe_repair_job_diagnostic(value: Any) -> dict[str, Any]:
     if (not isinstance(value, Mapping)
             or value.get("raw_job_ids_retained") is not False
@@ -606,6 +635,9 @@ def _safe_h007_completion_projection(case_receipt: Mapping[str, Any] | None) -> 
                 reconciliation.get("unbound_call_state_counts")),
             "job_id_request_result_correlation": _safe_job_id_correlation(
                 reconciliation.get("job_id_request_result_correlation")),
+            "agent_transcript_terminal": _safe_agent_transcript_terminal(
+                reconciliation.get("agent_transcript_terminal")
+            ),
             "failed_job_status_error_class_counts": _safe_named_counts(
                 reconciliation.get("failed_job_status_error_class_counts"),
                 SAFE_JOB_STATUS_ERROR_CLASSES, maximum=1_600),

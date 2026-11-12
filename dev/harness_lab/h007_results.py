@@ -619,6 +619,7 @@ def summarize_continuation_line_layout(text: str | None) -> dict[str, Any]:
         "completed_phases", "contract_phases", "required_stages", "gates",
     )
     pointer_keys = ("next_phase", "next_contract_phase", "next_stage", "next_gate")
+    progress_pointer_pairs = tuple(zip(progress_keys, pointer_keys))
     positions = {
         key: [index for index, line in enumerate(lines)
               if line.partition(":")[0].strip() == key]
@@ -652,6 +653,15 @@ def summarize_continuation_line_layout(text: str | None) -> dict[str, Any]:
         all(len(positions[key]) == 1 for key in (*progress_keys, *pointer_keys))
         and all(value is not None for value in section_ends)
     )
+    paired_pointers_follow_progress = (
+        all(
+            positions[pointer][0] > section_ends[index]
+            and (index + 1 == len(progress_keys)
+                 or positions[pointer][0] < positions[progress_keys[index + 1]][0])
+            for index, (_progress, pointer) in enumerate(progress_pointer_pairs)
+        )
+        if complete_shape else None
+    )
     progress_end = max((value for value in section_ends if value is not None), default=-1)
     final_pointer = max(pointer_positions, default=-1)
     trailing_nonblank = any(line.strip() for line in lines[final_pointer + 1:])
@@ -665,9 +675,10 @@ def summarize_continuation_line_layout(text: str | None) -> dict[str, Any]:
             section_positions == sorted(section_positions)
             if len(section_positions) == len(progress_keys) else None
         ),
-        "pointer_fields_follow_progress_sections": (
-            min(pointer_positions) > progress_end if complete_shape else None
-        ),
+        # Each pointer follows its corresponding progress section. H007 then
+        # continues with job and review evidence, so the final pointer is not
+        # expected to be the final line in the document.
+        "pointer_fields_follow_progress_sections": paired_pointers_follow_progress,
         "pointer_fields_in_expected_order": (
             pointer_positions == sorted(pointer_positions)
             if len(pointer_positions) == len(pointer_keys) else None
@@ -866,6 +877,16 @@ def continuation_document_confirmed(text: str,
                           else H007_REQUIRED_CONTINUATION_PHASES)
     required_gate_set = (frozenset(required_gates) if required_gates is not None
                          else H007_REQUIRED_CONTINUATION_GATES)
+    if (required_contract_phases is not None and required_stages is not None
+            and required_gates is not None):
+        layout = summarize_continuation_line_layout(text)
+        if (layout.get("state") != "observed"
+                or layout.get("progress_section_count") != 4
+                or layout.get("pointer_field_count") != 4
+                or layout.get("progress_sections_ordered") is not True
+                or layout.get("pointer_fields_follow_progress_sections") is not True
+                or layout.get("pointer_fields_in_expected_order") is not True):
+            return False
     gate_headers = [line for line in lines
                     if line.partition(":")[0].strip() == "gates"]
     if require_gate_block or gate_headers:
@@ -875,6 +896,11 @@ def continuation_document_confirmed(text: str,
                 or any(status not in {"complete", "completed"}
                        for status in gates.values())):
             return False
+        if required_contract_phases is not None and required_stages is not None:
+            next_gates = [line.partition(":")[2].strip() for line in lines
+                          if line.partition(":")[0].strip() == "next_gate"]
+            if next_gates != ["none"]:
+                return False
 
     phases = documented_phases(text)
     if phases is None:
@@ -1348,6 +1374,12 @@ def _verifier_public_reconciliation(
             serialized_transcript_diagnostic.get("lifecycle_projection_matches_source")
             is True
         )
+        terminal_completed = serialized_transcript_diagnostic.get(
+            "transcript_terminal_completed"
+        )
+        job_checks["agent_transcript_completed"] = (
+            terminal_completed if isinstance(terminal_completed, bool) else None
+        )
     public_checks = {
         "continuation_boundary": continuation_checks,
         "transcript_job_lifecycle": job_checks,
@@ -1372,6 +1404,35 @@ def _verifier_public_reconciliation(
 
     result = {
         "schema": "h007_verifier_public_reconciliation_v1",
+        "agent_transcript_terminal": {
+            "state": (
+                "observed" if isinstance(serialized_transcript_diagnostic, Mapping)
+                and serialized_transcript_diagnostic.get("state") == "observed"
+                else "unavailable"
+            ),
+            "terminal_state": (
+                serialized_transcript_diagnostic.get("transcript_terminal_state")
+                if isinstance(serialized_transcript_diagnostic, Mapping)
+                and serialized_transcript_diagnostic.get("transcript_terminal_state") in {
+                    "completed", "failed", "timeout", "cancelled",
+                    "infrastructure_error", "other", "unavailable",
+                } else "unavailable"
+            ),
+            "stop_reason": (
+                serialized_transcript_diagnostic.get("transcript_stop_reason")
+                if isinstance(serialized_transcript_diagnostic, Mapping)
+                and serialized_transcript_diagnostic.get("transcript_stop_reason") in {
+                    "end_turn", "cancelled", "turn_timeout", "provider_timeout",
+                    "request_failure", "other", "unavailable",
+                } else "unavailable"
+            ),
+            "completed": (
+                serialized_transcript_diagnostic.get("transcript_terminal_completed")
+                if isinstance(serialized_transcript_diagnostic, Mapping)
+                and isinstance(serialized_transcript_diagnostic.get(
+                    "transcript_terminal_completed"), bool) else None
+            ),
+        },
         "failure_domain_counts": {
             str(domain): count for domain, count in domain_counts.items()
             if isinstance(domain, str) and isinstance(count, int) and count > 0

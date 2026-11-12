@@ -250,6 +250,9 @@ class SerializedTranscriptAuditTests(unittest.TestCase):
                 expected_schema_version=transcript["schema_version"],
             )
             self.assertEqual(diagnostic["state"], "observed")
+            self.assertEqual(diagnostic["transcript_terminal_state"], "completed")
+            self.assertEqual(diagnostic["transcript_stop_reason"], "end_turn")
+            self.assertTrue(diagnostic["transcript_terminal_completed"])
             self.assertTrue(diagnostic["lifecycle_projection_matches_source"])
             self.assertTrue(diagnostic["job_id_request_result_correlation"][
                 "all_applicable_calls_match"])
@@ -259,6 +262,28 @@ class SerializedTranscriptAuditTests(unittest.TestCase):
             self.assertNotIn("TRANSCRIPT.json", encoded)
             self.assertFalse(diagnostic["raw_transcript_retained"])
             self.assertFalse(diagnostic["job_id_digests_retained"])
+
+    def test_serialized_transcript_projects_timeout_terminal_without_private_text(self) -> None:
+        calls = self._calls()
+        case = autonomy.load_autonomy_suite(
+            REPO_ROOT / "dev/harness_lab/fixtures/agent_autonomy_h007"
+        ).case("build-provenance-catalog")
+        transcript = autonomy_run.build_transcript(
+            case, calls, terminal="timeout", stop_reason="turn_timeout",
+            failure={"kind": "HarnessTimeout", "private": "PRIVATE FAILURE TEXT"},
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "TRANSCRIPT.json"
+            path.write_text(json.dumps(transcript), encoding="utf-8")
+            diagnostic = autonomy_run.diagnostics.audit_serialized_transcript(
+                path, calls, expected_case_id=case.case_id,
+                expected_schema_version=transcript["schema_version"],
+            )
+
+        self.assertEqual(diagnostic["transcript_terminal_state"], "timeout")
+        self.assertEqual(diagnostic["transcript_stop_reason"], "turn_timeout")
+        self.assertFalse(diagnostic["transcript_terminal_completed"])
+        self.assertNotIn("PRIVATE FAILURE TEXT", json.dumps(diagnostic))
 
     def test_serialized_mutation_malformed_json_and_size_limit_fail_closed(self) -> None:
         calls = self._calls()
