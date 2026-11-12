@@ -720,7 +720,9 @@ class H007CaseAndResultTests(unittest.TestCase):
         prompt = (
             "Keep the seven required stages named exactly in completed_phases and "
             "required_stages/next_stage. Track the five exact contract.json implementation "
-            "phases separately in contract_phases/next_contract_phase. FINAL CHECKPOINT"
+            "phases separately in contract_phases/next_contract_phase. Track the twelve "
+            "required gates in gates/next_gate, with each next pointer after its matching "
+            "progress section. FINAL CHECKPOINT"
         )
         self.assertEqual(_h007_required_phases(prompt), H007_S018_REQUIRED_STAGE_ORDER)
         self.assertEqual(_h007_required_contract_phases(prompt), H007_S018_CONTRACT_PHASE_ORDER)
@@ -743,6 +745,7 @@ class H007CaseAndResultTests(unittest.TestCase):
             f"completed_phases:\n{phase_lines}\nnext_phase: none\n"
             f"contract_phases:\n{contract_phase_lines}\nnext_contract_phase: none\n"
             f"required_stages:\n{stage_lines}\nnext_stage: none\n"
+            f"gates:\n{gate_lines}\nnext_gate: none\n"
             f"job_command_overlap: {H007_S018_RELEASE_OVERLAP_COMMAND}\n"
             f"job_id_overlap: {overlap_id}\njob_id_overlap_running: running\n"
             "job_id_overlap_terminal: completed\n"
@@ -753,7 +756,6 @@ class H007CaseAndResultTests(unittest.TestCase):
             f"review_agent: verifier\nreview_task: {task_id}\nreview_run: {run_id}\n"
             "review_status: completed (retrieved using native task get)\n"
             "review_findings: public requirement matrix was independently checked\n"
-            f"gates:\n{gate_lines}\n"
         )
         calls = [
             {"tool": "test", "job": {"job_id": overlap_id, "action": "submit",
@@ -792,6 +794,15 @@ class H007CaseAndResultTests(unittest.TestCase):
             self.assertTrue(_h007_continuation_confirmed(
                 calls, fixture, case_prompt=prompt))
 
+            misordered_pointer = note.replace(
+                f"contract_phases:\n{contract_phase_lines}\nnext_contract_phase: none\n",
+                f"next_contract_phase: none\ncontract_phases:\n{contract_phase_lines}\n",
+            )
+            (fixture / "CONTINUATION.md").write_text(misordered_pointer, encoding="utf-8")
+            self.assertFalse(_h007_continuation_confirmed(
+                calls, fixture, case_prompt=prompt))
+
+            (fixture / "CONTINUATION.md").write_text(note, encoding="utf-8")
             wrong_phase_ledger = note.replace(
                 "- cli_contract: completed", "- cli_export: pending")
             (fixture / "CONTINUATION.md").write_text(wrong_phase_ledger, encoding="utf-8")
@@ -2081,7 +2092,11 @@ class H007CaseAndResultTests(unittest.TestCase):
                 },
             },
             serialized_transcript_diagnostic={
+                "state": "observed",
                 "lifecycle_projection_matches_source": True,
+                "transcript_terminal_state": "completed",
+                "transcript_stop_reason": "end_turn",
+                "transcript_terminal_completed": True,
             },
         )["verifier_public_reconciliation"]
         self.assertEqual(correlated["public_domain_states"]["transcript_job_lifecycle"],
@@ -2109,7 +2124,11 @@ class H007CaseAndResultTests(unittest.TestCase):
                 },
             },
             serialized_transcript_diagnostic={
+                "state": "observed",
                 "lifecycle_projection_matches_source": False,
+                "transcript_terminal_state": "timeout",
+                "transcript_stop_reason": "turn_timeout",
+                "transcript_terminal_completed": False,
             },
         )["verifier_public_reconciliation"]
         self.assertEqual(mismatch["public_domain_states"]["transcript_job_lifecycle"],
@@ -2120,6 +2139,12 @@ class H007CaseAndResultTests(unittest.TestCase):
             "job_request_result_ids_match"])
         self.assertFalse(mismatch["public_checks"]["transcript_job_lifecycle"][
             "serialized_transcript_projection_matches"])
+        self.assertFalse(mismatch["public_checks"]["transcript_job_lifecycle"][
+            "agent_transcript_completed"])
+        self.assertEqual(mismatch["agent_transcript_terminal"], {
+            "state": "observed", "terminal_state": "timeout",
+            "stop_reason": "turn_timeout", "completed": False,
+        })
 
     def test_missing_repair_cycle_is_not_reported_as_missing_continuation(self):
         calls = [
@@ -2378,29 +2403,32 @@ class H007CaseAndResultTests(unittest.TestCase):
         self.assertFalse(pending["document_valid"])
         self.assertEqual(pending["next_phase"], "phase_one")
 
-    def test_continuation_line_layout_requires_footer_after_progress(self):
+    def test_continuation_line_layout_matches_interleaved_task_template(self):
         valid = (
             "completed_phases:\n- phase_one\n"
+            "next_phase: none\n"
             "contract_phases:\n- contract_one\n"
+            "next_contract_phase: none\n"
             "required_stages:\n- stage_one: complete\n"
+            "next_stage: none\n"
             "gates:\n- gate_one: complete\n"
-            "next_phase: none\nnext_contract_phase: none\n"
-            "next_stage: none\nnext_gate: none\n"
+            "next_gate: none\n"
+            "job_id_overlap: SAFE_EXAMPLE_ID\n"
+            "review_status: completed\n"
         )
         projected = h007_results.summarize_continuation_line_layout(valid)
         self.assertTrue(projected["progress_sections_ordered"])
         self.assertTrue(projected["pointer_fields_follow_progress_sections"])
         self.assertTrue(projected["pointer_fields_in_expected_order"])
-        self.assertTrue(projected["pointer_block_is_terminal"])
+        self.assertFalse(projected["pointer_block_is_terminal"])
         self.assertFalse(projected["raw_note_retained"])
         self.assertNotIn("phase_one", json.dumps(projected))
+        self.assertNotIn("SAFE_EXAMPLE_ID", json.dumps(projected))
 
-        lines = valid.splitlines()
-        gate_start = lines.index("gates:")
-        pointer_start = lines.index("next_phase: none")
-        misplaced = "\n".join(
-            lines[:gate_start] + lines[pointer_start:] + lines[gate_start:pointer_start]
-        ) + "\n"
+        misplaced = valid.replace(
+            "contract_phases:\n- contract_one\nnext_contract_phase: none\n",
+            "next_contract_phase: none\ncontract_phases:\n- contract_one\n",
+        )
         moved = h007_results.summarize_continuation_line_layout(misplaced)
         self.assertFalse(moved["pointer_fields_follow_progress_sections"])
 

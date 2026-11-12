@@ -251,6 +251,7 @@ class CampaignAuthorizationTests(unittest.TestCase):
                         "transcript_job_lifecycle": {
                             "test_jobs_terminal": False,
                             "job_tool_calls_bound_to_id": True,
+                            "agent_transcript_completed": False,
                         },
                         "private_domain": {"private_check": "PRIVATE DOMAIN"},
                     },
@@ -277,6 +278,13 @@ class CampaignAuthorizationTests(unittest.TestCase):
                     "raw_output_retained": False,
                     "raw_job_ids_retained": False,
                     "transcript_retained": False,
+                    "agent_transcript_terminal": {
+                        "state": "observed",
+                        "terminal_state": "timeout",
+                        "stop_reason": "turn_timeout",
+                        "completed": False,
+                        "private": "PRIVATE TERMINAL DATA",
+                    },
                     "assertion_text": "PRIVATE VERIFIER OUTPUT",
                 },
                 "verifier_output": "PRIVATE VERIFIER OUTPUT",
@@ -368,7 +376,17 @@ class CampaignAuthorizationTests(unittest.TestCase):
                 "transcript_job_lifecycle": {
                     "test_jobs_terminal": False,
                     "job_tool_calls_bound_to_id": True,
+                    "agent_transcript_completed": False,
                 },
+            },
+        )
+        self.assertEqual(
+            diagnostic["verifier_public_reconciliation"]["agent_transcript_terminal"],
+            {
+                "state": "observed",
+                "terminal_state": "timeout",
+                "stop_reason": "turn_timeout",
+                "completed": False,
             },
         )
         self.assertEqual(
@@ -399,6 +417,7 @@ class CampaignAuthorizationTests(unittest.TestCase):
             "private_stage_text", "PRIVATE CHECK DETAIL", "PRIVATE DOMAIN",
             "PRIVATE_EVENT_SOURCE", "PRIVATE_TOOL_ID",
             "PRIVATE_WORKSPACE_TEST_ID", "PRIVATE_TEST_COMMAND", "private_job",
+            "PRIVATE TERMINAL DATA",
         ):
             self.assertNotIn(private_marker, encoded)
         self.assertEqual(run, run_before)
