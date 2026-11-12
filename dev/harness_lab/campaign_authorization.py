@@ -136,6 +136,10 @@ _PUBLIC_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _PUBLIC_PROGRESS_STATUSES = frozenset({
     "complete", "completed", "pending", "failed", "in_progress", "not_started", "other",
 })
+_PUBLIC_REQUIRED_SUCCESS_JOB_LABELS = frozenset({"workspace_tests", "clippy"})
+_PUBLIC_REQUIRED_SUCCESS_JOB_STATUSES = frozenset({
+    "completed", "failed", "cancelled", "canceled", "timed_out", "unobserved",
+})
 _TASK_COMPLETION_STATES = frozenset({
     "verified_complete", "agent_incomplete", "incomplete", "verification_failed",
     "verifier_unavailable", "not_demonstrated",
@@ -261,6 +265,38 @@ def _safe_public_statuses(value: Any) -> dict[str, str]:
         if isinstance(key, str) and _PUBLIC_IDENTIFIER.fullmatch(key)
         and isinstance(status, str) and status in _PUBLIC_PROGRESS_STATUSES
     }
+
+
+def _safe_required_success_jobs(value: Any) -> dict[str, dict[str, Any]]:
+    """Keep only fixed final-job labels and bounded lifecycle booleans."""
+    if not isinstance(value, Mapping):
+        value = {}
+    result: dict[str, dict[str, Any]] = {}
+    for label in sorted(_PUBLIC_REQUIRED_SUCCESS_JOB_LABELS):
+        raw = value.get(label)
+        if not isinstance(raw, Mapping):
+            raw = {}
+        submitted_once = raw.get("submitted_once")
+        documented_completed = raw.get("documented_completed")
+        raw_status = raw.get("observed_terminal_status")
+        observed_status = (raw_status if isinstance(raw_status, str)
+                           and raw_status in _PUBLIC_REQUIRED_SUCCESS_JOB_STATUSES
+                           else "unavailable")
+        completed = (
+            raw.get("completed") is True
+            and submitted_once is True
+            and documented_completed is True
+            and observed_status == "completed"
+        )
+        result[label] = {
+            "submitted_once": submitted_once if isinstance(submitted_once, bool) else None,
+            "documented_completed": (
+                documented_completed if isinstance(documented_completed, bool) else None
+            ),
+            "observed_terminal_status": observed_status,
+            "completed": completed,
+        }
+    return result
 
 
 def _safe_public_domain_map(value: Any, allowed_values: frozenset[str]) -> dict[str, Any]:
@@ -494,6 +530,13 @@ def _safe_h007_completion_projection(case_receipt: Mapping[str, Any] | None) -> 
     else:
         stages = _safe_public_statuses(continuation.get("stages"))
         gates = _safe_public_statuses(continuation.get("gates"))
+        required_success_jobs = _safe_required_success_jobs(
+            continuation.get("required_success_jobs")
+        )
+        incomplete_required_success_jobs = [
+            label for label, summary in required_success_jobs.items()
+            if summary["completed"] is not True
+        ]
         incomplete_stages = [name for name, status in stages.items()
                              if status not in {"complete", "completed"}]
         incomplete_gates = [name for name, status in gates.items()
@@ -516,6 +559,8 @@ def _safe_h007_completion_projection(case_receipt: Mapping[str, Any] | None) -> 
             "gate_total_count": len(gates),
             "incomplete_gates": incomplete_gates,
             "first_missing_gate": incomplete_gates[0] if incomplete_gates else None,
+            "required_success_jobs": required_success_jobs,
+            "incomplete_required_success_jobs": incomplete_required_success_jobs,
             "required_review_observed": (
                 continuation.get("required_review_observed")
                 if isinstance(continuation.get("required_review_observed"), bool) else None

@@ -2381,7 +2381,7 @@ class H007CaseAndResultTests(unittest.TestCase):
     def test_continuation_line_layout_requires_footer_after_progress(self):
         valid = (
             "completed_phases:\n- phase_one\n"
-            "completed_contract_phases:\n- contract_one\n"
+            "contract_phases:\n- contract_one\n"
             "required_stages:\n- stage_one: complete\n"
             "gates:\n- gate_one: complete\n"
             "next_phase: none\nnext_contract_phase: none\n"
@@ -2403,6 +2403,19 @@ class H007CaseAndResultTests(unittest.TestCase):
         ) + "\n"
         moved = h007_results.summarize_continuation_line_layout(misplaced)
         self.assertFalse(moved["pointer_fields_follow_progress_sections"])
+
+        legacy_header = h007_results.summarize_continuation_line_layout(
+            valid.replace("contract_phases:", "completed_contract_phases:")
+        )
+        self.assertEqual(legacy_header["progress_section_count"], 3)
+        self.assertIsNone(legacy_header["progress_sections_ordered"])
+
+        duplicate_header = h007_results.summarize_continuation_line_layout(
+            valid.replace("required_stages:", "required_stages:\n- extra: complete\n"
+                          "required_stages:", 1)
+        )
+        self.assertEqual(duplicate_header["progress_section_count"], 3)
+        self.assertIsNone(duplicate_header["progress_sections_ordered"])
 
         oversized = h007_results.summarize_continuation_line_layout(
             "x" * (h007_results.MAX_CONTINUATION_LAYOUT_CHARS + 1)
