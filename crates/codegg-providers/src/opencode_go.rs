@@ -70,26 +70,9 @@ impl SseFrameProgress {
 
 /// Transport-owned deadline applied identically on every surface.
 ///
-/// **No per-chunk deadline is imposed here**, and that is a deliberate policy
-/// statement rather than an omission.
-///
-/// Stream liveness is owned by the agent layer, which already bounds a long
-/// stream: `STREAM_SETUP_TIMEOUT` (120 s) covers the time to the first event
-/// and `STREAM_IDLE_TIMEOUT` (90 s) covers the gap between events. A
-/// provider-level deadline *below* the agent's own idle timeout fires first
-/// and converts a slow but valid stream into a provider error, so the agent
-/// layer's bound never gets a chance to apply. That is exactly how nine of
-/// the twelve `worklog` trials failed in the harness's sustained scenario.
-///
-/// Every sibling streaming surface here — `openai`, `anthropic`, `google` —
-/// passes no chunk deadline either. Keeping this one surface-independent
-/// means the deadline is applied identically on Chat, Responses and Messages:
-/// it is not applied at all, and the agent layer's liveness policy governs
-/// all three.
-///
-/// The shared stream bridge no longer carries a chunk-deadline parameter, so
-/// this provider cannot impose one at all. The constant is retained under
-/// `cfg(test)` so the test below keeps pinning the posture.
+/// Chunk deadlines are absent by design. The agent layer owns stream
+/// liveness, and the shared bridge cannot impose a provider-specific timeout.
+/// The test-only constant pins that contract.
 #[cfg(test)]
 const CHUNK_TIMEOUT: Option<Duration> = None;
 
@@ -1432,15 +1415,7 @@ mod catalog_tests {
 mod chunk_timeout_tests {
     use super::*;
 
-    /// The provider must not impose a per-chunk deadline of its own.
-    ///
-    /// Stream liveness belongs to the agent layer (`STREAM_SETUP_TIMEOUT` of
-    /// 120 s and `STREAM_IDLE_TIMEOUT` of 90 s). A provider deadline below
-    /// the agent's idle timeout fires first and reports a slow but valid
-    /// stream as a provider failure, which is how nine of the twelve
-    /// `worklog` trials failed in the harness's sustained scenario. Every
-    /// sibling streaming surface — `openai`, `anthropic`, `google` — passes
-    /// no chunk deadline, so this surface must not invent one either.
+    /// The agent layer owns stream liveness; the provider adds no chunk limit.
     #[test]
     fn the_provider_imposes_no_per_chunk_deadline() {
         assert!(

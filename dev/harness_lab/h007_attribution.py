@@ -19,6 +19,10 @@ S001_FIXTURE_ROOT = "dev/harness_lab/fixtures/build_provenance_catalog/fixture/"
 S001_FIXTURE_SNAPSHOT = Path(
     "plans/closure/harness-lab-self-improvement-resumption/evidence/s001-frozen-fixture"
 )
+S001_METADATA_SOURCE = "dev/harness_lab/fixtures/build_provenance_catalog.case.json"
+S001_METADATA_SNAPSHOT = Path(
+    "plans/closure/harness-lab-self-improvement-resumption/evidence/s001-case-metadata.json"
+)
 TASK_OUTCOMES = {"passed", "failed", "inconclusive"}
 HORIZON_OUTCOMES = {"qualified", "not_qualified", "not_observed"}
 HORIZON_REASONS = {
@@ -70,6 +74,8 @@ def _source_blob(repo_root: Path, revision: str, relative: str) -> bytes:
         if rel.startswith(S001_FIXTURE_ROOT):
             snapshot_rel = (S001_FIXTURE_SNAPSHOT / rel.removeprefix(S001_FIXTURE_ROOT)).as_posix()
             return _repo_bytes(repo_root, snapshot_rel)
+        if rel == S001_METADATA_SOURCE:
+            return _repo_bytes(repo_root, S001_METADATA_SNAPSHOT.as_posix())
         # Other pinned inputs still live in the checked-out tree and are checked
         # against their recorded digests by the caller.
         return _repo_bytes(repo_root, rel)

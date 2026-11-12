@@ -1,0 +1,210 @@
+{
+  "schema": "s019_h007_run_diagnostic_v1",
+  "attempt": 5,
+  "case_id": "build-provenance-catalog",
+  "route": "opencode_go/muse-spark-1.3-contributor",
+  "duration_ms": 3299818,
+  "active_work_span_ms": 3295304,
+  "agent_terminal": "timeout",
+  "terminal_failure": null,
+  "task_outcome": "inconclusive",
+  "solved": false,
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "measurement_incomplete",
+  "horizon_evidence": {
+    "active_work_span_ms": 3295330,
+    "minimum_active_duration_ms": 1800000,
+    "maximum_activity_gap_ms": 213961,
+    "maximum_activity_gap_limit_ms": 300000,
+    "continuation_confirmed": false,
+    "exact_job_running_and_terminal": true,
+    "productive_work_during_job": true,
+    "repair_cycles": 4,
+    "measurement_complete": false,
+    "tool_call_count": 327,
+    "tool_call_limit": 1600,
+    "tool_call_cap_exceeded": false
+  },
+  "activity_stall": {
+    "stall_limit_seconds": 300,
+    "triggered": false,
+    "cancel_error_present": false
+  },
+  "activity_observation": {
+    "maximum_causal_event_gap_limit_ms": 300000,
+    "maximum_causal_event_gap_ms": 213961,
+    "maximum_native_tool_gap_limit_ms": 300000,
+    "maximum_native_tool_gap_ms": 213961,
+    "stall_watcher_triggered": false
+  },
+  "event_gap": {
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "event_observation_state": "observed_complete",
+    "tool_started_count": 327,
+    "tool_terminal_count": 327,
+    "tool_unpaired_start_count": 0
+  },
+  "causal_trace": {
+    "state": "complete",
+    "event_count": 696,
+    "dropped_events": 0,
+    "trace_span_ms": 3298437,
+    "max_sorted_event_gap_ms": 213961,
+    "trace_age_seconds_at_reconcile": null,
+    "sha256": "08f4edf70e9756a77b87bb1e08de919cacc5135d2f8ea8853ebf158c345c4f6a"
+  },
+  "provider_request_count": 216,
+  "provider_request_limit": 1200,
+  "tool_call_count": 327,
+  "tool_call_limit": 1600,
+  "cost": {
+    "reported_usd": 0.180945,
+    "source": "opencode_go_allowance_receipt",
+    "unreported_treatment": "unknown"
+  },
+  "disk_floor": {
+    "minimum_free_bytes": 10737418240,
+    "lowest_observed_free_bytes": 49428209664,
+    "last_free_bytes": 50141720576,
+    "triggered": false
+  },
+  "continuation": {
+    "confirmed": false,
+    "next_contract_phase": "catalog_merge",
+    "next_task_stage": "cli_contract",
+    "next_gate": "cli_contract",
+    "completed_task_stage_count": 4,
+    "required_task_stage_count": 7,
+    "completed_gate_count": 7,
+    "required_gate_count": 12,
+    "frozen_public_input_changed_count": 0
+  },
+  "reviewer": {
+    "completed_review_result_observed": false,
+    "exact_identity_matched_call_count": 1,
+    "final_failure_class": null,
+    "final_status": null,
+    "get_after_terminal_status_count": 0,
+    "get_count": 0,
+    "get_nonterminal_count": 0,
+    "get_run_status_counts": {},
+    "ordered_events": [
+      {
+        "action": "spawn",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2032157,
+        "index": 187,
+        "run_status": "queued",
+        "started_elapsed_ms": 2032095
+      }
+    ],
+    "raw_task_arguments_retained": false,
+    "reviewer_event_count": 1,
+    "reviewer_events_truncated": false,
+    "reviewer_run_id_sha256": "75106efca07ea828c4b6e52d4057ea52d96ede2abb2fbedd1b4198e179d1ad5f",
+    "reviewer_spawn_count": 1,
+    "reviewer_task_id_sha256": "12baa1a6219afcac00b19256adb54c1c5237835c01e41eb4f9543c303f39ee69",
+    "schema": "h007_reviewer_lifecycle_diagnostic_v1",
+    "status_sequence": [],
+    "task_action_counts": {
+      "spawn": 1
+    },
+    "task_result_body_retained": false,
+    "task_transcript_retained": false
+  },
+  "verification": {
+    "exit_code": 1,
+    "tests_run": 0,
+    "timed_out": false,
+    "duration_ms": 1381,
+    "diagnostic": {
+      "state": "test_errors",
+      "tests_run": 0,
+      "passed_count": 0,
+      "skipped_count": 0,
+      "failure_counts": {
+        "errors": 1,
+        "failures": 0
+      },
+      "failed_tests": [
+        {
+          "exception_class": "warning",
+          "exception_message": {
+            "kind": "exception_message",
+            "shape": [
+              "`",
+              "<word>",
+              "-",
+              "index",
+              "`",
+              "(",
+              "test",
+              "\"",
+              "<word>",
+              "\"",
+              ")",
+              "<word>",
+              "<number>",
+              "<word>",
+              "(",
+              "<word>",
+              "`",
+              "<word>",
+              "<word>",
+              "-",
+              "-",
+              "test",
+              "\"",
+              "<word>",
+              "\"",
+              "-",
+              "<word>",
+              "<word>",
+              "-",
+              "index",
+              "`",
+              "to",
+              "<word>",
+              "<number>",
+              "<word>",
+              ")"
+            ],
+            "shape_truncated": false,
+            "terms": [
+              "index",
+              "test"
+            ]
+          },
+          "failure_kind": "test_error",
+          "outcome": "error",
+          "test_id": "setUpClass (test_catalog_contract.CatalogContract)"
+        }
+      ],
+      "setup_exception_class": null,
+      "runner_error_class": null,
+      "timed_out": false,
+      "diagnostic_detail_complete": true,
+      "input_truncated": false,
+      "raw_output_retained": false,
+      "assertion_text_retained": false,
+      "traceback_retained": false
+    }
+  },
+  "provider_timeout_detail": {
+    "occurred": false,
+    "phase": null,
+    "phase_available": false,
+    "retry_attempt_count": null,
+    "retry_attempt_count_available": false
+  },
+  "requested_case_manifest_sha256": "6d549f10df2a8601631d90e385f29f5c9533584d95d4ea5a277d241bd4fea9ff",
+  "fixture_contract_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "fixture_metadata_sha256": "14c22072e7881e61486433d476f7ec742f9ad81f1cc5fff364a4dfd424c35593",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "receipt_sha256": "21c51160d5a7038963c0322230ad50d3daea90f5bd2628bfa830c199d553afa8",
+  "raw_output_retained": false,
+  "transcript_retained_or_inspected": false,
+  "verifier_source_or_output_inspected": false
+}

@@ -171,7 +171,16 @@ pub fn sandbox_config_for_profile_with_roots(
     profile: codegg_core::approval::SandboxProfile,
     roots: &[PathBuf],
 ) -> Option<SandboxConfig> {
-    match profile {
+    let private_root = std::env::var_os("CODEGG_HARNESS_PRIVATE_ROOT");
+    sandbox_config_for_profile_with_private_root(profile, roots, private_root.as_deref())
+}
+
+fn sandbox_config_for_profile_with_private_root(
+    profile: codegg_core::approval::SandboxProfile,
+    roots: &[PathBuf],
+    private_root: Option<&std::ffi::OsStr>,
+) -> Option<SandboxConfig> {
+    let mut config = match profile {
         codegg_core::approval::SandboxProfile::ReadOnly => {
             let allowed = roots
                 .iter()
@@ -197,6 +206,31 @@ pub fn sandbox_config_for_profile_with_roots(
             )
         }
         codegg_core::approval::SandboxProfile::FullHost => None,
+    };
+    if let Some(config) = config.as_mut() {
+        append_harness_private_root_deny(config, private_root);
+    }
+    config
+}
+
+/// Add a run-private harness root as a deny-only sandbox input.
+///
+/// The harness owns the environment variable; accepting it here can only
+/// remove child filesystem authority. An invalid or empty value denies the
+/// launch cwd, so a malformed value fails closed instead of dropping the
+/// requested protection.
+fn append_harness_private_root_deny(
+    config: &mut SandboxConfig,
+    private_root: Option<&std::ffi::OsStr>,
+) {
+    if let Some(private_root) = private_root {
+        config.deny_paths.push(
+            private_root
+                .to_str()
+                .filter(|path| !path.is_empty())
+                .unwrap_or("")
+                .to_owned(),
+        );
     }
 }
 
@@ -1303,6 +1337,44 @@ mod tests {
         let config = SandboxConfig::new();
         assert!(!config.enabled);
         assert!(config.allowed_paths.is_empty());
+    }
+
+    #[test]
+    fn harness_private_root_is_added_as_a_deny_without_granting_it() {
+        let workspace = tempfile::tempdir().expect("workspace fixture");
+        let private = tempfile::tempdir().expect("private fixture");
+        let config = sandbox_config_for_profile_with_private_root(
+            codegg_core::approval::SandboxProfile::WorkspaceWrite,
+            &[workspace.path().to_path_buf()],
+            Some(private.path().as_os_str()),
+        )
+        .expect("workspace-write profile");
+
+        assert_eq!(
+            config.deny_paths,
+            vec![private.path().to_string_lossy().to_string()]
+        );
+        assert_eq!(
+            config.allowed_paths,
+            vec![workspace.path().to_string_lossy().to_string()]
+        );
+        let spec = config
+            .launch_spec(
+                "sh",
+                &["-c".to_string(), "true".to_string()],
+                Some(workspace.path()),
+            )
+            .expect("sandbox spec");
+        let backend_policy = BackendPolicy::for_spec(&spec);
+        assert!(backend_policy.denied_roots.contains(
+            &private
+                .path()
+                .canonicalize()
+                .expect("canonical private root")
+        ));
+        assert!(!backend_policy
+            .write_roots
+            .contains(&private.path().canonicalize().unwrap()));
     }
 
     #[test]

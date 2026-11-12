@@ -235,6 +235,7 @@ pub fn classify_turn_failure(error: &AppError) -> codegg_protocol::core::TurnFai
         AppError::Provider(provider_error) => match provider_error.error_class() {
             "auth" => TurnFailureCategory::ProviderAuth,
             "rate_limit" => TurnFailureCategory::ProviderRateLimit,
+            "request_budget" => TurnFailureCategory::ProviderRequestBudget,
             "timeout" => TurnFailureCategory::ProviderTimeout,
             "connect" | "tls" | "io" | "transport" | "stream_interrupted" | "circuit_open" => {
                 TurnFailureCategory::ProviderTransport
@@ -1633,6 +1634,13 @@ mod failure_classification_tests {
             (
                 ProviderError::ModelNotFound("model".into()),
                 TurnFailureCategory::ProviderApi,
+            ),
+            (
+                ProviderError::api(
+                    "harness_request_budget_exhausted",
+                    "provider request budget exhausted",
+                ),
+                TurnFailureCategory::ProviderRequestBudget,
             ),
             (
                 ProviderError::api("500", "boom"),

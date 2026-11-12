@@ -1,6 +1,6 @@
 # S017 — Muse Spark v17 H007 requalification
 
-Status: **authorized; 9 of 20 runs started**
+Status: **unqualified; authorization exhausted (20/20 runs)**
 
 ## Objective
 
@@ -71,3 +71,41 @@ No verifier-specific cause is inferred. Prompt v25 asks for a public acceptance 
 Attempt 9's independent verifier reported two failures among five tests; output remains sealed. The task ended normally after 25m52s active and therefore missed the horizon. Priority and final locked workspace jobs both passed 42 tests, all phases and continuation were recorded, and event/disk/request gates were healthy.
 
 The public acceptance audit identified two concrete unmet prompt requirements: `ImpactView` still snapshots and lacks incremental upsert/removal against fresh rebuilds at the required 250k mixed sequence; reconcile uses a tautological resume assertion and does not prove restart after every page/checkpoint boundary. These are evidence-based corrective targets, not confirmed names of the hidden failing tests. Prompt v26 targets these gaps and preserves the independent verifier boundary.
+
+
+## Attempt 10 result and next corrective
+
+Attempt 10 used v26 and was cancelled at the authorized 300-second native-tool stall. It had 163/750 provider requests, 2,187,549 ms elapsed trace time, 158 native tool starts and 157 terminals, with no completed-event gap above 243,493 ms before the final open tool. Free disk stayed above 200 GiB. The last native call was `test`; the hidden verifier did not run and no task result was produced. The runner's cancellation left one orphan executable, which was separately identified by public path and stopped.
+
+Public process evidence showed `catalog-query/tests/impact_scale.rs` running at 100% CPU. The generated test performed `matches_fresh` and a second full `ImpactView::build` for each of 200 mutations against 250,000 records. This is the evidence-backed corrective target: retain the fixed-seed 250k graph and mixed mutation coverage, but compare against fresh rebuilds at bounded checkpoints and avoid repeated full-vector mutation scans so the unchanged debug suite can finish. This is a pathological test workload, not evidence of daemon/provider failure. Attempt 11 started with v27, manifest SHA-256 `d45257b05c31f97a07bc10c1e3c4932af5c2b367b5132ae7e64c57028d9150c0`, under the existing authorization.
+
+
+## Attempt 11 result
+
+Attempt 11 reused v27. It ended inconclusively on `provider_timeout` after 43/750 requests, with 415 seconds of active tool span and 664 seconds total duration. The trace was complete (44 starts and 44 terminals, no gaps), maximum measured native-activity gap was 97,156 ms, and the disk floor remained healthy. The verifier ran but did not pass; no qualifying priority job, productive overlap, continuation, or horizon was established. Its private output was accidentally exposed during receipt extraction and is excluded from evidence and diagnosis. No task success is claimed. Since the public task never reached the priority lifecycle, attempt 12 repeats v27 to validate the scale-test correction independently of this upstream timeout.
+
+
+## Attempt 12 result
+
+Attempt 12 repeated v27 and ended on `provider_timeout` after 26/750 admitted requests. It had 388 seconds of active tool span, 31 native starts and terminals with no gaps, a maximum measured activity gap of 128,253 ms, and no disk/stall trigger. The verifier ran zero tests and returned an error; its output remains sealed. No qualifying lifecycle or sustained horizon was established. Attempt 13 will repeat the same manifest to separate a transient provider interruption from the v27 task correction; no timeout or retry-policy changes are justified by this attempt alone.
+
+
+## Attempt 16 and v28 corrective
+
+Attempt 16 is the first sustained horizon pass: active work exceeded 30 minutes; exact job overlap, continuation, seven repairs, complete events, and disk/activity limits passed. The independent verifier timed out at 240,312 ms with zero tests run, so the task did not qualify. Public source inspection found `ImpactView` mutation scans all live records and recomputes full row/snapshot digests on every update; the 250k mixed test therefore remains too expensive in debug. v28 targets truly incremental per-package/index/digest maintenance while preserving the 250k workload and its ten checkpoints. Attempt 17 uses manifest SHA-256 `6aea30d94b4b10e11e98f0c7cc234393e4e31aea5f6c7a1239ca8e7ea3b5f410`.
+
+## Latest diagnostic evidence
+
+Attempt 17 demonstrates that the configured harness can sustain this task: 48m46s active work, complete native event pairing, a 175,188 ms maximum gap, exact-ID job overlap, continuation, 52 repairs, and a completed five-test verifier run. The task still failed two verifier assertions. The exact categories remain unknown by design; the verifier source and output tail stay sealed. No harness stall corrective is supported by this attempt. Attempt 18 uses the same workload and gates with a single independent public-source/test review before the final locked sweep; it must not add feature breadth or inspect private verifier material.
+
+Attempt 18 used the diagnostic v29 prompt but ended inconclusively after a 240-second first-event wait with zero decoded provider events. The 300-second native activity, request, disk, and event-pairing gates remained healthy; the verifier ran zero tests. No product or harness correction is supported from that run. Attempt 19 repeats v29 to test whether the provider-stream timeout is transient.
+
+Attempt 19 repeated the same v29 provider-stream failure: zero decoded events during the 240,001 ms first-event wait, 12 requests, complete 25/25 event pairing, and no stall/disk failure. This is a second occurrence, but it still does not implicate native tool execution or the 300-second activity watcher. Attempt 20 is the final authorization slot and repeats v29 once more.
+
+## Attempt 20 and corrective closure
+
+Attempt 20 used v29 and ended normally after 10m07s active with 31/750 requests. Event capture was complete (42/42), maximum activity gap was 190,030 ms, minimum free disk was 116,355,694,592 bytes, and neither the activity-stall nor disk guard fired. Exact-ID job overlap was missing and the 30-minute horizon was not observed. The verifier ran zero tests and returned a setup error after 240,367 ms; output remains sealed. S017 did not qualify.
+
+The receipt incorrectly marked continuation true because the old implementation accepted any productive native call after any terminal job. Attempt 20's public continuation file was incomplete (`completed_phases: none`, `next_phase: versioned_records`, `job_id: pending`). The corrected projection reads the bounded public file, requires completed phases and `next_phase: none`, matches a documented completed job ID to a completed native job event, and requires productive work afterward. It rejects symlinks and path escapes. It returns false for attempt 20 and true for attempt 17's complete public continuation. Focused regressions cover the incomplete/failed-job false positive, matching exact job evidence, symlink rejection, and the file-size bound.
+
+The user-authorized 20 live runs are exhausted. Attempt 17 proves the runner can sustain the horizon, but its independent verifier reported two failures; attempt 20 was inconclusive for task correctness and did not meet the horizon gates. No H007 qualification is claimed. Any further live attempt requires fresh explicit authorization. Final safe evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s017-run-20-summary.json`; full authorization ledger: `plans/closure/harness-lab-self-improvement-resumption/evidence/s017-muse-live-authorization-20261103.json`.

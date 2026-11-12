@@ -288,6 +288,52 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn private_sibling_stays_denied_through_a_workspace_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let lane = TempDir::new().expect("lane fixture");
+        let workspace = lane.path().join("case00");
+        let private = lane.path().join("private");
+        std::fs::create_dir_all(&workspace).expect("workspace directory");
+        std::fs::create_dir_all(&private).expect("private directory");
+        let canary = private.join("case-metadata.canary");
+        std::fs::write(&canary, "publicly harmless canary").expect("canary file");
+        let escape = workspace.join("private-canary");
+        symlink(&canary, &escape).expect("workspace symlink");
+
+        let workspace = workspace.canonicalize().expect("canonical workspace");
+        let private = private.canonicalize().expect("canonical private root");
+        assert_eq!(
+            escape.canonicalize().expect("resolved symlink"),
+            canary.canonicalize().unwrap()
+        );
+
+        let profile = sbpl_profile(&BackendPolicy::new(
+            vec![workspace.clone()],
+            vec![workspace.clone()],
+            vec![private.clone()],
+        ));
+        let workspace_write = format!("(allow file-write* (subpath \"{}\"))", workspace.display());
+        let private_read_deny = format!("(deny file-read* (subpath \"{}\"))", private.display());
+        let write_allow_at = profile
+            .find(&workspace_write)
+            .expect("workspace write grant");
+        let private_deny_at = profile
+            .find(&private_read_deny)
+            .expect("private root read deny");
+
+        assert!(
+            private_deny_at > write_allow_at,
+            "private deny must follow grants: {profile}"
+        );
+        assert!(
+            profile.contains("(allow default)"),
+            "profile has broad reads: {profile}"
+        );
+    }
+
     #[test]
     fn credential_denies_follow_writable_reallow_rules() {
         let dir = TempDir::new().expect("workspace fixture");

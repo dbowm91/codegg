@@ -1,28 +1,11 @@
-//! Provider-turn normalization boundary with attempt safety.
+//! Provider-turn normalization and attempt safety (M001).
 //!
-//! M001 (execution-reliability) owns this retry loop. The policy is:
-//!
-//! - Every logical turn gets one UUID-scoped attempt chain; each replay is
-//!   a new `ProviderAttemptId` published on the bus for attribution.
-//! - Failures are classified by the canonical
-//!   [`ProviderError::retry_disposition`](crate::provider::ProviderError::retry_disposition)
-//!   taxonomy. Only `Transient` failures retry; `Permanent` (auth, invalid
-//!   request, missing model) and `Conditional` (circuit-open, credential
-//!   refresh) never retry inside this loop.
-//! - Once an attempt has emitted externally visible output (`TextDelta`,
-//!   `ReasoningDelta`, `ToolCallStarted`), the turn does NOT transparently
-//!   replay. It publishes an explicit supersession marker and returns a
-//!   typed interrupted-attempt error carrying the attempt ID, so two
-//!   generations can never masquerade as one authoritative stream and an
-//!   abandoned tool-call start is never executed.
-//! - Backoff is bounded exponential with full jitter plus a capped
-//!   server `Retry-After` hint, and sleeps are cancellation-aware.
-//! - The session-selected provider object is never replaced here; retry
-//!   reuses the same request and provider handle. `FallbackProvider`
-//!   (`crates/codegg-providers/src/fallback.rs`) is a library-only
-//!   compatibility primitive and is never constructed on this production
-//!   turn path; provider switching here would require an explicit planning
-//!   change (C003).
+//! Each logical turn has a UUID-scoped chain; retries publish new attempt IDs.
+//! Only transient failures retry, with bounded cancellation-aware backoff.
+//! Once visible output starts, the adapter emits supersession and returns a
+//! typed interruption rather than replaying an ambiguous stream. It reuses
+//! the selected provider and request; fallback switching is not a production
+//! turn-path behavior (C003).
 
 use super::r#loop::AgentLoop;
 use crate::agent::provider_qualification::InferenceCredentialOutcome;
@@ -100,12 +83,17 @@ const MAX_ATTEMPTS: usize = 3;
 const BASE_RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 const STREAM_SETUP_TIMEOUT: Duration = Duration::from_secs(120);
-// OpenCode Go can keep an HTTP response active while the first decodable
-// ChatEvent is delayed. Live diagnostics observed a valid stream whose first
-// decoded event arrived after 83 seconds, and another with body progress but
-// no decoded event at the old 90-second edge. Keep the event-silence bound
-// finite, with 30 seconds of margin over the longest observed latency.
+// Give the first event 240 seconds; keep the later-event idle bound unchanged.
+const FIRST_EVENT_IDLE_TIMEOUT: Duration = Duration::from_secs(240);
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+
+fn stream_idle_timeout(decoded_event_count: u64) -> Duration {
+    if decoded_event_count == 0 {
+        FIRST_EVENT_IDLE_TIMEOUT
+    } else {
+        STREAM_IDLE_TIMEOUT
+    }
+}
 
 async fn stream_with_retry(
     loop_: &mut AgentLoop,
@@ -373,6 +361,10 @@ async fn stream_with_retry_inner(
                         attempt_id = %attempt_id,
                         attempt_index,
                         error_class = %error_class,
+                        attempts_left = chain.attempts_remaining(),
+                        remaining_ms = chain.remaining_time().map_or(0, |remaining| {
+                            remaining.as_millis().min(u64::MAX as u128) as u64
+                        }),
                         "provider retry chain deadline reached; stopping"
                     );
                     return Err(error);
@@ -680,7 +672,7 @@ async fn stream_once(
         let wait_started = Instant::now();
         let next_event = next_event_with_idle_timeout(
             tracing::Instrument::instrument(stream.next(), stream_span.clone()),
-            STREAM_IDLE_TIMEOUT,
+            stream_idle_timeout(decoded_event_count),
         )
         .await
         .map_err(|_| {
@@ -923,18 +915,30 @@ mod tests {
 
     #[tokio::test]
     async fn delayed_first_event_is_allowed_within_stream_idle_bound() {
-        assert_eq!(STREAM_IDLE_TIMEOUT, Duration::from_secs(120));
+        assert_eq!(stream_idle_timeout(0), Duration::from_secs(240));
+        assert_eq!(stream_idle_timeout(1), Duration::from_secs(120));
         let mut events = Box::pin(stream::once(async {
             tokio::time::sleep(Duration::from_millis(30)).await;
             Ok::<_, ProviderError>(ChatEvent::TextDelta(Arc::new("first event".to_string())))
         }));
 
-        let next = next_event_with_idle_timeout(events.next(), STREAM_IDLE_TIMEOUT)
+        let next = next_event_with_idle_timeout(events.next(), stream_idle_timeout(0))
             .await
             .expect("first event should arrive within the configured idle bound");
         assert!(
             matches!(next, Some(Ok(ChatEvent::TextDelta(text))) if text.as_str() == "first event")
         );
+    }
+
+    #[test]
+    fn operation_retry_window_covers_a_first_event_timeout_and_retry_backoff() {
+        let retry = RetryContext::for_operation();
+        let minimum_retry_window = FIRST_EVENT_IDLE_TIMEOUT + MAX_RETRY_DELAY;
+        assert!(
+            retry.remaining_time().unwrap() > minimum_retry_window,
+            "operation retry window must exceed the first-event timeout plus maximum backoff"
+        );
+        assert!(retry.attempts_remaining() > 1);
     }
 
     #[tokio::test]

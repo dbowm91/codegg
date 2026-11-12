@@ -12,10 +12,10 @@ use crate::tool::backend::{
 };
 use crate::tool::{Tool, ToolCategory};
 
-/// Run project tests through codegg's supervised test runner. Prefer this
-/// over bash for cargo test, cargo nextest, pytest, uv run pytest, go test,
-/// make test, and similar test commands. The tool streams full stdout/stderr
-/// to logs, classifies timeouts/failures, and returns a compact report
+/// Run project tests and bounded quality checks through codegg's supervised
+/// runner. Prefer this over bash for cargo test, cargo clippy, cargo nextest,
+/// pytest, uv run pytest, go test, make test, and similar commands. The tool
+/// streams full stdout/stderr to logs, classifies timeouts/failures, and returns a compact report
 /// instead of dumping full output into context.
 pub struct TestTool {
     #[allow(dead_code)]
@@ -122,7 +122,7 @@ impl Tool for TestTool {
     }
 
     fn description(&self) -> &str {
-        "Routing: use test for test runners only, not for non-test shell (prefer bash for general shell; terminal is compat-only). Run project tests through codegg's supervised test runner. Prefer this over bash for cargo test, cargo nextest, pytest, uv run pytest, go test, make test, and similar test commands. The tool streams full stdout/stderr to logs, classifies timeouts/failures, and returns a compact report instead of dumping full output into context. Set execution_mode=background to receive a stable JobHandle immediately and a terminal notification on completion without blocking; foreground (default) preserves the current synchronous report."
+        "Routing: use test for test runners and bounded quality checks, not for general shell (prefer bash for general shell; terminal is compat-only). Run project checks through codegg's supervised runner. Prefer this over bash for cargo test, cargo clippy, cargo nextest, pytest, uv run pytest, go test, make test, and similar commands. The tool streams full stdout/stderr to logs, classifies timeouts/failures, and returns a compact report instead of dumping full output into context. Set execution_mode=background to receive a stable JobHandle immediately and a terminal notification on completion without blocking; foreground (default) preserves the current synchronous report."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -144,7 +144,7 @@ impl Tool for TestTool {
                 },
                 "command": {
                     "type": "string",
-                    "description": "Custom test command (required when scope is custom, ignored otherwise). Must pass test command safety checks. Example: {\"scope\":\"custom\",\"command\":\"cargo test -p mycrate\"}."
+                    "description": "Custom supervised test or quality command (required when scope is custom, ignored otherwise). Must pass command safety checks. Allowed prefixes include cargo test, cargo clippy, cargo nextest, pytest, go test, and make check. Example: {\"scope\":\"custom\",\"command\":\"cargo test -p mycrate\"}."
                 },
                 "workdir": {
                     "type": "string",
@@ -703,7 +703,7 @@ fn parse_test_request_in(
             if validate_custom_command(cmd).is_err() {
                 return Err(ToolError::Execution(format!(
                     "custom command rejected by safety validator: '{cmd}'. \
-                     Allowed argv prefixes: cargo test, cargo nextest, pytest, \
+                     Allowed argv prefixes: cargo test, cargo clippy, cargo nextest, pytest, \
                      uv run pytest, go test, zig build test, make test, make check, \
                      npm test, pnpm test, yarn test, bun test. \
                      Shell metacharacters, redirection, pipes, command substitution, \
@@ -1417,6 +1417,17 @@ mod tests {
         assert!(cmd.is_ok(), "normal cargo test args should be accepted");
         let cmd = validate_custom_command_for_tool("cargo test -p codegg-core");
         assert!(cmd.is_ok(), "package flag should be accepted");
+    }
+
+    #[test]
+    fn test_tool_custom_accepts_cargo_clippy_args() {
+        let cmd = validate_custom_command_for_tool(
+            "cargo clippy --offline --locked --workspace --all-targets -- -D warnings",
+        );
+        assert!(
+            cmd.is_ok(),
+            "bounded cargo clippy command should be accepted"
+        );
     }
 
     /// Helper that runs the strict custom-command validator the same

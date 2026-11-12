@@ -1,0 +1,269 @@
+{
+  "attempt": 28,
+  "binary_sha256": "ac6687258c7dbb20f3059a836280f9629fa020e69378a18d748182f3406aa204",
+  "case_id": "build-provenance-catalog",
+  "causal_trace": {
+    "correlated_repair_cycles": 2,
+    "dropped_events": 0,
+    "event_count": 653,
+    "state": "complete"
+  },
+  "continuation": {
+    "all_public_artifacts_present": true,
+    "completed_phases": [
+      "versioned_records",
+      "durable_import",
+      "dependency_index",
+      "provenance_queries",
+      "cli_contract",
+      "acceptance_audit",
+      "workspace_qualification"
+    ],
+    "contract_phases": [
+      "versioned_records",
+      "durable_import",
+      "dependency_index",
+      "provenance_queries",
+      "cli_export"
+    ],
+    "document_valid": true,
+    "gates": {
+      "acceptance_audit": "complete",
+      "bounded_probes": "complete",
+      "cli_contract": "complete",
+      "dependency_index": "complete",
+      "durable_import": "complete",
+      "independent_review": "complete",
+      "provenance_queries": "complete",
+      "release_scale_overlap": "complete",
+      "starter_repair_format": "complete",
+      "starter_repair_store": "complete",
+      "versioned_records": "complete",
+      "workspace_qualification": "complete"
+    },
+    "incomplete_gates": [],
+    "incomplete_stages": [],
+    "next_contract_phase": "none",
+    "next_gate": "none",
+    "next_phase": "none",
+    "next_stage": "none",
+    "present": true,
+    "release_overlap_confirmed": true,
+    "repair_job_diagnostic": {
+      "complete": true,
+      "documented_repair_cycle_count": 2,
+      "groups": {
+        "catalog_format": {
+          "documented_states_match_observations": true,
+          "failed_job_status_called_immediately": true,
+          "failed_job_submitted_once": true,
+          "failed_terminal_observed": true,
+          "job_ids_are_distinct": true,
+          "productive_change_between_failure_and_rerun": true,
+          "qualified": true,
+          "repair_cycle_correlated": true,
+          "repair_followed_failure": true,
+          "repair_job_status_called_immediately": true,
+          "repair_job_submitted_once": true,
+          "repair_terminal_observed": true
+        },
+        "catalog_store": {
+          "documented_states_match_observations": true,
+          "failed_job_status_called_immediately": true,
+          "failed_job_submitted_once": true,
+          "failed_terminal_observed": true,
+          "job_ids_are_distinct": true,
+          "productive_change_between_failure_and_rerun": true,
+          "qualified": true,
+          "repair_cycle_correlated": true,
+          "repair_followed_failure": true,
+          "repair_job_status_called_immediately": true,
+          "repair_job_submitted_once": true,
+          "repair_terminal_observed": true
+        }
+      },
+      "job_ids_unique_across_groups": true,
+      "observed_repair_cycle_count": 2,
+      "qualified_pair_count": 2,
+      "raw_job_arguments_retained": false,
+      "raw_job_ids_retained": false,
+      "repair_cycle_count_matches": true,
+      "required_pair_count": 2
+    },
+    "required_review_observed": true,
+    "required_success_jobs": {
+      "clippy": {
+        "completed": true,
+        "documented_completed": true,
+        "observed_terminal_status": "completed",
+        "submitted_once": true
+      },
+      "workspace_tests": {
+        "completed": true,
+        "documented_completed": true,
+        "observed_terminal_status": "completed",
+        "submitted_once": true
+      }
+    },
+    "stages": {
+      "acceptance_audit": "complete",
+      "cli_contract": "complete",
+      "dependency_index": "complete",
+      "durable_import": "complete",
+      "provenance_queries": "complete",
+      "versioned_records": "complete",
+      "workspace_qualification": "complete"
+    },
+    "test_job_lifecycle": {
+      "all_terminal_observed": true,
+      "raw_job_arguments_retained": false,
+      "raw_job_ids_retained": false,
+      "submission_count": 15,
+      "terminal_observed_count": 15,
+      "terminal_status_counts": {
+        "completed": 13,
+        "failed": 2
+      },
+      "unique_submitted_job_count": 15,
+      "unobserved_count": 0,
+      "unobserved_status_counts": {}
+    }
+  },
+  "daemon_process_count_after_cleanup": 0,
+  "disk": {
+    "last_free_bytes": 191089102848,
+    "lowest_observed_free_bytes": 185999736832,
+    "minimum_free_bytes": 10737418240,
+    "triggered": false
+  },
+  "events": {
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "event_observation_state": "observed_complete",
+    "tool_started_count": 292,
+    "tool_terminal_count": 292,
+    "tool_unpaired_start_count": 0
+  },
+  "group_id": "s019-muse-diagnostic-v83",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "horizon": {
+    "active_work_span_ms": 2152050,
+    "continuation_confirmed": true,
+    "event_measurement_complete": true,
+    "exact_job_running_and_terminal": true,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 90163,
+    "measurement_complete": true,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": true,
+    "repair_cycles": 2,
+    "tool_call_cap_exceeded": false,
+    "tool_call_count": 292,
+    "tool_call_limit": 1600
+  },
+  "manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "provider": {
+    "attempts_failed": 0,
+    "attempts_started": 267,
+    "attempts_succeeded": 267,
+    "cost_source": "reported",
+    "request_count": 267,
+    "request_limit": 1200,
+    "timeouts": 0,
+    "usd": 0.010866
+  },
+  "raw_job_arguments_retained": false,
+  "raw_job_ids_retained": false,
+  "raw_transcript_retained": false,
+  "receipt_sha256": "588dc5204e6264fb79bf10bf06cff8c125971d7fc41192af46774ece16bb2295",
+  "requested_manifest_sha256": "8e36f5c03299e4089d950b0564a019deb99890c2cdccd3d6f352f4861b5c9d6a",
+  "resources": {
+    "cpu_seconds": 39.847,
+    "lane_disk_growth_bytes": 197539112,
+    "peak_rss_bytes": 464408576,
+    "sample_count": 3889
+  },
+  "reviewer": {
+    "completed_review_result_observed": true,
+    "compliant_status_then_get_lifecycle": true,
+    "exact_identity_matched_call_count": 5,
+    "final_status": "completed",
+    "get_after_terminal_status_count": 1
+  },
+  "schema": "s019_attempt_safe_diagnostic_v1",
+  "stop_reason": "end_turn",
+  "task_completion_state": {
+    "raw_job_ids_retained": false,
+    "raw_note_retained": false,
+    "reasons": [
+      "independent_verifier_failures"
+    ],
+    "schema": "h007_task_completion_diagnostic_v2",
+    "state": "verification_failed",
+    "verifier_outcome": "assertion_failures",
+    "verifier_public_reconciliation": {
+      "assertion_text_retained": false,
+      "classification": {
+        "continuation_boundary": "verifier_public_projection_disagreement",
+        "transcript_job_lifecycle": "verifier_public_projection_disagreement"
+      },
+      "failure_domain_counts": {
+        "continuation_boundary": 1,
+        "transcript_job_lifecycle": 1
+      },
+      "public_domain_states": {
+        "continuation_boundary": "complete",
+        "transcript_job_lifecycle": "complete"
+      },
+      "raw_job_ids_retained": false,
+      "raw_output_retained": false,
+      "schema": "h007_verifier_public_reconciliation_v1",
+      "transcript_retained": false
+    }
+  },
+  "task_outcome": "failed",
+  "terminal": "completed",
+  "verifier": {
+    "assertion_operation_counts": {
+      "pattern": 2
+    },
+    "assertion_text_retained": false,
+    "failed_test_ids": [
+      "test_durable_continuation_records_completed_phases_and_next_boundary (test_catalog_contract.CatalogContract.test_durable_continuation_records_completed_phases_and_next_boundary)",
+      "test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation (test_catalog_contract.CatalogContract.test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation)"
+    ],
+    "failure_counts": {
+      "errors": 0,
+      "failures": 2
+    },
+    "failure_domain_counts": {
+      "continuation_boundary": 1,
+      "transcript_job_lifecycle": 1
+    },
+    "outcome": "assertion_failures",
+    "passed_count": 3,
+    "raw_output_retained": false,
+    "tests_run": 5,
+    "traceback_retained": false
+  },
+  "verifier_public_reconciliation": {
+    "assertion_text_retained": false,
+    "classification": {
+      "continuation_boundary": "verifier_public_projection_disagreement",
+      "transcript_job_lifecycle": "verifier_public_projection_disagreement"
+    },
+    "failure_domain_counts": {
+      "continuation_boundary": 1,
+      "transcript_job_lifecycle": 1
+    },
+    "public_domain_states": {
+      "continuation_boundary": "complete",
+      "transcript_job_lifecycle": "complete"
+    },
+    "raw_job_ids_retained": false,
+    "raw_output_retained": false,
+    "schema": "h007_verifier_public_reconciliation_v1",
+    "transcript_retained": false
+  }
+}

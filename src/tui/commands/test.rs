@@ -61,7 +61,7 @@ fn build_test_request(
             if validate_custom_command(cmd).is_err() {
                 return Err(format!(
                     "custom command rejected by safety validator: '{cmd}'. \
-                     Allowed argv prefixes: cargo test, cargo nextest, pytest, \
+                     Allowed argv prefixes: cargo test, cargo clippy, cargo nextest, pytest, \
                      uv run pytest, go test, zig build test, make test, make check, \
                      npm test, pnpm test, yarn test, bun test. \
                      Shell metacharacters, redirection, pipes, command substitution, \
@@ -474,6 +474,20 @@ mod tests {
     fn tui_test_custom_accepts_normal_cargo_test_args() {
         let req =
             build_test_request("custom", "cargo test --lib -p codegg-core", "/tmp".into()).unwrap();
+        assert!(matches!(
+            req.scope,
+            crate::test_runner::TestScope::CustomCommand(_)
+        ));
+    }
+
+    #[test]
+    fn tui_test_custom_accepts_cargo_clippy_args() {
+        let req = build_test_request(
+            "custom",
+            "cargo clippy --offline --locked --workspace --all-targets -- -D warnings",
+            "/tmp".into(),
+        )
+        .unwrap();
         assert!(matches!(
             req.scope,
             crate::test_runner::TestScope::CustomCommand(_)

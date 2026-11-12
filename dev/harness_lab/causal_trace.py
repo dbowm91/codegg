@@ -9,7 +9,7 @@ from typing import Any, Mapping
 
 SCHEMA = "harness_causal_trace_v1"
 MAX_EVENTS = 10_000
-MAX_BYTES = 1_048_576
+MAX_BYTES = 4 * 1_048_576
 _JOB_ID = re.compile(r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b", re.I)
 _JOB_STATUS = re.compile(r"\bjob\s+(queued|running|completed|failed|cancelled|canceled|timed_out|still-running)\b", re.I)
 _TOOLS = frozenset({"read", "write", "edit", "replace", "apply_patch", "bash", "test", "job",
@@ -42,6 +42,7 @@ class Recorder:
         self._terminal: set[str] = set()
         self._truncated = False
         self._dropped = 0
+        self._correlated_repair_cycles = 0
         self._closed = False
 
     @property
@@ -96,7 +97,8 @@ class Recorder:
                          and dropped >= 0 else None)
 
     def record(self, event_type: str, *, elapsed_ms: int | None = None,
-               detail: str | None = None) -> None:
+               detail: str | None = None,
+               related_job_ids: tuple[str, str] | None = None) -> None:
         """Record a bounded controller observation, never raw exception text."""
         if event_type not in {"cancel_requested", "provider_timeout", "verifier_started",
                               "verifier_terminal", "continuation", "checkpoint", "repair_cycle"}:
@@ -104,6 +106,13 @@ class Recorder:
         row: dict[str, Any] = {"elapsed_ms": elapsed_ms if isinstance(elapsed_ms, int) and elapsed_ms >= 0 else None}
         if detail in {"user", "disk_floor", "activity_stall", "budget", "controller", "passed", "failed", "unknown"}:
             row["detail"] = detail
+        if related_job_ids is not None:
+            if (event_type != "repair_cycle" or len(related_job_ids) != 2
+                    or any(not isinstance(value, str) or not value for value in related_job_ids)
+                    or related_job_ids[0] == related_job_ids[1]):
+                raise ValueError("repair-cycle correlation requires two distinct job IDs")
+            row["failed_job_correlation"] = _id_digest(self.run_id, related_job_ids[0])
+            row["repair_job_correlation"] = _id_digest(self.run_id, related_job_ids[1])
         self._append(event_type, None, **row)
 
     def _append(self, event_type: str, notification: Mapping[str, Any] | None = None, **fields: Any) -> None:
@@ -127,6 +136,10 @@ class Recorder:
         self._seq += 1
         self._bytes += len(encoded)
         self._previous = digest
+        if (event_type == "repair_cycle"
+                and isinstance(fields.get("failed_job_correlation"), str)
+                and isinstance(fields.get("repair_job_correlation"), str)):
+            self._correlated_repair_cycles += 1
 
     def finish(self) -> dict[str, Any]:
         if not self._closed:
@@ -140,6 +153,7 @@ class Recorder:
                 "daemon_generation": self.identity.get("daemon_generation"),
                 "event_count": self._seq, "bytes": self._bytes,
                 "dropped_events": self._dropped,
+                "correlated_repair_cycles": self._correlated_repair_cycles,
                 "sha256": hashlib.sha256(self.path.read_bytes()).hexdigest()}
 
 
@@ -192,6 +206,12 @@ def attribution_report(trace_rows: list[dict[str, Any]], receipt: Mapping[str, A
                 for row in trace_rows),
             "repair_cycles_observed": sum(
                 row.get("event_type") == "repair_cycle" and row.get("detail") == "passed"
+                for row in trace_rows),
+            "correlated_repair_cycles_observed": sum(
+                row.get("event_type") == "repair_cycle"
+                and row.get("detail") == "passed"
+                and isinstance(row.get("failed_job_correlation"), str)
+                and isinstance(row.get("repair_job_correlation"), str)
                 for row in trace_rows),
             "continuation_observed": any(row.get("event_type") == "continuation"
                                          for row in trace_rows)}

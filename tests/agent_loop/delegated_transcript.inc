@@ -265,6 +265,7 @@ fn request(run_id: AgentRunId, prompt: &str) -> SubAgentRequest {
         description: "a delegated task".to_string(),
         depth: 0,
         max_tool_calls: None,
+        max_wall_clock_secs: None,
         parent_model: None,
         workspace_root: Some(std::env::current_dir().expect("workspace root")),
         default_working_directory: None,

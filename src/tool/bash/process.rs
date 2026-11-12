@@ -401,6 +401,7 @@ impl BashTool {
                 timeout,
                 None,
                 None,
+                None,
             )
             .await?;
         Ok((result, output))
@@ -413,6 +414,7 @@ impl BashTool {
         timeout: Duration,
         authorization: Option<crate::tool::authorization::ExecutionAuthorizationContext>,
         session_id: Option<&str>,
+        cancellation: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<
         (
             String,
@@ -478,6 +480,9 @@ impl BashTool {
             ),
         );
         request.execution_authorization = authorization;
+        if let Some(cancellation) = cancellation {
+            request.cancellation = cancellation;
+        }
         #[cfg(windows)]
         if let Some(raw_command) = raw_cmd_command {
             request = request.with_raw_command(raw_command);
@@ -618,6 +623,7 @@ impl BashTool {
         timeout: Duration,
         session_id: Option<String>,
         network_intent: codegg_core::approval::NetworkIntent,
+        cancellation: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<DispatchOutcome, ToolError> {
         self.record_routing_metric(RoutingMetric {
             family: CommandIntentFamily::Tests,
@@ -679,11 +685,37 @@ impl BashTool {
             )
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
-        let completion = submission
-            .scheduler()
-            .wait_for_completion(&submitted.job_id, timeout + Duration::from_secs(5))
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let scheduler = submission.scheduler();
+        let completion = if let Some(cancellation) = cancellation {
+            tokio::select! {
+                completion = scheduler.wait_for_completion(
+                    &submitted.job_id,
+                    timeout + Duration::from_secs(5),
+                ) => completion.map_err(|e| ToolError::Execution(e.to_string()))?,
+                _ = cancellation.cancelled() => {
+                    scheduler
+                        .request_cancel(&submitted.job_id, "parent turn cancelled")
+                        .await
+                        .map_err(|e| ToolError::Execution(e.to_string()))?;
+                    // Do not return from a foreground tool until the
+                    // scheduler confirms process teardown and the terminal
+                    // job state. This prevents a cancelled turn from leaving
+                    // its test process running behind it.
+                    let _ = scheduler
+                        .wait_for_completion(&submitted.job_id, Duration::from_secs(10))
+                        .await
+                        .map_err(|e| ToolError::Execution(e.to_string()))?;
+                    return Err(ToolError::Execution(
+                        "foreground test cancelled with its parent turn".into(),
+                    ));
+                }
+            }
+        } else {
+            scheduler
+                .wait_for_completion(&submitted.job_id, timeout + Duration::from_secs(5))
+                .await
+                .map_err(|e| ToolError::Execution(e.to_string()))?
+        };
         let result = completion.summary;
 
         // Synthesize a `std::process::Output`-shaped value for code paths
@@ -1482,6 +1514,7 @@ impl BashTool {
                     timeout,
                     session_id.clone(),
                     network_intent,
+                    audit_ctx.and_then(|ctx| ctx.cancellation.clone()),
                 )
                 .await
             }
@@ -1975,6 +2008,37 @@ mod tests {
         assert_eq!(&argv[..2], &["sh", "-c"]);
         #[cfg(windows)]
         assert!(Path::new(&argv[0]).is_absolute());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn managed_raw_shell_stops_when_turn_cancellation_fires() {
+        let tool = BashTool::new();
+        let workspace = tempfile::tempdir().expect("temporary workspace");
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let trigger = cancellation.clone();
+        let cancel_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            trigger.cancel();
+        });
+        let started = std::time::Instant::now();
+
+        let (result, output, _, _) = tool
+            .execute_via_raw_shell_with_authorization(
+                "sleep 30; printf reached-end",
+                Some(workspace.path()),
+                Duration::from_secs(60),
+                None,
+                None,
+                Some(cancellation),
+            )
+            .await
+            .expect("running shell reports its cancelled process result");
+        cancel_task.await.expect("cancellation task");
+
+        assert!(started.elapsed() < Duration::from_secs(8));
+        assert!(!result.contains("reached-end"), "{result}");
+        assert_ne!(output.status.code(), Some(0));
     }
 
     #[cfg(windows)]

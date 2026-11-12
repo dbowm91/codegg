@@ -118,6 +118,9 @@ pub struct SubAgentRequest {
     pub description: String,
     pub depth: usize,
     pub max_tool_calls: Option<usize>,
+    /// Durable per-attempt wall-clock budget. The configured child ceiling
+    /// still wins when it is smaller.
+    pub max_wall_clock_secs: Option<u64>,
     pub parent_model: Option<String>,
     pub workspace_root: Option<PathBuf>,
     /// Relative directory captured from the parent turn. It is resolved
@@ -166,6 +169,101 @@ pub struct SubAgentRequest {
     /// daemon — and the child's write then stays unattributed, which the
     /// shared-checkout fence refuses on a daemon with a team policy.
     pub execution_audit: Option<codegg_core::audit_instrumentation::TrustedExecutionAuditContext>,
+}
+
+fn resolve_subagent_wall_clock_timeout_secs(
+    run_budget_secs: Option<u64>,
+    configured_ceiling_secs: u64,
+) -> u64 {
+    let configured = if configured_ceiling_secs == 0 {
+        crate::config::schema::DEFAULT_SUBAGENT_WALL_CLOCK_TIMEOUT_SECS
+    } else {
+        configured_ceiling_secs
+    };
+    run_budget_secs
+        .filter(|seconds| *seconds > 0)
+        .map(|seconds| seconds.min(configured))
+        .unwrap_or(configured)
+}
+
+const SUBAGENT_TIMEOUT_CANCELLATION_GRACE: tokio::time::Duration =
+    tokio::time::Duration::from_secs(5);
+
+async fn run_with_subagent_wall_clock_timeout<T, F>(
+    timeout: tokio::time::Duration,
+    cancellation: &tokio::sync::watch::Sender<bool>,
+    execution: F,
+) -> Result<T, Box<dyn std::error::Error + Send + Sync>>
+where
+    F: std::future::Future<Output = Result<T, Box<dyn std::error::Error + Send + Sync>>>,
+{
+    tokio::pin!(execution);
+    match tokio::time::timeout(timeout, &mut execution).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(error),
+        Err(_) => {
+            // Ask the child loop to stop its current provider/tool work before
+            // dropping its future. Tool execution receives the same watch
+            // signal, so scheduler-backed work can observe cancellation too.
+            let _ = cancellation.send(true);
+            let _ = tokio::time::timeout(SUBAGENT_TIMEOUT_CANCELLATION_GRACE, &mut execution).await;
+            Err(Box::new(codegg_core::error::AppError::Tool(
+                codegg_core::error::ToolError::Timeout(
+                    "subagent wall-clock timeout exceeded".into(),
+                ),
+            )))
+        }
+    }
+}
+
+#[cfg(test)]
+mod subagent_wall_clock_tests {
+    use super::*;
+
+    #[test]
+    fn durable_budget_is_clamped_to_configured_ceiling() {
+        assert_eq!(
+            resolve_subagent_wall_clock_timeout_secs(Some(900), 600),
+            600
+        );
+        assert_eq!(
+            resolve_subagent_wall_clock_timeout_secs(Some(300), 600),
+            300
+        );
+        assert_eq!(resolve_subagent_wall_clock_timeout_secs(Some(0), 600), 600);
+        assert_eq!(
+            resolve_subagent_wall_clock_timeout_secs(None, 0),
+            crate::config::schema::DEFAULT_SUBAGENT_WALL_CLOCK_TIMEOUT_SECS
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_signals_cancellation_and_returns_a_typed_timeout() {
+        let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+        let execution = async move {
+            let _ = cancel_rx.changed().await;
+            Err::<(), Box<dyn std::error::Error + Send + Sync>>(Box::new(std::io::Error::other(
+                "child observed cancellation",
+            )))
+        };
+
+        let error = run_with_subagent_wall_clock_timeout(
+            tokio::time::Duration::from_millis(1),
+            &cancel_tx,
+            execution,
+        )
+        .await
+        .expect_err("the child must remain a timeout failure after cancellation");
+
+        assert!(error
+            .to_string()
+            .contains("subagent wall-clock timeout exceeded"));
+        assert!(*cancel_tx.borrow(), "timeout must signal the child loop");
+        assert_eq!(
+            classify_delegated_failure(error.as_ref()),
+            Some("deadline_exceeded")
+        );
+    }
 }
 
 /// Stable, typed compatibility lineage for the pre-durable AgentRun path.
@@ -1250,6 +1348,7 @@ pub fn classify_delegated_failure(
         AppError::Cancelled => Some("cancelled"),
         AppError::Permission(_) => Some("tool_permission_denied"),
         AppError::Tool(ToolError::Permission(_)) => Some("tool_permission_denied"),
+        AppError::Tool(ToolError::Timeout(_)) => Some("deadline_exceeded"),
         _ => None,
     }
 }
@@ -1378,6 +1477,7 @@ async fn run_subagent_task_with_cancel(
             SubAgentResult::failure(task_id, "Task cancelled".to_string())
         }
         result = async {
+            let (child_cancel_tx, child_cancel_rx) = tokio::sync::watch::channel(false);
             let execution = execute_agent_task(
                 &request,
                 &session_id,
@@ -1387,19 +1487,24 @@ async fn run_subagent_task_with_cancel(
                 session_store,
                 pool,
                 subagent_pool,
+                child_cancel_tx.clone(),
+                child_cancel_rx,
             );
-            if let Some(seconds) = config
+            let configured_timeout = config
                 .subagent
                 .as_ref()
-                .and_then(|settings| settings.wall_clock_timeout_secs)
-            {
-                match tokio::time::timeout(tokio::time::Duration::from_secs(seconds), execution).await {
-                    Ok(result) => result,
-                    Err(_) => Err("subagent wall-clock timeout exceeded".into()),
-                }
-            } else {
-                execution.await
-            }
+                .map(crate::config::schema::SubagentConfig::effective_wall_clock_timeout_secs)
+                .unwrap_or(crate::config::schema::DEFAULT_SUBAGENT_WALL_CLOCK_TIMEOUT_SECS);
+            let timeout_secs = resolve_subagent_wall_clock_timeout_secs(
+                request.max_wall_clock_secs,
+                configured_timeout,
+            );
+            run_with_subagent_wall_clock_timeout(
+                tokio::time::Duration::from_secs(timeout_secs),
+                &child_cancel_tx,
+                execution,
+            )
+            .await
         } => {
             match result {
                 Ok((output, report, validation, artifacts)) => {
@@ -1469,6 +1574,8 @@ async fn execute_agent_task(
     _session_store: Arc<SessionStore>,
     pool: Option<SqlitePool>,
     subagent_pool: Arc<SubAgentPool>,
+    child_cancel_tx: tokio::sync::watch::Sender<bool>,
+    child_cancel_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<
     (
         String,
@@ -2032,9 +2139,8 @@ async fn execute_agent_task(
     // registration happens only after the loop owns the receivers, so a
     // persisted control can never race provider transcript mutation.
     let live_registration = if let Some(run_id) = request.run_id.clone() {
-        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
         let (steer_tx, steer_rx) = tokio::sync::mpsc::channel(32);
-        agent_loop.set_cancel_receiver(cancel_rx);
+        agent_loop.set_cancel_receiver(child_cancel_rx.clone());
         agent_loop.set_steer_receiver(steer_rx);
         let control = subagent_pool.durable_run_control.lock().await.clone();
         if let Some(control) = control {
@@ -2072,7 +2178,7 @@ async fn execute_agent_task(
                     crate::agent::run_control::LiveRunHandle {
                         follow_up_tx: agent_loop.follow_up_sender(),
                         steer_tx,
-                        cancel_tx,
+                        cancel_tx: child_cancel_tx.clone(),
                         interrupt_flag: agent_loop.interrupt_flag(),
                     },
                 )
@@ -2484,6 +2590,7 @@ mod admission_tests {
             description: format!("task-{task_id}"),
             depth: 0,
             max_tool_calls: None,
+            max_wall_clock_secs: None,
             parent_model: None,
             workspace_root: None,
             default_working_directory: None,
@@ -2848,6 +2955,7 @@ mod writer_fence_tests {
             description: "task-1".into(),
             depth: 0,
             max_tool_calls: None,
+            max_wall_clock_secs: None,
             parent_model: None,
             workspace_root: None,
             default_working_directory: None,

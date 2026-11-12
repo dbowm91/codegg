@@ -1,0 +1,1721 @@
+{
+  "attempt_number": 41,
+  "authorization": {
+    "combined_starts_consumed": 42,
+    "combined_starts_remaining": 118,
+    "grant_id": "s019-supplemental-20261110-03",
+    "supplemental_starts_consumed": 4,
+    "supplemental_starts_remaining": 36
+  },
+  "continuation_public_gates": {
+    "all_public_artifacts_present": true,
+    "contract_phase_order_matches": true,
+    "document_valid": true,
+    "gates": {
+      "acceptance_audit": "complete",
+      "bounded_probes": "complete",
+      "cli_contract": "complete",
+      "dependency_index": "complete",
+      "durable_import": "complete",
+      "independent_review": "complete",
+      "provenance_queries": "complete",
+      "release_scale_overlap": "complete",
+      "starter_repair_format": "complete",
+      "starter_repair_store": "complete",
+      "versioned_records": "complete",
+      "workspace_qualification": "complete"
+    },
+    "incomplete_gates": [],
+    "incomplete_stages": [],
+    "missing_contract_phases": [],
+    "missing_phases": [],
+    "next_gate": "none",
+    "next_phase": "none",
+    "next_stage": "none",
+    "phase_order_matches": true,
+    "present": true,
+    "public_artifact_status": {
+      "HARNESS_PROBE_REPORT.json": true,
+      "PUBLIC_ACCEPTANCE_AUDIT.md": true,
+      "tools/catalog_probe.py": true
+    },
+    "release_overlap_confirmed": true,
+    "repair_job_diagnostic": {
+      "complete": true,
+      "documented_repair_cycle_count": 5,
+      "groups": {
+        "catalog_format": {
+          "documented_states_match_observations": true,
+          "failed_job_status_called_immediately": true,
+          "failed_job_submitted_once": true,
+          "failed_terminal_observed": true,
+          "job_ids_are_distinct": true,
+          "productive_change_between_failure_and_rerun": true,
+          "qualified": true,
+          "repair_cycle_correlated": true,
+          "repair_followed_failure": true,
+          "repair_job_status_called_immediately": true,
+          "repair_job_submitted_once": true,
+          "repair_terminal_observed": true
+        },
+        "catalog_store": {
+          "documented_states_match_observations": true,
+          "failed_job_status_called_immediately": true,
+          "failed_job_submitted_once": true,
+          "failed_terminal_observed": true,
+          "job_ids_are_distinct": true,
+          "productive_change_between_failure_and_rerun": true,
+          "qualified": true,
+          "repair_cycle_correlated": true,
+          "repair_followed_failure": true,
+          "repair_job_status_called_immediately": true,
+          "repair_job_submitted_once": true,
+          "repair_terminal_observed": true
+        }
+      },
+      "job_ids_unique_across_groups": true,
+      "observed_repair_cycle_count": 5,
+      "qualified_pair_count": 2,
+      "raw_job_arguments_retained": false,
+      "raw_job_ids_retained": false,
+      "repair_cycle_count_matches": true,
+      "required_pair_count": 2
+    },
+    "required_review_observed": true,
+    "required_success_jobs": {
+      "clippy": {
+        "completed": true,
+        "documented_completed": true,
+        "observed_terminal_status": "completed",
+        "submitted_once": true
+      },
+      "workspace_tests": {
+        "completed": true,
+        "documented_completed": true,
+        "observed_terminal_status": "completed",
+        "submitted_once": true
+      }
+    },
+    "schema": "h007_continuation_diagnostic_v1",
+    "stage_order_matches": true,
+    "stages": {
+      "acceptance_audit": "complete",
+      "cli_contract": "complete",
+      "dependency_index": "complete",
+      "durable_import": "complete",
+      "provenance_queries": "complete",
+      "versioned_records": "complete",
+      "workspace_qualification": "complete"
+    },
+    "test_job_lifecycle": {
+      "all_terminal_observed": true,
+      "raw_job_arguments_retained": false,
+      "raw_job_ids_retained": false,
+      "submission_count": 21,
+      "terminal_observed_count": 21,
+      "terminal_status_counts": {
+        "completed": 16,
+        "failed": 5
+      },
+      "unique_submitted_job_count": 21,
+      "unobserved_count": 0,
+      "unobserved_status_counts": {}
+    }
+  },
+  "disk": {
+    "current_free_bytes": 108083830784,
+    "elapsed_seconds": 2359.429,
+    "external_hard_stop": false,
+    "floor_bytes": 10737418240,
+    "minimum_free_bytes": 101345566720,
+    "trigger": null
+  },
+  "edit_event_sequence": {
+    "events": [
+      {
+        "call_index": 21,
+        "finished_elapsed_ms": 33359,
+        "started_elapsed_ms": 33331,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 28,
+        "finished_elapsed_ms": 50372,
+        "started_elapsed_ms": 50343,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 41,
+        "finished_elapsed_ms": 133171,
+        "started_elapsed_ms": 133123,
+        "tool": "write",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 47,
+        "finished_elapsed_ms": 151962,
+        "started_elapsed_ms": 151912,
+        "tool": "write",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 49,
+        "finished_elapsed_ms": 165368,
+        "started_elapsed_ms": 165315,
+        "tool": "write",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 52,
+        "finished_elapsed_ms": 171601,
+        "started_elapsed_ms": 171570,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 53,
+        "finished_elapsed_ms": 173382,
+        "started_elapsed_ms": 173370,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 58,
+        "finished_elapsed_ms": 190301,
+        "started_elapsed_ms": 190280,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 74,
+        "finished_elapsed_ms": 284952,
+        "started_elapsed_ms": 284920,
+        "tool": "write",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 75,
+        "finished_elapsed_ms": 292721,
+        "started_elapsed_ms": 292709,
+        "tool": "write",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 77,
+        "finished_elapsed_ms": 298865,
+        "started_elapsed_ms": 298836,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 86,
+        "finished_elapsed_ms": 320739,
+        "started_elapsed_ms": 320718,
+        "tool": "write",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 99,
+        "finished_elapsed_ms": 398999,
+        "started_elapsed_ms": 398971,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 100,
+        "finished_elapsed_ms": 400668,
+        "started_elapsed_ms": 400662,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 103,
+        "finished_elapsed_ms": 442951,
+        "started_elapsed_ms": 442919,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 133,
+        "finished_elapsed_ms": 832612,
+        "started_elapsed_ms": 832587,
+        "tool": "write",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 135,
+        "finished_elapsed_ms": 866643,
+        "started_elapsed_ms": 866617,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 136,
+        "finished_elapsed_ms": 869157,
+        "started_elapsed_ms": 869142,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 168,
+        "finished_elapsed_ms": 1331386,
+        "started_elapsed_ms": 1331332,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 171,
+        "finished_elapsed_ms": 1371932,
+        "started_elapsed_ms": 1371898,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 172,
+        "finished_elapsed_ms": 1419932,
+        "started_elapsed_ms": 1419904,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 173,
+        "finished_elapsed_ms": 1422032,
+        "started_elapsed_ms": 1422007,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 174,
+        "finished_elapsed_ms": 1423794,
+        "started_elapsed_ms": 1423777,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 176,
+        "finished_elapsed_ms": 1449488,
+        "started_elapsed_ms": 1449441,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 182,
+        "finished_elapsed_ms": 1460784,
+        "started_elapsed_ms": 1460775,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 187,
+        "finished_elapsed_ms": 1473084,
+        "started_elapsed_ms": 1473042,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 188,
+        "finished_elapsed_ms": 1476164,
+        "started_elapsed_ms": 1476141,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 190,
+        "finished_elapsed_ms": 1479784,
+        "started_elapsed_ms": 1479773,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 211,
+        "finished_elapsed_ms": 1658807,
+        "started_elapsed_ms": 1658755,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 222,
+        "finished_elapsed_ms": 1943646,
+        "started_elapsed_ms": 1943585,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 223,
+        "finished_elapsed_ms": 1956331,
+        "started_elapsed_ms": 1956301,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 224,
+        "finished_elapsed_ms": 2006458,
+        "started_elapsed_ms": 2006422,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 227,
+        "finished_elapsed_ms": 2069704,
+        "started_elapsed_ms": 2069662,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 230,
+        "finished_elapsed_ms": 2075835,
+        "started_elapsed_ms": 2075823,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 236,
+        "finished_elapsed_ms": 2119767,
+        "started_elapsed_ms": 2119733,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 244,
+        "finished_elapsed_ms": 2167905,
+        "started_elapsed_ms": 2167847,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 246,
+        "finished_elapsed_ms": 2180230,
+        "started_elapsed_ms": 2180164,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 269,
+        "finished_elapsed_ms": 2313713,
+        "started_elapsed_ms": 2313688,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 270,
+        "finished_elapsed_ms": 2314984,
+        "started_elapsed_ms": 2314959,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 271,
+        "finished_elapsed_ms": 2316158,
+        "started_elapsed_ms": 2316146,
+        "tool": "edit",
+        "tool_status": "completed"
+      },
+      {
+        "call_index": 272,
+        "finished_elapsed_ms": 2318394,
+        "started_elapsed_ms": 2318368,
+        "tool": "edit",
+        "tool_status": "completed"
+      }
+    ],
+    "raw_content_retained": false,
+    "raw_paths_retained": false
+  },
+  "event_measurement": {
+    "correlated_repair_cycles": 5,
+    "dropped_events": 0,
+    "event_count": 633,
+    "event_gap_dropped": 0,
+    "event_observation_state": "observed_complete",
+    "explicit_event_gaps": 0,
+    "raw_job_ids_retained": false,
+    "tool_started": 274,
+    "tool_terminal": 274,
+    "trace_state": "complete",
+    "unpaired_starts": 0
+  },
+  "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "horizon": {
+    "active_work_span_ms": 2315686,
+    "continuation_confirmed": true,
+    "duration_qualified": true,
+    "event_measurement_complete": true,
+    "exact_job_running_and_terminal": true,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 80833,
+    "measurement_complete": true,
+    "minimum_active_duration_ms": 1800000,
+    "outcome": "not_qualified",
+    "productive_work_during_job": true,
+    "reason": "task_not_passed",
+    "repair_cycles": 5,
+    "tool_call_cap_exceeded": false,
+    "tool_call_count": 274,
+    "tool_call_limit": 1600
+  },
+  "job_lifecycle_sequence": {
+    "events": [
+      {
+        "action": "submit",
+        "call_index": 17,
+        "finished_elapsed_ms": 24114,
+        "job_label": "J01",
+        "job_state": null,
+        "started_elapsed_ms": 24071,
+        "tool": "test",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 18,
+        "finished_elapsed_ms": 25512,
+        "job_label": "J01",
+        "job_state": "running",
+        "started_elapsed_ms": 25501,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "wait",
+        "call_index": 19,
+        "finished_elapsed_ms": 28622,
+        "job_label": "J01",
+        "job_state": "failed",
+        "started_elapsed_ms": 28598,
+        "tool": "job",
+        "tool_status": "failed"
+      },
+      {
+        "action": "output",
+        "call_index": 20,
+        "finished_elapsed_ms": 30208,
+        "job_label": "J01",
+        "job_state": "failed",
+        "started_elapsed_ms": 30176,
+        "tool": "job",
+        "tool_status": "failed"
+      },
+      {
+        "action": "submit",
+        "call_index": 22,
+        "finished_elapsed_ms": 35076,
+        "job_label": "J02",
+        "job_state": null,
+        "started_elapsed_ms": 35063,
+        "tool": "test",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 23,
+        "finished_elapsed_ms": 36635,
+        "job_label": "J02",
+        "job_state": "running",
+        "started_elapsed_ms": 36628,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "wait",
+        "call_index": 24,
+        "finished_elapsed_ms": 38830,
+        "job_label": "J02",
+        "job_state": "completed",
+        "started_elapsed_ms": 38816,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "submit",
+        "call_index": 25,
+        "finished_elapsed_ms": 40971,
+        "job_label": "J03",
+        "job_state": null,
+        "started_elapsed_ms": 40916,
+        "tool": "test",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 26,
+        "finished_elapsed_ms": 42565,
+        "job_label": "J03",
+        "job_state": "failed",
+        "started_elapsed_ms": 42551,
+        "tool": "job",
+        "tool_status": "failed"
+      },
+      {
+        "action": "output",
+        "call_index": 27,
+        "finished_elapsed_ms": 44260,
+        "job_label": "J03",
+        "job_state": "failed",
+        "started_elapsed_ms": 44231,
+        "tool": "job",
+        "tool_status": "failed"
+      },
+      {
+        "action": "submit",
+        "call_index": 29,
+        "finished_elapsed_ms": 52210,
+        "job_label": "J04",
+        "job_state": null,
+        "started_elapsed_ms": 51989,
+        "tool": "test",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 30,
+        "finished_elapsed_ms": 53232,
+        "job_label": "J04",
+        "job_state": "running",
+        "started_elapsed_ms": 53225,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "wait",
+        "call_index": 31,
+        "finished_elapsed_ms": 54840,
+        "job_label": "J04",
+        "job_state": "completed",
+        "started_elapsed_ms": 54834,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "submit",
+        "call_index": 42,
+        "finished_elapsed_ms": 135319,
+        "job_label": "J05",
+        "job_state": null,
+        "started_elapsed_ms": 135301,
+        "tool": "test",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 43,
+        "finished_elapsed_ms": 136754,
+        "job_label": "J05",
+        "job_state": "failed",
+        "started_elapsed_ms": 136750,
+        "tool": "job",
+        "tool_status": "failed"
+      },
+      {
+        "action": "output",
+        "call_index": 44,
+        "finished_elapsed_ms": 138843,
+        "job_label": "J05",
+        "job_state": "failed",
+        "started_elapsed_ms": 138824,
+        "tool": "job",
+        "tool_status": "failed"
+      },
+      {
+        "action": "submit",
+        "call_index": 50,
+        "finished_elapsed_ms": 167495,
+        "job_label": "J06",
+        "job_state": null,
+        "started_elapsed_ms": 167474,
+        "tool": "test",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 51,
+        "finished_elapsed_ms": 168969,
+        "job_label": "J06",
+        "job_state": "running",
+        "started_elapsed_ms": 168960,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "wait",
+        "call_index": 54,
+        "finished_elapsed_ms": 176369,
+        "job_label": "J06",
+        "job_state": "completed",
+        "started_elapsed_ms": 175159,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "submit",
+        "call_index": 55,
+        "finished_elapsed_ms": 183776,
+        "job_label": "J07",
+        "job_state": null,
+        "started_elapsed_ms": 183756,
+        "tool": "test",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 56,
+        "finished_elapsed_ms": 185991,
+        "job_label": "J07",
+        "job_state": "running",
+        "started_elapsed_ms": 185973,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "wait",
+        "call_index": 59,
+        "finished_elapsed_ms": 192650,
+        "job_label": "J07",
+        "job_state": "completed",
+        "started_elapsed_ms": 192642,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "submit",
+        "call_index": 60,
+        "finished_elapsed_ms": 194342,
+        "job_label": "J08",
+        "job_state": null,
+        "started_elapsed_ms": 194330,
+        "tool": "test",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 61,
+        "finished_elapsed_ms": 196224,
+        "job_label": "J08",
+        "job_state": "completed",
+        "started_elapsed_ms": 196218,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "output",
+        "call_index": 62,
+        "finished_elapsed_ms": 198297,
+        "job_label": "J08",
+        "job_state": "completed",
+        "started_elapsed_ms": 198264,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "submit",
+        "call_index": 63,
+        "finished_elapsed_ms": 200611,
+        "job_label": "J09",
+        "job_state": null,
+        "started_elapsed_ms": 200601,
+        "tool": "test",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 64,
+        "finished_elapsed_ms": 202135,
+        "job_label": "J09",
+        "job_state": "running",
+        "started_elapsed_ms": 202127,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "wait",
+        "call_index": 67,
+        "finished_elapsed_ms": 210936,
+        "job_label": "J09",
+        "job_state": "completed",
+        "started_elapsed_ms": 210924,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "submit",
+        "call_index": 79,
+        "finished_elapsed_ms": 305710,
+        "job_label": "J10",
+        "job_state": null,
+        "started_elapsed_ms": 305690,
+        "tool": "test",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 80,
+        "finished_elapsed_ms": 307685,
+        "job_label": "J10",
+        "job_state": "running",
+        "started_elapsed_ms": 307681,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "submit",
+        "call_index": 81,
+        "finished_elapsed_ms": 309319,
+        "job_label": "J11",
+        "job_state": null,
+        "started_elapsed_ms": 309310,
+        "tool": "test",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 82,
+        "finished_elapsed_ms": 311106,
+        "job_label": "J11",
+        "job_state": "running",
+        "started_elapsed_ms": 311101,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "wait",
+        "call_index": 84,
+        "finished_elapsed_ms": 314787,
+        "job_label": "J10",
+        "job_state": "completed",
+        "started_elapsed_ms": 314779,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "wait",
+        "call_index": 85,
+        "finished_elapsed_ms": 318041,
+        "job_label": "J11",
+        "job_state": "completed",
+        "started_elapsed_ms": 318013,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "submit",
+        "call_index": 94,
+        "finished_elapsed_ms": 391271,
+        "job_label": "J12",
+        "job_state": null,
+        "started_elapsed_ms": 391223,
+        "tool": "test",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 95,
+        "finished_elapsed_ms": 393081,
+        "job_label": "J12",
+        "job_state": "completed",
+        "started_elapsed_ms": 393068,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "output",
+        "call_index": 96,
+        "finished_elapsed_ms": 394709,
+        "job_label": "J12",
+        "job_state": "completed",
+        "started_elapsed_ms": 394691,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 121,
+        "finished_elapsed_ms": 620514,
+        "job_label": "J01",
+        "job_state": "failed",
+        "started_elapsed_ms": 620469,
+        "tool": "job",
+        "tool_status": "failed"
+      },
+      {
+        "action": "status",
+        "call_index": 123,
+        "finished_elapsed_ms": 673528,
+        "job_label": "J02",
+        "job_state": "completed",
+        "started_elapsed_ms": 673488,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 125,
+        "finished_elapsed_ms": 703438,
+        "job_label": "J03",
+        "job_state": "failed",
+        "started_elapsed_ms": 703401,
+        "tool": "job",
+        "tool_status": "failed"
+      },
+      {
+        "action": "status",
+        "call_index": 126,
+        "finished_elapsed_ms": 718571,
+        "job_label": "J04",
+        "job_state": "completed",
+        "started_elapsed_ms": 718546,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 127,
+        "finished_elapsed_ms": 720345,
+        "job_label": "J07",
+        "job_state": "completed",
+        "started_elapsed_ms": 720318,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 128,
+        "finished_elapsed_ms": 729531,
+        "job_label": "J10",
+        "job_state": "completed",
+        "started_elapsed_ms": 729500,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 129,
+        "finished_elapsed_ms": 731231,
+        "job_label": "J11",
+        "job_state": "completed",
+        "started_elapsed_ms": 731183,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "submit",
+        "call_index": 177,
+        "finished_elapsed_ms": 1451343,
+        "job_label": "J13",
+        "job_state": null,
+        "started_elapsed_ms": 1451320,
+        "tool": "test",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 178,
+        "finished_elapsed_ms": 1453215,
+        "job_label": "J13",
+        "job_state": "running",
+        "started_elapsed_ms": 1453201,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 180,
+        "finished_elapsed_ms": 1457301,
+        "job_label": "J13",
+        "job_state": "failed",
+        "started_elapsed_ms": 1457287,
+        "tool": "job",
+        "tool_status": "failed"
+      },
+      {
+        "action": "output",
+        "call_index": 181,
+        "finished_elapsed_ms": 1459074,
+        "job_label": "J13",
+        "job_state": "failed",
+        "started_elapsed_ms": 1459058,
+        "tool": "job",
+        "tool_status": "failed"
+      },
+      {
+        "action": "submit",
+        "call_index": 183,
+        "finished_elapsed_ms": 1462794,
+        "job_label": "J14",
+        "job_state": null,
+        "started_elapsed_ms": 1462769,
+        "tool": "test",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 184,
+        "finished_elapsed_ms": 1464587,
+        "job_label": "J14",
+        "job_state": "running",
+        "started_elapsed_ms": 1464577,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 186,
+        "finished_elapsed_ms": 1468394,
+        "job_label": "J14",
+        "job_state": "completed",
+        "started_elapsed_ms": 1468386,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "submit",
+        "call_index": 191,
+        "finished_elapsed_ms": 1481429,
+        "job_label": "J15",
+        "job_state": null,
+        "started_elapsed_ms": 1481408,
+        "tool": "test",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 202,
+        "finished_elapsed_ms": 1532124,
+        "job_label": "J15",
+        "job_state": "completed",
+        "started_elapsed_ms": 1532066,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 213,
+        "finished_elapsed_ms": 1725405,
+        "job_label": "J13",
+        "job_state": "failed",
+        "started_elapsed_ms": 1725387,
+        "tool": "job",
+        "tool_status": "failed"
+      },
+      {
+        "action": "status",
+        "call_index": 214,
+        "finished_elapsed_ms": 1738166,
+        "job_label": "J14",
+        "job_state": "completed",
+        "started_elapsed_ms": 1738140,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "submit",
+        "call_index": 225,
+        "finished_elapsed_ms": 2035127,
+        "job_label": "J16",
+        "job_state": null,
+        "started_elapsed_ms": 2035027,
+        "tool": "test",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 226,
+        "finished_elapsed_ms": 2036767,
+        "job_label": "J16",
+        "job_state": "failed",
+        "started_elapsed_ms": 2036763,
+        "tool": "job",
+        "tool_status": "failed"
+      },
+      {
+        "action": "submit",
+        "call_index": 228,
+        "finished_elapsed_ms": 2071136,
+        "job_label": "J17",
+        "job_state": null,
+        "started_elapsed_ms": 2071126,
+        "tool": "test",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 229,
+        "finished_elapsed_ms": 2074075,
+        "job_label": "J17",
+        "job_state": "completed",
+        "started_elapsed_ms": 2074053,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "submit",
+        "call_index": 231,
+        "finished_elapsed_ms": 2091815,
+        "job_label": "J18",
+        "job_state": null,
+        "started_elapsed_ms": 2091783,
+        "tool": "test",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 239,
+        "finished_elapsed_ms": 2132875,
+        "job_label": "J18",
+        "job_state": "completed",
+        "started_elapsed_ms": 2132835,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "submit",
+        "call_index": 241,
+        "finished_elapsed_ms": 2151184,
+        "job_label": "J19",
+        "job_state": null,
+        "started_elapsed_ms": 2151134,
+        "tool": "test",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 242,
+        "finished_elapsed_ms": 2152801,
+        "job_label": "J19",
+        "job_state": "running",
+        "started_elapsed_ms": 2152775,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 245,
+        "finished_elapsed_ms": 2171281,
+        "job_label": "J19",
+        "job_state": "completed",
+        "started_elapsed_ms": 2171229,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 247,
+        "finished_elapsed_ms": 2189820,
+        "job_label": "J13",
+        "job_state": "failed",
+        "started_elapsed_ms": 2189792,
+        "tool": "job",
+        "tool_status": "failed"
+      },
+      {
+        "action": "status",
+        "call_index": 248,
+        "finished_elapsed_ms": 2193195,
+        "job_label": "J14",
+        "job_state": "completed",
+        "started_elapsed_ms": 2193173,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 249,
+        "finished_elapsed_ms": 2194420,
+        "job_label": "J16",
+        "job_state": "failed",
+        "started_elapsed_ms": 2194416,
+        "tool": "job",
+        "tool_status": "failed"
+      },
+      {
+        "action": "status",
+        "call_index": 250,
+        "finished_elapsed_ms": 2195750,
+        "job_label": "J17",
+        "job_state": "completed",
+        "started_elapsed_ms": 2195736,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "submit",
+        "call_index": 261,
+        "finished_elapsed_ms": 2296375,
+        "job_label": "J20",
+        "job_state": null,
+        "started_elapsed_ms": 2296328,
+        "tool": "test",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 262,
+        "finished_elapsed_ms": 2298350,
+        "job_label": "J20",
+        "job_state": "running",
+        "started_elapsed_ms": 2298341,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 263,
+        "finished_elapsed_ms": 2300152,
+        "job_label": "J20",
+        "job_state": "running",
+        "started_elapsed_ms": 2300113,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 264,
+        "finished_elapsed_ms": 2305922,
+        "job_label": "J20",
+        "job_state": "running",
+        "started_elapsed_ms": 2305897,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 265,
+        "finished_elapsed_ms": 2307290,
+        "job_label": "J20",
+        "job_state": "completed",
+        "started_elapsed_ms": 2307274,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "submit",
+        "call_index": 266,
+        "finished_elapsed_ms": 2308790,
+        "job_label": "J21",
+        "job_state": null,
+        "started_elapsed_ms": 2308764,
+        "tool": "test",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 267,
+        "finished_elapsed_ms": 2310302,
+        "job_label": "J21",
+        "job_state": "running",
+        "started_elapsed_ms": 2310297,
+        "tool": "job",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 268,
+        "finished_elapsed_ms": 2312020,
+        "job_label": "J21",
+        "job_state": "completed",
+        "started_elapsed_ms": 2312014,
+        "tool": "job",
+        "tool_status": "completed"
+      }
+    ],
+    "raw_arguments_retained": false,
+    "raw_job_ids_retained": false,
+    "raw_outputs_retained": false,
+    "unique_job_labels": 21
+  },
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "outcome": {
+    "active_work_span_ms": 2315316,
+    "agent_terminal": "completed",
+    "continuation_stop_reason": "continuation_complete",
+    "duration_ms": 2344475,
+    "duration_qualified": true,
+    "stop_reason": "end_turn",
+    "task": "failed",
+    "task_completion_reasons": [
+      "independent_verifier_failures"
+    ],
+    "terminal": "completed",
+    "turn_timeout_diagnostic": {
+      "autonomous_followup_count": 4,
+      "exception_text_retained": false,
+      "last_request_elapsed_ms": 252282,
+      "last_request_timeout_seconds": 1207.801,
+      "prompt_request_count": 5,
+      "provider_text_retained": false,
+      "remaining_wallclock_seconds_at_prompt_start": 1507.801,
+      "remaining_wallclock_seconds_at_timeout": null,
+      "schema": "h007_prompt_timeout_diagnostic_v1",
+      "state": "not_observed",
+      "verifier_reserve_seconds": 300.0
+    }
+  },
+  "private_receipt_sha256": "5f681a96d855ce1e3626dbc5c64faa32aa2ac2c8753334c5c1fada21bddc3fd9",
+  "prompt_boundary_timeline": {
+    "count": 5,
+    "entries": [
+      {
+        "active_work_span_end_ms": 455881,
+        "active_work_span_start_ms": 0,
+        "continuation_decision": "continue",
+        "remaining_wallclock_start_ms": 3599539,
+        "request_elapsed_ms": 463500,
+        "request_index": 1,
+        "request_timeout_ms": 1500000,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": false,
+        "started_elapsed_ms": 141,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 107,
+        "tool_call_count_start": 0
+      },
+      {
+        "active_work_span_end_ms": 866815,
+        "active_work_span_start_ms": 455881,
+        "continuation_decision": "continue",
+        "remaining_wallclock_start_ms": 3135976,
+        "request_elapsed_ms": 416451,
+        "request_index": 2,
+        "request_timeout_ms": 1500000,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": false,
+        "started_elapsed_ms": 463704,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 138,
+        "tool_call_count_start": 107
+      },
+      {
+        "active_work_span_end_ms": 1476478,
+        "active_work_span_start_ms": 866815,
+        "continuation_decision": "continue",
+        "remaining_wallclock_start_ms": 2719463,
+        "request_elapsed_ms": 601217,
+        "request_index": 3,
+        "request_timeout_ms": 1500000,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": false,
+        "started_elapsed_ms": 880216,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 192,
+        "tool_call_count_start": 138
+      },
+      {
+        "active_work_span_end_ms": 2086864,
+        "active_work_span_start_ms": 1476478,
+        "continuation_decision": "continue",
+        "remaining_wallclock_start_ms": 2118179,
+        "request_elapsed_ms": 610311,
+        "request_index": 4,
+        "request_timeout_ms": 1500000,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": false,
+        "started_elapsed_ms": 1481501,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 232,
+        "tool_call_count_start": 192
+      },
+      {
+        "active_work_span_end_ms": 2315316,
+        "active_work_span_start_ms": 2086864,
+        "continuation_decision": "continuation_complete",
+        "remaining_wallclock_start_ms": 1507800,
+        "request_elapsed_ms": 252282,
+        "request_index": 5,
+        "request_timeout_ms": 1207800,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": null,
+        "started_elapsed_ms": 2091879,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 274,
+        "tool_call_count_start": 232
+      }
+    ],
+    "exception_text_retained": false,
+    "prompt_text_retained": false,
+    "provider_text_retained": false,
+    "raw_tool_arguments_retained": false
+  },
+  "prompt_text_retained": false,
+  "provider": {
+    "billed_usd": null,
+    "billed_usd_treatment": "unknown when unreported",
+    "native_tool_call_limit": 1600,
+    "request_limit": 1200,
+    "requests": 247,
+    "usage": {
+      "input_tokens": 64897,
+      "output_tokens": 2872
+    }
+  },
+  "provider_attempt_diagnostic": {
+    "attempt_accounting_consistent": true,
+    "attempt_ids_retained": false,
+    "first_response_event_timeout_count": 0,
+    "input_truncated": false,
+    "later_stream_timeout_count": 0,
+    "log_bytes": 2271813,
+    "log_present": true,
+    "provider_attempts_failed": 0,
+    "provider_attempts_started": 247,
+    "provider_attempts_succeeded": 247,
+    "raw_log_in_receipt": false,
+    "raw_provider_text_in_receipt": false,
+    "recognized_events": 2265,
+    "retry_chain_deadline_count": 0,
+    "retry_scheduled_count": 0,
+    "schema": "h007_provider_attempt_diagnostic_v1",
+    "setup_timeout_count": 0,
+    "state": "observed",
+    "stream_idle_timeout_count": 0,
+    "unresolved_provider_attempt_count": 0
+  },
+  "provider_text_retained": false,
+  "raw_job_arguments_retained": false,
+  "raw_job_ids_retained": false,
+  "raw_output_retained": false,
+  "reviewer_durable_state": {
+    "elapsed_ms": 56263,
+    "failure_class": null,
+    "failure_message_retained": false,
+    "matched_run_count": 1,
+    "matched_task_count": 1,
+    "raw_identifiers_retained": false,
+    "run_status": "completed",
+    "run_terminal": "completed",
+    "state": "observed",
+    "task_result_body_retained": false,
+    "task_status": "completed",
+    "transcript_retained": false
+  },
+  "reviewer_lifecycle": {
+    "completed_get_result_observed_count": 1,
+    "completed_review_result_observed": true,
+    "compliant_status_then_get_lifecycle": true,
+    "duplicate_get_count": 0,
+    "explicit_terminal_observation_count": 1,
+    "final_failure_class": null,
+    "final_status": "completed",
+    "get_after_terminal_status_count": 1,
+    "get_count": 1,
+    "ordered_completed_get_result_count": 1,
+    "raw_task_arguments_retained": false,
+    "reviewer_event_count": 6,
+    "reviewer_spawn_count": 1,
+    "schema": "h007_reviewer_lifecycle_diagnostic_v1",
+    "task_action_counts": {
+      "get": 1,
+      "spawn": 1,
+      "status": 2,
+      "wait": 2
+    },
+    "task_result_body_retained": false,
+    "task_transcript_retained": false
+  },
+  "reviewer_schedule": {
+    "due_prompt_count": 0,
+    "first_due_active_work_span_ms": null,
+    "first_due_followup_number": null,
+    "reviewer_spawn_count": 1,
+    "start_threshold_active_ms": 1800000,
+    "task_tool_call_count": 6,
+    "task_tool_requested_by_case": true
+  },
+  "route": "opencode_go",
+  "schema": "s019_attempt_safe_diagnostic_v2",
+  "source_revision": "ac584c886f03847ff6b829f8509667637e42a052",
+  "start_number": 42,
+  "task_completion": {
+    "reasons": [
+      "independent_verifier_failures"
+    ],
+    "state": "failed",
+    "verifier_confirmed": false,
+    "verifier_outcome": "assertion_failures",
+    "verifier_tests_observed": true
+  },
+  "task_lifecycle_sequence": {
+    "events": [
+      {
+        "action": "spawn",
+        "call_index": 87,
+        "run_status": "queued",
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 88,
+        "run_status": "running",
+        "tool_status": "completed"
+      },
+      {
+        "action": "wait",
+        "call_index": 89,
+        "run_status": null,
+        "tool_status": "completed"
+      },
+      {
+        "action": "status",
+        "call_index": 91,
+        "run_status": "running",
+        "tool_status": "completed"
+      },
+      {
+        "action": "wait",
+        "call_index": 92,
+        "run_status": "completed",
+        "tool_status": "completed"
+      },
+      {
+        "action": "get",
+        "call_index": 93,
+        "run_status": null,
+        "tool_status": "completed"
+      }
+    ],
+    "raw_result_bodies_retained": false,
+    "raw_task_ids_retained": false
+  },
+  "tool_call_diagnostic": {
+    "category_counts": {
+      "job": 55,
+      "other": 2,
+      "read": 80,
+      "shell": 49,
+      "task": 6,
+      "test": 21,
+      "tool_search": 20,
+      "write": 41
+    },
+    "failed_call_category_counts": {
+      "job": 14,
+      "read": 7
+    },
+    "identifiers_retained": false,
+    "raw_arguments_retained": false,
+    "raw_outputs_retained": false,
+    "terminal_status_counts": {
+      "completed": 253,
+      "failed": 21
+    },
+    "test_job_action_state_counts": {
+      "job.output.completed": 2,
+      "job.output.failed": 4,
+      "job.status.completed": 17,
+      "job.status.failed": 9,
+      "job.status.running": 15,
+      "job.wait.completed": 7,
+      "job.wait.failed": 1,
+      "test.submit.unobserved": 21
+    },
+    "tool_call_count": 274
+  },
+  "verifier_aggregate": {
+    "assertion_text_retained": false,
+    "diagnostic_detail_complete": true,
+    "exit_code": 1,
+    "failed_test_identities_retained": false,
+    "failure_counts": {
+      "errors": 0,
+      "failures": 2
+    },
+    "failure_domain_counts": {
+      "continuation_boundary": 1,
+      "transcript_job_lifecycle": 1
+    },
+    "failure_domain_details": {
+      "continuation_boundary": {
+        "assertion_operations": {
+          "pattern": 1
+        },
+        "exception_classes": {
+          "AssertionError": 1
+        },
+        "failure_count": 1,
+        "failure_kinds": {
+          "assertion_failure": 1
+        },
+        "message_categories": {
+          "assertion_message": 1
+        }
+      },
+      "transcript_job_lifecycle": {
+        "assertion_operations": {
+          "pattern": 1
+        },
+        "exception_classes": {
+          "AssertionError": 1
+        },
+        "failure_count": 1,
+        "failure_kinds": {
+          "assertion_failure": 1
+        },
+        "message_categories": {
+          "assertion_message": 1
+        }
+      }
+    },
+    "input_truncated": false,
+    "passed_count": 3,
+    "raw_output_retained": false,
+    "redacted_failure_rows": [
+      {
+        "exception_class": "AssertionError",
+        "failure_kind": "assertion_failure",
+        "message_kind": "assertion_message",
+        "outcome": "fail",
+        "safe_shape": [
+          "<word>",
+          "<word>",
+          "'",
+          "<word>",
+          "<word>",
+          ":",
+          "'",
+          "<word>",
+          ":",
+          "<symbol>",
+          "<symbol>",
+          "<word>",
+          "+",
+          "'",
+          "not",
+          "<redacted>",
+          "<redacted>",
+          "'",
+          "<symbol>",
+          "<word>",
+          "<word>",
+          "<word>",
+          "<symbol>",
+          "<word>",
+          "<symbol>",
+          "<word>",
+          "<redacted>",
+          "<word>",
+          "observed",
+          "<redacted>",
+          "<redacted>",
+          "<word>",
+          ".",
+          "<word>",
+          "completed",
+          "<word>",
+          "<redacted>",
+          "<word>",
+          ",",
+          "<word>",
+          "<word>",
+          "job",
+          "<word>",
+          "/",
+          "<word>",
+          ",",
+          "repair",
+          "<word>"
+        ],
+        "safe_terms": [
+          "before",
+          "completed",
+          "failed",
+          "index",
+          "job",
+          "key",
+          "none",
+          "not",
+          "observed",
+          "output",
+          "repair",
+          "running",
+          "test",
+          "workspace"
+        ],
+        "shape_truncated": true
+      },
+      {
+        "exception_class": "AssertionError",
+        "failure_kind": "assertion_failure",
+        "message_kind": "assertion_message",
+        "outcome": "fail",
+        "safe_shape": [
+          "<word>",
+          "<word>",
+          "'",
+          "<word>",
+          "<word>",
+          ":",
+          "'",
+          "<word>",
+          ":",
+          "<number>",
+          "<word>",
+          "<number>",
+          "<symbol>",
+          "<symbol>",
+          "-",
+          "<number>",
+          "<word>",
+          "<number>",
+          "<symbol>",
+          "<symbol>",
+          "-",
+          "<number>",
+          "<redacted>",
+          "<symbol>",
+          "<symbol>",
+          "-",
+          "<number>",
+          "<symbol>",
+          "<symbol>",
+          "-",
+          "<number>",
+          "<word>",
+          "<number>",
+          "<word>",
+          "<number>",
+          "<word>",
+          "<number>",
+          "<redacted>",
+          "<number>",
+          "(",
+          "<symbol>",
+          ":",
+          "<symbol>",
+          "<symbol>",
+          "<word>",
+          "<symbol>",
+          "<symbol>",
+          ")"
+        ],
+        "safe_terms": [
+          "before",
+          "completed",
+          "failed",
+          "index",
+          "job",
+          "key",
+          "none",
+          "not",
+          "observed",
+          "output",
+          "repair",
+          "running",
+          "test",
+          "workspace"
+        ],
+        "shape_truncated": true
+      }
+    ],
+    "runner_error_class": null,
+    "schema": "h007_verifier_diagnostic_v4",
+    "setup_exception_class": null,
+    "setup_failure_reason": null,
+    "skipped_count": 0,
+    "state": "assertion_failures",
+    "tests_run": 5,
+    "timed_out": false,
+    "traceback_retained": false,
+    "verbose_tests_observed": 5
+  },
+  "verifier_text_retained": false
+}

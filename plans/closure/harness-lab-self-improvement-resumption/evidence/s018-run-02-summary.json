@@ -1,0 +1,70 @@
+{
+  "active_work_span_ms": 2068676,
+  "activity_stall_triggered": false,
+  "agent_terminal": "failed",
+  "attempt": 2,
+  "autonomous_followup_count": 35,
+  "binary_sha256": "9982e2d4dd10221854c727285da43fd07d6df83a71fa29d1082e094551f14a14",
+  "campaign_id": "s018-muse-continuation-20261106",
+  "case_manifest_tool_call_cap": 900,
+  "case_tool_call_cap_exceeded_by": 22,
+  "continuation_confirmed": false,
+  "continuation_stop_reason": "turn_failure",
+  "disk_floor": {
+    "lowest_observed_free_bytes": 112001814528,
+    "minimum_free_bytes": 10737418240,
+    "triggered": false
+  },
+  "duration_ms": 2075950,
+  "duration_qualified": true,
+  "event_trace": {
+    "byte_limit_at_run": 1048576,
+    "bytes": 1048535,
+    "dropped_events": 333,
+    "event_count": 1696,
+    "event_observation_gaps": 0,
+    "event_observation_start_count": 922,
+    "event_observation_terminal_count": 922,
+    "sha256": "8635272b380f60969511126ea73c11eaa1b82930d2ba54bc3a0d4a808e5953e3",
+    "state": "truncated"
+  },
+  "exact_job_running_and_terminal": true,
+  "followup_limit": 40,
+  "job_wait_actions": 22,
+  "maximum_activity_gap_limit_ms": 300000,
+  "maximum_activity_gap_ms": 42056,
+  "minimum_active_duration_ms": 1800000,
+  "model_route": "opencode_go/muse-spark-1.3-contributor",
+  "productive_work_during_job": true,
+  "provider_request_cap": 750,
+  "provider_request_failure_classification": "provider_api; budget exhausted_cap was null; no explicit refused-request record, so cap causality is not confirmed",
+  "provider_requests": 750,
+  "public_completed_phase_count": 6,
+  "receipt_path": "/private/tmp/s018-muse-runs/attempt02.json",
+  "repair_cycles": 5,
+  "requested_manifest_sha256": "73673eb902d95f3a10edbcd3408226553010f54a23bffb927b3572fbb227d283",
+  "required_phase_count": 15,
+  "schema_version": 1,
+  "source_revision": "ac584c886f03847ff6b829f8509667637e42a052",
+  "status": "completed_unqualified",
+  "stop_reason": "end_turn",
+  "terminal": "failed",
+  "terminal_failure": {
+    "category": "provider_api",
+    "kind": "HarnessTurnFailure",
+    "usage_reason": "not_observed"
+  },
+  "tool_call_count": 922,
+  "usd": {
+    "billing_cost_separately_reported": false,
+    "provider_allowance_usd": 0.004163,
+    "source": "opencode_go_allowance_receipt"
+  },
+  "verification": {
+    "duration_ms": 8269,
+    "exit_code": 1,
+    "failure_summary": "(failures=1)",
+    "tests_run": 5,
+    "timed_out": false
+  }
+}

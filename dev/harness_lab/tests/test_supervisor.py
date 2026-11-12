@@ -200,7 +200,8 @@ while True:
         self.assertEqual(
             env["RUST_LOG"],
             "error,codegg_providers::request_budget=info,"
-            "codegg_providers::opencode_go=debug,codegg::agent::provider_turn=debug",
+            "codegg_providers::opencode_go=debug,codegg::agent::provider_turn=debug,"
+            "codegg::agent::context_runtime=debug,codegg::agent::loop=debug",
         )
 
     def test_provider_request_limit_can_be_bound_to_a_trial_without_parent_env(self) -> None:
@@ -226,7 +227,8 @@ while True:
         self.assertEqual(
             env["RUST_LOG"],
             "error,codegg_providers::request_budget=info,"
-            "codegg_providers::opencode_go=debug,codegg::agent::provider_turn=debug",
+            "codegg_providers::opencode_go=debug,codegg::agent::provider_turn=debug,"
+            "codegg::agent::context_runtime=debug,codegg::agent::loop=debug",
         )
         child = subprocess.run(
             [sys.executable, "-c", "import os; print(os.environ['CODEGG_HARNESS_MAX_PROVIDER_REQUESTS']); print(os.environ['CODEGG_HARNESS_PROVIDER_REQUEST_RECEIPT'])"],

@@ -266,18 +266,10 @@ impl AgentLoop {
                         }),
                     ))
                 }
-                // M007: the coarse, scheduler-owned job status for a
-                // peer group member. The predicate is the same
-                // authorization the other peer hints use: the event must
-                // be scoped to this session, the observer must be a
-                // member of a group in it, and the job must not be the
-                // observer's own.
-                //
-                // The payload carries the job id, the typed kind and the
-                // phase. It never carries the command line, the
-                // environment, the logs, the cache contents or an
-                // artifact path: the durable job record is the
-                // authority for those, and this hint is not it.
+                // M007 exposes coarse job status to same-session peer-group
+                // members, excluding the observer's own job. Commands,
+                // environment, logs and artifacts remain in the durable job
+                // record and are never included in this hint.
                 crate::bus::events::AppEvent::JobStatusObserved {
                     session_id,
                     turn_id,

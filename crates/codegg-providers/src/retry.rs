@@ -90,8 +90,11 @@ impl RetryContext {
 
     /// Default chain for a top-level logical operation spanning provider +
     /// tool retries. Provider (3) and tool (3) ceilings compose under it.
+    /// Keep the full hard-ceiling window: a provider's 240-second first-event
+    /// timeout must expire before this chain decides whether to retry, or a
+    /// transient stream stall silently disables provider retries.
     pub fn for_operation() -> Self {
-        Self::new(6, Duration::from_secs(180))
+        Self::new(6, MAX_CHAIN_DURATION)
     }
 
     pub fn chain_id(&self) -> &RetryChainId {
@@ -346,6 +349,15 @@ mod tests {
         let ctx = RetryContext::new(255, Duration::from_secs(3600));
         assert_eq!(ctx.total_attempts(), MAX_CHAIN_ATTEMPTS);
         assert!(ctx.remaining_time().unwrap() <= MAX_CHAIN_DURATION);
+    }
+
+    #[test]
+    fn operation_chain_uses_the_hard_ceiling_for_provider_retry_window() {
+        let ctx = RetryContext::for_operation();
+        assert_eq!(ctx.total_attempts(), 6);
+        let remaining = ctx.remaining_time().unwrap();
+        assert!(remaining <= MAX_CHAIN_DURATION);
+        assert!(remaining >= MAX_CHAIN_DURATION - Duration::from_secs(1));
     }
 
     #[test]

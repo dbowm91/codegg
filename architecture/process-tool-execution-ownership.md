@@ -144,6 +144,12 @@ head-plus-tail capture and streaming, sandbox-helper status isolation and
 Landlock behavior, secret-safe diagnostics, and existing authorization
 boundaries.
 
+Foreground model-owned Bash calls carry the turn cancellation token through
+the broker. Raw shell processes hand it to `ManagedProcessService`; a
+scheduler-backed foreground test cancels its submitted job and waits for that
+job's terminal result before returning. An explicit background submission
+does not inherit turn cancellation after it has been accepted.
+
 On Windows, the finite-process owner creates each child suspended, assigns it
 to a private Job Object with kill-on-last-handle-close, and resumes it only
 after assignment succeeds. Cancellation and timeout terminate the Job; closing

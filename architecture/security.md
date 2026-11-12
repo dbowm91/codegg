@@ -488,6 +488,20 @@ profile is added; ADR-0030 remains proposed, not authorized:
 | landlock | deny-first allowlist, ABI 3+ write and truncate rights, ABI 2+ refer rights, `no_new_privs` privilege drop, inherited across `exec` | no network isolation; pre-open fds remain usable; filesystem permissions still apply |
 | seatbelt | writes confined to workspace + scratch, credential paths denied, inherited across `exec` | no network isolation; **no `no_new_privs` equivalent**, so a setuid binary in an allowed read root may regain privilege; pre-open fds remain usable; Apple Events / Launch Services are a cross-process channel; reads are broadly allowed — containment is write-confined, not read-allowlisted |
 
+The autonomy runner passes `CODEGG_HARNESS_PRIVATE_ROOT` to the CodeGG process
+for each case. `sandbox_config_for_profile_with_roots` treats it only as a
+deny: it does not add a read or write grant. Landlock subtracts the root from
+broader grants; Seatbelt emits the explicit read/write denies after its broad
+baseline and workspace write grants. The runner also seeds one harmless
+canary file under that private root and a known symlink to it inside the
+editable fixture. The agent can test the OS-level read denial with native
+`bash` without receiving a private path through the managed shell environment,
+which is intentionally sanitized. This keeps verifier, case-metadata, and
+trace files unreadable through symlinks from the fixture on constrained
+profiles. A `FullHost` profile has no filesystem containment and therefore
+cannot make this guarantee; long-horizon harness cases use a constrained
+profile.
+
 **Seatbelt (`src/security/sandbox/seatbelt.rs`).** `sandbox_init` accepts an
 arbitrary SBPL string **in-process** and is available on macOS 26.6.2
 (verified: a `deny file-read*` subpath rule blocks reads, rules are
