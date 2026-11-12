@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement Resumption S048 — Timeout and Failed-Check Causal Projection
 
-Status: **active; offline implementation passed; attempt 60 waiting on disk reserve**
+Status: **closed at safe causal-projection scope; attempt 60 unqualified**
 
 Repository baseline: ac584c886f03847ff6b829f8509667637e42a052 (shared dirty worktree; preserve unrelated edits)
 
@@ -123,11 +123,11 @@ rtk proxy git diff --check
 
 The first focused H007 suite run caught a missing local bound constant in the new correlation projection; the code was corrected to use its explicit 1,600-call cap. The final campaign/CLI suite passed 18 tests. The autonomy, verifier-diagnostic, and H007 suites passed 197 tests. Test assertion-quality and duplication guards, Python compilation, and git diff --check passed.
 
-The candidate start 60 preflight was refused before provider admission. Free-space samples were 12.931, 18.894, 21.872, and 21.339 GiB, all below the 30-GiB reserve. Same-snapshot checks showed the harness's Python free-space reading agreed with `df` and `statvfs`; the changing values reflect fluctuating available space, not a measurement mismatch. The attempt was not counted; no private receipt or run lane was created. Safe refusal evidence is `plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt60-preflight-disk-wait-20261112.json`, `plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt60-preflight-disk-wait-20261112T045638Z.json`, and `plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt60-preflight-disk-wait-20261112T050131Z.json`. Counters remain 59/200 campaign, 15/40 grant, and 30/120 task authorization.
+Candidate start 60 passed preflight at 132.880 GiB and ran under the unchanged v97 task and configured caps. It completed 3,299.655 seconds with a 3,288.685-second active-work span, 390 provider requests, and exit code 2. The timeout occurred at the 3,300-second prompt-work ceiling with 299.974 seconds of verifier reserve remaining. The independent verifier did not qualify H007. Safe evidence is `plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt60-preflight-20261112.json` and `plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt60-safe-diagnostic-20261112.json`. Runtime disk samples stayed above 119.303 GiB; the 10-GiB runtime floor did not trigger. Counters are 60/200 campaign, 16/40 grant, and 31/120 task authorization.
 
 ## 12. Documentation updates
 
-Update this plan's closure evidence, the S019 roadmap section, and the registry. Record that attempt 59 reached its declared prompt-work ceiling and did not qualify; do not misattribute it to provider request exhaustion.
+The S048 closure records the attempt 60 result in the S019 roadmap and registry. Attempt 60 reached the declared prompt-work ceiling and did not qualify; it used 390/1,200 provider requests, so it was not request-exhausted. S049 owns the one failed job-status error-class detail that remains unavailable in public evidence.
 
 ## 13. Acceptance criteria
 
@@ -135,7 +135,7 @@ Update this plan's closure evidence, the S019 roadmap section, and the registry.
 - Safe evidence identifies which fixed repair predicates failed and how many job calls were unbound or mismatched.
 - Safe evidence distinguishes turn timeout from verifier-reserve stop and reports the bounded request timing and remaining wall budget.
 - Unknown/private values never survive the projection.
-- Attempt 60 remains unqualified unless the unchanged independent verifier and all existing H007 requirements pass.
+- Attempt 60 remains unqualified because the unchanged independent verifier and existing H007 requirements did not pass.
 
 ## 14. Stop conditions
 
@@ -145,8 +145,8 @@ Update this plan's closure evidence, the S019 roadmap section, and the registry.
 
 ## 15. Closure evidence required
 
-Record offline test results, exact attempt 60 preflight/safe-evidence paths, route and model, campaign/grant/task counters, request and tool counts, bounded failure checks, observed disk samples, and a qualification decision. State explicitly that raw private evidence was not inspected.
+Recorded offline test results, exact attempt 60 preflight/safe-evidence paths, route and model, campaign/grant/task counters, request and tool counts, bounded failure checks, observed disk samples, and the unqualified result in `plans/closure/harness-lab-self-improvement-resumption/048-status.md`. Raw private receipt and runner log were not inspected.
 
 ## 16. Handoff notes
 
-S047 is closed at its per-check public-reconciliation scope. H007 remains unqualified. Attempt 60 is the next provider-admitted start under the active authorization. Preserve the shared worktree's unrelated changes and do not commit the credential or any private run artifacts.
+S047 is closed at its per-check public-reconciliation scope. S048 is closed at safe causal-projection scope; H007 remains unqualified. Attempt 60 shows the verifier domains are genuinely incomplete: the lifecycle projection matches the event trace, while one `catalog_format` seed status was not the immediate next call and its failed status result has no returned ID. S049 will add a fixed error-class count for failed job-status calls. Preserve failed evidence; never commit the credential, private receipt, or raw runner log.

@@ -233,6 +233,7 @@ class _ToolCallProjector:
         self._elapsed: dict[str, int] = {}
         self._job: dict[str, dict[str, Any]] = {}
         self._tool_error_classes: dict[str, str] = {}
+        self._job_status_error_classes: dict[str, str] = {}
         self._placement_accepted: set[str] = set()
         self._task_run_statuses: dict[str, str] = {}
         self._task_spawn_ids_present: set[str] = set()
@@ -298,6 +299,10 @@ class _ToolCallProjector:
                         and error_class in diagnostics.SAFE_TEST_SUBMIT_ERROR_CLASSES):
                     self._tool_error_classes[call_id] = error_class
                 raw_output = update.get("rawOutput")
+                if title == "job" and action == "status" and status == faults.STATUS_FAILED:
+                    status_error_class = diagnostics.classify_job_status_error(raw_output)
+                    if status_error_class in diagnostics.SAFE_JOB_STATUS_ERROR_CLASSES:
+                        self._job_status_error_classes[call_id] = status_error_class
                 if title in {"job", "test"} and isinstance(raw_output, str):
                     job = _project_job_result(raw_output, title,
                                               self._started.get(call_id, {}).get("action"))
@@ -343,6 +348,9 @@ class _ToolCallProjector:
             error_class = self._tool_error_classes.get(call_id)
             if error_class is not None:
                 call["tool_error_class"] = error_class
+            status_error_class = self._job_status_error_classes.get(call_id)
+            if status_error_class is not None:
+                call["job_status_error_class"] = status_error_class
             job = self._job.get(call_id)
             if job is not None:
                 # The verifier treats an omitted job field as an empty mapping.
