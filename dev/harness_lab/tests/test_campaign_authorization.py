@@ -8,6 +8,7 @@ import unittest
 
 from dev.harness_lab.campaign_authorization import (
     CampaignLedgerError,
+    _safe_event_measurement_diagnostic,
     preflight_campaign_run_start,
     reconcile_campaign_run_start,
     safe_campaign_run_fields,
@@ -158,6 +159,41 @@ class CampaignAuthorizationTests(unittest.TestCase):
 
         self.assertEqual(projected, {"attempt": 2, "provider_requests_observed": 3})
 
+    def test_event_measurement_projection_rejects_malformed_and_raw_fields(self) -> None:
+        malformed = _safe_event_measurement_diagnostic({
+            "schema": "h007_event_measurement_v1",
+            "event_observation_state": ["PRIVATE_STATE"],
+        })
+        self.assertIsNone(malformed)
+
+        projected = _safe_event_measurement_diagnostic({
+            "schema": "h007_event_measurement_v1",
+            "event_observation_state": "observed_complete",
+            "measurement_complete": True,
+            "event_gap_count": 0,
+            "event_gap_dropped_count": 0,
+            "tool_started_count": 2,
+            "tool_terminal_count": 2,
+            "projected_tool_call_count": 2,
+            "tool_unpaired_start_count": 0,
+            "unknown_terminal_tool_call_count": 0,
+            "event_gaps": [{"source": "PRIVATE_SOURCE"}],
+            "tool_call_id": "PRIVATE_TOOL_ID",
+        })
+        self.assertEqual(projected, {
+            "schema": "h007_event_measurement_v1",
+            "event_observation_state": "observed_complete",
+            "measurement_complete": True,
+            "event_gap_count": 0,
+            "event_gap_dropped_count": 0,
+            "tool_started_count": 2,
+            "tool_terminal_count": 2,
+            "projected_tool_call_count": 2,
+            "tool_unpaired_start_count": 0,
+            "unknown_terminal_tool_call_count": 0,
+        })
+        self.assertNotIn("PRIVATE", json.dumps(projected))
+
     def test_safe_campaign_projection_preserves_identity_and_case_h007_progress(self) -> None:
         run = _run(manifest_sha256="c" * 64)
         canonical = _run(manifest_sha256="e" * 64)
@@ -193,6 +229,20 @@ class CampaignAuthorizationTests(unittest.TestCase):
                         "job_not_found": 2, "unobserved": 1,
                         "PRIVATE_ERROR_CLASS": 9, "unclassified": 1_601,
                         "tool_execution_failed": True,
+                    },
+                    "event_measurement_diagnostic": {
+                        "schema": "h007_event_measurement_v1",
+                        "event_observation_state": "unmeasured_gap",
+                        "measurement_complete": False,
+                        "event_gap_count": 1,
+                        "event_gap_dropped_count": 2,
+                        "tool_started_count": 4,
+                        "tool_terminal_count": 3,
+                        "projected_tool_call_count": 4,
+                        "tool_unpaired_start_count": 1,
+                        "unknown_terminal_tool_call_count": 1,
+                        "event_gaps": [{"source": "PRIVATE_EVENT_SOURCE"}],
+                        "tool_call_id": "PRIVATE_TOOL_ID",
                     },
                     "assertion_text_retained": False,
                     "raw_output_retained": False,
@@ -261,11 +311,28 @@ class CampaignAuthorizationTests(unittest.TestCase):
                 "failed_job_status_error_class_counts"],
             {"job_not_found": 2, "unobserved": 1},
         )
+        self.assertEqual(
+            diagnostic["verifier_public_reconciliation"][
+                "event_measurement_diagnostic"],
+            {
+                "schema": "h007_event_measurement_v1",
+                "event_observation_state": "unmeasured_gap",
+                "measurement_complete": False,
+                "event_gap_count": 1,
+                "event_gap_dropped_count": 2,
+                "tool_started_count": 4,
+                "tool_terminal_count": 3,
+                "projected_tool_call_count": 4,
+                "tool_unpaired_start_count": 1,
+                "unknown_terminal_tool_call_count": 1,
+            },
+        )
         encoded = json.dumps(projected, sort_keys=True)
         for private_marker in (
             "PRIVATE_REASON", "PRIVATE VERIFIER OUTPUT", "PRIVATE NOTE",
             "PRIVATE TOOL ARGUMENTS", "PRIVATE PROMPT", "PRIVATE TRANSCRIPT",
             "private_stage_text", "PRIVATE CHECK DETAIL", "PRIVATE DOMAIN",
+            "PRIVATE_EVENT_SOURCE", "PRIVATE_TOOL_ID",
         ):
             self.assertNotIn(private_marker, encoded)
         self.assertEqual(run, run_before)

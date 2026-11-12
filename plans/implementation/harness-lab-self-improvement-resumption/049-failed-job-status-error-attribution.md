@@ -1,8 +1,10 @@
 # Harness Lab Self-Improvement Resumption S049 — Failed Job-Status Error Attribution
 
-Status: **active**
+Status: **closed at error-attribution scope; attempt 61 unqualified**
 
 Repository baseline: `7bc59352a0c7a337f442bea5aa64947315042712`
+
+Implementation commit: `26c0aebcfa5168b015491b9ef4254f945feec124`
 
 Source roadmap:
 

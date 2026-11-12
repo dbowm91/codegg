@@ -45,6 +45,10 @@ H007_REQUIRED_CONTINUATION_GATE_ORDER = (
 )
 H007_REQUIRED_CONTINUATION_GATES = frozenset(H007_REQUIRED_CONTINUATION_GATE_ORDER)
 MAX_PUBLIC_JOB_CORRELATION_CALLS = 1_600
+_EVENT_OBSERVATION_STATES = frozenset({
+    "observed_complete", "unmeasured_gap", "not_instrumented",
+})
+_MEASURED_TERMINAL_TOOL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 _PHASE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 _PHASE_ENTRY = re.compile(r"^([a-z][a-z0-9_]*)(?:\s*:\s*(.*))?$")
 _GATE_LINE = re.compile(
@@ -1011,12 +1015,102 @@ def _job_lifecycle(tool_calls: Sequence[Mapping[str, Any]]) -> tuple[bool, bool]
     return lifecycle_observed, False
 
 
+def summarize_event_measurement(
+    observation: Mapping[str, Any], tool_calls: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Return bounded event-measurement causes without retaining gap records."""
+    def count(name: str) -> int | None:
+        value = observation.get(name)
+        if (isinstance(value, int) and not isinstance(value, bool)
+                and 0 <= value <= MAX_PUBLIC_JOB_CORRELATION_CALLS):
+            return value
+        return None
+
+    observation_state = observation.get("event_observation_state")
+    if not isinstance(observation_state, str) or observation_state not in _EVENT_OBSERVATION_STATES:
+        observation_state = "unobserved"
+    unknown_calls = sum(
+        not isinstance(call.get("status"), str)
+        or call.get("status") not in _MEASURED_TERMINAL_TOOL_STATUSES
+        for call in tool_calls
+    )
+    unknown_count = (unknown_calls if unknown_calls <= MAX_PUBLIC_JOB_CORRELATION_CALLS
+                     else None)
+    projected_call_count = (len(tool_calls)
+                            if len(tool_calls) <= MAX_PUBLIC_JOB_CORRELATION_CALLS else None)
+    gap_count = count("event_gap_count")
+    dropped_count = count("event_gap_dropped")
+    started_count = count("tool_started_count")
+    terminal_count = count("tool_terminal_count")
+    unpaired_count = count("tool_unpaired_start_count")
+    complete = (
+        observation_state == "observed_complete"
+        and gap_count == 0
+        and dropped_count == 0
+        and started_count is not None
+        and terminal_count is not None
+        and projected_call_count is not None
+        and started_count == projected_call_count
+        and terminal_count == projected_call_count
+        and unpaired_count == 0
+        and unknown_count == 0
+    )
+    return {
+        "schema": "h007_event_measurement_v1",
+        "event_observation_state": observation_state,
+        "event_gap_count": gap_count,
+        "event_gap_dropped_count": dropped_count,
+        "tool_started_count": started_count,
+        "tool_terminal_count": terminal_count,
+        "projected_tool_call_count": projected_call_count,
+        "tool_unpaired_start_count": unpaired_count,
+        "unknown_terminal_tool_call_count": unknown_count,
+        "measurement_complete": complete,
+    }
+
+
+def _safe_event_measurement_diagnostic(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping) or value.get("schema") != "h007_event_measurement_v1":
+        return None
+    state = value.get("event_observation_state")
+    if (not isinstance(state, str)
+            or state not in {*_EVENT_OBSERVATION_STATES, "unobserved"}):
+        return None
+    result: dict[str, Any] = {
+        "schema": "h007_event_measurement_v1",
+        "event_observation_state": state,
+    }
+    for key in (
+        "event_gap_count", "event_gap_dropped_count", "tool_started_count",
+        "tool_terminal_count", "projected_tool_call_count", "tool_unpaired_start_count",
+        "unknown_terminal_tool_call_count",
+    ):
+        count = value.get(key)
+        result[key] = (count if isinstance(count, int) and not isinstance(count, bool)
+                       and 0 <= count <= MAX_PUBLIC_JOB_CORRELATION_CALLS else None)
+    result["measurement_complete"] = (
+        state == "observed_complete"
+        and result["event_gap_count"] == 0
+        and result["event_gap_dropped_count"] == 0
+        and result["tool_started_count"] is not None
+        and result["tool_terminal_count"] is not None
+        and result["projected_tool_call_count"] is not None
+        and result["tool_started_count"] == result["projected_tool_call_count"]
+        and result["tool_terminal_count"] == result["projected_tool_call_count"]
+        and result["tool_unpaired_start_count"] == 0
+        and result["unknown_terminal_tool_call_count"] == 0
+    )
+    return result
+
+
 def project_result(*, terminal: str, verifier_ran: bool, verifier_exit_code: int | None,
                    duration_ms: int, tool_calls: Sequence[Mapping[str, Any]],
                    measurement_complete: bool, continuation_confirmed: bool,
                    repair_cycles: int, protected: bool = False,
                    tool_call_limit: int | None = None,
-                   verifier_state: str | None = None) -> dict[str, Any]:
+                   verifier_state: str | None = None,
+                   event_measurement_diagnostic: Mapping[str, Any] | None = None
+                   ) -> dict[str, Any]:
     """Project verifier outcome and tool-event observation as separate evidence."""
     if protected:
         task_outcome = "inconclusive"
@@ -1048,6 +1142,14 @@ def project_result(*, terminal: str, verifier_ran: bool, verifier_exit_code: int
     gap = max((later - earlier for earlier, later in zip(activity, activity[1:])), default=0)
     lifecycle, overlap = _job_lifecycle(tool_calls)
     test_job_lifecycle = summarize_test_job_lifecycle(tool_calls)
+    safe_event_measurement = _safe_event_measurement_diagnostic(
+        event_measurement_diagnostic
+    )
+    if event_measurement_diagnostic is not None:
+        measurement_complete = (
+            safe_event_measurement is not None
+            and safe_event_measurement.get("measurement_complete") is True
+        )
     tool_call_count = len(tool_calls)
     tool_call_cap_exceeded = (tool_call_limit is not None
                               and tool_call_count > tool_call_limit)
@@ -1101,6 +1203,7 @@ def project_result(*, terminal: str, verifier_ran: bool, verifier_exit_code: int
             "repair_cycles": repair_cycles,
             "measurement_complete": measurement_complete,
             "event_measurement_complete": measurement_complete,
+            "event_measurement_diagnostic": safe_event_measurement,
             "tool_call_count": tool_call_count,
             "tool_call_limit": tool_call_limit,
             "tool_call_cap_exceeded": tool_call_cap_exceeded,
@@ -1267,7 +1370,7 @@ def _verifier_public_reconciliation(
         else:
             reconciliation[domain] = "unmapped_failure_domain"
 
-    return {
+    result = {
         "schema": "h007_verifier_public_reconciliation_v1",
         "failure_domain_counts": {
             str(domain): count for domain, count in domain_counts.items()
@@ -1312,6 +1415,12 @@ def _verifier_public_reconciliation(
         "raw_job_ids_retained": False,
         "transcript_retained": False,
     }
+    event_measurement = _safe_event_measurement_diagnostic(
+        horizon.get("event_measurement_diagnostic")
+    )
+    if event_measurement is not None:
+        result["event_measurement_diagnostic"] = event_measurement
+    return result
 
 
 def summarize_task_completion(*, terminal: str, task_outcome: str,

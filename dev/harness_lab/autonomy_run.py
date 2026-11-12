@@ -3553,6 +3553,9 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     h007_projection = None
     if case.case_id == H007_CASE_ID:
         repair_cycles = len(observed_repair_cycles)
+        event_measurement_diagnostic = h007_results.summarize_event_measurement(
+            observation_receipt, tool_calls,
+        )
         continuation_confirmed = _h007_continuation_confirmed(
             tool_calls, agent_root / "fixture", case_prompt=case.prompt)
         h007_projection = h007_results.project_result(
@@ -3563,13 +3566,14 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
                             if isinstance(verification.get("diagnostic"), dict) else None),
             duration_ms=duration_ms,
             tool_calls=tool_calls,
-            measurement_complete=(observation_receipt.get("event_gap_count") == 0
-                                 and all(call.get("status") != "unknown"
-                                         for call in tool_calls)),
+            measurement_complete=(
+                event_measurement_diagnostic["measurement_complete"] is True
+            ),
             continuation_confirmed=continuation_confirmed,
             repair_cycles=repair_cycles,
             protected=case.protected,
             tool_call_limit=case.budget.get("max_tool_calls"),
+            event_measurement_diagnostic=event_measurement_diagnostic,
         )
         solved = h007_projection["task_outcome"] == "passed"
 
