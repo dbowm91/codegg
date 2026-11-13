@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement Resumption S052 — Completion Disagreement and Job-Status Attribution
 
-Status: **active**
+Status: **implemented; closed at diagnostic scope after attempt 66**
 
 Repository baseline: `de301938587a32366b634d94ba30abe2e9950379`
 
@@ -216,3 +216,5 @@ Record implementation commit, exact focused command results, preflight and safe-
 ## 16. Handoff notes
 
 Attempt 65 used the unchanged v97 workload, Muse Spark 1.3 Contributor via OpenCode Go, and the existing paired ARM64 binary/helper. It completed 35.29 active minutes with 182 requests and 201 measured tool calls; the verifier failed. The active grant has 19 starts remaining after that attempt, the combined campaign has 135, and task authorization has 84. Maintain 20-second safe monitoring samples and continue user-facing progress updates at least every minute during a live run.
+
+Attempt 66 exercised the S052 diagnostics on the unchanged v97 workload. The phase/status and job-status error cross-tab were projected safely, but H007 remained unqualified after a prompt-work timeout; see `plans/closure/harness-lab-self-improvement-resumption/052-status.md`. At attempt 66, the grant had 18 starts remaining, the combined campaign had 134, and task authorization had 83. Correct the monitor's lane-local provider-admission path before the next attempt.
