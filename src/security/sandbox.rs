@@ -616,6 +616,14 @@ impl SandboxConfig {
             .into_iter()
             .filter(|path| path.exists())
         {
+            // The per-process `/proc` aliases travel unresolved: canonicalizing
+            // one here binds *this* process's pid and would grant the daemon's
+            // directory instead of the target's. The helper resolves them at
+            // the pid `exec` preserves.
+            if policy::is_self_proc_alias(&path) {
+                read_paths.push(path);
+                continue;
+            }
             read_paths.push(policy::resolve_policy_path(&path).map_err(|reason| {
                 ToolError::Permission(format!(
                     "sandbox runtime read root '{}' is invalid: {reason}",

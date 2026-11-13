@@ -35,7 +35,7 @@ pub(super) const LANDLOCK_LIMITS: &[&str] = &[
     "filesystem permissions still apply on top of the ruleset",
     "rights newer than the crate's supported effective ABI are not handled",
     "pathname AF_UNIX sockets are not mediated by Landlock and stay reachable through a granted path",
-    "the default read grant includes /proc, so a same-uid process's environment can be read",
+    "the /proc grant is self-scoped: a child of the command cannot read its own /proc/self, and another process's /proc/<pid> is not granted",
 ];
 
 /// Stated when the host cannot obtain the ABI 6 scope. The scope is never

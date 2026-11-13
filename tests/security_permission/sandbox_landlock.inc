@@ -293,6 +293,15 @@ fn production_spec(root: &Path, script: &str, arm: GrantArm) -> SandboxLaunchSpe
         if !path.exists() {
             continue;
         }
+        // The per-process aliases travel unresolved, exactly as the product
+        // sends them: canonicalizing one here would bind this test process's
+        // pid instead of the sandboxed command's.
+        if policy::is_self_proc_alias(&path) {
+            if arm != GrantArm::WithoutProc {
+                read_paths.push(path);
+            }
+            continue;
+        }
         let Ok(resolved) = policy::resolve_policy_path(&path) else {
             continue;
         };
@@ -316,7 +325,7 @@ fn toolchain_probes() -> Vec<(&'static str, &'static str)> {
         ("git", "git --version >/dev/null"),
         ("python", "python3 -c 'import json' >/dev/null"),
         ("resolver", "getent hosts localhost >/dev/null"),
-        ("self-proc", "[ -e /proc/self/exe ]"),
+        ("self-proc", "IFS= read -r line < /proc/self/stat"),
     ]
 }
 
@@ -363,19 +372,21 @@ fn the_default_grant_set_denies_another_processes_proc_entry() {
         "the default grant set still reads `/proc/<pid>/environ`"
     );
 
-    // The command's own `/proc/self` survives: `[` is a shell builtin, so the
-    // shell itself stats the path at the pid the helper exec'd into.
+    // The command's own `/proc/self` survives, and the reader must be the
+    // shell itself: `read` with a redirection opens the file at the pid the
+    // helper exec'd into, while a child's `/proc/self` names the child - the
+    // residue the descriptor states.
     let own = run_helper(
         &production_spec(
             workspace.path(),
-            "[ -e /proc/self/exe ]",
+            "IFS= read -r line < /proc/self/stat",
             GrantArm::Production,
         ),
         workspace.path(),
     );
     assert!(
         own.output.status.success(),
-        "the narrowing denied the command its own `/proc/self/exe`: {}",
+        "the narrowing denied the command its own `/proc/self`: {}",
         String::from_utf8_lossy(&own.output.stderr)
     );
 

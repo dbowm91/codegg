@@ -13,8 +13,8 @@ max_block_lines = 50
 unlisted_max_comment_lines = 20
 
 [global]
-max_comment_lines = 139301
-max_comment_words = 1242180
+max_comment_lines = 139317
+max_comment_words = 1242324
 max_ratio = 0.1364
 
 # Per-file ceilings. A file may shrink; it may not grow past what is
@@ -480,7 +480,7 @@ max_ratio = 0.1364
 "src/search_backend/test_support.rs" = { max_comment_lines = 25, max_ratio = 0.463 }
 "src/security/lsp_executor.rs" = { max_comment_lines = 71, max_ratio = 0.0873 }
 "src/security/mod.rs" = { max_comment_lines = 26, max_ratio = 0.4728 }
-"src/security/sandbox.rs" = { max_comment_lines = 342, max_ratio = 0.2829 }
+"src/security/sandbox.rs" = { max_comment_lines = 346, max_ratio = 0.2853 }
 "src/security/sandbox/backend.rs" = { max_comment_lines = 104, max_ratio = 0.5389 }
 "src/security/sandbox/guarantee.rs" = { max_comment_lines = 118, max_ratio = 0.3164 }
 "src/security/sandbox/host_admission.rs" = { max_comment_lines = 81, max_ratio = 0.4264 }
@@ -490,7 +490,7 @@ max_ratio = 0.1364
 # +21 comment lines: the C002 narrowing states why `/proc` and `/var/run` are no
 # longer trees, what the self-scoped entry survives, and what a child does not
 # inherit.
-"src/security/sandbox/policy.rs" = { max_comment_lines = 185, max_ratio = 0.1505 }
+"src/security/sandbox/policy.rs" = { max_comment_lines = 192, max_ratio = 0.1554 }
 "src/security/sandbox/seatbelt.rs" = { max_comment_lines = 108, max_ratio = 0.3429 }
 "src/security/workflow/context.rs" = { max_comment_lines = 115, max_ratio = 0.2118 }
 "src/security/workflow/diff.rs" = { max_comment_lines = 88, max_ratio = 0.236 }
@@ -919,7 +919,7 @@ max_ratio = 0.1364
 "tests/scheduler_jobs/scratch_record_less_tree.inc" = { max_comment_lines = 32, max_ratio = 0.2353 }
 "tests/scheduler_jobs/scratch_retention_sweep.inc" = { max_comment_lines = 119, max_ratio = 0.1748 }
 "tests/scheduler_jobs/scratch_usage_census.inc" = { max_comment_lines = 32, max_ratio = 0.1181 }
-"tests/security_permission/sandbox_landlock.inc" = { max_comment_lines = 44, max_ratio = 0.1071 }
+"tests/security_permission/sandbox_landlock.inc" = { max_comment_lines = 49, max_ratio = 0.1176 }
 "tests/security_permission/approval_reviewer.inc" = { max_comment_lines = 49, max_ratio = 0.0705 }
 "tests/security_permission/destructive_delete_classification.inc" = { max_comment_lines = 33, max_ratio = 0.22 }
 "tests/security_permission/host_admission_manifest.inc" = { max_comment_lines = 28, max_ratio = 0.224 }

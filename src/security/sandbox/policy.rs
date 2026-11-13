@@ -463,6 +463,20 @@ fn narrow_host_reads() -> Vec<PathBuf> {
     paths
 }
 
+/// True for the per-process `/proc` aliases, which only the process that will
+/// use them can resolve.
+///
+/// `/proc/self` and `/proc/thread-self` name the *calling* process. A parent
+/// that canonicalizes one binds its own pid, so the alias has to travel
+/// unresolved to the helper, which runs at the pid `exec` preserves and is
+/// therefore the target's own.
+pub fn is_self_proc_alias(path: &std::path::Path) -> bool {
+    matches!(
+        path.to_str(),
+        Some("/proc/self") | Some("/proc/thread-self")
+    )
+}
+
 fn configured_rustup_home() -> Option<PathBuf> {
     std::env::var_os("RUSTUP_HOME")
         .filter(|value| !value.is_empty())
