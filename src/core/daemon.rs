@@ -5567,7 +5567,10 @@ mod tests {
         };
         // The standalone process is intentionally asynchronous; give slow
         // CI hosts time to start and publish its first bounded output chunk.
-        for _ in 0..500 {
+        // 20 s: a 4-vCPU runner under the full parallel sweep needs more than
+        // the 5 s this used to allow, and the assertion is about delivery, not
+        // about latency.
+        for _ in 0..2_000 {
             let response = daemon
                 .handle_request(crate::core::new_request(
                     "standalone-shell-read".into(),
