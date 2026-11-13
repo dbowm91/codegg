@@ -368,7 +368,7 @@ security = "The Windows launch policy must refuse junction components, UNC devic
 workflow = ".github/workflows/linux-sandbox-grants-native.yml"
 job = "grants"
 step = "Sandbox grant fixtures"
-command = "cargo test --locked --test security_permission sandbox_landlock -- --nocapture"
+command = "cargo test --locked --test security_permission sandbox_landlock -- --nocapture --test-threads=1"
 filter = "sandbox_landlock"
 tests = [
   "the_default_grant_set_denies_another_processes_proc_entry",

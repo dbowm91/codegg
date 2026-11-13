@@ -86,4 +86,4 @@ jobs:
           # rather than leaving a missing sidecar to look like a test failure.
           ls -l target/debug/codegg-sandbox-helper target/debug/deps/codegg-sandbox-helper
           python3 scripts/check_test_filter_execution.py --run -- \
-            cargo test --locked --test security_permission sandbox_landlock -- --nocapture
+            cargo test --locked --test security_permission sandbox_landlock -- --nocapture --test-threads=1

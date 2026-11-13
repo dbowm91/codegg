@@ -56,6 +56,7 @@ fn run_helper(spec: &SandboxLaunchSpec, root: &Path) -> HelperOutput {
     serde_json::to_writer(spec_file.as_file(), spec).expect("sandbox spec encoding");
     let (reader, writer) = pipe().expect("status pipe");
     let writer_fd = writer.as_raw_fd();
+    let helper = test_helper_path();
     let mut command = Command::new(&helper);
     command
         .arg("--spec")
@@ -76,7 +77,6 @@ fn run_helper(spec: &SandboxLaunchSpec, root: &Path) -> HelperOutput {
             Ok(())
         });
     }
-    let helper = test_helper_path();
     let output = command
         .output()
         .unwrap_or_else(|error| panic!("sandbox helper process at {}: {error}", helper.display()));
