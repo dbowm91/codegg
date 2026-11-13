@@ -68,6 +68,7 @@ jobs:
       - name: Build trusted sandbox helper
         run: |
           cargo build --locked --bin codegg-sandbox-helper
+          mkdir -p target/debug/deps
           cp target/debug/codegg-sandbox-helper target/debug/deps/codegg-sandbox-helper
 
       - name: Sandbox grant fixtures
