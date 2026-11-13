@@ -21,6 +21,10 @@ on:
       - 'src/security/sandbox/**'
       - 'tests/security_permission/sandbox_landlock.inc'
       - 'tests/security_permission/mod.rs'
+      # The filter registry is an input to this lane: an unregistered step is
+      # refused, and a registry entry that drifts from the command is a
+      # failure rather than a silently green subset.
+      - 'docs/security-test-filters.toml'
   push:
     paths:
       - '.github/workflows/linux-sandbox-grants-native.yml'
@@ -29,6 +33,10 @@ on:
       - 'src/security/sandbox/**'
       - 'tests/security_permission/sandbox_landlock.inc'
       - 'tests/security_permission/mod.rs'
+      # The filter registry is an input to this lane: an unregistered step is
+      # refused, and a registry entry that drifts from the command is a
+      # failure rather than a silently green subset.
+      - 'docs/security-test-filters.toml'
 
 permissions:
   contents: read
