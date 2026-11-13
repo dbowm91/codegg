@@ -348,4 +348,25 @@ mod tests {
         let filtered = filter_tool_definitions_for_profile(defs, &profile);
         assert_eq!(filtered.len(), 2);
     }
+
+    #[test]
+    fn descriptor_model_metadata_sets_context_and_reserved_output() {
+        use codegg_core::model_profile::InlineModelProfile;
+        use codegg_providers::inline::InlineModel;
+
+        let declared = InlineModel {
+            id: "descriptor-model".to_string(),
+            context_window: Some(64_000),
+            max_output_tokens: Some(4_096),
+            supports_tools: Some(true),
+        };
+        let inline = InlineModelProfile::from_inline_model(&declared);
+        let mut config = Config::default();
+        inline.apply_to_config(&mut config);
+        let profile = inline.resolve(&config);
+        let policy = ExecutionPolicy::from_profile(&profile, &config);
+
+        assert_eq!(policy.context_window, 64_000);
+        assert_eq!(policy.reserved_output_tokens, 4_096);
+    }
 }

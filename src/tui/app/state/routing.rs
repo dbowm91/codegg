@@ -130,10 +130,7 @@ impl UiRouteToken {
                 _ => return false,
             }
         }
-        if self.active_view_epoch != 0 && self.active_view_epoch != check.active_view_epoch {
-            return false;
-        }
-        true
+        !(self.active_view_epoch != 0 && self.active_view_epoch != check.active_view_epoch)
     }
 }
 

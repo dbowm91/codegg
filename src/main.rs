@@ -509,6 +509,14 @@ enum Commands {
         #[command(flatten)]
         policy: ExecutionPolicyArgs,
     },
+    #[command(about = "Run one embedding-host session over newline-delimited JSON-RPC on stdio")]
+    Host {
+        #[arg(
+            long,
+            help = "Serve the protocol on stdin/stdout (the only v1 transport)"
+        )]
+        stdio: bool,
+    },
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -1608,6 +1616,15 @@ mod cli_surface_tests {
     }
 
     #[test]
+    fn host_stdio_parses_without_project_or_tui_state() {
+        let cli = Cli::try_parse_from(["codegg", "host", "--stdio"]).expect("host parses");
+        assert!(matches!(cli.command, Some(Commands::Host { stdio: true })));
+
+        let cli = Cli::try_parse_from(["codegg", "host"]).expect("bare host parses");
+        assert!(matches!(cli.command, Some(Commands::Host { stdio: false })));
+    }
+
+    #[test]
     fn internal_transports_stay_parseable_but_hidden() {
         for args in [
             vec!["codegg", "--core-transport", "stdio"],
@@ -1713,7 +1730,7 @@ async fn main() -> Result<(), AppError> {
         }
     } else if matches!(
         cli.command,
-        Some(Commands::CoreStdio) | Some(Commands::Acp { .. })
+        Some(Commands::CoreStdio) | Some(Commands::Acp { .. }) | Some(Commands::Host { .. })
     ) {
         // core-stdio reserves stdout for the JSONL protocol.  Keep tracing
         // on stderr so a diagnostic can never corrupt a response frame.
@@ -1804,6 +1821,20 @@ async fn main() -> Result<(), AppError> {
                 let policy = merge_cli_policy_overrides(root_policy, command_policy)
                     .map_err(|e| AppError::Other(anyhow::anyhow!(e)))?;
                 codegg::acp::run(policy).await?;
+            }
+            Commands::Host { stdio } => {
+                if !*stdio {
+                    return Err(AppError::Other(anyhow::anyhow!(
+                        "`codegg host` requires --stdio; it is the only v1 transport"
+                    )));
+                }
+                match codegg::host::run_stdio(tokio::io::stdin(), tokio::io::stdout()).await {
+                    Ok(()) => {}
+                    Err(error) => {
+                        eprintln!("host: {error}");
+                        std::process::exit(error.exit_code());
+                    }
+                }
             }
             Commands::Validate { config } => {
                 cmd_validate(config.as_deref()).await?;

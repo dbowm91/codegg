@@ -400,10 +400,7 @@ impl ToolCausalContract {
         {
             return false;
         }
-        if !self.forbids.is_disjoint(facts) {
-            return false;
-        }
-        true
+        self.forbids.is_disjoint(facts)
     }
 
     /// `requires_any` groups in canonical order (each group is already
