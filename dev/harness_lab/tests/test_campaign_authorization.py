@@ -349,6 +349,13 @@ class CampaignAuthorizationTests(unittest.TestCase):
                         "PRIVATE_ERROR_CLASS": 9, "unclassified": 1_601,
                         "tool_execution_failed": True,
                     },
+                    "failed_test_submit_error_class_counts": {
+                        "tool_execution_failed": 2,
+                        "unclassified": 1,
+                        "PRIVATE_ERROR_CLASS": 9,
+                        "permission_denied": 1_601,
+                        "tool_timeout": True,
+                    },
                     "event_measurement_diagnostic": {
                         "schema": "h007_event_measurement_v1",
                         "event_observation_state": "unmeasured_gap",
@@ -485,6 +492,11 @@ class CampaignAuthorizationTests(unittest.TestCase):
         )
         self.assertEqual(
             diagnostic["verifier_public_reconciliation"][
+                "failed_test_submit_error_class_counts"],
+            {"tool_execution_failed": 2, "unclassified": 1},
+        )
+        self.assertEqual(
+            diagnostic["verifier_public_reconciliation"][
                 "event_measurement_diagnostic"],
             {
                 "schema": "h007_event_measurement_v1",
@@ -503,6 +515,7 @@ class CampaignAuthorizationTests(unittest.TestCase):
         for private_marker in (
             "PRIVATE_REASON", "PRIVATE VERIFIER OUTPUT", "PRIVATE NOTE",
             "PRIVATE TOOL ARGUMENTS", "PRIVATE PROMPT", "PRIVATE TRANSCRIPT",
+            "PRIVATE_ERROR_CLASS",
             "private_stage_text", "PRIVATE CHECK DETAIL", "PRIVATE DOMAIN",
             "PRIVATE_EVENT_SOURCE", "PRIVATE_TOOL_ID",
             "PRIVATE_WORKSPACE_TEST_ID", "PRIVATE_TEST_COMMAND", "private_job",
