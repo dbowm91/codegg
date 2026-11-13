@@ -40,14 +40,40 @@ struct HelperOutput {
     status: Vec<u8>,
 }
 
+/// The managed sidecar, wherever this build put it.
+///
+/// The profile directory beside the test binary is the normal answer, but a
+/// lane that builds only the helper and runs one target can place the test
+/// executable somewhere else entirely - the hosted grant lane resolved a
+/// `target/debug/build/...` path that never held the binary. Probing the
+/// candidates in order is what makes the fixture's own launch independent of
+/// where cargo decided to put the executable; the first existing candidate
+/// wins and a missing sidecar still fails the test rather than skipping it.
 #[cfg(target_os = "linux")]
 fn test_helper_path() -> PathBuf {
-    std::env::current_exe()
-        .expect("test executable")
-        .parent()
-        .and_then(|path| path.parent())
-        .expect("target debug directory")
-        .join("codegg-sandbox-helper")
+    let exe = std::env::current_exe().expect("test executable");
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(profile) = exe.parent().and_then(|path| path.parent()) {
+        candidates.push(profile.join("codegg-sandbox-helper"));
+    }
+    if let Some(deps) = exe.parent() {
+        candidates.push(deps.join("codegg-sandbox-helper"));
+    }
+    candidates.push(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("debug")
+            .join("codegg-sandbox-helper"),
+    );
+    let found = candidates
+        .iter()
+        .find(|candidate| candidate.is_file())
+        .cloned();
+    found.unwrap_or_else(|| {
+        panic!(
+            "the managed sandbox helper is missing; the lane must build it. Tried: {candidates:?}"
+        )
+    })
 }
 
 #[cfg(target_os = "linux")]
