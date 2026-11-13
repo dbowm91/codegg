@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement Resumption S044 — Terminal Review Recovery and Submit Error Attribution
 
-Status: **active; attempt 54 supplies the diagnostic baseline; attempt 55 awaits paired binaries and fresh admission**
+Status: **active; failed-submit error-class projection corrected; attempt 70 will verify the full safe path**
 
 Repository baseline: `ac584c886f03847ff6b829f8509667637e42a052` (shared dirty worktree; preserve unrelated edits)
 
@@ -23,6 +23,8 @@ Attempt 54 used `opencode_go/muse-spark-1.3-contributor` for 49.1 active minutes
 The reviewer reached terminal `failed/deadline_exceeded` about 21.9 minutes after spawn. The parent fetched the result once after 9.1 minutes, then made 74 status/wait calls and did not use the one permitted continuation. The safe events show that the failure was surfaced. The measured gap is terminal recovery behavior, not a missing daemon/ACP notification.
 
 S043 now proves 55/55 applicable job request/result IDs match and the exact serialized transcript projection matches its ACP source. One failed background test submission had no job ID, so the lifecycle is correctly left incomplete. The tool failure is observed, but its safe typed class is unavailable. That single event is not claimed as the cause of either hidden assertion.
+
+Attempt 69 ended normally after 34.54 active minutes. Its public continuation, both named repair pairs, required jobs, review, overlap, and all event pairs were complete, but the unchanged verifier still failed `continuation_boundary` and `transcript_job_lifecycle`. One failed `test` submission was unbound; all 45 ID-bearing job calls matched request/result correlation. Review of the safe-projection path found that `diagnostics.summarize_job_tool_sequence` and public reconciliation produced `failed_test_submit_error_class_counts`, but `_safe_h007_completion_projection` omitted that allowlisted field. Thus final campaign evidence could not classify the unbound failed submission. This is a Harness Lab projection omission, not proof that the CodeGG backend caused the failed submit. The omission is corrected below; attempt 69 remains unqualified and immutable.
 
 ## 3. Invariants
 
@@ -60,7 +62,7 @@ ACP receives a typed success bit and a rendered `ToolError` string. For a failed
 
 1. Add an agent-facing terminal recovery cue and focused TaskTool regression tests.
 2. Add an ACP classifier that applies only to failed background `test` submissions, with a closed vocabulary and no raw-text retention.
-3. Carry that safe enum into the in-memory failed-submit projection and the bounded S019 diagnostic; include a content-free `unclassified` fallback.
+3. Carry that safe enum through the in-memory projection and `_safe_h007_completion_projection` into the bounded S019 diagnostic; include a content-free `unclassified` fallback.
 4. Add redaction, unknown-prefix, unrelated-tool, successful-submit, and serialized-safe-receipt tests.
 5. Run focused Rust and Harness Lab suites, test quality guards, formatting, and `git diff --check`; document exact command results.
 6. Recheck ARM64 paired binaries, unchanged v97 manifest/verifier, credential source (without reading the secret), authorization balance, caps, budget-policy digest, and free disk ≥30 GiB. If disk is below reserve, do not build or launch; continue independent source/plan work and monitor.
@@ -73,6 +75,7 @@ ACP receives a typed success bit and a rendered `ToolError` string. For a failed
 - A continuation is counted for the reviewer lifecycle only when its hashed run identity matches the run returned by that reviewer's spawn; unrelated continuation calls do not qualify.
 - Failed test submissions expose only an allowlisted class; unknown messages and other tools reveal no new data.
 - Safe diagnostics can attribute the failed submit by class, or report `unclassified`, without retaining text or IDs.
+- The end-to-end campaign completion projection preserves only allowlisted `failed_test_submit_error_class_counts` and rejects unknown classes, invalid counts, and private labels.
 - Focused offline checks pass, paired ARM64 binaries match their recorded hashes, and the unchanged live verifier either passes all qualification requirements or produces actionable safe evidence.
 - H007 remains marked unqualified unless the independent verifier and every task, lifecycle, and horizon gate pass.
 
@@ -87,3 +90,5 @@ Attempt 54 is the baseline and remains unqualified. It used `opencode_go/muse-sp
 An attempt55 wrapper probe was invoked with `--help`; the wrapper emitted a monitor instead of help and finished without provider admission. Its safe monitor recorded zero provider requests, zero tool calls, no disk-floor trigger, and a 120-GiB minimum free-space sample. The paired-binary directory was empty at that point; the monitor did not establish a specific exit cause, model, route, or task outcome. The campaign and grant counters remained at 54 and 10/40. This was not a live qualification attempt and is preserved at `plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt55-wrapper-probe-20261111.json`. The probe's runner log and any private receipt were not inspected. Stage the exact-head paired binaries and perform a fresh documented preflight before invoking the wrapper without extra arguments.
 
 The active continuation-goal authorization reported 25/120 starts before attempt 55. Attempt 55 was admitted and is now preserved at 26/120 task starts, 55/200 durable campaign starts, and grant `s019-supplemental-20261111-04` at 11/40. Keep these counters distinct; reconcile each provider-admitted attempt in both scopes without rewriting historical rows. S045 owns the preflight identity mismatch found during this requalification attempt.
+
+Current handoff (2026-11-13): S019 attempt 69 is preserved as unqualified at 69/200 campaign starts, 25/40 starts in grant `s019-supplemental-20261111-04`, and 40/120 task-authorized starts. The failed-submit projection correction passes 18 `test_campaign_authorization` tests, the assertion-quality and duplication guards, Python compilation, and `git diff --check`. It changes no Rust source, paired binary, task manifest, or verifier. Attempt 70 is next after a fresh exact-head preflight; 15 starts remain in the grant. The attempt 69 safe diagnostic and monitor summary remain the source for that run's immutable outcomes; the projected error class could not be recovered retroactively.

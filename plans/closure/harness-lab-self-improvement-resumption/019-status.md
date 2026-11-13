@@ -1,6 +1,8 @@
 # S019 status — verifier and reviewer diagnostics with Muse requalification
 
-Status: **active; attempts 1–43, 45–51 unqualified; attempts 40 and 44 failed before provider startup; 52/200 combined starts consumed, 148 remain; latest grant 8/40 consumed, 32 remain; S035 conditionally closed; S036 closed; S037 conditionally closed; S038 conditionally closed; S039 conditionally closed; S040 closed; S041 closed; S042 active; H007 unqualified**
+Status: **active; attempt 69 unqualified; 69/200 combined starts consumed, 131 remain; current grant 25/40 consumed, 15 remain; current task authorization 40/120 consumed, 80 remain; S044 active; H007 unqualified**
+
+Attempts 53–69 are summarized in the current subsystem roadmap at §§37–46. Attempt 69 remains unqualified; its detailed immutable safe diagnostic, preflight, and monitor summary are linked there. Attempt 70 is pending the S044 final safe-projection correction and a fresh exact-head preflight.
 
 The combined authorization ceiling is 200 starts after the user's latest 40-start grant. Stop on qualification or when the authorized starts are exhausted. Use only `opencode_go/muse-spark-1.3-contributor`. The temporary replacement OpenCode Go credential is configured in the protected auth file, which remains mode `0600`; the value is not recorded.
 

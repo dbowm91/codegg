@@ -14,6 +14,7 @@ from typing import Any
 
 from .diagnostics import (
     SAFE_JOB_STATUS_ERROR_CLASSES,
+    SAFE_TEST_SUBMIT_ERROR_CLASSES,
     safe_job_status_failure_attribution,
 )
 
@@ -697,6 +698,9 @@ def _safe_h007_completion_projection(case_receipt: Mapping[str, Any] | None) -> 
             "failed_job_status_error_class_counts": _safe_named_counts(
                 reconciliation.get("failed_job_status_error_class_counts"),
                 SAFE_JOB_STATUS_ERROR_CLASSES, maximum=1_600),
+            "failed_test_submit_error_class_counts": _safe_named_counts(
+                reconciliation.get("failed_test_submit_error_class_counts"),
+                SAFE_TEST_SUBMIT_ERROR_CLASSES, maximum=1_600),
         }
         failed_job_status_attribution = safe_job_status_failure_attribution(
             reconciliation.get("failed_job_status_attribution")
