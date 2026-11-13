@@ -81,5 +81,9 @@ jobs:
 
       - name: Sandbox grant fixtures
         run: |
+          # The fixtures launch the helper as a separate process and resolve it
+          # beside the profile directory, so the step states what it built
+          # rather than leaving a missing sidecar to look like a test failure.
+          ls -l target/debug/codegg-sandbox-helper target/debug/deps/codegg-sandbox-helper
           python3 scripts/check_test_filter_execution.py --run -- \
             cargo test --locked --test security_permission sandbox_landlock -- --nocapture
