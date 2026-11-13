@@ -688,6 +688,14 @@ impl SandboxConfig {
                     .map_err(ToolError::Permission)?;
                 let mut identities = Vec::new();
                 for path in read_paths.iter().chain(&write_paths).chain(&protected) {
+                    // The per-process `/proc` aliases are names, not objects:
+                    // canonicalizing one changes it by definition, so the
+                    // replacement check that consumes these identities cannot
+                    // apply to them - and capturing one would reject a symlink
+                    // the policy deliberately sends unresolved.
+                    if policy::is_self_proc_alias(path) {
+                        continue;
+                    }
                     if path.exists() {
                         identities.push(SandboxPathIdentity::capture(path)?);
                     }
