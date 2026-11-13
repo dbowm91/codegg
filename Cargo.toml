@@ -177,7 +177,11 @@ grep-searcher = "0.1"
 
 # Text processing
 comrak = { version = "0.35", default-features = false }
-syntect = "5"
+# `metadata` exposes each grammar's own `TM_COMMENT_START`/`TM_COMMENT_END`
+# shell variables, which is where the editor's comment toggle reads its
+# token. A feature rather than a crate: the default packdump already ships
+# the metadata, and the feature is what compiles the accessor in.
+syntect = { version = "5", features = ["metadata"] }
 strsim = "0.11"
 
 # Config parsing (TOML remains used for themes/plugins/skills; YAML frontmatter
@@ -434,9 +438,26 @@ required-features = ["linux-git-test-support"]
 name = "tool_programs"
 path = "tests/tool_programs/mod.rs"
 
+# Recorded-session replay (harness-practice-adoption M001). Deliberately
+# **not** `required-features`-gated: nine targets already are, and no CI
+# workflow enables those features, so a gated family would never be compiled
+# there.
+[[test]]
+name = "session_replay"
+path = "tests/session_replay/mod.rs"
+
 [[test]]
 name = "exec_workspace_path_policy"
 path = "tests/exec_workspace_path_policy.rs"
+
+# Generated tool-surface catalog (harness-practice-adoption M004). The family
+# renders the catalog from the real registry and compares it to the committed
+# file, so it is the sweep-only half of the freshness gate
+# (`scripts/check_tool_catalog.py` is the structural half). Deliberately not
+# feature-gated, for the same reason as `session_replay` above.
+[[test]]
+name = "tool_catalog"
+path = "tests/tool_catalog/mod.rs"
 
 [[test]]
 name = "tui_render"

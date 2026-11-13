@@ -37,7 +37,10 @@ use codegg_protocol::lsp::{
 use crate::tui::app::state::editor::{EditorNotice, EditorOperation, EditorState, EditorStatus};
 use crate::tui::app::{App, TuiCommand};
 use crate::tui::async_cmd::{spawn_registered_tui_task, spawn_scoped_registered_tui_task};
-use crate::tui::document_session::{TuiDocumentPresentation, TuiDocumentSession};
+use crate::tui::document_session::{
+    JumplistPush, RecordedKey, RecorderBound, RegisterName, RegisterRefusal, RegisterWrite,
+    TuiDocumentPresentation, TuiDocumentSession, MAX_JUMPLIST_ENTRIES,
+};
 use crate::tui::editor::{self, EditorCommand, EditorCommandName, EditorMode, EditorPrefix};
 use crate::tui::editor_effect::{ClipboardVerb, EditorPendingEffect};
 use crate::tui::editor_lsp::EditorDiagnosticStep;
@@ -645,6 +648,12 @@ pub(crate) fn apply_editor_opened(
     if let Some(session) = app.editor_state.session.as_mut() {
         session.presentation_mut().reset_for_open();
     }
+    // D1: the unnamed register is seeded from the system clipboard **once**,
+    // at open, so `p` pastes what the reader copied in another application.
+    // The seed is here because the App layer owns the clipboard; the buffer
+    // never reads it, and the paste path stays synchronous. A second read per
+    // paste would put clipboard authority in the buffer.
+    seed_register_from_clipboard(app, crate::util::clipboard::read_from_clipboard());
     // The open succeeded, so the file tree hands the keyboard to the editor
     // and puts it in **Normal** mode.
     //
@@ -2080,6 +2089,9 @@ fn leave_editor_view(app: &mut App) {
     // armed, it would answer its second key against whatever buffer is open
     // when the route comes back.
     app.editor_state.disarm_prefix();
+    // The count is the same kind of partial gesture, so it goes for the same
+    // reason and in the same place.
+    clear_count(&mut app.editor_state);
 }
 
 // ── Save / reload / resync ───────────────────────────────────────────────────
@@ -2512,6 +2524,103 @@ fn editable(state: &EditorState) -> bool {
     state.is_open() && !state.is_busy() && state.is_writer() && !state.status.blocks_edits()
 }
 
+/// Delete `ranges` as one transaction, through the one edit funnel.
+///
+/// Returns whether the controller **accepted** the delete. `stay_insert` is the
+/// change gesture's half of the promise: it asks `submit_edit` to move to Insert
+/// mode, and that happens only inside the accepted branch — so a rejected
+/// transaction cannot leave Insert mode over text that survived. The refused
+/// range set answers `false` for the same reason: a caller that enters a mode on
+/// an edit that did not land is in exactly the state this forbids.
+///
+/// `yank` is where the deleted bytes go: `d`/`c` report
+/// [`YankTarget::Unnamed`], and `Alt-d`/`Alt-c` and the blackhole report
+/// [`YankTarget::Nothing`]. The bytes are read **before** the delete — after it
+/// they no longer exist — and written **after** the submission is accepted, so
+/// a refused delete writes no register. M002's promise survives: no arm here
+/// reaches the system clipboard, whatever the target says.
+fn submit_range_delete(
+    state: &mut EditorState,
+    ranges: Vec<std::ops::Range<usize>>,
+    stay_insert: bool,
+    yank: YankTarget,
+) -> bool {
+    let Some(session) = state.session.as_ref() else {
+        return false;
+    };
+    let Some(snapshot) = session.try_snapshot() else {
+        return false;
+    };
+    let yanked = if matches!(yank, YankTarget::Unnamed) {
+        read_range_text(&snapshot, &ranges)
+    } else {
+        String::new()
+    };
+    match editor::delete_ranges(&snapshot, ranges) {
+        editor::RangeSetEdit::Edit(mut edit, _) => {
+            edit.stay_insert = stay_insert;
+            let accepted = submit_edit(state, edit);
+            if accepted && !yanked.is_empty() {
+                // **After** the submission: `submit_edit` clears the notice on
+                // success, so a truncation disclosure set before it would be
+                // erased by the very edit it describes.
+                store_in_unnamed(state, &yanked);
+            }
+            accepted
+        }
+        editor::RangeSetEdit::Empty => false,
+        // Refused, not truncated. A partial multi-cursor delete is exactly the
+        // state neither `u` nor redo can describe, so the notice names the
+        // limit the reader hit.
+        editor::RangeSetEdit::TooMany(count) => {
+            state.set_notice(EditorNotice::Rejected(format!(
+                "too many selections to delete at once: {count} (limit {max})",
+                max = codegg_protocol::document::MAX_DOCUMENT_EDITS
+            )));
+            false
+        }
+    }
+}
+
+/// The bytes `ranges` cover, concatenated in the order given.
+///
+/// One read for every yank and every register-writing delete, so the two cannot
+/// disagree about what "the selection's text" means. An unreadable member is
+/// skipped rather than losing the whole verb: the alternative is a yank that
+/// produces nothing for a selection the reader can plainly see highlighted.
+fn read_range_text(
+    snapshot: &codegg_document::DocumentSnapshot,
+    ranges: &[std::ops::Range<usize>],
+) -> String {
+    let mut text = String::new();
+    for range in ranges {
+        if let Ok(part) = snapshot.read_bytes(range.start, range.end) {
+            text.push_str(&part);
+        }
+    }
+    text
+}
+
+/// Put `text` in the unnamed register and disclose a truncated write.
+///
+/// The unnamed register is what a bare `p` reads, so a delete that writes it is
+/// the gesture that makes `d` then `p` move text without the clipboard. A write
+/// past [`MAX_REGISTER_BYTES`] is reported: a paste from a truncated register
+/// still pastes, and the reader must have been told at write time that it was
+/// cut.
+fn store_in_unnamed(state: &mut EditorState, text: &str) {
+    let outcome = state.session.as_mut().map(|session| {
+        session
+            .presentation_mut()
+            .write_register(RegisterName::Unnamed, text)
+    });
+    if let Some(RegisterWrite::Truncated { stored, requested }) = outcome {
+        state.set_notice(EditorNotice::Note(format!(
+            "the unnamed register kept the first {stored} of {requested} bytes"
+        )));
+    }
+}
+
 /// Apply one motion command. Never touches text.
 pub(crate) fn editor_motion(state: &mut EditorState, command: EditorCommand, visible_lines: usize) {
     let Some(session) = state.session.as_ref() else {
@@ -2520,6 +2629,7 @@ pub(crate) fn editor_motion(state: &mut EditorState, command: EditorCommand, vis
     let Some(snapshot) = session.try_snapshot() else {
         return;
     };
+    let before = Some(session.presentation().cursor_byte);
     if let Some(session) = state.session.as_mut() {
         editor::apply_motion(
             session.presentation_mut(),
@@ -2533,6 +2643,11 @@ pub(crate) fn editor_motion(state: &mut EditorState, command: EditorCommand, vis
     // would be overwritten by the next `j` while the notice kept describing a
     // `]p` the reader never sent.
     lift_motion_notes(state);
+    // `gg` walks through here as `BufferStart`. Only a named destination
+    // records, and only when it moved — see `editor::is_named_destination`.
+    if editor::is_named_destination(command) {
+        note_jumplist_jump(state, before);
+    }
 }
 
 /// Move a motion's disclosure from the presentation into the notice.
@@ -2630,6 +2745,10 @@ fn editor_editing_verb(
 }
 
 /// Read the clipboard and run one clipboard-backed verb.
+///
+/// The `space` family's entry point, and deliberately not register-aware:
+/// `space p`, `space P` and `space R` mean the system clipboard whatever `"`
+/// selected, which is what keeps cross-application paste predictable.
 fn run_clipboard_verb(app: &mut App, verb: ClipboardVerb) {
     apply_clipboard_text(app, verb, crate::util::clipboard::read_from_clipboard());
 }
@@ -2667,40 +2786,126 @@ fn apply_clipboard_text(app: &mut App, verb: ClipboardVerb, read: Option<String>
         app.messages_state.toasts.warning("Clipboard is empty");
         return;
     }
+    apply_paste_text(app, verb, &text);
+}
+
+/// Run one paste verb against the selected register's bytes.
+///
+/// The read is a **borrow** of the register store (or of the search line, for
+/// `/`), cloned once into the edit because the presentation is borrowed again
+/// by the verb. A refusal is reported with the reason the register gave — a
+/// blackhole `"_p`, an empty slot, a `/` with no accepted search — rather than
+/// inserting nothing silently, which is the one outcome a reader cannot tell
+/// from a dropped keystroke.
+fn apply_register_text(app: &mut App, verb: ClipboardVerb, register: RegisterName) {
+    let read: Option<Result<String, RegisterRefusal>> =
+        app.editor_state.session.as_ref().map(|session| {
+            session
+                .presentation()
+                .read_register(register)
+                .map(str::to_owned)
+        });
+    let Some(read) = read else {
+        return;
+    };
+    match read {
+        Err(refusal) => app.messages_state.toasts.warning(&refusal.message()),
+        Ok(text) => apply_paste_text(app, verb, &text),
+    }
+}
+
+/// The edit itself, shared by both paste sources.
+///
+/// One funnel, so a register paste inherits the read-only gate, the undo
+/// entry, the selection-clearing rule and the transaction shape from the
+/// clipboard paste — it is the same verb with different bytes.
+fn apply_paste_text(app: &mut App, verb: ClipboardVerb, text: &str) {
     editor_editing_verb(&mut app.editor_state, |snapshot, presentation| {
-        verb.build(snapshot, presentation, &text)
+        verb.build(snapshot, presentation, text)
     });
+}
+
+/// D1's seed: the unnamed register takes the clipboard's contents at open.
+///
+/// `read` is a parameter for the same reason `apply_clipboard_text`'s is: a
+/// test that seeded the *real* clipboard would steal the developer's. The
+/// production call site is `apply_editor_opened`, which is the only place a
+/// document becomes current and therefore the only place a seed can be *the*
+/// seed rather than a second one.
+fn seed_register_from_clipboard(app: &mut App, read: Option<String>) {
+    let Some(text) = read else {
+        return;
+    };
+    if let Some(session) = app.editor_state.session.as_mut() {
+        session.presentation_mut().seed_unnamed_register(&text);
+    }
 }
 
 /// Which way through the history a traversal moves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HistoryStep {
-    /// One entry back — Helix's `earlier`.
+    /// Back — Helix's `earlier`.
     Earlier,
-    /// One entry forward — Helix's `later`.
+    /// Forward — Helix's `later`.
     Later,
 }
 
-/// Move the history cursor one entry, and the document with it.
+/// Which of the history's two axes a traversal moves along.
 ///
-/// The cursor moves **only after** the apply succeeds. A refused apply
-/// leaves the document, the history and the cursor exactly where they were:
-/// a cursor that moved without a matching change of text would leave the
-/// history describing a document that does not exist. That is the one
-/// behaviour this model must not get wrong.
+/// They answer different questions, and the four gestures keep them apart:
+/// `u`/`U` walk the **branch** — a parent, or the child last walked from here —
+/// while `Alt-u`/`Alt-U` walk **creation order**, the node made before or after
+/// this one, wherever in the tree it sits. The reporting rule rides on the axis
+/// because it rides on the binding. Collapsing both into one silent-or-not flag
+/// is how two axes become one indistinguishable movement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HistoryWalk {
+    /// Parent / last-visited child — `u` and `U`.
+    Branch,
+    /// The neighbouring node in creation order — `Alt-u` and `Alt-U`.
+    CreationOrder,
+}
+
+impl HistoryWalk {
+    /// Whether this axis reports its boundary instead of failing silently.
+    fn reports(self) -> bool {
+        matches!(self, Self::CreationOrder)
+    }
+}
+
+/// What a reporting gesture says when its walk has nowhere to go.
+///
+/// Two axes, two questions — "is there another node in time?" and "is there a
+/// parent?" — so two sentences; one for both would teach that they are the
+/// same movement. Only the creation-order sentences reach a key today: the
+/// branch gestures are silent by convention, as `docs/tui.md` records.
+fn history_boundary(step: HistoryStep, walk: HistoryWalk) -> &'static str {
+    match (walk, step) {
+        (HistoryWalk::CreationOrder, HistoryStep::Earlier) => "no earlier state",
+        (HistoryWalk::CreationOrder, HistoryStep::Later) => "no later state",
+        (HistoryWalk::Branch, HistoryStep::Earlier) => "no parent state",
+        (HistoryWalk::Branch, HistoryStep::Later) => "no branch state",
+    }
+}
+
+/// Move the history cursor one step, and the document with it.
+///
+/// The one traversal both axes run through. The step resolves to a **target
+/// node**; [`editor::history_edges`] resolves the edges between the cursor and
+/// that target — one for a branch step, a path over the fork for a time step —
+/// and every edge's transaction goes through the one apply path this file has:
+/// `controller.apply_local`.
+///
+/// The cursor moves **only after** the text does. A first edge that is refused
+/// leaves the document, the history and the cursor exactly where they were: a
+/// cursor that moved without a matching change of text would leave the history
+/// describing a document that does not exist. A longer path refused part-way
+/// leaves the cursor on the node the text actually reached.
 ///
 /// Undo during a destructive phase fails exactly like any other edit: the
 /// controller returns `LifecycleBusy`, the entry stays in history, and no
 /// transaction is queued for a phase that will refuse it.
-///
-/// `report` is the whole difference between the two spellings of the
-/// gesture. `u` and `U` are silent at the boundary — they have always been,
-/// and a reader who has just undone everything knows where they are.
-/// `Alt-u` and `Alt-U` are the *explicit* history gestures, so they say
-/// "no earlier change" or "no later change" rather than doing nothing
-/// silently. That is a CodeGG convention rather than a Helix behaviour; in
-/// Helix all four are the same movement.
-fn traverse_history(state: &mut EditorState, step: HistoryStep, report: bool) {
+fn traverse_history(state: &mut EditorState, step: HistoryStep, walk: HistoryWalk) {
     // A typing burst that has not been closed is one undo step, so the
     // session is committed before the history is read. Otherwise the
     // reader's own typing would be invisible to the `u` they just pressed:
@@ -2716,38 +2921,64 @@ fn traverse_history(state: &mut EditorState, step: HistoryStep, report: bool) {
         return;
     };
     let presentation = session.presentation();
-    let entry = match step {
-        HistoryStep::Earlier => editor::undo_entry(presentation),
-        HistoryStep::Later => editor::redo_entry(presentation),
+    let target = match (walk, step) {
+        (HistoryWalk::Branch, HistoryStep::Earlier) => {
+            editor::history_node(presentation, presentation.history_cursor).map(|node| node.parent)
+        }
+        (HistoryWalk::Branch, HistoryStep::Later) => {
+            editor::redo_entry(presentation).map(|node| node.created)
+        }
+        (HistoryWalk::CreationOrder, HistoryStep::Earlier) => {
+            editor::creation_order_back(presentation)
+        }
+        (HistoryWalk::CreationOrder, HistoryStep::Later) => {
+            editor::creation_order_forward(presentation)
+        }
     };
-    let Some(entry) = entry.cloned() else {
+    let edges = target
+        .map(|to| editor::history_edges(presentation, to))
+        .unwrap_or_default();
+    if edges.is_empty() {
         // The boundary. Nothing moved and nothing changed, so the only thing
         // left to do is say so — when this gesture says so.
-        if report {
-            let message = match step {
-                HistoryStep::Earlier => "no earlier change",
-                HistoryStep::Later => "no later change",
-            };
+        if walk.reports() {
+            let message = history_boundary(step, walk);
             state.set_notice(EditorNotice::Note(message.to_string()));
         }
         return;
-    };
-    let transaction = match step {
-        HistoryStep::Earlier => entry.inverse.clone(),
-        HistoryStep::Later => entry.forward.clone(),
-    };
+    }
     // Undo and redo are edits too: the highlighter has to be told where this
     // one landed, or the next frame re-reads the whole scanned prefix to
     // discover a change it could have been pointed at. The seed is resolved
     // against the post-edit snapshot for the same reason `submit_edit`
-    // resolves it there.
-    let first_edit_byte = transaction.edits.first().map(|edit| edit.range.start);
+    // resolves it there. A path over the fork lands several transactions, so
+    // the seed is the earliest byte any of them touched — starting too late
+    // would leave a change above the seed unscanned.
     let controller = session.controller();
-    if let Err(error) = controller.apply_local(transaction) {
-        state.set_notice(EditorNotice::from_error(&error));
+    let mut applied = 0usize;
+    let mut refusal = None;
+    for edge in &edges {
+        match controller.apply_local(edge.transaction.clone()) {
+            Ok(_) => applied += 1,
+            Err(error) => {
+                refusal = Some(error);
+                break;
+            }
+        }
+    }
+    if applied == 0 {
+        // The first edge was refused: nothing moved, so nothing is recorded.
+        if let Some(error) = refusal {
+            state.set_notice(EditorNotice::from_error(&error));
+        }
         return;
     }
     let after = controller.try_snapshot().map(|(snapshot, _)| snapshot);
+    let first_edit_byte = edges[..applied]
+        .iter()
+        .filter_map(|edge| edge.transaction.edits.first())
+        .map(|edit| edit.range.start)
+        .min();
     if let (Some(byte), Some(snapshot)) = (first_edit_byte, after.as_ref()) {
         state
             .highlight
@@ -2757,27 +2988,48 @@ fn traverse_history(state: &mut EditorState, step: HistoryStep, report: bool) {
         return;
     };
     let presentation = session.presentation_mut();
-    // The cursor moves now, after the apply has been accepted.
-    let moved = match step {
-        HistoryStep::Earlier => editor::move_history_cursor_back(presentation),
-        HistoryStep::Later => editor::move_history_cursor_forward(presentation),
-    };
-    debug_assert!(
-        moved,
-        "the entry was read from this cursor, so the cursor can still move"
+    // The cursor moves now, after the applies have been accepted. It names the
+    // node the text actually reached: the last edge that landed.
+    let landed = edges[applied - 1].lands_on;
+    match walk {
+        // The branch walk records the child it left as the one this node last
+        // stood at, which is what makes the next `U` deterministic instead of
+        // arbitrary. The edge and the cursor move are one step here.
+        HistoryWalk::Branch => {
+            let moved = match step {
+                HistoryStep::Earlier => editor::move_history_cursor_back(presentation),
+                HistoryStep::Later => editor::move_history_cursor_forward(presentation),
+            };
+            debug_assert!(moved, "the edge was resolved from this cursor");
+        }
+        // A time jump lands on the node it named. It is not a branch entry, so
+        // it records nothing: the reader asked where they were in time, not
+        // which child of this node they came from.
+        HistoryWalk::CreationOrder => {
+            editor::set_history_cursor(presentation, landed);
+        }
+    }
+    debug_assert_eq!(
+        presentation.history_cursor, landed,
+        "the cursor names the node the last applied edge landed on"
     );
-    match &after {
-        Some(snapshot) => {
-            presentation.cursor_byte = editor::clamp_offset(snapshot, entry.cursor_before);
-            presentation.restore_selections(&entry.selections_before);
+    // The recorded position and selection set of the last edge are restored,
+    // exactly as a single-step traversal restores its own entry's.
+    let observed = editor::history_node(presentation, edges[applied - 1].entry)
+        .map(|node| (node.cursor_before, node.selections_before.clone()));
+    match (&after, observed) {
+        (Some(snapshot), Some((cursor_before, selections))) => {
+            presentation.cursor_byte = editor::clamp_offset(snapshot, cursor_before);
+            presentation.restore_selections(&selections);
             presentation.viewport_line = presentation
                 .viewport_line
                 .min(snapshot.len_lines().saturating_sub(1));
         }
-        None => {
-            presentation.cursor_byte = entry.cursor_before;
-            presentation.restore_selections(&entry.selections_before);
+        (None, Some((cursor_before, selections))) => {
+            presentation.cursor_byte = cursor_before;
+            presentation.restore_selections(&selections);
         }
+        _ => {}
     }
     presentation.mode = EditorMode::Normal;
     // Text changed under the cursor; see `submit_edit`.
@@ -2788,41 +3040,51 @@ fn traverse_history(state: &mut EditorState, step: HistoryStep, report: bool) {
         state.lsp.diagnostics_stale = true;
     }
     state.status = EditorStatus::DirtyLocal;
-    state.clear_notice();
+    // A path refused part-way still moved the text, so its refusal is what the
+    // row says; a path that completed clears the row as every edit does.
+    match refusal {
+        Some(error) => state.set_notice(EditorNotice::from_error(&error)),
+        None => state.clear_notice(),
+    }
 }
 
 /// Undo the newest local edit by submitting its inverse transaction.
 ///
+/// Walks the **branch**: the cursor moves to the parent of the node it names.
 /// Silent at the boundary: `u` at the beginning of the history does nothing,
 /// exactly as it always has.
 pub(crate) fn editor_undo(state: &mut EditorState) {
-    traverse_history(state, HistoryStep::Earlier, false);
+    traverse_history(state, HistoryStep::Earlier, HistoryWalk::Branch);
 }
 
 /// Redo the newest undone local edit by re-submitting its forward
 /// transaction.
 ///
+/// Walks the **branch**: the cursor moves to the child it last walked from
+/// here, so a node with two children still has one defined redo target.
 /// Silent at the boundary, for the same reason [`editor_undo`] is.
 pub(crate) fn editor_redo(state: &mut EditorState) {
-    traverse_history(state, HistoryStep::Later, false);
+    traverse_history(state, HistoryStep::Later, HistoryWalk::Branch);
 }
 
-/// Helix's `earlier` — move the history cursor back one entry.
+/// Helix's `earlier` — step one node back in **creation order**.
 ///
-/// The explicit history gesture, so it **reports** its boundary: at the
-/// oldest entry it says "no earlier change" rather than doing nothing
-/// silently. It is the same movement `u` performs, in the same model; only
-/// the reporting differs.
+/// Time, not structure: the node made before this one may sit on another
+/// branch, so the movement climbs to the fork and descends that branch, one
+/// transaction per edge. The explicit history gesture, so it **reports** its
+/// boundary — "no earlier state" — rather than doing nothing silently. That is
+/// a CodeGG convention rather than a Helix behaviour, and it is recorded as
+/// one.
 pub(crate) fn editor_history_earlier(state: &mut EditorState) {
-    traverse_history(state, HistoryStep::Earlier, true);
+    traverse_history(state, HistoryStep::Earlier, HistoryWalk::CreationOrder);
 }
 
-/// Helix's `later` — move the history cursor forward one entry.
+/// Helix's `later` — step one node forward in **creation order**.
 ///
-/// The explicit history gesture, so it **reports** its boundary: at the tip
-/// it says "no later change".
+/// The explicit history gesture, so it **reports** its boundary — "no later
+/// state".
 pub(crate) fn editor_history_later(state: &mut EditorState) {
-    traverse_history(state, HistoryStep::Later, true);
+    traverse_history(state, HistoryStep::Later, HistoryWalk::CreationOrder);
 }
 
 /// Insert literal text at the cursor in insert mode.
@@ -3006,13 +3268,35 @@ fn handle_file_tree_key(app: &mut App, key: KeyEvent) -> bool {
     super::file_tree::handle_panel_key(app, key)
 }
 
+/// Handle one key for the editor route.
+///
+/// The recorder's **one capture point**. The key is dispatched first and
+/// recorded after, so a replayed key is not recorded (a replay that recorded
+/// itself would grow the log on every press) and a key the buffer refused is
+/// still recorded (the reader pressed it, and the replay owes them the same
+/// refusal). The wrapper is what makes that structural: every return path of
+/// [`dispatch_editor_key`] passes here, so a new early return cannot skip the
+/// capture.
 pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
+    let consumed = dispatch_editor_key(app, key);
+    capture_recorded_key(app, key);
+    consumed
+}
+
+fn dispatch_editor_key(app: &mut App, key: KeyEvent) -> bool {
     if !is_editor_view_active(app) {
         return false;
     }
     // M006-D: the tree pane claims keys only while it is focused, and only
     // the ones it owns. Anything else falls through, so a focused tree never
     // silently swallows composer or editor input.
+    //
+    // A count belongs to the buffer's keyboard, so a tree that owns the keys
+    // has no gesture for one to complete: `3`, `Ctrl+T` must not leave a count
+    // for the `j` that comes back to the document.
+    if app.ui_state.tree_focused {
+        clear_count(&mut app.editor_state);
+    }
     if app.ui_state.tree_focused && handle_file_tree_key(app, key) {
         return true;
     }
@@ -3026,6 +3310,12 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
     // nothing else happens. Answering the route first left Esc unable to
     // close a completion popup, which is the one dismissal the popup
     // documents as side-effect-free.
+    //
+    // The jumplist picker is ahead of both: it is the overlay the reader
+    // opened last, and `Esc` must undo the most recent thing they asked for.
+    if handle_jumplist_picker_key(app, key) {
+        return true;
+    }
     if handle_lsp_panel_key(app, key) {
         return true;
     }
@@ -3043,6 +3333,9 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
     // in Normal the `:` command line is closed first, and in Insert a document
     // that is about to be typed into must not also be one keystroke from gone.
     if key.code == KeyCode::Esc {
+        // `Esc` is the route's "undo the partial thing I am doing" key, and a
+        // count is a partial thing: `3`, `Esc`, `j` moves one line.
+        clear_count(&mut app.editor_state);
         // The two modal input lines close before the route steps mode, so
         // `Esc` always undoes the most recent thing the user asked for.
         if app.editor_state.session.as_ref().is_some_and(|session| {
@@ -3194,47 +3487,44 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
             resync_editor(app);
             true
         }
-        BufferKey::DeleteRanges(ranges) => {
-            let Some(session) = app.editor_state.session.as_ref() else {
-                return true;
-            };
-            let Some(snapshot) = session.try_snapshot() else {
-                return true;
-            };
-            match editor::delete_ranges(&snapshot, ranges) {
-                editor::RangeSetEdit::Edit(edit, _) => {
-                    submit_edit(&mut app.editor_state, edit);
-                }
-                editor::RangeSetEdit::Empty => {}
-                // Refused, not truncated. A partial multi-cursor delete is
-                // exactly the state neither `u` nor redo can describe, so the
-                // notice names the limit the reader hit.
-                editor::RangeSetEdit::TooMany(count) => {
-                    app.editor_state.set_notice(EditorNotice::Rejected(format!(
-                        "too many selections to delete at once: {count} (limit {max})",
-                        max = codegg_protocol::document::MAX_DOCUMENT_EDITS
-                    )))
-                }
+        BufferKey::DeleteRanges { ranges, yank } => {
+            // The App layer owns the controller, so the buffer's reported
+            // ranges are submitted here — and a refusal is already reported by
+            // the funnel, so there is nothing to add.
+            submit_range_delete(&mut app.editor_state, ranges, false, yank);
+            true
+        }
+        // The change gesture, in the only order that is correct: the delete
+        // lands first, and the keyboard moves **only** when the document took
+        // it. `submit_edit` sets the presentation's mode inside its accepted
+        // branch, so the App's `input_mode` has to move on the same answer —
+        // two modes that disagree would route Insert-mode keys to the Normal
+        // table (or the reverse) with nothing on screen to explain it.
+        BufferKey::ChangeRanges { ranges, yank } => {
+            if submit_range_delete(&mut app.editor_state, ranges, true, yank) {
+                app.ui_state.input_mode = crate::tui::input::InputMode::Insert;
             }
             true
         }
-        BufferKey::YankRanges(ranges) => {
-            yank_editor_ranges(app, ranges);
+        BufferKey::YankRanges { ranges, target } => {
+            yank_editor_ranges(app, ranges, target);
             true
         }
-        // The clipboard is the App layer's, so these three arrive here rather
-        // than carrying their payload: the buffer resolved the target and the
-        // bytes are read now, once, at the point that owns them.
-        BufferKey::PasteAfter(verb)
-        | BufferKey::PasteBefore(verb)
-        | BufferKey::ReplaceWithClipboard(verb) => {
-            run_clipboard_verb(app, verb);
+        // The bytes are read here, once, at the layer that owns them: the
+        // register the bare verbs named. The `space` family reaches the
+        // clipboard through its own effect, not through this variant.
+        BufferKey::Paste { verb, register } => {
+            apply_register_text(app, verb, register);
             true
         }
         // The document took the keyboard: adopt Insert mode so the badge, the
         // cursor style, and the key routing all agree.
         BufferKey::EnterInsert => {
             app.ui_state.input_mode = crate::tui::input::InputMode::Insert;
+            true
+        }
+        BufferKey::RepeatInsert => {
+            repeat_last_insert(app);
             true
         }
         BufferKey::RunCommand(command, argument) => {
@@ -3260,6 +3550,154 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
         run_editor_pending_effect(app, effect);
     }
     consumed
+}
+
+// ── The recorder's capture and replay ────────────────────────────────────────
+
+/// Record one dispatched key, if it belongs to an insert gesture.
+///
+/// **After dispatch**, deliberately: see [`handle_editor_key`]. The capture
+/// opens on the key that enters Insert (`i`, `a`, `o`, `c`, …) and closes on
+/// the `Esc` that leaves it, so the gesture `.` repeats is the whole thing the
+/// reader did — the entry key included, which is why `o` replays its newline.
+///
+/// The closing `Esc` is **not** recorded: it is the end of the gesture rather
+/// than part of it, and an `Esc` left in the log would be read as a replay
+/// interrupt.
+fn capture_recorded_key(app: &mut App, key: KeyEvent) {
+    if !is_editor_view_active(app) {
+        return;
+    }
+    let insert_now = app.ui_state.input_mode == crate::tui::input::InputMode::Insert;
+    let Some(session) = app.editor_state.session.as_mut() else {
+        return;
+    };
+    let recorder = &mut session.presentation_mut().recorder;
+    if recorder.is_replaying() {
+        return;
+    }
+    if recorder.is_recording() && !insert_now {
+        // `Esc` ended the gesture; anything else that took the keyboard away
+        // (leaving the route, the tree, a document switch) abandoned it, and
+        // an abandoned gesture must not become `.`'s next repeat.
+        if key.code == KeyCode::Esc {
+            recorder.finish();
+        } else {
+            recorder.discard();
+        }
+        return;
+    }
+    if !insert_now {
+        return;
+    }
+    if !recorder.is_recording() {
+        recorder.begin();
+    }
+    if recorder.record(RecordedKey::of(key)) == RecorderBound::ReachedCap {
+        app.editor_state
+            .set_notice(EditorNotice::Note(editor::recording_capped_notice()));
+    }
+}
+
+/// Repeat the last insert gesture at the cursor. `.`'s whole body.
+///
+/// Nothing recorded is a no-op that reports nothing: the chord is claimed
+/// unconditionally so it cannot reach the composer, and a reader who has not
+/// inserted anything yet is told nothing rather than told off.
+fn repeat_last_insert(app: &mut App) {
+    let Some(keys) = app
+        .editor_state
+        .session
+        .as_ref()
+        .and_then(|session| session.presentation().recorder.last_insert())
+        .map(<[RecordedKey]>::to_vec)
+    else {
+        return;
+    };
+    replay_recorded_keys(app, &keys);
+}
+
+/// The one replay driver: `.` and, when D1 resolves to bind them, macros.
+///
+/// Feeds each key back through [`handle_editor_key`], so a replay produces the
+/// effect, the notice and the **refusal** the same key pressed by the reader
+/// would. Three properties are load-bearing:
+///
+/// - **It cannot record.** The recorder's `replaying` flag makes the capture
+///   point skip every key of the replay, so a replay never adds to the log it
+///   is reading.
+/// - **It cannot nest.** [`KeyRecorder::begin_replay`] refuses a second
+///   replay, so a log holding `.` could not recurse however it was written.
+/// - **It is interruptible between keys.** An `Esc` in the log stops the
+///   replay *before* it is dispatched; a key already dispatched completes, so
+///   an interrupt never lands in the middle of an edit. Nothing is rolled
+///   back: the keys before the interrupt are applied and are their own
+///   history, exactly as they were when the reader typed them.
+fn replay_recorded_keys(app: &mut App, keys: &[RecordedKey]) {
+    if !begin_replay(app) {
+        app.editor_state
+            .set_notice(EditorNotice::Note(editor::REPLAY_IN_PROGRESS.to_string()));
+        return;
+    }
+    // An insert gesture is edits through the same funnel as the keys that made
+    // it, so a document that refuses edits refuses the whole repeat — instead
+    // of running the log's Insert-mode *text* through Normal mode's verbs,
+    // where `b` is a motion rather than a letter.
+    if !editable(&app.editor_state) {
+        let notice = if app.editor_state.is_writer() {
+            EditorNotice::Note(editor::REPLAY_REFUSED.to_string())
+        } else {
+            EditorNotice::ReadOnly
+        };
+        app.editor_state.set_notice(notice);
+        end_replay(app);
+        return;
+    }
+    for recorded in keys {
+        if replay_interrupted(app) {
+            break;
+        }
+        if recorded.is_escape() {
+            // The insert gesture's own trailing `Esc` is never recorded, so an
+            // `Esc` here can only be the reader stopping the replay.
+            interrupt_replay(app);
+            break;
+        }
+        handle_editor_key(app, recorded.event());
+    }
+    // An insert gesture ends where `Esc` would have left it: back to Normal,
+    // with the replayed typing committed as the one undo step the gesture it
+    // repeats produced.
+    if app.ui_state.input_mode == crate::tui::input::InputMode::Insert {
+        enter_editor_normal(app);
+    }
+    end_replay(app);
+}
+
+fn begin_replay(app: &mut App) -> bool {
+    app.editor_state
+        .session
+        .as_mut()
+        .is_some_and(|session| session.presentation_mut().recorder.begin_replay())
+}
+
+fn end_replay(app: &mut App) {
+    if let Some(session) = app.editor_state.session.as_mut() {
+        session.presentation_mut().recorder.end_replay();
+    }
+}
+
+fn interrupt_replay(app: &mut App) {
+    if let Some(session) = app.editor_state.session.as_mut() {
+        session.presentation_mut().recorder.interrupt_replay();
+    }
+}
+
+fn replay_interrupted(app: &App) -> bool {
+    app.editor_state
+        .session
+        .as_ref()
+        .is_some_and(|session| session.presentation().recorder.replay_interrupted())
 }
 
 /// Move the cursor one diagnostic along, in the direction the bracket said.
@@ -3329,6 +3767,7 @@ fn run_editor_pending_effect(app: &mut App, effect: EditorPendingEffect) {
         EditorPendingEffect::YankPrimary => yank_primary_selection(app),
         EditorPendingEffect::OpenFilePicker => open_editor_file_picker(app),
         EditorPendingEffect::OpenCommandPalette => open_editor_command_palette(app),
+        EditorPendingEffect::OpenJumplist => open_editor_jumplist_picker(app),
         EditorPendingEffect::OpenKeymap => toggle_editor_keymap(app),
         EditorPendingEffect::RenamePrompt => open_editor_rename_prompt(app),
     }
@@ -3370,7 +3809,7 @@ fn yank_primary_selection(app: &mut App) {
     }
     // An empty range list is the same "Nothing to yank" report `space y`
     // gives, so the message lives in one place.
-    yank_editor_ranges(app, ranges);
+    yank_editor_ranges(app, ranges, YankTarget::Clipboard);
 }
 
 /// Open the workspace file browser from the editor.
@@ -3425,6 +3864,158 @@ fn toggle_editor_keymap(app: &mut App) {
     presentation.keymap_overlay = !presentation.keymap_overlay;
 }
 
+// ── The jumplist ───────────────────────────────────────────────────────────
+
+/// The cursor's offset, read **before** a jump moves it.
+///
+/// Every push site takes this first and reports it after the move, because an
+/// entry that recorded where the jump landed could not take the reader back.
+fn jump_start(state: &EditorState) -> Option<usize> {
+    state
+        .session
+        .as_ref()
+        .map(|session| session.presentation().cursor_byte)
+}
+
+/// Record where a named jump started, and disclose a prune.
+///
+/// The push **rule** lives in [`editor::record_jumplist_jump`], so this only
+/// supplies the attachment identity and turns the dropped-oldest outcome into
+/// the disclosure the bound owes the reader.
+fn note_jumplist_jump(state: &mut EditorState, before: Option<usize>) {
+    let Some(before) = before else {
+        return;
+    };
+    let outcome = {
+        let Some(session) = state.session.as_mut() else {
+            return;
+        };
+        let Some(identity) = session.jumplist_identity() else {
+            return;
+        };
+        let presentation = session.presentation_mut();
+        editor::record_jumplist_jump(presentation, &identity, before)
+    };
+    if let Some(JumplistPush::DroppedOldest) = outcome {
+        state.set_notice(EditorNotice::Note(format!(
+            "jumplist keeps {MAX_JUMPLIST_ENTRIES} positions: the oldest one was dropped"
+        )));
+    }
+}
+
+/// Open the **jumplist picker** from `space j`.
+///
+/// Refused with a reason when nothing has been recorded: an empty picker is a
+/// key that appears to do nothing, which is the M002 failure mode. The reason
+/// names the gestures that fill it, so the key is not a dead end either.
+fn open_editor_jumplist_picker(app: &mut App) {
+    let empty = {
+        let Some(session) = app.editor_state.session.as_mut() else {
+            return;
+        };
+        let presentation = session.presentation_mut();
+        // The keymap box and the picker are the editor's one floating box, so
+        // opening one closes the other rather than stacking two over the text.
+        presentation.keymap_overlay = false;
+        if presentation.jumplist.is_empty() {
+            true
+        } else {
+            presentation.jumplist.open_picker();
+            false
+        }
+    };
+    if empty {
+        app.editor_state.set_notice(EditorNotice::Note(
+            "jumplist: nothing recorded yet — jump with `gg`, `G`, `:goto`, a diagnostic, or a search"
+                .to_string(),
+        ));
+    }
+}
+
+/// The picker's own keys, while it is open.
+///
+/// Modal over the buffer for the same reason the LSP panel is: `j`/`k` walk
+/// the rows, `Enter` jumps, `Esc` closes. In Insert a character is text, so
+/// nothing here claims one — the picker cannot open from Insert, and a
+/// reader who somehow is there keeps typing.
+fn handle_jumplist_picker_key(app: &mut App, key: KeyEvent) -> bool {
+    let normal_mode = app.editor_state.mode() == EditorMode::Normal;
+    let mut select = false;
+    {
+        let Some(session) = app.editor_state.session.as_mut() else {
+            return false;
+        };
+        let presentation = session.presentation_mut();
+        if !presentation.jumplist.picker_open() {
+            return false;
+        }
+        match key.code {
+            KeyCode::Esc => presentation.jumplist.close_picker(),
+            KeyCode::Char('j') | KeyCode::Down if normal_mode => {
+                presentation.jumplist.move_cursor(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up if normal_mode => {
+                presentation.jumplist.move_cursor(-1);
+            }
+            KeyCode::Enter if normal_mode => select = true,
+            _ => return false,
+        }
+    }
+    if select {
+        select_jumplist_entry(app);
+    }
+    true
+}
+
+/// Jump to the picker's highlighted entry, or say why it cannot be honoured.
+///
+/// A jump is a **cursor move**: this reads the entry, checks it against the
+/// text attached now, and moves. It writes nothing, asks the daemon for
+/// nothing, and adds no gate — an entry that cannot be honoured is refused
+/// with the reason rather than clamped to a nearby position.
+///
+/// A refusal leaves the picker **open**: a stale row is one row of a list,
+/// and dismissing the list because one entry aged out would make the reader
+/// reopen it to pick another.
+fn select_jumplist_entry(app: &mut App) {
+    let target = {
+        let Some(session) = app.editor_state.session.as_mut() else {
+            return;
+        };
+        let Some(identity) = session.jumplist_identity() else {
+            return;
+        };
+        let Some(entry) = session.presentation().jumplist.selected().cloned() else {
+            return;
+        };
+        let Some(snapshot) = session.try_snapshot() else {
+            return;
+        };
+        let target = editor::jumplist_target(&identity, &entry, &snapshot);
+        if let editor::JumplistTarget::Honour(byte) = target {
+            let presentation = session.presentation_mut();
+            editor::move_cursor_to(presentation, &snapshot, byte, visible_line_estimate());
+            presentation.jumplist.close_picker();
+        }
+        target
+    };
+    match target {
+        editor::JumplistTarget::Honour(_) => {}
+        editor::JumplistTarget::OtherDocument => {
+            app.editor_state.set_notice(EditorNotice::Note(
+                "jumplist: that entry was recorded against a different document, so it is refused"
+                    .to_string(),
+            ));
+        }
+        editor::JumplistTarget::Stale => {
+            app.editor_state.set_notice(EditorNotice::Note(
+                "jumplist: that position is gone — the document is shorter than it was, so the entry is stale"
+                    .to_string(),
+            ));
+        }
+    }
+}
+
 /// Open the **rename prompt** — the `:` line, pre-filled with the rename
 /// command and waiting for the new name.
 ///
@@ -3471,8 +4062,10 @@ fn goto_editor_line(app: &mut App, line: usize) {
     let Some(offset) = editor::line_start(&snapshot, target) else {
         return;
     };
+    let before = Some(session.presentation().cursor_byte);
     let presentation = session.presentation_mut();
     editor::move_cursor_to(presentation, &snapshot, offset, visible_line_estimate());
+    note_jumplist_jump(&mut app.editor_state, before);
 }
 
 /// Execute one parsed `:` command.
@@ -3553,7 +4146,8 @@ fn run_editor_command(app: &mut App, command: EditorCommandName, argument: Optio
         // reader sees is the same one they could have typed.
         EditorCommandName::SplitRegex
         | EditorCommandName::KeepRegex
-        | EditorCommandName::RemoveRegex => {
+        | EditorCommandName::RemoveRegex
+        | EditorCommandName::SelectRegex => {
             let Some(pattern) = argument.filter(|value| !value.trim().is_empty()) else {
                 let message = format!("`:{}` needs a regex pattern", command.spec());
                 app.messages_state.toasts.warning(&message);
@@ -3621,6 +4215,7 @@ fn run_selection_regex(state: &mut EditorState, command: EditorCommandName, patt
     let verb = match command {
         EditorCommandName::KeepRegex => editor::HelixVerb::KeepSelections { pattern },
         EditorCommandName::RemoveRegex => editor::HelixVerb::RemoveSelections { pattern },
+        EditorCommandName::SelectRegex => editor::HelixVerb::SelectSelectionMatches { pattern },
         _ => editor::HelixVerb::SplitSelection { pattern },
     };
     // Every outcome is reported by `apply_helix` itself, including the
@@ -3724,6 +4319,7 @@ fn jump_to_selected_diagnostic(state: &mut EditorState) {
     let Some(session) = state.session.as_ref() else {
         return;
     };
+    let before = Some(session.presentation().cursor_byte);
     let Some(snapshot) = session.try_snapshot() else {
         return;
     };
@@ -3749,6 +4345,10 @@ fn jump_to_selected_diagnostic(state: &mut EditorState) {
         // A jump, not a step: see `move_cursor_to`.
         presentation.desired_column = None;
     }
+    // One push for both entry points: `]d`/`[d` and the panel's `Enter` land
+    // through this function, so the gesture records once however it was asked
+    // for. The pre-jump offset was read above, before the cursor moved.
+    note_jumplist_jump(state, before);
     state.lsp.close_panel();
 }
 
@@ -3889,6 +4489,29 @@ fn editor_word_at_cursor(state: &EditorState) -> Option<String> {
     (!word.is_empty()).then(|| word.chars().take(200).collect())
 }
 
+/// Where a yank's bytes go.
+///
+/// One closed set, shared by the yank chord and the delete family, because
+/// "where does this text go" is the same question in both — only the answer
+/// differs. It is **not** a fourth [`ClipboardVerb`]: that enum says where the
+/// text is inserted, and a register is not a place in the document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum YankTarget {
+    /// `y` — the register `"` selected (the unnamed one when none was), the
+    /// unnamed register, and the system clipboard. `_` discards all three and
+    /// `/` is refused before anything is read.
+    Selected(RegisterName),
+    /// `d` / `c` — the unnamed register only. A delete is not
+    /// register-targeted, so the system clipboard is never touched by one.
+    Unnamed,
+    /// `space y` / `space Y` — the system clipboard only. The `space` family
+    /// is not register-aware, which is what keeps cross-application paste
+    /// predictable.
+    Clipboard,
+    /// `Alt-d` / `Alt-c` — nothing at all. M002's no-yank spelling.
+    Nothing,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BufferKey {
     /// The editor handled the key; nothing else should see it.
@@ -3903,22 +4526,48 @@ enum BufferKey {
     RequestSave,
     /// The user asked to resync; the App layer issues the round trip.
     RequestResync,
-    /// `d` asked for these ranges to be deleted. The App layer submits the
-    /// edit, because only it reaches the controller.
-    DeleteRanges(Vec<std::ops::Range<usize>>),
-    /// `space y` asked for these ranges to reach the system clipboard. The App
-    /// layer performs the copy, because the clipboard is not editor state.
-    YankRanges(Vec<std::ops::Range<usize>>),
-    /// `p` — paste the clipboard after the target.
-    PasteAfter(ClipboardVerb),
-    /// `P` — paste the clipboard before the target.
-    PasteBefore(ClipboardVerb),
-    /// `R` — replace the target with the clipboard's contents.
-    ReplaceWithClipboard(ClipboardVerb),
+    /// `d` asked for these ranges to be deleted, and for their bytes to reach
+    /// `yank`. The App layer submits the edit and performs the yank, because
+    /// only it reaches the controller.
+    DeleteRanges {
+        ranges: Vec<std::ops::Range<usize>>,
+        yank: YankTarget,
+    },
+    /// `c` asked for these ranges to be deleted **and** for the route to enter
+    /// Insert. Separate from [`Self::DeleteRanges`] because the second half is
+    /// conditional on the first succeeding, and the caller has to be able to
+    /// tell the two apart to order them.
+    ChangeRanges {
+        ranges: Vec<std::ops::Range<usize>>,
+        yank: YankTarget,
+    },
+    /// `y` or `space y` asked for these ranges to reach a yank destination.
+    /// The App layer owns the bytes, because neither the clipboard nor a
+    /// disclosed truncation is editor state.
+    YankRanges {
+        ranges: Vec<std::ops::Range<usize>>,
+        target: YankTarget,
+    },
+    /// `p` / `P` / `R` — insert from `register`.
+    ///
+    /// The `space p`/`P`/`R` spelling never reaches here: it parks
+    /// [`EditorPendingEffect::Clipboard`] instead, because the system clipboard
+    /// is a different source. Keeping one source per variant is what stops a
+    /// register paste from becoming a fourth [`ClipboardVerb`].
+    Paste {
+        verb: ClipboardVerb,
+        register: RegisterName,
+    },
     /// An insertion entry (`i`/`a`/`I`/`A`/`o`/`O`) took the keyboard. The App
     /// layer adopts Insert mode from this, because the route owns the mode
     /// and the document owns the cursor.
     EnterInsert,
+    /// `.` asked for the last insert gesture to be replayed.
+    ///
+    /// Reported rather than performed: a replay feeds keys back through
+    /// [`handle_editor_key`], which needs the `App`, and a second replay path
+    /// inside the buffer would be a second keymap.
+    RepeatInsert,
     /// The user ran a `:` command. The App layer owns every round trip and
     /// every route change, so the buffer reports the parsed command rather
     /// than performing it.
@@ -4059,27 +4708,98 @@ fn handle_search_line_key(
     }
 }
 
-/// Re-run the search for the current needle and park the cursor on the first
+/// Re-run the search for the current pattern and park the cursor on the first
 /// match at or after where it already is.
 ///
-/// A needle that matches nothing leaves the cursor exactly where it was: a
+/// A pattern that matches nothing leaves the cursor exactly where it was: a
 /// failed search is information, and yanking the reader to the top of the
 /// file to deliver that information is not it.
 fn run_editor_search(state: &mut EditorState, visible_lines: usize) {
+    let Some(cursor) = state
+        .session
+        .as_ref()
+        .map(|session| session.presentation().cursor_byte)
+    else {
+        return;
+    };
+    run_editor_search_from(state, visible_lines, cursor);
+}
+
+/// The same, adopting from an explicit `cursor`.
+///
+/// Separate from [`run_editor_search`] because `*` and `Alt-*` adopt from the
+/// **selection's start**: the cursor sits on the selection's head, so adopting
+/// from it would skip past the very match the key was pressed on whenever the
+/// selection is longer than one character.
+fn run_editor_search_from(state: &mut EditorState, visible_lines: usize, cursor: usize) {
     let Some(session) = state.session.as_mut() else {
         return;
     };
     let Some(snapshot) = session.try_snapshot() else {
         return;
     };
-    let needle = session.presentation().search_line.clone();
-    let outcome = editor::find_matches(&snapshot, &needle);
-    let cursor = session.presentation().cursor_byte;
-    let Some(offset) = session.presentation_mut().adopt_search(outcome, cursor) else {
-        return;
+    let pattern = session.presentation().search_line.clone();
+    let outcome = editor::find_matches(&snapshot, &pattern);
+    // Read before the outcome is consumed. A pattern that will not compile is
+    // a notice naming the pattern and the compiler's reason — never a panic
+    // and never a silent empty result — and a reached scan bound is named so
+    // the count is not mistaken for the whole story.
+    let notice = outcome
+        .pattern_error
+        .clone()
+        .or_else(|| outcome.bound_note());
+    let adopted = session.presentation_mut().adopt_search(outcome, cursor);
+    let before = Some(session.presentation().cursor_byte);
+    if let Some(offset) = adopted {
+        let presentation = session.presentation_mut();
+        editor::move_cursor_to(presentation, &snapshot, offset, visible_lines);
+    }
+    // Adoption is a named destination, so it records where the search started
+    // — recorded before the notice below, because a search that also names a
+    // bad pattern has the more specific message to give. The bound stays
+    // disclosed in the picker itself.
+    note_jumplist_jump(state, before);
+    // After the adoption either way: an invalid pattern matches nothing, so it
+    // adopts no offset, and the reason is the *only* thing the reader can act
+    // on. Setting it inside the `Some` branch would silence exactly that.
+    if let Some(notice) = notice {
+        state.set_notice(EditorNotice::Note(notice));
+    }
+}
+
+/// `*` / `Alt-*` — seed the search line from the main selection, then run it.
+///
+/// With no selection this reports **nothing**: a reader with a bare cursor
+/// asked to search for nothing, and a notice would answer a question they did
+/// not ask. A refusal — a multi-line selection, one past the pattern bound —
+/// names its reason instead of searching for something close to what they
+/// hold.
+fn editor_search_from_selection(state: &mut EditorState, visible_lines: usize, literal: bool) {
+    let resolved = {
+        let Some(session) = state.session.as_mut() else {
+            return;
+        };
+        let Some(snapshot) = session.try_snapshot() else {
+            return;
+        };
+        let start = editor::selection_range(session.presentation(), &snapshot)
+            .map(|range| range.start)
+            .unwrap_or_default();
+        editor::selection_search_pattern(&snapshot, session.presentation(), literal)
+            .map(|pattern| pattern.map(|pattern| (pattern, start)))
     };
-    let presentation = session.presentation_mut();
-    editor::move_cursor_to(presentation, &snapshot, offset, visible_lines);
+    let (pattern, start) = match resolved {
+        Ok(Some(resolved)) => resolved,
+        Ok(None) => return,
+        Err(reason) => {
+            state.set_notice(EditorNotice::Note(reason));
+            return;
+        }
+    };
+    if let Some(session) = state.session.as_mut() {
+        session.presentation_mut().open_search_line(&pattern, true);
+    }
+    run_editor_search_from(state, visible_lines, start);
 }
 
 /// Step the cursor to the next/previous `/` match, wrapping.
@@ -4093,8 +4813,10 @@ fn step_editor_search(state: &mut EditorState, forward: bool, visible_lines: usi
     let Some(offset) = session.presentation_mut().step_search(forward) else {
         return false;
     };
+    let before = Some(session.presentation().cursor_byte);
     let presentation = session.presentation_mut();
     editor::move_cursor_to(presentation, &snapshot, offset, visible_lines);
+    note_jumplist_jump(state, before);
     true
 }
 
@@ -4295,6 +5017,158 @@ fn match_arg_char(key: KeyEvent) -> Option<char> {
     }
 }
 
+/// The character a register name capture should use, if `key` carries one.
+///
+/// **Not** [`capture_char`]. That rule refuses an unmodified `:` so a find
+/// target cannot open a modal line — but `/` is a *register* here (the search
+/// register), and `:` is simply not one, which the resolver reports as an
+/// invalid name rather than silently dropping. The accept set is therefore
+/// every character, in both encodings a terminal uses for a shifted glyph:
+/// `"` and `_` are shifted punctuation on most layouts, and some terminals
+/// report the composed character with `NONE` while others keep `SHIFT`.
+fn register_name_char(key: KeyEvent) -> Option<char> {
+    match (key.modifiers, key.code) {
+        (KeyModifiers::NONE, KeyCode::Char(name)) => Some(name),
+        (KeyModifiers::SHIFT, KeyCode::Char(name)) => Some(name),
+        _ => None,
+    }
+}
+
+/// What a capture prefix does with a key that cannot be its data.
+///
+/// The **one** answer, asked of the prefix rather than written at each capture
+/// site, so a new capture grammar inherits the editor's mismatch policy
+/// instead of inventing one. `f`/`t`/`F`/`T`, `r` and the `m` arguments retry
+/// (their policy is `false`); the register name capture swallows — see
+/// [`EditorPrefix::swallows_unmatched`].
+fn capture_mismatch(pending: EditorPrefix) -> PrefixResolution {
+    if pending.swallows_unmatched() {
+        PrefixResolution::Swallowed
+    } else {
+        PrefixResolution::Retry
+    }
+}
+
+/// Arm the second level of the `"` grammar.
+///
+/// The captured name rides in the variant, so the selection's lifetime is the
+/// machine's: the next key either consumes it or the unconditional disarm
+/// drops it.
+fn arm_register_name(state: &mut EditorState, name: char) {
+    if let Some(session) = state.session.as_mut() {
+        session
+            .presentation_mut()
+            .arm_prefix(EditorPrefix::RegisterNamed(name));
+    }
+}
+
+/// Resolve one captured register name.
+///
+/// A name outside the set **disarms and reports the set**. It never falls
+/// through to the composer: the character was the argument, so `"D` must not
+/// delete to the end of the line and `"A` must not enter Insert mode. That is
+/// the destructive half of the closed-vocabulary rule — the other half is the
+/// non-character key, which [`capture_mismatch`] swallows for this prefix.
+fn resolve_register_name(state: &mut EditorState, name: char) -> PrefixResolution {
+    if RegisterName::parse(name).is_none() {
+        state.set_notice(EditorNotice::Note(
+            "not a register: use a–z, `\"` for the unnamed one, `_` or `/`".to_string(),
+        ));
+        return PrefixResolution::Handled(BufferKey::Consumed);
+    }
+    arm_register_name(state, name);
+    PrefixResolution::Handled(BufferKey::Consumed)
+}
+
+/// Resolve the verb that consumes a selected register.
+///
+/// The four verbs that honour a register are `y`, `p`, `P` and `R`; `d` and
+/// `c` are here only for the blackhole, because Helix's delete is not
+/// register-targeted and `"_d` is the one spelling that must not yank. Every
+/// other key retries: the register is dropped and the key does what it
+/// normally does, which is Vim's answer to `"a` then `j`.
+fn resolve_register_verb(
+    state: &mut EditorState,
+    register: RegisterName,
+    key: KeyEvent,
+) -> PrefixResolution {
+    let none = KeyModifiers::NONE;
+    let shift = KeyModifiers::SHIFT;
+    match (key.modifiers, key.code) {
+        (m, KeyCode::Char('y')) if m == none => yank_to_register(state, register),
+        (m, KeyCode::Char('p')) if m == none => {
+            paste_from_register(register, ClipboardVerb::PasteAfter)
+        }
+        (m, KeyCode::Char('P')) if m == none || m == shift => {
+            paste_from_register(register, ClipboardVerb::PasteBefore)
+        }
+        (m, KeyCode::Char('R')) if m == none || m == shift => {
+            paste_from_register(register, ClipboardVerb::Replace)
+        }
+        // The delete family. `d`/`c` ignore a **named** selection — a delete
+        // is not register-targeted — and honour the blackhole, which is the
+        // whole point of `"_d`.
+        (m, KeyCode::Char('d')) if m == none => {
+            match apply_helix(state, editor::HelixVerb::DeleteSelection) {
+                editor::HelixVerbOutcome::DeleteRanges(ranges) => {
+                    PrefixResolution::Handled(BufferKey::DeleteRanges {
+                        ranges,
+                        yank: delete_target(register),
+                    })
+                }
+                _ => PrefixResolution::Handled(BufferKey::Consumed),
+            }
+        }
+        (m, KeyCode::Char('c')) if m == none => {
+            match apply_helix(state, editor::HelixVerb::ChangeSelection) {
+                editor::HelixVerbOutcome::ChangeRanges(ranges) => {
+                    PrefixResolution::Handled(BufferKey::ChangeRanges {
+                        ranges,
+                        yank: delete_target(register),
+                    })
+                }
+                _ => PrefixResolution::Handled(BufferKey::Consumed),
+            }
+        }
+        _ => PrefixResolution::Retry,
+    }
+}
+
+/// `"<reg>y` — yank the held selection into `register`.
+fn yank_to_register(state: &mut EditorState, register: RegisterName) -> PrefixResolution {
+    let Some(session) = state.session.as_mut() else {
+        return PrefixResolution::Handled(BufferKey::Consumed);
+    };
+    let ranges = yank_ranges(session);
+    PrefixResolution::Handled(if ranges.is_empty() {
+        BufferKey::Consumed
+    } else {
+        BufferKey::YankRanges {
+            ranges,
+            target: YankTarget::Selected(register),
+        }
+    })
+}
+
+/// `"<reg>p` / `P` / `R` — paste or replace from `register`.
+fn paste_from_register(register: RegisterName, verb: ClipboardVerb) -> PrefixResolution {
+    PrefixResolution::Handled(BufferKey::Paste { verb, register })
+}
+
+/// Where a delete's bytes go when `"` selected `register`.
+///
+/// Not register-targeted — Helix's `d` yanks into the unnamed register
+/// whatever was selected — with **one** exception: the blackhole. `"_d` is the
+/// explicit "delete and yank nothing" spelling, and a delete that ignored it
+/// would make the only register whose purpose is refusing a write the one
+/// register a delete writes anyway.
+fn delete_target(register: RegisterName) -> YankTarget {
+    match register {
+        RegisterName::Blackhole => YankTarget::Nothing,
+        _ => YankTarget::Unnamed,
+    }
+}
+
 /// Arm the second level of the `m` grammar.
 ///
 /// The one place the `m` sub-state is written, so the transition cannot be
@@ -4401,11 +5275,30 @@ fn resolve_pending_prefix(
     // them, so reaching the leaf lookup would send a perfectly good target
     // down the mismatch path and out to the composer.
     //
-    // One branch, not two. `is_capture` is the classifier, `capture_char` is
-    // the single rule for what a target can be, and the retry is written
-    // once — so a third capture grammar added later cannot arrive with its
-    // own copy of any of the three.
+    // One branch, not two. `is_capture` is the classifier, each grammar's
+    // accept rule is a named function, and the **mismatch** answer is
+    // `capture_mismatch` — so a capture grammar added later cannot arrive
+    // with its own copy of any of the three, and cannot quietly decide that
+    // an unmatched key is swallowed.
     if pending.is_capture() {
+        // A capture takes the next key as **data**, and a count for it is out
+        // of scope (repeating a find is `Alt-.`'s job). The count is taken
+        // down here rather than at the resolver's exit because the find below
+        // runs a motion, and a motion consumes the count: leaving it armed
+        // would repeat `3f x` three times instead of discarding the `3`.
+        clear_count(state);
+        // The `"` grammar's first level. Its name is data, but the set is a
+        // closed vocabulary, so it has its own accept rule and its own
+        // mismatch answer — see `register_name_char` and `capture_mismatch`.
+        if pending.awaits_register_name() {
+            let Some(name) = register_name_char(key) else {
+                // A key that cannot be a name is a broken gesture, not a
+                // wrong target: swallowing it is what stops `"` then `Tab`
+                // from toggling the composer.
+                return capture_mismatch(pending);
+            };
+            return resolve_register_name(state, name);
+        }
         // The `m` grammar's second level has its **own** capture rule, because
         // its object arguments include a capital and the terminals disagree
         // about how one is encoded. It is resolved first, and it owns its
@@ -4413,14 +5306,16 @@ fn resolve_pending_prefix(
         // rule by accident.
         if let Some(arg) = pending.match_arg() {
             let Some(target) = match_arg_char(key) else {
-                // Not a target: hand the key back rather than swallow it.
-                return PrefixResolution::Retry;
+                // Not a target: the prefix's own policy decides whether the
+                // key is handed back or consumed with the gesture.
+                return capture_mismatch(pending);
             };
             return resolve_match_arg(state, arg, target);
         }
         let Some(target) = capture_char(key) else {
-            // Not a target: hand the key back rather than swallow it.
-            return PrefixResolution::Retry;
+            // Not a target: the prefix's own policy decides whether the key
+            // is handed back or consumed with the gesture.
+            return capture_mismatch(pending);
         };
         if pending.is_replace_char() {
             editor_editing_verb(state, |snapshot, presentation| {
@@ -4428,10 +5323,11 @@ fn resolve_pending_prefix(
             });
         } else {
             let Some(kind) = pending.find_kind() else {
-                // `is_capture` is `is_find() || is_replace_char()`, so this is
-                // unreachable; returning rather than unwrapping keeps a
+                // `is_capture` is "find, replace, register name, or `m`
+                // argument", and every one of those is handled above, so this
+                // is unreachable; returning rather than unwrapping keeps a
                 // future variant from panicking the key handler if the
-                // classifier ever grows a third arm without a verb for it.
+                // classifier ever grows an arm without a verb for it.
                 return PrefixResolution::Retry;
             };
             helix_motion(
@@ -4441,6 +5337,21 @@ fn resolve_pending_prefix(
             );
         }
         return PrefixResolution::Handled(BufferKey::Consumed);
+    }
+
+    // The `"` grammar's second level: the name was captured, and this key is
+    // the verb that consumes the selection. It is not a capture (its next key
+    // is a verb, not data) and it is not a leaf table either — each of the
+    // four verbs it honours needs the captured name as an argument.
+    if let Some(name) = pending.register_name() {
+        // `pending` only ever holds a validated name: the capture refuses
+        // everything outside the set. Returning rather than unwrapping keeps a
+        // future caller from panicking the key handler if that ever stops
+        // being true.
+        let Some(register) = RegisterName::parse(name) else {
+            return capture_mismatch(pending);
+        };
+        return resolve_register_verb(state, register, key);
     }
 
     // One lookup, N leaves. A prefix that has no row for this glyph takes the
@@ -4478,7 +5389,12 @@ fn resolve_pending_prefix(
                 PrefixResolution::Handled(if ranges.is_empty() {
                     BufferKey::Consumed
                 } else {
-                    BufferKey::YankRanges(ranges)
+                    // `space y` is the clipboard family: it is **not**
+                    // register-aware, so `"` cannot redirect it.
+                    BufferKey::YankRanges {
+                        ranges,
+                        target: YankTarget::Clipboard,
+                    }
                 })
             }
             // The shared edit funnel, not a new insertion path: `]Space` must
@@ -4502,6 +5418,16 @@ fn resolve_pending_prefix(
                 arm_match_arg(state, arg);
                 PrefixResolution::Handled(BufferKey::Consumed)
             }
+            // The comment toggles run through the **verb** path rather than
+            // building a transaction here: `apply_helix` owns the read-only
+            // gate and `apply_helix_edit` owns the submission, so a leaf that
+            // resolved its own edit would be the one write with its own idea
+            // of what a write costs. The leaf names the style; the verb names
+            // nothing the grammar could not change under it.
+            editor::PrefixAction::ToggleComments { block } => {
+                apply_helix_edit(state, editor::HelixVerb::ToggleComments { block });
+                PrefixResolution::Handled(BufferKey::Consumed)
+            }
             // Name the request; do not perform it. Running an LSP read needs
             // the App's core client, task registry and toasts, none of which
             // this function can see — so the effect is parked on the editor's
@@ -4521,12 +5447,9 @@ fn resolve_pending_prefix(
     // an arrow consumed it, `space` then an arrow moved the cursor. The policy
     // therefore comes from the prefix rather than from the machine — collapsing
     // the two would have changed one of the two gestures this milestone is
-    // required to preserve exactly.
-    if pending.swallows_unmatched() {
-        PrefixResolution::Swallowed
-    } else {
-        PrefixResolution::Retry
-    }
+    // required to preserve exactly. A leaf-lookup miss and a capture miss are
+    // the same question, so they get the same answer from one function.
+    capture_mismatch(pending)
 }
 
 /// Handle one key while the editor buffer owns input.
@@ -4632,12 +5555,26 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
     // and could only ever grow by adding another field.
     match resolve_pending_prefix(state, key, visible_lines) {
         PrefixResolution::Idle | PrefixResolution::Retry => {}
-        PrefixResolution::Handled(settled) => return settled,
-        PrefixResolution::Swallowed => return BufferKey::Consumed,
+        // The leaf either consumed the count (a motion) or did not own it (an
+        // edit, a yank, an effect, a capture). Taking it down on the way out
+        // covers the second case, and is a no-op for the first — the motion
+        // path already took it.
+        PrefixResolution::Handled(settled) => {
+            clear_count(state);
+            return settled;
+        }
+        PrefixResolution::Swallowed => {
+            clear_count(state);
+            return BufferKey::Consumed;
+        }
     }
     let Some(session) = state.session.as_mut() else {
         return BufferKey::Unhandled;
     };
+    // Read once, before the table: whether `0` begins or extends a count
+    // depends on the answer, and it must not change between the arm's guard
+    // and the clearing rule below the table.
+    let pending_count = session.presentation().pending_count;
 
     let none = KeyModifiers::NONE;
     let shift = KeyModifiers::SHIFT;
@@ -4650,7 +5587,10 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
     // Each arm is `(modifiers, code)` so a bare letter and its uppercase twin
     // are one rule. Terminals disagree about how `D` is encoded, and both
     // spellings have to work.
-    match (key.modifiers, key.code) {
+    // Set by the count arm and by nothing else, so the tail below can tell the
+    // one key that extends a count from every key that ends one.
+    let mut count_extended = false;
+    let settled = match (key.modifiers, key.code) {
         (m, KeyCode::Char('o')) if m == alt => BufferKey::ExpandSyntaxSelection,
         (m, KeyCode::Char('i')) if m == alt => BufferKey::ShrinkSyntaxSelection,
         // Paging resolves before the bare-char arms: `Ctrl+d`/`Ctrl+u` move a
@@ -4689,6 +5629,27 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
         }
         (m, KeyCode::PageUp) if m == none => {
             helix_motion(state, EditorCommand::PageUp, visible_lines);
+            BufferKey::Consumed
+        }
+        // ── The count (M004) ──────────────────────────────────────────────
+        //
+        // One arm, not nine, and **ahead of the `0` arm**: `0` begins no count
+        // (with nothing pending it is `LineStart`, which the arm below still
+        // owns) but extends one, so `10` is ten. `count_extended` tells the
+        // tail this key was the count rather than something to clear it.
+        (m, KeyCode::Char(ch))
+            if m == none && ch.is_ascii_digit() && (ch != '0' || pending_count.is_some()) =>
+        {
+            let clamped = session.presentation_mut().extend_count(ch);
+            count_extended = true;
+            if clamped {
+                // Saturation is a refusal, and an unseen refusal is a count the
+                // reader trusts and is wrong about.
+                state.set_notice(EditorNotice::Note(format!(
+                    "count stops at {max}",
+                    max = editor::MAX_COUNT
+                )));
+            }
             BufferKey::Consumed
         }
         (m, KeyCode::Char('0')) if m == none => {
@@ -4790,6 +5751,13 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
         // composer keystroke and do nothing, which is the same reason `n` is
         // gated on an existing search.
         (m, KeyCode::Char('.')) if m == alt => {
+            // A count on `Alt-.` is deliberately out of scope: the repeat
+            // repeats the *last* gesture, and a count typed before it would
+            // otherwise multiply a motion the reader had already chosen.
+            // Discarding it here is why the tail below is not the only clear
+            // on this path: the repeat resolves a motion, which would consume
+            // the count before the tail ever saw it.
+            clear_count(state);
             // The three slots are mutually exclusive by construction — every
             // recorder clears the other two, per `note_motion`'s single-slot
             // rule — so the order of these three is not a precedence between
@@ -4809,6 +5777,13 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
             helix_motion(state, repeat.command(), visible_lines);
             BufferKey::Consumed
         }
+        // Helix `.` — repeat the last **insert**, and a different verb from
+        // `Alt-.` above: that one repeats the last *motion*. The two are
+        // separated by modifier (this arm is `NONE` only), so neither shadows
+        // the other, and an unconditional claim is deliberate — with nothing
+        // recorded it is a no-op that reports nothing, which is why `.` stops
+        // typing a period into the composer.
+        (m, KeyCode::Char('.')) if m == none => BufferKey::RepeatInsert,
         // Selection. `v` is a mode and `x` is an action; both delegate to the
         // shared state machine, so they cannot drift from the terminal.
         (m, KeyCode::Char('v')) if m == none => {
@@ -4817,6 +5792,52 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
         }
         (m, KeyCode::Char('x')) if m == none => {
             apply_helix(state, editor::HelixVerb::SelectLine);
+            BufferKey::Consumed
+        }
+        // ── Line-shape verbs (M001, selection shape parity) ────────────────
+        //
+        // `X`, `_` and `Alt-x` reshape the selection and write nothing; `J`,
+        // `Alt-J`, `>` and `<` write, so they go through `apply_helix_edit` and
+        // land as one undoable transaction per gesture. The two indent keys
+        // take both spellings of a shifted punctuation glyph, the same rule the
+        // punctuation arms below follow — a terminal that sends `Char('>')`
+        // with `SHIFT` and one that sends it bare both have to work, or the key
+        // is dead on half the keyboards in use.
+        //
+        // `Alt-x` is claimed before any `x` arm could see it: `x` itself is
+        // `NONE` only, so the two are distinct events rather than a shadowing
+        // pair. `Alt-_` stays the adjacent-merge verb; bare `_` is this family.
+        (m, KeyCode::Char('X')) if m == none || m == shift => {
+            apply_helix(state, editor::HelixVerb::ExtendToLineBounds);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('x')) if m == alt => {
+            apply_helix(state, editor::HelixVerb::ShrinkToLineBounds);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('_')) if m == none || m == shift => {
+            apply_helix(state, editor::HelixVerb::TrimSelections);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('J')) if m == none || m == shift => {
+            apply_helix_edit(
+                state,
+                editor::HelixVerb::JoinLines {
+                    select_space: false,
+                },
+            );
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('J')) if m == alt => {
+            apply_helix_edit(state, editor::HelixVerb::JoinLines { select_space: true });
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('>')) if m == none || m == shift => {
+            apply_helix_edit(state, editor::HelixVerb::IndentSelection { outdent: false });
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('<')) if m == none || m == shift => {
+            apply_helix_edit(state, editor::HelixVerb::IndentSelection { outdent: true });
             BufferKey::Consumed
         }
         // ── Selection manipulation (M008) ───────────────────────────────────
@@ -4961,6 +5982,24 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
             ));
             BufferKey::Consumed
         }
+        // Helix `s` — select the regex matches inside each selection. A
+        // **selection** verb, so it opens the same `:` line `S` does and is
+        // gated by `grows_selection` like `v` and `x`: on a read-only
+        // attachment the reader is told, rather than handed a highlight they
+        // could not act on.
+        (m, KeyCode::Char('s')) if m == none => {
+            session.presentation_mut().open_command_line(&format!(
+                "{} ",
+                editor::EditorCommandName::SelectRegex.spec()
+            ));
+            BufferKey::Consumed
+        }
+        // Helix `Alt-s` — split every selection on newlines. No pattern, so
+        // no prompt: a line break is a byte, not a regex.
+        (m, KeyCode::Char('s')) if m == alt => {
+            apply_helix(state, editor::HelixVerb::SplitSelectionOnNewlines);
+            BufferKey::Consumed
+        }
         // Helix `=` formats the document. CodeGG's `=` shows the **preview** —
         // what the formatter *would* change — and, since M016, opens the
         // change review on it when the whole change is known. The write path
@@ -4975,45 +6014,124 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
         (m, KeyCode::Char('=')) if m == none => BufferKey::LspRead(LspReadOperation::FormatPreview),
         // Claimed even with nothing selected: an unclaimed `d` escapes to the
         // global `OpenDiff` binding, so the reader never gets "delete this".
+        //
+        // M007: the deleted bytes go to the **unnamed register**, and never to
+        // the system clipboard. That is M002's D1 discharged — `d` then `p`
+        // moves text without clobbering what the reader copied elsewhere —
+        // and the `Alt-d` arm below stays the spelling that writes nothing.
         (m, KeyCode::Char('d')) if m == none => {
             match apply_helix(state, editor::HelixVerb::DeleteSelection) {
-                editor::HelixVerbOutcome::DeleteRanges(ranges) => BufferKey::DeleteRanges(ranges),
+                editor::HelixVerbOutcome::DeleteRanges(ranges) => BufferKey::DeleteRanges {
+                    ranges,
+                    yank: YankTarget::Unnamed,
+                },
                 _ => BufferKey::Consumed,
             }
         }
-        // Helix `y` — yank the held selection. Deliberately the *same* path
-        // as `space y`: one clipboard helper, one toast, one selection rule.
+        // Helix `c` — change: delete, then type. Claimed even with nothing
+        // selected, for the reason `d` is claimed: an unclaimed `c` reaches the
+        // composer and types a `c` into whatever box has focus.
+        //
+        // The delete is resolved and submitted **before** the mode moves, and
+        // the mode moves only on acceptance (the `ChangeRanges` drain in
+        // `handle_editor_key`). Entering Insert first would leave the reader in
+        // Insert on a buffer whose text survived a refused delete — the state
+        // §8 of the milestone forbids. A read-only attachment is refused by
+        // `apply_helix` (`mutates_buffer`), which also means this arm returns
+        // `Consumed` rather than a change request.
+        (m, KeyCode::Char('c')) if m == none => {
+            match apply_helix(state, editor::HelixVerb::ChangeSelection) {
+                editor::HelixVerbOutcome::ChangeRanges(ranges) => BufferKey::ChangeRanges {
+                    ranges,
+                    yank: YankTarget::Unnamed,
+                },
+                _ => BufferKey::Consumed,
+            }
+        }
+        // Helix `Alt-c` / `Alt-d` — the explicit **no-yank** spellings. They
+        // resolve to the same delete as `c` and `d` and differ only in where
+        // the bytes go: nowhere. M002 bound them for this milestone, and the
+        // promise is asserted at the dispatch boundary — the target is
+        // `Nothing`, so not even the unnamed register is written, and the
+        // system clipboard was never in reach.
+        (m, KeyCode::Char('c')) if m == alt => {
+            match apply_helix(state, editor::HelixVerb::ChangeSelection) {
+                editor::HelixVerbOutcome::ChangeRanges(ranges) => BufferKey::ChangeRanges {
+                    ranges,
+                    yank: YankTarget::Nothing,
+                },
+                _ => BufferKey::Consumed,
+            }
+        }
+        (m, KeyCode::Char('d')) if m == alt => {
+            match apply_helix(state, editor::HelixVerb::DeleteSelection) {
+                editor::HelixVerbOutcome::DeleteRanges(ranges) => BufferKey::DeleteRanges {
+                    ranges,
+                    yank: YankTarget::Nothing,
+                },
+                _ => BufferKey::Consumed,
+            }
+        }
+        // Helix `y` — yank the held selection into the **selected register**,
+        // which is the unnamed one unless `"` named another. M007 splits what
+        // used to be one path: bare `y` still reaches the system clipboard
+        // (D1(a): every yank does), and additionally writes the register, so
+        // `y` then `p` round-trips through the unnamed register and `"ay`
+        // reaches `a`. `space y` is the spelling that means the clipboard
+        // alone.
+        //
         // Helix keeps the selection after a yank; this editor drops it, and
         // that was already true of `space y`, which M004 is required to
         // preserve byte for byte. Two spellings of one verb that behaved
         // differently would be a worse surprise than either behaviour alone,
-        // so bare `y` matches its sibling rather than Helix.
+        // so bare `y` keeps its sibling's rule rather than Helix's.
         (m, KeyCode::Char('y')) if m == none => {
             let ranges = yank_ranges(session);
             if ranges.is_empty() {
                 BufferKey::Consumed
             } else {
-                BufferKey::YankRanges(ranges)
+                BufferKey::YankRanges {
+                    ranges,
+                    target: YankTarget::Selected(RegisterName::Unnamed),
+                }
             }
         }
-        // Helix's clipboard round trip. `p` pastes after, `P` before, and
-        // `R` replaces — all three read the system clipboard, which is the
-        // App layer's, so they report the verb and let it read the bytes.
-        // They are claimed even when that read fails, because a `p` that fell
-        // through to the composer would type a `p` into a session name.
-        (m, KeyCode::Char('p')) if m == none => BufferKey::PasteAfter(ClipboardVerb::PasteAfter),
-        (m, KeyCode::Char('P')) if m == none || m == shift => {
-            BufferKey::PasteBefore(ClipboardVerb::PasteBefore)
-        }
-        // Helix `R` is `replace_with_yanked`. This editor has no register, so
-        // the yanked text *is* the clipboard — which is what `R` replaces the
-        // target with here.
+        // Helix's paste round trip. `p` pastes after, `P` before, and `R`
+        // replaces — all three read the **selected register** (the unnamed one
+        // by default), which is what M007 added. The bytes are the App
+        // layer's, so the buffer reports the verb and the source and lets it
+        // read them. They are claimed even when that read refuses, because a
+        // `p` that fell through to the composer would type a `p` into a
+        // session name.
+        (m, KeyCode::Char('p')) if m == none => BufferKey::Paste {
+            verb: ClipboardVerb::PasteAfter,
+            register: RegisterName::Unnamed,
+        },
+        (m, KeyCode::Char('P')) if m == none || m == shift => BufferKey::Paste {
+            verb: ClipboardVerb::PasteBefore,
+            register: RegisterName::Unnamed,
+        },
+        // Helix `R` is `replace_with_yanked`: replace the target with the
+        // selected register's text. `space R` is the spelling that replaces
+        // from the system clipboard.
         //
         // `R` used to reload from disk. It does not any more: Helix gives `R`
         // this meaning, and reload is still one `:e` away, so the capability
         // survives the rebinding even though the keystroke does not.
-        (m, KeyCode::Char('R')) if m == none || m == shift => {
-            BufferKey::ReplaceWithClipboard(ClipboardVerb::Replace)
+        (m, KeyCode::Char('R')) if m == none || m == shift => BufferKey::Paste {
+            verb: ClipboardVerb::Replace,
+            register: RegisterName::Unnamed,
+        },
+        // `"` — Helix's register prefix. It arms a **capture**: the next key is
+        // a register name, not a command, and the machine re-arms as
+        // `RegisterNamed` so the verb after it can consume the selection. The
+        // name is captured by `resolve_pending_prefix`, which also owns the
+        // refusal for a character outside the set.
+        (m, KeyCode::Char('"')) if m == none || m == shift => {
+            session
+                .presentation_mut()
+                .arm_prefix(EditorPrefix::Register);
+            BufferKey::Consumed
         }
         // Helix `~` — switch case. Accepts `NONE` and `SHIFT` because
         // terminals disagree about how a shifted backquote is encoded.
@@ -5096,10 +6214,11 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
             editor_redo(state);
             BufferKey::Consumed
         }
-        // `Alt-u` and `Alt-U` are Helix's `earlier` and `later`: the same
-        // movement through the history that `u` and `U` perform, in the same
-        // model, with one difference — they **report** their boundary instead
-        // of doing nothing silently. See `traverse_history`.
+        // `Alt-u` and `Alt-U` are Helix's `earlier` and `later`: one node back
+        // and forward through the history in **creation order** — time, not
+        // structure — so either can cross a fork that `u`/`U` never leave.
+        // They also **report** their boundary instead of doing nothing
+        // silently. See `traverse_history`.
         //
         // Three chords, because the capital has two terminal spellings and
         // they differ in the **key code**, not only in the modifier: a
@@ -5162,12 +6281,44 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
             let seed = snapshot
                 .and_then(|snapshot| editor::word_at(&snapshot, cursor))
                 .unwrap_or_default();
-            session.presentation_mut().open_search_line(&seed);
+            session.presentation_mut().open_search_line(&seed, true);
             if !seed.is_empty() {
                 // Seeded from the word under the cursor, so the matches that
                 // word already has are highlighted before the first keystroke.
                 run_editor_search(state, visible_lines);
             }
+            BufferKey::Consumed
+        }
+        // Helix `?` — the same search, walking **backwards**. It reopens the
+        // line with the pattern that is already accepted rather than an empty
+        // one: the gesture is "the previous one of what I just searched for",
+        // and making the reader retype it would be the whole cost of the key.
+        // With no accepted pattern the line opens empty, which is what the
+        // reader asked for rather than a key that silently did nothing.
+        (m, KeyCode::Char('?')) if m == none || m == shift => {
+            let seed = session.presentation().search_line.clone();
+            session.presentation_mut().open_search_line(&seed, false);
+            if !seed.is_empty() {
+                // One **strict** step first: `?` means "the previous one", and
+                // the cursor is usually sitting on the match `/` just
+                // accepted. Every later keystroke re-adopts inclusively
+                // instead, so refining the pattern stays where the reader is
+                // rather than walking backwards off the match.
+                step_editor_search(state, false, visible_lines);
+                run_editor_search(state, visible_lines);
+            }
+            BufferKey::Consumed
+        }
+        // Helix `*` / `Alt-*` — seed the search from the main selection. `*`
+        // escapes the text and wraps it in `\b`, so it searches for what is
+        // selected rather than for a pattern that happens to match; `Alt-*`
+        // is the deliberate unescaped spelling.
+        (m, KeyCode::Char('*')) if m == none || m == shift => {
+            editor_search_from_selection(state, visible_lines, true);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('*')) if m == alt => {
+            editor_search_from_selection(state, visible_lines, false);
             BufferKey::Consumed
         }
         // `n`/`N` walk the matches an accepted `/` search left behind.
@@ -5189,6 +6340,29 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
             }
         }
         _ => BufferKey::Unhandled,
+    };
+    // The dispatch tail: a count survives exactly two keys — the digit that
+    // extends it, and a key that arms a prefix that will carry it, so `3gg`
+    // and `3ge` work. Everything else takes it down on the way out: a stray
+    // `3` cannot arm the gesture after it, and a key the buffer does not claim
+    // ends the count rather than leaving it for the composer.
+    let carries_count = state
+        .session
+        .as_ref()
+        .is_some_and(|session| session.presentation().pending_prefix.is_pending());
+    if !count_extended && !carries_count {
+        clear_count(state);
+    }
+    settled
+}
+
+/// Take the pending count down, if there is one.
+///
+/// The one call site shape for every clearing path outside the motion body —
+/// see [`TuiDocumentPresentation::clear_count`] for the contract.
+fn clear_count(state: &mut EditorState) {
+    if let Some(session) = state.session.as_mut() {
+        session.presentation_mut().clear_count();
     }
 }
 
@@ -5288,6 +6462,7 @@ fn note_motion(state: &mut EditorState, command: EditorCommand) {
 
 /// Move the cursor through the Helix selection rules.
 fn helix_motion(state: &mut EditorState, command: EditorCommand, _visible_lines: usize) {
+    let before = jump_start(state);
     note_motion(state, command);
     apply_helix(state, editor::HelixVerb::Moved(command));
     // The second route a paragraph motion takes. `]p` itself and the bare
@@ -5295,6 +6470,11 @@ fn helix_motion(state: &mut EditorState, command: EditorCommand, _visible_lines:
     // arrive here. Without this a refusal disclosed through the repeat would
     // be resolved on the probe and then discarded with it.
     lift_motion_notes(state);
+    // `G` walks through here as `BufferEnd`. Same rule as `editor_motion`'s:
+    // a named destination that moved records where it started.
+    if editor::is_named_destination(command) {
+        note_jumplist_jump(state, before);
+    }
 }
 
 /// Apply a Helix verb, returning a delete/yank effect when one is requested.
@@ -5310,13 +6490,22 @@ fn apply_helix(state: &mut EditorState, verb: editor::HelixVerb) -> editor::Heli
         state.set_notice(EditorNotice::from_error(&DocumentControllerError::ReadOnly));
         return editor::HelixVerbOutcome::Handled;
     }
-    let Some(session) = state.session.as_mut() else {
-        return editor::HelixVerbOutcome::Handled;
+    // The comment toggle is the one verb whose *target* is resolved from the
+    // attachment rather than from the text: its token is the buffer's
+    // grammar's, and the grammar comes from the path. Every other verb is a
+    // function of the snapshot and the presentation alone.
+    let outcome = match verb {
+        editor::HelixVerb::ToggleComments { block } => comment_toggle_outcome(state, block),
+        verb => {
+            let Some(session) = state.session.as_mut() else {
+                return editor::HelixVerbOutcome::Handled;
+            };
+            let Some(snapshot) = session.try_snapshot() else {
+                return editor::HelixVerbOutcome::Handled;
+            };
+            editor::apply_helix_verb(&snapshot, session.presentation_mut(), verb)
+        }
     };
-    let Some(snapshot) = session.try_snapshot() else {
-        return editor::HelixVerbOutcome::Handled;
-    };
-    let outcome = editor::apply_helix_verb(&snapshot, session.presentation_mut(), verb);
     if let editor::HelixVerbOutcome::NothingToDo(reason) = &outcome {
         // Reported once, here, where the outcome is read — so every caller
         // gets it and no caller can forget. A verb that reports nothing and
@@ -5325,6 +6514,50 @@ fn apply_helix(state: &mut EditorState, verb: editor::HelixVerb) -> editor::Heli
         state.set_notice(EditorNotice::Note(reason.clone()));
     }
     outcome
+}
+
+/// Resolve one comment toggle against the attachment's own grammar.
+///
+/// Every refusal names what is missing, and the two syntax refusals name the
+/// extension: without it a reader cannot tell a file this build cannot comment
+/// from a key that never arrived — the same failure an unbound leaf is.
+fn comment_toggle_outcome(state: &EditorState, block: bool) -> editor::HelixVerbOutcome {
+    let refuse = |reason: String| editor::HelixVerbOutcome::NothingToDo(reason);
+    let Some(session) = state.session.as_ref() else {
+        return refuse("no document is open".to_string());
+    };
+    let Some(snapshot) = session.try_snapshot() else {
+        return refuse("the document is not attached".to_string());
+    };
+    let Some(path) = session.attachment_info().map(|info| info.relative_path) else {
+        return refuse("toggle comment: the document is not attached".to_string());
+    };
+    let extension = comment_extension(&path);
+    let Some(tokens) = crate::tui::editor_highlight::comment_tokens_for(&path) else {
+        return refuse(format!(
+            "toggle comment: {extension} declares no comment syntax, so the buffer is unchanged"
+        ));
+    };
+    let Some(style) = tokens.style(block) else {
+        return refuse(format!(
+            "toggle block comment: {extension} has no block comment pair, so the buffer is \
+             unchanged"
+        ));
+    };
+    match editor::toggle_comments(&snapshot, session.presentation(), style) {
+        Ok(outcome) => outcome,
+        Err(reason) => refuse(reason),
+    }
+}
+
+/// The extension a refusal names, or the absence of one.
+fn comment_extension(path: &str) -> String {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .filter(|extension| !extension.is_empty())
+        .map(|extension| format!("`.{extension}`"))
+        .unwrap_or_else(|| "a path with no extension".to_string())
 }
 
 /// Apply a verb that edits the buffer, submitting its transaction.
@@ -5364,7 +6597,19 @@ fn apply_helix_edit(state: &mut EditorState, verb: editor::HelixVerb) -> editor:
             if let Some(session) = state.session.as_mut() {
                 let presentation = session.presentation_mut();
                 presentation.selections = selections;
-                presentation.primary_index = 0;
+                // The primary is the member whose head the cursor landed on.
+                // `submit_edit` has already moved the cursor to the edit's
+                // `cursor_after`, so asking the set which member names that
+                // offset keeps "the cursor is the primary's head" true for
+                // every verb that leaves a selection behind — `Alt-J`'s spaces
+                // and the surround verbs alike. Hardcoding `0` would put the
+                // two out of step the moment a verb left more than one member.
+                let primary = presentation
+                    .selections
+                    .iter()
+                    .position(|member| member.head.byte == presentation.cursor_byte)
+                    .unwrap_or_default();
+                presentation.primary_index = primary;
             }
             editor::HelixVerbOutcome::Handled
         }
@@ -5390,6 +6635,21 @@ fn grows_selection(verb: &editor::HelixVerb) -> bool {
             // looking at a file they cannot write has no business enlarging
             // it.
             | editor::HelixVerb::SelectObject { .. }
+            // `X` widens every member to whole lines, which is growth in the
+            // strict sense.
+            | editor::HelixVerb::ExtendToLineBounds
+            // `_` only ever narrows a member, and it is refused here anyway:
+            // the milestone's acceptance criteria refuse it with the rest of
+            // the shape family, and one answer for the family is easier to
+            // predict than a per-key rule a reader has to memorise. `Alt-x`
+            // is the deliberate exception — it is navigation-like narrowing
+            // and stays available on a attachment the reader cannot write.
+            | editor::HelixVerb::TrimSelections
+            // `s` / `Alt-s` rebuild the held set from the text under it, so
+            // they enlarge a selection the reader cannot act on. Claimed by
+            // the same rule as `v` and `x` rather than by a new gate.
+            | editor::HelixVerb::SelectSelectionMatches { .. }
+            | editor::HelixVerb::SplitSelectionOnNewlines
     )
 }
 
@@ -5411,6 +6671,22 @@ fn mutates_buffer(verb: &editor::HelixVerb) -> bool {
             | editor::HelixVerb::SurroundAdd { .. }
             | editor::HelixVerb::SurroundDelete { .. }
             | editor::HelixVerb::SurroundReplace { .. }
+            // `J` / `Alt-J` rewrite the lines they cover into one, and `>` /
+            // `<` insert or remove indentation on each covered line. Both are
+            // edits, so a reader on a read-only attachment is told the gesture
+            // is unavailable rather than watching it appear to work.
+            | editor::HelixVerb::JoinLines { .. }
+            | editor::HelixVerb::IndentSelection { .. }
+            // `space c` / `space C` insert or remove a comment token on every
+            // covered line. Gated here for the same reason the two above are:
+            // a reader on a read-only attachment is told the gesture is
+            // unavailable instead of watching the buffer stay put.
+            | editor::HelixVerb::ToggleComments { .. }
+            // `c` / `Alt-c` delete. Refusing them here rather than only at the
+            // controller is what keeps the change gesture's two halves
+            // together: the refusal is reported and the route never reaches
+            // the point where Insert would follow.
+            | editor::HelixVerb::ChangeSelection
     )
 }
 
@@ -5429,45 +6705,178 @@ fn yank_ranges(session: &mut TuiDocumentSession) -> Vec<std::ops::Range<usize>> 
     ranges
 }
 
-/// Copy every range to the system clipboard in one write.
+/// Yank every range to `target`, in one gesture.
 ///
-/// A failed copy is reported rather than swallowed: the selection has already
-/// been dropped by the time this runs, so a silent failure would look exactly
-/// like `space y` doing nothing at all.
-fn yank_editor_ranges(app: &mut App, ranges: Vec<std::ops::Range<usize>>) {
+/// A failed destination is reported rather than swallowed: the selection has
+/// already been dropped by the time this runs, so a silent failure would look
+/// exactly like the gesture doing nothing at all.
+///
+/// The bytes are read **once**, here, and then offered to one destination
+/// through [`publish_yank`] — so the register and the clipboard receive the
+/// same text and cannot disagree about what was yanked.
+fn yank_editor_ranges(app: &mut App, ranges: Vec<std::ops::Range<usize>>, target: YankTarget) {
+    yank_editor_ranges_with(
+        app,
+        ranges,
+        target,
+        crate::util::clipboard::copy_to_clipboard,
+    );
+}
+
+/// The core of a yank, with the clipboard write already supplied.
+///
+/// `copy` is injected for the same reason [`apply_clipboard_text`] takes its
+/// read: `crate::util::clipboard` has no seam, and the only way to prove that
+/// `y` still reaches the system clipboard — without a test writing to, and
+/// stealing, the developer's real clipboard — is to not call it. The
+/// production entry point above is the one caller that passes the real
+/// function.
+fn yank_editor_ranges_with(
+    app: &mut App,
+    ranges: Vec<std::ops::Range<usize>>,
+    target: YankTarget,
+    copy: impl FnOnce(&str) -> Result<(), crate::error::AppError>,
+) {
     let Some(session) = app.editor_state.session.as_ref() else {
         return;
     };
     let Some(snapshot) = session.try_snapshot() else {
         return;
     };
-    let mut text = String::new();
-    let mut copied = 0usize;
-    for range in &ranges {
-        match snapshot.read_bytes(range.start, range.end) {
-            Ok(part) => {
-                copied += part.len();
-                text.push_str(&part);
-            }
-            // One unreadable member loses that member, not the whole verb: the
-            // alternative is a yank that produces nothing for a selection the
-            // reader can plainly see highlighted.
-            Err(_) => continue,
-        }
-    }
+    let text = read_range_text(&snapshot, &ranges);
     if text.is_empty() {
         app.messages_state.toasts.warning("Nothing to yank");
         return;
     }
-    match crate::util::clipboard::copy_to_clipboard(&text) {
-        Ok(()) => app
+    publish_yank(app, target, &text, copy);
+}
+
+/// Send one yank's bytes where the gesture said, and report what happened.
+///
+/// The order is load-bearing. The register is written **first**, so a reader
+/// who cannot have the clipboard still gets the text; the unnamed register
+/// then mirrors a named yank (a bare `p` after `"ay` pastes what was yanked,
+/// exactly as Vim's unnamed register does); and the clipboard is written last,
+/// because it is the one destination that can refuse.
+fn publish_yank(
+    app: &mut App,
+    target: YankTarget,
+    text: &str,
+    copy: impl FnOnce(&str) -> Result<(), crate::error::AppError>,
+) {
+    let bytes = text.len();
+    let mut written: Option<RegisterName> = None;
+    let mut truncation: Option<(RegisterName, usize, usize)> = None;
+    let copies = match target {
+        // Never reached from the keymap — M002's `Alt-d`/`Alt-c` write nothing
+        // and report nothing — but the arm keeps the funnel total rather than
+        // inventing a destination for a target that names none.
+        YankTarget::Nothing => return,
+        YankTarget::Clipboard => true,
+        YankTarget::Unnamed => {
+            let outcome = store_register(app, RegisterName::Unnamed, text);
+            note_truncation(&mut truncation, RegisterName::Unnamed, outcome);
+            written = Some(RegisterName::Unnamed);
+            false
+        }
+        YankTarget::Selected(register) => match register {
+            // The blackhole writes nothing and says nothing: discarding is
+            // what the reader asked for. It must not mirror into the unnamed
+            // register or reach the clipboard either.
+            RegisterName::Blackhole => return,
+            // `/` is a projection of the search line. A yank aimed at it is a
+            // stated refusal, not a write to a register that would then lie
+            // about the last search.
+            RegisterName::Search => {
+                app.messages_state
+                    .toasts
+                    .warning("the search register is read-only — it holds the last search pattern");
+                return;
+            }
+            named => {
+                let outcome = store_register(app, named, text);
+                note_truncation(&mut truncation, named, outcome);
+                written = Some(named);
+                if named != RegisterName::Unnamed {
+                    let mirror = store_register(app, RegisterName::Unnamed, text);
+                    note_truncation(&mut truncation, RegisterName::Unnamed, mirror);
+                }
+                // D1(a): every `y` also keeps the system clipboard in step, so
+                // a copy made here still pastes in another application.
+                true
+            }
+        },
+    };
+    let clipboard = if copies {
+        copy(text).err().map(|error| error.to_string())
+    } else {
+        None
+    };
+    report_yank(app, bytes, written, truncation, clipboard);
+}
+
+/// Write one register through the presentation, if a document is attached.
+fn store_register(app: &mut App, register: RegisterName, text: &str) -> Option<RegisterWrite> {
+    app.editor_state
+        .session
+        .as_mut()
+        .map(|session| session.presentation_mut().write_register(register, text))
+}
+
+/// Record a truncation, if the write had one.
+fn note_truncation(
+    truncation: &mut Option<(RegisterName, usize, usize)>,
+    register: RegisterName,
+    outcome: Option<RegisterWrite>,
+) {
+    if let Some(RegisterWrite::Truncated { stored, requested }) = outcome {
+        // One disclosure, not two: the named register is the one the reader
+        // asked for, and its mirror is the same bytes under another name.
+        truncation.get_or_insert((register, stored, requested));
+    }
+}
+
+/// Say what the gesture did, in one toast.
+///
+/// A truncation and a refused clipboard are both refusals and both belong on
+/// screen, so they compose into one sentence rather than two toasts racing
+/// each other. A write that reached no register and no clipboard is the
+/// `space` family's plain copy, and keeps its original wording.
+fn report_yank(
+    app: &mut App,
+    bytes: usize,
+    written: Option<RegisterName>,
+    truncation: Option<(RegisterName, usize, usize)>,
+    clipboard: Option<String>,
+) {
+    if let Some((register, stored, requested)) = truncation {
+        let mut message = format!(
+            "{} kept the first {stored} of {requested} bytes",
+            register.label()
+        );
+        if let Some(error) = clipboard {
+            message.push_str(&format!("; clipboard unavailable: {error}"));
+        }
+        app.messages_state.toasts.warning(&message);
+        return;
+    }
+    match (written, clipboard) {
+        (Some(register), Some(error)) => app.messages_state.toasts.warning(&format!(
+            "Copied {bytes} bytes to {}; clipboard unavailable: {error}",
+            register.label()
+        )),
+        (Some(register), None) => app
             .messages_state
             .toasts
-            .info(&format!("Copied {copied} bytes")),
-        Err(error) => app
+            .info(&format!("Copied {bytes} bytes to {}", register.label())),
+        (None, Some(error)) => app
             .messages_state
             .toasts
             .warning(&format!("Clipboard unavailable: {error}")),
+        (None, None) => app
+            .messages_state
+            .toasts
+            .info(&format!("Copied {bytes} bytes")),
     }
 }
 
@@ -5559,6 +6968,28 @@ fn editor_open_line(state: &mut EditorState, command: EditorCommand) -> BufferKe
     // presentation's own mode in agreement — `submit_edit` wrote the
     // presentation's side of it inside the accepted branch.
     BufferKey::EnterInsert
+}
+
+pub(crate) fn dispatch_editor(app: &mut App) {
+    app.open_external_editor();
+}
+
+pub(crate) fn dispatch_open_document(app: &mut App, argument: &str) {
+    // M006-A: `/open <workspace-relative path>`. With no
+    // argument the composer keeps the key so the user can
+    // type the path after the command.
+    //
+    // M007-H (work package A): the daemon owns the open, so the
+    // TUI sends the `open_document` command and attaches the
+    // response. It issues no open request of its own.
+    let path = argument;
+    if path.is_empty() {
+        app.messages_state
+            .toasts
+            .info("Usage: /open <workspace-relative path> (e.g. /open src/lib.rs)");
+    } else {
+        crate::tui::commands::editor::open_editor_via_command(app, path);
+    }
 }
 
 #[cfg(test)]
@@ -5823,12 +7254,18 @@ mod tests {
 
     /// Open one document into an `EditorState` over `daemon`.
     async fn open_state(daemon: &Arc<FakeDaemon>, writer: bool) -> EditorState {
+        open_state_at(daemon, writer, "src/lib.rs").await
+    }
+
+    /// The same fixture attached to `path`, for a test whose subject is the
+    /// grammar the path selects.
+    async fn open_state_at(daemon: &Arc<FakeDaemon>, writer: bool, path: &str) -> EditorState {
         let controller = Arc::new(DocumentController::new(daemon.clone()));
         controller
             .open(
                 "project-1".into(),
                 "workspace-1".into(),
-                "src/lib.rs".into(),
+                path.into(),
                 writer,
                 DocumentScope::Workspace,
             )
@@ -5839,7 +7276,7 @@ mod tests {
         session.presentation_mut().reset_for_open();
         EditorState {
             status,
-            path: Some("src/lib.rs".into()),
+            path: Some(path.into()),
             wants_writer: writer,
             session: Some(session),
             ..EditorState::default()
@@ -5849,6 +7286,13 @@ mod tests {
     async fn opened_writer(text: &str) -> (EditorState, Arc<FakeDaemon>) {
         let daemon = FakeDaemon::new(text, true);
         let state = open_state(&daemon, true).await;
+        (state, daemon)
+    }
+
+    /// `opened_writer` attached to `path` rather than the Rust fixture.
+    async fn opened_writer_at(path: &str, text: &str) -> (EditorState, Arc<FakeDaemon>) {
+        let daemon = FakeDaemon::new(text, true);
+        let state = open_state_at(&daemon, true, path).await;
         (state, daemon)
     }
 
@@ -5963,19 +7407,44 @@ mod tests {
         range.end - range.start
     }
 
-    /// How many history entries are applied — the undo depth.
+    /// How many nodes of the history are applied — the depth `u` walks.
+    ///
+    /// Not the cursor's identity. A node's `created` id is stable across
+    /// branching and pruning, so once the tree has a sibling branch the id is
+    /// no longer a count of what is applied; this asks the model.
     fn undo_depth(state: &EditorState) -> usize {
+        let presentation = state.session.as_ref().expect("open").presentation();
+        editor::history_depth(presentation, presentation.history_cursor)
+    }
+
+    /// How many redo steps `U` can take from here: one when the cursor has a
+    /// child, none when it is a tip.
+    ///
+    /// **Not** the arena's length minus the cursor. A length and an identity
+    /// are not positions: the subtraction read `0` at a branch tip — where a
+    /// sibling branch exists but `U` has nowhere to go — and read numbers that
+    /// meant nothing once ids and positions parted.
+    fn redo_depth(state: &EditorState) -> usize {
+        let presentation = state.session.as_ref().expect("open").presentation();
+        if editor::redo_entry(presentation).is_some() {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// How many nodes the tree retains, applied or not.
+    ///
+    /// The one question an arena length answers honestly, under its own name —
+    /// a branch the reader walked away from is retained without being applied.
+    fn history_len(state: &EditorState) -> usize {
         state
             .session
             .as_ref()
             .expect("open")
             .presentation()
-            .history_cursor
-    }
-
-    fn redo_depth(state: &EditorState) -> usize {
-        let presentation = state.session.as_ref().expect("open").presentation();
-        presentation.history.len() - presentation.history_cursor
+            .history
+            .len()
     }
 
     // ── Trajectory: open → edit → undo → redo → save → reopen ────────────
@@ -6895,13 +8364,19 @@ mod tests {
 
         // `d` deletes the held selection — an effect the App layer performs,
         // so the buffer reports the range rather than applying it.
-        let BufferKey::DeleteRanges(ranges) = normal(&mut state, KeyCode::Char('d')) else {
+        let BufferKey::DeleteRanges { ranges, yank } = normal(&mut state, KeyCode::Char('d'))
+        else {
             panic!("d must report a delete range");
         };
         assert_eq!(
             ranges,
             editor::one_range(0..14),
             "d reports the range the selection covers"
+        );
+        assert_eq!(
+            yank,
+            YankTarget::Unnamed,
+            "and where the bytes go: the unnamed register"
         );
         assert_eq!(
             editor_text(&state),
@@ -6920,13 +8395,19 @@ mod tests {
         // legacy terminal forces, so it needs the same dispatch proof.
         assert_eq!(normal(&mut state, KeyCode::Char('x')), BufferKey::Consumed);
         assert_eq!(normal(&mut state, KeyCode::Char(' ')), BufferKey::Consumed);
-        let BufferKey::YankRanges(yanked) = normal(&mut state, KeyCode::Char('y')) else {
+        let BufferKey::YankRanges { ranges, target } = normal(&mut state, KeyCode::Char('y'))
+        else {
             panic!("space y must report a yank range");
         };
         assert_eq!(
-            yanked,
+            ranges,
             editor::one_range(0..7),
             "space y reports the selected line"
+        );
+        assert_eq!(
+            target,
+            YankTarget::Clipboard,
+            "space y is the clipboard family and honours no register"
         );
 
         // `D` deletes to end of line. Both terminal encodings of the capital
@@ -7148,13 +8629,28 @@ mod tests {
         // the next one, not a permanent record.
         // `z` left this list when view mode claimed it: it is the prefix
         // that scrolls the page without moving the cursor.
-        for letter in ['q', 'c', 's', 'J', '?'] {
-            assert_eq!(
-                normal(&mut state, KeyCode::Char(letter)),
-                BufferKey::Unhandled,
-                "{letter} is unclaimed and must reach the composer"
-            );
-        }
+        //
+        // `J` left it with the line-shape verbs (`X`, `Alt-x`, `_`, `J`,
+        // `Alt-J`, `>` and `<`), which is the same intended shape: the list
+        // is a to-do list for whoever claims the next key, not a permanent
+        // record of what the buffer must leave alone.
+        //
+        // `c` left it in M002, with the change pair (`c`, `Alt-c`) and the
+        // no-yank delete (`Alt-d`). On the editor route `c` no longer types
+        // into the composer; that is the intended effect of binding it, and
+        // `docs/tui.md` says so.
+        // `s` and `?` left this list in M003, with the regex search verbs:
+        // `?` is the reverse search and `s` selects the regex matches inside
+        // the selections. `q` stayed unclaimed even after M008 landed macro
+        // recording, and deliberately: `q` is the two-press exit, so binding
+        // it for recording would make leaving the program depend on recording
+        // state. It is asserted here on its own rather than through a
+        // one-element loop, which asserts nothing a single call does not.
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('q')),
+            BufferKey::Unhandled,
+            "q is unclaimed and must reach the composer"
+        );
     }
 
     /// No Normal-mode binding may leak into the Insert path and swallow a
@@ -7311,8 +8807,11 @@ mod tests {
     #[tokio::test]
     async fn a_letter_the_buffer_does_not_own_falls_through_in_normal_mode() {
         let (mut state, _daemon) = opened_writer("base").await;
+        // `?` was on this list until M003 claimed it as the reverse search.
+        // `q` takes its place: macro recording is M008's, so the key is still
+        // the buffer's to give back.
         for code in [
-            KeyCode::Char('?'),
+            KeyCode::Char('q'),
             KeyCode::F(5),
             KeyCode::Home,
             KeyCode::End,
@@ -7349,7 +8848,10 @@ mod tests {
         // impossible. Reload is one `:e` away instead.
         assert_eq!(
             normal(&mut state, KeyCode::Char('R')),
-            BufferKey::ReplaceWithClipboard(ClipboardVerb::Replace)
+            BufferKey::Paste {
+                verb: ClipboardVerb::Replace,
+                register: RegisterName::Unnamed,
+            }
         );
         // In Insert those two keystrokes are the letter `R`, so the text
         // grows by exactly one — which is the property that makes normal-only
@@ -7370,7 +8872,10 @@ mod tests {
         assert_eq!(normal(&mut state, KeyCode::Char('x')), BufferKey::Consumed);
         assert_eq!(
             normal(&mut state, KeyCode::Char('d')),
-            BufferKey::DeleteRanges(editor::one_range(0..4))
+            BufferKey::DeleteRanges {
+                ranges: editor::one_range(0..4),
+                yank: YankTarget::Unnamed,
+            }
         );
         let edit = editor::delete_range(&snapshot_of(&state), 0..4).unwrap();
         submit_edit(&mut state, edit);
@@ -7382,7 +8887,10 @@ mod tests {
         // Lines 0..=1 of "two\nthree\n" — 0..10, both terminators included.
         assert_eq!(
             normal(&mut state, KeyCode::Char('d')),
-            BufferKey::DeleteRanges(editor::one_range(0..10))
+            BufferKey::DeleteRanges {
+                ranges: editor::one_range(0..10),
+                yank: YankTarget::Unnamed,
+            }
         );
     }
 
@@ -7407,7 +8915,10 @@ mod tests {
         // matching `/terminal`.
         assert_eq!(
             normal(&mut state, KeyCode::Char('d')),
-            BufferKey::DeleteRanges(editor::one_range(0..3))
+            BufferKey::DeleteRanges {
+                ranges: editor::one_range(0..3),
+                yank: YankTarget::Unnamed,
+            }
         );
     }
 
@@ -7418,7 +8929,10 @@ mod tests {
         assert_eq!(normal(&mut state, KeyCode::Char(' ')), BufferKey::Consumed);
         assert_eq!(
             normal(&mut state, KeyCode::Char('y')),
-            BufferKey::YankRanges(editor::one_range(0..7)),
+            BufferKey::YankRanges {
+                ranges: editor::one_range(0..7),
+                target: YankTarget::Clipboard,
+            },
             "`space y` is two events, so it is prefix state rather than a chord"
         );
 
@@ -8681,8 +10195,14 @@ mod tests {
         assert_eq!(selection_count(&state), 2, "redo restores it as well");
     }
 
+    /// A fresh edit starts a branch and drops the selection set it recorded.
+    ///
+    /// The redo *entry* survives as a sibling — that is M009 — but the set the
+    /// reader held is not carried into the new node: it described the text the
+    /// reader left, and restoring it on the next `u` would put cursors back on
+    /// characters they chose for a different edit.
     #[tokio::test]
-    async fn an_edit_after_undo_truncates_the_redo_tail_and_drops_the_set() {
+    async fn an_edit_after_undo_branches_and_drops_the_recorded_set() {
         let (mut state, _daemon) = opened_writer("ab cd").await;
         let snapshot = snapshot_of(&state);
         hold_two_members(&mut state, &snapshot, 0, 3);
@@ -8691,7 +10211,6 @@ mod tests {
         submit_edit(&mut state, edit);
         editor_undo(&mut state);
 
-        // A fresh edit invalidates the redo entry *and* the set it recorded.
         let after = snapshot_of(&state);
         let edit =
             editor::replace_char(&after, state.session.as_ref().unwrap().presentation(), 'Z')
@@ -8700,9 +10219,14 @@ mod tests {
         assert_eq!(
             redo_depth(&state),
             0,
-            "a new edit must not leave a redoable entry pointing at older text"
+            "the new node is a tip: no redo points at the text it replaced"
         );
         assert_eq!(selection_count(&state), 0);
+        assert_eq!(
+            history_len(&state),
+            2,
+            "and the branch the reader undid past is retained as a sibling"
+        );
     }
 
     /// Hold two single-character members at `start` and `other`, primary first.
@@ -8775,14 +10299,20 @@ mod tests {
         park(&mut state, 0);
         assert_eq!(
             normal(&mut state, KeyCode::Char('p')),
-            BufferKey::PasteAfter(ClipboardVerb::PasteAfter)
+            BufferKey::Paste {
+                verb: ClipboardVerb::PasteAfter,
+                register: RegisterName::Unnamed,
+            }
         );
         assert_eq!(
             normal_event(
                 &mut state,
                 KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT)
             ),
-            BufferKey::PasteBefore(ClipboardVerb::PasteBefore),
+            BufferKey::Paste {
+                verb: ClipboardVerb::PasteBefore,
+                register: RegisterName::Unnamed,
+            },
             "terminals disagree on how a capital is encoded; both must work"
         );
         assert_eq!(
@@ -8790,7 +10320,10 @@ mod tests {
                 &mut state,
                 KeyEvent::new(KeyCode::Char('P'), KeyModifiers::NONE)
             ),
-            BufferKey::PasteBefore(ClipboardVerb::PasteBefore)
+            BufferKey::Paste {
+                verb: ClipboardVerb::PasteBefore,
+                register: RegisterName::Unnamed,
+            }
         );
         assert_eq!(
             editor_text(&state),
@@ -8879,8 +10412,11 @@ mod tests {
 
         assert_eq!(
             normal(&mut state, KeyCode::Char('y')),
-            BufferKey::YankRanges(editor::one_range(0..3)),
-            "bare `y` must resolve exactly as `space y` does"
+            BufferKey::YankRanges {
+                ranges: editor::one_range(0..3),
+                target: YankTarget::Selected(RegisterName::Unnamed),
+            },
+            "bare `y` resolves the same ranges as `space y` and adds the register"
         );
         assert_eq!(editor_text(&state), "alpha beta", "a yank changes no text");
     }
@@ -8889,6 +10425,513 @@ mod tests {
     async fn bare_y_with_nothing_selected_is_still_claimed() {
         let (mut state, _daemon) = opened_writer("abc").await;
         assert_eq!(normal(&mut state, KeyCode::Char('y')), BufferKey::Consumed);
+    }
+
+    // ── M007: registers ─────────────────────────────────────────────────
+    //
+    // Every test presses keys, because the failure this layer has already
+    // produced once is a chord that compiles, reads correctly, and is shadowed
+    // before it can run.
+
+    /// The selected register, read through the presentation so a test cannot
+    /// assert against a second source of truth.
+    fn register_on_app(app: &App, register: RegisterName) -> Result<String, RegisterRefusal> {
+        app.editor_state
+            .session
+            .as_ref()
+            .expect("open")
+            .presentation()
+            .read_register(register)
+            .map(str::to_owned)
+    }
+
+    /// `"` arms the register prefix, the next key is the **name** (data, not a
+    /// command), and the key after that is the verb that consumes the
+    /// selection. Two levels in one prefix field, the `m` grammar's shape.
+    #[tokio::test]
+    async fn the_register_prefix_captures_a_name_and_the_verb_after_it_consumes_it() {
+        let (mut state, _daemon) = opened_writer("alpha\nbeta\n").await;
+        assert_eq!(normal(&mut state, KeyCode::Char('x')), BufferKey::Consumed);
+
+        assert_eq!(normal(&mut state, KeyCode::Char('"')), BufferKey::Consumed);
+        assert_eq!(
+            pending(&state),
+            "\"",
+            "`\"` shows itself while it waits for a name"
+        );
+
+        assert_eq!(normal(&mut state, KeyCode::Char('a')), BufferKey::Consumed);
+        assert_eq!(
+            state
+                .session
+                .as_ref()
+                .unwrap()
+                .presentation()
+                .pending_prefix,
+            EditorPrefix::RegisterNamed('a'),
+            "the name is held in the prefix, not in a second field"
+        );
+        assert_eq!(pending(&state), "\"a", "and the indicator names it");
+
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('y')),
+            BufferKey::YankRanges {
+                ranges: editor::one_range(0..6),
+                target: YankTarget::Selected(RegisterName::Named('a')),
+            },
+            "the verb after the name yanks into that register"
+        );
+        assert_eq!(
+            state
+                .session
+                .as_ref()
+                .unwrap()
+                .presentation()
+                .pending_prefix,
+            EditorPrefix::Idle,
+            "and the gesture is complete"
+        );
+    }
+
+    /// The selection is the prefix's second level, so it cannot outlive the key
+    /// after it: `"a` then `j` moves, and the `y` after that yanks into the
+    /// **unnamed** register. A sticky `selected_register` field would still be
+    /// pointing at `a` — the second grammar the plan rejected.
+    #[tokio::test]
+    async fn a_register_selection_does_not_survive_an_unrelated_key() {
+        let (mut state, _daemon) = opened_writer("alpha\nbeta\n").await;
+
+        normal(&mut state, KeyCode::Char('"'));
+        normal(&mut state, KeyCode::Char('a'));
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('p')),
+            BufferKey::Paste {
+                verb: ClipboardVerb::PasteAfter,
+                register: RegisterName::Named('a'),
+            },
+            "`\"ap` reads the selected register"
+        );
+
+        normal(&mut state, KeyCode::Char('"'));
+        normal(&mut state, KeyCode::Char('b'));
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('j')),
+            BufferKey::Consumed,
+            "`j` is not a register verb, so it resolves normally"
+        );
+        assert_eq!(
+            state
+                .session
+                .as_ref()
+                .unwrap()
+                .presentation()
+                .pending_prefix,
+            EditorPrefix::Idle,
+            "and the selection went with the prefix"
+        );
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('p')),
+            BufferKey::Paste {
+                verb: ClipboardVerb::PasteAfter,
+                register: RegisterName::Unnamed,
+            },
+            "the later `p` uses the default, not the abandoned selection"
+        );
+    }
+
+    /// A character outside the register set is **reported and consumed**. The
+    /// consumed half is the destructive one: `"D` must not delete to the end of
+    /// the line, and `"A` must not enter Insert mode.
+    #[tokio::test]
+    async fn an_invalid_register_name_is_reported_and_never_runs_as_a_verb() {
+        let (mut state, _daemon) = opened_writer("alpha\nbeta\n").await;
+        assert_eq!(normal(&mut state, KeyCode::Char('x')), BufferKey::Consumed);
+        normal(&mut state, KeyCode::Char('"'));
+
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('D')),
+            BufferKey::Consumed,
+            "the invalid name is the argument, so it is consumed"
+        );
+        assert_eq!(
+            editor_text(&state),
+            "alpha\nbeta\n",
+            "`\"D` is a rejected name, not delete-to-end-of-line"
+        );
+        assert!(
+            notice_of(&state).is_some_and(|note| note.contains("not a register")),
+            "the refusal names the set: {:?}",
+            notice_of(&state)
+        );
+        assert_eq!(pending(&state), "", "and the machine is disarmed");
+    }
+
+    /// A key that cannot be a name is **swallowed**, not retried: the register
+    /// set is a closed vocabulary, so a non-character key is not a wrong
+    /// register, and running it from a committed `"` would change the surface —
+    /// `"` then `Tab` toggling the composer, `"` then `Ctrl+d` paging the
+    /// buffer. `Tab` is the sharpest control because bare it is unclaimed.
+    #[tokio::test]
+    async fn the_register_prefix_swallows_a_key_that_cannot_be_a_name() {
+        let (mut state, _daemon) = opened_writer("abc").await;
+        assert_eq!(
+            normal(&mut state, KeyCode::Tab),
+            BufferKey::Unhandled,
+            "the control: bare `Tab` is not the buffer's"
+        );
+
+        for (label, code) in [("Tab", KeyCode::Tab), ("Esc", KeyCode::Esc)] {
+            normal(&mut state, KeyCode::Char('"'));
+            assert_eq!(
+                normal(&mut state, code),
+                BufferKey::Consumed,
+                "`{label}` after `\"` is consumed with the gesture"
+            );
+            assert_eq!(pending(&state), "", "and nothing stays selected");
+        }
+    }
+
+    /// `"ay` then `"ap` round-trips through the store, and `y` still reaches
+    /// the system clipboard. The clipboard write is injected — the utility has
+    /// no seam, and a test using the real one would steal the developer's
+    /// clipboard — the same seam `apply_clipboard_text` takes for its read.
+    #[tokio::test]
+    async fn a_named_register_round_trips_and_the_yank_still_reaches_the_clipboard() {
+        let (state, _daemon) = opened_writer("alpha\nbeta\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+
+        let mut copied = None;
+        yank_editor_ranges_with(
+            &mut app,
+            editor::one_range(0..6),
+            YankTarget::Selected(RegisterName::Named('a')),
+            |text| {
+                copied = Some(text.to_string());
+                Ok(())
+            },
+        );
+        assert_eq!(
+            copied.as_deref(),
+            Some("alpha\n"),
+            "`y` still writes the system clipboard, whatever register it also wrote"
+        );
+        assert_eq!(
+            register_on_app(&app, RegisterName::Named('a')).as_deref(),
+            Ok("alpha\n"),
+            "and the named register holds the same bytes"
+        );
+
+        park_on_app(&mut app, 6);
+        apply_register_text(
+            &mut app,
+            ClipboardVerb::PasteBefore,
+            RegisterName::Named('a'),
+        );
+        assert_eq!(
+            text_on_app(&app),
+            "alpha\nalpha\nbeta\n",
+            "`\"ap` pastes what `\"ay` yanked"
+        );
+    }
+
+    /// The default path, end to end: a bare `y` writes the unnamed register and
+    /// a bare `p` reads it, with no `"` anywhere in the gesture.
+    #[tokio::test]
+    async fn bare_y_then_bare_p_round_trips_through_the_unnamed_register() {
+        let (state, _daemon) = opened_writer("alpha\nbeta\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+
+        yank_editor_ranges_with(
+            &mut app,
+            editor::one_range(6..11),
+            YankTarget::Selected(RegisterName::Unnamed),
+            |_| Ok(()),
+        );
+        assert_eq!(
+            register_on_app(&app, RegisterName::Unnamed).as_deref(),
+            Ok("beta\n"),
+            "bare `y` writes the unnamed register"
+        );
+
+        park_on_app(&mut app, 0);
+        apply_register_text(&mut app, ClipboardVerb::PasteBefore, RegisterName::Unnamed);
+        assert_eq!(
+            text_on_app(&app),
+            "beta\nalpha\nbeta\n",
+            "and bare `p` reads it"
+        );
+    }
+
+    /// `d` yanks into the unnamed register and `p` pastes it; `Alt-d` yanks
+    /// nothing, so the register keeps what it held. That pair is M002's D1
+    /// discharged *and* M002's promise surviving the milestone that changed
+    /// it: the delete writes a register, and still never the clipboard.
+    #[tokio::test]
+    async fn d_then_p_pastes_the_deletion_and_alt_d_leaves_the_register_alone() {
+        let (state, _daemon) = opened_writer("alpha\nbeta\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+
+        assert!(submit_range_delete(
+            &mut app.editor_state,
+            editor::one_range(0..6),
+            false,
+            YankTarget::Unnamed,
+        ));
+        assert_eq!(text_on_app(&app), "beta\n", "the delete landed");
+        assert_eq!(
+            register_on_app(&app, RegisterName::Unnamed).as_deref(),
+            Ok("alpha\n"),
+            "and the reader can paste it back without the clipboard"
+        );
+
+        assert!(submit_range_delete(
+            &mut app.editor_state,
+            editor::one_range(0..5),
+            false,
+            YankTarget::Nothing,
+        ));
+        assert_eq!(text_on_app(&app), "", "`Alt-d` deleted too");
+        assert_eq!(
+            register_on_app(&app, RegisterName::Unnamed).as_deref(),
+            Ok("alpha\n"),
+            "but wrote nowhere: it is the no-yank spelling"
+        );
+
+        apply_register_text(&mut app, ClipboardVerb::PasteBefore, RegisterName::Unnamed);
+        assert_eq!(text_on_app(&app), "alpha\n", "and `p` still pastes it");
+    }
+
+    /// `space p` after a `d` pastes the **clipboard**, not the deletion. The
+    /// `space` family is not register-aware, which is the separation that keeps
+    /// cross-application paste predictable.
+    #[tokio::test]
+    async fn space_p_after_a_delete_still_pastes_the_clipboard() {
+        let (mut state, _daemon) = opened_writer("alpha\nbeta\n").await;
+        assert_eq!(normal(&mut state, KeyCode::Char('x')), BufferKey::Consumed);
+        assert_eq!(normal(&mut state, KeyCode::Char(' ')), BufferKey::Consumed);
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('p')),
+            BufferKey::Consumed,
+            "`space p` is a leaf, so the buffer consumes the second key"
+        );
+        assert_eq!(
+            parked(&state),
+            Some(EditorPendingEffect::Clipboard(ClipboardVerb::PasteAfter)),
+            "and parks the clipboard verb rather than a register paste"
+        );
+
+        let mut app = app_on_the_editor_route(state).await;
+        assert!(submit_range_delete(
+            &mut app.editor_state,
+            editor::one_range(0..6),
+            false,
+            YankTarget::Unnamed,
+        ));
+        assert_eq!(
+            register_on_app(&app, RegisterName::Unnamed).as_deref(),
+            Ok("alpha\n")
+        );
+        apply_clipboard_text(
+            &mut app,
+            ClipboardVerb::PasteBefore,
+            Some("CLIP".to_string()),
+        );
+        assert_eq!(
+            text_on_app(&app),
+            "CLIPbeta\n",
+            "the clipboard's own bytes, not the deleted text"
+        );
+    }
+
+    /// The blackhole writes nothing and refuses a read. `"_d` is the delete
+    /// that yanks nowhere, a blackhole yank reaches neither the unnamed
+    /// register nor the clipboard, and `"_p` says why it cannot paste.
+    #[tokio::test]
+    async fn the_blackhole_register_discards_and_its_paste_refuses_with_a_reason() {
+        let (mut state, _daemon) = opened_writer("alpha\nbeta\n").await;
+        assert_eq!(normal(&mut state, KeyCode::Char('x')), BufferKey::Consumed);
+        normal(&mut state, KeyCode::Char('"'));
+        normal(&mut state, KeyCode::Char('_'));
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('d')),
+            BufferKey::DeleteRanges {
+                ranges: editor::one_range(0..6),
+                yank: YankTarget::Nothing,
+            },
+            "`\"_d` is the delete that yanks nothing"
+        );
+
+        let mut app = app_on_the_editor_route(state).await;
+        let mut copied = false;
+        yank_editor_ranges_with(
+            &mut app,
+            editor::one_range(0..6),
+            YankTarget::Selected(RegisterName::Blackhole),
+            |_| {
+                copied = true;
+                Ok(())
+            },
+        );
+        assert!(!copied, "a blackhole yank must not write the clipboard");
+        assert_eq!(
+            register_on_app(&app, RegisterName::Unnamed),
+            Err(RegisterRefusal::Empty(RegisterName::Unnamed)),
+            "nor mirror into the unnamed register"
+        );
+
+        apply_register_text(&mut app, ClipboardVerb::PasteAfter, RegisterName::Blackhole);
+        assert_eq!(text_on_app(&app), "alpha\nbeta\n", "the paste refused");
+        let reported = app
+            .messages_state
+            .toasts
+            .history()
+            .map(|toast| toast.message.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            reported.iter().any(|message| message.contains("blackhole")),
+            "and said why: {reported:?}"
+        );
+    }
+
+    /// A paste from a register nobody wrote is a stated refusal, not an empty
+    /// insert; `"/p` projects the accepted search line and refuses before there
+    /// is one.
+    #[tokio::test]
+    async fn an_unset_register_and_an_unsearched_slash_both_refuse_with_a_reason() {
+        let (state, _daemon) = opened_writer("abc").await;
+        let mut app = app_on_the_editor_route(state).await;
+        park_on_app(&mut app, 0);
+
+        apply_register_text(
+            &mut app,
+            ClipboardVerb::PasteBefore,
+            RegisterName::Named('q'),
+        );
+        assert_eq!(text_on_app(&app), "abc", "nothing was inserted");
+        assert!(
+            app.messages_state
+                .toasts
+                .history()
+                .any(|toast| toast.message.contains("register `q` is empty")),
+            "the refusal names the register"
+        );
+
+        apply_register_text(&mut app, ClipboardVerb::PasteBefore, RegisterName::Search);
+        assert_eq!(text_on_app(&app), "abc");
+        assert!(
+            app.messages_state
+                .toasts
+                .history()
+                .any(|toast| toast.message.contains("no search has been accepted")),
+            "`/` before a search says so"
+        );
+
+        let presentation = app
+            .editor_state
+            .session
+            .as_mut()
+            .unwrap()
+            .presentation_mut();
+        presentation.open_search_line("bc", true);
+        presentation.close_search_line();
+        apply_register_text(&mut app, ClipboardVerb::PasteBefore, RegisterName::Search);
+        assert_eq!(
+            text_on_app(&app),
+            "bcabc",
+            "`\"/p` pastes the last accepted search pattern"
+        );
+    }
+
+    /// D1's seed: the App layer hands the clipboard's contents to the unnamed
+    /// register at open, so `p` pastes what was copied elsewhere while the
+    /// buffer itself never reads the clipboard.
+    #[tokio::test]
+    async fn the_unnamed_register_is_seeded_from_the_clipboard_at_open() {
+        let (state, _daemon) = opened_writer("abc").await;
+        let mut app = app_on_the_editor_route(state).await;
+        park_on_app(&mut app, 0);
+
+        seed_register_from_clipboard(&mut app, Some("SEED".to_string()));
+        apply_register_text(&mut app, ClipboardVerb::PasteBefore, RegisterName::Unnamed);
+        assert_eq!(
+            text_on_app(&app),
+            "SEEDabc",
+            "opening a document then pressing `p` pastes the clipboard's contents"
+        );
+
+        // A clipboard the system refuses seeds nothing rather than emptying a
+        // register that already holds something.
+        let (state, _daemon) = opened_writer("abc").await;
+        let mut app = app_on_the_editor_route(state).await;
+        seed_register_from_clipboard(&mut app, Some("first".to_string()));
+        seed_register_from_clipboard(&mut app, None);
+        assert_eq!(
+            register_on_app(&app, RegisterName::Unnamed).as_deref(),
+            Ok("first"),
+            "an unavailable clipboard is not a write"
+        );
+    }
+
+    /// The prefix reaches the keyboard through the App route, not only through
+    /// `editor_buffer_key`: `"`, `a`, `p` at the route level reads register `a`
+    /// — empty here — and says so. That is the end-to-end shape of `"ap`.
+    #[tokio::test]
+    async fn the_register_prefix_reaches_the_app_route() {
+        let (state, _daemon) = opened_writer("abc").await;
+        let mut app = app_on_the_editor_route(state).await;
+        park_on_app(&mut app, 0);
+
+        for code in [KeyCode::Char('"'), KeyCode::Char('a'), KeyCode::Char('p')] {
+            assert!(
+                handle_editor_key(&mut app, key(code)),
+                "`{code:?}` belongs to the editor once `\"` is armed"
+            );
+        }
+        assert_eq!(text_on_app(&app), "abc");
+        assert!(
+            app.messages_state
+                .toasts
+                .history()
+                .any(|toast| toast.message.contains("register `a` is empty")),
+            "the route reaches the register paste and reports the refusal"
+        );
+    }
+
+    /// A multi-member yank is **one** register entry: the members are
+    /// concatenated before the store sees them, so the store never grows a slot
+    /// per selection.
+    #[tokio::test]
+    async fn a_multi_member_yank_is_one_register_entry() {
+        let (state, _daemon) = opened_writer("abc\ndef\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+
+        yank_editor_ranges_with(
+            &mut app,
+            vec![0..3, 4..7],
+            YankTarget::Selected(RegisterName::Named('b')),
+            |_| Ok(()),
+        );
+        assert_eq!(
+            register_on_app(&app, RegisterName::Named('b')).as_deref(),
+            Ok("abcdef"),
+            "the members are concatenated in reading order"
+        );
+        assert_eq!(
+            app.editor_state
+                .session
+                .as_ref()
+                .unwrap()
+                .presentation()
+                .registers
+                .len(),
+            2,
+            "one named slot plus the unnamed mirror, not one per member"
+        );
+        assert_eq!(
+            register_on_app(&app, RegisterName::Named('c')),
+            Err(RegisterRefusal::Empty(RegisterName::Named('c'))),
+            "the next letter is untouched"
+        );
     }
 
     #[tokio::test]
@@ -9299,6 +11342,7 @@ mod tests {
     async fn the_regex_chords_open_the_command_line_prefilled_and_run_from_it() {
         for (code, modifiers, spec) in [
             (KeyCode::Char('S'), KeyModifiers::NONE, "split-regex"),
+            (KeyCode::Char('s'), KeyModifiers::NONE, "select-regex"),
             (KeyCode::Char('K'), KeyModifiers::NONE, "keep-regex"),
             (KeyCode::Char('K'), KeyModifiers::ALT, "remove-regex"),
         ] {
@@ -9353,7 +11397,9 @@ mod tests {
 
             let held = held_ranges(&state);
             match spec {
-                "split-regex" => assert_eq!(held, vec![0..2, 6..8], "two matches"),
+                "split-regex" | "select-regex" => {
+                    assert_eq!(held, vec![0..2, 6..8], "two matches")
+                }
                 "keep-regex" => assert_eq!(held, vec![0..2, 6..8], "both contain `aa`"),
                 _ => assert!(held.is_empty(), "neither line matches anything else"),
             }
@@ -9427,6 +11473,250 @@ mod tests {
             undo_depth(&state),
             0,
             "an aborted prompt pushes no undo entry"
+        );
+    }
+
+    // ── M003: regex search chords, through the real dispatch path ──────
+
+    /// `/` is a regex, and `n`/`N` walk its matches and wrap — the whole
+    /// existing search interaction, re-proved on the new scanner.
+    #[tokio::test]
+    async fn slash_searches_a_regex_and_n_and_n_cap_it() {
+        let (mut state, _daemon) = opened_writer("axb a.b\n").await;
+        // On the space, so the line opens empty rather than seeded from a
+        // word: this test is about the pattern the reader types.
+        park(&mut state, 3);
+        assert_eq!(normal(&mut state, KeyCode::Char('/')), BufferKey::Consumed);
+        assert!(search_open(&state));
+        for ch in "a.b".chars() {
+            normal(&mut state, KeyCode::Char(ch));
+        }
+        // Enter accepts; the matches stay painted for `n`/`N`.
+        assert_eq!(normal(&mut state, KeyCode::Enter), BufferKey::Consumed);
+        assert!(!search_open(&state));
+        assert_eq!(
+            cursor(&state),
+            4,
+            "`.` is a wildcard, so the first match at or after the cursor is `a.b`"
+        );
+        assert_eq!(normal(&mut state, KeyCode::Char('n')), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 0, "`n` walked on and wrapped to `axb`");
+        assert_eq!(normal(&mut state, KeyCode::Char('n')), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 4);
+        assert_eq!(
+            press(&mut state, KeyCode::Char('N'), KeyModifiers::SHIFT),
+            BufferKey::Consumed
+        );
+        assert_eq!(cursor(&state), 0, "and `N` walks the other way");
+    }
+
+    /// `?` reuses the accepted pattern and adopts the **previous** match, so
+    /// reversing a search never means retyping it.
+    #[tokio::test]
+    async fn question_searches_backwards_without_retyping_the_pattern() {
+        let (mut state, _daemon) = opened_writer("aa bb aa bb aa\n").await;
+        park(&mut state, 0);
+        // `/` seeds the line from the word under the cursor, so the pattern is
+        // never typed in this test at all.
+        normal(&mut state, KeyCode::Char('/'));
+        assert_eq!(search_text(&state), "aa", "seeded from the cursor's word");
+        assert_eq!(normal(&mut state, KeyCode::Enter), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 0, "`/aa` adopted the first match");
+
+        assert_eq!(
+            press(&mut state, KeyCode::Char('?'), KeyModifiers::NONE),
+            BufferKey::Consumed
+        );
+        assert!(search_open(&state), "`?` opens the search line");
+        assert_eq!(
+            search_text(&state),
+            "aa",
+            "seeded with the accepted pattern rather than an empty line"
+        );
+        assert_eq!(
+            cursor(&state),
+            12,
+            "and adopted the previous match, wrapping to the last one"
+        );
+    }
+
+    /// `?` with no accepted pattern opens an empty line instead of doing
+    /// nothing silently.
+    #[tokio::test]
+    async fn question_with_no_previous_pattern_opens_an_empty_line() {
+        let (mut state, _daemon) = opened_writer("aa bb\n").await;
+        park(&mut state, 3);
+        assert_eq!(
+            press(&mut state, KeyCode::Char('?'), KeyModifiers::NONE),
+            BufferKey::Consumed
+        );
+        assert!(search_open(&state), "the line still opens");
+        assert_eq!(
+            search_text(&state),
+            "",
+            "empty, because there is nothing to seed"
+        );
+        assert_eq!(cursor(&state), 3, "and the cursor is unmoved");
+    }
+
+    /// `*` searches for the selected **text**, so a selection containing `.`
+    /// matches the literal characters and nothing else. The same selection
+    /// with `Alt-*` is read as a regex — the difference is the point of
+    /// having both chords.
+    #[tokio::test]
+    async fn star_searches_for_the_literal_selection_and_alt_star_does_not() {
+        let (mut state, _daemon) = opened_writer("a.b axb\n").await;
+        // Select `a.b` — the dot is a metacharacter in the pattern.
+        hold_range(&mut state, 0, 3);
+        park(&mut state, 0);
+
+        assert_eq!(
+            press(&mut state, KeyCode::Char('*'), KeyModifiers::NONE),
+            BufferKey::Consumed
+        );
+        assert!(search_open(&state), "`*` opens the search line");
+        assert_eq!(
+            search_text(&state),
+            "\\ba\\.b\\b",
+            "escaped and word-bounded, so it searches for the text and not a pattern"
+        );
+        let escaped = state.session.as_ref().unwrap().presentation();
+        assert_eq!(
+            escaped.search_matches.len(),
+            1,
+            "only the literal `a.b` matches"
+        );
+
+        // The same selection, read as a regex, matches the wildcard too.
+        let (mut state, _daemon) = opened_writer("a.b axb\n").await;
+        hold_range(&mut state, 0, 3);
+        park(&mut state, 0);
+        assert_eq!(
+            press(&mut state, KeyCode::Char('*'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        assert_eq!(search_text(&state), "a.b", "verbatim, unescaped");
+        assert_eq!(
+            state
+                .session
+                .as_ref()
+                .unwrap()
+                .presentation()
+                .search_matches
+                .len(),
+            2,
+            "`Alt-*` matched `axb` as well, which is exactly the difference"
+        );
+    }
+
+    /// `s` is a selection verb: it needs a pattern, so it opens the `:` line,
+    /// and on a read-only attachment it is refused with the notice `v` and
+    /// `x` give rather than silently reshaping a set the reader cannot use.
+    #[tokio::test]
+    async fn s_is_a_selection_verb_and_is_refused_on_a_read_only_document() {
+        let (mut state, _daemon) = opened_reader("ab ab\n").await;
+        hold_range(&mut state, 0, 5);
+        park(&mut state, 0);
+
+        assert_eq!(normal(&mut state, KeyCode::Char('s')), BufferKey::Consumed);
+        assert_eq!(
+            command_line_text(&state),
+            "select-regex ",
+            "the chord is a shortcut for a command the reader could have typed"
+        );
+        for ch in "ab".chars() {
+            normal(&mut state, KeyCode::Char(ch));
+        }
+        let BufferKey::RunCommand(command, argument) = normal(&mut state, KeyCode::Enter) else {
+            panic!("Enter must submit the command line");
+        };
+        run_selection_regex(&mut state, command, argument.expect("the pattern"));
+
+        assert!(
+            notice_of(&state).is_some_and(|note| note.contains("Read-only")),
+            "the refusal is reported, not swallowed: {:?}",
+            notice_of(&state)
+        );
+        assert_eq!(
+            selection_count(&state),
+            1,
+            "and the set is exactly what the reader held"
+        );
+    }
+
+    /// `Alt-s` needs no pattern, so it acts on the keystroke and leaves one
+    /// member per line — bounded by each line's content.
+    #[tokio::test]
+    async fn alt_s_splits_the_selection_on_newlines_through_the_key_path() {
+        let (mut state, _daemon) = opened_writer("alpha\nbeta\ngamma\n").await;
+        hold_range(&mut state, 0, 10);
+        park(&mut state, 0);
+
+        assert_eq!(
+            press(&mut state, KeyCode::Char('s'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        assert_eq!(
+            held_ranges(&state),
+            vec![0..5, 6..10],
+            "two lines, each ending at its content"
+        );
+        assert_eq!(editor_text(&state), "alpha\nbeta\ngamma\n", "no byte moved");
+    }
+
+    /// A pattern that will not compile is a **notice naming the pattern and
+    /// the compiler's reason**, not a panic and not a silent empty result —
+    /// and the line keeps its text so the reader can fix it.
+    #[tokio::test]
+    async fn an_invalid_search_pattern_is_reported_and_leaves_the_line_fixable() {
+        let (mut state, _daemon) = opened_writer("alpha\n").await;
+        // On the line break, so the line opens empty and the `[` is the
+        // reader's rather than an append to a seeded word.
+        park(&mut state, 5);
+        normal(&mut state, KeyCode::Char('/'));
+        normal(&mut state, KeyCode::Char('['));
+        let notice = notice_of(&state).expect("an invalid pattern is reported");
+        assert!(
+            notice.contains('[') && notice.contains("not a valid regex"),
+            "the notice names the pattern and the compiler's reason: {notice}"
+        );
+        assert!(
+            state
+                .session
+                .as_ref()
+                .unwrap()
+                .presentation()
+                .search_matches
+                .is_empty(),
+            "and a refused pattern leaves no matches behind"
+        );
+        assert_eq!(
+            search_text(&state),
+            "[",
+            "the line keeps the text, so the reader can fix what they typed"
+        );
+    }
+
+    /// A search bound that is reached is **named**, not merely reported as
+    /// partial: a count that stopped at the entry cap and a scan that stopped
+    /// at the byte window are different facts.
+    #[tokio::test]
+    async fn a_truncated_search_names_the_match_count_bound_in_the_notice() {
+        // More matches than the entry cap, in a document well inside the byte
+        // window, so the notice can only be about the count. `/` seeds the
+        // line from the word under the cursor, so the pattern is never typed.
+        let text = "ab ".repeat(crate::tui::editor::MAX_EDITOR_SEARCH_MATCHES + 5);
+        let (mut state, _daemon) = opened_writer(&text).await;
+        park(&mut state, 0);
+        assert_eq!(normal(&mut state, KeyCode::Char('/')), BufferKey::Consumed);
+        let notice = notice_of(&state).expect("a bound was reached and disclosed");
+        assert!(
+            notice.contains(&crate::tui::editor::MAX_EDITOR_SEARCH_MATCHES.to_string()),
+            "the notice names the count bound: {notice}"
+        );
+        assert!(
+            !notice.contains("scan window"),
+            "and not the byte window, which was never reached: {notice}"
         );
     }
 
@@ -9927,8 +12217,14 @@ mod tests {
         );
     }
 
+    /// M009 supersedes M012's truncation: the branch is kept, not destroyed.
+    ///
+    /// The burst that follows an undo becomes a **sibling** of the branch the
+    /// reader undid past, so the abandoned text is still in the tree while the
+    /// burst is open (nothing is recorded until it closes) and `U` follows the
+    /// new branch once it commits.
     #[tokio::test]
-    async fn typing_undoing_and_typing_again_leaves_the_redo_stack_empty() {
+    async fn an_edit_after_an_undo_branches_instead_of_truncating() {
         let (mut state, _daemon) = opened_writer("").await;
         assert_eq!(
             normal(&mut state, KeyCode::Char('i')),
@@ -9939,7 +12235,7 @@ mod tests {
 
         assert_eq!(normal(&mut state, KeyCode::Char('u')), BufferKey::Consumed);
         assert_eq!(editor_text(&state), "");
-        assert_eq!(redo_depth(&state), 1, "the undo left a redo tail");
+        assert_eq!(redo_depth(&state), 1, "the undo left a redo branch");
 
         assert_eq!(
             normal(&mut state, KeyCode::Char('i')),
@@ -9948,8 +12244,30 @@ mod tests {
         insert(&mut state, KeyCode::Char('b'));
         assert_eq!(
             redo_depth(&state),
+            1,
+            "the branch the reader undid past survives the new burst"
+        );
+        leave_insert_mode(&mut state);
+
+        assert_eq!(undo_depth(&state), 1, "the burst is its own node");
+        assert_eq!(
+            history_len(&state),
+            2,
+            "and the abandoned node is still in the tree"
+        );
+        assert_eq!(
+            redo_depth(&state),
             0,
-            "the new burst clears the redo tail — once, on its first edit"
+            "`U` stands at the tip of the branch it took"
+        );
+        // Back to the fork: `U` follows the new branch, not the abandoned one.
+        assert_eq!(normal(&mut state, KeyCode::Char('u')), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "", "at the fork state");
+        assert_eq!(normal(&mut state, KeyCode::Char('U')), BufferKey::Consumed);
+        assert_eq!(
+            editor_text(&state),
+            "b",
+            "and forward follows the new branch"
         );
     }
 
@@ -11327,7 +13645,7 @@ mod tests {
         assert_eq!(undo_depth(&state), 0, "the cursor did not move");
         assert_eq!(
             notice_of(&state).as_deref(),
-            Some("no earlier change"),
+            Some("no earlier state"),
             "the boundary is reported rather than swallowed"
         );
     }
@@ -11345,16 +13663,119 @@ mod tests {
         assert_eq!(undo_depth(&state), 1, "the cursor did not move");
         assert_eq!(
             notice_of(&state).as_deref(),
-            Some("no later change"),
+            Some("no later state"),
             "the boundary is reported rather than swallowed"
         );
     }
 
-    /// The recorded divergence: the **explicit** history gestures report
-    /// their boundary and the undo/redo gestures do not.
+    /// Type `text` as one insert burst, the way a reader would: `i`, the keys,
+    /// then the `Esc` that closes the burst.
+    fn type_burst(state: &mut EditorState, text: &str) {
+        assert_eq!(
+            normal(state, KeyCode::Char('i')),
+            BufferKey::EnterInsert,
+            "`i` enters insert mode"
+        );
+        for ch in text.chars() {
+            insert(state, KeyCode::Char(ch));
+        }
+        leave_insert_mode(state);
+    }
+
+    /// The milestone's headline: after an undo, an edit is a **sibling**, and
+    /// a keystroke reaches the branch it did not take.
     ///
-    /// This is a CodeGG convention rather than a Helix behaviour — in Helix
-    /// all four are the same movement — and it is recorded as one.
+    /// `Alt-u` walks creation order, so from the new branch it lands on the
+    /// node made before it — the abandoned branch's text — and `Alt-U` comes
+    /// back across the fork.
+    #[tokio::test]
+    async fn alt_u_crosses_the_fork_to_the_branch_the_edit_abandoned() {
+        let (mut state, _daemon) = opened_writer("").await;
+        type_burst(&mut state, "a");
+        type_burst(&mut state, "b");
+        type_burst(&mut state, "c");
+        assert_eq!(editor_text(&state), "abc");
+
+        // Undo to the middle of the chain, then edit: the edit branches and
+        // the abandoned text is not truncated.
+        assert_eq!(normal(&mut state, KeyCode::Char('u')), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "ab");
+        type_burst(&mut state, "d");
+        assert_eq!(editor_text(&state), "abd");
+        assert_eq!(history_len(&state), 4, "three chain nodes plus the branch");
+
+        assert_eq!(
+            press(&mut state, KeyCode::Char('u'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        assert_eq!(
+            editor_text(&state),
+            "abc",
+            "Alt-u reached the text the edit did not take"
+        );
+        assert_eq!(
+            press(&mut state, KeyCode::Char('U'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        assert_eq!(
+            editor_text(&state),
+            "abd",
+            "Alt-U came back across the fork to the new branch"
+        );
+    }
+
+    /// `u` is the **branch** walk: from a branch node it goes to its parent,
+    /// never to the node creation order would name.
+    ///
+    /// Same sequence as the test above, where creation order answers `"abc"`.
+    #[tokio::test]
+    async fn u_walks_the_branch_and_never_crosses_the_fork() {
+        let (mut state, _daemon) = opened_writer("").await;
+        type_burst(&mut state, "a");
+        type_burst(&mut state, "b");
+        type_burst(&mut state, "c");
+        assert_eq!(normal(&mut state, KeyCode::Char('u')), BufferKey::Consumed);
+        type_burst(&mut state, "d");
+        assert_eq!(editor_text(&state), "abd");
+
+        assert_eq!(normal(&mut state, KeyCode::Char('u')), BufferKey::Consumed);
+        assert_eq!(
+            editor_text(&state),
+            "ab",
+            "u moved to the parent, not to the node created before this one"
+        );
+    }
+
+    /// The axes name their own boundaries. One sentence for both is how a
+    /// reader learns that two movements are one.
+    #[test]
+    fn the_two_axes_name_different_boundaries() {
+        assert_ne!(
+            history_boundary(HistoryStep::Earlier, HistoryWalk::Branch),
+            history_boundary(HistoryStep::Earlier, HistoryWalk::CreationOrder),
+            "the branch walk and the time walk answer different questions"
+        );
+        assert_ne!(
+            history_boundary(HistoryStep::Later, HistoryWalk::Branch),
+            history_boundary(HistoryStep::Later, HistoryWalk::CreationOrder),
+            "and so do their forward directions"
+        );
+        assert_ne!(
+            history_boundary(HistoryStep::Earlier, HistoryWalk::CreationOrder),
+            history_boundary(HistoryStep::Later, HistoryWalk::CreationOrder),
+            "each direction of the time walk names its own end"
+        );
+    }
+
+    /// The recorded divergence: the **creation-order** gestures report their
+    /// boundary and the branch gestures do not.
+    ///
+    /// `Alt-u`/`Alt-U` are the explicit history gestures — a reader who has
+    /// asked "what came before this?" should not be left guessing whether the
+    /// key was dropped — while `u`/`U` have always been silent, and a reader
+    /// who has undone everything already knows where they are. The two axes
+    /// also answer different questions, so their boundary sentences differ;
+    /// this CodeGG convention is recorded in `docs/tui.md`.
     #[tokio::test]
     async fn u_and_u_stay_silent_at_their_boundaries() {
         // `u` at the beginning of the history. The first `u` undoes the only
@@ -11771,6 +14192,515 @@ mod tests {
         );
     }
 
+    // ── M001: line-shape verbs, through the dispatch path ─────────────
+    //
+    // One test per chord, each pressing the **key** rather than calling the
+    // resolver. A helper-level test passes whether or not the arm is
+    // reachable, which is exactly how the `Ctrl+r` shadow survived M001 of
+    // the predecessor.
+
+    #[tokio::test]
+    async fn capital_x_widens_the_held_selection_through_the_dispatch_path() {
+        let (mut state, _daemon) = opened_writer("one\ntwo\n").await;
+        hold_range(&mut state, 4, 6);
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('X')),
+            BufferKey::Consumed,
+            "`X` is claimed"
+        );
+        assert_eq!(held_ranges(&state), editor::one_range(4..8));
+        assert_eq!(
+            editor_text(&state),
+            "one\ntwo\n",
+            "widening a selection writes nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn alt_x_narrows_the_line_selection_through_the_dispatch_path() {
+        let (mut state, _daemon) = opened_writer("one\ntwo\n").await;
+        assert_eq!(normal(&mut state, KeyCode::Char('x')), BufferKey::Consumed);
+        assert_eq!(
+            held_ranges(&state),
+            editor::one_range(0..4),
+            "`x` arms the whole line, terminator included"
+        );
+        assert_eq!(
+            press(&mut state, KeyCode::Char('x'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        assert_eq!(
+            held_ranges(&state),
+            editor::one_range(0..3),
+            "`Alt-x` narrows it to the line's own bounds"
+        );
+    }
+
+    #[tokio::test]
+    async fn underscore_trims_the_held_selection_through_the_dispatch_path() {
+        let (mut state, _daemon) = opened_writer("  ab  \n").await;
+        hold_range(&mut state, 0, 6);
+        assert_eq!(normal(&mut state, KeyCode::Char('_')), BufferKey::Consumed);
+        assert_eq!(held_ranges(&state), editor::one_range(2..4));
+        assert_eq!(editor_text(&state), "  ab  \n", "trimming keeps the bytes");
+    }
+
+    #[tokio::test]
+    async fn capital_j_joins_the_covered_lines_through_the_dispatch_path() {
+        let (mut state, _daemon) = opened_writer("one\n    two\n").await;
+        hold_range(&mut state, 0, 12);
+        assert_eq!(normal(&mut state, KeyCode::Char('J')), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "one two\n");
+        assert_eq!(
+            editor_text(&state).matches('\n').count(),
+            1,
+            "the join removed the line break"
+        );
+        assert_eq!(undo_depth(&state), 1, "one join, one undo step");
+    }
+
+    #[tokio::test]
+    async fn alt_j_leaves_the_inserted_space_selected_through_the_dispatch_path() {
+        let (mut state, _daemon) = opened_writer("one\n  two\n").await;
+        hold_range(&mut state, 0, 10);
+        assert_eq!(
+            press(&mut state, KeyCode::Char('J'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        assert_eq!(editor_text(&state), "one two\n");
+        assert_eq!(
+            held_ranges(&state),
+            editor::one_range(3..4),
+            "the inserted space is what the reader holds"
+        );
+        assert_eq!(cursor(&state), 3, "and the cursor is on it");
+    }
+
+    #[tokio::test]
+    async fn greater_than_indents_every_covered_line_through_the_dispatch_path() {
+        let (mut state, _daemon) = opened_writer("a\n  b\n").await;
+        hold_range(&mut state, 0, 6);
+        assert_eq!(normal(&mut state, KeyCode::Char('>')), BufferKey::Consumed);
+        assert_eq!(
+            editor_text(&state),
+            "  a\n    b\n",
+            "one detected two-space unit on every covered line"
+        );
+        assert_eq!(undo_depth(&state), 1, "one gesture, one undo step");
+        assert_eq!(
+            held_ranges(&state),
+            editor::one_range(0..10),
+            "the selection is line-wise over both lines afterwards"
+        );
+    }
+
+    #[tokio::test]
+    async fn less_than_removes_one_indent_unit_through_the_dispatch_path() {
+        let (mut state, _daemon) = opened_writer("  a\n  b\n").await;
+        hold_range(&mut state, 0, 8);
+        assert_eq!(normal(&mut state, KeyCode::Char('<')), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "a\nb\n");
+        assert_eq!(undo_depth(&state), 1);
+    }
+
+    #[tokio::test]
+    async fn every_shape_verb_that_grows_or_writes_is_refused_when_read_only() {
+        for (label, code, modifiers) in [
+            ("X", KeyCode::Char('X'), KeyModifiers::NONE),
+            ("_", KeyCode::Char('_'), KeyModifiers::NONE),
+            ("J", KeyCode::Char('J'), KeyModifiers::NONE),
+            ("Alt-J", KeyCode::Char('J'), KeyModifiers::ALT),
+            (">", KeyCode::Char('>'), KeyModifiers::NONE),
+            ("<", KeyCode::Char('<'), KeyModifiers::NONE),
+        ] {
+            let (mut state, _daemon) = opened_reader("  ab  \n").await;
+            let before = editor_text(&state);
+            assert_eq!(
+                press(&mut state, code, modifiers),
+                BufferKey::Consumed,
+                "`{label}` is claimed even where it is refused"
+            );
+            assert!(
+                notice_of(&state).is_some_and(|note| note.contains("Read-only")),
+                "`{label}` reports the refusal: {:?}",
+                notice_of(&state)
+            );
+            assert_eq!(
+                editor_text(&state),
+                before,
+                "`{label}` changes no byte on a read-only attachment"
+            );
+            assert_eq!(undo_depth(&state), 0, "`{label}` records no history");
+        }
+    }
+
+    #[tokio::test]
+    async fn alt_x_narrows_a_selection_on_a_read_only_attachment() {
+        let (mut state, _daemon) = opened_reader("  ab  \n").await;
+        // `x` itself is refused on a read-only attachment, so the line
+        // selection is put in place the way a permitted verb would leave it.
+        let member = Selection {
+            anchor: EditorPoint { byte: 0, line: 0 },
+            head: EditorPoint { byte: 0, line: 0 },
+            mode: crate::tui::helix_selection::SelectionMode::Line,
+            growing: false,
+        };
+        state
+            .session
+            .as_mut()
+            .unwrap()
+            .presentation_mut()
+            .selections = vec![member];
+        assert_eq!(
+            press(&mut state, KeyCode::Char('x'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        assert_eq!(
+            held_ranges(&state),
+            editor::one_range(0..6),
+            "narrowing is navigation-like and stays available"
+        );
+        assert!(
+            notice_of(&state).is_none(),
+            "a permitted verb reports no refusal: {:?}",
+            notice_of(&state)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_multi_member_join_is_one_undo_step() {
+        let (mut state, _daemon) = opened_writer("a\nb\nc\nd\n").await;
+        let snapshot = snapshot_of(&state);
+        let point = |byte: usize| EditorPoint {
+            byte,
+            line: editor::cursor_line(&snapshot, byte),
+        };
+        let member = |anchor: usize, head: usize| Selection {
+            anchor: point(anchor),
+            head: point(head),
+            mode: crate::tui::helix_selection::SelectionMode::Char,
+            growing: false,
+        };
+        let presentation = state.session.as_mut().unwrap().presentation_mut();
+        presentation.selections = vec![member(0, 2), member(4, 6)];
+        presentation.primary_index = 0;
+
+        assert_eq!(normal(&mut state, KeyCode::Char('J')), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "a b\nc d\n");
+        assert_eq!(
+            undo_depth(&state),
+            1,
+            "one gesture is one history entry, not one per member"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_multi_member_indent_is_one_undo_step() {
+        let (mut state, _daemon) = opened_writer("a\nb\nc\n").await;
+        let snapshot = snapshot_of(&state);
+        hold_two_members(&mut state, &snapshot, 0, 4);
+        assert_eq!(normal(&mut state, KeyCode::Char('>')), BufferKey::Consumed);
+        assert_eq!(
+            editor_text(&state),
+            "    a\nb\n    c\n",
+            "each member's own line takes one unit of the four-space default"
+        );
+        assert_eq!(
+            undo_depth(&state),
+            1,
+            "one gesture is one history entry, not one per member"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_indent_past_the_transaction_limit_is_refused_and_changes_nothing() {
+        let text: String = (0..=codegg_protocol::document::MAX_DOCUMENT_EDITS)
+            .map(|line| format!("line{line}\n"))
+            .collect();
+        let (mut state, _daemon) = opened_writer(&text).await;
+        assert_eq!(normal(&mut state, KeyCode::Char('%')), BufferKey::Consumed);
+        let before = editor_text(&state);
+        assert_eq!(normal(&mut state, KeyCode::Char('>')), BufferKey::Consumed);
+        assert!(
+            notice_of(&state).is_some_and(|note| note.contains("limit")),
+            "the refusal names the bound: {:?}",
+            notice_of(&state)
+        );
+        assert_eq!(editor_text(&state), before, "the document is untouched");
+        assert_eq!(undo_depth(&state), 0, "and no history entry was pushed");
+    }
+
+    // ── M002: change verbs ─────────────────────────────────────────────
+    //
+    // `c` has two halves and the order between them is the milestone's
+    // correctness hazard, so every case here drives the real dispatch: the
+    // delete is resolved, submitted, and only an accepted submission moves the
+    // route into Insert.
+
+    #[tokio::test]
+    async fn c_deletes_then_enters_insert_and_the_typing_run_is_a_second_step() {
+        let (mut state, _daemon) = opened_writer("ab\ncd\n").await;
+        assert_eq!(normal(&mut state, KeyCode::Char('x')), BufferKey::Consumed);
+        let mut app = app_on_the_editor_route(state).await;
+
+        assert!(
+            handle_editor_key(&mut app, key(KeyCode::Char('c'))),
+            "the chord is claimed"
+        );
+        assert_eq!(editor_text(&app.editor_state), "cd\n", "the line went");
+        assert_eq!(
+            cursor(&app.editor_state),
+            0,
+            "and the cursor sits at the deletion point"
+        );
+        assert_eq!(
+            app.ui_state.input_mode,
+            crate::tui::input::InputMode::Insert,
+            "the keyboard followed the delete"
+        );
+        assert_eq!(
+            app.editor_state.mode(),
+            EditorMode::Insert,
+            "and the presentation agrees with the route, so the two tables cannot disagree"
+        );
+        assert_eq!(undo_depth(&app.editor_state), 1, "the delete is one step");
+
+        for ch in "xy".chars() {
+            assert!(
+                handle_editor_key(&mut app, key(KeyCode::Char(ch))),
+                "typing goes into the document"
+            );
+        }
+        assert_eq!(editor_text(&app.editor_state), "xycd\n");
+        assert_eq!(
+            undo_depth(&app.editor_state),
+            1,
+            "the run is not committed while it is open"
+        );
+
+        assert!(handle_editor_key(&mut app, key(KeyCode::Esc)));
+        assert_eq!(
+            undo_depth(&app.editor_state),
+            2,
+            "exactly two steps: the delete and the run"
+        );
+    }
+
+    #[tokio::test]
+    async fn c_with_nothing_selected_is_claimed_rather_than_typed() {
+        // The fallthrough hazard in its most visible form: an unclaimed bare
+        // `c` reaches the composer and types a `c` into whatever box is
+        // focused.
+        let (state, _daemon) = opened_writer("ab\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+
+        assert!(
+            handle_editor_key(&mut app, key(KeyCode::Char('c'))),
+            "`c` is the editor's, not the composer's"
+        );
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "b\n",
+            "with nothing held the character under the cursor is the target"
+        );
+        assert_eq!(
+            app.ui_state.input_mode,
+            crate::tui::input::InputMode::Insert
+        );
+    }
+
+    #[tokio::test]
+    async fn alt_c_changes_and_alt_d_deletes_through_dispatch() {
+        let (mut state, _daemon) = opened_writer("ab\ncd\n").await;
+        assert_eq!(normal(&mut state, KeyCode::Char('x')), BufferKey::Consumed);
+        assert_eq!(
+            press(&mut state, KeyCode::Char('c'), KeyModifiers::ALT),
+            BufferKey::ChangeRanges {
+                ranges: editor::one_range(0..3),
+                yank: YankTarget::Nothing,
+            },
+            "`Alt-c` is the change gesture's no-yank spelling"
+        );
+        assert_eq!(
+            press(&mut state, KeyCode::Char('d'), KeyModifiers::ALT),
+            BufferKey::DeleteRanges {
+                ranges: editor::one_range(0..3),
+                yank: YankTarget::Nothing,
+            },
+            "`Alt-d` is the delete's no-yank spelling"
+        );
+        assert_eq!(
+            editor_text(&state),
+            "ab\ncd\n",
+            "the buffer reported both effects rather than applying them"
+        );
+    }
+
+    /// The no-yank promise, as a property of the dispatch boundary.
+    ///
+    /// The system clipboard is written from one place — `publish_yank` — and
+    /// that place is reachable only when a reported [`YankTarget`] asks for it.
+    /// "The delete family does not touch the clipboard" is therefore the same
+    /// claim as "no delete chord reports the clipboard target", and `y` is the
+    /// positive control: it reports the target that *does* reach the clipboard,
+    /// so a dispatch that stopped reporting targets cannot pass this test by
+    /// asserting nothing.
+    ///
+    /// M007 moved `d` and `c` from "no target at all" to the unnamed register —
+    /// M002's D1 discharged — and left the `Alt` pair writing nowhere. What did
+    /// not move is the property this test exists for: neither pair reaches the
+    /// clipboard.
+    #[tokio::test]
+    async fn the_delete_family_never_reports_a_clipboard_write() {
+        let (mut state, _daemon) = opened_writer("ab\ncd\n").await;
+        assert_eq!(normal(&mut state, KeyCode::Char('x')), BufferKey::Consumed);
+
+        for (label, event, expected) in [
+            (
+                "d",
+                KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+                YankTarget::Unnamed,
+            ),
+            (
+                "c",
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+                YankTarget::Unnamed,
+            ),
+            (
+                "Alt-c",
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT),
+                YankTarget::Nothing,
+            ),
+            (
+                "Alt-d",
+                KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT),
+                YankTarget::Nothing,
+            ),
+        ] {
+            let yank = match normal_event(&mut state, event) {
+                BufferKey::DeleteRanges { yank, .. } | BufferKey::ChangeRanges { yank, .. } => yank,
+                other => panic!("`{label}` must report a delete effect, got {other:?}"),
+            };
+            assert_eq!(
+                yank, expected,
+                "`{label}` yanks into the unnamed register or nowhere, never the clipboard"
+            );
+        }
+
+        assert!(
+            matches!(
+                normal(&mut state, KeyCode::Char('y')),
+                BufferKey::YankRanges {
+                    target: YankTarget::Selected(RegisterName::Unnamed),
+                    ..
+                }
+            ),
+            "the positive control: `y` reports the target that reaches the clipboard"
+        );
+    }
+
+    #[tokio::test]
+    async fn c_on_a_read_only_attachment_reports_and_stays_in_normal() {
+        let (state, _daemon) = opened_reader("ab\ncd\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+
+        assert!(
+            handle_editor_key(&mut app, key(KeyCode::Char('c'))),
+            "a refused verb still owns its key"
+        );
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "ab\ncd\n",
+            "nothing was written"
+        );
+        assert_eq!(
+            app.ui_state.input_mode,
+            crate::tui::input::InputMode::Normal,
+            "no dead Insert mode over an unwritable buffer"
+        );
+        assert_eq!(
+            app.editor_state.mode(),
+            EditorMode::Normal,
+            "and the presentation was not moved either"
+        );
+        assert!(
+            notice_on_app(&app).is_some_and(|note| note.contains("Read-only")),
+            "{:?}",
+            notice_on_app(&app)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_change_past_the_transaction_limit_is_refused_and_does_not_enter_insert() {
+        // Resolved, then refused: this is the ordering proof. The verb produced
+        // a range set, the set was too large to submit, and Insert was not
+        // entered because the document did not take the change.
+        let text: String = (0..=codegg_protocol::document::MAX_DOCUMENT_EDITS * 2)
+            .map(|i| if i % 2 == 0 { 'a' } else { 'b' })
+            .collect();
+        let (mut state, _daemon) = opened_writer(&text).await;
+        {
+            let presentation = state.session.as_mut().expect("open").presentation_mut();
+            presentation.selections = (0..=codegg_protocol::document::MAX_DOCUMENT_EDITS)
+                .map(|i| Selection {
+                    anchor: EditorPoint {
+                        byte: i * 2,
+                        line: 0,
+                    },
+                    head: EditorPoint {
+                        byte: i * 2,
+                        line: 0,
+                    },
+                    mode: crate::tui::helix_selection::SelectionMode::Char,
+                    growing: false,
+                })
+                .collect();
+            presentation.primary_index = 0;
+        }
+        let mut app = app_on_the_editor_route(state).await;
+
+        assert!(handle_editor_key(&mut app, key(KeyCode::Char('c'))));
+        assert!(
+            notice_on_app(&app).is_some_and(|note| note.contains("limit")),
+            "the refusal names the bound: {:?}",
+            notice_on_app(&app)
+        );
+        assert_eq!(
+            editor_text(&app.editor_state),
+            text,
+            "the document is byte-identical"
+        );
+        assert_eq!(
+            app.ui_state.input_mode,
+            crate::tui::input::InputMode::Normal,
+            "Insert is not entered on a change that did not land"
+        );
+        assert_eq!(undo_depth(&app.editor_state), 0, "and nothing was recorded");
+    }
+
+    #[tokio::test]
+    async fn a_multi_member_change_is_one_undo_step() {
+        // A set of cursors is one gesture, so it is one entry: splitting it
+        // would make `u` take back one member at a time and leave the reader
+        // in a document no single delete produced.
+        let (mut state, _daemon) = opened_writer("ab\ncd\n").await;
+        let snapshot = snapshot_of(&state);
+        hold_two_members(&mut state, &snapshot, 0, 3);
+        let mut app = app_on_the_editor_route(state).await;
+
+        assert!(handle_editor_key(&mut app, key(KeyCode::Char('c'))));
+        assert_eq!(editor_text(&app.editor_state), "b\nd\n");
+        assert_eq!(
+            undo_depth(&app.editor_state),
+            1,
+            "one gesture is one history entry, not one per member"
+        );
+        assert_eq!(
+            app.ui_state.input_mode,
+            crate::tui::input::InputMode::Insert
+        );
+    }
+
     // ── M010: the space-mode family ───────────────────────────────────
 
     /// The reason a statement leaf rendered, if any.
@@ -11993,12 +14923,18 @@ mod tests {
         );
     }
 
-    /// The seven leaves with no substrate each state their reason.
+    /// The four leaves with no substrate each state their reason.
     ///
     /// The expected strings are the **whole** reason, not a fragment, so the
     /// test and `docs/tui.md` cannot drift apart: the docs carry the same
     /// sentences, and a reader who is told "no workspace root" in the status
     /// line is told the same thing the documentation says.
+    ///
+    /// `space c` / `space C` are no longer here: M005 turned them into working
+    /// toggles, so their reason is now a per-file refusal rather than a
+    /// missing feature. `space j` left in M006 for the same reason — it opens
+    /// the jumplist picker, and a capability that works cannot keep an
+    /// apology.
     #[tokio::test]
     async fn every_substrate_less_space_leaf_states_its_reason() {
         for (glyph, expected) in [
@@ -12011,20 +14947,8 @@ mod tests {
                 "buffer list: one document is attached at a time, so there is no list to choose from",
             ),
             (
-                'j',
-                "jumplist: this editor keeps no visited-position history",
-            ),
-            (
                 'D',
                 "workspace diagnostics: no server capability backs a separate request; `space d` opens the panel",
-            ),
-            (
-                'c',
-                "toggle comment: this build knows no comment syntax for the edited buffer",
-            ),
-            (
-                'C',
-                "toggle block comment: this build knows no comment syntax for the edited buffer",
             ),
             (
                 '\'',
@@ -12037,6 +14961,460 @@ mod tests {
             let note = notice_on_app(&app).expect("the reason is stated");
             assert_eq!(note, expected, "space {glyph} must state its reason");
         }
+    }
+
+    // ── The jumplist (`space j`) ────────────────────────────────────────
+
+    /// The recorded positions, oldest first.
+    fn jumplist_bytes(app: &App) -> Vec<usize> {
+        app.editor_state
+            .session
+            .as_ref()
+            .expect("open")
+            .presentation()
+            .jumplist
+            .entries()
+            .iter()
+            .map(|entry| entry.byte)
+            .collect()
+    }
+
+    fn jumplist_picker_is_open(app: &App) -> bool {
+        app.editor_state
+            .session
+            .as_ref()
+            .expect("open")
+            .presentation()
+            .jumplist
+            .picker_open()
+    }
+
+    /// `space j` opens the picker over the recorded positions and `Enter`
+    /// returns the cursor to the one selected — through the real dispatch.
+    #[tokio::test]
+    async fn space_j_opens_the_jumplist_and_enter_returns_to_the_selected_position() {
+        let (state, _daemon) = opened_writer("one\ntwo\nthree\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+        run_editor_command(&mut app, EditorCommandName::GotoLine, Some("2".to_string()));
+        run_editor_command(&mut app, EditorCommandName::GotoLine, Some("3".to_string()));
+        assert_eq!(cursor(&app.editor_state), 8, "line 3 starts at byte 8");
+        assert_eq!(
+            jumplist_bytes(&app),
+            vec![0, 4],
+            "each `:goto` records where it started"
+        );
+
+        press_space(&mut app, 'j');
+        assert!(
+            jumplist_picker_is_open(&app),
+            "`space j` must open the picker, not say the capability is absent"
+        );
+
+        // `j` walks to the older row; `Enter` jumps to where that jump began.
+        assert!(handle_editor_key(&mut app, key(KeyCode::Char('j'))));
+        assert!(handle_editor_key(&mut app, key(KeyCode::Enter)));
+        assert_eq!(
+            cursor(&app.editor_state),
+            0,
+            "the cursor returns to the recorded position"
+        );
+        assert!(
+            !jumplist_picker_is_open(&app),
+            "selecting closes the picker it was chosen from"
+        );
+    }
+
+    /// An empty list is not an empty box: the key says what fills it.
+    #[tokio::test]
+    async fn space_j_with_nothing_recorded_states_why_and_opens_nothing() {
+        let (state, _daemon) = opened_writer("one\ntwo\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+
+        press_space(&mut app, 'j');
+
+        assert!(!jumplist_picker_is_open(&app), "no empty picker opens");
+        let note = notice_on_app(&app).expect("the reason is stated");
+        assert!(
+            note.contains("nothing recorded"),
+            "the reason says the list is empty: {note}"
+        );
+        assert!(
+            note.contains("gg") && note.contains(":goto"),
+            "and names a gesture that fills it: {note}"
+        );
+    }
+
+    /// A motion that walks the buffer records nothing; each named jump
+    /// records the position it started from, exactly once.
+    #[tokio::test]
+    async fn a_motion_records_nothing_and_each_named_jump_records_where_it_started() {
+        let (state, _daemon) = opened_writer("one\ntwo\nthree\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+
+        assert!(handle_editor_key(&mut app, key(KeyCode::Char('j'))));
+        assert_eq!(cursor(&app.editor_state), 4, "one line down is byte 4");
+        assert!(
+            jumplist_bytes(&app).is_empty(),
+            "`j` walks the buffer, so it is not a jump"
+        );
+
+        // `gg` from byte 4 lands at the top and records byte 4.
+        assert!(handle_editor_key(&mut app, key(KeyCode::Char('g'))));
+        assert!(handle_editor_key(&mut app, key(KeyCode::Char('g'))));
+        assert_eq!(cursor(&app.editor_state), 0);
+        assert_eq!(jumplist_bytes(&app), vec![4], "`gg` recorded its start");
+
+        // `gg` again at the top is a jump to where the reader stands: no row.
+        assert!(handle_editor_key(&mut app, key(KeyCode::Char('g'))));
+        assert!(handle_editor_key(&mut app, key(KeyCode::Char('g'))));
+        assert_eq!(
+            jumplist_bytes(&app),
+            vec![4],
+            "a no-op jump records nothing"
+        );
+
+        // `G` from the top records the top.
+        assert!(handle_editor_key(&mut app, key(KeyCode::Char('G'))));
+        assert_eq!(
+            jumplist_bytes(&app),
+            vec![4, 0],
+            "`G` recorded one entry, and it is where the cursor was"
+        );
+        let snapshot = snapshot_of(&app.editor_state);
+        assert_eq!(
+            editor::cursor_line(&snapshot, cursor(&app.editor_state)),
+            editor::last_line_of(&snapshot),
+            "and the jump itself landed on the file's last line"
+        );
+    }
+
+    /// The two jumps that are not motions — a diagnostic step and a search
+    /// adoption — record where they started as well.
+    #[tokio::test]
+    async fn a_diagnostic_step_and_a_search_adoption_record_where_they_started() {
+        let (state, _daemon) = opened_writer("one\ntwo\nthree\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+        app.editor_state.lsp.diagnostics = vec![test_diagnostic(2, "third")];
+        assert!(handle_editor_key(&mut app, key(KeyCode::Char(']'))));
+        assert!(handle_editor_key(&mut app, key(KeyCode::Char('d'))));
+        assert_eq!(cursor(&app.editor_state), 8, "the step landed on line 3");
+        assert_eq!(
+            jumplist_bytes(&app),
+            vec![0],
+            "the diagnostic step recorded where it started"
+        );
+
+        let (state, _daemon) = opened_writer("one\ntwo\nthree\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+        app.editor_state
+            .session
+            .as_mut()
+            .expect("open")
+            .presentation_mut()
+            .open_search_line("two", true);
+        run_editor_search_from(&mut app.editor_state, 10, 0);
+        assert_eq!(cursor(&app.editor_state), 4, "the first match for `two`");
+        assert_eq!(
+            jumplist_bytes(&app),
+            vec![0],
+            "adopting a search recorded where it started"
+        );
+    }
+
+    /// The highlight stops at both ends of the list instead of wrapping or
+    /// panicking, so `Enter` always acts on a row the reader walked to.
+    #[tokio::test]
+    async fn the_jumplist_highlight_stops_at_both_ends() {
+        let (state, _daemon) = opened_writer("one\ntwo\nthree\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+        run_editor_command(&mut app, EditorCommandName::GotoLine, Some("2".to_string()));
+        run_editor_command(&mut app, EditorCommandName::GotoLine, Some("3".to_string()));
+        press_space(&mut app, 'j');
+        let selected = |app: &App| {
+            app.editor_state
+                .session
+                .as_ref()
+                .expect("open")
+                .presentation()
+                .jumplist
+                .selected()
+                .map(|entry| entry.byte)
+        };
+
+        assert_eq!(
+            selected(&app),
+            Some(4),
+            "the picker opens on the newest row"
+        );
+        assert!(handle_editor_key(&mut app, key(KeyCode::Char('k'))));
+        assert_eq!(
+            selected(&app),
+            Some(4),
+            "`k` at the newest row has nowhere to go"
+        );
+        for _ in 0..3 {
+            assert!(handle_editor_key(&mut app, key(KeyCode::Char('j'))));
+        }
+        assert_eq!(
+            selected(&app),
+            Some(0),
+            "`j` past the oldest row stops on it rather than wrapping"
+        );
+    }
+
+    /// A position the document no longer contains is **refused**: the cursor
+    /// does not move, and the reason is on screen. Clamping would land the
+    /// reader somewhere plausible and wrong.
+    #[tokio::test]
+    async fn an_entry_the_shorter_document_no_longer_contains_is_refused() {
+        let (state, _daemon) = opened_writer("one\ntwo\nthree\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+        run_editor_command(&mut app, EditorCommandName::GotoLine, Some("3".to_string()));
+        run_editor_command(&mut app, EditorCommandName::GotoLine, Some("2".to_string()));
+        assert_eq!(jumplist_bytes(&app), vec![0, 8], "byte 8 is the stale one");
+
+        // The document shrinks under the entry: everything from line 2 on goes.
+        //
+        // The set really is one range — a delete covers a contiguous span —
+        // and `single_range_in_vec_init` exists to catch the *other* case,
+        // where someone writes `vec![a..b]` meaning a vector of the integers
+        // `a..b`. The element type here is `Range<usize>` by construction, so
+        // the lint is answering a question this line never asked.
+        #[allow(clippy::single_range_in_vec_init)]
+        let ranges = vec![4..14];
+        assert!(submit_range_delete(
+            &mut app.editor_state,
+            ranges,
+            false,
+            YankTarget::Nothing,
+        ));
+        assert_eq!(editor_text(&app.editor_state), "one\n");
+
+        let before = cursor(&app.editor_state);
+        press_space(&mut app, 'j');
+        assert!(handle_editor_key(&mut app, key(KeyCode::Enter)));
+        assert_eq!(
+            cursor(&app.editor_state),
+            before,
+            "a refused entry must not move the cursor"
+        );
+        let note = notice_on_app(&app).expect("the refusal is reported");
+        assert!(
+            note.contains("stale"),
+            "the reason names the entry as stale: {note}"
+        );
+    }
+
+    /// The store goes with the presentation on every transition the contract
+    /// names: opening a document, reload, resync, and close.
+    #[tokio::test]
+    async fn the_jumplist_does_not_survive_open_reload_resync_or_close() {
+        let (mut state, _daemon) = opened_writer("base").await;
+        park(&mut state, 3);
+        editor_motion(&mut state, EditorCommand::BufferStart, 10);
+        assert_eq!(jumplist_bytes_in(&state), vec![3], "an entry to clear");
+        state
+            .session
+            .as_mut()
+            .expect("open")
+            .presentation_mut()
+            .reset_for_open();
+        assert!(
+            jumplist_bytes_in(&state).is_empty(),
+            "opening a document starts a new history"
+        );
+
+        for reconcile in ["reload", "resync", "close"] {
+            let (mut state, daemon) = opened_writer("base").await;
+            park(&mut state, 3);
+            editor_motion(&mut state, EditorCommand::BufferStart, 10);
+            assert_eq!(jumplist_bytes_in(&state), vec![3], "{reconcile} fixture");
+
+            let controller = state.session.as_ref().expect("open").controller();
+            controller.flush().await.expect("flush");
+            let outcome = match reconcile {
+                "reload" => controller.reload_from_disk().await,
+                "resync" => controller.resync().await,
+                _ => controller.close().await,
+            };
+            outcome.unwrap_or_else(|error| panic!("{reconcile} failed: {error}"));
+            if reconcile == "close" {
+                state.detach();
+                assert!(
+                    state.session.is_none(),
+                    "close leaves no session to hold a jumplist"
+                );
+            } else if let Some(session) = state.session.as_mut() {
+                editor::clear_history(session.presentation_mut());
+                assert!(
+                    jumplist_bytes_in(&state).is_empty(),
+                    "the jumplist must not survive {reconcile}"
+                );
+            }
+            let _ = daemon;
+        }
+    }
+
+    /// The jumplist as `EditorState` holds it, for the transition test above.
+    fn jumplist_bytes_in(state: &EditorState) -> Vec<usize> {
+        state
+            .session
+            .as_ref()
+            .map(|session| {
+                session
+                    .presentation()
+                    .jumplist
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.byte)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Hold a character selection covering `first`..=`last`, so a gesture that
+    /// acts on a range reaches the range.
+    fn select_range(app: &mut App, first: usize, last: usize) {
+        let snapshot = snapshot_of(&app.editor_state);
+        let start = editor::line_start(&snapshot, first).expect("the first line exists");
+        let end = editor::line_content_end(&snapshot, last).expect("the last line exists");
+        let point = |byte: usize| EditorPoint {
+            byte,
+            line: editor::cursor_line(&snapshot, byte),
+        };
+        let presentation = app
+            .editor_state
+            .session
+            .as_mut()
+            .expect("open")
+            .presentation_mut();
+        presentation.selections = vec![Selection {
+            anchor: point(start),
+            head: point(end),
+            mode: crate::tui::helix_selection::SelectionMode::Char,
+            growing: false,
+        }];
+        presentation.primary_index = 0;
+        presentation.cursor_byte = start;
+    }
+
+    /// `space c` comments the cursor's line after its indentation, and the
+    /// second press takes exactly that back.
+    #[tokio::test]
+    async fn space_c_toggles_a_line_comment_and_the_second_press_restores_it() {
+        let (state, _daemon) = opened_writer("    let value = 1;\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+        park(&mut app.editor_state, 4);
+
+        press_space(&mut app, 'c');
+        assert_eq!(editor_text(&app.editor_state), "    // let value = 1;\n");
+        assert_eq!(undo_depth(&app.editor_state), 1, "one gesture, one entry");
+
+        press_space(&mut app, 'c');
+        assert_eq!(editor_text(&app.editor_state), "    let value = 1;\n");
+        assert_eq!(
+            undo_depth(&app.editor_state),
+            2,
+            "the un-toggle is its own entry, not a coalesced one"
+        );
+    }
+
+    /// A three-line toggle is **one** history entry, and one `u` takes all of
+    /// it back.
+    #[tokio::test]
+    async fn space_c_comments_a_range_as_one_undo_step() {
+        let (state, _daemon) = opened_writer("one\ntwo\nthree\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+        select_range(&mut app, 0, 2);
+
+        press_space(&mut app, 'c');
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "// one\n// two\n// three\n",
+            "every covered line, and nothing else"
+        );
+        assert_eq!(undo_depth(&app.editor_state), 1, "three lines, one entry");
+
+        editor_undo(&mut app.editor_state);
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "one\ntwo\nthree\n",
+            "one `u` takes the whole toggle back"
+        );
+    }
+
+    /// `space C` wraps the range in the grammar's block pair, and the same
+    /// gesture removes exactly that pair.
+    #[tokio::test]
+    async fn space_capital_c_wraps_the_range_in_the_block_pair() {
+        let (state, _daemon) = opened_writer("one\ntwo\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+        select_range(&mut app, 0, 1);
+
+        press_space(&mut app, 'C');
+        assert_eq!(editor_text(&app.editor_state), "/*one\ntwo*/\n");
+
+        select_range(&mut app, 0, 1);
+        press_space(&mut app, 'C');
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "one\ntwo\n",
+            "removing the pair it added is exact"
+        );
+    }
+
+    /// A buffer whose grammar declares no comment token is refused, the
+    /// refusal names the extension, and the document is byte-identical.
+    ///
+    /// Two shapes, because they fail for different reasons and the reader
+    /// gets the same answer: `.txt` has a grammar and no comment token,
+    /// `.zzz` has no grammar at all.
+    #[tokio::test]
+    async fn a_buffer_with_no_comment_token_is_refused_and_names_the_extension() {
+        for (path, extension) in [("notes.txt", ".txt"), ("scratch.zzz", ".zzz")] {
+            let (state, _daemon) = opened_writer_at(path, "plain\n").await;
+            let mut app = app_on_the_editor_route(state).await;
+
+            press_space(&mut app, 'c');
+
+            let note = notice_on_app(&app).expect("the refusal is stated");
+            assert!(
+                note.contains(extension),
+                "the notice names the extension: {note}"
+            );
+            assert!(
+                note.contains("no comment syntax"),
+                "and says what is missing: {note}"
+            );
+            assert_eq!(
+                editor_text(&app.editor_state),
+                "plain\n",
+                "{path} must be byte-identical after the refusal"
+            );
+            assert_eq!(undo_depth(&app.editor_state), 0, "no entry, {path}");
+        }
+    }
+
+    /// The toggle is refused on a read-only attachment like every other write.
+    #[tokio::test]
+    async fn space_c_on_a_read_only_attachment_is_refused_visibly() {
+        let (state, _daemon) = opened_reader("one\ntwo\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+        select_range(&mut app, 0, 1);
+
+        press_space(&mut app, 'c');
+
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "one\ntwo\n",
+            "no byte changed"
+        );
+        assert_eq!(
+            app.editor_state.notice,
+            Some(EditorNotice::ReadOnly),
+            "the refusal is the one every write reports"
+        );
+        assert_eq!(undo_depth(&app.editor_state), 0, "and records no history");
     }
 
     /// its keys, in its bottom-right corner — and not the global help dialog.
@@ -13036,6 +16414,693 @@ mod tests {
                 .iter()
                 .any(|message| message.contains("unsaved edits")),
             "and the editor must say why, got: {messages:?}"
+        );
+    }
+
+    // ── M004: counts ─────────────────────────────────────────────────────
+
+    fn count(state: &EditorState) -> Option<usize> {
+        state
+            .session
+            .as_ref()
+            .expect("open")
+            .presentation()
+            .pending_count
+    }
+
+    /// Press `digits`, then read the field rather than the dispatch's return.
+    fn type_count(state: &mut EditorState, digits: &str) -> Option<usize> {
+        for digit in digits.chars() {
+            assert_eq!(
+                normal(state, KeyCode::Char(digit)),
+                BufferKey::Consumed,
+                "{digit} belongs to the buffer while it is a count digit"
+            );
+        }
+        count(state)
+    }
+
+    /// `1`-`9` no longer reach the composer; `0` alone is still `LineStart`.
+    #[tokio::test]
+    async fn the_digits_begin_a_count_instead_of_reaching_the_composer() {
+        let (mut state, _daemon) = opened_writer(&numbered_lines(20)).await;
+        for digit in "1234".chars() {
+            assert_eq!(
+                normal(&mut state, KeyCode::Char(digit)),
+                BufferKey::Consumed,
+                "{digit} is a count digit, not a composer keystroke"
+            );
+        }
+        assert_eq!(count(&state), Some(1234), "the digits accumulated in order");
+        assert_eq!(editor_text(&state), numbered_lines(20), "and wrote nothing");
+
+        // `0` with nothing pending is `LineStart`, the one binding a careless
+        // digit arm would steal. Line 2 starts at byte 7, so from byte 9 it
+        // lands on 7 and begins no count.
+        let (mut state, _daemon) = opened_writer(&numbered_lines(20)).await;
+        normal(&mut state, KeyCode::Char('l'));
+        normal(&mut state, KeyCode::Char('l'));
+        normal(&mut state, KeyCode::Char('l'));
+        normal(&mut state, KeyCode::Char('l'));
+        normal(&mut state, KeyCode::Char('j'));
+        assert_eq!(cursor(&state), 11, "on line 2, column 4");
+        assert_eq!(normal(&mut state, KeyCode::Char('0')), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 7, "`0` is still LineStart");
+        assert_eq!(count(&state), None, "and a leading `0` begins no count");
+    }
+
+    /// `0` after `1` extends the count to ten, and the motion after reads it.
+    #[tokio::test]
+    async fn a_zero_after_a_digit_extends_the_count_to_ten() {
+        let (mut state, _daemon) = opened_writer(&numbered_lines(20)).await;
+        assert_eq!(type_count(&mut state, "10"), Some(10));
+        assert_eq!(normal(&mut state, KeyCode::Char('j')), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 70, "`10j` walks ten lines");
+        assert_eq!(count(&state), None, "and the motion took the count");
+    }
+
+    /// The character and vertical motions, each counted.
+    #[tokio::test]
+    async fn a_count_repeats_the_character_and_vertical_motions() {
+        let (mut state, _daemon) = opened_writer(&numbered_lines(20)).await;
+        assert_eq!(type_count(&mut state, "5"), Some(5));
+        normal(&mut state, KeyCode::Char('l'));
+        assert_eq!(cursor(&state), 5, "`5l` walks five bytes");
+
+        let (mut state, _daemon) = opened_writer(&numbered_lines(20)).await;
+        assert_eq!(type_count(&mut state, "5"), Some(5));
+        normal(&mut state, KeyCode::Char('j'));
+        assert_eq!(cursor(&state), 35, "`5j` walks five lines");
+    }
+
+    /// The word and long-word motions are counted, and still disagree.
+    #[tokio::test]
+    async fn a_count_repeats_the_word_and_long_word_motions() {
+        let (mut state, _daemon) = opened_writer("foo.bar baz\nqux\n").await;
+        assert_eq!(type_count(&mut state, "2"), Some(2));
+        normal(&mut state, KeyCode::Char('w'));
+        assert_eq!(cursor(&state), 4, "`2w` steps over the punctuation run");
+
+        let (mut state, _daemon) = opened_writer("foo.bar baz\nqux\n").await;
+        assert_eq!(type_count(&mut state, "2"), Some(2));
+        normal(&mut state, KeyCode::Char('W'));
+        assert_eq!(cursor(&state), 12, "`2W` steps over two WORDS");
+    }
+
+    /// A paragraph motion is a motion, so `2]p` is the second boundary.
+    #[tokio::test]
+    async fn a_count_repeats_the_paragraph_motion() {
+        let (mut state, _daemon) = opened_writer("alpha\n\nbeta\n\ngamma\n").await;
+        assert_eq!(type_count(&mut state, "2"), Some(2));
+        normal(&mut state, KeyCode::Char(']'));
+        assert_eq!(normal(&mut state, KeyCode::Char('p')), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 13, "`2]p` reaches the second paragraph");
+    }
+
+    /// A page key's count is a single multiplier: three half pages.
+    #[tokio::test]
+    async fn a_count_multiplies_a_half_page() {
+        let (mut state, _daemon) = opened_writer(&numbered_lines(60)).await;
+        assert_eq!(type_count(&mut state, "3"), Some(3));
+        let ctrl_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert_eq!(normal_event(&mut state, ctrl_d), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 210, "three half pages is thirty lines");
+    }
+
+    /// `<n>G` and `<n>gg` address a line, and the goto leaves share it.
+    #[tokio::test]
+    async fn a_count_addresses_a_line_through_the_goto_motions() {
+        let (mut state, _daemon) = opened_writer(&numbered_lines(60)).await;
+        assert_eq!(type_count(&mut state, "10"), Some(10));
+        assert_eq!(normal(&mut state, KeyCode::Char('G')), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 63, "`10G` addresses line 10, one-based");
+
+        let (mut state, _daemon) = opened_writer(&numbered_lines(60)).await;
+        normal(&mut state, KeyCode::Char('G'));
+        assert_eq!(cursor(&state), 420, "`G` alone is still the buffer end");
+        assert_eq!(type_count(&mut state, "3"), Some(3));
+        normal(&mut state, KeyCode::Char('g'));
+        assert_eq!(normal(&mut state, KeyCode::Char('g')), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 14, "`3gg` reaches line 3 from anywhere");
+
+        let (mut state, _daemon) = opened_writer(&numbered_lines(60)).await;
+        assert_eq!(type_count(&mut state, "3"), Some(3));
+        normal(&mut state, KeyCode::Char('g'));
+        assert_eq!(normal(&mut state, KeyCode::Char('j')), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 21, "and `3gj` is three lines down");
+    }
+
+    /// The count survives arming a prefix and is consumed exactly once.
+    #[tokio::test]
+    async fn a_count_survives_a_prefix_and_is_consumed_exactly_once() {
+        let (mut state, _daemon) = opened_writer(&numbered_lines(60)).await;
+        assert_eq!(type_count(&mut state, "3"), Some(3));
+        assert_eq!(normal(&mut state, KeyCode::Char('g')), BufferKey::Consumed);
+        assert_eq!(pending(&state), "g", "the count did not clear the prefix");
+        assert_eq!(
+            count(&state),
+            Some(3),
+            "and the prefix did not clear the count"
+        );
+        assert_eq!(normal(&mut state, KeyCode::Char('g')), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 14, "the leaf consumed the count");
+
+        assert_eq!(normal(&mut state, KeyCode::Char('g')), BufferKey::Consumed);
+        assert_eq!(normal(&mut state, KeyCode::Char('g')), BufferKey::Consumed);
+        assert_eq!(
+            cursor(&state),
+            0,
+            "a second `gg` has no count to spend, so it moves once"
+        );
+    }
+
+    /// A count larger than the document clamps at the last line and reports
+    /// nothing: the resolver stops when it stops moving, so `9999j` costs one
+    /// walk rather than 9999.
+    #[tokio::test]
+    async fn a_count_past_the_document_clamps_at_the_boundary() {
+        // The boundary is read from the uncounted binding rather than written
+        // as a byte count: `G` is the document's last line, and the clamp has
+        // to land on it.
+        let (mut reference, _daemon) = opened_writer(&numbered_lines(5)).await;
+        normal(&mut reference, KeyCode::Char('G'));
+        let last_line = cursor(&reference);
+
+        let (mut state, _daemon) = opened_writer(&numbered_lines(5)).await;
+        assert_eq!(type_count(&mut state, "9999"), Some(editor::MAX_COUNT));
+        assert_eq!(normal(&mut state, KeyCode::Char('j')), BufferKey::Consumed);
+        assert_eq!(cursor(&state), last_line, "`9999j` stops at the last line");
+        assert_eq!(count(&state), None, "and the motion took the count");
+        assert!(
+            state.notice.is_none(),
+            "a clamp is not a refusal, got: {:?}",
+            state.notice.as_ref().map(|notice| notice.message())
+        );
+    }
+
+    /// A count above `MAX_COUNT` saturates and **says so**.
+    #[tokio::test]
+    async fn a_count_past_the_bound_saturates_and_discloses_it() {
+        let (mut state, _daemon) = opened_writer(&numbered_lines(20)).await;
+        assert_eq!(
+            type_count(&mut state, "10000"),
+            Some(editor::MAX_COUNT),
+            "the count clamps at the bound"
+        );
+        let notice = state.notice.as_ref().map(|notice| notice.message());
+        assert!(
+            notice
+                .as_deref()
+                .is_some_and(|message| message.contains(&editor::MAX_COUNT.to_string())),
+            "the refusal names the bound, got: {notice:?}"
+        );
+    }
+
+    /// A count is cleared by `Esc` before the next motion ever sees it.
+    #[tokio::test]
+    async fn escape_clears_a_pending_count_before_the_next_motion() {
+        let (mut state, _daemon) = opened_writer(&numbered_lines(20)).await;
+        assert_eq!(type_count(&mut state, "3"), Some(3));
+        let mut app = app_on_the_editor_route(state).await;
+        assert!(handle_editor_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+        ));
+        assert_eq!(
+            app.editor_state
+                .session
+                .as_ref()
+                .expect("open")
+                .presentation()
+                .pending_count,
+            None,
+            "`Esc` is the route's disarm, and the count is a partial gesture"
+        );
+    }
+
+    /// A gesture that does not consume the count takes it down, as does a
+    /// prefix that disarms without resolving.
+    #[tokio::test]
+    async fn a_gesture_that_does_not_consume_the_count_clears_it() {
+        let (mut state, _daemon) = opened_writer(&numbered_lines(20)).await;
+        assert_eq!(type_count(&mut state, "3"), Some(3));
+        assert_eq!(normal(&mut state, KeyCode::Char('d')), BufferKey::Consumed);
+        assert_eq!(count(&state), None, "a repeatable verb is not a motion");
+        assert_eq!(normal(&mut state, KeyCode::Char('j')), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 7, "so the `j` after it moves one line");
+
+        let (mut state, _daemon) = opened_writer(&numbered_lines(20)).await;
+        assert_eq!(type_count(&mut state, "3"), Some(3));
+        normal(&mut state, KeyCode::Char('g'));
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('z')),
+            BufferKey::Consumed,
+            "`gz` is not a goto leaf, so `g` swallows it"
+        );
+        assert_eq!(count(&state), None, "and the count went with the prefix");
+        normal(&mut state, KeyCode::Char('j'));
+        assert_eq!(cursor(&state), 7, "the next `j` moves one line");
+    }
+
+    /// A count on a capture is out of scope, so `3f x` finds once.
+    #[tokio::test]
+    async fn a_capture_discards_a_count_instead_of_repeating_the_find() {
+        let (mut state, _daemon) = opened_writer("axbxcxd\n").await;
+        assert_eq!(type_count(&mut state, "3"), Some(3));
+        normal(&mut state, KeyCode::Char('f'));
+        assert_eq!(normal(&mut state, KeyCode::Char('x')), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 1, "`3f x` landed on the first `x`");
+        assert_eq!(count(&state), None);
+    }
+
+    // ── `.` and the keystroke recorder (M008) ───────────────────────────
+
+    /// Type `keys` through the route, letting the real dispatch record them.
+    fn type_keys(app: &mut App, keys: &[KeyCode]) {
+        for code in keys {
+            assert!(
+                handle_editor_key(app, key(*code)),
+                "{code:?} was not claimed by the editor route"
+            );
+        }
+    }
+
+    /// The recorded gesture, as the characters it holds.
+    fn recorded_chars(app: &App) -> Vec<char> {
+        app.editor_state
+            .session
+            .as_ref()
+            .expect("open")
+            .presentation()
+            .recorder
+            .last_insert()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|key| match key.code {
+                KeyCode::Char(ch) => Some(ch),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `.` replays the last insert *at the cursor*, and a second `.` inserts
+    /// again. The gesture is the entry key plus the text, which is what makes
+    /// the repeat land where the reader is now rather than where they were.
+    #[tokio::test]
+    async fn dot_repeats_the_last_insert_and_twice_inserts_twice() {
+        let (state, _daemon) = opened_writer("one\ntwo\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+
+        type_keys(
+            &mut app,
+            &[
+                KeyCode::Char('i'),
+                KeyCode::Char('X'),
+                KeyCode::Char('Y'),
+                KeyCode::Char('Z'),
+                KeyCode::Esc,
+            ],
+        );
+        assert_eq!(editor_text(&app.editor_state), "XYZone\ntwo\n");
+        assert_eq!(
+            recorded_chars(&app),
+            vec!['i', 'X', 'Y', 'Z'],
+            "the entry key is part of the gesture and the closing `Esc` is not"
+        );
+
+        type_keys(&mut app, &[KeyCode::Char('.')]);
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "XYZXYZone\ntwo\n",
+            "`.` inserts the gesture at the cursor"
+        );
+        assert_eq!(cursor(&app.editor_state), 6);
+        assert_eq!(
+            app.editor_state.mode(),
+            EditorMode::Normal,
+            "`.` ends where `Esc` ends: back in Normal mode"
+        );
+
+        type_keys(&mut app, &[KeyCode::Char('.')]);
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "XYZXYZXYZone\ntwo\n",
+            "a second `.` inserts a second time"
+        );
+    }
+
+    /// With nothing recorded `.` is claimed and silent: it must not reach the
+    /// composer as a period, and it must not invent a notice either.
+    #[tokio::test]
+    async fn dot_with_nothing_recorded_is_claimed_and_reports_nothing() {
+        let (state, _daemon) = opened_writer("alpha\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+
+        assert!(
+            handle_editor_key(&mut app, key(KeyCode::Char('.'))),
+            "`.` is claimed unconditionally, or it would type a period into the composer"
+        );
+        assert_eq!(editor_text(&app.editor_state), "alpha\n");
+        assert_eq!(
+            cursor(&app.editor_state),
+            0,
+            "a repeat with nothing to repeat moves nothing"
+        );
+        assert_eq!(notice_of(&app.editor_state), None, "and reports nothing");
+    }
+
+    /// A gesture that deleted replays the deletion: the log holds the
+    /// keystrokes, so their effect is reproduced rather than a text diff
+    /// reapplied at the wrong offsets.
+    #[tokio::test]
+    async fn dot_replays_a_backspace_inside_the_gesture() {
+        let (state, _daemon) = opened_writer("\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+
+        type_keys(
+            &mut app,
+            &[
+                KeyCode::Char('i'),
+                KeyCode::Char('a'),
+                KeyCode::Char('b'),
+                KeyCode::Backspace,
+                KeyCode::Char('c'),
+                KeyCode::Esc,
+            ],
+        );
+        assert_eq!(editor_text(&app.editor_state), "ac\n");
+
+        type_keys(&mut app, &[KeyCode::Char('.')]);
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "acac\n",
+            "the backspace's effect replays, so the insert is `ac` and not `abc`"
+        );
+    }
+
+    /// `o` is part of the gesture, so `.` opens a line too instead of only
+    /// typing the text onto the line it is already on.
+    #[tokio::test]
+    async fn dot_replays_the_line_that_o_opened() {
+        let (state, _daemon) = opened_writer("one\ntwo\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+
+        type_keys(
+            &mut app,
+            &[
+                KeyCode::Char('o'),
+                KeyCode::Char('a'),
+                KeyCode::Char('b'),
+                KeyCode::Esc,
+            ],
+        );
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "one\nab\ntwo\n",
+            "`o` opened a line and the text landed on it"
+        );
+
+        type_keys(&mut app, &[KeyCode::Char('.')]);
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "one\nab\nab\ntwo\n",
+            "`.` repeats the newline `o` inserted as well as the text"
+        );
+    }
+
+    /// The interrupt check runs **between** keys: the keys before an `Esc` are
+    /// applied, the ones after it are not, and the editor is left in Normal.
+    #[tokio::test]
+    async fn an_esc_in_the_log_stops_the_replay_between_keys() {
+        let (state, _daemon) = opened_writer("\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+        {
+            // Written by hand: the capture path never records the trailing
+            // `Esc`, so an `Esc` in the log can only be an interrupt.
+            let recorder = &mut app
+                .editor_state
+                .session
+                .as_mut()
+                .expect("open")
+                .presentation_mut()
+                .recorder;
+            recorder.begin();
+            for code in [KeyCode::Char('i'), KeyCode::Char('a')] {
+                assert_eq!(
+                    recorder.record(RecordedKey::of(key(code))),
+                    RecorderBound::Recorded
+                );
+            }
+            recorder.record(RecordedKey::of(key(KeyCode::Esc)));
+            recorder.record(RecordedKey::of(key(KeyCode::Char('b'))));
+            assert!(recorder.finish(), "the log is repeatable");
+        }
+
+        type_keys(&mut app, &[KeyCode::Char('.')]);
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "a\n",
+            "the key after the `Esc` was not replayed"
+        );
+        assert_eq!(
+            app.editor_state.mode(),
+            EditorMode::Normal,
+            "an interrupted replay leaves the editor in a consistent mode"
+        );
+        assert_eq!(
+            undo_depth(&app.editor_state),
+            1,
+            "the edits already applied are their own history, with no rollback"
+        );
+    }
+
+    /// A replay cannot nest, so a log that contains `.` terminates instead of
+    /// recursing: the inner request is refused with a notice and writes
+    /// nothing.
+    #[tokio::test]
+    async fn a_log_containing_dot_is_refused_inside_the_replay_rather_than_recursing() {
+        let (state, _daemon) = opened_writer("\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+        {
+            let recorder = &mut app
+                .editor_state
+                .session
+                .as_mut()
+                .expect("open")
+                .presentation_mut()
+                .recorder;
+            recorder.begin();
+            recorder.record(RecordedKey::of(key(KeyCode::Char('.'))));
+            assert!(recorder.finish());
+        }
+
+        type_keys(&mut app, &[KeyCode::Char('.')]);
+
+        assert_eq!(
+            notice_of(&app.editor_state),
+            Some(editor::REPLAY_IN_PROGRESS.to_string()),
+            "the replayed `.` found a replay already running and said so"
+        );
+        assert_eq!(editor_text(&app.editor_state), "\n", "and replayed nothing");
+        assert_eq!(
+            app.editor_state
+                .session
+                .as_ref()
+                .expect("open")
+                .presentation()
+                .recorder
+                .last_insert()
+                .map(<[RecordedKey]>::len),
+            Some(1),
+            "the log is unchanged, so the refusal was a state and not a second gesture"
+        );
+    }
+
+    /// The security property: the repeat is edits through the same funnel, so
+    /// a gesture recorded while the document was writable is **refused** once
+    /// it is not — not replayed into it.
+    #[tokio::test]
+    async fn a_gesture_recorded_on_a_writable_document_is_refused_on_a_read_only_one() {
+        let (state, _daemon) = opened_writer("\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+        type_keys(
+            &mut app,
+            &[
+                KeyCode::Char('i'),
+                KeyCode::Char('a'),
+                KeyCode::Char('b'),
+                KeyCode::Esc,
+            ],
+        );
+        let gesture = app
+            .editor_state
+            .session
+            .as_ref()
+            .expect("open")
+            .presentation()
+            .recorder
+            .last_insert()
+            .expect("the gesture was recorded on the writable document")
+            .to_vec();
+
+        // The same gesture, on an attachment that never held the writer lease.
+        let (reader, _reader_daemon) = opened_reader("\n").await;
+        let mut read_only = app_on_the_editor_route(reader).await;
+        let before = editor_text(&read_only.editor_state);
+
+        replay_recorded_keys(&mut read_only, &gesture);
+
+        assert_eq!(
+            editor_text(&read_only.editor_state),
+            before,
+            "the repeat wrote nothing into a buffer it may not write"
+        );
+        assert_eq!(cursor(&read_only.editor_state), 0, "and it moved nothing");
+        assert_eq!(
+            notice_of(&read_only.editor_state),
+            Some(EditorNotice::ReadOnly.message()),
+            "the reader is told why nothing happened"
+        );
+        assert_eq!(
+            undo_depth(&read_only.editor_state),
+            0,
+            "no history entry was recorded for an edit that was refused"
+        );
+        assert_eq!(read_only.editor_state.mode(), EditorMode::Normal);
+        assert!(
+            !read_only
+                .editor_state
+                .session
+                .as_ref()
+                .expect("open")
+                .presentation()
+                .recorder
+                .is_replaying(),
+            "the refusal releases the replay flag rather than leaving it set"
+        );
+    }
+
+    /// Replay does not record: a replay that captured itself would grow the log
+    /// on every press, and with a macro chord it could start a recording.
+    #[tokio::test]
+    async fn a_replay_neither_records_itself_nor_opens_a_capture() {
+        let (state, _daemon) = opened_writer("\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+        type_keys(
+            &mut app,
+            &[
+                KeyCode::Char('i'),
+                KeyCode::Char('a'),
+                KeyCode::Char('b'),
+                KeyCode::Esc,
+            ],
+        );
+
+        type_keys(&mut app, &[KeyCode::Char('.')]);
+
+        let recorder = &app
+            .editor_state
+            .session
+            .as_ref()
+            .expect("open")
+            .presentation()
+            .recorder;
+        assert!(
+            !recorder.is_recording(),
+            "the replayed keys opened no capture"
+        );
+        assert_eq!(
+            recorded_chars(&app).len(),
+            3,
+            "and the log it read was not appended to"
+        );
+        assert!(!recorder.is_replaying(), "the replay flag is released");
+    }
+
+    /// The recorder is document-local: it is cleared by the one transition
+    /// that clears the registers, so `.` cannot repeat a gesture made against
+    /// a buffer the reader is no longer looking at.
+    #[tokio::test]
+    async fn a_recorded_gesture_is_cleared_by_the_transition_that_clears_the_registers() {
+        let (state, _daemon) = opened_writer("\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+        type_keys(
+            &mut app,
+            &[KeyCode::Char('i'), KeyCode::Char('a'), KeyCode::Esc],
+        );
+        {
+            let session = app.editor_state.session.as_mut().expect("open");
+            session
+                .presentation_mut()
+                .write_register(RegisterName::Named('a'), "alpha");
+            assert!(session.presentation().recorder.last_insert().is_some());
+            // The reconciliation path: one clearing point for both stores.
+            editor::clear_history(session.presentation_mut());
+            assert!(session.presentation().registers.is_empty());
+            assert!(
+                session.presentation().recorder.last_insert().is_none(),
+                "the same transition clears the recorder, so there is no second lifetime"
+            );
+        }
+
+        type_keys(&mut app, &[KeyCode::Char('.')]);
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "a\n",
+            "`.` has nothing to repeat after the document moved on"
+        );
+    }
+
+    /// The cap is enforced through the real capture path, disclosed once, and
+    /// the gesture it overflowed is not repeatable.
+    #[tokio::test]
+    async fn a_gesture_past_the_cap_is_disclosed_and_not_repeatable() {
+        let (state, _daemon) = opened_writer("\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+
+        // The entry key is the first of the bound, so `MAX - 1` characters
+        // fill it exactly.
+        type_keys(&mut app, &[KeyCode::Char('i')]);
+        for _ in 0..(editor::MAX_RECORDED_KEYS - 1) {
+            type_keys(&mut app, &[KeyCode::Char('x')]);
+        }
+        let at_cap = cursor(&app.editor_state);
+        assert_eq!(
+            notice_of(&app.editor_state),
+            None,
+            "the bound is not reached yet"
+        );
+
+        type_keys(&mut app, &[KeyCode::Char('y')]);
+        assert_eq!(
+            notice_of(&app.editor_state),
+            Some(editor::recording_capped_notice()),
+            "crossing the bound is disclosed at the keystroke that crossed it"
+        );
+        type_keys(&mut app, &[KeyCode::Esc]);
+        // `y` still typed into the buffer — the recorder refused it, the
+        // document did not — so the position to compare against is the one
+        // left by the whole gesture.
+        let before_repeat = cursor(&app.editor_state);
+        assert_eq!(before_repeat, at_cap + 1);
+
+        assert!(
+            app.editor_state
+                .session
+                .as_ref()
+                .expect("open")
+                .presentation()
+                .recorder
+                .last_insert()
+                .is_none(),
+            "a gesture that crossed the bound is dropped rather than replayed short"
+        );
+        app.editor_state.clear_notice();
+        type_keys(&mut app, &[KeyCode::Char('.')]);
+        assert_eq!(
+            cursor(&app.editor_state),
+            before_repeat,
+            "`.` wrote nothing: the refused gesture was not kept"
         );
     }
 }

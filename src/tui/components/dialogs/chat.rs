@@ -66,6 +66,8 @@ use crate::tui::app::state::chat::ChatStatus;
 use crate::tui::app::TuiMsg;
 use crate::tui::chat_browser::{self, ChatBrowser, ChatComposeSeed, ChatKeyAction, ChatView};
 use crate::tui::components::component::{Component, DialogType};
+use crate::tui::components::hint_line::HintLine;
+use crate::tui::components::section::Section;
 use crate::tui::theme::Theme;
 
 /// Maximum messages held in the window snapshot. Matches the reducer's
@@ -439,11 +441,13 @@ impl ChatDialog {
     fn footer(&self, theme: &Arc<Theme>) -> Line<'static> {
         let dim = Style::default().fg(theme.muted);
         let hints = match self.mode {
-            ChatMode::Normal => format!(
-                "{} · Esc close",
-                chat_browser::normal_hints(self.browser.show_help())
-            ),
-            _ => chat_browser::input_hints(&self.seed()),
+            ChatMode::Normal => {
+                let mut hint = HintLine::new();
+                let normal = chat_browser::normal_hints(self.browser.show_help());
+                hint.push_required("Esc", "close").push_line(&normal);
+                hint.render(0)
+            }
+            _ => chat_browser::input_hints(&self.seed()).render(0),
         };
         Line::from(Span::styled(hints, dim))
     }
@@ -578,13 +582,12 @@ impl Component for ChatDialog {
             return;
         }
         frame.render_widget(Clear, area);
-        let title = format!(" Project Chat — {} ", self.project_id);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
-            .title(title);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        // The project id makes this title data, so the primitive pads it and
+        // leaves its spelling alone.
+        let title = format!("Project Chat — {}", self.project_id);
+        let inner = Section::verbatim(&title, theme)
+            .focused(true)
+            .draw(area, frame.buffer_mut());
 
         // Channel bar is present only when the project actually has more
         // than one channel to switch between.

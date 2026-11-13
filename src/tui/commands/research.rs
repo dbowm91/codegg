@@ -1,6 +1,8 @@
 //! Research handler functions for the TUI.
 
+use crate::tui::app::send_tui;
 use crate::tui::app::App;
+use crate::tui::app::Dialog;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
 use crate::tui::task_lifecycle::TuiTaskKind;
@@ -503,6 +505,74 @@ pub(crate) fn apply_research_section_loaded(
             app.messages_state
                 .toasts
                 .warning("Could not load section content");
+        }
+    }
+}
+
+pub(crate) fn dispatch_research(app: &mut App, argument: &str) {
+    let args = argument;
+    app.ui_state.command_mode = false;
+    if args.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /research <question> [--mode <mode>] [--depth <depth>]");
+    } else {
+        app.handle_research_command(args);
+    }
+}
+
+pub(crate) fn dispatch_research_runs(app: &mut App) {
+    app.ui_state.command_mode = false;
+    app.handle_research_runs_command();
+}
+
+pub(crate) fn dispatch_research_open(app: &mut App, argument: &str) {
+    let run_id = argument;
+    app.ui_state.command_mode = false;
+    if run_id.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /research-open <run_id>");
+    } else {
+        app.handle_research_open_command(run_id);
+    }
+}
+
+pub(crate) fn dispatch_research_show(app: &mut App, argument: &str) {
+    let rest = argument;
+    app.ui_state.command_mode = false;
+    if rest.is_empty() {
+        app.handle_research_runs_command();
+    } else {
+        let parts: Vec<&str> = rest.splitn(2, ' ').collect();
+        let section = parts[0];
+        let run_id = parts.get(1).copied().unwrap_or("").trim();
+        if run_id.is_empty() {
+            app.messages_state.toasts.warning(
+                "Usage: /research-show <section> <run_id> (section: report, brief, claims, handoff)",
+            );
+        } else {
+            app.open_dialog(Dialog::ResearchBrowser);
+            if let Some(ref mut browser) = app.dialog_state.research_browser {
+                browser.loading = true;
+            }
+            let run_id_owned = run_id.to_string();
+            let section_owned = section.to_string();
+            if let Some(ref tx) = app.tui_cmd_tx {
+                let _ = send_tui(
+                    tx,
+                    TuiCommand::ResearchLoadRun {
+                        run_id: run_id_owned.clone(),
+                    },
+                );
+                let _ = send_tui(
+                    tx,
+                    TuiCommand::ResearchLoadSection {
+                        run_id: run_id_owned,
+                        section: section_owned,
+                    },
+                );
+            }
         }
     }
 }

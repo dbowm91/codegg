@@ -442,6 +442,7 @@ pub struct MessagesWidget {
     rows_dirty_from: Cell<usize>,
 }
 
+use crate::tui::components::hint_line::HintLine;
 /// Split a string into wrapped lines of at most `width` display columns each.
 /// Returns one entry per visual line (preserves explicit newlines as line
 /// breaks).
@@ -2110,13 +2111,25 @@ impl Widget for &MessagesWidget {
                 0
             };
             let query_display = self.search_query.as_deref().unwrap_or("");
+            // One row, one grammar: the query and the position are values,
+            // the keys are items, and the exit leads because the buffer clips
+            // from the end. The `|`s here separated fields, not hints.
             let search_bar = if match_count > 0 {
-                format!(
-                    " Search: {} | {}/{} | n:next N:prev Esc:close ",
-                    query_display, current, match_count
-                )
+                HintLine::from_items(&[
+                    ("Esc", "close"),
+                    (&format!("Search: {query_display}"), ""),
+                    (&format!("{current}/{match_count}"), ""),
+                    ("n", "next"),
+                    ("N", "prev"),
+                ])
+                .render(0)
             } else {
-                format!(" Search: {} | no matches | Esc:close ", query_display)
+                HintLine::from_items(&[
+                    ("Esc", "close"),
+                    (&format!("Search: {query_display}"), ""),
+                    ("no matches", ""),
+                ])
+                .render(0)
             };
             let search_style = Style::default()
                 .fg(self.theme.foreground)

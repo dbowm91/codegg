@@ -2,13 +2,15 @@ use crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 use std::sync::Arc;
 
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
+use super::super::section::Section;
 use crate::session::Session;
 use crate::tui::app::TuiMsg;
+use crate::tui::components::hint_line::HintLine;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ImportState {
@@ -137,17 +139,13 @@ pub enum ImportSource {
     FilePath(String),
 }
 
+/// The busiest state's line count, so the box does not resize as the state
+/// moves from input to preview to result while it is open.
+const IMPORT_BODY_ROWS: u16 = 10;
+
 impl Widget for &ImportDialog {
     fn render(self, area: Rect, buf: &mut ratatui::prelude::Buffer) {
         let mut lines: Vec<Line> = Vec::new();
-
-        lines.push(Line::from(Span::styled(
-            " Import Session ",
-            Style::default()
-                .fg(self.theme.primary)
-                .add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(""));
 
         match self.state {
             ImportState::Input => {
@@ -195,7 +193,8 @@ impl Widget for &ImportDialog {
                     )));
                 } else {
                     lines.push(Line::from(Span::styled(
-                        "Enter preview/import  |  Esc close",
+                        HintLine::from_items(&[("Esc", "close"), ("Enter", "preview/import")])
+                            .render(0),
                         Style::default().fg(self.theme.muted),
                     )));
                 }
@@ -237,7 +236,7 @@ impl Widget for &ImportDialog {
                     lines.push(Line::from(""));
 
                     lines.push(Line::from(Span::styled(
-                        "Enter import  |  Esc close",
+                        HintLine::from_items(&[("Esc", "close"), ("Enter", "import")]).render(0),
                         Style::default().fg(self.theme.muted),
                     )));
                 }
@@ -269,7 +268,7 @@ impl Widget for &ImportDialog {
                 }
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
-                    "Enter continue  Esc close",
+                    HintLine::from_items(&[("Esc", "close"), ("Enter", "continue")]).render(0),
                     Style::default().fg(self.theme.muted),
                 )));
             }
@@ -295,21 +294,38 @@ impl Widget for &ImportDialog {
             }
         }
 
-        let block = Block::default()
-            .title(" Import Session ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border))
-            .style(Style::default().bg(self.theme.background));
-
-        let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
-        paragraph.render(area, buf);
+        let inner = Section::new("Import Session", &self.theme)
+            .focused(true)
+            .draw(area, buf);
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .render(inner, buf);
     }
 }
 
 impl Component for ImportDialog {
+    fn preferred_area(&self, available: Rect) -> Rect {
+        crate::tui::components::dialog_size::preferred_rows(
+            available,
+            Section::owned_height(IMPORT_BODY_ROWS),
+        )
+    }
+
+    /// `Char`/`Backspace` edit the input only in [`ImportState::Input`], the one
+    /// state that shows it. Neither bounds the input, because
+    /// [`Component::handle_paste`] bounds nothing either — a limit on one path
+    /// alone would refuse text the other accepts.
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
         match key.code {
             crossterm::event::KeyCode::Esc => Some(TuiMsg::CloseDialog),
+            crossterm::event::KeyCode::Char(c) if self.state == ImportState::Input => {
+                self.set_input(c);
+                None
+            }
+            crossterm::event::KeyCode::Backspace if self.state == ImportState::Input => {
+                self.backspace();
+                None
+            }
             crossterm::event::KeyCode::Enter => match self.state {
                 ImportState::Input => Some(TuiMsg::SubmitImportPreview),
                 ImportState::Preview => Some(TuiMsg::ConfirmImport),
@@ -335,14 +351,6 @@ impl Component for ImportDialog {
 
     fn render(&mut self, frame: &mut ratatui::Frame, area: Rect, theme: &Arc<Theme>) {
         let mut lines: Vec<Line> = Vec::new();
-
-        lines.push(Line::from(Span::styled(
-            " Import Session ",
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(""));
 
         match self.state {
             ImportState::Input => {
@@ -387,7 +395,8 @@ impl Component for ImportDialog {
                     )));
                 } else {
                     lines.push(Line::from(Span::styled(
-                        "Enter preview/import  |  Esc close",
+                        HintLine::from_items(&[("Esc", "close"), ("Enter", "preview/import")])
+                            .render(0),
                         Style::default().fg(theme.muted),
                     )));
                 }
@@ -426,7 +435,7 @@ impl Component for ImportDialog {
                     lines.push(Line::from(""));
 
                     lines.push(Line::from(Span::styled(
-                        "Enter import  |  Esc close",
+                        HintLine::from_items(&[("Esc", "close"), ("Enter", "import")]).render(0),
                         Style::default().fg(theme.muted),
                     )));
                 }
@@ -458,7 +467,7 @@ impl Component for ImportDialog {
                 }
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
-                    "Enter continue  Esc close",
+                    HintLine::from_items(&[("Esc", "close"), ("Enter", "continue")]).render(0),
                     Style::default().fg(theme.muted),
                 )));
             }
@@ -484,17 +493,114 @@ impl Component for ImportDialog {
             }
         }
 
-        let block = Block::default()
-            .title(" Import Session ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
-            .style(Style::default().bg(theme.background));
-
-        let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
-        paragraph.render(area, frame.buffer_mut());
+        let inner = Section::new("Import Session", theme)
+            .focused(true)
+            .draw(area, frame.buffer_mut());
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .render(inner, frame.buffer_mut());
     }
 
     fn dialog_type(&self) -> DialogType {
         DialogType::Import
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// One character at a time, which is the path a reader actually uses.
+    fn typed(text: &str) -> ImportDialog {
+        let mut dialog = ImportDialog::default();
+        for c in text.chars() {
+            assert_eq!(
+                dialog.handle_key(key(KeyCode::Char(c))),
+                None,
+                "a typed character changes the box without reporting a message"
+            );
+        }
+        dialog
+    }
+
+    #[test]
+    fn typing_reaches_the_input_and_backspace_pops_it() {
+        let mut dialog = typed("codegg://share/abc");
+        assert_eq!(
+            dialog.input, "codegg://share/abc",
+            "the typed URL never reached the box's input"
+        );
+
+        assert_eq!(
+            dialog.handle_key(key(KeyCode::Backspace)),
+            None,
+            "backspace edits the box without reporting a message"
+        );
+        assert_eq!(
+            dialog.input, "codegg://share/ab",
+            "backspace must pop the last typed character"
+        );
+    }
+
+    #[test]
+    fn typing_is_scoped_to_the_state_that_shows_the_input() {
+        let mut dialog = typed("codegg://share/abc");
+        dialog.set_preview(Session::default(), 3);
+        let submitted = dialog.input.clone();
+
+        dialog.handle_key(key(KeyCode::Char('z')));
+        dialog.handle_key(key(KeyCode::Backspace));
+
+        assert_eq!(
+            dialog.input, submitted,
+            "the preview state advertises Enter and Esc alone, so it must not edit \
+             a source that has already been submitted"
+        );
+    }
+
+    #[test]
+    fn typing_and_pasting_reach_the_input_at_the_same_bound() {
+        // Paste bounds nothing, so typing must bound nothing either: the parity
+        // is the property, not a shared literal.
+        let text = "x".repeat(4096);
+        let typed_dialog = typed(&text);
+        let mut pasted = ImportDialog::default();
+        assert_eq!(
+            pasted.handle_paste(text.clone()),
+            None,
+            "paste edits the box without reporting a message"
+        );
+
+        assert_eq!(
+            typed_dialog.input.len(),
+            text.len(),
+            "typing truncated input that paste would have accepted whole"
+        );
+        assert_eq!(
+            typed_dialog.input, pasted.input,
+            "the two input paths disagree for the same text"
+        );
+    }
+
+    #[test]
+    fn enter_submits_a_preview_then_confirms_it() {
+        let mut dialog = typed("abc123456789");
+        assert_eq!(
+            dialog.handle_key(key(KeyCode::Enter)),
+            Some(TuiMsg::SubmitImportPreview),
+            "Enter in the input state must ask for a preview"
+        );
+
+        dialog.set_preview(Session::default(), 3);
+        assert_eq!(
+            dialog.handle_key(key(KeyCode::Enter)),
+            Some(TuiMsg::ConfirmImport),
+            "Enter in the preview state must ask to import"
+        );
     }
 }

@@ -1,6 +1,7 @@
 //! Diagnostics and doctor command handlers.
 
 use crate::protocol::projection::dto::ToolContractProjection;
+use crate::tui::app::send_tui;
 use crate::tui::app::App;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
@@ -684,6 +685,70 @@ pub(crate) fn handle_tool_contracts(app: &mut App) {
         crate::tui::components::dialogs::info::InfoType::DoctorReport,
         lines,
     );
+}
+
+pub(crate) fn dispatch_doctor(app: &mut App) {
+    // The doctor routine is async (it has to await the
+    // eggsearch MCP spawn), so fire it in a background task
+    // and let the agent loop pick up the result via a
+    // TuiCommand::SendNotification on the way back.
+    if let Some(ref tx) = app.tui_cmd_tx {
+        let _ = send_tui(tx, TuiCommand::RunDoctor);
+    } else {
+        app.messages_state
+            .toasts
+            .info("doctor: not connected to a core client");
+    }
+}
+
+pub(crate) fn dispatch_logs(app: &mut App) {
+    app.ui_state.command_mode = false;
+    app.open_logs_window();
+}
+
+pub(crate) fn dispatch_tool_contracts(app: &mut App) {
+    if let Some(ref tx) = app.tui_cmd_tx {
+        let _ = send_tui(tx, TuiCommand::ToolContracts);
+    } else {
+        app.messages_state
+            .toasts
+            .info("tool-contracts: not connected to a core client");
+    }
+}
+
+pub(crate) fn dispatch_lsp_status(app: &mut App) {
+    app.ui_state.command_mode = false;
+    app.enqueue_tui_command(TuiCommand::LspStatusDetailRequested);
+}
+
+pub(crate) fn dispatch_nodes(app: &mut App) {
+    // Eggwork M002: a read-only operator read of the remote
+    // nodes' host telemetry. It never touches the queue and
+    // never creates a job.
+    app.ui_state.command_mode = false;
+    app.enqueue_tui_command(TuiCommand::NodeTelemetryRequested);
+}
+
+pub(crate) fn dispatch_tool_backends(app: &mut App) {
+    // Build the report synchronously from the resolved
+    // config. The App doesn't hold a direct reference to
+    // the live `ToolRegistry`, so the connectivity half of
+    // the report is unavailable here (shown by `/mcps`).
+    // M005: this diagnostic must not consult the deprecated
+    // search-backend process-global slots.
+    let config = crate::config::schema::Config::load_or_default();
+    let search_cfg = config.search.clone().unwrap_or_default();
+    let mcp_server_names: Option<Vec<String>> = None;
+    let report = crate::tool::backend::build_report(
+        &search_cfg,
+        config.tool_backends.as_ref(),
+        mcp_server_names.as_deref(),
+        Some(&crate::tool::integrated_config::resolve_integrated_config(
+            &config,
+        )),
+    );
+    let rendered = report.render();
+    app.messages_state.toasts.info(&rendered);
 }
 
 #[cfg(test)]

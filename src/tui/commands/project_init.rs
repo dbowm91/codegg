@@ -2,6 +2,7 @@
 use crate::protocol::core::{CoreRequest, CoreResponse};
 use crate::tui::app::{App, TuiCommand};
 use crate::tui::async_cmd::spawn_registered_tui_task;
+use crate::tui::commands::close_command_mode;
 use crate::tui::task_lifecycle::TuiTaskKind;
 
 pub(crate) fn start_project_init_draft(app: &mut App) {
@@ -160,6 +161,12 @@ pub(crate) fn start_project_init_refresh(app: &mut App, project_id: String, work
             })
         },
     );
+}
+
+pub(crate) fn dispatch_project_init(app: &mut App) {
+    app.dialog_state.project_init_draft = None;
+    app.enqueue_tui_command(TuiCommand::ProjectInitDraft);
+    close_command_mode(app);
 }
 
 #[cfg(test)]

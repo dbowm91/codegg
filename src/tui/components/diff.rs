@@ -6,6 +6,7 @@ use ratatui::widgets::{Block, Borders};
 use ratatui::Frame;
 use similar::{ChangeTag, TextDiff};
 
+use crate::tui::components::hint_line::HintLine;
 use crate::tui::components::scroll::CenteredScroll;
 use crate::tui::theme::Theme;
 
@@ -52,6 +53,24 @@ impl Clone for DiffHunk {
             lines: self.lines.clone(),
         }
     }
+}
+
+/// The one-row footer of the transcript's diff viewer.
+///
+/// `Scroll:`/`Mode:`/`Close:` were three labels, not three items; the mode is the
+/// `s` item's verb because pressing `s` is what changes it.
+fn viewer_footer(mode: &DiffMode) -> String {
+    let target = match mode {
+        DiffMode::Inline => "side-by-side",
+        DiffMode::SideBySide => "inline",
+    };
+    HintLine::from_items(&[("Esc", "close"), ("↑↓/j/k", "scroll"), ("s", target)]).render(0)
+}
+
+/// The lines of `hunks` from `offset` onward, as one continuous sequence: the
+/// offset addresses the whole diff, so `End`'s `total_lines() - 1` is the last line.
+pub fn lines_from(hunks: &[DiffHunk], offset: usize) -> impl Iterator<Item = &DiffLine> {
+    hunks.iter().flat_map(|hunk| hunk.lines.iter()).skip(offset)
 }
 
 #[derive(Clone)]
@@ -215,62 +234,45 @@ impl DiffViewer {
         ));
 
         let visible_lines = inner.height as usize;
-        let scroll_offset = self.scroll.get();
 
-        let mut y = 0u16;
+        for (y, line) in lines_from(&self.hunks, self.scroll.get())
+            .take(visible_lines)
+            .enumerate()
+        {
+            let fg_color = match line.tag {
+                ChangeTag::Delete => theme.error,
+                ChangeTag::Insert => theme.success,
+                ChangeTag::Equal => theme.foreground,
+            };
 
-        for hunk in &self.hunks {
-            for line in hunk.lines.iter().skip(scroll_offset) {
-                if y as usize >= visible_lines {
-                    break;
-                }
+            let old_num = line
+                .line_number_old
+                .map(|n| format!("{:4}", n))
+                .unwrap_or_else(|| "    ".to_string());
+            let new_num = line
+                .line_number_new
+                .map(|n| format!("{:4}", n))
+                .unwrap_or_else(|| "    ".to_string());
 
-                let fg_color = match line.tag {
-                    ChangeTag::Delete => theme.error,
-                    ChangeTag::Insert => theme.success,
-                    ChangeTag::Equal => theme.foreground,
-                };
+            let prefix = match line.tag {
+                ChangeTag::Delete => "-",
+                ChangeTag::Insert => "+",
+                ChangeTag::Equal => " ",
+            };
 
-                let old_num = line
-                    .line_number_old
-                    .map(|n| format!("{:4}", n))
-                    .unwrap_or_else(|| "    ".to_string());
-                let new_num = line
-                    .line_number_new
-                    .map(|n| format!("{:4}", n))
-                    .unwrap_or_else(|| "    ".to_string());
+            let content = format!("{}{} │ {}", old_num, new_num, line.content);
+            let full_line = format!("{}{}", prefix, &content[1..]);
 
-                let prefix = match line.tag {
-                    ChangeTag::Delete => "-",
-                    ChangeTag::Insert => "+",
-                    ChangeTag::Equal => " ",
-                };
+            let styled_line =
+                Line::from(vec![Span::styled(full_line, Style::default().fg(fg_color))]);
 
-                let content = format!("{}{} │ {}", old_num, new_num, line.content);
-                let full_line = format!("{}{}", prefix, &content[1..]);
-
-                let styled_line =
-                    Line::from(vec![Span::styled(full_line, Style::default().fg(fg_color))]);
-
-                let line_area = Rect::new(inner.x, inner.y + y, inner.width, 1);
-                frame.render_widget(styled_line, line_area);
-
-                y += 1;
-            }
-
-            if y as usize >= visible_lines {
-                break;
-            }
+            let line_area = Rect::new(inner.x, inner.y + y as u16, inner.width, 1);
+            frame.render_widget(styled_line, line_area);
         }
     }
 
     fn render_footer(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let mode_toggle = match self.mode {
-            DiffMode::Inline => "Press 's' for Side-by-Side",
-            DiffMode::SideBySide => "Press 's' for Inline",
-        };
-
-        let info = format!("Scroll: ↑↓ or j/k | Mode: {} | Close: Esc", mode_toggle);
+        let info = viewer_footer(&self.mode);
 
         let footer = ratatui::widgets::Paragraph::new(Line::from(Span::styled(
             info,
@@ -361,12 +363,7 @@ impl DiffViewer {
             1,
         );
 
-        let mode_toggle = match self.mode {
-            DiffMode::Inline => "Press 's' for Side-by-Side",
-            DiffMode::SideBySide => "Press 's' for Inline",
-        };
-
-        let info = format!("Scroll: ↑↓ or j/k | Mode: {} | Close: Esc", mode_toggle);
+        let info = viewer_footer(&self.mode);
 
         let footer = ratatui::widgets::Paragraph::new(Line::from(Span::styled(
             info,
@@ -381,51 +378,40 @@ impl DiffViewer {
         }
 
         let visible_lines = content_height as usize;
-        let scroll_offset = self.scroll.get();
-        let mut y = 0u16;
 
-        for hunk in hunks {
-            for line in hunk.lines.iter().skip(scroll_offset) {
-                if y as usize >= visible_lines {
-                    break;
-                }
+        for (y, line) in lines_from(hunks, self.scroll.get())
+            .take(visible_lines)
+            .enumerate()
+        {
+            let fg_color = match line.tag {
+                ChangeTag::Delete => theme.error,
+                ChangeTag::Insert => theme.success,
+                ChangeTag::Equal => theme.foreground,
+            };
 
-                let fg_color = match line.tag {
-                    ChangeTag::Delete => theme.error,
-                    ChangeTag::Insert => theme.success,
-                    ChangeTag::Equal => theme.foreground,
-                };
+            let old_num = line
+                .line_number_old
+                .map(|n| format!("{:4}", n))
+                .unwrap_or_else(|| "    ".to_string());
+            let new_num = line
+                .line_number_new
+                .map(|n| format!("{:4}", n))
+                .unwrap_or_else(|| "    ".to_string());
 
-                let old_num = line
-                    .line_number_old
-                    .map(|n| format!("{:4}", n))
-                    .unwrap_or_else(|| "    ".to_string());
-                let new_num = line
-                    .line_number_new
-                    .map(|n| format!("{:4}", n))
-                    .unwrap_or_else(|| "    ".to_string());
+            let prefix = match line.tag {
+                ChangeTag::Delete => "-",
+                ChangeTag::Insert => "+",
+                ChangeTag::Equal => " ",
+            };
 
-                let prefix = match line.tag {
-                    ChangeTag::Delete => "-",
-                    ChangeTag::Insert => "+",
-                    ChangeTag::Equal => " ",
-                };
+            let content = format!("{}{} │ {}", old_num, new_num, line.content);
+            let full_line = format!("{}{}", prefix, &content[1..]);
 
-                let content = format!("{}{} │ {}", old_num, new_num, line.content);
-                let full_line = format!("{}{}", prefix, &content[1..]);
+            let styled_line =
+                Line::from(vec![Span::styled(full_line, Style::default().fg(fg_color))]);
 
-                let styled_line =
-                    Line::from(vec![Span::styled(full_line, Style::default().fg(fg_color))]);
-
-                let line_area = Rect::new(inner.x, inner.y + 1 + y, inner.width, 1);
-                styled_line.render(line_area, buf);
-
-                y += 1;
-            }
-
-            if y as usize >= visible_lines {
-                break;
-            }
+            let line_area = Rect::new(inner.x, inner.y + 1 + y as u16, inner.width, 1);
+            styled_line.render(line_area, buf);
         }
     }
 }
@@ -453,6 +439,37 @@ mod tests {
         let mut buffer = Buffer::empty(area());
         render(&mut buffer);
         buffer
+    }
+
+    /// Every painted cell as one string, so a test can ask what is on screen.
+    fn painted(buffer: &Buffer) -> String {
+        buffer.content().iter().map(|cell| cell.symbol()).collect()
+    }
+
+    /// `End` addresses the diff, not each hunk: `total_lines() - 1` only means
+    /// "the last line" if the offset is consumed once across the whole list.
+    #[test]
+    fn end_paints_the_tail_of_a_two_hunk_diff() {
+        let theme = Theme::dark();
+        let mut viewer = viewer();
+        assert_eq!(viewer.hunks.len(), 2, "the fixture must have two hunks");
+        let total = viewer.total_lines();
+        assert_eq!(total, 3, "two lines in the first hunk, one in the second");
+
+        viewer.scroll.set(1);
+        let one = painted(&draw(|buffer| viewer.render_in(area(), buffer, &theme)));
+        assert!(
+            one.contains("BRAVO") && one.contains("inserted"),
+            "one offset must address the whole diff, not each hunk: {one:?}"
+        );
+
+        viewer.scroll_to_bottom();
+        assert_eq!(viewer.scroll.get(), total - 1, "End means the last line");
+        let bottom = painted(&draw(|buffer| viewer.render_in(area(), buffer, &theme)));
+        assert!(
+            bottom.contains("inserted"),
+            "End must paint the last line of the last hunk, not blank the pane: {bottom:?}"
+        );
     }
 
     /// The borrowed path draws byte-identically to the owned one, in both

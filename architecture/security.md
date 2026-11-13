@@ -82,7 +82,7 @@ half:
 | Linux mount view | `src/security/sandbox/linux_mount_view.rs` | The opt-in protected-mount compiler and its enforcement scope |
 | Linux launch contract | `src/security/sandbox/linux_launch.rs` | The immutable requested-dimension model (filesystem/network/process/syscall/resource) under a parent ceiling |
 | Linux seccomp | `src/security/sandbox/linux_seccomp.rs` | The architecture-checked denylist handed to Bubblewrap |
-| Guarantee negotiation | `src/security/sandbox/guarantee.rs` | The pure `negotiate()` contract check (C042, ADR-0029, test-only) |
+| Guarantee negotiation | `src/security/sandbox/guarantee.rs` | The pure `negotiate()` contract (C042, ADR-0029): a written specification with unit tests only, no production caller — see "Deliberately test-only and unwired surfaces" |
 | Host admission | `src/security/sandbox/host_admission.rs` | The host-capability discovery record and its maintainer-admission type |
 | Facade | `src/security/sandbox.rs` | Profiles, `SandboxConfig`, capability, enforcement, execution path, helper status protocol |
 
@@ -253,8 +253,41 @@ descriptors before starting Bubblewrap; the in-sandbox gate consumes the
 acknowledgment descriptor and marks the status descriptor close-on-exec before
 the requested exec. Missing receipts, malformed status, unsupported options,
 or setup failure refuse the launch. The obtained result records the exact path
-scope. Network, PID/IPC, seccomp, and resource limits are not inferred from
+scope.
+
+The mount-view guarantee list, unlike the network boundary, is **request-derived
+and not labelled as such in the descriptor**, with two exceptions. Its
+path-scope entries come from
+`linux_mount_view::enforcement_scope(spec)`; its PID/IPC and seccomp entries
+are appended from `spec.linux_process_isolation`. The exceptions are the two
+facts this route observes rather than requests. Bubblewrap's `child-pid` record
+proves the namespace and mount setup completed and the child exists, and it is
+what `obtained_network_enforcement` rests the network claim on. The Landlock
+process scope is applied by the trusted helper before it becomes Bubblewrap, so
+the helper writes one status record
+(`{"codegg-landlock-process-scope-abi": n}`) on the private status descriptor
+ahead of Bubblewrap's own records, and the descriptor's scope guarantee names
+the ABI that record carries — the number `apply_process_scopes()` returned,
+never a baseline the host need not have granted. A launch on the
+process-isolation tier whose helper reported no record states a limit naming
+the absence instead; the filesystem-only tier applies no scope at all, so it
+reports no ABI and says so in its limits. A reader must take the remaining
+entries as "requested and not contradicted", which is weaker than the numbers
+the two observed claims carry. Helper records are a prefix of the status
+stream, so the parent splits them off before decoding Bubblewrap's records;
+that keeps one decoder for one producer and keeps the helper's own failure
+reason readable when Bubblewrap never starts.
+
+The route's `abi` field stays `None`, because that field is the *backend's*
+version and Bubblewrap has none. The obtained Landlock ABI rides the guarantee
+list, where it is named with the scope it belongs to, so the durable audit
+label is `enforced:bubblewrap:abi=none` rather than a claim that attributes
+Landlock's version to Bubblewrap.
+
+Network, PID/IPC, seccomp, and resource limits are not inferred from
 mount setup.
+
+
 
 An additional internal `SandboxConfig::with_linux_process_isolation(true)` opt-in
 composes the mount view with Bubblewrap's PID and IPC namespaces and a private
@@ -471,7 +504,56 @@ capability or complete existing-tree policy. See
 `SandboxLaunchOutcome::Enforced` carries `guarantees` and `limits` alongside
 the backend id. Those lists are the honest boundary of each mechanism and
 are asserted in `tests/security_permission/sandbox_containment.inc`, so a backend can never be
-read as stronger than it is. Capability-stratified successor negotiation
+read as stronger than it is.
+
+**A decoded frame is a report; a disagreement is refused.** `Enforced { backend, .. }`
+is the helper's own account of what it applied, and the parent's
+`SandboxExecutionPath::Contained { backend }` is the *decision*, computed before
+spawn by `platform_sandbox_capability()`. The two can disagree — a probe that
+answered differently in the helper, or a helper that is not the binary the
+parent validated — and a disagreement must refuse rather than be recorded as
+containment under the mechanism the parent never selected.
+
+The **Linux** legacy acceptance does exactly that:
+`linux_launch::observe_legacy_outcome` refuses an `Enforced` frame naming any
+backend other than the route's own mechanism, so the reported identity is
+compared instead of trusted, and the launch fails closed. The comparison is a
+route invariant rather than a second selection: the registry registers no
+backend other than Landlock whose probe succeeds on Linux, and the protected
+mount view never reaches that projection, so the check is exact without
+re-probing — and a re-probe at acceptance would paper over a probe that changed
+between selection and launch. The comparison itself is
+`sandbox::verify_reported_backend`, shared and platform-neutral so a macOS
+acceptance site can call the same function; the `sandbox` unit test
+`a_frame_naming_another_backend_is_refused` fails if it stops.
+`guarantee::verify_helper_backend` was delivered for this comparison but cannot
+be the call site: its first parameter is a `SatisfiedContract`, which only the
+deliberately unwired `negotiate()` produces.
+
+**macOS carries the same comparison as a route invariant.** Its frame is decoded
+in `managed_process`, which is never told which backend the launch owner selected
+(`SandboxRequest::Required` carries the launch spec, not the selection). Rather
+than thread a selection no caller holds, the acceptance site names the invariant:
+the registry ships exactly two backends and each probe refuses off its platform,
+so exactly one backend is admissible per platform that ships this route.
+`sandbox::LEGACY_HELPER_BACKEND` is that fact as a value; the decode site passes
+it to `verify_reported_backend`, and a mismatch fails closed as `SandboxFailed`.
+The invariant is guarded rather than assumed —
+`sandbox::tests::the_legacy_helper_backend_is_the_only_one_the_registry_admits`
+fails the day a second backend becomes admissible on macOS, which is when the real
+carrier has to be introduced. A re-probe at acceptance would paper over a probe
+that changed between selection and launch, which is why the invariant — not a
+second probe — is what is compared.
+
+The status decoder accepts only setup shapes a producer writes, and the type
+carries only those shapes. `Enforced` is the sole setup frame: the protected
+mount view reports through Bubblewrap's own `--json-status-fd`, so no helper
+writes a mount-setup receipt onto the private channel, and there is no variant
+for one. A frame naming `BubblewrapReady` — the shape a decoder arm used to
+accept — now fails deserialization as malformed, because an accepted setup
+shape with no producer is a claim nothing can back.
+
+Capability-stratified successor negotiation
 (C042, ADR-0029 bounded test-only) lives in
 `src/security/sandbox/guarantee.rs`: the pure `negotiate()` function takes
 an immutable `RequestedGuarantees` plus attested `AttestedCapabilities`
@@ -485,8 +567,8 @@ profile is added; ADR-0030 remains proposed, not authorized:
 
 | Backend | Guarantees | Limits |
 |---|---|---|
-| landlock | deny-first allowlist, ABI 3+ write and truncate rights, ABI 2+ refer rights, `no_new_privs` privilege drop, inherited across `exec` | no network isolation; pre-open fds remain usable; filesystem permissions still apply |
-| seatbelt | writes confined to workspace + scratch, credential paths denied, inherited across `exec` | no network isolation; **no `no_new_privs` equivalent**, so a setuid binary in an allowed read root may regain privilege; pre-open fds remain usable; Apple Events / Launch Services are a cross-process channel; reads are broadly allowed — containment is write-confined, not read-allowlisted |
+| landlock | deny-first allowlist, ABI 3+ write and truncate rights, ABI 2+ refer rights, `no_new_privs` privilege drop, inherited across `exec`; on an ABI 6 host, signal and abstract-AF_UNIX-socket scoping recorded as an obtained fact | no network isolation; open file descriptors inherited before the profile apply remain usable; filesystem permissions still apply; pathname AF_UNIX sockets are not mediated; the default read set grants `/proc` and `/var/run` as trees |
+| seatbelt | writes confined to workspace + scratch, credential paths denied, inherited across `exec` | no network isolation; **no `no_new_privs` equivalent**, so a setuid binary in an allowed read root may regain privilege; open file descriptors inherited before the profile apply remain usable; Apple Events / Launch Services are a cross-process channel; reads are broadly allowed — containment is write-confined, not read-allowlisted |
 
 **Seatbelt (`src/security/sandbox/seatbelt.rs`).** `sandbox_init` accepts an
 arbitrary SBPL string **in-process** and is available on macOS 26.6.2
@@ -504,15 +586,197 @@ The `sandbox_init` FFI is `unsafe` and the root library denies
 `seatbelt::install_apply_hook` at startup. An uninstalled hook is a hard
 error, never a fallback to an uncontained exec.
 
-`policy.rs` grants read access to system runtimes and selected read-only Rust
-toolchain inputs. It does not allow broad `~/.config`, cache, Cargo, or
-Rustup ancestors. Rustup inputs come from `RUSTUP_HOME` when set, otherwise
-`$HOME/.rustup`, and are limited to `settings.toml`, `toolchains/`, and
-`update-hashes/`. Landlock grants are split around denied descendants, so a
-workspace or tool-root allowance cannot re-grant a nested credential. A
-missing denied child is preserved relative to its nearest existing parent.
-On Seatbelt, credential read/write denials are emitted after workspace write
-re-allow rules because SBPL evaluation is order-sensitive.
+Availability is a **symbol** question. `seatbelt::probe()` resolves
+`sandbox_init` with `dlsym(RTLD_DEFAULT, "sandbox_init")` and never calls it:
+the application is one-shot per process, so a probe that applied a profile
+would consume the helper's only application and every later launch in that
+process would fail with a second-call error. Resolution asks the loader what it
+bound in this address space — the same facility the applier calls — and changes
+no sandbox state, so the probe is repeatable and safe to call from the daemon's
+capability report as well as from the helper. The previous check asked only
+whether `/usr/bin/sandbox-exec` existed, which says nothing about the symbol
+the helper links; the front end is still required as a serviceability signal
+for the SBPL compiler. Neither check proves a given profile compiles —
+`seatbelt::apply_profile` is the real gate and fails closed.
+
+That resolution is the only `seatbelt`-owned `unsafe` call in the library. It
+carries a reviewed `#[allow(unsafe_code)]` on one function, the same narrow
+allowance `linux_mount_view::open_pinned` uses for `openat2`; the crate-level
+denial is narrowed there and lifted nowhere.
+
+#### Deliberately test-only and unwired surfaces
+
+Three sandbox surfaces look like production gates and are not. They are named
+here because "it exists and has tests" has been read as "it enforces
+something".
+
+| Surface | Status | Why it stays that way |
+|---|---|---|
+| `guarantee.rs` — `negotiate()`, `verify_helper_backend()`, `RequestedGuarantees`, `AttestedCapabilities`, `CapabilityFact`, `SatisfiedContract`, `Refusal` | Orphaned specification: unit tests only, no production caller, no external test consumer | A recorded closure delivered it (`plans/closure/windows-native-sandbox/042-status.md`) and a Windows dossier depends on its types, so deleting it would contradict recorded work for a tidiness gain. Wiring `negotiate()` is **not** a fix: refusing a request for a guarantee the mechanism never claimed changes refusal semantics and needs its own ADR. `verify_helper_backend()` is not the launch gate either — the acceptance site compares the reported and selected backend identities directly, because a `SatisfiedContract` cannot be had without the unwired `negotiate()`. |
+| `host_admission.rs` | Live **test** infrastructure | It backs the `host_admission_manifest` family member (`tests/security_permission/host_admission_manifest.inc`). It is not a launch gate, and it is not dead code. |
+| `windows-sandbox-test-support` (feature) | Debug-only harness | It returns `TestOnlyAppContainer`, never `Enforced`, and a release build fails compilation with the feature enabled. |
+
+The distinction runs one way only: none of these may be read as a containment
+claim. A surface with tests and no caller is a specification; a surface a
+launch passes through is a gate. Only the second may be described as
+enforcement.
+
+For Landlock, `policy.rs` grants read access to system runtimes and selected
+read-only Rust toolchain inputs. It does not allow broad `~/.config`, cache,
+Cargo, or Rustup ancestors. Rustup inputs come from `RUSTUP_HOME` when set,
+otherwise `$HOME/.rustup`, and are limited to `settings.toml`, `toolchains/`,
+and `update-hashes/`. Landlock grants are split around denied descendants, so a
+workspace or tool-root allowance cannot re-grant a nested credential. A missing
+denied child is preserved relative to its nearest existing parent. Seatbelt does
+**not** consume those read roots: `sbpl_profile` emits `(version 1)`,
+`(allow default)`, a blanket write deny with one write re-allow per writable
+root, and then one `deny file-read*` and one `deny file-write*` per denied root.
+Credential read/write denials are emitted after workspace write re-allow rules
+because SBPL evaluation is order-sensitive. **On Seatbelt the deny list is the
+read protection**; a credential path that is not listed is readable by a
+contained child, because reads are deliberately broad for tool compatibility.
+
+**Credential deny classification (C001).** Every candidate path is classified
+before it is denied, because a deny is total — read *and* write — and a wrong
+one breaks a supported toolchain:
+
+- `credential-only`: the path exists only to hold secrets; losing it costs an
+  authenticated fetch, never a build.
+- `config-with-embedded-secret`: legitimate build or tool configuration that
+  also holds credentials; denial removes both.
+- `private-user-store`: personal data with no toolchain role.
+
+A `config-with-embedded-secret` entry is denied only when the breakage is a
+visible, recoverable re-authentication. When denial would remove configuration a
+build needs and no narrower entry restores it, the entry is skipped.
+`~/.npmrc` — already denied wholesale and holding both registry auth and install
+settings — is the accepted precedent for this trade. The completed table:
+
+| Path | Class | Breakage if denied | Decision |
+|---|---|---|---|
+| `~/.git-credentials` | credential-only | `git push` / `git pull` over HTTPS with `credential.helper=store` cannot read the token; the user re-authenticates or uses a socket helper. | add |
+| `~/.config/git/credentials` | credential-only | the same for XDG-style credential stores. Only the credential file is denied — never `~/.config/git` — so `git` still reads its configuration. | add |
+| `~/.pgpass` | credential-only | `psql` prompts for a password (or needs `PGPASSWORD`). | add |
+| `~/.my.cnf` | config-with-embedded-secret | `mysql` prompts for a password and loses `[client]` defaults such as a socket path. | add — plaintext passwords share the file with ordinary client defaults, and the prompt is visible and recoverable. |
+| `~/.vault-token` | credential-only | `vault` requires `vault login` again. | add |
+| `~/.password-store` | credential-only | `pass` cannot read any entry; the GPG keys it would need are already denied at `~/.gnupg`. | add |
+| `~/.local/share/keyrings` | credential-only | libsecret consumers such as `git-credential-libsecret` cannot unlock the keyring and fall back to a prompt. | add |
+| `~/.config/op` | credential-only | the 1Password CLI loses its session and requires `op signin`. | add |
+| `~/.yarnrc.yml` | config-with-embedded-secret | Yarn Berry loses `npmAuthToken` and home-level settings; authenticated installs need `yarn npm login`. A project-level `.yarnrc.yml` lives in the workspace and stays readable. | add — the same shape as the already-denied `~/.npmrc`. |
+| `~/.m2/settings.xml` | config-with-embedded-secret | `mvn` loses `<servers>` credentials **and** `<mirrors>`/`<proxies>`; a build behind a mirror or proxy fails outright. | **skip** — denial breaks the build, not merely an authenticated fetch, and the credentials share the file with the configuration the build needs, so no narrower entry restores it. |
+| `~/.gradle/gradle.properties` | config-with-embedded-secret | Gradle loses signing and repository credentials **and** build properties (`org.gradle.jvmargs`, caching, daemon settings); the build can fail or change behaviour. | **skip** — same reason: one file holds the secret and the build configuration. |
+| `~/.bash_history` | private-user-store | none for any toolchain; the history may contain pasted secrets. | add |
+| `~/.zsh_history` | private-user-store | none for any toolchain; the history may contain pasted secrets. | add |
+| `~/Library/Messages` | private-user-store | none for any toolchain. | add |
+| `~/Library/Mail` | private-user-store | none for any toolchain. | add |
+| `~/Library/Safari` | private-user-store | none for any toolchain. | add |
+| `~/Library/Cookies` | private-user-store | none for any toolchain. | add |
+| Browser profiles under `~/Library/Application Support/<vendor>` | private-user-store | none for a command-line toolchain. | **skip** — the vendor directories are open-ended (`Google/Chrome`, `BraveSoftware`, `Firefox`, …); a curated enumeration would read as coverage while missing a browser, so the gap is recorded rather than claimed. Safari's stores are covered by the two entries above. |
+
+The accepted `config-with-embedded-secret` breakage is therefore `~/.npmrc`
+(pre-existing), `~/.my.cnf` and `~/.yarnrc.yml`: an authenticated fetch becomes
+an interactive login, and MySQL client defaults are lost. `~/.m2/settings.xml`
+and `~/.gradle/gradle.properties` are skipped because their denial would break a
+build. Two existing fail-closed consequences widen with the set: a denied
+regular file with hardlink aliases still makes `validate_denied_paths` refuse
+the launch, and a workspace rooted such that one of these paths falls beneath a
+writable root is still refused because Landlock cannot subtract a deny from a
+writable ancestor. The kernel evidence for the added entries relocates each one
+under a fixture root and drives it through `SandboxConfig::deny_paths`, so the
+fixture never opens a real credential file; the membership assertions in
+`policy.rs` tie each relocated copy back to the curated list, and every added
+entry is kernel-verified rather than only structurally asserted.
+
+**Linux default containment (C002, ADR-0061 Option B).** The default
+(`LegacyPrivateHelper`) route is Landlock filesystem rules **plus the Landlock
+ABI 6 process scope** — `Scope::SIGNAL | Scope::ABSTRACT_UNIX_SOCKET`, applied by
+a second `restrict_self()` in the helper before `exec`. No namespace, container
+runtime, or privileged helper is required, and nothing about network or pathname
+sockets changes.
+
+**Obtained** on a host with Landlock ABI 6: a contained child cannot signal a
+process outside its Landlock domain, and cannot connect to an abstract AF_UNIX
+socket created outside it. Both are reported as obtained facts — the status
+frame carries a guarantee naming the ABI the second `restrict_self()` returned,
+and the in-memory `BackendEnforcement::process_scope_abi` holds the same value.
+That value is never serialized to durable storage, so no wire or payload schema
+changed.
+
+**Not obtained, and stated as a limit rather than a guarantee:**
+
+- **Pathname AF_UNIX sockets.** Landlock does not mediate `connect(2)` on a
+  pathname socket; only the protected mount view hides those. The descriptor
+  never reuses the word "isolated" for this dimension.
+- **`/proc`.** The default read set still grants `/proc` as a tree, so a
+  same-uid process's `/proc/<pid>/environ` remains readable when host
+  permissions admit it. Narrowing is **pending**: the C002 work package A
+  requires a committed toolchain matrix (`/bin/sh -c true`, `git status`,
+  `cargo metadata`, a Python import, a Node import, and a name lookup) run with
+  the current grant set, with `/proc` removed, and with `/var/run` removed,
+  each removal justified by a recorded observation. The macOS authoring host
+  cannot produce that measurement, so no grant was removed on intuition and no
+  grant was widened.
+- **`/var/run`.** Still granted as a tree, so a host service socket remains
+  reachable whenever its mode admits the target's uid. Replacing it with the
+  specific files name lookup needs is pending the same matrix.
+- **Network.** Unchanged: no network isolation is claimed and loopback TCP stays
+  reachable.
+
+A host whose kernel cannot obtain ABI 6 keeps the filesystem-only tier and
+reports the scope as absent (a limit), never as a guarantee. Once the host has
+proved it can apply the scope, a failure to obtain it aborts before the target
+starts: there is no partial-contained state and no fallback that restores a
+broad grant. The kernel evidence for signal and abstract-socket scoping is
+**pending**: it must be produced by a Linux host running
+`tests/security_permission/sandbox_containment.inc` (member
+`default_landlock_scopes_signals_and_abstract_sockets_with_positive_control`)
+with Landlock ABI 6 (Linux 6.12+); a compiling cross-check is not kernel
+evidence.
+
+**Descriptor hygiene and grant-path pinning (C006).** Descriptor closure is
+part of the containment boundary on **every** contained launch, not only the
+opt-in process-isolation tier. `managed_process::configure_status_fds` runs in
+`pre_exec`, duplicates `SANDBOX_STATUS_FD` and `SANDBOX_ACK_FD` to temporary
+numbers, restores them to their fixed numbers, and only then closes what the
+launch does not hand the helper: `close_range` on Linux, a scan bounded by the
+process's own `RLIMIT_NOFILE` on macOS (Darwin has neither `close_range` nor
+`closefrom`). The hook allocates nothing, takes no lock, and logs nothing, so
+the `fork`→`exec` contract holds. The process-isolation tier keeps the closure
+it already had; the mount-view and default Landlock tiers and macOS now get the
+same one. The evidence is
+`a_contained_child_cannot_read_an_inherited_descriptor` (fixture member in
+`sandbox_containment.inc`): a non-`CLOEXEC` descriptor held by the launching
+process is unreadable by a contained child, and the positive control — the same
+descriptor through the helper with the daemon's closure out of the path — is
+readable. This is conditional rather than a live exploit: std and most
+tokio/SQLite handles are `CLOEXEC`, so most launches were not leaking; the
+channel is closed because the invariant, not the incident, is what has to hold.
+
+The closure does not make the descriptor channel disappear, and no tier may say
+it did. The helper's own status, acknowledgment, mount-source and seccomp
+descriptors cross the final `exec` by construction, so Landlock, Seatbelt and
+the Bubblewrap mount view all disclose the same limit, worded once in
+`backend::INHERITED_DESCRIPTOR_LIMIT`: *open file descriptors inherited before
+the profile apply remain usable*. The mount-view limits list previously omitted
+this channel while its scope text claimed unlisted host paths were absent from
+the fresh mount root — true of the mount tree, false of the descriptor table.
+All three tiers now name it identically, and none claims the channel is closed.
+
+Landlock grants are pinned by identity. `BackendPolicy` canonicalizes each root
+once; `landlock::apply` snapshots each root's `dev`/`ino` from that policy,
+opens the root through the shared `linux_mount_view::open_pinned` primitive
+(`openat2` with `RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS`, the same open the
+protected mount view uses for its sources), verifies the opened object against
+the snapshot, and binds the rule to that descriptor. A root replaced by a
+symlink is refused at the open; a root renamed or replaced by another object is
+refused by the identity check; both happen before `restrict_self`, so no
+partial ruleset exists. The rights mask is still classified by path, but the
+rule target is the pinned descriptor: if the two reads disagree, the mask is
+narrower (denies more) or `add_rule` rejects the incompatible pair, so a
+mismatch fails closed. The unit evidence is
+`a_grant_root_replaced_after_identity_capture_is_refused` plus the Linux
+`a_grant_root_replaced_between_policy_construction_and_apply_is_refused`; the
+positive control in both is the unchanged root, which is accepted.
 
 Persistent writes are restricted to approved workspace roots, authorized
 session scratch roots, and stateless device nodes. A model process with a

@@ -45,6 +45,7 @@
 
 pub mod agents;
 pub mod chat;
+pub mod chrome;
 pub mod help;
 pub mod hosted;
 pub mod session;
@@ -59,6 +60,7 @@ use ratatui::{buffer::Buffer, layout::Rect};
 use crate::tui::app::state::ChatState;
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::Component;
+use crate::tui::components::hint_line::HintLine;
 use crate::tui::components::sidebar::SidebarWidget;
 use crate::tui::input::{InputAction, InputMode};
 use crate::tui::theme::Theme;
@@ -71,16 +73,20 @@ use crate::tui::theme::Theme;
 ///
 /// ## The host owns the chrome
 ///
-/// The block painted here is the panel's identity: the name, and the `●` that
-/// marks which panel has the keyboard. A widget that then painted its own
-/// border over the same rect did not layer, it overwrote — the title and the
-/// focus dot included. Hence [`Component::render_in_panel`].
+/// The edge painted here is the panel's identity: the name, and the `●` that
+/// marks which panel has the keyboard. It comes from [`chrome::PanelChrome`],
+/// so a hosted panel indicates focus exactly as a bespoke one does — the title
+/// string a caller passes no longer carries the focus decision. A widget that
+/// then painted its own border over the same rect did not layer, it
+/// overwrote — the title and the focus dot included. Hence
+/// [`Component::render_in_panel`].
 pub fn render_hosted(
     widget: &mut dyn crate::tui::components::component::Component,
     buf: &mut Buffer,
     area: Rect,
     theme: &Arc<Theme>,
-    title: &str,
+    label: &str,
+    focused: bool,
 ) {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -106,13 +112,10 @@ pub fn render_hosted(
         cell.set_bg(theme.background);
     }
     let _ = terminal.draw(|frame| {
-        frame.render_widget(
-            ratatui::widgets::Block::default()
-                .borders(ratatui::widgets::Borders::ALL)
-                .title(title.to_string())
-                .border_style(ratatui::style::Style::default().fg(theme.border)),
-            frame.area(),
-        );
+        chrome::PanelChrome::new(label, focused, theme).draw(frame.area(), frame.buffer_mut());
+        // The widget keeps the whole column, not the inset area: its own
+        // `render_in_panel` is what positions the body inside the host's
+        // edge, and handing it the inset would inset it twice.
         widget.render_in_panel(frame, frame.area(), theme);
     });
 
@@ -404,11 +407,25 @@ pub fn direction_of(key: KeyEvent) -> Option<PanelDirection> {
 /// still typecheck and still swap *something*, which is exactly the kind of
 /// bug that reads as "the gesture is just weird". Ordering the two first and
 /// splitting only once removes the case where the branches disagree.
-fn two_slots_mut(
-    slots: &mut [PanelSlot],
-    a: PanelPlacement,
-    b: PanelPlacement,
-) -> (&mut PanelSlot, &mut PanelSlot) {
+/// Two slots borrowed at once, named by their place in the slot table.
+///
+/// The fields are named rather than positional because the helper sorts its
+/// arguments, so a tuple's meaning depends on the two indices rather than on
+/// the call. One caller destructured the tuple as `(from, to)` and was right
+/// only while the destination's index was the higher of the two: a move to an
+/// edge **earlier** in the table (`Left`→`Right`, `Bottom`→`Right`,
+/// `Bottom`→`Left`) read the destination as the origin, moved the
+/// destination's panel into the origin, and then selected an edge that never
+/// received the panel. Naming the fields makes that unreadable rather than
+/// wrong.
+struct SlotPair<'a> {
+    /// The slot at the lower table index.
+    low: &'a mut PanelSlot,
+    /// The slot at the higher table index.
+    high: &'a mut PanelSlot,
+}
+
+fn two_slots_mut(slots: &mut [PanelSlot], a: PanelPlacement, b: PanelPlacement) -> SlotPair<'_> {
     debug_assert_ne!(a, b, "a slot cannot be borrowed twice");
     let (first, second) = if a.index() <= b.index() {
         (a, b)
@@ -416,7 +433,10 @@ fn two_slots_mut(
         (b, a)
     };
     let (low, high) = slots.split_at_mut(second.index());
-    (&mut low[first.index()], &mut high[0])
+    SlotPair {
+        low: &mut low[first.index()],
+        high: &mut high[0],
+    }
 }
 
 /// One swappable side panel.
@@ -1348,8 +1368,16 @@ impl SidePanelHost {
                 return;
             }
             // Borrow both slots at once, so the move is a single operation
-            // rather than two steps a reader could interleave wrongly.
-            let (from_slot, to_slot) = two_slots_mut(&mut self.slots, origin, placement);
+            // rather than two steps a reader could interleave wrongly. The
+            // pair is named by table position, so which borrow is the origin
+            // is decided here and not by the order the helper happened to
+            // receive or return.
+            let pair = two_slots_mut(&mut self.slots, origin, placement);
+            let (from_slot, to_slot) = if origin.index() < placement.index() {
+                (pair.low, pair.high)
+            } else {
+                (pair.high, pair.low)
+            };
             from_slot.release_to(to_slot);
         } else {
             self.slot_mut(placement).occupy(id);
@@ -1523,7 +1551,11 @@ impl SidePanelHost {
         if !self.is_focused() || terminal_reading {
             return panel;
         }
-        panel.map(|panel| format!("⇧Q leave · {panel}"))
+        panel.map(|panel| {
+            let mut hint = HintLine::new();
+            hint.push("⇧Q", "leave").push(&panel, "");
+            hint.render(0)
+        })
     }
 
     /// Chat panel's composer buffer, so a keystroke can mirror it into the
@@ -2123,6 +2155,53 @@ mod tests {
         );
     }
 
+    /// The direction the slot table gets wrong when its borrows are named by
+    /// argument order rather than by position: a move to an edge **earlier**
+    /// in the table.
+    ///
+    /// [`PanelPlacement::index`] orders `Right` 0, `Left` 1, `Bottom` 2, and
+    /// [`two_slots_mut`] returns its pair sorted by that index. Reading the
+    /// pair as `(from, to)` therefore moves the *destination* into the
+    /// origin, so the panel the gesture named disappears and the edge the
+    /// host then selects never received it. Every existing swap test moves to
+    /// a later edge (`Right`→`Left`, `Right`→`Bottom`, `Left`→`Bottom`),
+    /// which is the direction that happened to read correctly.
+    #[test]
+    fn a_move_to_an_earlier_edge_moves_the_panel_the_gesture_named() {
+        let mut host = SidePanelHost::new();
+        host.dock(SidePanelId::Chat, PanelPlacement::Bottom);
+        host.dock(SidePanelId::Chat, PanelPlacement::Right);
+        assert_eq!(
+            host.panel_at(PanelPlacement::Right),
+            SidePanelId::Chat,
+            "Bottom→Right must land the panel on the edge the gesture named"
+        );
+        assert_eq!(
+            host.panel_at(PanelPlacement::Bottom),
+            SidePanelId::Session,
+            "and Bottom must restore the panel it was showing before"
+        );
+
+        // The same index direction from the other edge: Left is 1, Right is 0.
+        host.dock(SidePanelId::Chat, PanelPlacement::Left);
+        host.dock(SidePanelId::Chat, PanelPlacement::Right);
+        assert_eq!(
+            host.panel_at(PanelPlacement::Right),
+            SidePanelId::Chat,
+            "Left→Right must land the panel on the edge the gesture named"
+        );
+        assert_eq!(
+            host.panel_at(PanelPlacement::Left),
+            SidePanelId::Session,
+            "and Left must restore the panel it was showing before"
+        );
+        assert_eq!(
+            host.placement(),
+            PanelPlacement::Right,
+            "the selected edge is the one that received the panel"
+        );
+    }
+
     /// The user's own scenario: an edge that was collapsed before the panel
     /// arrived has nothing to restore, so it goes back to collapsed rather
     /// than to an arbitrary default panel.
@@ -2303,7 +2382,7 @@ mod tests {
             cell.set_symbol("X");
         }
         let area = Rect::new(70, 5, 30, 20);
-        render_hosted(&mut widget, &mut buf, area, &theme, " Panel ");
+        render_hosted(&mut widget, &mut buf, area, &theme, "Panel", false);
 
         // Nothing outside the column is touched. The old copy loop
         // intersected the scratch with the screen buffer, which painted the
@@ -2584,13 +2663,13 @@ mod tests {
         let mut dialog = FilesDialog::new(Arc::clone(&theme));
         let area = Rect::new(0, 0, 30, 8);
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 8));
-        render_hosted(&mut dialog, &mut buf, area, &theme, " ● Files ");
+        render_hosted(&mut dialog, &mut buf, area, &theme, "Files", true);
 
         let title_row: String = (0..30)
             .map(|x| buf.cell((x, 0)).expect("in bounds").symbol().to_string())
             .collect();
         assert!(
-            title_row.contains("● Files"),
+            title_row.contains("Files ●"),
             "the host's title and focus dot must survive the widget, got {title_row:?}"
         );
     }
@@ -2608,7 +2687,8 @@ mod tests {
             &mut buf,
             Rect::new(0, 0, 20, 6),
             &theme,
-            " Keyless ",
+            "Keyless",
+            false,
         );
         let row: String = (0..20)
             .map(|x| buf.cell((x, 0)).expect("in bounds").symbol().to_string())

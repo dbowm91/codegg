@@ -136,10 +136,18 @@ impl BackendPolicy {
         }
     }
 
-    /// Compile the requested sets into the closest Landlock allowlist. Deny
-    /// descendants are removed from file grants; directory-listing rights on
-    /// their ancestors are retained separately. Seatbelt uses the requested
-    /// roots directly and applies its explicit final deny rules.
+    /// Compile the requested sets into the closest Landlock allowlist.
+    ///
+    /// Deny descendants are removed from file grants while their ancestors
+    /// keep a separate directory-listing right, so a denied file is hidden
+    /// without making its parent unreadable. **That deny-first carving is
+    /// Landlock's alone.**
+    ///
+    /// Seatbelt does not consume the carved result: `seatbelt::sbpl_profile`
+    /// renders `write_roots` and `denied_roots` in SBPL's last-rule-wins order
+    /// and never reads `read_roots` or `read_dir_roots`. Its read posture is
+    /// `(allow default)` plus the explicit credential denies, so this method's
+    /// shape is not the macOS contract and must not be read as one.
     pub fn landlock_effective(&self) -> Self {
         let (read_roots, read_dir_roots) =
             Self::carve_read_denied(self.read_roots.clone(), &self.denied_roots);
@@ -599,6 +607,15 @@ pub fn sensitive_deny_paths() -> Vec<PathBuf> {
             ".netrc",
             ".npmrc",
             ".pypirc",
+            ".git-credentials",
+            ".config/git/credentials",
+            ".pgpass",
+            ".my.cnf",
+            ".vault-token",
+            ".password-store",
+            ".local/share/keyrings",
+            ".config/op",
+            ".yarnrc.yml",
             ".gem/credentials",
             ".cargo/credentials",
             ".cargo/credentials.toml",
@@ -612,6 +629,12 @@ pub fn sensitive_deny_paths() -> Vec<PathBuf> {
             // must never be able to read the secrets the agent itself uses.
             ".config/codegg",
             ".codegg",
+            ".bash_history",
+            ".zsh_history",
+            "Library/Messages",
+            "Library/Mail",
+            "Library/Safari",
+            "Library/Cookies",
             "Library/Keychains",
             "Library/Application Support/codegg",
         ] {
@@ -695,6 +718,58 @@ fn windows_env_dir(name: &str) -> Option<PathBuf> {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .filter(|path| path.is_dir())
+}
+
+/// Snapshot the device/inode identity of a policy path.
+///
+/// The snapshot is taken **before** the object is opened for a rule, so an
+/// object substituted afterwards is refused by [`verify_path_identity`]
+/// instead of being granted. `symlink_metadata` is deliberate: a canonical
+/// policy root is not an alias, and a path that is one now has changed since
+/// the policy was built.
+#[cfg(any(target_os = "linux", all(test, unix)))]
+pub fn capture_path_identity(path: &Path) -> Result<super::SandboxPathIdentity, String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        format!(
+            "cannot snapshot sandbox path identity {}: {error}",
+            path.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "sandbox path is a symlink and cannot be granted: {}",
+            path.display()
+        ));
+    }
+    Ok(super::SandboxPathIdentity {
+        path: path.to_path_buf(),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+/// Verify that an opened object is the one the policy captured.
+///
+/// A grant is bound to the object, not the name it was reached by: a root that
+/// was renamed or replaced between policy construction and rule compilation is
+/// refused here rather than granted in its new form.
+#[cfg(any(target_os = "linux", all(test, unix)))]
+pub fn verify_path_identity(
+    path: &Path,
+    expected: &super::SandboxPathIdentity,
+    actual: &std::fs::Metadata,
+) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+
+    if actual.dev() == expected.device && actual.ino() == expected.inode {
+        return Ok(());
+    }
+    Err(format!(
+        "sandbox path changed after its identity was captured: {}",
+        path.display()
+    ))
 }
 
 #[cfg(all(test, unix))]
@@ -848,6 +923,111 @@ mod tests {
                 rustup_home.path().join("credentials.toml")
             ]
         );
+    }
+
+    const CURATED_HOME_DENY_ROWS: &[&str] = &[
+        ".git-credentials",
+        ".config/git/credentials",
+        ".pgpass",
+        ".my.cnf",
+        ".vault-token",
+        ".password-store",
+        ".local/share/keyrings",
+        ".config/op",
+        ".yarnrc.yml",
+        ".bash_history",
+        ".zsh_history",
+        "Library/Messages",
+        "Library/Mail",
+        "Library/Safari",
+        "Library/Cookies",
+    ];
+
+    #[test]
+    fn curated_credential_deny_set_is_complete() {
+        let home = home_dir().expect("HOME is required for the curated deny set");
+        let raw = sensitive_deny_paths();
+        for relative in CURATED_HOME_DENY_ROWS {
+            assert!(
+                raw.iter().any(|root| root == &home.join(relative)),
+                "{relative} is classified for denial in architecture/security.md \
+                 but is absent from sensitive_deny_paths()"
+            );
+        }
+    }
+
+    #[test]
+    fn absent_curated_credential_denies_resolve_under_the_nearest_parent() {
+        let home = home_dir().expect("HOME is required for the curated deny set");
+        let canonical_home = home.canonicalize().expect("canonical HOME");
+        for relative in CURATED_HOME_DENY_ROWS {
+            let raw = home.join(relative);
+            let denied = BackendPolicy::new(Vec::new(), Vec::new(), vec![raw.clone()]).denied_roots;
+            assert_eq!(
+                denied.len(),
+                1,
+                "{relative} must resolve to exactly one deny"
+            );
+            let resolved = &denied[0];
+            assert!(
+                resolved.ends_with(relative)
+                    || std::fs::canonicalize(&raw).is_ok_and(|canonical| canonical == *resolved),
+                "a missing deny must stay denied relative to its nearest existing parent: \
+                 {relative} -> {resolved:?}"
+            );
+            assert_ne!(
+                *resolved, canonical_home,
+                "resolving {relative} must never widen into all of HOME"
+            );
+        }
+    }
+
+    #[test]
+    fn curated_credential_denies_render_after_write_reallows() {
+        let workspace = tempfile::tempdir().expect("workspace fixture");
+        let spec = SandboxLaunchSpec {
+            env: Vec::new(),
+            linux_protected_mount_view: false,
+            linux_process_isolation: false,
+            linux_offline_network: false,
+            protected_readonly_paths: Vec::new(),
+            path_identities: Vec::new(),
+            expected_created_git_pointers: Vec::new(),
+            target: PathBuf::from("/bin/sh"),
+            args: vec!["-c".to_string(), "true".to_string()],
+            read_paths: vec![workspace.path().to_path_buf()],
+            write_paths: vec![workspace.path().to_path_buf()],
+            deny_paths: sensitive_deny_paths(),
+        };
+        let policy = BackendPolicy::for_spec(&spec);
+        let profile = crate::security::sandbox::seatbelt::sbpl_profile(&policy);
+        let last_reallow = profile
+            .rfind("(allow file-write*")
+            .expect("a writable root must be re-allowed");
+        let home = home_dir().expect("HOME is required for the curated deny set");
+        for relative in CURATED_HOME_DENY_ROWS {
+            let raw = home.join(relative);
+            let resolved = policy
+                .denied_roots
+                .iter()
+                .find(|root| {
+                    root.ends_with(relative)
+                        || std::fs::canonicalize(&raw).is_ok_and(|canonical| canonical == **root)
+                })
+                .unwrap_or_else(|| {
+                    panic!("no resolved deny for {relative}: {:?}", policy.denied_roots)
+                });
+            for operation in ["file-read*", "file-write*"] {
+                let rule = format!("(deny {operation} (subpath \"{}\"))", resolved.display());
+                let at = profile
+                    .find(&rule)
+                    .unwrap_or_else(|| panic!("{rule} must be rendered in the SBPL profile"));
+                assert!(
+                    at > last_reallow,
+                    "{rule} must follow every write re-allow rule"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1079,6 +1259,41 @@ mod tests {
         assert!(
             !policy.denied_roots.is_empty(),
             "a policy must carry the deny intent into the backend"
+        );
+    }
+
+    #[test]
+    fn a_grant_root_replaced_after_identity_capture_is_refused() {
+        let directory = tempfile::tempdir().expect("fixture root");
+        let root = directory.path().join("granted");
+        std::fs::create_dir(&root).expect("grant root");
+
+        // The policy captures the object before a backend opens it.
+        let identity = capture_path_identity(&root).expect("identity snapshot");
+        let unchanged = std::fs::symlink_metadata(&root).expect("unchanged metadata");
+        verify_path_identity(&root, &identity, &unchanged)
+            .expect("the unchanged root is the object the policy captured");
+
+        // Replace the root with a symlink after the policy saw the directory.
+        let displaced = directory.path().join("displaced");
+        std::fs::rename(&root, &displaced).expect("displace the grant root");
+        std::os::unix::fs::symlink(&displaced, &root).expect("symlink replacement");
+
+        let swapped = std::fs::symlink_metadata(&root).expect("replacement metadata");
+        let error = verify_path_identity(&root, &identity, &swapped)
+            .expect_err("a grant root replaced after policy construction must refuse");
+        assert!(
+            error.contains("changed after its identity was captured"),
+            "the refusal must name the identity change: {error}"
+        );
+
+        // A symlink is never a grant root even before it is opened, because a
+        // path that became an alias is no longer the canonical policy root.
+        let alias_error =
+            capture_path_identity(&root).expect_err("a symlinked grant root must refuse");
+        assert!(
+            alias_error.contains("symlink and cannot be granted"),
+            "the refusal must name the alias: {alias_error}"
         );
     }
 }

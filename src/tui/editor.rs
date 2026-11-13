@@ -25,7 +25,9 @@ use codegg_document::{BytePosition, DocumentSnapshot, TextEdit, TextTransaction}
 use codegg_protocol::document::MAX_DOCUMENT_EDITS;
 use codegg_protocol::lsp::LspReadOperation;
 
-use super::document_session::TuiDocumentPresentation;
+use super::document_session::{
+    JumplistEntry, JumplistIdentity, JumplistPush, TuiDocumentPresentation,
+};
 use super::text_geometry;
 use crate::tui::editor_effect::{ClipboardVerb, EditorPendingEffect};
 use crate::tui::editor_lsp::EditorDiagnosticStep;
@@ -53,6 +55,48 @@ pub const MAX_EDITOR_UNDO_BYTES: usize = 4 * 1024 * 1024;
 /// grammar that needs a longer label fails a test instead of silently
 /// truncating into an indistinguishable blank.
 pub const MAX_EDITOR_PENDING_PREFIX: usize = 5;
+
+/// The widest count a motion accepts.
+///
+/// A count saturates here rather than wrapping: `9999` is four digits, more
+/// than a reader types on purpose, and the motion loop stops at the document's
+/// own boundary long before the bound is reached. A wider bound would only
+/// move the refusal further away, without making a single motion cheaper.
+pub const MAX_COUNT: usize = 9999;
+
+/// Most keys one recorded gesture holds.
+///
+/// A recording is a **bounded gesture**, not a session log. One hundred and
+/// twenty-eight keys is far more than an insert anyone repeats (`o`, a line of
+/// text, a backspace or two) and small enough that the log can never be
+/// mistaken for a buffer. Reaching the cap refuses the recording rather than
+/// keeping its prefix: half a gesture is a different edit. See
+/// [`KeyRecorder`](super::document_session::KeyRecorder).
+pub const MAX_RECORDED_KEYS: usize = 128;
+
+/// The notice a replay shows when one is already running.
+///
+/// A replay that re-entered itself would run a second gesture over the first
+/// one's half-applied edits, so it is refused instead.
+pub const REPLAY_IN_PROGRESS: &str = "a replay is already running — let it finish before repeating";
+
+/// The notice a `.` shows when the gesture it would repeat is not repeatable.
+///
+/// The crossing of [`MAX_RECORDED_KEYS`] is disclosed when it happens, and this
+/// is the same fact at the moment the reader asks for the repeat.
+pub fn recording_capped_notice() -> String {
+    format!(
+        "insert recording stopped at {MAX_RECORDED_KEYS} keys — this insert is not repeatable with `.`"
+    )
+}
+
+/// The notice a replay shows when the document refuses edits.
+///
+/// The usual refusal is the read-only one and says so itself; this is the
+/// same answer for the states that block edits for another reason (busy,
+/// conflict, resync required), where the status row carries the reason.
+pub const REPLAY_REFUSED: &str =
+    "repeat refused: the document is not accepting edits, so nothing was replayed";
 
 /// The multi-key grammar the editor is waiting on.
 ///
@@ -122,6 +166,29 @@ pub enum EditorPrefix {
     /// The payload rides in the variant, so the presentation still has
     /// exactly one prefix field and the prefix-state guard stays green.
     MatchArg(MatchArg),
+    /// Helix's `"` — waiting for a **register name**.
+    ///
+    /// The name is data, exactly as `f`'s target and `m`'s argument are, so
+    /// this is a capture ([`Self::is_capture`]). Unlike them, the name does
+    /// not complete the gesture: it selects a register for the verb that
+    /// follows, which is why the machine re-arms as [`Self::RegisterNamed`]
+    /// rather than disarming.
+    Register,
+    /// Helix's `"` with its **captured name** — waiting for the verb that
+    /// consumes the selection.
+    ///
+    /// The name rides in the variant for the same reason [`Self::MatchArg`]'s
+    /// argument does: the presentation keeps exactly one prefix field, and the
+    /// selection's lifetime is the machine's. A separate `selected_register`
+    /// field would be a second grammar with a second clearing rule, and a
+    /// selection that outlived an unrelated key would be exactly the sticky
+    /// state this type exists to avoid — `"a`, `j`, `p` must not paste from
+    /// `a`.
+    ///
+    /// The verbs it accepts are `y`, `p`, `P` and `R`, plus `d`/`c` for the
+    /// blackhole's sake — [`Self::swallows_unmatched`] explains what happens
+    /// to a key outside that set.
+    RegisterNamed(char),
 }
 
 /// What the `m` grammar is waiting for.
@@ -217,7 +284,10 @@ impl EditorPrefix {
     /// dispatch without also being added here — which is what would leave it
     /// resolving an armed prefix down the leaf lookup and out to the composer.
     pub fn is_capture(self) -> bool {
-        self.is_find() || self == EditorPrefix::ReplaceChar || self.match_arg().is_some()
+        self.is_find()
+            || self == EditorPrefix::ReplaceChar
+            || self.awaits_register_name()
+            || self.match_arg().is_some()
     }
 
     /// The `m` argument this prefix is waiting for, when it is one.
@@ -238,6 +308,28 @@ impl EditorPrefix {
     /// Whether this prefix is waiting for the character `r` replaces with.
     pub fn is_replace_char(self) -> bool {
         self == EditorPrefix::ReplaceChar
+    }
+
+    /// Whether this prefix is waiting for a **register name**.
+    ///
+    /// The first level of the `"` grammar. The name is data, so this is a
+    /// capture; but unlike `f`'s target it does not complete the gesture — it
+    /// selects a register for the verb after it.
+    pub fn awaits_register_name(self) -> bool {
+        self == EditorPrefix::Register
+    }
+
+    /// The register name this prefix has captured, when it has one.
+    ///
+    /// The second level of the `"` grammar, beside [`Self::match_arg`] for the
+    /// `m` grammar's second level. One answer rather than a `==` test at each
+    /// call site, so the resolver cannot mistake the name-pending state for
+    /// the verb-pending one.
+    pub fn register_name(self) -> Option<char> {
+        match self {
+            EditorPrefix::RegisterNamed(name) => Some(name),
+            _ => None,
+        }
     }
 
     /// The prefix `glyph` arms, when `glyph` is one of the find keys.
@@ -292,6 +384,8 @@ impl EditorPrefix {
             EditorPrefix::FindTillPrevious => "T".into(),
             EditorPrefix::ReplaceChar => "r".into(),
             EditorPrefix::Match => "m".into(),
+            EditorPrefix::Register => "\"".into(),
+            EditorPrefix::RegisterNamed(name) => format!("\"{name}").into(),
             EditorPrefix::MatchArg(MatchArg::SurroundReplaceTo(from)) => {
                 format!("{} {}", MatchArg::SurroundReplaceFrom.command(), from).into()
             }
@@ -319,10 +413,15 @@ impl EditorPrefix {
     /// complete them. `r` is empty for the same reason — it takes the
     /// character to write, not a key that means "replace".
     ///
-    /// Every empty row above is a **capture** ([`Self::is_capture`]); a prefix
-    /// with leaves is one the dispatch resolves by glyph lookup. That claim
-    /// used to be false of `[`/`]` — they sat in this arm too, unarmed, until
-    /// M006 gave them [`OPEN_BRACKET_LEAVES`] and [`CLOSE_BRACKET_LEAVES`].
+    /// Every empty row above is a **capture** ([`Self::is_capture`]) or a
+    /// prefix whose term is not a glyph at all; a prefix with leaves is one the
+    /// dispatch resolves by glyph lookup. That claim used to be false of
+    /// `[`/`]` — they sat in this arm too, unarmed, until M006 gave them
+    /// [`OPEN_BRACKET_LEAVES`] and [`CLOSE_BRACKET_LEAVES`]. The register
+    /// grammar's second level, [`Self::RegisterNamed`], is the first prefix
+    /// whose term is a **verb** from a closed set rather than a glyph: each of
+    /// the four it accepts needs the captured name as an argument, so a
+    /// `PrefixLeaf` row could name the verb but not the register it acts on.
     pub fn leaves(self) -> &'static [PrefixLeaf] {
         match self {
             EditorPrefix::Goto => GOTO_LEAVES,
@@ -337,7 +436,15 @@ impl EditorPrefix {
             | EditorPrefix::FindTillNext
             | EditorPrefix::FindTillPrevious
             | EditorPrefix::ReplaceChar
-            | EditorPrefix::MatchArg(_) => &[],
+            | EditorPrefix::MatchArg(_)
+            // The `"` grammar's two levels. The first is a capture (the name
+            // is data); the second takes a **verb**, not a glyph, and each of
+            // the four it accepts needs the captured name as an argument — so
+            // neither can be a `PrefixLeaf` row without a payload the action
+            // type does not carry. `commands::editor::resolve_register_verb`
+            // is the table for it.
+            | EditorPrefix::Register
+            | EditorPrefix::RegisterNamed(_) => &[],
         }
     }
 
@@ -372,8 +479,22 @@ impl EditorPrefix {
     /// which does not recognise the next key returns it to the composer
     /// rather than eating it. A swallowed `m z` would type nothing at all,
     /// which is the M002 failure mode this milestone exists to end.
+    ///
+    /// `"` **swallows** while it waits for a name, the one deliberate
+    /// exception to the rule above. Its argument is a **closed vocabulary** —
+    /// `a`–`z`, `"`, `_`, `/` — so every character that could be a register is
+    /// captured, including the destructive ones (`"D` is a rejected name, not
+    /// a delete). The mismatch path therefore only sees keys that are not
+    /// characters, and handing one back would run it from a gesture the reader
+    /// had already committed to: `"` then `Tab` would toggle the composer.
+    /// Vim consumes the argument the same way, and Helix's `select_register`
+    /// is a prompt, which also consumes keys rather than executing them.
+    ///
+    /// [`Self::RegisterNamed`] retries: its next key is a *verb*, and one the
+    /// register grammar does not honour (`j`, `space`, `w`) is an ordinary
+    /// command the reader meant to run — Vim's `"a` then `j` still moves.
     pub fn swallows_unmatched(self) -> bool {
-        self == EditorPrefix::Goto || self == EditorPrefix::View
+        self == EditorPrefix::Goto || self == EditorPrefix::View || self == EditorPrefix::Register
     }
 }
 
@@ -422,6 +543,16 @@ pub enum PrefixAction {
     /// difference is a whole second level: the motion arm promises to move
     /// the cursor, and arming a capture moves nothing.
     Capture(MatchArg),
+    /// Toggle the buffer's comment style over the covered lines.
+    ///
+    /// An [`EditorCommand`] cannot stand in for this: the token is the
+    /// buffer's grammar's, and the grammar is resolved from the attachment's
+    /// path — which the leaf table, being a `const`, could not carry. The
+    /// leaf names the **style**, and the resolver builds the verb.
+    ToggleComments {
+        /// `space C` — force the block pair.
+        block: bool,
+    },
 }
 
 /// One row of a prefix's leaf table.
@@ -722,13 +853,14 @@ pub const SPACE_LEAVES: &[PrefixLeaf] = &[
             "buffer list: one document is attached at a time, so there is no list to choose from",
         )),
     },
-    // `space j` — the jumplist. This editor keeps no visited-position
-    // history, so there is nothing to jump back to.
+    // `space j` — the jumplist picker. The entries are the positions the
+    // editor's named jumps started from; Helix's `Ctrl-i`/`Ctrl-o` stepping
+    // pair is **not** bindable here (`Ctrl-i` arrives as `Tab`, which toggles
+    // the composer, and `Ctrl-o` is the workspace dashboard), so the picker is
+    // the whole delivered gesture. See `docs/tui.md` and the M006 plan's D1.
     PrefixLeaf {
         glyph: 'j',
-        action: PrefixAction::Effect(EditorPendingEffect::Unavailable(
-            "jumplist: this editor keeps no visited-position history",
-        )),
+        action: PrefixAction::Effect(EditorPendingEffect::OpenJumplist),
     },
     // `space D` — workspace diagnostics. The daemon publishes per-project
     // diagnostics, but no server capability backs a separate "workspace
@@ -740,20 +872,17 @@ pub const SPACE_LEAVES: &[PrefixLeaf] = &[
             "workspace diagnostics: no server capability backs a separate request; `space d` opens the panel",
         )),
     },
-    // `space c` / `space C` — comment toggles. Nothing in this repository
-    // knows a comment syntax for the buffer it is editing, so the toggle
-    // would have to guess and could guess wrong.
+    // `space c` / `space C` — comment toggles. The token comes from the
+    // buffer's own grammar, through the same `syntax_for` the highlighter
+    // reads, so a file that colours correctly toggles correctly; a syntax
+    // that declares no token is a stated refusal rather than a guess.
     PrefixLeaf {
         glyph: 'c',
-        action: PrefixAction::Effect(EditorPendingEffect::Unavailable(
-            "toggle comment: this build knows no comment syntax for the edited buffer",
-        )),
+        action: PrefixAction::ToggleComments { block: false },
     },
     PrefixLeaf {
         glyph: 'C',
-        action: PrefixAction::Effect(EditorPendingEffect::Unavailable(
-            "toggle block comment: this build knows no comment syntax for the edited buffer",
-        )),
+        action: PrefixAction::ToggleComments { block: true },
     },
     // `space '` — the last picker. The pickers here are not fuzzy, so there
     // is no "last query" for a picker to recall.
@@ -949,10 +1078,14 @@ pub const MAX_EDITOR_SEARCH_MATCHES: usize = 2_000;
 pub const MAX_EDITOR_SEARCH_BYTES: usize = 2 * 1024 * 1024;
 
 /// One resolved `/` search outcome.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchOutcome {
-    /// Retained match start offsets, ascending.
-    pub matches: Vec<usize>,
+    /// Retained match **spans**, ascending and non-overlapping.
+    ///
+    /// A span rather than a start offset because a match has an extent: it is
+    /// what `s` selects and what the renderer can highlight exactly. Every
+    /// endpoint is on a character boundary and inside the scanned window.
+    pub matches: Vec<std::ops::Range<usize>>,
     /// Whether matches beyond [`MAX_EDITOR_SEARCH_MATCHES`] existed and were
     /// dropped. Disclosed rather than hidden: a truncated match list that
     /// looks complete is the same defect as unvalidated LSP coverage.
@@ -960,24 +1093,70 @@ pub struct SearchOutcome {
     /// Whether the scan stopped at [`MAX_EDITOR_SEARCH_BYTES`] before the
     /// end of the document.
     pub bounded: bool,
+    /// Why the pattern could not be compiled, when it could not.
+    ///
+    /// On the outcome rather than returned as an `Err` so a caller cannot
+    /// confuse "this is not a regex" with "this matched nothing": the first
+    /// is a notice naming the compiler's reason, the second is an ordinary
+    /// empty result and says nothing.
+    pub pattern_error: Option<String>,
 }
 
-/// Find every occurrence of `needle` in `snapshot`, bounded.
-///
-/// Offsets are absolute UTF-8 byte offsets into the replica and are always
-/// character boundaries, because they are handed straight to the renderer
-/// and to the cursor. The full ascending list is returned rather than a
-/// slice starting at the cursor: `n` and `N` index it directly, so the
-/// cursor's position is part of what the *caller* asks for
-/// ([`next_match_index`]) instead of a post-hoc adjustment here.
-pub fn find_matches(snapshot: &DocumentSnapshot, needle: &str) -> SearchOutcome {
-    if needle.is_empty() {
-        return SearchOutcome {
-            matches: Vec::new(),
-            truncated: false,
-            bounded: false,
-        };
+impl SearchOutcome {
+    /// Which scan bound was reached, in reader-facing words, if one was.
+    ///
+    /// The milestone requires the disclosure to name **which** bound was hit
+    /// rather than say the result was merely partial: a match list that
+    /// stopped at the entry cap and a scan that stopped at the byte window
+    /// call for different next steps.
+    pub fn bound_note(&self) -> Option<String> {
+        let count = MAX_EDITOR_SEARCH_MATCHES;
+        let mib = MAX_EDITOR_SEARCH_BYTES / (1024 * 1024);
+        match (self.truncated, self.bounded) {
+            (false, false) => None,
+            (true, false) => Some(format!("partial: the first {count} matches")),
+            (false, true) => Some(format!("partial: within the {mib} MiB scan window")),
+            (true, true) => Some(format!(
+                "partial: the first {count} matches, within the {mib} MiB scan window"
+            )),
+        }
     }
+}
+
+/// Find every match of the **regex** `pattern` in `snapshot`, bounded.
+///
+/// One compiler: the pattern goes through [`compile_selection_regex`], the
+/// function `S`, `s`, `K` and `Alt-K` use, so the search and the selection
+/// verbs cannot disagree about what compiles or about the program-size bound.
+///
+/// **Zero-width matches are not search matches.** `x*` and `\b` match the
+/// empty string; such a match cannot be selected or highlighted, and it would
+/// let `n` re-report one offset. The scan skips them — a rule, not an
+/// accident, so do not "fix" the skip.
+///
+/// The window is the leading [`MAX_EDITOR_SEARCH_BYTES`] cut at a character
+/// boundary, so `^`/`$` bind to line boundaries *inside that window*; a
+/// document past it is reported as [`SearchOutcome::bounded`].
+///
+/// Spans are absolute UTF-8 byte offsets into the replica and always on
+/// character boundaries, because they are handed straight to the renderer and
+/// to the cursor. The full ascending list is returned rather than a slice
+/// starting at the cursor: `n` and `N` index it directly, so the cursor's
+/// position is part of what the *caller* asks for ([`next_match_index`])
+/// instead of a post-hoc adjustment here.
+pub fn find_matches(snapshot: &DocumentSnapshot, pattern: &str) -> SearchOutcome {
+    if pattern.is_empty() {
+        return SearchOutcome::default();
+    }
+    let regex = match compile_selection_regex(pattern) {
+        Ok(regex) => regex,
+        Err(reason) => {
+            return SearchOutcome {
+                pattern_error: Some(reason),
+                ..SearchOutcome::default()
+            }
+        }
+    };
     let total = snapshot.len_bytes();
     // Cut the scanned window at a character boundary, and never report the
     // bound as reached when the document already fits inside it.
@@ -988,27 +1167,27 @@ pub fn find_matches(snapshot: &DocumentSnapshot, needle: &str) -> SearchOutcome 
     let bounded = window < total;
     let Ok(haystack) = snapshot.read_bytes(0, window) else {
         return SearchOutcome {
-            matches: Vec::new(),
-            truncated: false,
             bounded,
+            ..SearchOutcome::default()
         };
     };
     let mut matches = Vec::new();
     let mut truncated = false;
-    for (offset, _) in haystack.match_indices(needle) {
-        if offset + needle.len() > window {
-            break;
+    for found in regex.find_iter(&haystack) {
+        if found.start() == found.end() {
+            continue;
         }
         if matches.len() == MAX_EDITOR_SEARCH_MATCHES {
             truncated = true;
             break;
         }
-        matches.push(offset);
+        matches.push(found.start()..found.end());
     }
     SearchOutcome {
         matches,
         truncated,
         bounded,
+        pattern_error: None,
     }
 }
 
@@ -1328,24 +1507,46 @@ pub fn word_at(snapshot: &DocumentSnapshot, offset: usize) -> Option<String> {
     Some(line_text[begin..finish].to_string())
 }
 
-/// Index of the first match at or after `cursor`, wrapping to the first.
+/// Index of the first match that starts at or after `cursor`, wrapping to the
+/// first.
 ///
 /// Inclusive on purpose, and this is the difference from
 /// [`next_match_index`]. Typing `/` while the cursor already sits on a match
 /// must leave you **on** that match; a strict `>` would make every keystroke
 /// of a live search hop you to the next occurrence, so refining a needle
 /// you are looking at would keep running away from you.
-pub fn first_match_index(matches: &[usize], cursor: usize) -> Option<usize> {
+///
+/// Binary search rather than a scan: the spans ascend and do not overlap, so
+/// their starts are sorted, and a live search runs this once per keystroke
+/// over up to [`MAX_EDITOR_SEARCH_MATCHES`] entries.
+pub fn first_match_index(matches: &[std::ops::Range<usize>], cursor: usize) -> Option<usize> {
     if matches.is_empty() {
         return None;
     }
-    match matches.iter().position(|offset| *offset >= cursor) {
-        Some(index) => Some(index),
-        None => Some(0),
-    }
+    let index = matches.partition_point(|span| span.start < cursor);
+    Some(if index == matches.len() { 0 } else { index })
 }
 
-/// Index of the first match strictly after `cursor`, wrapping to the first.
+/// Index of the last match that starts at or before `cursor`, wrapping to the
+/// last.
+///
+/// The reverse-direction twin of [`first_match_index`], and inclusive for the
+/// same reason: `?` must leave the cursor on the match it is already on while
+/// the pattern is being refined.
+pub fn last_match_index(matches: &[std::ops::Range<usize>], cursor: usize) -> Option<usize> {
+    if matches.is_empty() {
+        return None;
+    }
+    let index = matches.partition_point(|span| span.start <= cursor);
+    Some(if index == 0 {
+        matches.len() - 1
+    } else {
+        index - 1
+    })
+}
+
+/// Index of the first match starting strictly after `cursor`, wrapping to the
+/// first.
 ///
 /// Strict, because this is `n`: pressing it must move you *off* the match you
 /// are on, or the first press would look like the key did nothing.
@@ -1353,25 +1554,26 @@ pub fn first_match_index(matches: &[usize], cursor: usize) -> Option<usize> {
 /// Wrapping is deliberate: a search that stopped at the last match would
 /// make `n` look broken exactly when the user has found what they were
 /// looking for and wants to come back to it.
-pub fn next_match_index(matches: &[usize], cursor: usize) -> Option<usize> {
+pub fn next_match_index(matches: &[std::ops::Range<usize>], cursor: usize) -> Option<usize> {
     if matches.is_empty() {
         return None;
     }
-    match matches.iter().position(|offset| *offset > cursor) {
-        Some(index) => Some(index),
-        None => Some(0),
-    }
+    let index = matches.partition_point(|span| span.start <= cursor);
+    Some(if index == matches.len() { 0 } else { index })
 }
 
-/// Index of the last match strictly before `cursor`, wrapping to the last.
-pub fn previous_match_index(matches: &[usize], cursor: usize) -> Option<usize> {
+/// Index of the last match starting strictly before `cursor`, wrapping to the
+/// last.
+pub fn previous_match_index(matches: &[std::ops::Range<usize>], cursor: usize) -> Option<usize> {
     if matches.is_empty() {
         return None;
     }
-    match matches.iter().rposition(|offset| *offset < cursor) {
-        Some(index) => Some(index),
-        None => Some(matches.len() - 1),
-    }
+    let index = matches.partition_point(|span| span.start < cursor);
+    Some(if index == 0 {
+        matches.len() - 1
+    } else {
+        index - 1
+    })
 }
 
 /// One `:` command the editor can execute.
@@ -1410,6 +1612,10 @@ pub enum EditorCommandName {
     KeepRegex,
     /// `:remove-regex <pattern>` — `Alt-K`, remove the selections that match.
     RemoveRegex,
+    /// `:select-regex <pattern>` — `s`, select the matches inside each
+    /// selection. The `:` spelling exists so `s` is a shortcut for a command
+    /// the reader could have typed, like `S`, `K` and `Alt-K`.
+    SelectRegex,
     /// `:rename-preview <name>` — `space r`, preview renaming the symbol under
     /// the cursor.
     ///
@@ -1448,6 +1654,7 @@ impl EditorCommandName {
             Self::SplitRegex => "split-regex",
             Self::KeepRegex => "keep-regex",
             Self::RemoveRegex => "remove-regex",
+            Self::SelectRegex => "select-regex",
             Self::RenamePreview => "rename-preview",
             Self::GotoLine => "goto",
         }
@@ -1468,6 +1675,7 @@ impl EditorCommandName {
             Self::SplitRegex => "split each selection on regex matches",
             Self::KeepRegex => "keep the selections matching a regex",
             Self::RemoveRegex => "remove the selections matching a regex",
+            Self::SelectRegex => "select every regex match inside each selection",
             Self::RenamePreview => "preview renaming the symbol under the cursor",
             Self::GotoLine => "jump to a line number",
         }
@@ -1485,6 +1693,7 @@ impl EditorCommandName {
                 | Self::SplitRegex
                 | Self::KeepRegex
                 | Self::RemoveRegex
+                | Self::SelectRegex
                 | Self::RenamePreview
                 | Self::GotoLine
         )
@@ -1507,6 +1716,7 @@ impl EditorCommandName {
         Self::SplitRegex,
         Self::KeepRegex,
         Self::RemoveRegex,
+        Self::SelectRegex,
         Self::RenamePreview,
         Self::GotoLine,
     ];
@@ -1558,6 +1768,7 @@ pub fn parse_editor_command(line: &str) -> Option<(EditorCommandName, Option<Str
         "split-regex" => EditorCommandName::SplitRegex,
         "keep-regex" => EditorCommandName::KeepRegex,
         "remove-regex" => EditorCommandName::RemoveRegex,
+        "select-regex" => EditorCommandName::SelectRegex,
         "rename-preview" => EditorCommandName::RenamePreview,
         "goto" => EditorCommandName::GotoLine,
         _ => return None,
@@ -1687,17 +1898,26 @@ pub struct EditorEdit {
     pub stay_insert: bool,
 }
 
-/// One reversible step in the frontend-local undo history.
+/// A node's identity in the undo tree.
+///
+/// `0` is the root state — the text before the oldest retained entry — and
+/// any other value is a node's [`EditorUndoEntry::created`], which is `>= 1`.
+pub type HistoryId = usize;
+
+/// One reversible step in the frontend-local undo history: one **node** of the
+/// tree.
 ///
 /// An entry retains **both** directions, so one entry is what undo and redo
 /// each apply. Reusing the same transaction for both would make redo
 /// re-apply the undo, silently reverting the user's re-edit.
 ///
-/// **The entry never moves.** The history is one ordered list and a cursor
-/// names the position in it, so "undo" and "redo" are the same movement in
+/// **The node never moves.** The history is one tree and the cursor names a
+/// node in it, so "undo" and "redo" are the same movement along one edge in
 /// opposite directions rather than a transfer between two stacks. That is
 /// what makes the "both directions" invariant structural: there is no
-/// direction in which an entry can lose its other half.
+/// direction in which a node can lose its other half. A node created after an
+/// undo is a **sibling** of the branch it did not take, so the branch the
+/// reader abandoned is still there instead of being truncated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditorUndoEntry {
     /// Transaction that produces the newer text. Redo applies this.
@@ -1716,6 +1936,16 @@ pub struct EditorUndoEntry {
     pub selections_before: Vec<crate::tui::helix_selection::Selection<EditorPoint>>,
     /// Retained payload bytes across both directions, for the memory bound.
     pub bytes: usize,
+    /// This node's identity, which is also its place in creation order.
+    pub created: HistoryId,
+    /// The node this one was created from; `0` is the root state.
+    pub parent: HistoryId,
+    /// The child `U` follows when this node has several: the one the reader
+    /// last stood at.
+    ///
+    /// Checked against the tree when it is read, so a link a prune forgot to
+    /// clear cannot move the reader outside this node's own children.
+    pub last_child: Option<HistoryId>,
 }
 
 /// One open insert session: the edits since Insert mode was entered.
@@ -2707,11 +2937,90 @@ pub enum HelixVerb {
     SelectChar,
     /// `x` — select the cursor's line, or grow the held line selection by one.
     SelectLine,
+    /// `X` — widen every member to the bounds of the lines it touches.
+    ///
+    /// A **shape** verb: no byte of the document changes. The line's
+    /// terminator is part of the bounds, because that is what
+    /// [`SelectionMode::Line`] already means here — see `member_range`.
+    ExtendToLineBounds,
+    /// `Alt-x` — narrow every member to the bounds of its lines.
+    ///
+    /// The narrowing is to each line's **content** bounds, which is what
+    /// makes the character selection `X` came from recoverable whenever that
+    /// selection covered the line's content; a narrower one is widened to
+    /// the line instead. `_` is the verb that strips whitespace — this one
+    /// never does.
+    ShrinkToLineBounds,
+    /// `_` — trim leading and trailing whitespace from every member.
+    ///
+    /// An all-whitespace member collapses to an empty selection **at its own
+    /// start** and stays in the set: a member that vanished would quietly
+    /// change which member the primary names.
+    TrimSelections,
+    /// `J` / `Alt-J` — join the lines each member covers with one space.
+    ///
+    /// One flag rather than two variants, because the join itself is
+    /// identical and only what the reader is left holding differs: `Alt-J`
+    /// leaves each inserted space selected so the next verb acts on it.
+    JoinLines {
+        /// `Alt-J` — hold the inserted spaces; `J` holds nothing.
+        select_space: bool,
+    },
+    /// `>` / `<` — add or remove one indent unit at the start of every line a
+    /// member covers, after making the selection line-wise.
+    ///
+    /// The unit comes from `detect_indent_unit`, which reads it from the
+    /// document rather than from configuration — see that function for the
+    /// decision and its fallback.
+    IndentSelection {
+        /// `<` — remove one unit rather than adding one.
+        outdent: bool,
+    },
+    /// `space c` / `space C` — toggle the buffer's comment style over the
+    /// covered lines, as one transaction.
+    ///
+    /// The verb carries **which style**, never the token: the token is the
+    /// grammar's, resolved at the gesture by
+    /// `crate::tui::editor_highlight::comment_tokens_for`, and a verb that
+    /// carried it could not live in a `const` leaf table. `block` is
+    /// `space C`; `space c` prefers the line token and falls back to the pair.
+    ToggleComments {
+        /// `space C` — force the block pair.
+        block: bool,
+    },
     /// `d` — delete the held selection. Claims the key even with nothing
     /// selected, because an unclaimed `d` escapes to the global `OpenDiff`
     /// binding.
+    ///
+    /// `Alt-d` resolves to this same verb, and M007 has now split what the two
+    /// spellings *do* with the bytes: the verb answers **which ranges** the
+    /// delete covers, and the chord's `YankTarget` answers where they go —
+    /// `d` to the unnamed register, `Alt-d` nowhere, and neither to the system
+    /// clipboard. The verb stays one value because it is one question; a
+    /// second variant would have made a destination look like a different
+    /// delete. See [`Self::ChangeSelection`].
     DeleteSelection,
-    /// `y` — yank the held selection to the system clipboard.
+    /// `c` / `Alt-c` — delete the held selection **and** report that Insert
+    /// follows.
+    ///
+    /// A distinct variant rather than a flag on [`Self::DeleteSelection`]:
+    /// a flag would make the two verbs share one arm and hide the difference
+    /// they exist to express — that `d` stops at the delete and `c` hands the
+    /// keyboard over.
+    ///
+    /// **It does not touch the clipboard, and that is the decision M002
+    /// recorded** (`plans/implementation/tui-editor-helix-capability-parity/002-change-verbs-and-no-yank-deletion.md`).
+    /// M007 discharges D1: `c` now yanks into the **unnamed register**, `Alt-c`
+    /// writes nothing, and neither reaches the system clipboard — so a change
+    /// never clobbers what the reader copied for the edit. The destination
+    /// rides on the chord's `YankTarget`, not on this variant, because the
+    /// same delete feeds both spellings. Do not route it to the clipboard:
+    /// that was the user-hostile half D1 existed to prevent.
+    ChangeSelection,
+    /// `y` — report the held selection's ranges for a yank.
+    ///
+    /// The **ranges**, not the bytes: the destination is the chord's, and the
+    /// bytes are read by the App layer that owns them.
     YankSelection,
     /// Any deliberate motion: extends a character selection, leaves a line
     /// selection alone, and disarms line growth.
@@ -2760,6 +3069,17 @@ pub enum HelixVerb {
     KeepSelections { pattern: String },
     /// `Alt-K` — remove the members whose text matches a regex.
     RemoveSelections { pattern: String },
+    /// `s` — replace every member with one member per regex match.
+    ///
+    /// Helix's `select_regex`, resolved through the same `split_selection` as
+    /// [`Self::SplitSelection`], so the two chords cannot disagree about a
+    /// match's extent. This editor's `S` has selected the **matches** rather
+    /// than Helix's gaps since it landed (see `docs/tui.md`), so today the
+    /// two produce the same set; they stay separate variants because they are
+    /// separate chords and separate `:` commands.
+    SelectSelectionMatches { pattern: String },
+    /// `Alt-s` — split every member on newline boundaries, with no regex.
+    SplitSelectionOnNewlines,
     /// `m a` / `m i` — select **around** or **inside** a text object.
     SelectObject { kind: ObjectKind, around: bool },
     /// `m s` — surround the held selection with a character.
@@ -2843,6 +3163,82 @@ pub fn selection_ranges(
             .filter_map(|selection| member_range(snapshot, selection))
             .collect(),
     )
+}
+
+/// The pattern `*` / `Alt-*` seed the search line with.
+///
+/// `Ok(None)` is a **silent** no-op: no selection, or an empty one, is a
+/// reader with a bare cursor asked to search for nothing. `Err` is a refusal
+/// that names its reason. `literal` is `*` — the text is `regex::escape`d and
+/// wrapped in `\b…\b`, so `foo.bar` searches for the literal text as a whole
+/// word; `Alt-*` is the deliberate unescaped spelling, which is the whole
+/// distinction between the two chords.
+pub fn selection_search_pattern(
+    snapshot: &DocumentSnapshot,
+    presentation: &TuiDocumentPresentation,
+    literal: bool,
+) -> Result<Option<String>, String> {
+    let Some(range) = selection_range(presentation, snapshot) else {
+        return Ok(None);
+    };
+    let Ok(text) = snapshot.read_bytes(range.start, range.end) else {
+        return Err("the selection could not be read".to_string());
+    };
+    // A line-wise member carries its terminator — that is what makes `d` take
+    // the line rather than blank it — so one trailing break is not a
+    // multi-line pattern. Anything left after it is, and a multi-line pattern
+    // is a different gesture.
+    let text = text.strip_suffix('\n').unwrap_or(&text);
+    if text.contains('\n') {
+        return Err("the selection spans a line break; `Alt-x` narrows it to one line".to_string());
+    }
+    if text.is_empty() {
+        return Ok(None);
+    }
+    let pattern = if literal {
+        format!("\\b{}\\b", regex::escape(text))
+    } else {
+        text.to_string()
+    };
+    // The search line is a bounded query, so an over-long pattern is refused
+    // here rather than silently truncated into a *different* regex.
+    if pattern.chars().count() > MAX_EDITOR_SEARCH_LINE {
+        return Err(format!(
+            "the pattern is longer than the {MAX_EDITOR_SEARCH_LINE}-character search line"
+        ));
+    }
+    Ok(Some(pattern))
+}
+
+/// The ranges a **change** gesture deletes.
+///
+/// A held set resolves exactly as [`selection_ranges`] resolves it, so `c` and
+/// `d` cannot disagree about the bytes a selection covers — a collapsed member
+/// is already one character wide there.
+///
+/// A **bare cursor** — no member at all — is the one case where the two verbs
+/// differ, and it is pinned rather than invented. Helix's model is that a
+/// cursor *is* a one-character selection, so `change_selection` with nothing
+/// selected takes the character under the cursor, and at a line end that
+/// character is the terminator: deleting it joins the two lines. CodeGG keeps
+/// that rule for `c` only. `d` on an empty set stays the claimed no-op it has
+/// always been (`deleting_with_nothing_selected_is_a_claimed_no_op`), because
+/// re-deciding `d` is not this milestone's change to make.
+///
+/// At the end of the buffer there is no character to take, so the answer is
+/// empty and the caller enters no mode — an Insert mode over text that
+/// survived is exactly the state this milestone forbids.
+fn change_ranges(
+    presentation: &TuiDocumentPresentation,
+    snapshot: &DocumentSnapshot,
+) -> Vec<std::ops::Range<usize>> {
+    let ranges = selection_ranges(presentation, snapshot);
+    if !ranges.is_empty() {
+        return ranges;
+    }
+    let start = clamp_offset(snapshot, presentation.cursor_byte);
+    let end = char_end(snapshot, start);
+    (start < end).then_some(start..end).into_iter().collect()
 }
 
 /// Whether a **line-mode** selection member covers `line`.
@@ -2997,6 +3393,58 @@ pub fn apply_helix_verb(
                 state.select_line();
             }
         }
+        // ── Line-shape verbs ─────────────────────────────────────────────
+        //
+        // Four gestures, one shape: each asks a question about **lines** —
+        // where one starts, where its content ends, which line a member
+        // touches — and writes the answer back over the whole set. The rules
+        // stay in the shared machine; only the geometry is here, because a
+        // line is a byte range and that module deliberately knows no
+        // coordinates.
+        //
+        // `X`, `Alt-x` and `_` are shape-only: they never build an edit, so
+        // they fall through to the shared write-back. A second `X` on an
+        // already line-wise member is a **silent** no-op — the reader asked
+        // for a state they are already in, which is not an error to report.
+        HelixVerb::ExtendToLineBounds => {
+            extend_to_line_bounds(snapshot, &mut state);
+        }
+        HelixVerb::ShrinkToLineBounds => {
+            shrink_to_line_bounds(snapshot, &mut state);
+        }
+        HelixVerb::TrimSelections => match trim_selections(snapshot, &mut state) {
+            Ok(true) => {}
+            Ok(false) => {
+                return HelixVerbOutcome::NothingToDo("nothing to trim".to_string());
+            }
+            Err(reason) => return HelixVerbOutcome::NothingToDo(reason),
+        },
+        // `J` and `>` write, so they build one transaction and hand it to the
+        // caller's edit funnel — which is what makes undo, the read-only gate
+        // and the selection-clearing rule apply without a second
+        // implementation of any of them.
+        HelixVerb::JoinLines { select_space } => {
+            return match join_lines(snapshot, &state, select_space) {
+                Ok(outcome) => outcome,
+                Err(reason) => HelixVerbOutcome::NothingToDo(reason),
+            };
+        }
+        HelixVerb::IndentSelection { outdent } => {
+            return match indent_selections(snapshot, &state, outdent) {
+                Ok(outcome) => outcome,
+                Err(reason) => HelixVerbOutcome::NothingToDo(reason),
+            };
+        }
+        // Resolved **before** this point: the token is the buffer's grammar's,
+        // and the grammar comes from the attachment's path, which this
+        // function does not see. `apply_helix` in the command layer resolves
+        // it and builds the edit, so reaching here means a caller skipped that
+        // step — refused with the reason rather than silently doing nothing.
+        HelixVerb::ToggleComments { .. } => {
+            return HelixVerbOutcome::NothingToDo(
+                "toggle comment: the buffer's comment token must be resolved first".to_string(),
+            );
+        }
         // Delete and yank are *effects* over a range the machine describes,
         // not transitions of the selection, so they read the range and drop
         // the selection outright. Both still claim the key with nothing held:
@@ -3012,6 +3460,17 @@ pub fn apply_helix_verb(
                 HelixVerbOutcome::Handled
             } else {
                 HelixVerbOutcome::DeleteRanges(ranges)
+            };
+        }
+        // `c` / `Alt-c` share the delete's resolution and differ only in what
+        // they report — "which bytes does a held set cover" keeps its single
+        // implementation in `selection_ranges` / `change_ranges`.
+        HelixVerb::ChangeSelection => {
+            let ranges = change_ranges(presentation, snapshot);
+            return if ranges.is_empty() {
+                HelixVerbOutcome::Handled
+            } else {
+                HelixVerbOutcome::ChangeRanges(ranges)
             };
         }
         HelixVerb::YankSelection => {
@@ -3055,6 +3514,11 @@ pub fn apply_helix_verb(
                 // probe, and the offset it computed has to reach the real
                 // presentation.
                 view_scroll: presentation.view_scroll,
+                // The count rides along and is **taken** here: `apply_motion`
+                // reads and clears it, and it must be cleared on the real
+                // record whatever it does on the probe — a count the probe
+                // consumed and the presentation kept would fire a second time.
+                pending_count: presentation.pending_count.take(),
                 ..TuiDocumentPresentation::default()
             };
             let motion_height = motion_height(&probe);
@@ -3216,6 +3680,24 @@ pub fn apply_helix_verb(
                 Ok(SetVerbOutcome::NothingToDo(reason)) => HelixVerbOutcome::NothingToDo(reason),
                 Err(reason) => HelixVerbOutcome::NothingToDo(reason),
             };
+        }
+        HelixVerb::SelectSelectionMatches { ref pattern } => {
+            // Selection-only, so it falls through to the shared tail that
+            // writes the set back — the same path `;` and `,` take.
+            match split_selection(snapshot, &mut state, pattern) {
+                Ok(SetVerbOutcome::Handled) => {}
+                Ok(SetVerbOutcome::NothingToDo(reason)) => {
+                    return HelixVerbOutcome::NothingToDo(reason)
+                }
+                Err(reason) => return HelixVerbOutcome::NothingToDo(reason),
+            }
+        }
+        HelixVerb::SplitSelectionOnNewlines => {
+            if let SetVerbOutcome::NothingToDo(reason) =
+                split_selections_on_newlines(snapshot, &mut state)
+            {
+                return HelixVerbOutcome::NothingToDo(reason);
+            }
         }
         // ── The `m` grammar ──────────────────────────────────────────────
         HelixVerb::SelectObject { kind, around } => {
@@ -3383,6 +3865,14 @@ pub enum HelixVerbOutcome {
     /// A **set**, already merged and in document order: one transaction
     /// covers the whole list, and the caller must not split it.
     DeleteRanges(Vec<std::ops::Range<usize>>),
+    /// The same ranges as [`Self::DeleteRanges`], with Insert following.
+    ///
+    /// Distinct from `DeleteRanges` because the two answer a different
+    /// question — "delete this" versus "delete this and hand over the
+    /// keyboard" — and the caller's ordering depends on it: the delete is
+    /// submitted first and Insert is entered only if it was accepted, so a
+    /// refused change leaves Normal mode exactly where it was.
+    ChangeRanges(Vec<std::ops::Range<usize>>),
     /// Copy these ranges to the clipboard, then clear the selection.
     YankRanges(Vec<std::ops::Range<usize>>),
     /// Apply this edit, already built as one transaction.
@@ -3738,7 +4228,15 @@ fn align_selections(
     )
 }
 
-/// `S` — split every member into one member per regex match.
+/// `S` / `s` — replace every member with one member per regex match.
+///
+/// The two chords share this resolution on purpose: they differ as chords and
+/// as `:` commands, not in what a match is. Zero-width matches are skipped,
+/// the same rule [`find_matches`] states — a match with no bytes cannot be
+/// selected. Past [`MAX_SET_VERB_READ_BYTES`] the gesture **refuses** rather
+/// than returning the matches it happened to reach, because a member that was
+/// never scanned contributes none and a short set that reads as complete is
+/// the defect the budget exists to prevent.
 fn split_selection(
     snapshot: &DocumentSnapshot,
     state: &mut SelectionState<EditorPoint>,
@@ -3751,11 +4249,19 @@ fn split_selection(
         let Some(range) = member_range(snapshot, member) else {
             continue;
         };
-        let window = bounded_regex_window(snapshot, range.clone(), &mut budget);
+        let window = bounded_regex_window(snapshot, range, &mut budget);
+        if budget > MAX_SET_VERB_READ_BYTES {
+            return Err(format!(
+                "the selections read past the {MAX_SET_VERB_READ_BYTES}-byte budget"
+            ));
+        }
         let Ok(text) = snapshot.read_bytes(window.start, window.end) else {
             continue;
         };
         for found in regex.find_iter(&text) {
+            if found.start() == found.end() {
+                continue;
+            }
             let Some(head) = last_char_start(snapshot, window.start + found.end()) else {
                 continue;
             };
@@ -3784,6 +4290,48 @@ fn split_selection(
     // than it is worth when the members have just been rebuilt from text.
     state.set_members(state.cursor(), split, 0);
     Ok(SetVerbOutcome::Handled)
+}
+
+/// `Alt-s` — replace every member with one member per line it covers.
+///
+/// No regex: a line break is a byte, so the only question is where each
+/// line's **content** ends. The terminator is never part of a member, which
+/// makes `Alt-s` the inverse of `J` and the geometry-only sibling of `s`.
+/// An empty line keeps a member of its own — it covers the line break, which
+/// is the only byte that line has — so the shape of the gesture is one member
+/// per line, never fewer.
+fn split_selections_on_newlines(
+    snapshot: &DocumentSnapshot,
+    state: &mut SelectionState<EditorPoint>,
+) -> SetVerbOutcome {
+    if state.selections().is_empty() {
+        return SetVerbOutcome::NothingToDo("nothing selected".to_string());
+    }
+    let last_line = snapshot.len_lines().saturating_sub(1);
+    let mut split = Vec::new();
+    for member in state.selections() {
+        let (first, last) = member.line_range();
+        for line in first.min(last_line)..=last.min(last_line) {
+            let start = line_start(snapshot, line).unwrap_or(0);
+            let end = line_content_end(snapshot, line).unwrap_or(start);
+            let head = if end > start {
+                last_char_start(snapshot, end).unwrap_or(start).max(start)
+            } else {
+                start
+            };
+            let mut piece = Selection::new(editor_point(snapshot, start), SelectionMode::Char);
+            piece.head = editor_point(snapshot, head);
+            split.push(piece);
+        }
+    }
+    if split.len() > MAX_DOCUMENT_EDITS {
+        return SetVerbOutcome::NothingToDo(format!(
+            "{n} lines is past the {MAX_DOCUMENT_EDITS}-selection limit",
+            n = split.len()
+        ));
+    }
+    state.set_members(state.cursor(), split, 0);
+    SetVerbOutcome::Handled
 }
 
 /// `K` / `Alt-K` — keep or remove the members whose text matches.
@@ -3878,6 +4426,822 @@ fn last_char_start(snapshot: &DocumentSnapshot, end: usize) -> Option<usize> {
         candidate -= 1;
     }
     Some(candidate)
+}
+
+// ── Line-shape verbs ─────────────────────────────────────────────────────────
+//
+// `X`, `Alt-x`, `_`, `J`, `Alt-J`, `>` and `<`. Four questions about **lines**
+// — where one starts, where its content ends, which line a member touches, and
+// how wide the file's own indentation is — and one rule: each is answered
+// against the snapshot the caller already holds and written back over the whole
+// set, so nothing here retains a byte of the document.
+//
+// The **rules** (what a set is, how members are ordered, which one is primary)
+// stay in `helix_selection`; only the geometry is here, because a line is a
+// byte range and the shared module deliberately knows no coordinates. The
+// terminal panel shares the state machine but claims none of these chords, so
+// the two surfaces cannot disagree about `v` or `x`; what it has no equivalent
+// for is a document line, because it addresses viewport cells.
+
+/// `X` — widen every member to the bounds of the lines it touches.
+///
+/// **The boundary is pinned by test, not assumed.** The lines' terminators are
+/// included, because that is what [`SelectionMode::Line`] already means in this
+/// module: [`member_range`] resolves a line member to
+/// `line_start(first)..line_start(last + 1)`, which is what makes `d` remove the
+/// lines rather than leave blank ones behind. `x` growth writes the same shape.
+///
+/// The head is placed on the **last covered line's start**, not on the start of
+/// the line after it: [`Selection::line_range`] reads the head's line, so a
+/// head one line further on would make `X` cover one line more than the reader
+/// selected. Growth stays disarmed — the cursor may be anywhere inside the
+/// resulting block, and a following `x` re-anchoring on the cursor is the
+/// answer a reader can predict; an armed growth would also walk a backwards
+/// member's head *down*, shrinking what this verb just widened.
+fn extend_to_line_bounds(snapshot: &DocumentSnapshot, state: &mut SelectionState<EditorPoint>) {
+    if state.selections().is_empty() {
+        return;
+    }
+    let last_line = snapshot.len_lines().saturating_sub(1);
+    let mut members = Vec::with_capacity(state.selections().len());
+    for member in state.selections() {
+        let (first, last) = member.line_range();
+        let first = first.min(last_line);
+        let last = last.min(last_line);
+        let first_start = line_start(snapshot, first).unwrap_or(0);
+        let last_start = line_start(snapshot, last).unwrap_or(first_start);
+        let forward = member.anchor <= member.head;
+        let (anchor, head) = if forward {
+            (first_start, last_start)
+        } else {
+            (last_start, first_start)
+        };
+        let mut extended = Selection::new(editor_point(snapshot, anchor), SelectionMode::Line);
+        extended.head = editor_point(snapshot, head);
+        members.push(extended);
+    }
+    state.set_members(
+        state.cursor(),
+        members,
+        state.primary_index().unwrap_or_default(),
+    );
+}
+
+/// `Alt-x` — narrow every member to the bounds of its lines.
+///
+/// The bounds are each line's **content** bounds: its first byte and the start
+/// of its last character. That is the one rule that makes both halves of the
+/// acceptance criterion true — a character selection that covered the line's
+/// content is recovered exactly, and a narrower one is widened to the line —
+/// and it is deliberately *not* a whitespace trim. `_` is the trim verb; a
+/// narrowing that also stripped indentation would make the two keys the same
+/// gesture under two names.
+fn shrink_to_line_bounds(snapshot: &DocumentSnapshot, state: &mut SelectionState<EditorPoint>) {
+    if state.selections().is_empty() {
+        return;
+    }
+    let last_line = snapshot.len_lines().saturating_sub(1);
+    let mut members = Vec::with_capacity(state.selections().len());
+    for member in state.selections() {
+        let (first, last) = member.line_range();
+        let first = first.min(last_line);
+        let last = last.min(last_line);
+        let start = line_start(snapshot, first).unwrap_or(0);
+        let content_end = line_content_end(snapshot, last).unwrap_or(start);
+        let end = if content_end > start {
+            last_char_start(snapshot, content_end)
+                .unwrap_or(start)
+                .max(start)
+        } else {
+            start
+        };
+        let forward = member.anchor <= member.head;
+        let (anchor, head) = if forward { (start, end) } else { (end, start) };
+        let mut shrunk = Selection::new(editor_point(snapshot, anchor), SelectionMode::Char);
+        shrunk.head = editor_point(snapshot, head);
+        members.push(shrunk);
+    }
+    state.set_members(
+        state.cursor(),
+        members,
+        state.primary_index().unwrap_or_default(),
+    );
+}
+
+/// `_` — trim leading and trailing whitespace from every member.
+///
+/// Every member stays in the set. An all-whitespace member collapses to a
+/// zero-width selection — anchor and head both at its own start, which is this
+/// model's empty selection — rather than vanishing, because a member that
+/// disappeared would change which member the primary names, and the whole point
+/// of the set is that its identity is stable across a verb.
+///
+/// Returns whether anything changed. Reading is bounded by
+/// [`MAX_SET_VERB_READ_BYTES`] across the whole gesture: only the whitespace
+/// runs at each member's two edges are examined, but a member that *is* one
+/// enormous whitespace run would otherwise be an unbounded scan behind one
+/// keystroke.
+fn trim_selections(
+    snapshot: &DocumentSnapshot,
+    state: &mut SelectionState<EditorPoint>,
+) -> Result<bool, String> {
+    if state.selections().is_empty() {
+        return Ok(false);
+    }
+    let mut scanned = 0usize;
+    let mut changed = false;
+    let mut members = Vec::with_capacity(state.selections().len());
+    for member in state.selections() {
+        let Some(range) = member_range(snapshot, member) else {
+            // A member that covers no bytes is already as trimmed as it gets.
+            members.push(*member);
+            continue;
+        };
+        let (start, end) = trimmed_bounds(snapshot, range, &mut scanned)?;
+        let forward = member.anchor <= member.head;
+        let (anchor, head) = if forward { (start, end) } else { (end, start) };
+        let mut trimmed = Selection::new(editor_point(snapshot, anchor), SelectionMode::Char);
+        trimmed.head = editor_point(snapshot, head);
+        changed |= trimmed != *member;
+        members.push(trimmed);
+    }
+    state.set_members(
+        state.cursor(),
+        members,
+        state.primary_index().unwrap_or_default(),
+    );
+    Ok(changed)
+}
+
+/// The first non-whitespace byte of `range` and the start of its last
+/// non-whitespace character.
+///
+/// An all-whitespace range answers `(range.start, range.start)` — empty at its
+/// **own start**, which is the position [`trim_selections`] collapses a member
+/// to. `scanned` is the gesture-wide budget.
+fn trimmed_bounds(
+    snapshot: &DocumentSnapshot,
+    range: std::ops::Range<usize>,
+    scanned: &mut usize,
+) -> Result<(usize, usize), String> {
+    let mut start = range.start;
+    while start < range.end {
+        let Some(ch) = char_at(snapshot, start) else {
+            break;
+        };
+        if !ch.is_whitespace() {
+            break;
+        }
+        *scanned = scanned.saturating_add(ch.len_utf8());
+        if *scanned > MAX_SET_VERB_READ_BYTES {
+            return Err(format!(
+                "trimming would scan more than the {MAX_SET_VERB_READ_BYTES}-byte budget"
+            ));
+        }
+        start = char_end(snapshot, start);
+    }
+    if start >= range.end {
+        return Ok((range.start, range.start));
+    }
+    let mut last = prev_char_boundary(snapshot, range.end);
+    while last > start {
+        let Some(ch) = char_at(snapshot, last) else {
+            break;
+        };
+        if !ch.is_whitespace() {
+            break;
+        }
+        *scanned = scanned.saturating_add(ch.len_utf8());
+        if *scanned > MAX_SET_VERB_READ_BYTES {
+            return Err(format!(
+                "trimming would scan more than the {MAX_SET_VERB_READ_BYTES}-byte budget"
+            ));
+        }
+        last = prev_char_boundary(snapshot, last);
+    }
+    Ok((start, last.max(start)))
+}
+
+/// `J` / `Alt-J` — join the lines each member covers with one space.
+///
+/// Each join replaces the range from a line's content end to the next line's
+/// first content byte — its terminator **and that line's indentation** — with a
+/// single space. The whole set is one [`TextTransaction`], so a multi-member
+/// join is one undo step, and a set whose ranges overlap is refused rather than
+/// letting two members own the same bytes.
+///
+/// A member covering one line, or whose covered lines have no terminator (the
+/// last line of an unterminated file), contributes nothing and reports nothing:
+/// there is no newline to remove.
+fn join_lines(
+    snapshot: &DocumentSnapshot,
+    state: &SelectionState<EditorPoint>,
+    select_space: bool,
+) -> Result<HelixVerbOutcome, String> {
+    let last_line = snapshot.len_lines().saturating_sub(1);
+    let mut boundaries: Vec<usize> = Vec::new();
+    for member in state.selections() {
+        let (first, last) = member.line_range();
+        let first = first.min(last_line);
+        let last = last.min(last_line);
+        boundaries.extend(first..last);
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    if boundaries.is_empty() {
+        // With nothing held there is no gesture at all, and the roadmap's rule
+        // is that a bound key which does nothing says why. A member that
+        // already covers one line is the other case: it asked to join what is
+        // already one line, which reports nothing.
+        return if state.selections().is_empty() {
+            Err("nothing selected".to_string())
+        } else {
+            Ok(HelixVerbOutcome::Handled)
+        };
+    }
+    if boundaries.len() > MAX_DOCUMENT_EDITS {
+        return Err(format!(
+            "joining {} lines would exceed one transaction's limit of {MAX_DOCUMENT_EDITS}",
+            boundaries.len()
+        ));
+    }
+    let mut joins: Vec<(usize, TextEdit)> = Vec::with_capacity(boundaries.len());
+    for line in boundaries {
+        let Some(end) = line_content_end(snapshot, line) else {
+            continue;
+        };
+        let Ok(bounds) = snapshot.line_range(line) else {
+            continue;
+        };
+        if bounds.end == end {
+            // No terminator: this is the last line of an unterminated file, so
+            // there is no following line to join.
+            continue;
+        }
+        let Some(next_start) = line_start(snapshot, line + 1) else {
+            continue;
+        };
+        let next_end = line_content_end(snapshot, line + 1).unwrap_or(next_start);
+        let next_content = first_non_whitespace(snapshot, line + 1)
+            .unwrap_or(next_start)
+            .clamp(next_start, next_end);
+        if next_content < end {
+            continue;
+        }
+        joins.push((line, TextEdit::new(end..next_content, " ".to_string())));
+    }
+    if joins.is_empty() {
+        return Ok(HelixVerbOutcome::Handled);
+    }
+    joins.sort_by_key(|(_, edit)| edit.range.start);
+    for pair in joins.windows(2) {
+        if pair[1].1.range.start < pair[0].1.range.end {
+            return Err("two selections overlap — merge them with `Alt-minus` first".to_string());
+        }
+    }
+    // Post-edit positions. Every join removes exactly one line break and every
+    // earlier join sits above this one, so a join at pre-edit line `n` whose
+    // index in the sorted list is `i` lands on post-edit line `n - i`.
+    let mut delta: isize = 0;
+    let mut spaces: Vec<(usize, usize, usize)> = Vec::with_capacity(joins.len());
+    for (index, (line, edit)) in joins.iter().enumerate() {
+        let post_byte = (edit.range.start as isize + delta).max(0) as usize;
+        spaces.push((*line, post_byte, line.saturating_sub(index)));
+        delta += edit.insert.len() as isize - (edit.range.end - edit.range.start) as isize;
+    }
+    let primary = state.primary_index().unwrap_or_default();
+    let mut primary_space = None;
+    let mut selections: Vec<Selection<EditorPoint>> = Vec::with_capacity(spaces.len());
+    for (index, member) in state.selections().iter().enumerate() {
+        let (first, last) = member.line_range();
+        let first = first.min(last_line);
+        let last = last.min(last_line);
+        let Some(&(_, byte, line)) = spaces
+            .iter()
+            .rev()
+            .find(|(boundary, _, _)| (first..last).contains(boundary))
+        else {
+            continue;
+        };
+        if index == primary {
+            primary_space = Some(byte);
+        }
+        // A one-character selection: `Selection` is inclusive of the head, so
+        // anchor == head over a one-byte space selects exactly that space.
+        if !selections
+            .iter()
+            .any(|held: &Selection<EditorPoint>| held.anchor.byte == byte)
+        {
+            selections.push(Selection::new(
+                EditorPoint { byte, line },
+                SelectionMode::Char,
+            ));
+        }
+    }
+    let first_space = spaces.first().map(|(_, byte, _)| *byte).unwrap_or(0);
+    let cursor_after = if select_space {
+        primary_space.unwrap_or(first_space)
+    } else {
+        primary_space
+            .map(|byte| byte + 1)
+            .unwrap_or(first_space + 1)
+    };
+    let edits: Vec<TextEdit> = joins.into_iter().map(|(_, edit)| edit).collect();
+    let Some(edit) = build_edit(snapshot, TextTransaction::new(edits), cursor_after, false) else {
+        return Ok(HelixVerbOutcome::Handled);
+    };
+    Ok(if select_space {
+        HelixVerbOutcome::EditAndSelect(edit, None, selections)
+    } else {
+        HelixVerbOutcome::Edit(edit, None)
+    })
+}
+
+/// The indentation unit `>` and `<` use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IndentUnit {
+    /// `width` spaces.
+    Spaces(usize),
+    /// One tab.
+    Tab,
+}
+
+impl IndentUnit {
+    /// The bytes one unit inserts at the start of a line.
+    fn insertion(self) -> String {
+        match self {
+            Self::Spaces(width) => " ".repeat(width),
+            Self::Tab => "\t".to_string(),
+        }
+    }
+
+    /// How the unit reads in a notice.
+    fn describe(self) -> String {
+        match self {
+            Self::Spaces(1) => "1 space".to_string(),
+            Self::Spaces(width) => format!("{width} spaces"),
+            Self::Tab => "tab".to_string(),
+        }
+    }
+
+    /// `(columns one unit covers, columns a tab counts as)`.
+    ///
+    /// Helix's own rule, restated: a space unit is `width` columns wide, so a
+    /// leading tab is one unit and a short run of spaces is all of it; a tab
+    /// unit is one column wide, so `<` removes exactly one leading character.
+    fn columns(self) -> (usize, usize) {
+        match self {
+            Self::Spaces(width) => (width, width),
+            Self::Tab => (1, 1),
+        }
+    }
+}
+
+/// The document's own indent unit, and whether it was **detected** or
+/// defaulted.
+///
+/// **The recorded decision (M001-D1): the unit comes from the document, not
+/// from configuration.** Three candidates were considered. A fixed four spaces
+/// is wrong for every two-space file, which is most of this repository's own
+/// sources. An editor configuration key is the honest long-term answer, but it
+/// is a configuration-surface change with its own default, discovery and
+/// documentation consequences, so it belongs to its own milestone rather than
+/// to this one. Detection needs neither.
+///
+/// The rule: scan a **bounded prefix** — [`MAX_RENDER_LINE_BYTES`], the frame's
+/// own per-line budget, so one keystroke never costs more than one line of
+/// rendering — and take the *smallest positive* run of leading spaces. A file
+/// whose indented lines are mostly tab-led is tab-indented instead; a file with
+/// no indentation at all falls back to four spaces. The fallback is disclosed
+/// through [`HelixVerb::IndentSelection`]'s notice whenever a gesture changes
+/// nothing, so a reader is never left guessing which width the editor chose.
+fn detect_indent_unit(snapshot: &DocumentSnapshot) -> (IndentUnit, bool) {
+    let window_end = bounded_prefix_end(snapshot, 0, snapshot.len_bytes());
+    let mut tab_lines = 0usize;
+    let mut space_lines = 0usize;
+    let mut smallest: Option<usize> = None;
+    let mut line = 0usize;
+    loop {
+        let Some(start) = line_start(snapshot, line) else {
+            break;
+        };
+        if start >= window_end {
+            break;
+        }
+        let content_end = line_content_end(snapshot, line)
+            .unwrap_or(start)
+            .min(window_end);
+        if char_at(snapshot, start) == Some('\t') {
+            tab_lines += 1;
+            line += 1;
+            continue;
+        }
+        let mut spaces = 0usize;
+        let mut cursor = start;
+        while cursor < content_end && char_at(snapshot, cursor) == Some(' ') {
+            spaces += 1;
+            let next = char_end(snapshot, cursor);
+            if next <= cursor {
+                break;
+            }
+            cursor = next;
+        }
+        if spaces > 0 {
+            space_lines += 1;
+            smallest = Some(smallest.map_or(spaces, |width| width.min(spaces)));
+        }
+        line += 1;
+    }
+    if tab_lines > space_lines {
+        return (IndentUnit::Tab, true);
+    }
+    match smallest {
+        Some(width) => (IndentUnit::Spaces(width), true),
+        None => (IndentUnit::Spaces(4), false),
+    }
+}
+
+/// `>` / `<` — add or remove one indent unit on every line the set covers.
+///
+/// The selection becomes **line-wise over the covered lines** as part of the
+/// gesture, which is why the outcome is an `EditAndSelect`: `submit_edit`
+/// clears every selection when an edit lands, so the members are rebuilt from
+/// post-edit offsets here, where they are still known. Indent and unindent move
+/// no line break, so each line keeps its index and only its start offset moves.
+///
+/// Duplicate lines are indented once: two members over one line asked for one
+/// indent, not two.
+fn indent_selections(
+    snapshot: &DocumentSnapshot,
+    state: &SelectionState<EditorPoint>,
+    outdent: bool,
+) -> Result<HelixVerbOutcome, String> {
+    if state.selections().is_empty() {
+        // Nothing held means no covered line, and a bound key that does
+        // nothing has to say why rather than read as a dropped keystroke.
+        return Err("nothing selected".to_string());
+    }
+    let (unit, detected) = detect_indent_unit(snapshot);
+    let last_line = snapshot.len_lines().saturating_sub(1);
+    let mut lines: Vec<usize> = Vec::new();
+    let mut members: Vec<(usize, usize)> = Vec::with_capacity(state.selections().len());
+    for member in state.selections() {
+        let (first, last) = member.line_range();
+        let first = first.min(last_line);
+        let last = last.min(last_line);
+        members.push((first, last));
+        lines.extend(first..=last);
+    }
+    lines.sort_unstable();
+    lines.dedup();
+    // Drop the zero-width line a trailing newline invents: it has no text to
+    // indent, and counting it would spend the transaction budget on a line
+    // that contributes no edit.
+    lines.retain(|&line| {
+        line_start(snapshot, line).is_some_and(|start| start < snapshot.len_bytes())
+    });
+    if lines.len() > MAX_DOCUMENT_EDITS {
+        return Err(format!(
+            "indenting {} lines would exceed one transaction's limit of {MAX_DOCUMENT_EDITS}",
+            lines.len()
+        ));
+    }
+    let mut edits: Vec<TextEdit> = Vec::with_capacity(lines.len());
+    for &line in &lines {
+        let Some(start) = line_start(snapshot, line) else {
+            continue;
+        };
+        // A zero-width line at the very end of the buffer exists only because
+        // the file ends in a newline. Indenting it would write trailing
+        // whitespace past the last line rather than indent a line of text.
+        if start >= snapshot.len_bytes() {
+            continue;
+        }
+        if outdent {
+            let content_end = line_content_end(snapshot, line).unwrap_or(start);
+            let remove = outdent_bytes(snapshot, start, content_end, unit);
+            if remove > 0 {
+                edits.push(TextEdit::new(start..start + remove, String::new()));
+            }
+        } else {
+            edits.push(TextEdit::new(start..start, unit.insertion()));
+        }
+    }
+    if edits.is_empty() {
+        return Ok(HelixVerbOutcome::NothingToDo(format!(
+            "no covered line is indented (indent unit: {}, {})",
+            unit.describe(),
+            if detected {
+                "detected from the file"
+            } else {
+                "default"
+            }
+        )));
+    }
+    // The post-edit offset of every pre-edit offset. Each edit contributes
+    // its own size change to every offset **after** it; an offset at the
+    // edit's own start keeps the line's start (the indent begins there).
+    let mut shifts: Vec<(usize, isize)> = Vec::with_capacity(edits.len());
+    for edit in &edits {
+        shifts.push((
+            edit.range.start,
+            edit.insert.len() as isize - (edit.range.end - edit.range.start) as isize,
+        ));
+    }
+    let post = |pre: usize| -> usize {
+        let mut offset = pre as isize;
+        for (start, shift) in &shifts {
+            if *start < pre {
+                offset += shift;
+            }
+        }
+        offset.max(0) as usize
+    };
+    let primary = state.primary_index().unwrap_or_default();
+    let mut selections = Vec::with_capacity(members.len());
+    let mut cursor_after = 0usize;
+    for (index, (first, last)) in members.iter().enumerate() {
+        let first_start = line_start(snapshot, *first).unwrap_or(0);
+        let last_start = line_start(snapshot, *last).unwrap_or(first_start);
+        let mut member = Selection::new(
+            EditorPoint {
+                byte: post(first_start),
+                line: *first,
+            },
+            SelectionMode::Line,
+        );
+        member.head = EditorPoint {
+            byte: post(last_start),
+            line: *last,
+        };
+        if index == primary {
+            cursor_after = member.head.byte;
+        }
+        selections.push(member);
+    }
+    let Some(edit) = build_edit(snapshot, TextTransaction::new(edits), cursor_after, false) else {
+        return Ok(HelixVerbOutcome::Handled);
+    };
+    Ok(HelixVerbOutcome::EditAndSelect(edit, None, selections))
+}
+
+/// How many bytes one indent unit occupies at the start of a line.
+///
+/// The loop stops at the first character that is not whitespace and never
+/// counts past one unit's columns, which is why `<` cannot eat content: a line
+/// indented with less than a unit loses exactly what it has and no more.
+fn outdent_bytes(
+    snapshot: &DocumentSnapshot,
+    start: usize,
+    content_end: usize,
+    unit: IndentUnit,
+) -> usize {
+    let (unit_columns, tab_columns) = unit.columns();
+    let mut columns = 0usize;
+    let mut cursor = start;
+    while cursor < content_end {
+        let Some(ch) = char_at(snapshot, cursor) else {
+            break;
+        };
+        if !ch.is_whitespace() {
+            break;
+        }
+        let width = if ch == '\t' { tab_columns } else { 1 };
+        if columns + width > unit_columns {
+            break;
+        }
+        columns += width;
+        let next = char_end(snapshot, cursor);
+        if next <= cursor {
+            break;
+        }
+        cursor = next;
+    }
+    cursor - start
+}
+
+// ── Comment toggling (M005) ──────────────────────────────────────────────────
+
+/// `space c` / `space C` — toggle the comment style over the covered lines.
+///
+/// The covered range is the lines the selection spans, or the cursor's line
+/// when nothing is held; the cursor's **column** never decides anything, because
+/// a comment belongs to a line.
+///
+/// A line token goes after the line's existing indentation. A block pair wraps
+/// the range: the start token before its first non-whitespace byte, the end
+/// token after its last. Nothing between the tokens is rewritten, and a blank
+/// line is skipped rather than given whitespace it did not have.
+///
+/// A range is uncommented only when **every** non-blank line in it is
+/// commented, so a mixed range is commented rather than half-uncommented.
+/// Removal takes away exactly the token inserted, which is what makes the
+/// gesture its own inverse. One transaction, so one history entry.
+pub fn toggle_comments(
+    snapshot: &DocumentSnapshot,
+    presentation: &TuiDocumentPresentation,
+    style: crate::tui::editor_highlight::CommentStyle<'_>,
+) -> Result<HelixVerbOutcome, String> {
+    let cursor = clamp_offset(snapshot, presentation.cursor_byte);
+    let last_line = snapshot.len_lines().saturating_sub(1);
+    let mut lines: Vec<usize> = Vec::new();
+    if presentation.selections.is_empty() {
+        lines.push(cursor_line(snapshot, cursor).min(last_line));
+    } else {
+        for member in &presentation.selections {
+            let (first, last) = member.line_range();
+            lines.extend(first.min(last_line)..=last.min(last_line));
+        }
+    }
+    lines.sort_unstable();
+    lines.dedup();
+    let edits = match style {
+        crate::tui::editor_highlight::CommentStyle::Line(token) => {
+            line_comment_edits(snapshot, &lines, token)?
+        }
+        crate::tui::editor_highlight::CommentStyle::Block { start, end } => {
+            block_comment_edits(snapshot, &lines, start, end)?
+        }
+    };
+    if edits.len() > MAX_DOCUMENT_EDITS {
+        return Err(format!(
+            "commenting this range needs {} edits, past one transaction's limit of \
+             {MAX_DOCUMENT_EDITS}",
+            edits.len()
+        ));
+    }
+    // Every pre-edit offset's post-edit position, so the cursor keeps its place.
+    let mut shifts: Vec<(usize, isize)> = Vec::with_capacity(edits.len());
+    for edit in &edits {
+        shifts.push((
+            edit.range.start,
+            edit.insert.len() as isize - (edit.range.end - edit.range.start) as isize,
+        ));
+    }
+    let post = |pre: usize| -> usize {
+        let mut offset = pre as isize;
+        for (start, shift) in &shifts {
+            if *start < pre {
+                offset += shift;
+            }
+        }
+        offset.max(0) as usize
+    };
+    let cursor_after = post(cursor);
+    let Some(edit) = build_edit(snapshot, TextTransaction::new(edits), cursor_after, false) else {
+        return Err("nothing to comment: the covered range is blank".to_string());
+    };
+    // The selection survives the gesture: `submit_edit` clears every member on
+    // an accepted edit, so a toggle that did not name them would leave the
+    // second press acting on the cursor's line alone. No token adds or removes
+    // a line break, so only the byte offsets move.
+    if presentation.selections.is_empty() {
+        return Ok(HelixVerbOutcome::Edit(edit, None));
+    }
+    let members = presentation
+        .selections
+        .iter()
+        .map(|member| Selection {
+            anchor: EditorPoint {
+                byte: post(member.anchor.byte),
+                line: member.anchor.line,
+            },
+            head: EditorPoint {
+                byte: post(member.head.byte),
+                line: member.head.line,
+            },
+            ..*member
+        })
+        .collect();
+    Ok(HelixVerbOutcome::EditAndSelect(edit, None, members))
+}
+
+/// The line-token edits for the covered `lines`.
+///
+/// Every edit is at a first-non-whitespace byte, so the ranges ascend with the
+/// lines and cannot overlap. Insertion is the grammar's own token — `"// "`
+/// for Rust, trailing space included — so removal is the exact inverse.
+fn line_comment_edits(
+    snapshot: &DocumentSnapshot,
+    lines: &[usize],
+    token: &str,
+) -> Result<Vec<TextEdit>, String> {
+    let mut targets: Vec<(usize, bool)> = Vec::with_capacity(lines.len());
+    for &line in lines {
+        let Some(start) = line_start(snapshot, line) else {
+            continue;
+        };
+        let content_end = line_content_end(snapshot, line).unwrap_or(start);
+        // A blank line, and the zero-width line a final newline invents, have
+        // no content to comment. `first_non_whitespace` is the bounded walk
+        // `gs` uses, so a huge indent costs a bound rather than a scan.
+        if start >= snapshot.len_bytes() || content_end <= start {
+            continue;
+        }
+        let Some(token_at) = first_non_whitespace(snapshot, line) else {
+            continue;
+        };
+        if token_at >= content_end {
+            continue;
+        }
+        let commented = snapshot
+            .read_bytes(token_at, content_end)
+            .is_ok_and(|body| body.starts_with(token));
+        targets.push((token_at, commented));
+    }
+    if targets.is_empty() {
+        return Err("nothing to comment: every covered line is blank".to_string());
+    }
+    // Mixed ranges comment: five lines asked for five comments.
+    let uncomment = targets.iter().all(|(_, commented)| *commented);
+    let mut edits = Vec::with_capacity(targets.len());
+    for (token_at, commented) in targets {
+        if uncomment {
+            edits.push(TextEdit::new(
+                token_at..token_at + token.len(),
+                String::new(),
+            ));
+        } else if !commented {
+            edits.push(TextEdit::new(token_at..token_at, token.to_string()));
+        }
+    }
+    Ok(edits)
+}
+
+/// The block-pair edits for the range the covered `lines` span.
+///
+/// Recognition is the wrap itself: the first non-whitespace byte must begin the
+/// start token and the last must end the end token. A wrapped range loses
+/// exactly those two runs, so a re-toggle restores the original bytes.
+fn block_comment_edits(
+    snapshot: &DocumentSnapshot,
+    lines: &[usize],
+    start_token: &str,
+    end_token: &str,
+) -> Result<Vec<TextEdit>, String> {
+    let blank = || "nothing to comment: the covered range is blank".to_string();
+    let Some(&first_line) = lines.first() else {
+        return Err(blank());
+    };
+    let last_line = lines.last().copied().unwrap_or(first_line);
+    // The range's own first and last bytes are the *content* bytes: a blank
+    // first line is skipped rather than wrapped, and the closing token goes
+    // after the last non-whitespace byte rather than after the line's
+    // terminator.
+    let mut first = None;
+    for &line in lines {
+        let Some(start) = line_start(snapshot, line) else {
+            continue;
+        };
+        let content_end = line_content_end(snapshot, line).unwrap_or(start);
+        if content_end <= start {
+            continue;
+        }
+        if let Some(candidate) = first_non_whitespace(snapshot, line) {
+            if candidate < content_end {
+                first = Some(candidate);
+                break;
+            }
+        }
+    }
+    let Some(first) = first else {
+        return Err(blank());
+    };
+    let mut last = line_content_end(snapshot, last_line).unwrap_or(first);
+    while last > first {
+        let previous = prev_char_boundary(snapshot, last);
+        match char_at(snapshot, previous) {
+            Some(ch) if ch.is_whitespace() => last = previous,
+            _ => break,
+        }
+    }
+    if first >= last {
+        return Err(blank());
+    }
+    let body = snapshot
+        .read_bytes(first, last)
+        .map_err(|error| error.to_string())?;
+    let wrapped = body.len() >= start_token.len() + end_token.len()
+        && body.starts_with(start_token)
+        && body.ends_with(end_token);
+    if !wrapped {
+        return Ok(vec![
+            TextEdit::new(first..first, start_token.to_string()),
+            TextEdit::new(last..last, end_token.to_string()),
+        ]);
+    }
+    let inner_start = first + start_token.len();
+    let inner_end = last - end_token.len();
+    if inner_start >= inner_end {
+        // The pair is the whole range: one deletion, because two would be
+        // adjacent and the transaction's ascending rule is about ranges, not
+        // about the number of them.
+        return Ok(vec![TextEdit::new(first..last, String::new())]);
+    }
+    Ok(vec![
+        TextEdit::new(first..inner_start, String::new()),
+        TextEdit::new(inner_end..last, String::new()),
+    ])
 }
 
 /// Line reached by a half-page motion, from the current viewport height.
@@ -4487,13 +5851,68 @@ pub fn resolve_completion_edit(
 
 // ── Resolution against a presentation record ────────────────────────────────
 
-/// Apply a motion command to the presentation. Never touches text.
+/// The pending count as the banner row shows it: `"3"`, or `""` for none.
+///
+/// A count is **not** a notice. A notice states what just happened; a count
+/// states what is about to, so it gets its own place on the row rather than
+/// the notice slot — and it goes immediately before the armed prefix, because
+/// `3g` is one gesture read left to right.
+pub fn pending_count_label(count: Option<usize>) -> String {
+    count.map(|count| count.to_string()).unwrap_or_default()
+}
+
+/// Apply a motion command to the presentation, honouring a pending count.
+/// Never touches text.
 ///
 /// Deliberate movement that arrived through the Helix verbs goes through
 /// [`apply_helix_verb`], which owns the selection rules. This is the
 /// *raw* motion: it always drops a held selection, so an Insert-mode arrow or
 /// an LSP jump leaves nothing highlighted rather than dragging an old anchor
 /// onto wherever the cursor landed.
+///
+/// **The count is read and cleared here, and nowhere else.** Reading it in one
+/// place is what makes "apply this motion N times" a loop over
+/// [`apply_motion_once`] rather than N special cases in the dispatch layer, and
+/// clearing it in the same step is what keeps a count from leaking into the
+/// next gesture. Two commands are not repeated: `<n>G` and `<n>gg` **address a
+/// line**, because `G` is `goto_line` and the count is its argument — see
+/// [`GOTO_LEAVES`]' note on `g|`.
+pub fn apply_motion(
+    presentation: &mut TuiDocumentPresentation,
+    snapshot: &DocumentSnapshot,
+    command: EditorCommand,
+    visible_lines: usize,
+) -> usize {
+    let count = presentation.pending_count.take();
+    let addresses_a_line = count.is_some()
+        && matches!(
+            command,
+            EditorCommand::BufferStart | EditorCommand::BufferEnd
+        );
+    let repeats = if addresses_a_line {
+        1
+    } else {
+        count.unwrap_or(1).max(1)
+    };
+    let mut landed = clamp_offset(snapshot, presentation.cursor_byte);
+    for _ in 0..repeats {
+        let next = apply_motion_once(presentation, snapshot, command, visible_lines, count);
+        // A motion that did not move cannot be moved by asking again: the
+        // resolution is a function of the position it starts from, so the loop
+        // stops at the document's boundary instead of running the count out.
+        // That is what bounds `9999h` at column zero, and it is why a count
+        // larger than the document clamps rather than stalling.
+        let stopped = next == landed;
+        landed = next;
+        if stopped {
+            break;
+        }
+    }
+    landed
+}
+
+/// One step of [`apply_motion`]: resolve `command` once and write the cursor,
+/// the viewport and the disclosure it produced.
 ///
 /// A find motion is the one command resolved here rather than in
 /// [`apply_motion_inner`], because it is the only motion that has an
@@ -4507,11 +5926,12 @@ pub fn resolve_completion_edit(
 /// `]p` at the last paragraph must be able to say so. Resolving it here also
 /// means the scan runs **once** — the note and the offset cannot come from two
 /// passes that saw different documents.
-pub fn apply_motion(
+fn apply_motion_once(
     presentation: &mut TuiDocumentPresentation,
     snapshot: &DocumentSnapshot,
     command: EditorCommand,
     visible_lines: usize,
+    count: Option<usize>,
 ) -> usize {
     let from = clamp_offset(snapshot, presentation.cursor_byte);
     // The view commands do not move the cursor — they move the **view**, and
@@ -4582,7 +6002,7 @@ pub fn apply_motion(
             // A bracket that did not match leaves the cursor exactly where it
             // was, and the note says which of the three reasons it was.
             Some(_) => from,
-            None => apply_motion_inner(presentation, snapshot, command, visible_lines),
+            None => apply_motion_inner(presentation, snapshot, command, visible_lines, count),
         },
     };
     presentation.cursor_byte = resolved;
@@ -4647,15 +6067,30 @@ fn desired_column_after(
     }
 }
 
+/// The start of the line a `<n>G`-style count addresses.
+///
+/// One-based in, zero-based in the document, clamped to the last line — the
+/// same rule `:` applies to `:50`, so the two spellings of "go to a numbered
+/// line" cannot land on different bytes. `None` when no count is pending.
+fn counted_line_start(snapshot: &DocumentSnapshot, count: Option<usize>) -> Option<usize> {
+    let line = count?;
+    line_start(snapshot, line.saturating_sub(1).min(last_line_of(snapshot)))
+}
+
 /// The geometry half of [`apply_motion`]: resolve the offset a motion lands
 /// on, without writing anything. Split out so the Helix driver can resolve a
 /// motion against a throwaway presentation and then commit the result exactly
 /// once through the shared selection state machine.
+///
+/// `count` reaches the two goto motions only: `<n>G` and `<n>gg` address a
+/// line, so the count is an **argument** rather than a repeat. Every other arm
+/// ignores it — the repeat lives in [`apply_motion`].
 fn apply_motion_inner(
     presentation: &TuiDocumentPresentation,
     snapshot: &DocumentSnapshot,
     command: EditorCommand,
     visible_lines: usize,
+    count: Option<usize>,
 ) -> usize {
     let cursor = clamp_offset(snapshot, presentation.cursor_byte);
     let next = match command {
@@ -4673,8 +6108,13 @@ fn apply_motion_inner(
         EditorCommand::FirstNonWhitespace => {
             first_non_whitespace(snapshot, cursor_line(snapshot, cursor)).unwrap_or(cursor)
         }
-        EditorCommand::BufferStart => 0,
-        EditorCommand::BufferEnd => buffer_content_end(snapshot),
+        // `<n>gg` and `<n>G` are `goto_line`, not "the start/end n times":
+        // the count addresses a line. Without a count both keep exactly the
+        // binding they had.
+        EditorCommand::BufferStart => counted_line_start(snapshot, count).unwrap_or(0),
+        EditorCommand::BufferEnd => {
+            counted_line_start(snapshot, count).unwrap_or_else(|| buffer_content_end(snapshot))
+        }
         EditorCommand::WordForward => word_forward(snapshot, cursor),
         EditorCommand::WordBackward => word_backward(snapshot, cursor),
         EditorCommand::WordEnd => word_end(snapshot, cursor),
@@ -4924,6 +6364,80 @@ pub fn move_cursor_to(
         last_line_of(snapshot),
     );
     cursor
+}
+
+// ── The jumplist ───────────────────────────────────────────────────────────
+
+/// What the jumplist can do with one recorded position against the text that
+/// is attached now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JumplistTarget {
+    /// The entry names this attachment and an offset its text contains: the
+    /// cursor may stand there.
+    Honour(usize),
+    /// The entry was recorded against a **different** attachment.
+    OtherDocument,
+    /// The entry's offset is past the end of the current text: the document
+    /// shrank underneath it.
+    Stale,
+}
+
+/// Can this entry be honoured?
+///
+/// Two refusals, and neither is a repair. An offset at **exactly** the end is
+/// a legal cursor position — the end of the buffer is somewhere the cursor
+/// may stand — but one past it is refused rather than clamped: landing
+/// somewhere else is worse than saying the entry is stale, because a reader
+/// who is told the jump failed can still find the place, and one moved to a
+/// plausible-looking line believes they are already there.
+pub fn jumplist_target(
+    identity: &JumplistIdentity,
+    entry: &JumplistEntry,
+    snapshot: &DocumentSnapshot,
+) -> JumplistTarget {
+    if entry.identity != *identity {
+        return JumplistTarget::OtherDocument;
+    }
+    if entry.byte > snapshot.len_bytes() {
+        return JumplistTarget::Stale;
+    }
+    JumplistTarget::Honour(entry.byte)
+}
+
+/// Whether one motion is a jump to a **named destination** rather than a step
+/// that walks the buffer.
+///
+/// The jumplist's push rule, stated once: a jump to a named destination
+/// records where it started; a motion that walks the buffer does not. Only
+/// the two buffer ends qualify. `j`, `w`, `Ctrl-d`, `gs` and `$` are steps —
+/// relative to where the reader stands or to the line they are on — and
+/// recording each would turn the jumplist into a second, worse undo history.
+pub fn is_named_destination(command: EditorCommand) -> bool {
+    matches!(
+        command,
+        EditorCommand::BufferStart | EditorCommand::BufferEnd
+    )
+}
+
+/// Record where a named jump **started**, when it actually moved.
+///
+/// Called before the jump, with the offset captured before it: an entry that
+/// recorded where the jump *landed* could not take the reader back. `None`
+/// when the cursor never moved — a `gg` at the top and a `G` at the end are
+/// jumps to where the reader already stands, and an entry for them would be a
+/// picker row that does nothing.
+pub fn record_jumplist_jump(
+    presentation: &mut TuiDocumentPresentation,
+    identity: &JumplistIdentity,
+    before: usize,
+) -> Option<JumplistPush> {
+    if presentation.cursor_byte == before {
+        return None;
+    }
+    Some(presentation.jumplist.push(JumplistEntry {
+        identity: identity.clone(),
+        byte: before,
+    }))
 }
 
 /// Resolve an editing command into a local transaction plus the cursor and
@@ -5230,16 +6744,17 @@ pub fn record_undo(presentation: &mut TuiDocumentPresentation, edit: &EditorEdit
     );
 }
 
-/// Push one accepted edit onto the history and truncate anything after it.
+/// Push one accepted edit as a new node of the undo tree.
 ///
-/// `cursor_before` is the position observed *before*
-/// the forward transaction, so undo restores where the user actually was.
-/// `selections_before` is the same idea for the selection set: undo restores
-/// the members the reader had, not an empty buffer with the text put back.
+/// `cursor_before` is the position observed *before* the forward transaction,
+/// so undo restores where the user actually was. `selections_before` is the
+/// same idea for the selection set: undo restores the members the reader had,
+/// not an empty buffer with the text put back.
 ///
-/// A new edit after an undo **truncates the tail**: everything after the
-/// cursor is dropped, because that text is no longer reachable. This is
-/// today's `push_undo` clearing the redo stack, expressed as a cursor.
+/// The node's parent is the node the text stood at, so an edit made after an
+/// undo is a **sibling** of the branch it did not take: nothing is truncated
+/// and no branch is lost. The parent's last-visited child moves to the new
+/// node, which is what makes `U` follow the branch just taken.
 pub fn push_undo(
     presentation: &mut TuiDocumentPresentation,
     forward: TextTransaction,
@@ -5248,73 +6763,243 @@ pub fn push_undo(
     cursor_before: usize,
     selections_before: Vec<crate::tui::helix_selection::Selection<EditorPoint>>,
 ) {
-    truncate_history_tail(presentation);
+    let parent = presentation.history_cursor;
+    // Identity is monotonic, so a pruned node's identity is never handed to a
+    // different node. `history_next` is `0` on a fresh or cleared history, so
+    // the newest existing node is the other floor.
+    let newest = presentation
+        .history
+        .last()
+        .map_or(1, |node| node.created + 1);
+    let created = presentation.history_next.max(newest);
+    presentation.history_next = created + 1;
+    if let Some(index) = node_index(presentation, parent) {
+        presentation.history[index].last_child = Some(created);
+    }
     presentation.history.push(EditorUndoEntry {
         forward,
         inverse,
         cursor_before,
         selections_before,
         bytes,
+        created,
+        parent,
+        last_child: None,
     });
     presentation.history_bytes = presentation.history_bytes.saturating_add(bytes);
-    presentation.history_cursor = presentation.history.len();
-    trim_history(presentation);
+    presentation.history_cursor = created;
+    presentation.history_bound_cleared = trim_history(presentation);
 }
 
-/// Drop everything after the history cursor, and the bytes it held.
+/// Where the node `id` names sits in the arena, if it is still retained.
 ///
-/// The cursor is a count of applied entries, so truncating the tail leaves
-/// it where it is: the applied entries are the ones before it, and they are
-/// untouched.
-pub fn truncate_history_tail(presentation: &mut TuiDocumentPresentation) {
-    let cursor = presentation.history_cursor.min(presentation.history.len());
-    if cursor >= presentation.history.len() {
-        return;
+/// The arena is in creation order, so identity is a binary search rather than
+/// a scan, and pruning removes nodes without renumbering the survivors.
+fn node_index(presentation: &TuiDocumentPresentation, id: HistoryId) -> Option<usize> {
+    presentation
+        .history
+        .binary_search_by_key(&id, |node| node.created)
+        .ok()
+}
+
+/// The node `id` names, if it is still retained.
+pub fn history_node(
+    presentation: &TuiDocumentPresentation,
+    id: HistoryId,
+) -> Option<&EditorUndoEntry> {
+    presentation.history.get(node_index(presentation, id)?)
+}
+
+/// How many nodes are applied at `id`, counting `id` itself.
+pub fn history_depth(presentation: &TuiDocumentPresentation, id: HistoryId) -> usize {
+    let mut depth = 0;
+    let mut walk = id;
+    while let Some(node) = history_node(presentation, walk) {
+        depth += 1;
+        walk = node.parent;
     }
-    let dropped: usize = presentation.history[cursor..]
-        .iter()
-        .map(|entry| entry.bytes)
-        .sum();
-    presentation.history_bytes = presentation.history_bytes.saturating_sub(dropped);
-    presentation.history.truncate(cursor);
+    depth
 }
 
-/// The entry one step **back** from the cursor, if there is one.
+/// The child `U` follows from `parent`: the one the reader last stood at, else
+/// the newest.
 ///
-/// This is what `u` undoes: the entry the current text was produced by.
+/// The recorded child is checked against the tree rather than trusted, so a
+/// link a prune forgot to clear cannot send the reader outside this node's own
+/// children. Without a record a node with several children would have no
+/// defined redo target at all, which is the arbitrary choice this prevents.
+fn chosen_child(
+    presentation: &TuiDocumentPresentation,
+    parent: HistoryId,
+) -> Option<&EditorUndoEntry> {
+    let recorded = history_node(presentation, parent).and_then(|node| node.last_child);
+    recorded
+        .and_then(|id| {
+            presentation
+                .history
+                .iter()
+                .find(|node| node.created == id && node.parent == parent)
+        })
+        .or_else(|| {
+            presentation
+                .history
+                .iter()
+                .rev()
+                .find(|node| node.parent == parent)
+        })
+}
+
+/// The node one step **back** from the cursor, if there is one.
+///
+/// This is what `u` undoes: the node the current text was produced by, whose
+/// inverse restores its parent's text.
 pub fn undo_entry(presentation: &TuiDocumentPresentation) -> Option<&EditorUndoEntry> {
-    let index = presentation.history_cursor.checked_sub(1)?;
-    presentation.history.get(index)
+    history_node(presentation, presentation.history_cursor)
 }
 
-/// The entry one step **forward** from the cursor, if there is one.
+/// The node one step **forward** from the cursor, if there is one.
 ///
-/// This is what `U` redoes: the entry the text can still be moved to.
+/// This is what `U` redoes: the branch the reader last walked from here, so a
+/// node with several children still has one defined redo target.
 pub fn redo_entry(presentation: &TuiDocumentPresentation) -> Option<&EditorUndoEntry> {
-    presentation.history.get(presentation.history_cursor)
+    chosen_child(presentation, presentation.history_cursor)
 }
 
-/// Move the history cursor **back** one entry.
+/// Move the cursor to the parent of the node it names.
 ///
-/// Returns `false` at the beginning of the history, where there is nothing
-/// earlier to move to.
+/// Returns `false` at the root state, where there is nothing earlier to move
+/// to. The node just left becomes its parent's last-visited child, so redo
+/// comes back to the branch the reader was on.
 pub fn move_history_cursor_back(presentation: &mut TuiDocumentPresentation) -> bool {
-    if presentation.history_cursor == 0 {
+    let Some((parent, left)) = history_node(presentation, presentation.history_cursor)
+        .map(|node| (node.parent, node.created))
+    else {
         return false;
+    };
+    if let Some(index) = node_index(presentation, parent) {
+        presentation.history[index].last_child = Some(left);
     }
-    presentation.history_cursor -= 1;
+    presentation.history_cursor = parent;
     true
 }
 
-/// Move the history cursor **forward** one entry.
+/// Move the cursor to the child [`redo_entry`] names.
 ///
-/// Returns `false` at the tip of the history, where there is nothing later
-/// to move to.
+/// Returns `false` at a tip, where there is nothing later to move to.
 pub fn move_history_cursor_forward(presentation: &mut TuiDocumentPresentation) -> bool {
-    if presentation.history_cursor >= presentation.history.len() {
+    let Some((next, parent)) = redo_entry(presentation).map(|node| (node.created, node.parent))
+    else {
+        return false;
+    };
+    if let Some(index) = node_index(presentation, parent) {
+        presentation.history[index].last_child = Some(next);
+    }
+    presentation.history_cursor = next;
+    true
+}
+
+/// One edge of a history movement that crosses more than one node.
+///
+/// Creation order is **not** tree order: `Alt-u`/`Alt-U` can name a node on
+/// another branch, and reaching it means climbing to the fork and descending.
+/// Each edge is applied in turn; [`lands_on`](Self::lands_on) is the node the
+/// movement stands at once it has.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryEdge {
+    /// Transaction to submit to cross this edge.
+    pub transaction: TextTransaction,
+    /// The node whose transaction this is, and so whose recorded position and
+    /// selection set the traversal restores once the edge has landed.
+    pub entry: HistoryId,
+    /// The node reached by applying [`transaction`](Self::transaction).
+    pub lands_on: HistoryId,
+}
+
+/// The node or state created immediately before the cursor's, if there is one.
+///
+/// This is `Alt-u`'s target. Before the oldest retained node is the root state
+/// — the text the oldest entry was made against — which is a position in time
+/// rather than a node, and is what makes the time walk able to reach the
+/// beginning a branch walk also reaches.
+pub fn creation_order_back(presentation: &TuiDocumentPresentation) -> Option<HistoryId> {
+    let index = node_index(presentation, presentation.history_cursor)?;
+    match index.checked_sub(1) {
+        Some(previous) => presentation.history.get(previous).map(|node| node.created),
+        None => Some(0),
+    }
+}
+
+/// The node created immediately after the cursor's, if there is one.
+///
+/// This is `Alt-U`'s target. From the root state it is the oldest node the
+/// tree still holds.
+pub fn creation_order_forward(presentation: &TuiDocumentPresentation) -> Option<HistoryId> {
+    let next = match node_index(presentation, presentation.history_cursor) {
+        Some(index) => index + 1,
+        None if presentation.history_cursor == 0 => 0,
+        None => return None,
+    };
+    presentation.history.get(next).map(|node| node.created)
+}
+
+/// Every edge a movement from the cursor to `to` crosses, in application
+/// order.
+///
+/// A branch change is not one transaction: the movement climbs to the fork
+/// applying each node's inverse, then descends the other branch applying each
+/// node's forward. Empty when `to` is not retained or is where the cursor
+/// already stands.
+pub fn history_edges(presentation: &TuiDocumentPresentation, to: HistoryId) -> Vec<HistoryEdge> {
+    let from = presentation.history_cursor;
+    if from == to || (to != 0 && history_node(presentation, to).is_none()) {
+        return Vec::new();
+    }
+    let from_line = ancestry(presentation, from);
+    let to_line = ancestry(presentation, to);
+    let shared = from_line
+        .iter()
+        .zip(&to_line)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut edges = Vec::new();
+    for id in from_line[shared..].iter().rev() {
+        let node = history_node(presentation, *id).expect("on the cursor's own line");
+        edges.push(HistoryEdge {
+            transaction: node.inverse.clone(),
+            entry: node.created,
+            lands_on: node.parent,
+        });
+    }
+    for id in &to_line[shared..] {
+        let node = history_node(presentation, *id).expect("on the target's own line");
+        edges.push(HistoryEdge {
+            transaction: node.forward.clone(),
+            entry: node.created,
+            lands_on: node.created,
+        });
+    }
+    edges
+}
+
+/// The nodes from the root state down to `id`, root first.
+fn ancestry(presentation: &TuiDocumentPresentation, id: HistoryId) -> Vec<HistoryId> {
+    let mut line = vec![0];
+    let mut pending = Vec::new();
+    let mut walk = id;
+    while let Some(node) = history_node(presentation, walk) {
+        pending.push(node.created);
+        walk = node.parent;
+    }
+    line.extend(pending.into_iter().rev());
+    line
+}
+
+/// Park the cursor on `to`, if that node is retained.
+pub fn set_history_cursor(presentation: &mut TuiDocumentPresentation, to: HistoryId) -> bool {
+    if to != 0 && history_node(presentation, to).is_none() {
         return false;
     }
-    presentation.history_cursor += 1;
+    presentation.history_cursor = to;
     true
 }
 
@@ -5327,11 +7012,10 @@ pub fn move_history_cursor_forward(presentation: &mut TuiDocumentPresentation) -
 /// Returns `false` when the edit does not fit, in which case the caller
 /// must commit the session (if one is open) and push the edit on its own.
 ///
-/// The redo tail is cleared when the session **opens**, and only then. A
-/// reader who undoes and then types must not have the redo tail
-/// resurrected by the next keystroke of the new burst, and clearing it on
-/// every keystroke of the burst would clear a redo the reader had earned
-/// since the burst began.
+/// Opening a session records no node: the branch the run becomes is created
+/// when the run commits, from the node the text stands at then. A reader who
+/// undoes and then types therefore branches at the older node instead of
+/// destroying the tail — the tail is what the tree was built to keep.
 pub fn absorb_insert_edit(
     presentation: &mut TuiDocumentPresentation,
     transaction: &TextTransaction,
@@ -5356,12 +7040,8 @@ pub fn absorb_insert_edit(
             cursor_before,
             selections_before,
         });
-        // The redo tail is dropped when the session **opens**, and only then.
-        // A reader who undoes and then types must not have the tail
-        // resurrected by the next keystroke of the new burst, and dropping it
-        // on every keystroke of the burst would drop a redo the reader had
-        // earned since the burst began.
-        truncate_history_tail(presentation);
+        // Opening a session takes no node and drops no branch: the run becomes
+        // a child of whatever node the text stands at when it commits.
         return true;
     };
     // The run continues only at the end of the run so far. An insertion
@@ -5434,28 +7114,92 @@ pub fn discard_insert_session(presentation: &mut TuiDocumentPresentation) {
     presentation.insert_session = None;
 }
 
-/// Evict the oldest entries until the history is inside **one** cap.
-fn trim_history(presentation: &mut TuiDocumentPresentation) {
+/// Evict whole branches until the history is inside both caps.
+///
+/// Returns `true` when it could not prune enough and cleared the history
+/// instead. That fallback is a stated outcome rather than a silent one: an
+/// interior node a live child still needs cannot be dropped, so a history that
+/// is one node too large to keep is one the reader is told about.
+fn trim_history(presentation: &mut TuiDocumentPresentation) -> bool {
     while presentation.history.len() > MAX_EDITOR_UNDO_DEPTH
         || presentation.history_bytes > MAX_EDITOR_UNDO_BYTES
     {
-        match presentation.history.first() {
-            Some(oldest) => {
-                presentation.history_bytes = presentation.history_bytes.saturating_sub(oldest.bytes)
-            }
-            None => {
-                presentation.history_bytes = 0;
-                break;
-            }
+        let Some(victim) = prune_victim(presentation) else {
+            clear_history_nodes(presentation);
+            return true;
+        };
+        drop_node(presentation, victim);
+    }
+    false
+}
+
+/// The node to evict: the oldest leaf that is not the cursor's own, or — when
+/// the history is one chain — its oldest node.
+///
+/// A leaf has no child, so dropping it strands nothing, and an interior node
+/// a live child still needs is never a candidate. The cursor and its ancestors
+/// are therefore protected: while the cursor survives, nothing on its path is
+/// a leaf.
+fn prune_victim(presentation: &TuiDocumentPresentation) -> Option<HistoryId> {
+    let cursor = presentation.history_cursor;
+    let oldest_leaf = presentation
+        .history
+        .iter()
+        .find(|node| node.created != cursor && !has_child(presentation, node.created))
+        .map(|node| node.created);
+    oldest_leaf.or_else(|| {
+        presentation
+            .history
+            .first()
+            .map(|node| node.created)
+            .filter(|id| *id != cursor)
+    })
+}
+
+/// Whether any retained node was created from `id`.
+fn has_child(presentation: &TuiDocumentPresentation, id: HistoryId) -> bool {
+    presentation.history.iter().any(|node| node.parent == id)
+}
+
+/// Remove one node, re-parenting its child and repairing every link to it.
+///
+/// The caller passes a leaf or the oldest node of a single chain, so at most
+/// one node is re-parented and no branch is merged into another.
+fn drop_node(presentation: &mut TuiDocumentPresentation, created: HistoryId) {
+    let Some(index) = node_index(presentation, created) else {
+        return;
+    };
+    let node = presentation.history.remove(index);
+    presentation.history_bytes = presentation.history_bytes.saturating_sub(node.bytes);
+    debug_assert!(
+        presentation
+            .history
+            .iter()
+            .filter(|other| other.parent == created)
+            .count()
+            <= 1,
+        "pruning drops a leaf or the oldest node of one chain"
+    );
+    for other in &mut presentation.history {
+        if other.parent == created {
+            other.parent = node.parent;
         }
-        presentation.history.remove(0);
-        // The cursor counts the applied entries, which are the ones at the
-        // front. Dropping the oldest shifts every index after it, so the
-        // count shifts with them.
-        if presentation.history_cursor > 0 {
-            presentation.history_cursor -= 1;
+        if other.last_child == Some(created) {
+            other.last_child = None;
         }
     }
+}
+
+/// Drop the tree and its identities.
+///
+/// A cleared history has no nodes, so the next one is the first again and the
+/// disclosed fallback no longer describes anything.
+fn clear_history_nodes(presentation: &mut TuiDocumentPresentation) {
+    presentation.history.clear();
+    presentation.history_bytes = 0;
+    presentation.history_cursor = 0;
+    presentation.history_next = 0;
+    presentation.history_bound_cleared = false;
 }
 
 /// Drop all undo and redo history.
@@ -5484,9 +7228,7 @@ fn trim_history(presentation: &mut TuiDocumentPresentation) {
 /// error the user can see, it just aims the next `j` at a column of a line
 /// that is no longer there.
 pub fn clear_history(presentation: &mut TuiDocumentPresentation) {
-    presentation.history.clear();
-    presentation.history_bytes = 0;
-    presentation.history_cursor = 0;
+    clear_history_nodes(presentation);
     // An open insert session is discarded, not committed. Its edits are
     // already in the text, but the text they described is the pre-reload
     // text: committing the session would record a step that restores a
@@ -5502,6 +7244,27 @@ pub fn clear_history(presentation: &mut TuiDocumentPresentation) {
     presentation.last_unimpaired = None;
     presentation.paragraph_note = crate::tui::editor::ParagraphNote::None;
     presentation.desired_column = None;
+    // A count typed against the old text addresses positions in a document
+    // that no longer exists, so it goes with the history, the prefix and the
+    // find — the same reconciliation rule, in the same one place.
+    presentation.clear_count();
+    // The jumplist names positions in the text that was just replaced, so it
+    // goes with the same one rule: a reload that shrank the file would
+    // otherwise leave entries behind the new end. `reset_for_open` calls this
+    // function, so opening a document clears it too, and closing drops the
+    // session that owns it.
+    presentation.jumplist.clear();
+    // Registers hold bytes from the text that was just replaced, so they go
+    // with it: `"ap` after a reload would paste text from a document the
+    // reader is no longer looking at, and the register would be the one piece
+    // of the old buffer left on screen. The selection is the prefix machine's
+    // (`EditorPrefix::RegisterNamed`) and `disarm_prefix` above already took
+    // it down, so there is no second field to clear here.
+    presentation.registers.clear();
+    // The recorder holds chords recorded against the same text, and `.`
+    // cannot repeat a gesture made in a document the reader is no longer
+    // looking at. Same one clearing point, same lifetime as the registers.
+    presentation.recorder.clear();
 }
 
 // ── Viewport ─────────────────────────────────────────────────────────────────
@@ -6510,6 +8273,7 @@ pub(crate) fn one_range(range: std::ops::Range<usize>) -> Vec<std::ops::Range<us
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::editor_highlight::CommentStyle;
     use crate::tui::helix_selection::{Selection, SelectionMode};
     use codegg_document::{DocumentBuffer, DocumentLimits};
 
@@ -6678,21 +8442,17 @@ mod tests {
     }
 
     #[test]
-    fn the_first_edit_of_a_run_clears_the_redo_tail() {
+    fn a_run_opened_after_an_undo_keeps_the_abandoned_branch() {
         let snapshot = snapshot_of("hello");
         let mut presentation = presentation_at(0);
-        // An entry, undone, so that there is a tail to invalidate. Without
-        // one the assertion below would hold for a history that never had
-        // anything in it.
+        // An entry, undone, so that there is a branch to keep. Without one the
+        // assertions below would hold for a history that never had anything.
         record_undo(
             &mut presentation,
             &insert_text(&snapshot, 0, "abc").unwrap(),
         );
         assert!(move_history_cursor_back(&mut presentation));
-        assert!(
-            redo_entry(&presentation).is_some(),
-            "there is a tail to clear"
-        );
+        assert_eq!(presentation.history_cursor, 0, "at the root state");
 
         let insertion = TextTransaction::new(vec![TextEdit::new(0..0, "a")]);
         assert!(absorb_insert_edit(
@@ -6702,10 +8462,23 @@ mod tests {
             0,
             Vec::new()
         ));
-        assert!(redo_entry(&presentation).is_none(), "the redo tail is gone");
+        assert_eq!(presentation.history.len(), 1, "opening a run drops nothing");
+        assert!(
+            redo_entry(&presentation).is_some(),
+            "the branch the reader left is still reachable"
+        );
+
+        commit_insert_session(&mut presentation);
+        assert_eq!(presentation.history.len(), 2, "the run is a sibling");
+        assert!(move_history_cursor_back(&mut presentation));
         assert_eq!(
-            presentation.history_cursor, 0,
-            "and the cursor is back at the beginning"
+            redo_entry(&presentation).map(|node| node.created),
+            Some(2),
+            "`U` now follows the run, not the branch the reader left"
+        );
+        assert!(
+            history_node(&presentation, 1).is_some(),
+            "and the abandoned branch survives"
         );
     }
 
@@ -6768,16 +8541,22 @@ mod tests {
     // ── `/` search ─────────────────────────────────────────────────────
 
     #[test]
-    fn find_matches_returns_every_offset_in_order() {
+    fn find_matches_returns_every_span_in_order() {
         let snapshot = snapshot_of("let host_status = 1;\nfn host_status() {}\n");
         let outcome = find_matches(&snapshot, "host_status");
-        assert_eq!(outcome.matches.len(), 2);
-        assert!(outcome.matches[0] < outcome.matches[1]);
+        assert_eq!(
+            outcome.matches,
+            vec![4..15, 24..35],
+            "one span per occurrence, each covering the whole match"
+        );
         assert!(!outcome.truncated && !outcome.bounded);
-        // Every offset is a cursor position, so every one must be a char
-        // boundary — a non-boundary offset would panic the renderer.
-        for offset in outcome.matches {
-            assert!(snapshot.is_byte_boundary(offset));
+        assert!(outcome.pattern_error.is_none());
+        // Every endpoint is a cursor position or a slice edge, so every one
+        // must be a char boundary — a non-boundary edge would panic the
+        // renderer.
+        for span in outcome.matches {
+            assert!(snapshot.is_byte_boundary(span.start));
+            assert!(snapshot.is_byte_boundary(span.end));
         }
     }
 
@@ -6845,7 +8624,7 @@ mod tests {
     #[test]
     fn the_search_line_is_bounded_at_the_keystroke() {
         let mut presentation = presentation_at(0);
-        presentation.open_search_line("");
+        presentation.open_search_line("", true);
         for _ in 0..(MAX_EDITOR_SEARCH_LINE + 50) {
             presentation.push_search_char('a');
         }
@@ -6867,14 +8646,14 @@ mod tests {
     fn accepting_a_search_keeps_the_highlight_and_cancelling_drops_it() {
         let snapshot = snapshot_of("aaa bbb aaa\n");
         let mut presentation = presentation_at(0);
-        presentation.open_search_line("aaa");
+        presentation.open_search_line("aaa", true);
         let outcome = find_matches(&snapshot, "aaa");
         presentation.adopt_search(outcome, 0);
         presentation.close_search_line();
         assert!(!presentation.search_active, "Enter closes the line");
         assert!(presentation.has_search(), "and keeps the matches for n/N");
 
-        presentation.open_search_line("aaa");
+        presentation.open_search_line("aaa", true);
         presentation.cancel_search();
         assert!(!presentation.search_active);
         assert!(!presentation.has_search(), "Esc disowns the highlight too");
@@ -6883,7 +8662,7 @@ mod tests {
     #[test]
     fn an_empty_search_confirms_to_nothing() {
         let mut presentation = presentation_at(0);
-        presentation.open_search_line("");
+        presentation.open_search_line("", true);
         presentation.close_search_line();
         // Enter on an empty needle is a search for nothing, so there is
         // nothing to leave painted.
@@ -6914,6 +8693,340 @@ mod tests {
         assert_eq!(word_at(&snapshot, 9), None);
     }
 
+    // ── M003: `/` is a regex scan ───────────────────────────────────────
+
+    /// The literal-to-regex change, asserted rather than discovered: this
+    /// test **fails on the old substring scanner**, where `.` was a literal
+    /// byte and `foo.bar` could only ever match its own four characters.
+    #[test]
+    fn a_dot_in_the_pattern_is_a_wildcard_and_an_escaped_dot_is_not() {
+        let snapshot = snapshot_of("fooXbar foo.bar\n");
+        assert_eq!(
+            find_matches(&snapshot, "foo.bar").matches,
+            vec![0..7, 8..15],
+            "`.` matches any character, so both spellings are found"
+        );
+        assert_eq!(
+            find_matches(&snapshot, "foo\\.bar").matches,
+            vec![8..15],
+            "the escaped dot is the literal one — the old behaviour, spelled out"
+        );
+    }
+
+    /// A pattern that does not compile is a **reason**, not a panic and not
+    /// an ordinary empty result: the two are different answers and only one of
+    /// them is the reader's to fix.
+    #[test]
+    fn an_invalid_pattern_carries_the_compilers_reason_and_no_matches() {
+        let snapshot = snapshot_of("alpha\n");
+        let broken = find_matches(&snapshot, "[");
+        assert!(
+            broken.pattern_error.as_deref().is_some_and(|reason| {
+                reason.contains('[') && reason.contains("not a valid regex")
+            }),
+            "the notice names the pattern and the compiler's reason: {:?}",
+            broken.pattern_error
+        );
+        assert!(broken.matches.is_empty());
+        // A pattern that compiles and matches nothing is the *other* answer:
+        // no reason, an empty set, and the reader is told nothing.
+        let absent = find_matches(&snapshot, "zzz");
+        assert_eq!(absent.pattern_error, None);
+        assert!(absent.matches.is_empty());
+    }
+
+    /// A zero-width match cannot be selected, highlighted, or stepped, so the
+    /// scan skips it and keeps only the matches that cover bytes.
+    #[test]
+    fn a_zero_width_match_is_not_a_search_match() {
+        let snapshot = snapshot_of("abc\n");
+        assert!(
+            find_matches(&snapshot, "x*").matches.is_empty(),
+            "`x*` matches the empty string at every position; none of those is \
+             a match the reader can act on"
+        );
+        assert_eq!(
+            find_matches(&snapshot, "b*").matches,
+            vec![1..2],
+            "the one match that covers a byte survives; the empty ones do not"
+        );
+    }
+
+    #[test]
+    fn a_match_span_covers_whole_characters_across_a_multibyte_pair() {
+        let snapshot = snapshot_of("a漢字b\n");
+        // Byte 0 is `a`, 1..4 is `漢`, 4..7 is `字`, 7 is `b`.
+        let outcome = find_matches(&snapshot, "漢.");
+        assert_eq!(outcome.matches, vec![1..7]);
+        let span = outcome.matches[0].clone();
+        assert_eq!(
+            snapshot.read_bytes(span.start, span.end).expect("readable"),
+            "漢字",
+            "slicing on the span's own edges must not cut a character in half"
+        );
+        assert!(snapshot.is_byte_boundary(span.start) && snapshot.is_byte_boundary(span.end));
+    }
+
+    #[test]
+    fn a_program_past_the_size_limit_is_refused_before_the_scan_runs() {
+        let snapshot = snapshot_of("aaaa\n");
+        // Nested bounded repetition expands to a program far past the 1 MiB
+        // ceiling the bounded builder sets.
+        let outcome = find_matches(&snapshot, "(a{400}){400}");
+        assert!(
+            outcome
+                .pattern_error
+                .as_deref()
+                .is_some_and(|reason| reason.contains("size limit")),
+            "refused at compile, with the size limit named: {:?}",
+            outcome.pattern_error
+        );
+        assert!(
+            outcome.matches.is_empty(),
+            "a refused pattern scans nothing at all"
+        );
+    }
+
+    /// The index helpers after the type change: they read a span's start, and
+    /// they wrap at both ends.
+    #[test]
+    fn the_span_index_helpers_wrap_at_both_ends() {
+        let spans = vec![2..4, 8..10, 14..16];
+        assert_eq!(first_match_index(&spans, 0), Some(0), "before the first");
+        assert_eq!(
+            first_match_index(&spans, 8),
+            Some(1),
+            "inclusive: a cursor on a match stays on it"
+        );
+        assert_eq!(first_match_index(&spans, 99), Some(0), "wraps to the first");
+        assert_eq!(
+            last_match_index(&spans, 0),
+            Some(2),
+            "inclusive backwards: no match at or before wraps to the last"
+        );
+        assert_eq!(last_match_index(&spans, 8), Some(1));
+        assert_eq!(
+            next_match_index(&spans, 8),
+            Some(2),
+            "strict: `n` must leave the match it is on"
+        );
+        assert_eq!(next_match_index(&spans, 15), Some(0), "wraps forward");
+        assert_eq!(
+            previous_match_index(&spans, 8),
+            Some(0),
+            "strict: `N` must leave the match it is on"
+        );
+        assert_eq!(previous_match_index(&spans, 0), Some(2), "wraps backward");
+        // Empty in, empty out — no helper invents an index for a match set
+        // that does not exist.
+        assert_eq!(first_match_index(&[], 0), None);
+        assert_eq!(last_match_index(&[], 0), None);
+        assert_eq!(next_match_index(&[], 0), None);
+        assert_eq!(previous_match_index(&[], 0), None);
+    }
+
+    // ── M003: `*` / `Alt-*` / `s` / `Alt-s` ────────────────────────────
+
+    /// `*` escapes the selection; `Alt-*` deliberately does not. The two
+    /// chords exist to be different, and this pins the difference.
+    #[test]
+    fn star_escapes_the_selection_and_alt_star_reads_it_as_a_regex() {
+        // The selection is the literal text `a.b`.
+        let snapshot = snapshot_of("a.b axb\n");
+        let mut presentation = presentation_at(0);
+        hold(&mut presentation, vec![member_on(&snapshot, 0, 0, 2)]);
+        let escaped = selection_search_pattern(&snapshot, &presentation, true);
+        assert_eq!(
+            escaped,
+            Ok(Some("\\ba\\.b\\b".to_string())),
+            "`*` searches for the literal text, as a whole word"
+        );
+        let verbatim = selection_search_pattern(&snapshot, &presentation, false);
+        assert_eq!(
+            verbatim,
+            Ok(Some("a.b".to_string())),
+            "`Alt-*` is the unescaped spelling, which is what makes the two \
+             chords worth having separately"
+        );
+        // And the difference is observable in what the scan finds, which is
+        // the whole point: the wildcard is not a subtlety of the string.
+        assert_eq!(
+            find_matches(&snapshot, &escaped.unwrap().unwrap()).matches,
+            vec![0..3],
+            "the escaped pattern matches the literal text and not `axb`"
+        );
+        assert_eq!(
+            find_matches(&snapshot, &verbatim.unwrap().unwrap()).matches,
+            vec![0..3, 4..7],
+            "the unescaped pattern matches the wildcard too"
+        );
+    }
+
+    #[test]
+    fn a_selection_spanning_a_line_break_is_refused_for_the_pattern() {
+        let snapshot = snapshot_of("alpha\nbeta\n");
+        let mut presentation = presentation_at(0);
+        hold(&mut presentation, vec![member_on(&snapshot, 0, 0, 11)]);
+        let refusal = selection_search_pattern(&snapshot, &presentation, true)
+            .expect_err("a multi-line pattern is a different gesture");
+        assert!(
+            refusal.contains("line break"),
+            "the refusal says why: {refusal}"
+        );
+        assert!(
+            refusal.contains("Alt-x"),
+            "and names the way out: {refusal}"
+        );
+    }
+
+    #[test]
+    fn a_line_selection_is_patterned_from_its_content_not_its_terminator() {
+        let snapshot = snapshot_of("alpha\nbeta\n");
+        let mut presentation = presentation_at(0);
+        hold(
+            &mut presentation,
+            vec![Selection {
+                anchor: editor_point(&snapshot, 0),
+                head: editor_point(&snapshot, 0),
+                mode: SelectionMode::Line,
+                growing: false,
+            }],
+        );
+        assert_eq!(
+            selection_search_pattern(&snapshot, &presentation, false),
+            Ok(Some("alpha".to_string())),
+            "one trailing line break is the selection model's, not the reader's"
+        );
+    }
+
+    #[test]
+    fn star_with_no_selection_reports_nothing_at_all() {
+        let snapshot = snapshot_of("alpha\n");
+        let presentation = presentation_at(0);
+        for literal in [true, false] {
+            assert_eq!(
+                selection_search_pattern(&snapshot, &presentation, literal),
+                Ok(None),
+                "a bare cursor asked to search for nothing is a silent no-op"
+            );
+        }
+    }
+
+    /// `s` — one member per match, so a three-match member becomes three.
+    #[test]
+    fn select_matches_replaces_one_member_with_one_per_match() {
+        let snapshot = snapshot_of("ab ab ab\n");
+        let mut presentation = presentation_at(0);
+        hold(&mut presentation, vec![member_on(&snapshot, 0, 0, 8)]);
+        let outcome = apply_helix_verb(
+            &snapshot,
+            &mut presentation,
+            HelixVerb::SelectSelectionMatches {
+                pattern: "ab".to_string(),
+            },
+        );
+        assert_eq!(outcome, HelixVerbOutcome::Handled);
+        assert_eq!(
+            selection_ranges(&presentation, &snapshot),
+            vec![0..2, 3..5, 6..8],
+            "three matches, each covering exactly its own bytes"
+        );
+    }
+
+    /// The set-level read budget is **disclosed**, never silently short: a
+    /// member that was never scanned contributes no matches, so a partial set
+    /// reads as complete when it is not.
+    #[test]
+    fn selecting_matches_past_the_read_budget_refuses_rather_than_truncating() {
+        // Nine members, each one line past the 32 KiB per-member window, so
+        // the set's total passes the 256 KiB set budget.
+        let line = "a".repeat(40 * 1024);
+        let text = (0..9).map(|_| format!("{line}\n")).collect::<String>();
+        let snapshot = snapshot_of(&text);
+        let mut presentation = presentation_at(0);
+        hold(
+            &mut presentation,
+            (0..9)
+                .map(|index| member_on(&snapshot, index, 0, 40 * 1024))
+                .collect(),
+        );
+        let outcome = apply_helix_verb(
+            &snapshot,
+            &mut presentation,
+            HelixVerb::SelectSelectionMatches {
+                pattern: "z".to_string(),
+            },
+        );
+        let reason = refusal(outcome);
+        assert!(
+            reason.contains(&MAX_SET_VERB_READ_BYTES.to_string()),
+            "the refusal names the byte budget it hit: {reason}"
+        );
+        assert_eq!(
+            presentation.selections.len(),
+            9,
+            "and the set is left exactly as the reader held it"
+        );
+    }
+
+    /// `Alt-s` — one member per line, bounded by each line's content.
+    #[test]
+    fn alt_s_splits_a_member_into_one_member_per_line() {
+        let snapshot = snapshot_of("alpha\nbeta\n");
+        let mut presentation = presentation_at(0);
+        hold(&mut presentation, vec![member_on(&snapshot, 0, 0, 9)]);
+        assert_eq!(
+            apply_helix_verb(
+                &snapshot,
+                &mut presentation,
+                HelixVerb::SplitSelectionOnNewlines
+            ),
+            HelixVerbOutcome::Handled
+        );
+        assert_eq!(
+            selection_ranges(&presentation, &snapshot),
+            vec![0..5, 6..10],
+            "two lines, each bounded by its content and never its terminator"
+        );
+    }
+
+    #[test]
+    fn alt_s_keeps_an_empty_line_as_its_own_member() {
+        let snapshot = snapshot_of("alpha\n\nbeta\n");
+        let mut presentation = presentation_at(0);
+        hold(&mut presentation, vec![member_on(&snapshot, 0, 0, 11)]);
+        apply_helix_verb(
+            &snapshot,
+            &mut presentation,
+            HelixVerb::SplitSelectionOnNewlines,
+        );
+        // One member per line, the blank one included, so the shape stays
+        // one-to-one with the lines it covers. A Char selection is inclusive
+        // of its head, so the blank line's member covers the break — the only
+        // byte that line has — and the merged view folds it into the range
+        // after it.
+        assert_eq!(presentation.selections.len(), 3);
+        assert_eq!(
+            selection_ranges(&presentation, &snapshot),
+            vec![0..5, 6..11],
+            "the blank line is byte 6 and it is held, not dropped"
+        );
+    }
+
+    #[test]
+    fn alt_s_with_nothing_selected_reports_why_it_did_nothing() {
+        let snapshot = snapshot_of("alpha\n");
+        let mut presentation = presentation_at(0);
+        assert_eq!(
+            refusal(apply_helix_verb(
+                &snapshot,
+                &mut presentation,
+                HelixVerb::SplitSelectionOnNewlines
+            )),
+            "nothing selected"
+        );
+    }
+
     #[test]
     fn move_cursor_to_reveals_the_target_and_drops_a_held_selection() {
         let text = (0..40).map(|i| format!("line{i}\n")).collect::<String>();
@@ -6938,6 +9051,115 @@ mod tests {
         );
         // Revealed, so the target is inside the window the viewport shows.
         assert!(30 >= presentation.viewport_line && 30 < presentation.viewport_line + 10);
+    }
+
+    // ── The jumplist ──────────────────────────────────────────────────
+
+    fn jumplist_identity(path: &str) -> JumplistIdentity {
+        JumplistIdentity {
+            document_id: "doc".to_string(),
+            relative_path: path.to_string(),
+            scope: codegg_protocol::document::DocumentScope::Workspace,
+        }
+    }
+
+    /// An offset the text still contains is honoured — including one at the
+    /// exact end, where the cursor may legally stand.
+    #[test]
+    fn an_entry_inside_the_text_or_at_its_exact_end_is_honoured() {
+        let snapshot = snapshot_of("one\ntwo\n");
+        let identity = jumplist_identity("src/lib.rs");
+        let entry = |byte: usize| JumplistEntry {
+            identity: identity.clone(),
+            byte,
+        };
+        assert_eq!(
+            jumplist_target(&identity, &entry(4), &snapshot),
+            JumplistTarget::Honour(4)
+        );
+        assert_eq!(
+            jumplist_target(&identity, &entry(snapshot.len_bytes()), &snapshot),
+            JumplistTarget::Honour(snapshot.len_bytes()),
+            "the end of the buffer is a legal cursor position"
+        );
+    }
+
+    /// A position the shorter document no longer contains is **stale**, and
+    /// another document's entry is refused for its own reason. Neither is
+    /// clamped to the nearest position that would fit.
+    #[test]
+    fn an_entry_past_the_end_or_from_another_document_is_refused() {
+        let snapshot = snapshot_of("one\n");
+        let identity = jumplist_identity("src/lib.rs");
+        let past = JumplistEntry {
+            identity: identity.clone(),
+            byte: snapshot.len_bytes() + 1,
+        };
+        assert_eq!(
+            jumplist_target(&identity, &past, &snapshot),
+            JumplistTarget::Stale,
+            "one byte past the end is refused, not clamped to the end"
+        );
+        let elsewhere = JumplistEntry {
+            identity: jumplist_identity("src/other.rs"),
+            byte: 0,
+        };
+        assert_eq!(
+            jumplist_target(&identity, &elsewhere, &snapshot),
+            JumplistTarget::OtherDocument,
+            "an offset is only meaningful in the document it was recorded against"
+        );
+    }
+
+    /// Only the two buffer ends are named destinations; the motions that walk
+    /// the buffer are not, and a push for one would be a second undo history.
+    #[test]
+    fn only_a_jump_to_a_named_destination_records_a_position() {
+        for command in [EditorCommand::BufferStart, EditorCommand::BufferEnd] {
+            assert!(
+                is_named_destination(command),
+                "{command:?} is a named destination"
+            );
+        }
+        for command in [
+            EditorCommand::MoveDown,
+            EditorCommand::WordForward,
+            EditorCommand::HalfPageDown,
+            EditorCommand::LineEnd,
+        ] {
+            assert!(
+                !is_named_destination(command),
+                "{command:?} walks the buffer and must not record"
+            );
+        }
+    }
+
+    /// A push records where the cursor **was**, and a jump that did not move
+    /// records nothing at all.
+    #[test]
+    fn a_jump_records_the_position_it_started_from_and_a_no_op_records_nothing() {
+        let identity = jumplist_identity("src/lib.rs");
+        let mut presentation = presentation_at(9);
+        assert_eq!(
+            record_jumplist_jump(&mut presentation, &identity, 9),
+            None,
+            "a jump to where the cursor already stands records nothing"
+        );
+        presentation.cursor_byte = 0;
+        assert_eq!(
+            record_jumplist_jump(&mut presentation, &identity, 9),
+            Some(JumplistPush::Recorded)
+        );
+        assert_eq!(
+            presentation
+                .jumplist
+                .entries()
+                .iter()
+                .map(|entry| entry.byte)
+                .collect::<Vec<_>>(),
+            vec![9],
+            "the entry is where the jump started, not where it landed"
+        );
     }
 
     // ── Completion edit resolution ────────────────────────────────────
@@ -7205,8 +9427,576 @@ mod tests {
         assert_eq!(presentation.selections.len(), 1);
     }
 
-    // ── The selection set ───────────────────────────────────────────────
+    // ── M002: the change verb ───────────────────────────────────────────
+    //
+    // `c` resolves its ranges against the same snapshot the delete does, so
+    // these prove the geometry and the one rule `c` owns that `d` does not:
+    // a bare cursor is a one-character selection.
 
+    #[test]
+    fn change_resolves_the_same_ranges_as_delete_for_a_held_set() {
+        // Pinned as an equality rather than as two literal range lists: the
+        // property is that `c` and `d` cannot disagree about the bytes a
+        // selection covers, however many members there are.
+        let snapshot = snapshot_of("one\ntwo\nthree\n");
+        let mut delete_presentation = presentation_at(0);
+        hold(
+            &mut delete_presentation,
+            vec![spanning(&snapshot, 0, 1), spanning(&snapshot, 4, 6)],
+        );
+        let mut change_presentation = delete_presentation.clone();
+
+        assert_eq!(
+            apply_helix_verb(
+                &snapshot,
+                &mut change_presentation,
+                HelixVerb::ChangeSelection
+            ),
+            HelixVerbOutcome::ChangeRanges(vec![0..2, 4..7]),
+            "both members are reported, in document order"
+        );
+        assert_eq!(
+            apply_helix_verb(
+                &snapshot,
+                &mut delete_presentation,
+                HelixVerb::DeleteSelection
+            ),
+            HelixVerbOutcome::DeleteRanges(vec![0..2, 4..7])
+        );
+        assert_eq!(
+            change_presentation.selections.len(),
+            2,
+            "the set is left for the caller to consume, so undo records what the \
+             reader actually held"
+        );
+    }
+
+    #[test]
+    fn change_with_a_bare_cursor_takes_the_character_under_it() {
+        // Mid-line: one character, exactly the one the cursor is on.
+        let snapshot = snapshot_of("one\ntwo\n");
+        let mut presentation = presentation_at(1);
+        assert_eq!(
+            apply_helix_verb(&snapshot, &mut presentation, HelixVerb::ChangeSelection),
+            HelixVerbOutcome::ChangeRanges(one_range(1..2)),
+            "a cursor is a one-character selection"
+        );
+
+        // On a line's terminator: the character under the cursor **is** the
+        // break, so the two lines join. Asserted by applying the delete the
+        // range describes rather than by describing the range again — a range
+        // that pointed one byte further would still look plausible.
+        let snapshot = snapshot_of("one\ntwo\n");
+        let mut presentation = presentation_at(3);
+        let HelixVerbOutcome::ChangeRanges(ranges) =
+            apply_helix_verb(&snapshot, &mut presentation, HelixVerb::ChangeSelection)
+        else {
+            panic!("a cursor on the terminator has a character to take");
+        };
+        assert_eq!(
+            apply_to("one\ntwo\n", delete_ranges(&snapshot, ranges).edit()),
+            "onetwo\n",
+            "the joined text, not the byte offset"
+        );
+    }
+
+    #[test]
+    fn change_with_nothing_left_to_take_resolves_nothing() {
+        // Nothing to take, so nothing to submit and no Insert to follow: the
+        // mode must not move for an edit that did not happen. An empty buffer
+        // and a cursor at the end of one are the same case — there is no
+        // character under the cursor either way.
+        let snapshot = snapshot_of("");
+        let mut empty = presentation_at(0);
+        assert_eq!(
+            apply_helix_verb(&snapshot, &mut empty, HelixVerb::ChangeSelection),
+            HelixVerbOutcome::Handled,
+            "an empty buffer has nothing to change"
+        );
+
+        let snapshot = snapshot_of("one\n");
+        let mut presentation = presentation_at(4);
+        assert_eq!(
+            apply_helix_verb(&snapshot, &mut presentation, HelixVerb::ChangeSelection),
+            HelixVerbOutcome::Handled
+        );
+        assert_eq!(presentation.cursor_byte, 4, "and the cursor stays put");
+    }
+
+    // ── M001: line-shape verbs ──────────────────────────────────────────
+    //
+    // Each case resolves the verb against a `DocumentSnapshot` directly. The
+    // dispatch-path tests live in `commands/editor.rs`; these prove the
+    // geometry, which a key press can only reach through it.
+
+    #[test]
+    fn x_widens_an_inner_selection_to_the_line_and_a_second_press_changes_nothing() {
+        let snapshot = snapshot_of("one\ntwo\n");
+        let mut presentation = presentation_at(5);
+        hold(&mut presentation, vec![spanning(&snapshot, 4, 5)]);
+
+        assert_eq!(
+            apply_helix_verb(&snapshot, &mut presentation, HelixVerb::ExtendToLineBounds),
+            HelixVerbOutcome::Handled
+        );
+        // Pinned boundary: the whole line **including its terminator**, which
+        // is what makes `d` remove the line rather than leave a blank one.
+        assert_eq!(selection_range(&presentation, &snapshot), Some(4..8));
+        assert_eq!(primary(&presentation).unwrap().line_range(), (1, 1));
+
+        let before = presentation.selections.clone();
+        assert_eq!(
+            apply_helix_verb(&snapshot, &mut presentation, HelixVerb::ExtendToLineBounds),
+            HelixVerbOutcome::Handled,
+            "an already line-wise member is a no-op, not an error"
+        );
+        assert_eq!(presentation.selections, before);
+    }
+
+    #[test]
+    fn alt_x_recovers_the_line_bounds_selection_and_narrows_a_narrower_one() {
+        let snapshot = snapshot_of("  foo bar  \nnext\n");
+        // The line's content bounds: bytes 0..=10 are "  foo bar  ".
+        let mut recoverable = presentation_at(2);
+        hold(&mut recoverable, vec![spanning(&snapshot, 0, 10)]);
+        apply_helix_verb(&snapshot, &mut recoverable, HelixVerb::ExtendToLineBounds);
+        assert_eq!(selection_range(&recoverable, &snapshot), Some(0..12));
+        apply_helix_verb(&snapshot, &mut recoverable, HelixVerb::ShrinkToLineBounds);
+        assert_eq!(
+            selection_range(&recoverable, &snapshot),
+            Some(0..11),
+            "the selection `X` widened is recovered exactly"
+        );
+
+        // A selection narrower than the line cannot be recovered, so the
+        // answer is the line's own bounds instead — and it is **not** a
+        // whitespace trim, which is what `_` is for.
+        let mut narrower = presentation_at(3);
+        hold(&mut narrower, vec![spanning(&snapshot, 2, 3)]);
+        apply_helix_verb(&snapshot, &mut narrower, HelixVerb::ExtendToLineBounds);
+        apply_helix_verb(&snapshot, &mut narrower, HelixVerb::ShrinkToLineBounds);
+        assert_eq!(selection_range(&narrower, &snapshot), Some(0..11));
+    }
+
+    #[test]
+    fn trim_strips_both_edges_and_keeps_an_all_whitespace_member_in_the_set() {
+        let snapshot = snapshot_of("  ab  \n   \ncd\n");
+        let mut presentation = presentation_at(2);
+        // "  ab  " is 0..=5; the whitespace-only line is 7..=9.
+        hold(
+            &mut presentation,
+            vec![spanning(&snapshot, 0, 5), spanning(&snapshot, 7, 9)],
+        );
+
+        assert_eq!(
+            apply_helix_verb(&snapshot, &mut presentation, HelixVerb::TrimSelections),
+            HelixVerbOutcome::Handled
+        );
+        assert_eq!(
+            selection_range(&presentation, &snapshot),
+            Some(2..4),
+            "the padded primary member keeps only its content"
+        );
+        assert_eq!(
+            presentation.selections.len(),
+            2,
+            "an all-whitespace member collapses instead of vanishing"
+        );
+        let collapsed = presentation.selections[1].bounds();
+        assert_eq!(
+            (collapsed.0.byte, collapsed.1.byte),
+            (7, 7),
+            "it collapses to a zero-width selection at its own start"
+        );
+        assert_eq!(
+            presentation.primary_index, 0,
+            "the set is still normalized and the primary still names a member"
+        );
+    }
+
+    #[test]
+    fn joining_two_lines_replaces_the_terminator_and_indent_with_one_space() {
+        let snapshot = snapshot_of("one\n    two\nthree\n");
+        let mut presentation = presentation_at(0);
+        // A line selection over lines 0..=1.
+        hold(
+            &mut presentation,
+            vec![Selection {
+                anchor: editor_point(&snapshot, 0),
+                head: editor_point(&snapshot, 4),
+                mode: SelectionMode::Line,
+                growing: false,
+            }],
+        );
+
+        let outcome = apply_helix_verb(
+            &snapshot,
+            &mut presentation,
+            HelixVerb::JoinLines {
+                select_space: false,
+            },
+        );
+        let HelixVerbOutcome::Edit(edit, None) = outcome else {
+            panic!("a join is one edit: {outcome:?}");
+        };
+        assert_eq!(edit.transaction.edits.len(), 1, "one join, one edit");
+        let joined = &edit.transaction.edits[0];
+        assert_eq!(
+            (joined.range.start, joined.range.end),
+            (3, 8),
+            "the terminator and the next line's indentation both go"
+        );
+        assert_eq!(edit.transaction.edits[0].insert, " ");
+        assert_eq!(edit.cursor_after, 4, "just past the inserted space");
+    }
+
+    #[test]
+    fn alt_j_holds_the_space_it_inserted_and_a_single_line_join_is_silent() {
+        let snapshot = snapshot_of("one\n  two\n");
+        let mut presentation = presentation_at(0);
+        hold(
+            &mut presentation,
+            vec![Selection {
+                anchor: editor_point(&snapshot, 0),
+                head: editor_point(&snapshot, 4),
+                mode: SelectionMode::Line,
+                growing: false,
+            }],
+        );
+        let outcome = apply_helix_verb(
+            &snapshot,
+            &mut presentation,
+            HelixVerb::JoinLines { select_space: true },
+        );
+        let HelixVerbOutcome::EditAndSelect(edit, None, selections) = outcome else {
+            panic!("`Alt-J` leaves a selection behind: {outcome:?}");
+        };
+        assert_eq!(
+            (
+                edit.transaction.edits[0].range.start,
+                edit.transaction.edits[0].range.end
+            ),
+            (3, 6)
+        );
+        assert_eq!(edit.cursor_after, 3);
+        assert_eq!(selections.len(), 1);
+        assert_eq!(
+            (selections[0].anchor.byte, selections[0].head.byte),
+            (3, 3),
+            "the inserted space is the selection"
+        );
+        assert_eq!(selections[0].mode, SelectionMode::Char);
+
+        // A member covering one line has no newline to remove.
+        let mut single = presentation_at(0);
+        hold(&mut single, vec![spanning(&snapshot, 0, 2)]);
+        assert_eq!(
+            apply_helix_verb(
+                &snapshot,
+                &mut single,
+                HelixVerb::JoinLines { select_space: true },
+            ),
+            HelixVerbOutcome::Handled,
+            "a one-line join reports nothing"
+        );
+    }
+
+    #[test]
+    fn the_indent_unit_is_detected_from_the_document_and_defaults_to_four_spaces() {
+        for (text, expected, detected) in [
+            ("a\n  b\n    c\n", IndentUnit::Spaces(2), true),
+            ("a\n    b\n        c\n", IndentUnit::Spaces(4), true),
+            ("a\n\tb\n\t\tc\n", IndentUnit::Tab, true),
+            // Mixed, tab-majority: two tab-led lines against one space-led
+            // one. The majority wins, which is the recorded choice.
+            ("a\n\tb\n\tc\n  d\n", IndentUnit::Tab, true),
+            // Mixed, space-majority: the smallest space run wins instead.
+            ("a\n\tb\n  c\n  d\n", IndentUnit::Spaces(2), true),
+            // No indentation at all: the documented fallback, and it says it
+            // was not detected.
+            ("a\nb\nc\n", IndentUnit::Spaces(4), false),
+        ] {
+            let snapshot = snapshot_of(text);
+            assert_eq!(
+                detect_indent_unit(&snapshot),
+                (expected, detected),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn indent_inserts_one_detected_unit_per_covered_line_in_one_transaction() {
+        let snapshot = snapshot_of("a\n  b\n  c\n");
+        let mut presentation = presentation_at(0);
+        hold(
+            &mut presentation,
+            vec![Selection {
+                anchor: editor_point(&snapshot, 0),
+                head: editor_point(&snapshot, 2),
+                mode: SelectionMode::Line,
+                growing: false,
+            }],
+        );
+
+        let outcome = apply_helix_verb(
+            &snapshot,
+            &mut presentation,
+            HelixVerb::IndentSelection { outdent: false },
+        );
+        let HelixVerbOutcome::EditAndSelect(edit, None, selections) = outcome else {
+            panic!("an indent is one edit that keeps the selection: {outcome:?}");
+        };
+        assert_eq!(edit.transaction.edits.len(), 2);
+        assert_eq!(
+            (
+                edit.transaction.edits[0].range.start,
+                edit.transaction.edits[0].range.end
+            ),
+            (0, 0)
+        );
+        assert_eq!(edit.transaction.edits[0].insert, "  ");
+        assert_eq!(
+            (
+                edit.transaction.edits[1].range.start,
+                edit.transaction.edits[1].range.end
+            ),
+            (2, 2)
+        );
+        assert_eq!(
+            selections[0].mode,
+            SelectionMode::Line,
+            "the selection is line-wise afterwards"
+        );
+        assert_eq!(
+            (selections[0].anchor.byte, selections[0].anchor.line),
+            (0, 0)
+        );
+        assert_eq!(
+            (selections[0].head.byte, selections[0].head.line),
+            (4, 1),
+            "the head moves with the bytes inserted above it"
+        );
+    }
+
+    #[test]
+    fn outdent_removes_at_most_one_unit_and_stops_at_non_whitespace() {
+        // Two-space unit: the padded line loses two spaces, the unindented
+        // line loses nothing, and the tab-led line loses its one tab.
+        let snapshot = snapshot_of("  aa\nbb\n\tcc\n");
+        let mut presentation = presentation_at(0);
+        hold(
+            &mut presentation,
+            vec![Selection {
+                anchor: editor_point(&snapshot, 0),
+                head: editor_point(&snapshot, 8),
+                mode: SelectionMode::Line,
+                growing: false,
+            }],
+        );
+
+        let outcome = apply_helix_verb(
+            &snapshot,
+            &mut presentation,
+            HelixVerb::IndentSelection { outdent: true },
+        );
+        let HelixVerbOutcome::EditAndSelect(edit, None, _) = outcome else {
+            panic!("an outdent is one edit: {outcome:?}");
+        };
+        assert_eq!(edit.transaction.edits.len(), 2);
+        assert_eq!(
+            (
+                edit.transaction.edits[0].range.start,
+                edit.transaction.edits[0].range.end
+            ),
+            (0, 2)
+        );
+        assert_eq!(
+            (
+                edit.transaction.edits[1].range.start,
+                edit.transaction.edits[1].range.end
+            ),
+            (8, 9)
+        );
+        assert!(
+            edit.transaction
+                .edits
+                .iter()
+                .all(|edit| edit.insert.is_empty()),
+            "nothing is inserted when unindenting"
+        );
+    }
+
+    // ── Comment toggling (M005) ──────────────────────────────────────────
+
+    /// One line toggle over `lines` — `None` covers the cursor's line — and
+    /// the text it produces, through the real buffer validator.
+    fn toggled(
+        text: &str,
+        lines: Option<(usize, usize)>,
+        style: CommentStyle<'_>,
+    ) -> Result<String, String> {
+        let snapshot = snapshot_of(text);
+        let first = lines.map_or(0, |(first, _)| first);
+        let cursor = line_start(&snapshot, first).unwrap_or(0);
+        let mut presentation = presentation_at(cursor);
+        if let Some((first, last)) = lines {
+            let start = line_start(&snapshot, first).unwrap_or(0);
+            let end = line_content_end(&snapshot, last).unwrap_or(start);
+            hold(&mut presentation, vec![spanning(&snapshot, start, end)]);
+        }
+        let outcome = toggle_comments(&snapshot, &presentation, style)?;
+        let edit = match outcome {
+            HelixVerbOutcome::Edit(edit, None) | HelixVerbOutcome::EditAndSelect(edit, None, _) => {
+                edit
+            }
+            other => panic!("a toggle resolves to exactly one edit: {other:?}"),
+        };
+        Ok(apply(text, &edit.transaction))
+    }
+
+    #[test]
+    fn a_line_toggle_comments_the_cursor_line_after_its_indentation() {
+        let out = toggled("    let value = 1;\n", None, CommentStyle::Line("// "))
+            .expect("a line token toggles");
+        assert_eq!(
+            out, "    // let value = 1;\n",
+            "the token goes after the indent, not at column zero"
+        );
+    }
+
+    #[test]
+    fn a_line_toggle_covers_every_line_the_selection_spans() {
+        let out = toggled("one\ntwo\nthree\n", Some((0, 1)), CommentStyle::Line("// "))
+            .expect("a line token toggles");
+        assert_eq!(out, "// one\n// two\nthree\n", "and only those lines");
+    }
+
+    #[test]
+    fn a_toggle_keeps_the_selection_it_acted_on() {
+        // Without this the second press would act on the cursor's line alone
+        // and the inverse property would hold for one line and fail for a
+        // range: `submit_edit` drops every member on an accepted edit.
+        let snapshot = snapshot_of("one\ntwo\n");
+        let mut presentation = presentation_at(0);
+        hold(&mut presentation, vec![spanning(&snapshot, 0, 6)]);
+        let outcome = toggle_comments(&snapshot, &presentation, CommentStyle::Line("// "))
+            .expect("a line token toggles");
+        let HelixVerbOutcome::EditAndSelect(_, None, members) = outcome else {
+            panic!("a toggle over a range keeps the range: {outcome:?}");
+        };
+        assert_eq!(members.len(), 1, "one member in, one member out");
+        assert_eq!(
+            (members[0].anchor.byte, members[0].head.byte),
+            (0, 12),
+            "the member moves with the tokens inserted before it"
+        );
+    }
+
+    #[test]
+    fn a_mixed_range_comments_rather_than_half_uncommenting() {
+        let out = toggled("// one\ntwo\n", Some((0, 1)), CommentStyle::Line("// "))
+            .expect("a line token toggles");
+        assert_eq!(
+            out, "// one\n// two\n",
+            "one uncommented line makes the gesture a comment, not an uncomment"
+        );
+    }
+
+    #[test]
+    fn a_blank_line_in_the_range_is_skipped_rather_than_commented() {
+        let out = toggled("\none\n", Some((0, 1)), CommentStyle::Line("// "))
+            .expect("a line token toggles");
+        assert_eq!(
+            out, "\n// one\n",
+            "an empty line gains no token: the toggle invents no whitespace"
+        );
+    }
+
+    #[test]
+    fn a_range_of_blank_lines_is_refused_with_a_reason() {
+        let error = toggled("\n\n", Some((0, 1)), CommentStyle::Line("// "))
+            .expect_err("nothing to comment");
+        assert!(
+            error.contains("blank"),
+            "the refusal says why the buffer is unchanged: {error}"
+        );
+    }
+
+    #[test]
+    fn toggling_twice_restores_the_exact_bytes() {
+        // The property that distinguishes a toggle from "add a comment":
+        // one line, a nested block, mixed indentation, a blank line inside
+        // the range, and text that is already commented.
+        for (text, lines) in [
+            ("let a = 1;\n", None),
+            (
+                "fn f() {\n    let a = 1;\n    let b = 2;\n}\n",
+                Some((1, 2)),
+            ),
+            ("\tone\n  two\nthree\n", Some((0, 2))),
+            ("one\n\nthree\n", Some((0, 2))),
+            ("// one\n// two\n", Some((0, 1))),
+        ] {
+            let once =
+                toggled(text, lines, CommentStyle::Line("// ")).expect("the first toggle lands");
+            assert_ne!(once, text, "the first toggle changed something: {text:?}");
+            let twice =
+                toggled(&once, lines, CommentStyle::Line("// ")).expect("the second toggle lands");
+            assert_eq!(twice, text, "two toggles restore the bytes: {text:?}");
+        }
+    }
+
+    #[test]
+    fn a_block_toggle_wraps_the_range_and_returns_the_same_bytes() {
+        let style = CommentStyle::Block {
+            start: "<!-- ",
+            end: " -->",
+        };
+        let once = toggled("one\ntwo\n", Some((0, 1)), style).expect("a pair toggles");
+        assert_eq!(
+            once, "<!-- one\ntwo -->\n",
+            "the pair wraps the range, and the text between it is untouched"
+        );
+        let twice = toggled(&once, Some((0, 1)), style).expect("the pair toggles back");
+        assert_eq!(twice, "one\ntwo\n", "and removing it is exact");
+    }
+
+    #[test]
+    fn a_block_toggle_does_not_inspect_the_interior_for_the_end_token() {
+        // The stated limit: the wrap is a text edit, not a parse. A range
+        // whose interior already holds the end token produces a block the
+        // language would end early, and the gesture is still its own inverse.
+        let style = CommentStyle::Block {
+            start: "/*",
+            end: "*/",
+        };
+        let once = toggled("a */ b", None, style).expect("a pair toggles");
+        assert_eq!(once, "/*a */ b*/");
+        assert_eq!(
+            toggled(&once, None, style).expect("the pair toggles back"),
+            "a */ b"
+        );
+    }
+
+    #[test]
+    fn a_toggle_past_one_transactions_limit_is_refused_not_truncated() {
+        let many: String = (0..=MAX_DOCUMENT_EDITS)
+            .map(|index| format!("line {index}\n"))
+            .collect();
+        let error = toggled(
+            &many,
+            Some((0, MAX_DOCUMENT_EDITS)),
+            CommentStyle::Line("// "),
+        )
+        .expect_err("the transaction bound is not negotiable");
+        assert!(
+            error.contains("limit of"),
+            "the refusal names the bound it hit: {error}"
+        );
+    }
+
+    // ── The selection set ───────────────────────────────────────────────
     /// A member spanning `start..=end` in character mode.
     fn spanning(snapshot: &DocumentSnapshot, start: usize, end: usize) -> Selection<EditorPoint> {
         Selection {
@@ -7783,6 +10573,106 @@ mod tests {
         }
     }
 
+    /// A count is a loop over the one resolver, and the gesture owns it.
+    #[test]
+    fn a_count_repeats_the_one_resolver_and_is_consumed() {
+        let text: String = (0..20).map(|index| format!("line{index:02}\n")).collect();
+        let snapshot = snapshot_of(&text);
+        let mut presentation = presentation_at(0);
+        presentation.pending_count = Some(5);
+        let landed = apply_motion(&mut presentation, &snapshot, EditorCommand::MoveDown, 10);
+        assert_eq!(landed, 35, "5j walks five 7-byte lines, not one");
+        assert_eq!(
+            presentation.pending_count, None,
+            "the motion read it, so it is cleared"
+        );
+    }
+
+    /// A count larger than the document clamps: the loop stops when the
+    /// resolver stops moving, so `9999` costs no more than the walk.
+    #[test]
+    fn a_count_past_the_document_clamps_instead_of_running_the_count_out() {
+        let snapshot = snapshot_of("line00\nline01\nline02\nline03");
+        let mut presentation = presentation_at(0);
+        presentation.pending_count = Some(MAX_COUNT);
+        assert_eq!(
+            apply_motion(&mut presentation, &snapshot, EditorCommand::MoveDown, 10),
+            buffer_content_end(&snapshot),
+            "stops at the document's end rather than 9999 lines down"
+        );
+        let mut presentation = presentation_at(0);
+        presentation.pending_count = Some(MAX_COUNT);
+        assert_eq!(
+            apply_motion(&mut presentation, &snapshot, EditorCommand::MoveLeft, 10),
+            0,
+            "a motion with nowhere to go lands where it already is"
+        );
+    }
+
+    /// `<n>G` and `<n>gg` **address a line**: the count is an argument, not a
+    /// repeat.
+    #[test]
+    fn a_count_on_a_goto_addresses_a_line() {
+        // Joined without a trailing newline: with one, the document's last
+        // line is the empty one after it, and "the last line" stops meaning
+        // what a reader means by it.
+        let text = (0..20)
+            .map(|index| format!("line{index:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let snapshot = snapshot_of(&text);
+        // The clamp target, derived rather than guessed: a count past the
+        // document stops at the last addressable line, which is the position
+        // after the final byte — the same address `:999` resolves to, because
+        // `goto_editor_line` clamps by exactly this rule.
+        let last_address = line_start(&snapshot, last_line_of(&snapshot)).expect("a last line");
+        assert_eq!(
+            last_address,
+            snapshot.len_bytes(),
+            "the last addressable line starts after the final byte"
+        );
+        for (command, count, expected) in [
+            (EditorCommand::BufferStart, 3, 14),
+            (EditorCommand::BufferEnd, 10, 63),
+            (EditorCommand::BufferEnd, 999, last_address),
+        ] {
+            let mut presentation = presentation_at(0);
+            presentation.pending_count = Some(count);
+            assert_eq!(
+                apply_motion(&mut presentation, &snapshot, command, 10),
+                expected,
+                "{command:?} with {count} must address line {count}, one-based"
+            );
+        }
+        // And with no count the binding is exactly what it was.
+        let mut presentation = presentation_at(0);
+        apply_motion(&mut presentation, &snapshot, EditorCommand::BufferEnd, 10);
+        assert_eq!(
+            presentation.cursor_byte,
+            buffer_content_end(&snapshot),
+            "no count: the last line's content end, as before"
+        );
+    }
+
+    /// The banner string names the count, and nothing when there is none.
+    #[test]
+    fn the_pending_count_label_is_the_number_or_nothing() {
+        assert_eq!(pending_count_label(Some(12)), "12");
+        assert_eq!(pending_count_label(None), "");
+    }
+
+    /// A reconciliation takes the count down with the history and the prefix.
+    #[test]
+    fn clear_history_takes_the_pending_count_with_it() {
+        let mut presentation = presentation_at(0);
+        presentation.pending_count = Some(3);
+        clear_history(&mut presentation);
+        assert_eq!(
+            presentation.pending_count, None,
+            "a reload cannot leave a count aimed at the old text"
+        );
+    }
+
     /// A column recorded against older text can never place the cursor outside
     /// a line or inside a multi-byte character, even when the text is
     /// re-encoded under it.
@@ -8146,6 +11036,248 @@ mod tests {
         }
         assert!(presentation.history_bytes <= MAX_EDITOR_UNDO_BYTES);
         assert!(presentation.history.len() < 8);
+    }
+
+    /// Push `count` one-byte nodes onto `presentation`, each a child of the
+    /// node the cursor stands at.
+    fn push_nodes(presentation: &mut TuiDocumentPresentation, count: usize) {
+        for _ in 0..count {
+            push_undo(
+                presentation,
+                TextTransaction::new(vec![TextEdit::new(0..0, "x")]),
+                TextTransaction::new(vec![TextEdit::new(0..1, "")]),
+                1,
+                0,
+                Vec::new(),
+            );
+        }
+    }
+
+    /// The regression gate: with no branch, the tree walks exactly as the list
+    /// did — every node visited once going back, once coming forward.
+    #[test]
+    fn a_branchless_history_walks_exactly_as_the_list_did() {
+        let mut presentation = presentation_at(0);
+        push_nodes(&mut presentation, 4);
+        assert_eq!(presentation.history_cursor, 4);
+        let bytes = presentation.history_bytes;
+
+        for expected in (0..4).rev() {
+            assert_eq!(
+                undo_entry(&presentation).map(|node| node.created),
+                Some(expected + 1),
+                "one step back names the node the text was produced by"
+            );
+            assert!(move_history_cursor_back(&mut presentation));
+            assert_eq!(presentation.history_cursor, expected);
+        }
+        assert!(
+            !move_history_cursor_back(&mut presentation),
+            "the root state is the end of the history"
+        );
+        assert_eq!(presentation.history_bytes, bytes, "no entry was dropped");
+
+        for expected in 1..=4 {
+            assert_eq!(
+                redo_entry(&presentation).map(|node| node.created),
+                Some(expected),
+                "one step forward names the branch just left"
+            );
+            assert!(move_history_cursor_forward(&mut presentation));
+            assert_eq!(presentation.history_cursor, expected);
+        }
+        assert!(
+            !move_history_cursor_forward(&mut presentation),
+            "the tip is the end of the history"
+        );
+        assert!(
+            presentation.history_position().is_none(),
+            "a branchless history at its tip discloses nothing"
+        );
+    }
+
+    /// The whole point: an edit after an undo is a sibling, not a truncation.
+    #[test]
+    fn an_edit_after_an_undo_keeps_the_abandoned_branch() {
+        let mut presentation = presentation_at(0);
+        push_nodes(&mut presentation, 3);
+        assert!(move_history_cursor_back(&mut presentation));
+
+        push_nodes(&mut presentation, 1);
+        assert_eq!(
+            presentation.history.len(),
+            4,
+            "the branch the reader undid past survives"
+        );
+        assert_eq!(
+            history_node(&presentation, 3).map(|node| node.parent),
+            Some(2),
+            "and it is still a child of the node the reader undid to"
+        );
+        assert_eq!(
+            history_node(&presentation, 4).map(|node| node.parent),
+            Some(2),
+            "the edit is its sibling, not its successor"
+        );
+    }
+
+    /// `U` follows the branch the reader last walked, not the abandoned one.
+    #[test]
+    fn redo_follows_the_branch_the_reader_last_walked() {
+        let mut presentation = presentation_at(0);
+        push_nodes(&mut presentation, 3);
+        assert!(move_history_cursor_back(&mut presentation));
+        push_nodes(&mut presentation, 1);
+        assert!(move_history_cursor_back(&mut presentation));
+        assert_eq!(
+            redo_entry(&presentation).map(|node| node.created),
+            Some(4),
+            "the new branch is the one the reader took"
+        );
+        assert!(move_history_cursor_forward(&mut presentation));
+        assert_eq!(presentation.history_cursor, 4);
+
+        // Standing on the other child makes *it* the redo target, which is
+        // what keeps the choice deterministic instead of arbitrary.
+        assert!(set_history_cursor(&mut presentation, 3));
+        assert!(move_history_cursor_back(&mut presentation));
+        assert_eq!(
+            redo_entry(&presentation).map(|node| node.created),
+            Some(3),
+            "the branch last stood on wins"
+        );
+    }
+
+    /// `Alt-u`/`Alt-U` are time, not structure: reaching another branch
+    /// crosses the fork, so the movement is a path rather than one edge.
+    #[test]
+    fn creation_order_crosses_the_fork_to_the_other_branch() {
+        let mut presentation = presentation_at(0);
+        push_nodes(&mut presentation, 3);
+        assert!(move_history_cursor_back(&mut presentation));
+        push_nodes(&mut presentation, 1);
+
+        assert_eq!(creation_order_back(&presentation), Some(3));
+        assert_eq!(
+            creation_order_forward(&presentation),
+            None,
+            "the newest node is the end of creation order"
+        );
+        let edges = history_edges(&presentation, 3);
+        assert_eq!(
+            edges.iter().map(|edge| edge.lands_on).collect::<Vec<_>>(),
+            vec![2, 3],
+            "climb to the fork, then descend the abandoned branch"
+        );
+        assert_eq!(
+            edges[0].transaction,
+            history_node(&presentation, 4).expect("retained").inverse,
+            "climbing unapplies the node left"
+        );
+        assert_eq!(
+            edges[1].transaction,
+            history_node(&presentation, 3).expect("retained").forward,
+            "descending re-applies the node reached"
+        );
+        assert!(set_history_cursor(&mut presentation, 3));
+        assert_eq!(creation_order_forward(&presentation), Some(4));
+
+        assert!(!set_history_cursor(&mut presentation, 99), "no such node");
+        assert!(
+            history_edges(&presentation, 99).is_empty(),
+            "and a movement to it crosses nothing"
+        );
+    }
+
+    /// The time walk reaches the root state, so `Alt-u` can undo the oldest
+    /// node: the state before it is earlier in time even though it is not a
+    /// node.
+    #[test]
+    fn the_time_walk_reaches_the_root_state_from_the_oldest_node() {
+        let mut presentation = presentation_at(0);
+        push_nodes(&mut presentation, 1);
+        assert_eq!(creation_order_back(&presentation), Some(0));
+        assert_eq!(
+            history_edges(&presentation, 0).len(),
+            1,
+            "one edge unapplies the oldest node"
+        );
+        assert!(set_history_cursor(&mut presentation, 0));
+        assert_eq!(
+            creation_order_back(&presentation),
+            None,
+            "the root state has nothing earlier"
+        );
+    }
+
+    /// Pruning drops the oldest leaf branch and leaves every survivor's parent
+    /// chain intact, which is the corruption this rule exists to prevent.
+    #[test]
+    fn pruning_drops_the_oldest_branch_and_keeps_every_parent_chain() {
+        let mut presentation = presentation_at(0);
+        push_nodes(&mut presentation, MAX_EDITOR_UNDO_DEPTH);
+        for _ in 0..10 {
+            assert!(move_history_cursor_back(&mut presentation));
+        }
+        let fork = presentation.history_cursor;
+        push_nodes(&mut presentation, 10);
+        let tip = presentation.history_cursor;
+
+        assert_eq!(
+            presentation.history.len(),
+            MAX_EDITOR_UNDO_DEPTH,
+            "the depth bound holds"
+        );
+        for node in &presentation.history {
+            let mut walk = node.created;
+            let mut steps = 0;
+            while let Some(reached) = history_node(&presentation, walk) {
+                walk = reached.parent;
+                steps += 1;
+                assert!(steps <= MAX_EDITOR_UNDO_DEPTH, "no node is its own parent");
+            }
+            assert_eq!(walk, 0, "node {} reaches the root state", node.created);
+        }
+        assert!(
+            history_node(&presentation, fork).is_some(),
+            "the fork every survivor hangs from survives"
+        );
+        assert!(
+            history_node(&presentation, MAX_EDITOR_UNDO_DEPTH).is_none(),
+            "the abandoned tail was the oldest leaf branch"
+        );
+        assert_eq!(
+            history_node(&presentation, tip).map(|node| node.parent),
+            Some(tip - 1),
+            "and the reader's own branch is untouched"
+        );
+    }
+
+    /// A history that cannot be pruned below its cap is cleared, and says so.
+    #[test]
+    fn a_history_that_cannot_be_pruned_is_cleared_and_disclosed() {
+        let mut presentation = presentation_at(0);
+        assert!(!presentation.history_bound_cleared);
+        push_undo(
+            &mut presentation,
+            TextTransaction::new(vec![TextEdit::new(0..0, "x")]),
+            TextTransaction::new(vec![TextEdit::new(0..1, "")]),
+            MAX_EDITOR_UNDO_BYTES + 1,
+            0,
+            Vec::new(),
+        );
+
+        assert!(
+            presentation.history.is_empty(),
+            "the only node is the cursor's own, so there was nothing to prune"
+        );
+        assert_eq!(presentation.history_bytes, 0);
+        assert_eq!(presentation.history_cursor, 0);
+        assert!(
+            presentation.history_bound_cleared,
+            "the fallback is recorded rather than silent"
+        );
+        assert!(presentation.history_position().is_none());
     }
 
     /// The one behaviour the cursor model must not get wrong.
@@ -8574,7 +11706,7 @@ mod tests {
             &'static str,
             Option<FindKind>,
         );
-        let cases: [Case; 11] = [
+        let cases: [Case; 13] = [
             (EditorPrefix::Idle, vec![], false, "", None),
             (
                 EditorPrefix::Goto,
@@ -8671,6 +11803,16 @@ mod tests {
                 "m",
                 None,
             ),
+            // The `"` grammar's two levels. The **name** level swallows an
+            // unmatched key because its vocabulary is closed: a key that is
+            // not a register is not a wrong register, it is a broken gesture,
+            // and running it as a command from a mistyped `"` is how `"` then
+            // `Tab` would toggle the composer. The **verb** level retries,
+            // because `"a` then `j` must still move the cursor — Vim's own
+            // answer — and a verb the register grammar does not honour simply
+            // drops the selection.
+            (EditorPrefix::Register, vec![], true, "\"", None),
+            (EditorPrefix::RegisterNamed('a'), vec![], false, "\"a", None),
         ];
         for (prefix, leaves, swallows, display, find_kind) in cases {
             assert_eq!(
@@ -8765,6 +11907,10 @@ mod tests {
             EditorPrefix::MatchArg(MatchArg::SurroundReplaceTo('(')),
             EditorPrefix::MatchArg(MatchArg::AroundObject),
             EditorPrefix::MatchArg(MatchArg::InnerObject),
+            // The `"` grammar's two levels: the empty name prompt and the
+            // captured one. `"a` is three bytes, well inside the bound.
+            EditorPrefix::Register,
+            EditorPrefix::RegisterNamed('a'),
         ] {
             assert!(
                 prefix.display().len() <= MAX_EDITOR_PENDING_PREFIX,

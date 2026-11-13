@@ -20,6 +20,8 @@ in `src/lib.rs`.
 | `crates/codegg-config/src/encryption.rs` | Master key lookup; `encrypt_provider_keys` / `decrypt_provider_keys` are no-ops |
 | `crates/codegg-config/src/error.rs` | ConfigError, AppError types |
 | `crates/codegg-config/src/document.rs` | Document-level config helpers |
+| `crates/codegg-config/src/provenance.rs` | Layer identity, declared merge strategies, per-key attribution, redaction |
+| `crates/codegg-config/src/config_catalog.rs` | Test-only generator for `config-catalog.md` |
 
 ## How It Works
 
@@ -59,40 +61,35 @@ compatibility.
 
 ### Merge Strategies (`paths.rs:172`, `merge_configs`)
 
-Different strategies per field type:
+`merge_configs` combines each section with one of five shapes:
 
-- **Field-by-field**: `provider` (via `ProviderConfig::merge()`),
-  `server` (via `ServerConfig::merge()`), `watcher`, `search`,
-  `discovery`, `eggwork` (via `EggworkConfig::merge()` per node key,
-  mirroring the `provider` map merge), and the eleven optional sections
-  `approval_reviewer`, `command_intent`, `daemon`, `human_shell`,
-  `preflight`, `research`, `scheduler`, `scratch`, `shell`,
-  `tool_backends`, `tool_deferral`, each via its own
-  `merge(&mut self, other: &Self)` in `schema.rs`
-- **Key replacement**: `agent`, `mcp`, `commands`, `mode`, `model_profile` (insert
-  overwrites existing keys)
-- **Key replacement**: `model_routers` (each virtual model key from a later
-  config layer replaces the earlier policy)
-- **Concatenation**: `instructions` (appended to list)
-- **Whole-value replace**: `theme`, `provider_connections`, `security`,
-  and `deterministic_tools`. Those three are replace-only because every one
-  of their fields is non-`Option`, so serde bakes the default into the
-  struct and field-by-field combination cannot distinguish "unset" from
-  "set to the default". See "Merge coverage is enforced" below.
-  (`security` has one exception: `gates.deny_critical_commands` is carried
-  forward from the layer beneath when the later layer leaves it unset, so
-  the critical-command gate is not silently lost.)
-- **Simple override** (via `merge_option!`, 41 fields):
-  `schema`, `version`, `log_level`,
-  `model`, `small_model`, `medium_model`, `auto_route_models`, `default_agent`,
-  `username`, `share`, `autoupdate`, `disabled_providers`,
-  `enabled_providers`, `permission`, `compaction`, `subagent`, `skills`,
-  `templates`, `layout`, `tools`, `formatter`, `lsp`, `lsp_semantic_cache`,
-  `snapshot`, `snapshot_config`, `plugin`, `enterprise`, `experimental`,
-  `keybinds`, `vim_mode`, `panel_hotkeys`, `panel_placement`, `hooks`,
-  `notifications`, `catalog`, `context`,
-  `context_packer`, `context_policy`, `tool_advisor`, `decision_engine`,
-  `orchestration`
+- **whole-value** — the later layer's value replaces the section. This covers
+  the `merge_option!` overrides, `theme`, and the sections whose every field is
+  non-`Option` (`provider_connections`, `deterministic_tools`): serde has
+  already baked the default into the parsed value there, so field-by-field
+  combination cannot distinguish "unset" from "set to the default".
+- **field-by-field** — the section's own fields combine; a nested block still
+  replaces wholesale. `server`, `search`, `watcher`, `discovery`, `eggwork` and
+  the eleven optional sections `approval_reviewer`, `command_intent`, `daemon`,
+  `human_shell`, `preflight`, `research`, `scheduler`, `scratch`, `shell`,
+  `tool_backends`, `tool_deferral` use it, each via its own
+  `merge(&mut self, other: &Self)` in `schema.rs`.
+- **union-of-keys** — a map's entries combine, and an entry a later layer
+  replaces is replaced whole (`provider`, `agent`, `mcp`, `commands`, `mode`,
+  `model_profile`, `model_routers`). `provider` is one level deeper than the
+  others because `ProviderConfig` owns its own `merge()`.
+- **whole-value-with-inherit** — `security`, replaced whole except
+  `gates.deny_critical_commands`, which is carried forward from the layer beneath
+  when the later layer leaves it unset, so the critical-command gate is never
+  silently lost.
+- **concatenate** — `instructions`, appended in precedence order.
+
+The **[configuration catalog](config-catalog.md)** is the authoritative
+section-by-section list of those shapes. It is generated from `Config`'s own
+type, so it cannot miss a field, and it also records which attribution rule
+`codegg-config`'s provenance engine applies to each section. Do not extend the
+enumeration above by hand — add the field, its merge arm and its strategy entry,
+then regenerate the catalog.
 
 Within a field-by-field section, top-level keys combine individually, but a
 **nested block replaces wholesale** — specifying `[scheduler.queue]` in a
@@ -114,6 +111,12 @@ without editing it and adding an uncovered one fails. It runs in
 `scripts/verify.sh quick` and in CI. Run it directly with `--verbose`; the
 guard's own sensitivity is exercised by `--self-test`.
 
+The same guard also derives the **shape** of each section's merge arm and
+requires `provenance::STRATEGY_TABLE` to declare that shape, its combine depth
+and its attribution rule. A declaration that disagrees with the arm is a
+failure, because the provenance dump computes a key's winning layer from the
+declaration: a wrong declaration produces a confident wrong answer.
+
 When adding a `Config` field, add the merge arm in the same change and extend a
 merge assertion in `paths.rs`'s test module. The guard will catch an omission,
 but the test is what pins the intended precedence.
@@ -133,6 +136,60 @@ containing all thirteen and asserts each survives), plus
 `scratch` was added later and follows the field-by-field shape — it is an
 all-`Option` section with its own `merge()`, so it is the eleventh such
 section today.
+
+### Provenance — which layer won a key (`provenance.rs`)
+
+`codegg_config::provenance` answers "which file did this value come from" by
+**reading** the pipeline, not reimplementing it: it resolves the layer paths
+through `resolve_config_layer_paths` (the same order `resolve_config_paths`
+projects), parses each file once with `load_config_document` (which returns the
+typed `Config` *and* the document it came from), and folds the layers through
+the real `merge_configs` one prefix at a time, serializing after each fold.
+
+A key is attributed to the last layer that specifies it. What "specifies" means
+is the declared `combine_depth` for the section (see the
+[configuration catalog](config-catalog.md)): `0` means the section is replaced
+whole, so every key beneath it belongs to the layer that named the section; `1`
+means the section's own fields combine; `2` means a map's entries and their
+fields combine. A path declared in `inherited_paths` (today only
+`security.gates.deny_critical_commands`) is attributed to the layer that set it,
+never to a layer that merely replaced the enclosing block.
+
+The engine proves its own answer instead of guessing:
+
+- the serialized value may not change in a layer that is not a candidate for the
+  key — that is a merge which is not the declared rule;
+- when the winning layer names the key itself, its own value must equal the
+  effective one;
+- a disagreement is returned as an error naming the key and both layers. It is
+  never resolved by picking one, because a confidently wrong attribution is
+  worse than no dump.
+
+Two sections are not last-wins and are declared as exceptions: `instructions`
+concatenates (every containing layer contributes), and `security` replaces whole
+except the inherited critical-command gate. Removing either declaration makes the
+engine report the mis-attribution, which is what the undeclared-exception test
+asserts.
+
+Credential values are never rendered: `(set)` or `(unset)` replaces them.
+Classification is fail-closed and declared — a leaf name in `CREDENTIAL_NAMES`,
+or any path through a `CREDENTIAL_CONTAINERS` block (`auth`, `env`,
+`environment`, `headers`, `oauth`) — and `CREDENTIAL_FIELDS` names every schema
+field that holds a credential together with the rule that redacts it.
+`scripts/check_config_provenance.py` fails when a credential-shaped schema field
+has no declaration, so an unmarked credential field is a guard failure rather
+than a disclosure.
+
+One boundary is deliberate: the fold stops where `Config::load` calls
+`Config::migrate`, which rewrites only `version`. A dump reports the
+layer-authored version; a caller comparing it against `Config::load()` must
+account for that one key.
+
+The operator surface — `codegg config show [--provenance] [--format json]` — is a
+thin CLI wrapper over this module; it prints `render_text` / `render_json`, and
+`crates/codegg-config/fixtures/provenance-redaction.*` pin both formats. A layer
+that fails to parse is named and the command exits non-zero, so a partially
+parsed layer set never presents as a clean result.
 
 ### ProviderConfig Merge (`schema.rs:1650`)
 

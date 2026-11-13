@@ -406,6 +406,44 @@ paths = [
 ]
 targets = ["agent_loop"]
 
+# The recorded-session replay tier (harness-practice-adoption M001). It drives
+# the shipped agent loop from a committed fixture with no key and no network,
+# so a change to prompt assembly, tool admission, the context projection or
+# compaction is exactly what it exists to fail. The scenarios read the real
+# `read` tool, which is why that surface selects the family too.
+[[groups]]
+id = "session_replay"
+member = "codegg"
+paths = [
+  "src/agent/**",
+  "src/context/**",
+  "src/tool/read.rs",
+]
+targets = ["session_replay"]
+
+# The generated tool-surface catalog (harness-practice-adoption M004). The
+# family builds `ToolRegistry::with_options` for each declared surface and
+# compares the render to `architecture/tool-catalog.md`, so a registration, a
+# backend gate, a disclosure-state change or the hand-written surface prose is
+# exactly what it exists to fail.
+[[groups]]
+id = "tool_catalog"
+member = "codegg"
+paths = [
+  "src/tool/mod.rs",
+  "src/tool/backend.rs",
+  "src/tool/codesearch.rs",
+  "src/tool/disabled.rs",
+  "src/tool/disclosure.rs",
+  "src/tool/git_read.rs",
+  "src/tool/invalid.rs",
+  "src/tool/lsp_read.rs",
+  "architecture/tool-catalog.md",
+  "architecture/agent-tool-surface.md",
+  "scripts/check_tool_catalog.py",
+]
+targets = ["tool_catalog"]
+
 # Durable jobs, admission, background execution, and scratch management.
 [[groups]]
 id = "scheduler_jobs"

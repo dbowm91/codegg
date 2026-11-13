@@ -125,8 +125,25 @@ run_guards() {
     echo "==> python3 scripts/check_desktop_editor_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_desktop_editor_authority.py)
 
+    # The sandbox guards protect the silent containment defects: a dropped
+    # sandbox profile thread, a widened child ceiling, a degraded
+    # uncontained launch, an unregistered backend, a Seatbelt deny emitted
+    # before its re-allow, a hardlinked deny that is not refused, and a
+    # scheduler path that rebuilds containment without the durable-payload
+    # tier request. Both run with their self-tests, because a guard that
+    # cannot be shown to fail on an injected defect is not evidence — and
+    # because this one was invoked by nothing until those self-tests existed.
+    echo "==> python3 scripts/check_sandbox_contract.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_sandbox_contract.py --self-test)
+
     echo "==> python3 scripts/check_sandbox_contract.py"
     (cd "$REPO_ROOT" && python3 scripts/check_sandbox_contract.py)
+
+    echo "==> python3 scripts/check_sandbox_policy_wiring.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_sandbox_policy_wiring.py --self-test)
+
+    echo "==> python3 scripts/check_sandbox_policy_wiring.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_sandbox_policy_wiring.py)
 
     echo "==> python3 scripts/check_adr_integrity.py"
     (cd "$REPO_ROOT" && python3 scripts/check_adr_integrity.py)
@@ -294,11 +311,20 @@ run_guards() {
     echo "==> python3 scripts/check_tui_project_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_project_authority.py)
 
+    echo "==> python3 scripts/check_tui_editor_text_authority.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_text_authority.py --self-test)
+
     echo "==> python3 scripts/check_tui_editor_text_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_text_authority.py)
 
+    echo "==> python3 scripts/check_tui_editor_key_authority.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_key_authority.py --self-test)
+
     echo "==> python3 scripts/check_tui_editor_key_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_key_authority.py)
+
+    echo "==> python3 scripts/check_tui_editor_leaf_authority.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_leaf_authority.py --self-test)
 
     echo "==> python3 scripts/check_tui_editor_leaf_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_leaf_authority.py)
@@ -306,11 +332,20 @@ run_guards() {
     echo "==> python3 scripts/check_tui_editor_completion_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_completion_authority.py)
 
+    echo "==> python3 scripts/check_tui_editor_apply_path.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_apply_path.py --self-test)
+
     echo "==> python3 scripts/check_tui_editor_apply_path.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_apply_path.py)
 
+    echo "==> python3 scripts/check_tui_editor_prefix_state.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_prefix_state.py --self-test)
+
     echo "==> python3 scripts/check_tui_editor_prefix_state.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_prefix_state.py)
+
+    echo "==> python3 scripts/check_tui_editor_doc_drift.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_doc_drift.py --self-test)
 
     echo "==> python3 scripts/check_tui_editor_doc_drift.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_doc_drift.py)
@@ -419,6 +454,15 @@ run_guards() {
 
     echo "==> python3 scripts/check_config_merge_coverage.py"
     (cd "$REPO_ROOT" && python3 scripts/check_config_merge_coverage.py)
+
+    echo "==> python3 scripts/check_config_merge_coverage.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_config_merge_coverage.py --self-test)
+
+    echo "==> python3 scripts/check_config_provenance.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_config_provenance.py --self-test)
+
+    echo "==> python3 scripts/check_config_provenance.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_config_provenance.py)
 
     echo "==> python3 scripts/check_provider_wire_boundary.py"
     (cd "$REPO_ROOT" && python3 scripts/check_provider_wire_boundary.py)
@@ -578,6 +622,57 @@ run_guards() {
 
     echo "==> python3 scripts/check_test_common_binding.py"
     (cd "$REPO_ROOT" && python3 scripts/check_test_common_binding.py)
+
+    # The TUI render-invariant baseline is a ratchet: I4, I5 and I6 record the
+    # failures that exist today, and the set may shrink and may not grow. The
+    # harness is the measurement; this guard is the cheap static gate on the
+    # record's shape, its banked totals, its surface inventory and the contrast
+    # arithmetic. It runs in CI too, because a baseline only one lane checks is
+    # a baseline the other lane can grow.
+    echo "==> python3 scripts/check_tui_render_invariant_baseline.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_render_invariant_baseline.py --self-test)
+
+    echo "==> python3 scripts/check_tui_render_invariant_baseline.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_render_invariant_baseline.py)
+
+    echo "==> python3 scripts/check_session_replay_fixtures.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_session_replay_fixtures.py --self-test)
+
+    echo "==> python3 scripts/check_session_replay_fixtures.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_session_replay_fixtures.py)
+
+    echo "==> python3 scripts/check_request_ledger_writers.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_request_ledger_writers.py --self-test)
+
+    echo "==> python3 scripts/check_request_ledger_writers.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_request_ledger_writers.py)
+
+    echo "==> python3 scripts/check_storage_catalog.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_storage_catalog.py --self-test)
+
+    echo "==> python3 scripts/check_storage_catalog.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_storage_catalog.py)
+
+    echo "==> python3 scripts/check_tool_catalog.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tool_catalog.py --self-test)
+
+    echo "==> python3 scripts/check_tool_catalog.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tool_catalog.py)
+
+    echo "==> python3 scripts/check_project_catalog_invariants.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_project_catalog_invariants.py)
+
+    # An escaped defect gets a dated postmortem naming the guard that now
+    # prevents it. This guard fails when a record names a guard that does not
+    # exist, when that guard never mentions the defect, when a required section
+    # is missing, and when a number is duplicated or skipped — none of which any
+    # other check can see, and all of which fail silently. It is documentation,
+    # so it adds no compilation: a record must not cost a build.
+    echo "==> python3 scripts/check_postmortems.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_postmortems.py --self-test)
+
+    echo "==> python3 scripts/check_postmortems.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_postmortems.py)
 }
 
 # ── Quick tier ──────────────────────────────────────────────────────────────

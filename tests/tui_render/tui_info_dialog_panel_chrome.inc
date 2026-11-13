@@ -29,6 +29,7 @@ use std::sync::Arc;
 
 use codegg::tui::components::component::Component;
 use codegg::tui::components::dialogs::info::{InfoDialog, InfoType};
+use codegg::tui::components::hint_line::HintLine;
 use codegg::tui::panels::{render_hosted, SidePanelId};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 use ratatui::buffer::Buffer;
@@ -51,19 +52,11 @@ fn dialog(info_type: InfoType, lines: &[&str]) -> InfoDialog {
     )
 }
 
-/// The column exactly as the host paints it: `HostPanel::render` builds this
-/// title from `SidePanelId::label()` and the focus marker, and then calls
-/// `render_in_panel` into the same rect.
-fn host_title(panel: SidePanelId, focused: bool) -> String {
-    let dot = if focused { "●" } else { " " };
-    format!(" {} {} ", panel.label(), dot)
-}
-
 /// Render `dialog` through the production hosted path and return the rows.
 fn hosted_rows(dialog: &mut InfoDialog, panel: SidePanelId, area: Rect) -> Vec<String> {
     let theme = Arc::new(codegg::tui::theme::Theme::dark());
     let mut buf = Buffer::empty(Rect::new(0, 0, area.width, area.height));
-    render_hosted(dialog, &mut buf, area, &theme, &host_title(panel, true));
+    render_hosted(dialog, &mut buf, area, &theme, panel.label(), true);
     (0..area.height)
         .map(|y| {
             (0..area.width)
@@ -265,10 +258,11 @@ fn every_reachable_hosted_info_type_leaves_the_host_alone() {
 }
 
 #[test]
-fn a_hosted_info_dialog_at_a_degenerate_size_paints_no_second_box() {
-    // The host's own frame is already on screen by the time the widget runs,
-    // so a column with no interior must leave that frame alone rather than
-    // panic or paint over it.
+fn a_hosted_info_dialog_below_the_chrome_threshold_paints_no_border() {
+    // The host draws its edge only where `PanelChrome::has_chrome` allows it:
+    // a border and a title in a column this small would consume the content
+    // they frame. The widget must still leave the column alone and must not
+    // panic — the frame is the size it was asked for, and the edge is absent.
     for (w, h) in [(2u16, 2u16), (3, 3), (4, 2), (2, 4)] {
         let mut d = dialog(InfoType::Cost, &["x", "y"]);
         let rows = hosted_rows(&mut d, SidePanelId::Cost, Rect::new(0, 0, w, h));
@@ -277,11 +271,20 @@ fn a_hosted_info_dialog_at_a_degenerate_size_paints_no_second_box() {
             assert_eq!(row.chars().count(), w as usize, "{w}x{h}: wrong width");
         }
         assert!(
-            rows[0].starts_with('┌'),
-            "{w}x{h}: host top border lost — {:?}",
+            !rows[0].starts_with('┌'),
+            "{w}x{h}: a border was drawn below the chrome threshold — {:?}",
             rows[0]
         );
     }
+
+    // The threshold itself still draws: 12x4 is the smallest chrome area.
+    let mut d = dialog(InfoType::Cost, &["x", "y"]);
+    let rows = hosted_rows(&mut d, SidePanelId::Cost, Rect::new(0, 0, 12, 4));
+    assert!(
+        rows[0].starts_with('┌'),
+        "12x4 is at the chrome threshold, so the host edge must be there: {:?}",
+        rows[0]
+    );
 }
 
 // ── Scroll reachability parity ───────────────────────────────────────
@@ -440,7 +443,7 @@ fn modal_rendering_is_unchanged() {
         "modal footer top border moved"
     );
     assert!(
-        rows[14].starts_with("│ j/k scroll  |  Esc/Enter close") && rows[14].ends_with('│'),
+        rows[14].starts_with("│Esc/Enter close · j/k scroll") && rows[14].ends_with('│'),
         "modal footer verb line changed: {:?}",
         rows[14]
     );
@@ -646,7 +649,7 @@ fn the_hint_does_not_describe_a_caller_supplied_modal_footer() {
     // hosted status line would re-advertise a dead `Esc` — the defect this
     // milestone removes — so the hint is derived from `handle_key` instead.
     let mut d = dialog(InfoType::ProjectInit, &["candidate"]);
-    d.set_custom_footer("a: publish   Esc: cancel".into());
+    d.set_custom_footer(HintLine::from_items(&[("a", "publish"), ("Esc", "cancel")]));
     let hint = d.keymap_hint().expect("ProjectInit needs a hint");
     assert!(
         !hint.contains("cancel"),

@@ -52,6 +52,9 @@ pub mod nested_runtime_command_dispatch;
 #[path = "presence_m002_collaborators.inc"]
 pub mod presence_m002_collaborators;
 
+#[path = "present_deliverable.inc"]
+pub mod present_deliverable;
+
 #[path = "theme_selection_tokens.inc"]
 pub mod theme_selection_tokens;
 
@@ -195,3 +198,6 @@ pub mod workspace_m005_selected_project_chat;
 
 #[path = "workspace_postclosure_m002_task_cancellation.inc"]
 pub mod workspace_postclosure_m002_task_cancellation;
+
+#[path = "invariants/mod.rs"]
+pub mod invariants;

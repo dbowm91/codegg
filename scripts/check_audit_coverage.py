@@ -17,6 +17,10 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import rust_test_scan  # noqa: E402  (path is set above)
+
 AUDIT_MODULE = REPO_ROOT / "crates" / "codegg-core" / "src" / "audit.rs"
 INSTR_MODULE = REPO_ROOT / "crates" / "codegg-core" / "src" / "audit_instrumentation.rs"
 # Canonical authorization descriptor source. The descriptor table moved
@@ -406,6 +410,24 @@ def check_daemon_hook_table_is_authoritative() -> bool:
     return ok
 
 
+def core_boundary_violation(source: str) -> str | None:
+    """The authorization import that reaches production code, if any.
+
+    The boundary is checked over `rust_test_scan.production_view`, so a
+    test-only pin may reference the canonical matrix while a production
+    import still fails. Truncating at the **first** `#[cfg(test)]` marker --
+    what this replaced -- is only correct while the file happens to hold one
+    module and it happens to be last: a marker in the middle of the file
+    would hide every production line after it, which is the false-pass
+    direction.
+    """
+    production = rust_test_scan.production_view(source)
+    for marker in ("crate::authorization", "crate::auth"):
+        if marker in production:
+            return marker
+    return None
+
+
 def check_instrumentation_stays_append_only_and_trusted() -> bool:
     source = _read(INSTR_MODULE)
     if re.search(r"(?i)\b(UPDATE|DELETE)\s+.*audit_event\b", source):
@@ -431,11 +453,15 @@ def check_instrumentation_stays_append_only_and_trusted() -> bool:
     # authorization service (see check-core-boundary.sh). The daemon
     # seam owns the operation_descriptor -> operation_to_audit_action
     # step plus the audit_provenance bridge. Test-only coverage pins
-    # (`#[cfg(test)]`) may reference the canonical matrix; strip them
-    # before enforcing the production boundary.
-    production = source.split("#[cfg(test)]")[0]
-    if "crate::authorization" in production or "crate::auth" in production:
-        print("  FAIL: instrumentation must not import crate::authorization (core boundary)")
+    # may reference the canonical matrix; `rust_test_scan.production_view`
+    # removes them, and it removes them by the module's own braces rather
+    # than by truncating at the first `#[cfg(test)]` marker -- a marker in
+    # the middle of the file must not hide the production code after it.
+    violation = core_boundary_violation(source)
+    if violation is not None:
+        print(
+            f"  FAIL: instrumentation must not import {violation} (core boundary)"
+        )
         return False
     daemon = _read(DAEMON_MODULE)
     for required in (

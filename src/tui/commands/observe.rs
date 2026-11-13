@@ -11,6 +11,7 @@ use crate::tui::app::state::observe::observer_blocked_message;
 use crate::tui::app::App;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
+use crate::tui::commands::close_command_mode;
 use crate::tui::task_lifecycle::TuiTaskKind;
 
 /// Kick off an observation of `session_id` in `project_id`.
@@ -634,4 +635,34 @@ pub(crate) fn check_observer_block(app: &mut App, raw_input: &str) -> bool {
         return true;
     }
     false
+}
+
+pub(crate) fn dispatch_observe(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    let session_arg = argument;
+    if session_arg.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /observe <session-id>");
+        return;
+    }
+    // Session locator is the first token; anything after is
+    // ignored (no second stream, no control args).
+    let session_id = session_arg
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_string();
+    let Some(project_id) = app.active_project_id().map(str::to_string) else {
+        app.messages_state
+            .toasts
+            .warning("No active project — open a project tab first");
+        return;
+    };
+    crate::tui::commands::observe::start_observe(app, project_id, session_id);
+}
+
+pub(crate) fn dispatch_stop_observing(app: &mut App) {
+    close_command_mode(app);
+    crate::tui::commands::observe::stop_observing(app);
 }

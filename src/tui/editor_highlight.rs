@@ -507,6 +507,81 @@ fn syntax_for(path: &str) -> Option<&'static SyntaxReference> {
         .or_else(|| SYNTAX_SET.find_syntax_by_name(extension))
 }
 
+/// The comment tokens a buffer's grammar declares.
+///
+/// Read from the grammar's own `TM_COMMENT_START`/`TM_COMMENT_END` shell
+/// variables, through [`syntax_for`]: one selector, so the highlighter and the
+/// comment toggle cannot disagree. The strings are the grammar's, trailing
+/// spaces included — `"// "`, not `"//"` — which is what makes the toggle its
+/// own inverse instead of a normalisation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommentTokens {
+    /// `TM_COMMENT_START` with no matching end — what prefixes a line.
+    pub line: Option<String>,
+    /// The first start/end pair — what wraps a range.
+    pub block: Option<(String, String)>,
+}
+
+/// One comment token set, already chosen for a gesture.
+///
+/// Borrowed from a [`CommentTokens`]: the geometry inserts and removes these
+/// strings and nothing retains them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentStyle<'a> {
+    /// Prefix every covered line with this token, after its indentation.
+    Line(&'a str),
+    /// Wrap the covered range with this pair.
+    Block {
+        /// Placed before the range's first non-whitespace byte.
+        start: &'a str,
+        /// Placed after the range's last non-whitespace byte.
+        end: &'a str,
+    },
+}
+
+impl CommentTokens {
+    /// The style one toggle uses: the pair for `space C`, and for `space c` the
+    /// line token with the pair as its fallback.
+    ///
+    /// `None` when the grammar has no token of the requested kind — a refusal
+    /// at the call site, never a guess.
+    pub fn style(&self, block: bool) -> Option<CommentStyle<'_>> {
+        if block {
+            return self
+                .block
+                .as_ref()
+                .map(|(start, end)| CommentStyle::Block { start, end });
+        }
+        match &self.line {
+            Some(line) => Some(CommentStyle::Line(line)),
+            None => self
+                .block
+                .as_ref()
+                .map(|(start, end)| CommentStyle::Block { start, end }),
+        }
+    }
+}
+
+/// The comment tokens for `path`'s grammar, or `None` when it declares none.
+///
+/// `None` is one answer for three cases — no grammar for the extension, a
+/// grammar that declares no token (plain text), an empty metadata set — because
+/// the outcome is the same: the toggle refuses and names the extension.
+pub fn comment_tokens_for(path: &str) -> Option<CommentTokens> {
+    let syntax = syntax_for(path)?;
+    let metadata = SYNTAX_SET.metadata().metadata_for_scope(&[syntax.scope]);
+    let tokens = CommentTokens {
+        line: metadata.line_comment().map(str::to_string),
+        block: metadata
+            .block_comment()
+            .map(|(start, end)| (start.to_string(), end.to_string())),
+    };
+    if tokens.line.is_none() && tokens.block.is_none() {
+        return None;
+    }
+    Some(tokens)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -901,5 +976,53 @@ mod tests {
                 MAX_HIGHLIGHT_SCAN_LINES + 6,
             )
             .is_empty());
+    }
+
+    #[test]
+    fn rust_declares_a_line_token_and_a_block_pair() {
+        let tokens = comment_tokens_for("src/main.rs").expect("Rust declares both");
+        assert_eq!(tokens.line.as_deref(), Some("// "));
+        assert_eq!(
+            tokens.block,
+            Some(("/*".to_string(), "*/".to_string())),
+            "the pair is the grammar's own, not a guess"
+        );
+    }
+
+    #[test]
+    fn python_declares_its_own_line_token_and_no_block_pair() {
+        // The token comes from the grammar, not from a table keyed by the
+        // extension: `#` is Python's and `//` is Rust's.
+        let tokens = comment_tokens_for("tools/run.py").expect("Python declares a line token");
+        assert_eq!(tokens.line.as_deref(), Some("# "));
+        assert_eq!(tokens.block, None);
+        assert_eq!(
+            tokens.style(true),
+            None,
+            "a grammar with no pair cannot honour `space C`"
+        );
+    }
+
+    #[test]
+    fn a_grammar_with_no_comment_token_answers_none() {
+        // Plain Text has a grammar — it highlights — and declares no comment
+        // token at all, so the refusal is about the syntax rather than about
+        // the file being unknown.
+        assert_eq!(comment_tokens_for("notes.txt"), None);
+        assert_eq!(comment_tokens_for("src/scratch.zzz"), None, "no grammar");
+        assert_eq!(comment_tokens_for(""), None, "no extension");
+    }
+
+    #[test]
+    fn the_line_style_is_preferred_and_the_block_style_is_forced() {
+        let rust = comment_tokens_for("src/main.rs").expect("Rust declares both");
+        assert_eq!(rust.style(false), Some(CommentStyle::Line("// ")));
+        assert_eq!(
+            rust.style(true),
+            Some(CommentStyle::Block {
+                start: "/*",
+                end: "*/"
+            })
+        );
     }
 }

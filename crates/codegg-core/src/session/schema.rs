@@ -308,6 +308,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 94 {
         migrate_and_record(pool, 94).await?;
     }
+    if current_version < 95 {
+        migrate_and_record(pool, 95).await?;
+    }
 
     Ok(())
 }
@@ -414,6 +417,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             92 => migrate_v92(&mut tx).await?,
             93 => migrate_v93(&mut tx).await?,
             94 => migrate_v94(&mut tx).await?,
+            95 => migrate_v95(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -525,6 +529,42 @@ async fn migrate_v94(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_skill_promotion_workspace \
          ON skill_promotion(workspace_id, kind, created_at_ms)",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    Ok(())
+}
+
+async fn migrate_v95(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS turn_request_ledger (
+            id TEXT NOT NULL PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            turn_index INTEGER NOT NULL CHECK (turn_index >= 0),
+            attempt_index INTEGER NOT NULL CHECK (attempt_index >= 0),
+            attempt_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            effort TEXT,
+            system_digest TEXT NOT NULL,
+            tools_digest TEXT NOT NULL,
+            message_digest TEXT NOT NULL,
+            message_count INTEGER NOT NULL CHECK (message_count >= 0),
+            section_digests TEXT,
+            outcome TEXT NOT NULL CHECK (outcome IN ('streaming', 'ok', 'failed', 'cancelled')),
+            body TEXT,
+            created_at_ms INTEGER NOT NULL,
+            UNIQUE (session_id, turn_index, attempt_index)
+        )
+        "#,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_turn_request_ledger_session_turn \
+         ON turn_request_ledger(session_id, turn_index, attempt_index)",
     )
     .execute(&mut **tx)
     .await
@@ -4136,6 +4176,9 @@ async fn migrate_v85(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 }
 
 #[cfg(test)]
+mod storage_catalog;
+
+#[cfg(test)]
 mod migration_upgrade_tests {
     use super::{migrate, migrate_and_record};
     use crate::storage::STORAGE_LAYOUT_VERSION;
@@ -4281,6 +4324,68 @@ mod migration_upgrade_tests {
         .await
         .expect("check rolled-back rebuild table");
         assert_eq!(transient_table, 0, "failed v78 leaves no partial rebuild");
+
+        pool.close().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn v94_database_gains_the_request_ledger_and_reapplies_idempotently() {
+        let directory = tempfile::tempdir().expect("ledger migration fixture directory");
+        let path = directory.path().join("v94.db");
+        let pool = open_pool(&path).await;
+        sqlx::query(
+            "CREATE TABLE migration_version (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL DEFAULT 0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create migration marker");
+        for version in 1..=94 {
+            migrate_and_record(&pool, version)
+                .await
+                .unwrap_or_else(|error| panic!("apply migration v{version}: {error}"));
+        }
+        let before: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'turn_request_ledger'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count pre-v95 ledger table");
+        assert_eq!(before, 0, "a v94 store has no request ledger table");
+
+        migrate(&pool).await.expect("apply v95");
+        let after: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'turn_request_ledger'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count post-v95 ledger table");
+        assert_eq!(after, 1, "v95 creates the ledger table");
+        let index: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' \
+             AND name = 'idx_turn_request_ledger_session_turn'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count post-v95 ledger index");
+        assert_eq!(index, 1, "v95 creates the per-session read index");
+        let version: i64 = sqlx::query_scalar("SELECT version FROM migration_version WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .expect("read the upgraded marker");
+        assert_eq!(version, STORAGE_LAYOUT_VERSION as i64);
+        assert_eq!(
+            version, 95,
+            "the layout marker tracks the highest migration"
+        );
+
+        migrate(&pool).await.expect("second startup is idempotent");
+        let reapplied: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'turn_request_ledger'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("recount the ledger table");
+        assert_eq!(reapplied, 1, "the re-run creates no second table");
 
         pool.close().await;
     }

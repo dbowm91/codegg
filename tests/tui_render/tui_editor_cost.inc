@@ -85,6 +85,7 @@ fn draw(fixture: &mut Fixture, snapshot: &DocumentSnapshot, width: u16, height: 
                 status: "synced",
                 notice: None,
                 find_note: "",
+                count_label: "",
                 mode: EditorMode::Normal,
                 buffer_focused: true,
                 pending_prefix: EditorPrefix::Idle,

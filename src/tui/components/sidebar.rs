@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use super::super::app::TodoEntry;
 use super::super::theme::Theme;
+use crate::tui::panels::chrome::PanelChrome;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SidebarSection {
@@ -2200,47 +2201,36 @@ impl Default for SidebarWidget {
 
 impl Widget for &SidebarWidget {
     fn render(self, area: Rect, buf: &mut ratatui::prelude::Buffer) {
-        self.render_with_title(area, buf, " Sidebar ", false);
+        let chrome = PanelChrome::new("Sidebar", false, &self.theme);
+        self.render_with_title(area, buf, &chrome);
     }
 }
 
 impl SidebarWidget {
-    /// Render with a caller-supplied title and focus styling.
+    /// Render the body inside `chrome`, which owns the border and its title.
     ///
-    /// The side column is a swappable panel host now, so the border title
-    /// has to name whichever panel is active. The body, scrollbar, and
-    /// tooltip logic is identical to the plain `Widget` path — this only
-    /// moves the title and the border colour to the caller.
+    /// The side column is a swappable panel host now, so the border title has
+    /// to name whichever panel is active. The body, scrollbar, and tooltip
+    /// logic is identical to the plain `Widget` path — this only moves the
+    /// title and the border colour to the panel's one chrome producer.
     pub fn render_with_title(
         &self,
         area: Rect,
         buf: &mut ratatui::prelude::Buffer,
-        title: &str,
-        focused: bool,
+        chrome: &PanelChrome<'_>,
     ) {
+        let inner = chrome.draw(area, buf);
         // One build of the line model serves the paragraph, the scroll clamp
         // and the scrollbar's extent. `max_scroll` used to rebuild the whole
         // model for the clamp and again for the scrollbar's presence guard.
         let lines = self.content_lines(area.width);
         let content_len = lines.len();
-        let viewport_height = sidebar_content_height(area) as usize;
+        let viewport_height = inner.height as usize;
         let max_scroll = content_len.saturating_sub(viewport_height);
         let scroll_offset = self.scroll_offset.min(max_scroll);
 
-        let block = Block::default()
-            .title(title.to_string())
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(if focused {
-                self.theme.primary
-            } else {
-                self.theme.border
-            }))
-            .style(Style::default().bg(self.theme.background));
-
-        let paragraph = Paragraph::new(lines)
-            .block(block)
-            .scroll((scroll_offset as u16, 0));
-        paragraph.render(area, buf);
+        let paragraph = Paragraph::new(lines).scroll((scroll_offset as u16, 0));
+        paragraph.render(inner, buf);
 
         if max_scroll > 0 {
             let mut state = ScrollbarState::new(content_len).position(scroll_offset);
@@ -2536,7 +2526,8 @@ mod tests {
         }]);
         let area = Rect::new(0, 0, 60, 20);
         let mut buf = ratatui::buffer::Buffer::empty(area);
-        sidebar.render_with_title(area, &mut buf, " SESSIONS ", false);
+        let chrome = PanelChrome::new("Sessions", false, &sidebar.theme);
+        sidebar.render_with_title(area, &mut buf, &chrome);
         let mut text = String::new();
         for y in 0..area.height {
             for x in 0..area.width {

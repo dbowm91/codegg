@@ -423,8 +423,90 @@ pub fn compile(
     Ok((args, fds))
 }
 
-/// Exact path scope represented by the compiled mount policy. The serialized
-/// execution result is bounded so a large policy cannot inflate audit output.
+/// Open a policy path without following an alias, then verify that the opened
+/// object is the one the policy captured.
+///
+/// `openat2` with `RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS` is the single
+/// open the containment path uses to turn a name into a rule target: the
+/// protected mount view pins its sources with it and the Landlock rule
+/// compiler pins its grants with it, so neither can drift back to a
+/// follow-by-name open. The descriptor stays pinned by identity — the object
+/// cannot be swapped underneath the caller between this call and the rule it
+/// becomes.
+///
+/// The one `unsafe` here is the `openat2` syscall and the `File::from_raw_fd`
+/// that takes ownership of its result, the same reviewed pair the helper used
+/// before this primitive moved into the library.
+#[allow(unsafe_code)]
+pub fn open_pinned(
+    path: &Path,
+    identity: Option<&super::SandboxPathIdentity>,
+) -> Result<std::fs::File, String> {
+    use std::ffi::CString;
+    use std::os::fd::{FromRawFd, RawFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    #[repr(C)]
+    struct OpenHow {
+        flags: u64,
+        mode: u64,
+        resolve: u64,
+    }
+
+    const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+    const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+    let path_c = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| "sandbox path contains a NUL byte".to_string())?;
+    let flags = if path == Path::new("/dev/null") {
+        libc::O_RDONLY | libc::O_CLOEXEC
+    } else {
+        libc::O_PATH | libc::O_CLOEXEC
+    };
+    let how = OpenHow {
+        flags: flags as u64,
+        mode: 0,
+        resolve: RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
+    };
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
+            path_c.as_ptr(),
+            &how,
+            std::mem::size_of::<OpenHow>(),
+        ) as RawFd
+    };
+    if fd < 0 {
+        let error = std::io::Error::last_os_error();
+        return Err(match error.kind() {
+            std::io::ErrorKind::NotFound => {
+                format!("required sandbox path does not exist: {}", path.display())
+            }
+            _ => format!(
+                "cannot open sandbox path {} without following aliases: {error}",
+                path.display()
+            ),
+        });
+    }
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    if let Some(identity) = identity {
+        let metadata = file
+            .metadata()
+            .map_err(|error| format!("cannot verify pinned sandbox path: {error}"))?;
+        super::policy::verify_path_identity(path, identity, &metadata)?;
+    }
+    Ok(file)
+}
+
+/// The path scope the mount policy is **built from**, rendered for the
+/// execution record.
+///
+/// Every entry is inferred from the requested `spec`, not observed in the
+/// started child: this says what the compiled mount view is configured to
+/// grant and hide, and must not be read as a receipt that any given path was
+/// mounted, hidden, or denied. The one receipt on this route is Bubblewrap's
+/// `child-pid`, which proves setup completed and is consumed elsewhere. The
+/// serialized result is bounded so a large policy cannot inflate audit output.
 pub fn enforcement_scope(spec: &SandboxLaunchSpec) -> Result<Vec<String>, String> {
     let writes = spec
         .write_paths

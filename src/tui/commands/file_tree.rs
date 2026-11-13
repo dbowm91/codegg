@@ -797,6 +797,11 @@ pub fn hand_off_to_editor(app: &mut App) {
     super::editor::enter_editor_normal(app);
 }
 
+pub(crate) fn dispatch_tree(app: &mut App) {
+    app.ui_state.command_mode = false;
+    app.open_tree_dialog();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -29,6 +29,7 @@ use crate::tui::app::App;
 use crate::tui::app::Dialog;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
+use crate::tui::commands::close_command_mode;
 use crate::tui::components::dialogs::policy_selector::{PolicySelectorDialog, PolicySelectorKind};
 use crate::tui::task_lifecycle::TuiTaskKind;
 
@@ -773,5 +774,109 @@ fn policy_update_error_hint(code: &str, message: &str) -> String {
         )
     } else {
         format!("Policy update failed ({}): {}", code, message)
+    }
+}
+
+pub(crate) fn dispatch_policy(app: &mut App) {
+    close_command_mode(app);
+    if app.core_client.is_none() {
+        app.messages_state
+            .toasts
+            .warning("Runtime policy unavailable: no core connection");
+        return;
+    }
+    crate::tui::commands::policy::start_snapshot_refresh(
+        app,
+        crate::tui::commands::policy::PolicySnapshotReason::SelectorRefresh,
+    );
+}
+
+pub(crate) fn dispatch_approval(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    let arg = argument;
+    if arg.is_empty() {
+        crate::tui::commands::policy::open_policy_selector(
+            app,
+            crate::tui::components::dialogs::policy_selector::PolicySelectorKind::Approval,
+        );
+        return;
+    }
+    match crate::policy_surface::parse_approval_mode(arg) {
+        Ok(mode) => crate::tui::commands::policy::request_policy_change(app, Some(mode), None),
+        Err(e) => {
+            app.messages_state.toasts.warning(&format!(
+                "{} (usage: /approval [interactive|automatic|yolo])",
+                e
+            ));
+        }
+    }
+}
+
+pub(crate) fn dispatch_sandbox(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    let arg = argument;
+    if arg.is_empty() {
+        crate::tui::commands::policy::open_policy_selector(
+            app,
+            crate::tui::components::dialogs::policy_selector::PolicySelectorKind::Sandbox,
+        );
+        return;
+    }
+    match crate::policy_surface::parse_sandbox_profile(arg) {
+        Ok(profile) => {
+            crate::tui::commands::policy::request_policy_change(app, None, Some(profile))
+        }
+        Err(e) => {
+            app.messages_state.toasts.warning(&format!(
+                "{} (usage: /sandbox [read-only|workspace-write|full-host])",
+                e
+            ));
+        }
+    }
+}
+
+pub(crate) fn dispatch_network(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    let arg = argument;
+    if arg.is_empty() {
+        crate::tui::commands::policy::start_snapshot_refresh(
+            app,
+            crate::tui::commands::policy::PolicySnapshotReason::SelectorRefresh,
+        );
+        return;
+    }
+    match arg {
+        "offline" | "offline-required" => {
+            crate::tui::commands::policy::request_network_intent_change(
+                app,
+                codegg_core::approval::NetworkIntent::OfflineRequired,
+            );
+        }
+        "unrestricted confirm" => {
+            crate::tui::commands::policy::request_network_intent_change(
+                app,
+                codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+            );
+        }
+        "unrestricted" => {
+            let active = app.policy_ui.cached.as_ref().is_some_and(|view| {
+                view.effective_network_intent
+                    == codegg_core::approval::NetworkIntent::OfflineRequired
+            });
+            if active {
+                app.messages_state
+                    .toasts
+                    .warning("Restoring network access requires `/network unrestricted confirm`.");
+            } else {
+                crate::tui::commands::policy::request_network_intent_change(
+                    app,
+                    codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+                );
+            }
+        }
+        _ => app
+            .messages_state
+            .toasts
+            .warning("Unknown network policy (usage: /network [offline|unrestricted confirm])"),
     }
 }

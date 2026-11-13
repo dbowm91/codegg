@@ -345,6 +345,27 @@ pub fn build_session_tool_registry(
             execution.workspace_root.clone(),
             crate::core::daemon_skills::default_habit_root(),
         ));
+        // M003 (harness practice adoption): `present` verifies a declared
+        // deliverable against the turn's durable edit checkpoint before the
+        // declaration is recorded. It is registered here, in the daemon's
+        // per-turn registry, and deliberately NOT in
+        // `ToolRegistry::with_defaults`: a delegated child builds its registry
+        // through `with_options`, so this is the same denial mechanism that
+        // keeps every unreviewed tool out of a child. A child's result is
+        // machine-derived from Git state; a model-authored declaration about
+        // the same work would be a second, weaker claim.
+        tool_registry.register(crate::tool::present::PresentTool::new(
+            execution.workspace_root.clone(),
+            execution.workspace_id.as_str().to_owned(),
+            session_id.clone(),
+            turn_id.clone(),
+            Some(Arc::new(
+                crate::snapshot::checkpoint::EditCheckpointManager::new(
+                    pool.clone(),
+                    execution.workspace_root.clone(),
+                ),
+            )),
+        ));
         tool_registry.register(
             crate::tool::session_working_directory::SessionWorkingDirectoryTool::new(
                 pool, session_id, root,

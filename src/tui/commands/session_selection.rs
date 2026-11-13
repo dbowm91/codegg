@@ -354,6 +354,18 @@ pub(crate) fn start_model_select_persist(app: &mut App, session_id: String, mode
     );
 }
 
+pub(crate) fn dispatch_models_refresh(app: &mut App) {
+    app.refresh_models();
+}
+
+pub(crate) fn dispatch_variants(app: &mut App) {
+    let model = &app.agent_state.current_model;
+    let base = model.split('/').next_back().unwrap_or(model);
+    app.messages_state
+        .toasts
+        .info(&format!("Variants for {}: default (no suffix)", base));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

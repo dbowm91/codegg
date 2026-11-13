@@ -27,6 +27,7 @@ use ratatui::Frame;
 
 use codegg_document::DocumentSnapshot;
 
+use crate::tui::document_session::MAX_JUMPLIST_ENTRIES;
 use crate::tui::editor::{self, EditorMode, EditorPrefix, EditorViewport};
 use crate::tui::theme::Theme;
 
@@ -166,6 +167,14 @@ pub struct EditorWidget<'a> {
     /// holds no domain state: the disclosure belongs to the motion that
     /// produced it, and the caller already had it in hand.
     pub find_note: &'a str,
+    /// The count being typed, already rendered to text by
+    /// [`pending_count_label`](crate::tui::editor::pending_count_label), or
+    /// `""` when no count is pending.
+    ///
+    /// A pre-rendered `&str` like `find_note`, and for the same reason. It
+    /// renders immediately before the armed prefix — `3g` is one gesture, read
+    /// left to right — and never in the notice slot.
+    pub count_label: &'a str,
     /// Buffer mode.
     pub mode: EditorMode,
     /// Which region owns keyboard input.
@@ -218,6 +227,24 @@ pub struct EditorWidget<'a> {
     pub theme: Arc<Theme>,
 }
 
+/// The `space j` picker's window: rows it will draw, at most.
+///
+/// The same bound the LSP result panel uses, so a full jumplist is a window
+/// the reader scrolls rather than a box that leaves no document on screen.
+const PICKER_MAX_ROWS: usize = 12;
+
+/// Columns reserved for the picker's line number.
+const PICKER_LINE_DIGITS: usize = 5;
+
+/// Bytes read from one line to label a picker row.
+///
+/// A line beyond this renders from its prefix: a picker row is a label, not
+/// the document, and a frame must not read a whole 32 KiB line per row.
+const PICKER_ROW_BYTES: usize = 512;
+
+/// Characters of a line a picker row shows.
+const PICKER_ROW_CHARS: usize = 60;
+
 /// The editor's own keys, as the keymap box lists them.
 ///
 /// The editor's **own** verbs, not the whole application's: the box answers
@@ -226,18 +253,36 @@ pub struct EditorWidget<'a> {
 const EDITOR_KEYMAP: &[(&str, &str)] = &[
     ("e / b", "word end / start — selects the word"),
     ("w", "next word start"),
+    (
+        "3w / 5j",
+        "a count repeats the motion; 0 alone is line start",
+    ),
     ("v", "select mode — movement extends"),
-    ("x", "select the line"),
-    ("d / y", "delete / yank the selection"),
+    (
+        "x / X / Alt-x",
+        "select the line / widen to lines / narrow back",
+    ),
+    (
+        "d / y",
+        "delete into the unnamed register / yank it and the clipboard",
+    ),
+    ("c / Alt-c", "change — delete the selection, then type"),
+    ("\" a", "select register a — then y / p / P / R"),
+    ("J / Alt-J", "join the lines covered"),
+    ("> / <", "indent / unindent the covered lines"),
+    ("space c / C", "toggle line / block comment"),
     ("u / Ctrl-r", "undo / redo"),
+    (". / Alt-.", "repeat the last insert / the last motion"),
     (":", "command line — matches as you type"),
-    ("/", "search"),
+    ("/ / ?", "regex search / the same backwards"),
+    ("*", "search for the selected text"),
     ("n / N", "next / previous match"),
     ("Ctrl-d / Ctrl-u", "half a page down / up"),
     ("PgDn / PgUp", "a full page down / up"),
     ("z c / t / b", "view: centre / top / bottom"),
     ("g g / g G", "start / end of the buffer"),
     ("g t / c / b", "top / middle / bottom of screen"),
+    ("space j", "jumplist — back to a visited position"),
     ("space ?", "this box"),
     ("Esc", "leave select mode / cancel"),
 ];
@@ -281,12 +326,19 @@ impl EditorWidget<'_> {
     }
 
     /// The editor's **keymap box** — its own catalogue of its keys, in the
-    /// bottom-right corner.
+    /// bottom-right corner — and, when it is open, the `space j`
+    /// **jumplist picker**, which is the same box holding a different list.
     ///
     /// A floating overlay: it covers the corner of the text area rather than
     /// taking rows away from the document, so opening it does not reflow the
-    /// text under the reader.
+    /// text under the reader. Two lists share it because a list on a row is a
+    /// list that has to be truncated, and a second box over the first would be
+    /// two competing overlays for one corner.
     fn render_keymap_overlay(&self, frame: &mut Frame, text_area: Rect) {
+        if self.presentation.jumplist.picker_open() {
+            self.render_jumplist_picker(frame, text_area);
+            return;
+        }
         if !self.presentation.keymap_overlay {
             return;
         }
@@ -338,6 +390,133 @@ impl EditorWidget<'_> {
             Paragraph::new(lines).style(Style::default().bg(theme.background).fg(theme.foreground)),
             inner,
         );
+    }
+
+    /// The `space j` **jumplist picker**, in the keymap box's corner.
+    ///
+    /// Newest first, one row per recorded position: its line number and the
+    /// line's own text, so two entries on one line are still tellable apart.
+    /// The title carries the count against
+    /// [`MAX_JUMPLIST_ENTRIES`](crate::tui::document_session::MAX_JUMPLIST_ENTRIES),
+    /// and at the bound it also says the oldest entry is dropped — the
+    /// disclosure the bound owes the reader, in the place the list is read and
+    /// where a short window cannot clip it.
+    ///
+    /// The text is read from the frame's snapshot and dropped with the
+    /// borrow: the picker holds offsets, never document bytes.
+    fn render_jumplist_picker(&self, frame: &mut Frame, text_area: Rect) {
+        let jumplist = &self.presentation.jumplist;
+        let theme = Arc::clone(&self.theme);
+        // Bounded by the panel the LSP results use, so a long history is a
+        // window rather than a box the height of the screen.
+        let rows_available = text_area
+            .height
+            .saturating_sub(2)
+            .min(PICKER_MAX_ROWS as u16)
+            .max(1) as usize;
+        let len = jumplist.len();
+        let visible = len.min(rows_available);
+        let start = jumplist
+            .cursor()
+            .saturating_sub(visible.saturating_sub(1))
+            .min(len.saturating_sub(visible));
+        // `(gutter, row index, line text)`: the gutter fixes the column and
+        // the row index says which entry the highlight belongs to, so a
+        // window that scrolled still marks the highlighted row.
+        let mut rows: Vec<(String, usize, String)> = Vec::with_capacity(visible);
+        for index in start..start + visible {
+            let Some(entry) = jumplist.row(index) else {
+                continue;
+            };
+            let line = crate::tui::editor::cursor_line(self.snapshot, entry.byte) + 1;
+            let gutter = format!("{line:>width$}  ", width = PICKER_LINE_DIGITS);
+            let text = self.picker_line_text(entry.byte);
+            rows.push((gutter, index, text));
+        }
+        // The bound is disclosed in the **title**, not in a footer row: a
+        // short editor window clips a row off the bottom of the box, and a
+        // disclosure nobody can see is not a disclosure. The title is part of
+        // the width calculation below, so it survives at full size.
+        let title = if jumplist.at_bound() {
+            format!(
+                " jumplist · {len}/{max} · oldest dropped at the bound ",
+                max = MAX_JUMPLIST_ENTRIES
+            )
+        } else {
+            format!(" jumplist · {len}/{max} ", max = MAX_JUMPLIST_ENTRIES)
+        };
+        let body_width = rows
+            .iter()
+            .map(|(gutter, _, text)| gutter.chars().count() + text.chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(title.chars().count());
+        let width = (body_width + 2).min(text_area.width as usize) as u16;
+        let height = (rows.len() + 2).min(text_area.height as usize) as u16;
+        if width == 0 || height == 0 {
+            return;
+        }
+        let rect = Rect {
+            x: text_area.x + text_area.width - width,
+            y: text_area.y + text_area.height - height,
+            width,
+            height,
+        };
+        let lines: Vec<Line> = rows
+            .iter()
+            .map(|(gutter, index, text)| {
+                let (gutter_style, text_style) = if *index == jumplist.cursor() {
+                    let selected = Style::default()
+                        .fg(theme.background)
+                        .bg(theme.primary)
+                        .add_modifier(Modifier::BOLD);
+                    (selected, selected)
+                } else {
+                    (
+                        Style::default().fg(theme.muted),
+                        Style::default().fg(theme.foreground),
+                    )
+                };
+                Line::from(vec![
+                    Span::styled(gutter.clone(), gutter_style),
+                    Span::styled(text.clone(), text_style),
+                ])
+            })
+            .collect();
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.primary))
+            .style(Style::default().bg(theme.background));
+        let inner = block.inner(rect);
+        frame.render_widget(Clear, rect);
+        frame.render_widget(block, rect);
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(theme.background).fg(theme.foreground)),
+            inner,
+        );
+    }
+
+    /// One picker row's text: the line the entry lands on, from its start.
+    fn picker_line_text(&self, byte: usize) -> String {
+        let line = crate::tui::editor::cursor_line(self.snapshot, byte);
+        let Some(start) = crate::tui::editor::line_start(self.snapshot, line) else {
+            return String::new();
+        };
+        let end = crate::tui::editor::line_content_end(self.snapshot, line).unwrap_or(start);
+        let bounded =
+            crate::tui::editor::clamp_offset(self.snapshot, start.saturating_add(PICKER_ROW_BYTES))
+                .min(end);
+        self.snapshot
+            .read_bytes(start, bounded)
+            .map(|text| {
+                text.chars()
+                    .take(PICKER_ROW_CHARS)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .unwrap_or_default()
     }
 
     /// The editor's single bottom row: the path on the left, the status
@@ -528,11 +707,9 @@ impl EditorWidget<'_> {
             }
         }
         // ── The transient disclosure ────────────────────────────────────
-        // It answers "what did my last keystroke do?" — the find that landed,
-        // the search that matched, the history cursor that moved. It is one
-        // group: the count of a search and its "partial" marker are one
-        // answer, and dropping half of it would say "3 matches" about a
-        // search that only found part of them.
+        // "What did my last keystroke do?" — the find, the search, the history
+        // cursor. It is one group: a count and its "partial" marker are one
+        // answer, and half of it would say "3 matches" about a partial search.
         let mut disclosure: Vec<Span<'_>> = Vec::new();
         if self.search_active || self.search_count > 0 {
             let plural = if self.search_count == 1 { "" } else { "es" };
@@ -579,6 +756,12 @@ impl EditorWidget<'_> {
                 format!("· history {position}/{length} "),
                 Style::default().fg(theme.muted),
             ));
+        } else if self.presentation.history_bound_cleared {
+            // The row explains the `u` that finds nothing.
+            disclosure.push(Span::styled(
+                "· history cleared at its bound ".to_string(),
+                Style::default().fg(theme.muted),
+            ));
         }
         if !disclosure.is_empty() {
             groups.push(ClusterGroup {
@@ -591,6 +774,19 @@ impl EditorWidget<'_> {
                 ClusterWeight::Notice,
                 format!("{notice} "),
                 Style::default().fg(theme.error),
+            ));
+        }
+        // The pending count, then the armed prefix. They are **one** gesture —
+        // `3gg` is a count and a prefix — so the count goes immediately before
+        // the prefix and carries the prefix's weight and style rather than the
+        // disclosure's: both answer "what is my next key about to do?".
+        if !self.count_label.is_empty() {
+            groups.push(ClusterGroup::one(
+                ClusterWeight::Prefix,
+                self.count_label.to_string(),
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
             ));
         }
         // The armed prefix is **last**: it is the one thing that must be
@@ -1670,12 +1866,13 @@ impl EditorWidget<'_> {
                 syntax_ranges.push((range, Style::default().fg(span.color)));
             }
         }
-        // `/` matches, clipped to this row. Match offsets ascend, so a
-        // partition point finds the first one inside the line in O(log n)
-        // rather than walking every retained match for every visible row.
+        // `/` matches, clipped to this row. Match spans ascend and do not
+        // overlap, so a partition point finds the first one inside the line
+        // in O(log n) rather than walking every retained match for every
+        // visible row. Each span carries its own extent, so a wildcard match
+        // is painted exactly as wide as the text it covered.
         let search_ranges = {
-            let needle = self.presentation.search_line.len();
-            if needle == 0 {
+            if self.presentation.search_line.is_empty() {
                 Vec::new()
             } else {
                 let absolute_start = start;
@@ -1683,17 +1880,19 @@ impl EditorWidget<'_> {
                 let first = self
                     .presentation
                     .search_matches
-                    .partition_point(|offset| *offset < absolute_start);
+                    .partition_point(|span| span.start < absolute_start);
                 self.presentation
                     .search_matches
                     .iter()
                     .skip(first)
-                    .take_while(|offset| **offset < absolute_end)
-                    .map(|offset| {
-                        let from = offset
+                    .take_while(|span| span.start < absolute_end)
+                    .map(|span| {
+                        let from = span
+                            .start
                             .saturating_sub(start)
                             .clamp(visible_start, visible_end);
-                        let to = (offset + needle)
+                        let to = span
+                            .end
                             .saturating_sub(start)
                             .clamp(visible_start, visible_end);
                         from..to
@@ -2188,6 +2387,7 @@ mod tests {
         status: &'a str,
         notice: Option<&'a str>,
         find_note: &'a str,
+        count_label: &'a str,
         mode: EditorMode,
         buffer_focused: bool,
         pending_prefix: EditorPrefix,
@@ -2201,11 +2401,12 @@ mod tests {
         /// The held selection **set**, for tests that need the renderer's
         /// third background layer — or its extra head markers — painted.
         selections: Vec<crate::tui::helix_selection::Selection<editor::EditorPoint>>,
-        /// Retained `/` match offsets, for the search highlight layer.
-        search_matches: Vec<usize>,
-        /// The history cursor's position and the history's length, as
-        /// `(position, length)`.
+        /// Retained `/` match spans, for the search highlight layer.
+        search_matches: Vec<std::ops::Range<usize>>,
+        /// The history position `(applied, retained)`, and whether the last
+        /// prune cleared it.
         history: (usize, usize),
+        history_cleared: bool,
         writable: bool,
         busy: bool,
         scope: codegg_protocol::document::DocumentScope,
@@ -2215,6 +2416,11 @@ mod tests {
         /// read results the widget draws — without reaching into the
         /// widget's own fields.
         lsp: crate::tui::editor_lsp::EditorLspState,
+        /// The jumplist the widget renders, with its picker state.
+        ///
+        /// Owned for the same reason `lsp` is: a test seeds the store through
+        /// its real API rather than hand-setting a private field.
+        jumplist: crate::tui::document_session::Jumplist,
     }
 
     fn defaults<'a>() -> Options<'a> {
@@ -2222,6 +2428,7 @@ mod tests {
             status: "synced",
             notice: None,
             find_note: "",
+            count_label: "",
             mode: EditorMode::Normal,
             buffer_focused: true,
             pending_prefix: EditorPrefix::Idle,
@@ -2235,10 +2442,12 @@ mod tests {
             selections: Vec::new(),
             search_matches: Vec::new(),
             history: (0, 0),
+            history_cleared: false,
             writable: true,
             busy: false,
             scope: codegg_protocol::document::DocumentScope::Workspace,
             lsp: crate::tui::editor_lsp::EditorLspState::default(),
+            jumplist: crate::tui::document_session::Jumplist::default(),
         }
     }
 
@@ -2281,6 +2490,8 @@ mod tests {
             selections: options.selections,
             search_line: options.search_line.to_string(),
             search_matches: options.search_matches.clone(),
+            jumplist: options.jumplist,
+            history_bound_cleared: options.history_cleared,
             ..TuiDocumentPresentation::default()
         };
         seed_history(&mut presentation, options.history);
@@ -2295,6 +2506,7 @@ mod tests {
                     status: options.status,
                     notice: options.notice,
                     find_note: options.find_note,
+                    count_label: options.count_label,
                     mode: options.mode,
                     buffer_focused: options.buffer_focused,
                     pending_prefix: options.pending_prefix,
@@ -2363,6 +2575,8 @@ mod tests {
             selections: options.selections,
             search_line: options.search_line.to_string(),
             search_matches: options.search_matches.clone(),
+            jumplist: options.jumplist,
+            history_bound_cleared: options.history_cleared,
             ..TuiDocumentPresentation::default()
         };
         seed_history(&mut presentation, options.history);
@@ -2377,6 +2591,7 @@ mod tests {
                     status: options.status,
                     notice: options.notice,
                     find_note: options.find_note,
+                    count_label: options.count_label,
                     mode: options.mode,
                     buffer_focused: options.buffer_focused,
                     pending_prefix: options.pending_prefix,
@@ -3309,6 +3524,8 @@ mod tests {
             selections: options.selections,
             search_line: options.search_line.to_string(),
             search_matches: options.search_matches.clone(),
+            jumplist: options.jumplist,
+            history_bound_cleared: options.history_cleared,
             ..TuiDocumentPresentation::default()
         };
         seed_history(&mut presentation, options.history);
@@ -3322,6 +3539,7 @@ mod tests {
                     status: options.status,
                     notice: options.notice,
                     find_note: options.find_note,
+                    count_label: options.count_label,
                     mode: options.mode,
                     buffer_focused: options.buffer_focused,
                     pending_prefix: options.pending_prefix,
@@ -3440,6 +3658,7 @@ mod tests {
             status: "synced",
             notice: None,
             find_note: "",
+            count_label: "",
             mode: EditorMode::Normal,
             buffer_focused: true,
             pending_prefix: EditorPrefix::Idle,
@@ -3453,10 +3672,12 @@ mod tests {
             selections: Vec::new(),
             search_matches: Vec::new(),
             history: (0, 0),
+            history_cleared: false,
             scope: codegg_protocol::document::DocumentScope::Workspace,
             writable: true,
             busy: false,
             lsp: crate::tui::editor_lsp::EditorLspState::default(),
+            jumplist: crate::tui::document_session::Jumplist::default(),
         };
         let mut highlight = crate::tui::editor_highlight::EditorHighlight::default();
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -3467,6 +3688,7 @@ mod tests {
                     status: options.status,
                     notice: options.notice,
                     find_note: options.find_note,
+                    count_label: options.count_label,
                     mode: options.mode,
                     buffer_focused: options.buffer_focused,
                     pending_prefix: options.pending_prefix,
@@ -3746,6 +3968,7 @@ mod tests {
             status: "synced",
             notice: None,
             find_note: "",
+            count_label: "",
             mode: EditorMode::Normal,
             buffer_focused: true,
             pending_prefix: EditorPrefix::Idle,
@@ -3882,6 +4105,7 @@ mod tests {
             status: "synced",
             notice: None,
             find_note: "",
+            count_label: "",
             mode: EditorMode::Normal,
             buffer_focused: true,
             pending_prefix: EditorPrefix::Idle,
@@ -4026,6 +4250,7 @@ mod tests {
             status: "synced",
             notice: None,
             find_note: "",
+            count_label: "",
             mode: EditorMode::Normal,
             buffer_focused: true,
             pending_prefix: EditorPrefix::Idle,
@@ -4384,7 +4609,7 @@ mod tests {
                 buffer_focused: false,
                 search_line: "aaa",
                 search_count: 2,
-                search_matches: vec![0, 8],
+                search_matches: vec![0..3, 8..11],
                 ..defaults()
             },
         );
@@ -4406,6 +4631,11 @@ mod tests {
         let snapshot = DocumentBuffer::new("aaa bbb").snapshot();
         // Every layer stacked on the same cell: the cursor is on the match
         // start, which is also inside the selection.
+        // One match, because the search line matches once. `vec![0..3]` here
+        // is a set of ranges, not a mistaken range-to-vec conversion — the
+        // lint cannot tell the two apart, so the reason is stated instead.
+        #[allow(clippy::single_range_in_vec_init)]
+        let matches = vec![0..3];
         let buffer = render_buffer(
             "aaa bbb",
             30,
@@ -4416,7 +4646,7 @@ mod tests {
                 selections: vec![selection_over(&snapshot, 0..3)],
                 search_line: "aaa",
                 search_count: 1,
-                search_matches: vec![0],
+                search_matches: matches,
                 ..defaults()
             },
         );
@@ -4485,6 +4715,94 @@ mod tests {
         assert!(!plain_readout.contains("partial"), "{plain_readout:?}");
     }
 
+    // ── The jumplist picker ─────────────────────────────────────────────
+
+    /// The picker is a list of visited positions, newest first, with the
+    /// count against the bound in its title.
+    #[test]
+    fn the_jumplist_picker_lists_positions_newest_first() {
+        use crate::tui::document_session::{Jumplist, JumplistEntry, JumplistIdentity};
+        let mut jumplist = Jumplist::default();
+        for byte in [0, 11] {
+            jumplist.push(JumplistEntry {
+                identity: JumplistIdentity::default(),
+                byte,
+            });
+        }
+        jumplist.open_picker();
+        let painted = render(
+            "alpha\nbeta\ngamma\n",
+            60,
+            12,
+            11,
+            Options {
+                jumplist,
+                ..defaults()
+            },
+        )
+        .join("\n");
+
+        assert!(
+            painted.contains("jumplist · 2/32"),
+            "the title carries the count against the named bound, got:\n{painted}"
+        );
+        // The document paints those words too, so the rows are matched by
+        // their own gutter rather than by the text alone.
+        let newest = painted
+            .find("    3  gamma")
+            .expect("the newest entry's row");
+        let oldest = painted
+            .find("    1  alpha")
+            .expect("the oldest entry's row");
+        assert!(
+            newest < oldest,
+            "newest first, so the most recent jump is the first row, got:\n{painted}"
+        );
+        assert!(
+            !painted.contains("oldest dropped"),
+            "below the bound nothing is dropped, so nothing claims it is:\n{painted}"
+        );
+    }
+
+    /// At the bound the picker states what the bound costs, so a history that
+    /// pruned is disclosed where the list is read rather than silently shorter.
+    #[test]
+    fn the_jumplist_picker_discloses_the_bound_it_holds_at() {
+        use crate::tui::document_session::{
+            Jumplist, JumplistEntry, JumplistIdentity, MAX_JUMPLIST_ENTRIES,
+        };
+        let mut jumplist = Jumplist::default();
+        for byte in 0..MAX_JUMPLIST_ENTRIES {
+            jumplist.push(JumplistEntry {
+                identity: JumplistIdentity::default(),
+                byte,
+            });
+        }
+        jumplist.open_picker();
+        let painted = render(
+            "alpha\nbeta\ngamma\n",
+            60,
+            12,
+            0,
+            Options {
+                jumplist,
+                ..defaults()
+            },
+        )
+        .join("\n");
+
+        assert!(
+            painted.contains(&format!(
+                "jumplist · {MAX_JUMPLIST_ENTRIES}/{MAX_JUMPLIST_ENTRIES}"
+            )),
+            "the count reaches the bound, got:\n{painted}"
+        );
+        assert!(
+            painted.contains("oldest dropped at the bound"),
+            "at the bound the picker says what a further push costs, got:\n{painted}"
+        );
+    }
+
     // ── The history cursor's position ───────────────────────────────────
 
     /// A time cursor nobody can see is a rename.
@@ -4521,6 +4839,27 @@ mod tests {
         assert!(
             banner.contains("history 1/3"),
             "the position belongs on the banner row: {banner:?}"
+        );
+    }
+
+    /// A clear at the bound explains itself instead of leaving `u` broken.
+    #[test]
+    fn the_banner_names_a_history_cleared_at_its_bound() {
+        let height = 8;
+        let cleared = render(
+            "alpha",
+            100,
+            height,
+            0,
+            Options {
+                history_cleared: true,
+                ..defaults()
+            },
+        );
+        let banner = &cleared[banner_row(height) as usize];
+        assert!(
+            banner.contains("history cleared at its bound"),
+            "the fallback is disclosed rather than silent: {banner:?}"
         );
     }
 

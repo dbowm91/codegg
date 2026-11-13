@@ -2141,6 +2141,9 @@ async fn execute_agent_task(
             adapter_fingerprint: Some(&adapter.fingerprint),
             runtime_blocks: &runtime_blocks,
         });
+    agent_loop.set_prompt_section_digests(crate::agent::prompt::section_digests(
+        &compiled_prompt.blocks,
+    ));
     // Captured where the child's messages are produced, so the stored body
     // is the text the child acted on. The system message is the child's
     // internal channel; the prompt is the orchestrator-visible one.
@@ -2999,6 +3002,135 @@ mod writer_fence_tests {
         assert!(
             request_holds_managed_checkout(Some(runs), &request(Some(parent_run_id), None)).await,
             "the parent still holds a managed checkout"
+        );
+    }
+}
+
+#[cfg(test)]
+mod prompt_ledger_tests {
+    use super::*;
+    use crate::agent::provider_turn::ProviderTurnAdapter;
+    use crate::provider::{ChatRequest, ContentPart, Message};
+    use std::str::FromStr;
+    use std::time::Duration;
+
+    async fn delegated_ledger_pool() -> SqlitePool {
+        let name = format!("worker_prompt_ledger_{}", uuid::Uuid::new_v4().simple());
+        let options = sqlx::sqlite::SqliteConnectOptions::from_str(&format!(
+            "file:{name}?mode=memory&cache=shared"
+        ))
+        .expect("valid sqlite options")
+        .create_if_missing(true)
+        .busy_timeout(Duration::from_secs(10));
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("connect in-memory sqlite");
+        codegg_core::session::schema::migrate(&pool)
+            .await
+            .expect("migrations run inside the helper");
+        pool
+    }
+
+    fn compiled_delegated_prompt() -> crate::agent::prompt::CompiledPrompt {
+        let agent = crate::agent::builtins::generated_builtin_agents()
+            .into_iter()
+            .find(|agent| agent.name == "build")
+            .expect("the build agent is a built-in");
+        let config = Config::default();
+        let model_profile =
+            crate::model_profile::ModelProfileResolver::new(&config).resolve("delegated-model");
+        let adapter = crate::model_profile::resolve_adapter(None, "delegated-model");
+        crate::agent::prompt::PromptCompiler::compile(crate::agent::prompt::PromptCompilerInput {
+            agent: &agent,
+            model_profile: &model_profile,
+            config: &config,
+            tools: &["read".to_string(), "write".to_string()],
+            skills: &[],
+            agents: std::slice::from_ref(&agent),
+            is_plan_mode: false,
+            snapshot: None,
+            pin: None,
+            execution: None,
+            adapter_fingerprint: Some(&adapter.fingerprint),
+            runtime_blocks: &[],
+        })
+    }
+
+    fn delegated_ledger_request(compiled: &crate::agent::prompt::CompiledPrompt) -> ChatRequest {
+        ChatRequest {
+            messages: vec![Message::User {
+                content: vec![ContentPart::Text {
+                    text: "inspect the delegated tree".to_string().into(),
+                }],
+            }],
+            model: "delegated-model".to_string(),
+            tools: None,
+            system: Some(compiled.text.clone()),
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            context: Default::default(),
+        }
+    }
+
+    fn delegated_loop_with_ledger(pool: SqlitePool, workspace: &std::path::Path) -> AgentLoop {
+        AgentLoop::new(
+            Vec::new(),
+            Box::new(crate::research::tests::StubProvider),
+            PermissionChecker::new(None, None),
+            ToolRegistry::default(),
+            Config::default(),
+            None,
+            Some(pool),
+            Arc::new(crate::context::InMemoryArtifactStore::new()),
+            workspace.to_path_buf(),
+            "delegated-child-ledger".to_string(),
+            None,
+            None,
+        )
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_delegated_childs_dispatched_prompt_records_its_section_digests() {
+        let compiled = compiled_delegated_prompt();
+        let digests = crate::agent::prompt::section_digests(&compiled.blocks);
+        assert!(
+            digests.contains_key("harness_contract"),
+            "the delegated prompt has a harness contract section to attribute"
+        );
+        let pool = delegated_ledger_pool().await;
+        let workspace = tempfile::tempdir().expect("ledger workspace");
+        let mut child = delegated_loop_with_ledger(pool.clone(), workspace.path());
+        assert_eq!(
+            child.prompt_section_digests(),
+            None,
+            "a fresh child loop carries no section identity until the compiled prompt records it"
+        );
+        child.set_prompt_section_digests(digests.clone());
+        let request = delegated_ledger_request(&compiled);
+        let events = ProviderTurnAdapter::receive_with_retry_context(&mut child, &request, None)
+            .await
+            .expect("the delegated attempt completes");
+        assert!(events.is_empty(), "the stub provider streams no events");
+        let rows = crate::session::request_ledger::TurnRequestLedgerStore::new(pool)
+            .turn_attempts("delegated-child-ledger", 1)
+            .await
+            .expect("read the delegated turn");
+        assert_eq!(rows.len(), 1, "the delegated attempt wrote its request row");
+        assert_eq!(
+            rows[0].section_digests.as_ref(),
+            Some(&digests),
+            "the row carries the compiled delegated prompt's section digests"
+        );
+        assert_eq!(
+            rows[0].system_digest,
+            crate::context::tool_hash::system_prompt_digest(&request),
+            "the section map belongs to the system prompt the child actually dispatched"
         );
     }
 }

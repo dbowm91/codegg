@@ -3,6 +3,7 @@
 //! Extracted from `src/tui/mod.rs` to keep the main module manageable.
 
 use crate::protocol::core::{CoreRequest, CoreResponse};
+use crate::tui::app::send_tui;
 use crate::tui::app::App;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
@@ -659,4 +660,147 @@ pub(crate) fn handle_goal_budget(app: &mut App, session_id: String, subcommand: 
     app.messages_state
         .toasts
         .warning("Usage: /goal budget [show | raise <axis> <n>]");
+}
+
+pub(crate) fn dispatch_goal(app: &mut App, argument: &str) {
+    let query = argument;
+    let parts: Vec<&str> = query.splitn(2, ' ').collect();
+    let subcmd = parts.first().copied().unwrap_or("");
+    let args = parts.get(1).copied().unwrap_or("").trim();
+
+    let Some(session) = app.session_state.session.clone() else {
+        app.messages_state.toasts.warning("No active session");
+        return;
+    };
+    let session_id = session.id.clone();
+    let project_id = app.active_project_key().unwrap_or_default();
+
+    match subcmd {
+        "set" => {
+            if args.is_empty() {
+                app.messages_state
+                    .toasts
+                    .warning("Usage: /goal set <objective>");
+                return;
+            }
+            if let Some(ref tx) = app.tui_cmd_tx {
+                let _ = send_tui(
+                    tx,
+                    TuiCommand::GoalSet {
+                        session_id,
+                        project_id,
+                        objective: args.to_string(),
+                    },
+                );
+            }
+        }
+        "from-file" => {
+            if args.is_empty() {
+                app.messages_state
+                    .toasts
+                    .warning("Usage: /goal from-file <path>");
+                return;
+            }
+            if let Some(ref tx) = app.tui_cmd_tx {
+                let _ = send_tui(
+                    tx,
+                    TuiCommand::GoalFromFile {
+                        session_id,
+                        project_id,
+                        path: args.to_string(),
+                    },
+                );
+            }
+        }
+        "show" => {
+            if let Some(ref tx) = app.tui_cmd_tx {
+                let _ = send_tui(tx, TuiCommand::GoalShow { session_id });
+            }
+        }
+        "pause" => {
+            if let Some(ref tx) = app.tui_cmd_tx {
+                let _ = send_tui(tx, TuiCommand::GoalPause { session_id });
+            }
+        }
+        "resume" => {
+            if let Some(ref tx) = app.tui_cmd_tx {
+                let _ = send_tui(tx, TuiCommand::GoalResume { session_id });
+            }
+        }
+        "clear" => {
+            if let Some(ref tx) = app.tui_cmd_tx {
+                let _ = send_tui(tx, TuiCommand::GoalClear { session_id });
+            }
+        }
+        "done" => {
+            if let Some(ref tx) = app.tui_cmd_tx {
+                let _ = send_tui(tx, TuiCommand::GoalDone { session_id });
+            }
+        }
+        "checkpoint" => {
+            if let Some(ref tx) = app.tui_cmd_tx {
+                let _ = send_tui(
+                    tx,
+                    TuiCommand::GoalCheckpoint {
+                        session_id,
+                        project_id,
+                    },
+                );
+            }
+        }
+        "budget" => {
+            if args.is_empty() {
+                app.messages_state
+                    .toasts
+                    .info("Usage: /goal budget [show | raise <axis> <n> | raise clear <axis>]");
+                return;
+            }
+            if let Some(ref tx) = app.tui_cmd_tx {
+                let _ = send_tui(
+                    tx,
+                    TuiCommand::GoalBudget {
+                        session_id,
+                        subcommand: args.to_string(),
+                    },
+                );
+            }
+        }
+        _ => {
+            // Treat bare text as goal set (e.g., /goal fix the bug)
+            if !subcmd.is_empty()
+                && subcmd != "set"
+                && subcmd != "from-file"
+                && subcmd != "show"
+                && subcmd != "pause"
+                && subcmd != "resume"
+                && subcmd != "clear"
+                && subcmd != "done"
+                && subcmd != "checkpoint"
+                && subcmd != "budget"
+            {
+                // The whole query is the goal text
+                let goal_text = query.trim();
+                if !goal_text.is_empty() {
+                    if let Some(ref tx) = app.tui_cmd_tx {
+                        let _ = send_tui(
+                            tx,
+                            TuiCommand::GoalSet {
+                                session_id,
+                                project_id,
+                                objective: goal_text.to_string(),
+                            },
+                        );
+                    }
+                } else {
+                    app.messages_state
+                        .toasts
+                        .warning("Usage: /goal <text> or /goal set <text>");
+                }
+            } else {
+                app.messages_state
+                    .toasts
+                    .warning("Usage: /goal <text> or /goal set <text>");
+            }
+        }
+    }
 }

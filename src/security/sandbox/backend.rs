@@ -104,6 +104,18 @@ impl<'de> Deserialize<'de> for BackendId {
 /// the degraded path never have to invent a backend identity.
 pub const UNCONTAINED: BackendId = BackendId("uncontained");
 
+/// The inherited-descriptor channel, worded once for every tier.
+///
+/// A launch closes the descriptors it does not hand the helper (C006), but the
+/// helper's own descriptors — the status pipe, the acknowledgment pipe, the
+/// mount sources, the seccomp filter — cross the final `exec`. So every tier
+/// still passes a descriptor channel, and every tier's limits list must name
+/// it with these words rather than claiming the channel is closed. One shared
+/// string is what keeps the Landlock, Seatbelt and mount-view lists from
+/// describing one channel three ways.
+pub const INHERITED_DESCRIPTOR_LIMIT: &str =
+    "open file descriptors inherited before the profile apply remain usable";
+
 /// What a backend actually guarantees once it has applied a policy.
 ///
 /// Enforcement is reported as obtained facts, not as a claim derived from
@@ -116,6 +128,9 @@ pub struct BackendEnforcement {
     /// Backend-reported policy/ABI version when the mechanism has one.
     /// Seatbelt has no versioned ABI, so it reports `None`.
     pub abi: Option<u32>,
+    /// Linux Landlock ABI 6 process scope obtained (`None` when this host or
+    /// mechanism has none); reported in the descriptor and never serialized.
+    pub process_scope_abi: Option<u32>,
     /// Stable, human-readable guarantees this mechanism provides.
     pub guarantees: Vec<String>,
     /// Known ways containment can be escaped on this mechanism.
@@ -126,6 +141,7 @@ impl BackendEnforcement {
     pub fn new(abi: Option<u32>, guarantees: &[&str], limits: &[&str]) -> Self {
         Self {
             abi,
+            process_scope_abi: None,
             guarantees: guarantees
                 .iter()
                 .map(|value| (*value).to_string())
@@ -248,5 +264,58 @@ mod tests {
         // The degraded path must never be able to name itself as a backend.
         assert!(backend(UNCONTAINED).is_none());
         assert_eq!(UNCONTAINED.as_str(), "uncontained");
+    }
+
+    /// Three tiers, one descriptor channel, one wording. A tier that passes a
+    /// descriptor must say so; none may claim the channel is closed, because
+    /// the helper's own status, acknowledgment and mount-source descriptors
+    /// cross the final exec on every tier.
+    #[test]
+    fn every_tier_names_the_inherited_descriptor_channel_with_the_same_words() {
+        assert!(
+            crate::security::sandbox::landlock::LANDLOCK_LIMITS
+                .contains(&INHERITED_DESCRIPTOR_LIMIT),
+            "Landlock must disclose the descriptor channel"
+        );
+        assert!(
+            crate::security::sandbox::seatbelt::enforcement()
+                .limits
+                .iter()
+                .any(|limit| limit == INHERITED_DESCRIPTOR_LIMIT),
+            "Seatbelt must disclose the descriptor channel with the same words"
+        );
+
+        let mut spec = SandboxLaunchSpec {
+            target: std::path::PathBuf::from("/bin/sh"),
+            args: Vec::new(),
+            env: Vec::new(),
+            read_paths: Vec::new(),
+            write_paths: Vec::new(),
+            deny_paths: Vec::new(),
+            linux_protected_mount_view: true,
+            linux_process_isolation: false,
+            linux_offline_network: false,
+            protected_readonly_paths: Vec::new(),
+            path_identities: Vec::new(),
+            expected_created_git_pointers: Vec::new(),
+        };
+        for isolated in [false, true] {
+            spec.linux_process_isolation = isolated;
+            let limits = crate::managed_process::protected_mount_view_limits(&spec);
+            assert!(
+                limits
+                    .iter()
+                    .any(|limit| limit == INHERITED_DESCRIPTOR_LIMIT),
+                "the mount view must disclose the descriptor channel on the \
+                 process-isolation={isolated} tier: {limits:?}"
+            );
+            // The disclosure is additive: the existing limits stay.
+            assert!(
+                limits
+                    .iter()
+                    .any(|limit| limit.contains("network isolation")),
+                "the mount view must keep its network limit: {limits:?}"
+            );
+        }
     }
 }

@@ -11,11 +11,11 @@
 /// `codegg-core`, `codegg-providers`, or `codegg-config`.
 ///
 /// Every conversion currently round-trips through `serde_json::Value`. This
-/// works because the domain types and DTOs share the same serde attributes,
-/// but it is a **transitional compatibility bridge**, not the intended
-/// long-term pattern. In a future cleanup pass, prefer explicit
-/// `From`/`TryFrom` implementations that avoid the intermediate JSON
-/// serialization and provide better compile-time error messages.
+/// works because the domain types and DTOs share the same wire names and the
+/// same deserialization behaviour, but it is a **transitional compatibility
+/// bridge**, not the intended long-term pattern. In a future cleanup pass,
+/// prefer explicit `From`/`TryFrom` implementations that avoid the intermediate
+/// JSON serialization and provide better compile-time error messages.
 // ── Domain → DTO (for constructing protocol responses / requests) ───────
 pub fn session_to_dto(
     s: crate::session::Session,
@@ -1103,5 +1103,117 @@ pub fn checked_restore_outcome_to_dto(
             checkpoint_id: checkpoint_id.clone(),
             reason: reason.clone(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::message::{Message, MessageData, PartData, PartInfo, ToolStatus};
+
+    /// A message whose single part is a tool call, with part and tool-call ids
+    /// deliberately different so a collapse is visible.
+    fn tool_call_message() -> Message {
+        Message {
+            id: "m1".to_string(),
+            session_id: "s".to_string(),
+            time_created: 1,
+            time_updated: 2,
+            data: MessageData {
+                id: "m1".to_string(),
+                session_id: "s".to_string(),
+                message_id: "m1".to_string(),
+                parts: vec![PartInfo {
+                    id: "m1_0".to_string(),
+                    session_id: "s".to_string(),
+                    message_id: "m1".to_string(),
+                    data: PartData::ToolCall {
+                        id: "call_1".to_string(),
+                        name: "read".to_string(),
+                        input: serde_json::json!({}),
+                        output: None,
+                        status: ToolStatus::Pending,
+                    },
+                }],
+                role: None,
+            },
+        }
+    }
+
+    /// The round trip the `dto::PartInfo` doc comment claims and that nothing
+    /// exercised: `message_to_dto` must accept a message containing a tool
+    /// call and preserve both ids, in both directions.
+    #[test]
+    fn message_to_dto_accepts_a_tool_call_and_preserves_both_ids() {
+        let dto = message_to_dto(tool_call_message()).expect("message_to_dto for a tool call");
+        assert_eq!(dto.id, "m1");
+        assert_eq!(dto.data.parts.len(), 1);
+        let part = &dto.data.parts[0];
+        assert_eq!(part.id, "m1_0");
+        assert_eq!(part.message_id, "m1");
+        match &part.data {
+            codegg_protocol::dto::PartData::ToolCall { id, name, .. } => {
+                assert_eq!(id, "call_1", "the tool-call id must survive the bridge");
+                assert_eq!(name, "read");
+            }
+            other => panic!("expected a tool-call part, got {other:?}"),
+        }
+
+        let back = dto_to_message(dto).expect("dto_to_message for a tool call");
+        assert_eq!(back.data.parts.len(), 1);
+        assert_eq!(back.data.parts[0].id, "m1_0");
+        match &back.data.parts[0].data {
+            PartData::ToolCall { id, .. } => {
+                assert_eq!(id, "call_1", "the tool-call id must survive the return leg");
+            }
+            other => panic!("expected a tool-call part, got {other:?}"),
+        }
+    }
+
+    /// `dto::PartInfo`'s doc comment says the two types are kept in step by the
+    /// JSON round trip. This pins that claim for both shapes that exist:
+    /// canonical rows, and rows written before `toolCallID` existed.
+    #[test]
+    fn both_crates_decode_the_same_tool_call_part_json() {
+        const CANONICAL: &str = r#"{"id":"m1_0","sessionID":"s","messageID":"m1",
+            "type":"tool_call","toolCallID":"call_1","name":"read","input":{},
+            "output":null,"status":"pending"}"#;
+        const PRE_RENAME: &str = r#"{"id":"call_1","sessionID":"s","messageID":"m1",
+            "type":"tool_call","name":"read","input":{},"output":null,
+            "status":"pending"}"#;
+
+        for (label, json) in [("canonical", CANONICAL), ("pre-rename", PRE_RENAME)] {
+            let domain: PartInfo = serde_json::from_str(json)
+                .unwrap_or_else(|error| panic!("{label}: domain decode failed: {error}"));
+            let wire: codegg_protocol::dto::PartInfo = serde_json::from_str(json)
+                .unwrap_or_else(|error| panic!("{label}: dto decode failed: {error}"));
+            assert_eq!(domain.id, wire.id, "{label}: part id");
+            assert_eq!(domain.session_id, wire.session_id, "{label}: session id");
+            assert_eq!(domain.message_id, wire.message_id, "{label}: message id");
+            match (&domain.data, &wire.data) {
+                (
+                    PartData::ToolCall {
+                        id: domain_call,
+                        status: domain_status,
+                        ..
+                    },
+                    codegg_protocol::dto::PartData::ToolCall {
+                        id: wire_call,
+                        status: wire_status,
+                        ..
+                    },
+                ) => {
+                    assert_eq!(domain_call, wire_call, "{label}: tool-call id");
+                    // Distinct Rust types on each side; the contract is that
+                    // they agree on the wire spelling.
+                    assert_eq!(
+                        serde_json::to_value(domain_status).expect("serialize domain status"),
+                        serde_json::to_value(wire_status).expect("serialize dto status"),
+                        "{label}: tool status"
+                    );
+                }
+                other => panic!("{label}: expected two tool-call parts, got {other:?}"),
+            }
+        }
     }
 }

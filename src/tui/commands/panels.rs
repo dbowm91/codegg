@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 use crate::tui::app::state::chat::ChatState;
 use crate::tui::app::App;
+use crate::tui::commands::close_command_mode;
 use crate::tui::input::{InputAction, InputMode};
 use crate::tui::panels::hosted::PlaceholderState;
 use crate::tui::panels::{
@@ -1386,4 +1387,15 @@ pub(crate) fn sync_workspace_focus(app: &mut App) {
 pub(crate) fn reset_chat_panel(app: &mut App) {
     app.panel_host.chat_panel_mut().reset();
     app.panel_host.chat_panel_mut().set_bound(false);
+}
+
+pub(crate) fn dispatch_panels(app: &mut App) {
+    close_command_mode(app);
+    // The second spelling of `⇧S`. `⇧S` is a Normal-mode
+    // gesture, so with `Ctrl+Alt+W` retired it was the *only*
+    // way into the manager while composing — and there the key
+    // is the letter `S` and must stay typeable. A slash
+    // command is typed, not chorded, so it opens the same box
+    // from Insert as well.
+    crate::tui::commands::panels::open_panel_manager(app);
 }

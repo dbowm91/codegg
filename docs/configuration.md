@@ -212,7 +212,11 @@ which keeps the lookup explicit and avoids writing an expanded secret to disk.
 
 ## What else configuration controls
 
-`codegg.example.jsonc` annotates each block. The main groups are:
+`codegg.example.jsonc` annotates each block. The authoritative list of sections,
+their merge shape and the rule that decides which layer won a key is the
+generated [configuration catalog](../architecture/config-catalog.md) — this page
+keeps the narrative and the catalog keeps the enumeration, so a key that exists
+in the schema cannot go missing here. The main groups are:
 
 | Group | Key | Guide |
 |---|---|---|

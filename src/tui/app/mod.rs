@@ -19,6 +19,7 @@ mod input;
 mod modal;
 #[path = "plugin_ui.rs"]
 mod plugin_effects;
+pub mod present_card;
 mod project_session;
 mod prompt_turn;
 mod render;
@@ -48,35 +49,18 @@ pub fn default_tui_state_root() -> std::path::PathBuf {
     std::path::PathBuf::from(".codegg/tui")
 }
 
-/// Join `parts` with `separator`, dropping whole parts that do not fit.
+/// Join `parts` with the hint vocabulary's one separator, dropping whole
+/// parts that do not fit — through the rule, not through a second copy of it.
 ///
-/// A part is never split. A row that ends in the middle of a key names a key
-/// that does not exist, and a user who presses it gets nothing — so the row
-/// drops whole parts from the end instead of cutting one in half.
-///
-/// A `budget` of `0` means unbounded: every part is kept.
-fn fit_parts(parts: &[&str], separator: &str, budget: usize) -> String {
-    use unicode_width::UnicodeWidthStr;
-    let separator_width = UnicodeWidthStr::width(separator);
-    let mut out = String::new();
-    let mut used = 0usize;
-    for part in parts {
-        let part_width = UnicodeWidthStr::width(*part);
-        let extra = if out.is_empty() {
-            part_width
-        } else {
-            separator_width + part_width
-        };
-        if budget > 0 && used + extra > budget {
-            break;
-        }
-        if !out.is_empty() {
-            out.push_str(separator);
-        }
-        out.push_str(part);
-        used += extra;
-    }
-    out
+/// This file used to carry its own `fit_parts` with a caller-supplied
+/// separator and no protection rule, which made the I6 guarantee an
+/// argument-order convention at one call site. The row's producer now goes
+/// through `hint_line::fit_parts`. The parts here are pre-built strings rather
+/// than `(key, verb)` pairs — the situational line is a fact, not a gesture —
+/// so the row joins them with the same rule rather than building a
+/// `HintLine`.
+fn fit_row(parts: &[&str], budget: usize) -> String {
+    crate::tui::components::hint_line::fit_parts(parts, budget)
 }
 
 pub mod state;
@@ -103,11 +87,10 @@ use super::input::{
     build_help_lines, handle_event, handle_event_with_bindings_moded, HelpMode, InputAction,
     InputMode, KeybindConfig,
 };
-use super::layout::{LayoutConfig, TuiLayout};
+use super::layout::{FramePlan, LayoutConfig, TuiLayout};
 use super::route::{Route, RouteManager};
 use super::theme::Theme;
 use crate::agent::builtin_agents;
-use crate::agent::AgentMode;
 use crate::config::schema::SessionTemplate;
 use crate::core::CoreClient;
 use crate::error::AppError;
@@ -125,7 +108,6 @@ use crate::tui::task_lifecycle::TuiTaskKind;
 use crate::util::fuzzy::fuzzy_score;
 use crate::util::truncate::{truncate_prefix, truncate_suffix};
 use crossterm::event::KeyEvent;
-use egglsp::{render_workflow_display, LspWorkflowInvocation, LspWorkflowRecipe};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -391,11 +373,13 @@ pub struct App {
     /// `Some` in normal operation; `None` is reserved for test fixtures
     /// that don't open a database.
     pub preferences: Option<crate::storage::UserPreferences>,
-    pub viewport_area: Option<Rect>,
-    pub scrollbar_area: Option<Rect>,
-    pub prompt_area: Option<Rect>,
+    /// Where every region of the last frame was.
+    ///
+    /// One value: [`crate::tui::layout::plan_frame`] derives the regions the
+    /// arithmetic decides, the two painters record the two only they can
+    /// resolve, and the mouse reads the same rects the frame painted.
+    pub frame_plan: FramePlan,
     pub dialog_area: Option<Rect>,
-    pub completion_area: Option<Rect>,
     /// Visible popup rows for the current completion, set by the render
     /// pass from the *filtered* row list so mouse hit-testing cannot size
     /// itself from the unfiltered catalog.
@@ -450,10 +434,6 @@ pub struct App {
     /// and closing it has to give the user's mode back. Without the restore,
     /// peeking at pending work would silently end composition mode.
     tasks_restore_mode: Option<InputMode>,
-    /// Rows the todo strip occupies on the last render pass.
-    pub todo_area: Option<Rect>,
-    /// Rows the unified tasks overlay occupies on the last render pass.
-    pub tasks_area: Option<Rect>,
     pub sidebar_area: Option<Rect>,
     /// Every panel column painted on the last frame, with the placement that
     /// owns it.
@@ -464,11 +444,6 @@ pub struct App {
     /// text inside it. Rebuilt on each render, so a placement that is not on
     /// screen is not clickable.
     pub panel_areas: Vec<(crate::tui::panels::PanelPlacement, Rect)>,
-    /// 1-column strip reserved for the TUI's outer left border.
-    pub left_border_area: Option<Rect>,
-    /// 1-row strip reserved for the TUI's outer bottom border (under
-    /// the footer).
-    pub bottom_border_area: Option<Rect>,
     pub last_click_time: Option<Instant>,
     pub last_click_target: Option<ClickTarget>,
     pub hover_target: Option<ClickTarget>,
@@ -498,7 +473,6 @@ pub struct App {
     frame_task_rows: Option<FrameTaskRows>,
     /// The snapshot and tab set the transcript watermark scan last ran for.
     watermark_scan_key: Option<WatermarkScanKey>,
-    pub context_hint: String,
     pub event_rx: Option<mpsc::Receiver<ChatEvent>>,
     pub tui_cmd_tx: Option<mpsc::Sender<TuiCommand>>,
     /// Receiver half of the frontend command channel.
@@ -1231,11 +1205,8 @@ impl App {
                 .and_then(|c| c.experimental)
                 .and_then(|e| e.memory_auto_consolidate)
                 .unwrap_or(false),
-            viewport_area: None,
-            scrollbar_area: None,
-            prompt_area: None,
+            frame_plan: FramePlan::default(),
             dialog_area: None,
-            completion_area: None,
             completion_visible_rows: 0,
             completion_scroll_offset: 0,
             todos: Vec::new(),
@@ -1244,12 +1215,8 @@ impl App {
             tasks_selected: None,
             tasks_selected_key: None,
             tasks_restore_mode: None,
-            todo_area: None,
-            tasks_area: None,
             sidebar_area: None,
             panel_areas: Vec::new(),
-            left_border_area: None,
-            bottom_border_area: None,
             composer_mode_before_panel_focus: None,
             last_click_time: None,
             last_click_target: None,
@@ -1261,7 +1228,6 @@ impl App {
             sidebar_projection_revision: None,
             frame_task_rows: None,
             watermark_scan_key: None,
-            context_hint: String::new(),
             event_rx: None,
             tui_cmd_tx: None,
             tui_cmd_rx: None,
@@ -1829,11 +1795,8 @@ impl App {
                 .and_then(|c| c.experimental)
                 .and_then(|e| e.memory_auto_consolidate)
                 .unwrap_or(false),
-            viewport_area: None,
-            scrollbar_area: None,
-            prompt_area: None,
+            frame_plan: FramePlan::default(),
             dialog_area: None,
-            completion_area: None,
             completion_visible_rows: 0,
             completion_scroll_offset: 0,
             todos: Vec::new(),
@@ -1842,12 +1805,8 @@ impl App {
             tasks_selected: None,
             tasks_selected_key: None,
             tasks_restore_mode: None,
-            todo_area: None,
-            tasks_area: None,
             sidebar_area: None,
             panel_areas: Vec::new(),
-            left_border_area: None,
-            bottom_border_area: None,
             composer_mode_before_panel_focus: None,
             last_click_time: None,
             last_click_target: None,
@@ -1859,7 +1818,6 @@ impl App {
             sidebar_projection_revision: None,
             frame_task_rows: None,
             watermark_scan_key: None,
-            context_hint: String::new(),
             event_rx: None,
             tui_cmd_tx: None,
             tui_cmd_rx: None,
@@ -5637,9 +5595,7 @@ impl App {
         if self.observer.is_observing() {
             let effective = raw_input.unwrap_or(cmd.name.as_str());
             if crate::tui::commands::observe::check_observer_block(self, effective) {
-                self.ui_state.command_mode = false;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
+                crate::tui::commands::close_command_mode(self);
                 return;
             }
         }
@@ -5691,9 +5647,7 @@ impl App {
                         },
                     );
                 }
-                self.ui_state.command_mode = false;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
+                crate::tui::commands::close_command_mode(self);
             }
             crate::tui::command::CommandAction::Template => {
                 if self.prompt_state.pending_send {
@@ -5733,9 +5687,7 @@ impl App {
                 }
             }
             crate::tui::command::CommandAction::Plugin => {
-                self.ui_state.command_mode = false;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
+                crate::tui::commands::close_command_mode(self);
                 self.messages_state.toasts.info(&format!(
                     "{} is a plugin command; use the plugin panel to run it",
                     cmd.name
@@ -5797,6 +5749,13 @@ impl App {
     /// Crate-visible so the reasoning command's own tests can drive the
     /// command the way the dispatcher does, rather than through a
     /// test-only shim that could drift from the real path.
+    ///
+    /// Every arm is **one delegation**: the handler lives in the family module
+    /// under `crate::tui::commands/`, receives the normalised `argument`, and
+    /// owns the whole body — including the command-mode teardown. The match is
+    /// deliberately still a match, not a table: a new `BuiltinSlashAction`
+    /// variant must fail to compile until it has an arm here, where a runtime
+    /// lookup would silently do nothing.
     pub(crate) fn dispatch_builtin_command(
         &mut self,
         action: crate::tui::command::BuiltinSlashAction,
@@ -5805,3098 +5764,179 @@ impl App {
         use crate::tui::command::BuiltinSlashAction as B;
         // No argument and an empty argument mean the same thing.
         let argument = argument.unwrap_or_default().trim();
+        use crate::tui::commands::{
+            agents, appearance, change_review, chat, compaction, control, diagnostics, diff,
+            edit_history, editor, exit_control, file_tree, goals, help, import,
+            interactive_terminal, lsp, memory, observe, panels, plugin_management, policy,
+            presence, project_init, project_picker, promotion, provider_connections, queue,
+            reasoning, research, revert, security, session_report, session_selection, sessions,
+            shell, skills, subagent_steer, tasks, team, test, transcript, turn_control,
+            work_orders, workspace_dashboard,
+        };
         match action {
-            B::ProjectInit => {
-                self.dialog_state.project_init_draft = None;
-                self.enqueue_tui_command(TuiCommand::ProjectInitDraft);
-                self.ui_state.command_mode = false;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-            }
-            B::Queue => {
-                crate::tui::commands::queue::open_queue_box(self);
-            }
-            B::SubagentSend => {
-                crate::tui::commands::subagent_steer::dispatch_addressee_command(self, argument);
-            }
-            B::Reload => {
-                self.enqueue_tui_command(TuiCommand::RefreshAssets);
-                self.ui_state.command_mode = false;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-            }
-            B::Skills => {
-                let query = argument.chars().take(128).collect::<String>();
-                let report = self.agent_state.snapshot.as_deref().map(|snapshot| {
-                    let registry = &snapshot.skills;
-                    let skipped = registry
-                        .diagnostics
-                        .iter()
-                        .filter(|diagnostic| diagnostic.severity == crate::skills::Severity::Error)
-                        .count();
-                    let result = if query.is_empty() {
-                        if registry.effective.is_empty() {
-                            "No effective skills".to_string()
-                        } else {
-                            let mut entries = registry
-                                .effective
-                                .iter()
-                                .take(12)
-                                .map(|skill| {
-                                    format!(
-                                        "{} [{}:{} depth {}] ({} shadowed)",
-                                        skill.name,
-                                        skill.source_kind.directory_name(),
-                                        skill.precedence_rank,
-                                        skill.workspace_depth,
-                                        skill.shadowed_alternatives.len()
-                                    )
-                                })
-                                .collect::<Vec<_>>()
-                                .join("; ");
-                            let remaining = registry.effective.len().saturating_sub(12);
-                            if remaining > 0 {
-                                entries.push_str(&format!(
-                                    "; {remaining} more (inspect with /skills <name>)"
-                                ));
-                            }
-                            entries
-                        }
-                    } else if let Some(skill) = registry.get(&query) {
-                        format!(
-                            "{} — {}; source: {} (rank {}, depth {}); {} resources; shadowed: {}",
-                            skill.name,
-                            skill.description,
-                            skill.source_kind.directory_name(),
-                            skill.precedence_rank,
-                            skill.workspace_depth,
-                            skill.resources.len(),
-                            skill
-                                .shadowed_alternatives
-                                .iter()
-                                .map(|alternative| alternative.source_kind.directory_name())
-                                .collect::<Vec<_>>()
-                                .join(",")
-                        )
-                    } else {
-                        format!("No effective skill named '{query}'")
-                    };
-                    format!("{result}; {skipped} invalid candidates. Use /reload to refresh.")
-                });
-                if let Some(report) = report {
-                    let bounded: String = report.chars().take(2048).collect();
-                    self.messages_state.toasts.info(&bounded);
-                } else {
-                    self.messages_state
-                        .toasts
-                        .warning("No active asset snapshot is available");
-                }
-                self.ui_state.command_mode = false;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-            }
-            B::Exit => {
-                self.ui_state.running = false;
-                let _ = self.ui_state.shutdown_tx.take().map(|tx| tx.send(()));
-            }
-            B::Help => {
-                self.ui_state.command_mode = false;
-                // The app's help, not the composer's chord: this box lists the
-                // keys and never copies. See
-                // `crate::tui::components::dialogs::help::HelpRoute`.
-                self.open_dialog(Dialog::Help(HelpRoute::Command));
-            }
-            B::Tree => {
-                self.ui_state.command_mode = false;
-                self.open_tree_dialog();
-            }
-            B::AgentSelect => {
-                let name = argument.to_string();
-                if name.is_empty() {
-                    // No argument: open the agent selection dialog
-                    self.ui_state.command_mode = false;
-                    self.open_dialog(Dialog::Agent);
-                    return;
-                }
-                match crate::tui::commands::agents::validate_agent_select(&name, &self.agent_state)
-                {
-                    Ok(idx) => {
-                        self.agent_state.current_agent = idx;
-                        let agent = &self.agent_state.agents[idx];
-                        let model = self.agent_state.current_model.clone();
-                        self.messages_state.toasts.info(&format!(
-                            "selected agent: {} (model: {})",
-                            agent.name, model
-                        ));
-                    }
-                    Err(e) => {
-                        self.messages_state.toasts.error(&e);
-                    }
-                }
-            }
-            B::Agents => {
-                let workspace_root = match self.project_execution_context() {
-                    Ok(context) => context.workspace_root,
-                    Err(error) => {
-                        self.messages_state.toasts.error(&error);
-                        return;
-                    }
-                };
-                // The argument is everything after the command spelling.
-                let args = argument.to_string();
-
-                if args.is_empty() {
-                    // Bare `/agents` opens **agents**, the same surface `/agent`
-                    // opens. It used to open the panel picker instead — "where
-                    // should this panel live?" — which answered a question the
-                    // user did not ask: someone typing `/agents` wants to see
-                    // agents, and asking them to choose a placement first made
-                    // the command look broken.
-                    //
-                    // Panel *placement* is a real question and stays reachable
-                    // through `/panels`; the two are different questions and
-                    // should not share an entry point. Everything below here —
-                    // `/agents show`, `--all`, `diff`, `validate`, `reload` —
-                    // is unchanged, so nothing that worked before is now
-                    // harder to reach.
-                    self.ui_state.command_mode = false;
-                    self.open_dialog(Dialog::Agent);
-                    return;
-                }
-
-                let parts: Vec<&str> = args.splitn(2, ' ').collect();
-                let subcmd = parts[0];
-                let subargs = parts.get(1).copied().unwrap_or("").trim();
-
-                match subcmd {
-                    "--all" | "-a" => {
-                        let lines = crate::tui::commands::agents::format_agents_list_for_root(
-                            &self.agent_state,
-                            true,
-                            &workspace_root,
-                        );
-                        self.show_short_or_info(
-                            crate::tui::components::dialogs::info::InfoType::Agents,
-                            lines,
-                        );
-                    }
-                    "show" => {
-                        if subargs.is_empty() {
-                            self.messages_state
-                                .toasts
-                                .warning("Usage: /agents show <name>");
-                            return;
-                        }
-                        let lines = crate::tui::commands::agents::format_agent_show_for_root(
-                            subargs,
-                            &workspace_root,
-                        );
-                        self.show_short_or_info(
-                            crate::tui::components::dialogs::info::InfoType::Agents,
-                            lines,
-                        );
-                    }
-                    "diff" => {
-                        if subargs.is_empty() {
-                            self.messages_state
-                                .toasts
-                                .warning("Usage: /agents diff <name>");
-                            return;
-                        }
-                        let lines = crate::tui::commands::agents::format_agent_diff_for_root(
-                            subargs,
-                            &workspace_root,
-                        );
-                        self.show_short_or_info(
-                            crate::tui::components::dialogs::info::InfoType::Agents,
-                            lines,
-                        );
-                    }
-                    "validate" => {
-                        let (lines, _) = crate::tui::commands::agents::format_agents_validate_inner(
-                            &workspace_root,
-                        );
-                        self.show_short_or_info(
-                            crate::tui::components::dialogs::info::InfoType::Agents,
-                            lines,
-                        );
-                    }
-                    "reload" | "rebuild" => {
-                        let (new_agents, diags) =
-                            crate::tui::commands::agents::rebuild_agents_for_root(&workspace_root);
-                        if !new_agents.is_empty() {
-                            // Preserve current agent if still valid
-                            let current_name = self
-                                .agent_state
-                                .agents
-                                .get(self.agent_state.current_agent)
-                                .map(|a| a.name.clone());
-                            self.agent_state.agents = new_agents;
-                            if let Some(ref name) = current_name {
-                                if let Some(idx) =
-                                    self.agent_state.agents.iter().position(|a| a.name == *name)
-                                {
-                                    // Check if agent is still selectable (not hidden, not subagent-only)
-                                    let agent = &self.agent_state.agents[idx];
-                                    if !agent.hidden && !matches!(agent.mode, AgentMode::Subagent) {
-                                        self.agent_state.current_agent = idx;
-                                    } else {
-                                        // Current agent became hidden or subagent-only, fall back
-                                        if let Some(idx) = self
-                                            .agent_state
-                                            .agents
-                                            .iter()
-                                            .position(|a| a.name == "build")
-                                        {
-                                            self.agent_state.current_agent = idx;
-                                        } else {
-                                            self.agent_state.current_agent = 0;
-                                        }
-                                    }
-                                } else {
-                                    // Current agent disappeared, fall back to default
-                                    if let Some(idx) = self
-                                        .agent_state
-                                        .agents
-                                        .iter()
-                                        .position(|a| a.name == "build")
-                                    {
-                                        self.agent_state.current_agent = idx;
-                                    } else {
-                                        self.agent_state.current_agent = 0;
-                                    }
-                                }
-                            }
-                        }
-                        self.show_short_or_info(
-                            crate::tui::components::dialogs::info::InfoType::Agents,
-                            diags,
-                        );
-                    }
-                    _ => {
-                        // Treat unknown subcommand as agent name for convenience
-                        // e.g., `/agents build` shows that agent
-                        let lines = crate::tui::commands::agents::format_agent_show_for_root(
-                            subcmd,
-                            &workspace_root,
-                        );
-                        self.show_short_or_info(
-                            crate::tui::components::dialogs::info::InfoType::Agents,
-                            lines,
-                        );
-                    }
-                }
-            }
-            B::New => {
-                // `/new` (alias `/clear`) previously only cleared the message
-                // list, which left the TUI attached to the old session and
-                // never actually created a new one. Route it through the same
-                // path as Ctrl+N so both produce a real new session.
-                self.new_session();
-            }
-            B::Compact => {
-                crate::tui::commands::compaction::handle_compact_session(self);
-            }
-            B::Connect => {
-                self.ui_state.command_mode = false;
-                self.open_connect_dialog();
-            }
-            B::Connections => {
-                self.ui_state.command_mode = false;
-                self.open_connection_selection_dialog();
-            }
-            B::Status => {
-                let mut status = format!(
-                    "status: {:?} | tokens: {}↑ {}↓ | model: {}",
-                    self.session_state.session_status,
-                    self.session_state.token_in,
-                    self.session_state.token_out,
-                    self.agent_state
-                        .current_model
-                        .split('/')
-                        .next_back()
-                        .unwrap_or(&self.agent_state.current_model)
-                );
-                // M007: daemon-resolved effective policy alongside the
-                // legacy status line (observers can read policy here;
-                // /policy itself stays control-gated).
-                if let Some(line) = self.policy_ui.status_line() {
-                    status.push_str(&format!(" | {}", line));
-                }
-                self.messages_state.toasts.info(&status);
-            }
-            B::Policy => {
-                self.ui_state.command_mode = false;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                if self.core_client.is_none() {
-                    self.messages_state
-                        .toasts
-                        .warning("Runtime policy unavailable: no core connection");
-                    return;
-                }
-                crate::tui::commands::policy::start_snapshot_refresh(
-                    self,
-                    crate::tui::commands::policy::PolicySnapshotReason::SelectorRefresh,
-                );
-            }
-            B::Approval => {
-                self.ui_state.command_mode = false;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                let arg = argument;
-                if arg.is_empty() {
-                    crate::tui::commands::policy::open_policy_selector(
-                        self,
-                        crate::tui::components::dialogs::policy_selector::PolicySelectorKind::Approval,
-                    );
-                    return;
-                }
-                match crate::policy_surface::parse_approval_mode(arg) {
-                    Ok(mode) => {
-                        crate::tui::commands::policy::request_policy_change(self, Some(mode), None)
-                    }
-                    Err(e) => {
-                        self.messages_state.toasts.warning(&format!(
-                            "{} (usage: /approval [interactive|automatic|yolo])",
-                            e
-                        ));
-                    }
-                }
-            }
-            B::Sandbox => {
-                self.ui_state.command_mode = false;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                let arg = argument;
-                if arg.is_empty() {
-                    crate::tui::commands::policy::open_policy_selector(
-                        self,
-                        crate::tui::components::dialogs::policy_selector::PolicySelectorKind::Sandbox,
-                    );
-                    return;
-                }
-                match crate::policy_surface::parse_sandbox_profile(arg) {
-                    Ok(profile) => crate::tui::commands::policy::request_policy_change(
-                        self,
-                        None,
-                        Some(profile),
-                    ),
-                    Err(e) => {
-                        self.messages_state.toasts.warning(&format!(
-                            "{} (usage: /sandbox [read-only|workspace-write|full-host])",
-                            e
-                        ));
-                    }
-                }
-            }
-            B::Network => {
-                self.ui_state.command_mode = false;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                let arg = argument;
-                if arg.is_empty() {
-                    crate::tui::commands::policy::start_snapshot_refresh(
-                        self,
-                        crate::tui::commands::policy::PolicySnapshotReason::SelectorRefresh,
-                    );
-                    return;
-                }
-                match arg {
-                    "offline" | "offline-required" => {
-                        crate::tui::commands::policy::request_network_intent_change(
-                            self,
-                            codegg_core::approval::NetworkIntent::OfflineRequired,
-                        );
-                    }
-                    "unrestricted confirm" => {
-                        crate::tui::commands::policy::request_network_intent_change(
-                            self,
-                            codegg_core::approval::NetworkIntent::LegacyUnrestricted,
-                        );
-                    }
-                    "unrestricted" => {
-                        let active = self.policy_ui.cached.as_ref().is_some_and(|view| {
-                            view.effective_network_intent
-                                == codegg_core::approval::NetworkIntent::OfflineRequired
-                        });
-                        if active {
-                            self.messages_state.toasts.warning(
-                                "Restoring network access requires `/network unrestricted confirm`.",
-                            );
-                        } else {
-                            crate::tui::commands::policy::request_network_intent_change(
-                                self,
-                                codegg_core::approval::NetworkIntent::LegacyUnrestricted,
-                            );
-                        }
-                    }
-                    _ => self.messages_state.toasts.warning(
-                        "Unknown network policy (usage: /network [offline|unrestricted confirm])",
-                    ),
-                }
-            }
-            B::Context => {
-                self.ui_state.command_mode = false;
-                self.open_dialog(Dialog::Context);
-            }
-            B::Cost => {
-                self.ui_state.command_mode = false;
-                self.open_dialog(Dialog::Cost);
-            }
-            B::Usage => {
-                self.ui_state.command_mode = false;
-                self.open_dialog(Dialog::Usage);
-            }
-            B::Themes => {
-                self.handle_theme_command(argument);
-            }
-            B::Tui => {
-                self.toggle_fullscreen();
-            }
-            B::TuiStats => {
-                self.open_stats_dialog();
-            }
-            B::Tts => {
-                self.toggle_tts();
-            }
-            B::Collaborators => {
-                self.ui_state.command_mode = false;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                // Subcommand: `/collaborators refresh` forces a re-fetch.
-                // Bare `/collaborators` shows the bounded panel, fetching
-                // on demand when missing or stale. Focus/key follows the
-                // standard info-dialog convention (j/k scroll, Esc close)
-                // and never mutates sessions.
-                let arg = argument;
-                if arg.eq_ignore_ascii_case("refresh") {
-                    crate::tui::commands::presence::refresh_collaborators(self);
-                } else {
-                    crate::tui::commands::presence::show_collaborators(self);
-                }
-            }
-            B::Team => {
-                self.ui_state.command_mode = false;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                // M003: durable project-team administration. Bare `/team`
-                // shows the bounded member list plus the M002 chat-policy
-                // summary for the active project; subcommands mutate
-                // membership, principals/tokens (LocalOwner), and chat
-                // overrides. `/collaborators` stays the presence view.
-                let args = argument;
-                crate::tui::commands::team::dispatch_team_command(self, args);
-            }
-            B::Control => {
-                self.ui_state.command_mode = false;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                // M004: shared-session controller lease. Bare `/control`
-                // shows the current lease plus inert requests for the
-                // active session; subcommands request/transfer/release/
-                // take over explicit control. Observer mode stays
-                // hard-blocked via the central `blocks_command` gate
-                // (this arm is unreachable while observing).
-                let args = argument;
-                crate::tui::commands::control::dispatch_control_command(self, args);
-            }
-            B::Observe => {
-                self.ui_state.command_mode = false;
-                let session_arg = argument;
-                if session_arg.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /observe <session-id>");
-                    self.prompt_state.prompt.clear();
-                    self.prompt_state.show_completions = false;
-                    return;
-                }
-                // Session locator is the first token; anything after is
-                // ignored (no second stream, no control args).
-                let session_id = session_arg
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("")
-                    .to_string();
-                let Some(project_id) = self.active_project_id().map(str::to_string) else {
-                    self.messages_state
-                        .toasts
-                        .warning("No active project — open a project tab first");
-                    self.prompt_state.prompt.clear();
-                    self.prompt_state.show_completions = false;
-                    return;
-                };
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                crate::tui::commands::observe::start_observe(self, project_id, session_id);
-            }
-            B::StopObserving => {
-                self.ui_state.command_mode = false;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                crate::tui::commands::observe::stop_observing(self);
-            }
-            B::Panels => {
-                self.ui_state.command_mode = false;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                // The second spelling of `⇧S`. `⇧S` is a Normal-mode
-                // gesture, so with `Ctrl+Alt+W` retired it was the *only*
-                // way into the manager while composing — and there the key
-                // is the letter `S` and must stay typeable. A slash
-                // command is typed, not chorded, so it opens the same box
-                // from Insert as well.
-                crate::tui::commands::panels::open_panel_manager(self);
-            }
-            B::Chat => {
-                self.ui_state.command_mode = false;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                // M005: Workspace side panel owns chat while the view is
-                // active (explicit focus, no modal); otherwise the modal.
-                if crate::tui::commands::workspace_dashboard::is_workspace_view_active(self) {
-                    crate::tui::commands::workspace_dashboard::focus_workspace_chat(self);
-                } else {
-                    crate::tui::commands::chat::show_chat(self);
-                }
-            }
-            B::ChatSend => {
-                self.ui_state.command_mode = false;
-                let body = argument.to_string();
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                let Some(project_id) = self.chat_target_project_id() else {
-                    self.messages_state
-                        .toasts
-                        .warning("No project selected — select a Workspace project or open a project tab first");
-                    return;
-                };
-                crate::tui::commands::chat::start_chat_send(self, project_id, body, None);
-            }
-            B::ChatReply => {
-                self.ui_state.command_mode = false;
-                let rest = argument;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                let Some((target, body)) = rest.split_once(' ') else {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /chat-reply <message-id> <text>");
-                    return;
-                };
-                let body = body.trim();
-                if body.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /chat-reply <message-id> <text>");
-                    return;
-                }
-                let Some(project_id) = self.chat_target_project_id() else {
-                    self.messages_state
-                        .toasts
-                        .warning("No project selected — select a Workspace project or open a project tab first");
-                    return;
-                };
-                crate::tui::commands::chat::start_chat_send(
-                    self,
-                    project_id,
-                    body.to_string(),
-                    Some(target.trim().to_string()),
-                );
-            }
-            B::ChatHistory => {
-                self.ui_state.command_mode = false;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                let Some(project_id) = self.chat_target_project_id() else {
-                    self.messages_state
-                        .toasts
-                        .warning("No project selected — select a Workspace project or open a project tab first");
-                    return;
-                };
-                let workspace_active =
-                    crate::tui::commands::workspace_dashboard::is_workspace_view_active(self);
-                crate::tui::commands::chat::start_chat_history(self, project_id);
-                if workspace_active {
-                    crate::tui::commands::workspace_dashboard::sync_workspace_chat_panel(self);
-                } else {
-                    // Refresh the panel view when it is showing chat.
-                    crate::tui::commands::chat::show_chat(self);
-                }
-            }
-            B::ChatSync => {
-                self.ui_state.command_mode = false;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                let Some(project_id) = self.chat_target_project_id() else {
-                    self.messages_state
-                        .toasts
-                        .warning("No project selected — select a Workspace project or open a project tab first");
-                    return;
-                };
-                crate::tui::commands::chat::start_chat_sync(self, project_id);
-            }
-            B::ChatRead => {
-                self.ui_state.command_mode = false;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                let Some(project_id) = self.chat_target_project_id() else {
-                    self.messages_state
-                        .toasts
-                        .warning("No project selected — select a Workspace project or open a project tab first");
-                    return;
-                };
-                crate::tui::commands::chat::start_chat_read(self, project_id);
-            }
-            B::ChatEdit => {
-                self.ui_state.command_mode = false;
-                let rest = argument;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                let Some((target, body)) = rest.split_once(' ') else {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /chat-edit <message-id> <new-text>");
-                    return;
-                };
-                if body.trim().is_empty() {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /chat-edit <message-id> <new-text>");
-                    return;
-                }
-                let Some(project_id) = self.chat_target_project_id() else {
-                    self.messages_state
-                        .toasts
-                        .warning("No project selected — select a Workspace project or open a project tab first");
-                    return;
-                };
-                crate::tui::commands::chat::start_chat_edit(
-                    self,
-                    project_id,
-                    target.trim().to_string(),
-                    body.trim().to_string(),
-                );
-            }
-            B::ChatRedact => {
-                self.ui_state.command_mode = false;
-                let rest = argument;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                if rest.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /chat-redact <message-id> [reason]");
-                    return;
-                }
-                let (target, reason) = match rest.split_once(' ') {
-                    Some((t, r)) if !r.trim().is_empty() => {
-                        (t.trim().to_string(), Some(r.trim().to_string()))
-                    }
-                    _ => (rest.trim().to_string(), None),
-                };
-                let Some(project_id) = self.chat_target_project_id() else {
-                    self.messages_state
-                        .toasts
-                        .warning("No project selected — select a Workspace project or open a project tab first");
-                    return;
-                };
-                crate::tui::commands::chat::start_chat_redact(self, project_id, target, reason);
-            }
-            B::ChatComposing => {
-                self.ui_state.command_mode = false;
-                let arg = argument;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                let composing = match arg.to_lowercase().as_str() {
-                    "on" | "true" | "1" | "start" => true,
-                    "off" | "false" | "0" | "stop" | "clear" => false,
-                    _ => {
-                        self.messages_state
-                            .toasts
-                            .warning("Usage: /chat-composing on|off");
-                        return;
-                    }
-                };
-                let Some(project_id) = self.chat_target_project_id() else {
-                    self.messages_state
-                        .toasts
-                        .warning("No project selected — select a Workspace project or open a project tab first");
-                    return;
-                };
-                crate::tui::commands::chat::start_chat_composing(self, project_id, composing);
-            }
-            B::ChatActionTask => {
-                self.ui_state.command_mode = false;
-                let rest = argument;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                // Explicit form: <message-id> <workspace-id> <agent> <prompt…>.
-                let mut parts = rest.splitn(4, ' ');
-                let message_id = parts.next().unwrap_or_default().trim();
-                let workspace_id = parts.next().unwrap_or_default().trim();
-                let agent = parts.next().unwrap_or_default().trim();
-                let prompt = parts.next().unwrap_or_default().trim();
-                if message_id.is_empty()
-                    || workspace_id.is_empty()
-                    || agent.is_empty()
-                    || prompt.is_empty()
-                {
-                    self.messages_state.toasts.warning(
-                        "Usage: /chat-action-task <message-id> <workspace-id> <agent> <prompt>",
-                    );
-                    return;
-                }
-                let Some(project_id) = self.chat_target_project_id() else {
-                    self.messages_state
-                        .toasts
-                        .warning("No project selected — select a Workspace project or open a project tab first");
-                    return;
-                };
-                crate::tui::commands::chat::start_chat_action_task(
-                    self,
-                    project_id,
-                    message_id.to_string(),
-                    workspace_id.to_string(),
-                    agent.to_string(),
-                    prompt.to_string(),
-                );
-            }
-            B::ChatActionReview => {
-                self.ui_state.command_mode = false;
-                let rest = argument;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                let mut parts = rest.splitn(4, ' ');
-                let message_id = parts.next().unwrap_or_default().trim();
-                let workspace_id = parts.next().unwrap_or_default().trim();
-                let agent = parts.next().unwrap_or_default().trim();
-                let prompt = parts.next().unwrap_or_default().trim();
-                if message_id.is_empty()
-                    || workspace_id.is_empty()
-                    || agent.is_empty()
-                    || prompt.is_empty()
-                {
-                    self.messages_state.toasts.warning(
-                        "Usage: /chat-action-review <message-id> <workspace-id> <agent> <prompt>",
-                    );
-                    return;
-                }
-                let Some(project_id) = self.chat_target_project_id() else {
-                    self.messages_state
-                        .toasts
-                        .warning("No project selected — select a Workspace project or open a project tab first");
-                    return;
-                };
-                crate::tui::commands::chat::start_chat_action_review(
-                    self,
-                    project_id,
-                    message_id.to_string(),
-                    workspace_id.to_string(),
-                    agent.to_string(),
-                    prompt.to_string(),
-                );
-            }
-            B::ChatActionList => {
-                self.ui_state.command_mode = false;
-                let rest = argument;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                let message_id = if rest.is_empty() {
-                    None
-                } else {
-                    Some(rest.to_string())
-                };
-                let Some(project_id) = self.chat_target_project_id() else {
-                    self.messages_state
-                        .toasts
-                        .warning("No project selected — select a Workspace project or open a project tab first");
-                    return;
-                };
-                crate::tui::commands::chat::start_chat_action_list(self, project_id, message_id);
-                if crate::tui::commands::workspace_dashboard::is_workspace_view_active(self) {
-                    crate::tui::commands::workspace_dashboard::sync_workspace_chat_panel(self);
-                } else {
-                    crate::tui::commands::chat::show_chat(self);
-                }
-            }
-            B::Sessions => {
-                self.open_dialog(Dialog::Session);
-            }
-            B::Projects => {
-                self.open_project_picker();
-            }
-            B::Stop => {
-                crate::tui::commands::turn_control::stop(self);
-            }
-            B::StartTurn => {
-                crate::tui::commands::turn_control::start(self);
-            }
-            B::Share => {
-                if let Some(ref session) = self.session_state.session {
-                    if let Some(ref existing) = session.share_url {
-                        let mut dialog = crate::tui::components::dialogs::share::ShareDialog::new(
-                            Arc::clone(&self.ui_state.theme),
-                        );
-                        dialog.set_theme(&self.ui_state.theme);
-                        dialog.set_url(existing.clone());
-                        self.dialog_state.share_dialog = Some(dialog);
-                        self.open_dialog(Dialog::Share);
-                    } else if self.tui_cmd_tx.is_some() {
-                        let session_id = session.id.clone();
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = send_tui(tx, TuiCommand::ShareSession { session_id });
-                        }
-                    } else {
-                        self.messages_state
-                            .toasts
-                            .error("Session store not available");
-                    }
-                } else {
-                    self.messages_state
-                        .toasts
-                        .info("No active session to share");
-                }
-            }
-            B::Unshare => {
-                // Dispatch a real unshare round-trip. This used to only
-                // toast "Session unshared", leaving the share URL live
-                // server-side while reporting success.
-                if let Some(session) = self.session_state.session.as_ref() {
-                    let session_id = session.id.clone();
-                    self.enqueue_tui_command(TuiCommand::UnshareSession { session_id });
-                } else {
-                    self.messages_state.toasts.info("No active session");
-                }
-            }
-            B::Rename => {
-                self.messages_state
-                    .toasts
-                    .info("Use /sessions to rename - select and press Enter");
-            }
-            B::Timeline => {
-                self.show_timeline();
-            }
-            B::Undo => {
-                if self.messages_state.messages.undo() {
-                    self.messages_state.toasts.info("Undid last message");
-                } else {
-                    self.messages_state.toasts.info("Nothing to undo");
-                }
-            }
-            B::Redo => {
-                if self.messages_state.messages.redo() {
-                    self.messages_state.toasts.info("Redid message");
-                } else {
-                    self.messages_state.toasts.info("Nothing to redo");
-                }
-            }
-            B::Export => {
-                let sub = argument;
-                if sub == "handoff" {
-                    self.export_handoff();
-                } else if let Some(session) = self.session_state.session.as_ref() {
-                    // Dispatch a real export round-trip. This used to
-                    // only toast "Exporting session - copy to clipboard"
-                    // without copying anything.
-                    let session_id = session.id.clone();
-                    self.enqueue_tui_command(TuiCommand::ExportSession { session_id });
-                } else {
-                    self.messages_state.toasts.info("No active session");
-                }
-            }
-            B::Import => {
-                self.dialog_state.import_dialog =
-                    Some(crate::tui::components::dialogs::import::ImportDialog::new(
-                        Arc::clone(&self.ui_state.theme),
-                    ));
-                self.open_dialog(Dialog::Import);
-            }
-            B::Timestamps => {
-                self.ui_state.show_timestamps = !self.ui_state.show_timestamps;
-                let msg = if self.ui_state.show_timestamps {
-                    "timestamps shown"
-                } else {
-                    "timestamps hidden"
-                };
-                self.messages_state.toasts.info(msg);
-            }
-            B::Thinking => {
-                self.ui_state.show_thinking = !self.ui_state.show_thinking;
-                let msg = if self.ui_state.show_thinking {
-                    "thinking shown"
-                } else {
-                    "thinking hidden"
-                };
-                self.messages_state.toasts.info(msg);
-            }
-            B::ExpandAllDisclosures => {
-                // The palette twin of the `Ctrl+Alt+O` chord: the same
-                // gesture, the same toast.
-                self.expand_all_disclosures();
-            }
-            B::Reasoning => {
-                // The option set is the **model's**, not a static ladder:
-                // the labels the capability publishes, in its own order, a
-                // disable only when the model permits one, and a budget only
-                // when it lies inside the model's bounds. Distinct from
-                // `/thinking`, which only toggles whether reasoning text is
-                // rendered; this one changes what the model is asked to do.
-                //
-                // The daemon owns the selection, so it needs somewhere to
-                // store it. Without a daemon connection the command reports
-                // that rather than changing a local value the daemon would
-                // ignore.
-                if self.core_client.is_none() {
-                    self.messages_state.toasts.error(
-                        "Extended thinking unavailable: this frontend has no daemon connection, so \
-                         the selection cannot be stored",
-                    );
-                    return;
-                }
-                let options = crate::tui::commands::reasoning::option_set(self);
-                let previous = self.ui_state.reasoning_mode.clone();
-                let next = crate::tui::commands::reasoning::next_mode(&previous, &options);
-                // The display moves immediately so the command feels
-                // responsive; the daemon's response corrects it when the two
-                // differ, and a refusal puts the daemon's last known value
-                // back.
-                self.ui_state.reasoning_mode = next.clone();
-                let detail = next.detail();
-                // Selecting an effort or budget on a provider whose adapter
-                // deletes `reasoning_effort` is silently ignored. Warn instead
-                // of letting the control look broken.
-                let strips = next.requests_reasoning() && self.selected_provider_strips_reasoning();
-                let mut message = format!("Extended thinking: {detail}");
-                if let Some(note) = crate::tui::commands::reasoning::option_note(&options) {
-                    message.push_str(" — ");
-                    message.push_str(&note);
-                }
-                if strips {
-                    message.push_str(&format!(
-                        " — {} drops this setting on the wire",
-                        self.agent_state
-                            .current_model
-                            .split('/')
-                            .next()
-                            .unwrap_or("this provider")
-                    ));
-                    self.messages_state.toasts.warning(&message);
-                } else {
-                    self.messages_state.toasts.info(&message);
-                }
-                crate::tui::commands::reasoning::start_preference_update(
-                    self,
-                    crate::tui::commands::reasoning::override_for(&next),
-                    previous,
-                );
-            }
-            B::ModelsRefresh => {
-                self.refresh_models();
-            }
-            B::Variants => {
-                let model = &self.agent_state.current_model;
-                let base = model.split('/').next_back().unwrap_or(model);
-                self.messages_state
-                    .toasts
-                    .info(&format!("Variants for {}: default (no suffix)", base));
-            }
-            B::Fork => {
-                if let Some(idx) = self.messages_state.messages.sel_msg {
-                    self.messages_state.toasts.info(&format!(
-                        "Fork from message {} - use CLI --fork flag for now",
-                        idx
-                    ));
-                } else {
-                    self.messages_state
-                        .toasts
-                        .info("Select a message with arrow keys first, then use /fork");
-                }
-            }
-            B::Workspaces => {
-                self.messages_state
-                    .toasts
-                    .info("Workspace management - use /sessions to switch workspaces");
-            }
-            B::Worktree => {
-                if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = send_tui(tx, TuiCommand::WorktreeList);
-                } else {
-                    let git_root = self.active_workspace_root().unwrap_or_default();
-                    let trees = tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(async {
-                            match crate::worktree::find_git_root(&git_root) {
-                                Some(root) => crate::worktree::list_worktrees(&root)
-                                    .await
-                                    .unwrap_or_default(),
-                                None => Vec::new(),
-                            }
-                        })
-                    });
-                    if trees.is_empty() {
-                        self.messages_state.toasts.info("No worktrees found");
-                    } else {
-                        let names: Vec<String> = trees
-                            .iter()
-                            .map(|t| format!("{} ({})", t.path, t.branch))
-                            .collect();
-                        self.messages_state.toasts.info(&names.join(", "));
-                    }
-                }
-            }
-            B::Editor => {
-                self.open_external_editor();
-            }
-            B::OpenDocument => {
-                // M006-A: `/open <workspace-relative path>`. With no
-                // argument the composer keeps the key so the user can
-                // type the path after the command.
-                //
-                // M007-H (work package A): the daemon owns the open, so the
-                // TUI sends the `open_document` command and attaches the
-                // response. It issues no open request of its own.
-                let path = argument;
-                if path.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .info("Usage: /open <workspace-relative path> (e.g. /open src/lib.rs)");
-                } else {
-                    crate::tui::commands::editor::open_editor_via_command(self, path);
-                }
-            }
-            B::Loop => {
-                // The argument is `<interval> "<message>"`; the command
-                // spelling was already removed by the extraction point.
-                let parts: Vec<&str> = argument.splitn(2, ' ').collect();
-                if parts.len() < 2 {
-                    self.messages_state.toasts.warning(
-                        "Usage: /loop <interval> \"<message>\" (e.g. /loop 5m \"check status\")",
-                    );
-                } else if let Some(duration) =
-                    crate::background_task_migration::parse_duration(parts[0])
-                {
-                    let message = parts[1].trim_matches('"').to_string();
-                    if let Some(ref tx) = self.tui_cmd_tx {
-                        let _ = send_tui(
-                            tx,
-                            TuiCommand::TaskSchedule {
-                                interval_secs: duration.as_secs(),
-                                message,
-                            },
-                        );
-                    } else {
-                        self.messages_state
-                            .toasts
-                            .error("Command channel unavailable");
-                    }
-                } else {
-                    self.messages_state
-                        .toasts
-                        .warning("Invalid interval. Examples: 30s, 5m, 1h, 1d");
-                }
-            }
-            B::Tasks => {
-                // Project Work Orders M003: `/tasks` opens the WorkOrder
-                // Task view when the capability is available, falling
-                // back to the low-level schedule list with an explicit
-                // diagnostic on older servers. `/schedules` keeps
-                // direct low-level access; the `Schedule*` protocol is
-                // preserved.
-                crate::tui::commands::work_orders::start_tasks_command(self);
-            }
-            B::Task => {
-                crate::tui::commands::work_orders::open_task_view(self, "task");
-            }
-            B::Workspace => {
-                // M005: `/workspace` opens the non-modal primary Workspace
-                // view (same as `OpenWorkspaceDashboard` hotkey Ctrl+O).
-                // The composer stays editable and the sidebar shows
-                // project chat for the selection.
-                crate::tui::commands::workspace_dashboard::open_workspace_dashboard(self);
-            }
-            B::Schedules => {
-                if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = send_tui(tx, TuiCommand::ListTasks);
-                } else {
-                    self.messages_state.toasts.info("No background tasks");
-                }
-            }
-            B::TaskDel => {
-                let id = argument;
-                if id.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .warning(
-                            "Usage: /task-del <id> (use the ID shown by /tasks; full schedule IDs also work)",
-                        );
-                } else if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = send_tui(tx, TuiCommand::DeleteTask { id: id.to_string() });
-                } else {
-                    self.messages_state
-                        .toasts
-                        .warning("Scheduler not available");
-                }
-            }
-            B::Memory => {
-                if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = send_tui(
-                        tx,
-                        TuiCommand::MemorySummary {
-                            command_id: "memory".to_string(),
-                        },
-                    );
-                } else {
-                    self.handle_memory_command(None);
-                }
-            }
-            B::MemorySearch => {
-                let query = argument.to_string();
-                if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = send_tui(tx, TuiCommand::MemorySearch { query });
-                } else {
-                    self.handle_memory_command(Some(("search", &query)));
-                }
-            }
-            B::MemoryList => {
-                let query = argument.to_string();
-                if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = send_tui(
-                        tx,
-                        TuiCommand::MemorySummary {
-                            command_id: "memory_list".to_string(),
-                        },
-                    );
-                } else {
-                    self.handle_memory_command(Some(("list", &query)));
-                }
-            }
-            B::MemoryRemember => {
-                let text = argument.to_string();
-                if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = send_tui(tx, TuiCommand::MemoryRemember { text });
-                } else {
-                    self.handle_memory_command(Some(("remember", &text)));
-                }
-            }
-            B::MemoryForget => {
-                let id = argument.to_string();
-                if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = send_tui(tx, TuiCommand::MemoryForget { id });
-                } else {
-                    self.handle_memory_command(Some(("forget", &id)));
-                }
-            }
-            B::MemoryConsolidate => {
-                self.handle_memory_command(Some(("consolidate", "")));
-            }
-            B::Habits => {
-                let ready_only = argument == "ready";
-                if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = send_tui(tx, TuiCommand::HabitList { ready_only });
-                } else {
-                    self.messages_state
-                        .toasts
-                        .warning("Habit store unavailable");
-                }
-            }
-            B::HabitDismiss => {
-                let id = argument.to_string();
-                if id.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /habit-dismiss <id> (use /habits)");
-                } else if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = send_tui(tx, TuiCommand::HabitDismiss { id });
-                } else {
-                    self.messages_state
-                        .toasts
-                        .warning("Habit store unavailable");
-                }
-            }
-            B::SkillPromote => {
-                if self.prompt_state.pending_send {
-                    self.messages_state
-                        .toasts
-                        .warning("Still waiting for previous prompt to finish");
-                    return;
-                }
-                let Some(habit_id) = crate::memory::habit::HabitId::parse(argument) else {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /skill-promote <ready habit id>");
-                    return;
-                };
-                let Some(session_id) = self.session_state.session.as_ref().map(|s| s.id.clone())
-                else {
-                    self.messages_state
-                        .toasts
-                        .warning("Start or select a session before promoting a habit");
-                    return;
-                };
-                let Some(workspace_id) = self.active_workspace_id().map(str::to_owned) else {
-                    self.messages_state
-                        .toasts
-                        .warning("Select a workspace before promoting a habit");
-                    return;
-                };
-                // M007-I (work package B): the daemon owns the promotion
-                // store, so the frontend stages nothing itself. It asks the
-                // daemon, and the daemon records the request against the
-                // canonical workspace.
-                crate::tui::commands::promotion::start_skill_promotion(
-                    self,
-                    crate::protocol::skill::SkillPromotionRequestDto {
-                        workspace_id,
-                        session_id,
-                        action: crate::protocol::skill::SkillPromotionActionDto::Begin,
-                        habit_id: Some(habit_id.as_str().to_owned()),
-                        proposal_id: None,
-                        target_scope: None,
-                    },
-                );
-            }
-            B::SkillProposals => {
-                let Some(session_id) = self.session_state.session.as_ref().map(|s| s.id.clone())
-                else {
-                    self.messages_state
-                        .toasts
-                        .warning("Start or select a session before listing proposals");
-                    return;
-                };
-                let Some(workspace_id) = self.active_workspace_id().map(str::to_owned) else {
-                    self.messages_state
-                        .toasts
-                        .warning("Select a workspace before listing proposals");
-                    return;
-                };
-                crate::tui::commands::promotion::start_skill_promotion(
-                    self,
-                    crate::protocol::skill::SkillPromotionRequestDto {
-                        workspace_id,
-                        session_id,
-                        action: crate::protocol::skill::SkillPromotionActionDto::List,
-                        habit_id: None,
-                        proposal_id: None,
-                        target_scope: None,
-                    },
-                );
-            }
-            B::SkillProposal => {
-                let Some(session_id) = self.session_state.session.as_ref().map(|s| s.id.clone())
-                else {
-                    self.messages_state
-                        .toasts
-                        .warning("Start or select a session before acting on a proposal");
-                    return;
-                };
-                let Some(workspace_id) = self.active_workspace_id().map(str::to_owned) else {
-                    self.messages_state
-                        .toasts
-                        .warning("Select a workspace before acting on a proposal");
-                    return;
-                };
-                let mut action = crate::protocol::skill::SkillPromotionActionDto::Preview;
-                let mut target_scope = None;
-                let id_text = if let Some(publish_args) = argument.strip_prefix("publish") {
-                    let parts = publish_args.split_whitespace().collect::<Vec<_>>();
-                    if parts.len() != 2 {
-                        self.messages_state
-                            .toasts
-                            .warning("Usage: /skill-proposal publish <id> [project|global]");
-                        return;
-                    }
-                    target_scope = Some(match parts[1] {
-                        "project" => crate::protocol::skill::SkillTargetScopeDto::Project,
-                        "global" => crate::protocol::skill::SkillTargetScopeDto::Global,
-                        _ => {
-                            self.messages_state
-                                .toasts
-                                .warning("Publication scope must be project or global");
-                            return;
-                        }
-                    });
-                    action = crate::protocol::skill::SkillPromotionActionDto::Publish;
-                    parts[0].to_string()
-                } else if let Some(reject_id) = argument.strip_prefix("reject ") {
-                    action = crate::protocol::skill::SkillPromotionActionDto::Reject;
-                    reject_id.trim().to_string()
-                } else {
-                    argument.trim().to_string()
-                };
-                if crate::skills::promotion::SkillProposalId::parse(&id_text).is_none() {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /skill-proposal <id> or /skill-proposal reject <id>");
-                    return;
-                }
-                crate::tui::commands::promotion::start_skill_promotion(
-                    self,
-                    crate::protocol::skill::SkillPromotionRequestDto {
-                        workspace_id,
-                        session_id,
-                        action,
-                        habit_id: None,
-                        proposal_id: Some(id_text),
-                        target_scope,
-                    },
-                );
-            }
-            B::Goal => {
-                let query = argument;
-                let parts: Vec<&str> = query.splitn(2, ' ').collect();
-                let subcmd = parts.first().copied().unwrap_or("");
-                let args = parts.get(1).copied().unwrap_or("").trim();
-
-                let Some(session) = self.session_state.session.clone() else {
-                    self.messages_state.toasts.warning("No active session");
-                    return;
-                };
-                let session_id = session.id.clone();
-                let project_id = self.active_project_key().unwrap_or_default();
-
-                match subcmd {
-                    "set" => {
-                        if args.is_empty() {
-                            self.messages_state
-                                .toasts
-                                .warning("Usage: /goal set <objective>");
-                            return;
-                        }
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = send_tui(
-                                tx,
-                                TuiCommand::GoalSet {
-                                    session_id,
-                                    project_id,
-                                    objective: args.to_string(),
-                                },
-                            );
-                        }
-                    }
-                    "from-file" => {
-                        if args.is_empty() {
-                            self.messages_state
-                                .toasts
-                                .warning("Usage: /goal from-file <path>");
-                            return;
-                        }
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = send_tui(
-                                tx,
-                                TuiCommand::GoalFromFile {
-                                    session_id,
-                                    project_id,
-                                    path: args.to_string(),
-                                },
-                            );
-                        }
-                    }
-                    "show" => {
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = send_tui(tx, TuiCommand::GoalShow { session_id });
-                        }
-                    }
-                    "pause" => {
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = send_tui(tx, TuiCommand::GoalPause { session_id });
-                        }
-                    }
-                    "resume" => {
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = send_tui(tx, TuiCommand::GoalResume { session_id });
-                        }
-                    }
-                    "clear" => {
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = send_tui(tx, TuiCommand::GoalClear { session_id });
-                        }
-                    }
-                    "done" => {
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = send_tui(tx, TuiCommand::GoalDone { session_id });
-                        }
-                    }
-                    "checkpoint" => {
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = send_tui(
-                                tx,
-                                TuiCommand::GoalCheckpoint {
-                                    session_id,
-                                    project_id,
-                                },
-                            );
-                        }
-                    }
-                    "budget" => {
-                        if args.is_empty() {
-                            self.messages_state
-                                .toasts
-                                .info("Usage: /goal budget [show | raise <axis> <n> | raise clear <axis>]");
-                            return;
-                        }
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = send_tui(
-                                tx,
-                                TuiCommand::GoalBudget {
-                                    session_id,
-                                    subcommand: args.to_string(),
-                                },
-                            );
-                        }
-                    }
-                    _ => {
-                        // Treat bare text as goal set (e.g., /goal fix the bug)
-                        if !subcmd.is_empty()
-                            && subcmd != "set"
-                            && subcmd != "from-file"
-                            && subcmd != "show"
-                            && subcmd != "pause"
-                            && subcmd != "resume"
-                            && subcmd != "clear"
-                            && subcmd != "done"
-                            && subcmd != "checkpoint"
-                            && subcmd != "budget"
-                        {
-                            // The whole query is the goal text
-                            let goal_text = query.trim();
-                            if !goal_text.is_empty() {
-                                if let Some(ref tx) = self.tui_cmd_tx {
-                                    let _ = send_tui(
-                                        tx,
-                                        TuiCommand::GoalSet {
-                                            session_id,
-                                            project_id,
-                                            objective: goal_text.to_string(),
-                                        },
-                                    );
-                                }
-                            } else {
-                                self.messages_state
-                                    .toasts
-                                    .warning("Usage: /goal <text> or /goal set <text>");
-                            }
-                        } else {
-                            self.messages_state
-                                .toasts
-                                .warning("Usage: /goal <text> or /goal set <text>");
-                        }
-                    }
-                }
-            }
-            B::Plan => {
-                // M007-H (D3): the plan is the daemon's durable work-plan
-                // state, so the daemon publishes it and this arm renders
-                // that answer. The local checklist is **gone**: a second
-                // copy of the plan is a second source of truth.
-                if !argument.trim().is_empty() {
-                    self.messages_state
-                        .toasts
-                        .warning("The plan is the daemon's; /plan takes no argument");
-                    return;
-                }
-                let Some(plan) = self.session_state_derived.plan.clone() else {
-                    self.messages_state
-                        .toasts
-                        .info("No plan published by the daemon");
-                    return;
-                };
-                if plan.items.is_empty() {
-                    self.messages_state.toasts.info("Plan is empty");
-                    return;
-                }
-                let items: Vec<String> = plan
-                    .items
-                    .iter()
-                    .enumerate()
-                    .map(|(i, item)| {
-                        let icon = match item.status {
-                            crate::session::events::PlanItemStatus::Done => "[x]",
-                            crate::session::events::PlanItemStatus::InProgress => "[>]",
-                            crate::session::events::PlanItemStatus::Skipped => "[-]",
-                            crate::session::events::PlanItemStatus::Blocked => "[?]",
-                            crate::session::events::PlanItemStatus::Pending => "[ ]",
-                        };
-                        format!("{} {} {}", i, icon, item.text)
-                    })
-                    .collect();
-                let mut plan_lines = vec![format!("Plan ({} items):", plan.items.len())];
-                plan_lines.extend(items);
-                self.show_short_or_info(
-                    crate::tui::components::dialogs::info::InfoType::Stats,
-                    plan_lines,
-                );
-            }
-            B::State => {
-                let state = &self.session_state_derived;
-                let mut lines = Vec::new();
-
-                if let Some(ref goal) = state.goal {
-                    lines.push(format!("Goal: {}", goal));
-                }
-
-                if let Some(ref plan) = state.plan {
-                    let done = plan
-                        .items
-                        .iter()
-                        .filter(|i| i.status == crate::session::events::PlanItemStatus::Done)
-                        .count();
-                    lines.push(format!("Plan: {}/{} done", done, plan.items.len()));
-                }
-
-                let model_short = self
-                    .agent_state
-                    .current_model
-                    .split('/')
-                    .next_back()
-                    .unwrap_or(&self.agent_state.current_model);
-                lines.push(format!("Model: {}", model_short));
-
-                let agent_name = &self.agent_state.agents[self.agent_state.current_agent].name;
-                lines.push(format!("Agent: {}", agent_name));
-
-                lines.push(format!("Files: {} changed", state.changed_files.len()));
-
-                // `context_limit` is 0 until the agent resolves a window for the turn.
-                // Dividing unconditionally here yielded NaN (rendered as a
-                // bogus 0%) whenever the limit was still unknown.
-                let context_line = if self.session_state.context_limit > 0 {
-                    format!(
-                        "Context: {}%",
-                        (self.session_state.context_tokens as f64
-                            / self.session_state.context_limit as f64
-                            * 100.0) as u64
-                    )
-                } else {
-                    "Context: unknown".to_string()
-                };
-                lines.push(context_line);
-
-                self.show_short_or_info(
-                    crate::tui::components::dialogs::info::InfoType::Stats,
-                    lines,
-                );
-            }
-            B::Search => {
-                let query = argument.to_string();
-                if query.is_empty() {
-                    self.messages_state.toasts.warning("Usage: /search <query>");
-                } else {
-                    self.messages_state.messages.search(&query);
-                    let count = self.messages_state.messages.search_matches.len();
-                    if count == 0 {
-                        self.messages_state
-                            .toasts
-                            .info(&format!("No matches for \"{}\"", query));
-                    } else {
-                        self.messages_state.toasts.info(&format!(
-                            "{} match{} for \"{}\"",
-                            count,
-                            if count == 1 { "" } else { "es" },
-                            query
-                        ));
-                    }
-                }
-            }
-            B::Doctor => {
-                // The doctor routine is async (it has to await the
-                // eggsearch MCP spawn), so fire it in a background task
-                // and let the agent loop pick up the result via a
-                // TuiCommand::SendNotification on the way back.
-                if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = send_tui(tx, TuiCommand::RunDoctor);
-                } else {
-                    self.messages_state
-                        .toasts
-                        .info("doctor: not connected to a core client");
-                }
-            }
-            B::Logs => {
-                self.ui_state.command_mode = false;
-                self.open_logs_window();
-            }
-            B::ToolContracts => {
-                if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = send_tui(tx, TuiCommand::ToolContracts);
-                } else {
-                    self.messages_state
-                        .toasts
-                        .info("tool-contracts: not connected to a core client");
-                }
-            }
-            B::LspStatus => {
-                self.ui_state.command_mode = false;
-                self.enqueue_tui_command(TuiCommand::LspStatusDetailRequested);
-            }
-            B::Nodes => {
-                // Eggwork M002: a read-only operator read of the remote
-                // nodes' host telemetry. It never touches the queue and
-                // never creates a job.
-                self.ui_state.command_mode = false;
-                self.enqueue_tui_command(TuiCommand::NodeTelemetryRequested);
-            }
-            B::LspPreviews => {
-                self.ui_state.command_mode = false;
-                if let Some(ref lsp_tool) = self.lsp_tool {
-                    let output = lsp_tool.preview_list_text();
-                    self.messages_state.toasts.info(&output);
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
-            }
-            B::LspPreview => {
-                self.ui_state.command_mode = false;
-                let id = argument;
-                if id.is_empty() {
-                    self.messages_state.toasts.info("Usage: /lsp-preview <id>");
-                } else if self.core_client.is_some() {
-                    self.messages_state
-                        .toasts
-                        .info("LSP preview details are not available through this daemon yet");
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    match lsp_tool.preview_detail_text(id) {
-                        Some(detail) => self.messages_state.toasts.info(&detail),
-                        None => self
-                            .messages_state
-                            .toasts
-                            .info(&format!("Preview not found: {id}")),
-                    }
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
-            }
-            B::LspPreviewClear => {
-                self.ui_state.command_mode = false;
-                let arg = argument;
-                if let Some(ref lsp_tool) = self.lsp_tool {
-                    if arg == "--all" || arg.is_empty() {
-                        let count = lsp_tool.clear_preview(None);
-                        self.messages_state
-                            .toasts
-                            .info(&format!("Cleared {count} preview(s)"));
-                    } else {
-                        let count = lsp_tool.clear_preview(Some(arg));
-                        if count > 0 {
-                            self.messages_state
-                                .toasts
-                                .info(&format!("Cleared preview: {arg}"));
-                        } else {
-                            self.messages_state
-                                .toasts
-                                .info(&format!("Preview not found: {arg}"));
-                        }
-                    }
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
-            }
-            B::LspPreviewRefresh => {
-                self.ui_state.command_mode = false;
-                let id = argument;
-                if id.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .info("Usage: /lsp-preview-refresh <id>");
-                } else if self.core_client.is_some() {
-                    self.messages_state
-                        .toasts
-                        .info("LSP preview refresh is not available through this daemon yet");
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    match lsp_tool.refresh_preview_staleness(id) {
-                        Some((true, detail)) => {
-                            self.messages_state
-                                .toasts
-                                .info(&format!("Preview is STALE\n{detail}"));
-                        }
-                        Some((false, _)) => {
-                            self.messages_state.toasts.info("Preview is FRESH");
-                        }
-                        None => {
-                            self.messages_state
-                                .toasts
-                                .info(&format!("Preview not found: {id}"));
-                        }
-                    }
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
-            }
-            B::Review => {
-                self.ui_state.command_mode = false;
-                let id = argument.to_string();
-                // M007-H (D4): the daemon owns the preview store, so the
-                // candidate is read from it. The TUI's own `LspTool` copy is
-                // never installed, so the old arm could not work.
-                crate::tui::commands::change_review::open_via_daemon(self, &id);
-            }
-            B::LspPreviewApply => {
-                self.ui_state.command_mode = false;
-                let id = argument;
-                if id.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .info("Usage: /lsp-preview-apply <id>");
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let (is_stale, refresh_detail) = lsp_tool
-                        .refresh_preview_staleness(id)
-                        .unwrap_or((true, "preview not found".to_string()));
-                    if is_stale {
-                        self.messages_state.toasts.info(&format!(
-                            "Preview is STALE — base content has changed since creation.\n\
-                             Refresh/recompute the preview before applying.\n\n\
-                             Detail: {refresh_detail}"
-                        ));
-                    } else {
-                        // M006-E: the request is built by the one shared
-                        // helper the review surface also calls, so the two
-                        // paths cannot drift into two apply semantics.
-                        let core_request =
-                            match crate::tui::commands::change_review::build_apply_request(
-                                self,
-                                crate::tui::commands::change_review::ApplySource::Registry(id),
-                            ) {
-                                Ok(request) => request,
-                                Err(refusal) => {
-                                    self.messages_state.toasts.info(refusal.message());
-                                    return;
-                                }
-                            };
-                        let Some(core_client) = self.core_client.clone() else {
-                            self.messages_state
-                                .toasts
-                                .info("LSP preview apply requires the daemon core client");
-                            return;
-                        };
-                        // M006-E: the shared builder already resolved the
-                        // session; capture it for the completion so the
-                        // existing handler keeps its session id.
-                        let session_id = self.active_session_id().unwrap_or_default().to_string();
-                        self.messages_state
-                            .toasts
-                            .info("Applying LSP preview through the checked edit service…");
-                        crate::tui::async_cmd::spawn_registered_tui_task(
-                            self.tui_cmd_tx.clone(),
-                            &mut self.task_registry,
-                            crate::tui::task_lifecycle::TuiTaskKind::Command,
-                            "lsp_preview_apply",
-                            async move {
-                                let response = core_client
-                                    .request(crate::core::new_request(
-                                        uuid::Uuid::new_v4().to_string(),
-                                        core_request,
-                                    ))
-                                    .await;
-                                let (result, error) = match response {
-                                    Ok(crate::protocol::core::CoreResponse::LspPreviewApplyResult {
-                                        result,
-                                    }) => (Some(result), None),
-                                    Ok(crate::protocol::core::CoreResponse::Error {
-                                        message, ..
-                                    }) => (None, Some(message)),
-                                    Ok(other) => (
-                                        None,
-                                        Some(format!(
-                                            "unexpected core response: {other:?}"
-                                        )),
-                                    ),
-                                    Err(error) => (None, Some(error.to_string())),
-                                };
-                                Some(crate::tui::app::TuiCommand::LspPreviewApplyFinished {
-                                    session_id,
-                                    result,
-                                    error,
-                                })
-                            },
-                        );
-                    }
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
-            }
-            B::LspServers => {
-                self.ui_state.command_mode = false;
-                self.enqueue_tui_command(TuiCommand::LspServersRequested);
-            }
-            B::LspCapabilities => {
-                self.ui_state.command_mode = false;
-                let key = argument;
-                if key.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .info("Usage: /lsp-capabilities <server-key>\nUse /lsp-servers to see available keys.");
-                } else {
-                    self.enqueue_tui_command(TuiCommand::LspCapabilitiesRequested {
-                        server_id: key.to_string(),
-                    });
-                }
-            }
-            B::LspErrors => {
-                self.ui_state.command_mode = false;
-                let key = argument;
-                if key.is_empty() {
-                    self.messages_state.toasts.info(
-                        "Usage: /lsp-errors <server-key>\nUse /lsp-servers to see available keys.",
-                    );
-                } else {
-                    self.enqueue_tui_command(TuiCommand::LspErrorsRequested {
-                        server_id: key.to_string(),
-                    });
-                }
-            }
-            B::LspRoot => {
-                self.ui_state.command_mode = false;
-                let path_arg = argument;
-                if path_arg.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .info("Usage: /lsp-root <file-path>");
-                } else if self.core_client.is_some() {
-                    self.enqueue_tui_command(TuiCommand::LspWorkflowRequested {
-                        command_id: "lsp_root",
-                        argument: path_arg.to_string(),
-                    });
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let text = lsp_tool.lsp_root_diagnose(path_arg);
-                    self.messages_state.toasts.info(&text);
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
-            }
-            B::LspDoctor => {
-                self.ui_state.command_mode = false;
-                let path_arg = argument;
-                if path_arg.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .info("Usage: /lsp-doctor <file-path>");
-                } else if self.core_client.is_some() {
-                    self.messages_state
-                        .toasts
-                        .info("LSP doctor is not available through this daemon yet");
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let text = tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(lsp_tool.lsp_doctor(path_arg))
-                    });
-                    self.messages_state.toasts.info(&text);
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
-            }
-            B::LspContextDiagnostics => {
-                self.ui_state.command_mode = false;
-                let path_arg = argument;
-                if path_arg.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .info("Usage: /lsp-context-diagnostics <file-path>");
-                } else if self.core_client.is_some() {
-                    self.enqueue_tui_command(TuiCommand::LspWorkflowRequested {
-                        command_id: "lsp_context_diagnostics",
-                        argument: path_arg.to_string(),
-                    });
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let text = tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(lsp_tool.lsp_context_diagnostics(path_arg))
-                    });
-                    self.messages_state.toasts.info(&text);
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
-            }
-            B::LspRepairLocal => {
-                self.ui_state.command_mode = false;
-                let arg = argument;
-                if arg.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .info("Usage: /lsp-repair-local <path[:line]>");
-                } else if self.core_client.is_some() {
-                    self.enqueue_tui_command(TuiCommand::LspWorkflowRequested {
-                        command_id: "lsp_repair_local",
-                        argument: arg.to_string(),
-                    });
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let (path, line, col) = parse_path_line_col(arg);
-                    let invocation = LspWorkflowInvocation {
-                        recipe: LspWorkflowRecipe::RepairLocal,
-                        primary_path: Some(path),
-                        line,
-                        column: col,
-                        ..Default::default()
-                    };
-                    match tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
-                    }) {
-                        Ok(display) => {
-                            let text = render_workflow_display(&display);
-                            self.messages_state.toasts.info(&text);
-                        }
-                        Err(e) => self.messages_state.toasts.info(&e),
-                    }
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
-            }
-            B::LspRepairHunk => {
-                self.ui_state.command_mode = false;
-                let arg = argument;
-                if arg.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .info("Usage: /lsp-repair-hunk <path> [hunk-id|range]");
-                } else if self.core_client.is_some() {
-                    self.messages_state
-                        .toasts
-                        .info("LSP hunk repair is not available through this daemon yet");
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let parts: Vec<&str> = arg.splitn(2, ' ').collect();
-                    let path = parts[0].to_string();
-                    let invocation = LspWorkflowInvocation {
-                        recipe: LspWorkflowRecipe::RepairHunk,
-                        primary_path: Some(path),
-                        ..Default::default()
-                    };
-                    match tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
-                    }) {
-                        Ok(display) => {
-                            let text = render_workflow_display(&display);
-                            self.messages_state.toasts.info(&text);
-                        }
-                        Err(e) => self.messages_state.toasts.info(&e),
-                    }
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
-            }
-            B::LspReviewFile => {
-                self.ui_state.command_mode = false;
-                let arg = argument;
-                if arg.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .info("Usage: /lsp-review-file <path>");
-                } else if self.core_client.is_some() {
-                    self.enqueue_tui_command(TuiCommand::LspWorkflowRequested {
-                        command_id: "lsp_review_file",
-                        argument: arg.to_string(),
-                    });
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let invocation = LspWorkflowInvocation {
-                        recipe: LspWorkflowRecipe::ReviewFile,
-                        primary_path: Some(arg.to_string()),
-                        ..Default::default()
-                    };
-                    match tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
-                    }) {
-                        Ok(display) => {
-                            let text = render_workflow_display(&display);
-                            self.messages_state.toasts.info(&text);
-                        }
-                        Err(e) => self.messages_state.toasts.info(&e),
-                    }
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
-            }
-            B::LspReviewDiff => {
-                self.ui_state.command_mode = false;
-                if self.core_client.is_some() {
-                    self.messages_state
-                        .toasts
-                        .info("LSP diff review is not available through this daemon yet");
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let invocation = LspWorkflowInvocation {
-                        recipe: LspWorkflowRecipe::ReviewDiff,
-                        ..Default::default()
-                    };
-                    match tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
-                    }) {
-                        Ok(display) => {
-                            let text = render_workflow_display(&display);
-                            self.messages_state.toasts.info(&text);
-                        }
-                        Err(e) => self.messages_state.toasts.info(&e),
-                    }
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
-            }
-            B::LspSecurityReview => {
-                self.ui_state.command_mode = false;
-                let arg = argument;
-                if self.core_client.is_some() {
-                    self.messages_state
-                        .toasts
-                        .info("LSP security review is not available through this daemon yet");
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let review_mode = if arg.is_empty() {
-                        Some("diff".to_string())
-                    } else {
-                        Some(arg.to_string())
-                    };
-                    let invocation = LspWorkflowInvocation {
-                        recipe: LspWorkflowRecipe::SecurityReviewEnriched,
-                        review_mode,
-                        ..Default::default()
-                    };
-                    match tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
-                    }) {
-                        Ok(display) => {
-                            let text = render_workflow_display(&display);
-                            self.messages_state.toasts.info(&text);
-                        }
-                        Err(e) => self.messages_state.toasts.info(&e),
-                    }
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
-            }
-            B::LspImpact => {
-                self.ui_state.command_mode = false;
-                let arg = argument;
-                if arg.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .info("Usage: /lsp-impact <path:line:col>");
-                } else if self.core_client.is_some() {
-                    self.enqueue_tui_command(TuiCommand::LspWorkflowRequested {
-                        command_id: "lsp_impact",
-                        argument: arg.to_string(),
-                    });
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let (path, line, col) = parse_path_line_col(arg);
-                    let invocation = LspWorkflowInvocation {
-                        recipe: LspWorkflowRecipe::ImpactAnalysis,
-                        primary_path: Some(path),
-                        line,
-                        column: col,
-                        ..Default::default()
-                    };
-                    match tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
-                    }) {
-                        Ok(display) => {
-                            let text = render_workflow_display(&display);
-                            self.messages_state.toasts.info(&text);
-                        }
-                        Err(e) => self.messages_state.toasts.info(&e),
-                    }
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
-            }
-            B::LspTestRepair => {
-                self.ui_state.command_mode = false;
-                let arg = argument;
-                if arg.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .info("Usage: /lsp-test-repair <test-file> [failure-text]");
-                } else if self.core_client.is_some() {
-                    self.enqueue_tui_command(TuiCommand::LspWorkflowRequested {
-                        command_id: "lsp_test_repair",
-                        argument: arg.to_string(),
-                    });
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let parts: Vec<&str> = arg.splitn(2, ' ').collect();
-                    let test_file = parts[0].to_string();
-                    let failure_text = parts.get(1).map(|s| s.to_string());
-                    let invocation = LspWorkflowInvocation {
-                        recipe: LspWorkflowRecipe::TestFailureRepair,
-                        primary_path: Some(test_file),
-                        failure_text,
-                        ..Default::default()
-                    };
-                    match tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
-                    }) {
-                        Ok(display) => {
-                            let text = render_workflow_display(&display);
-                            self.messages_state.toasts.info(&text);
-                        }
-                        Err(e) => self.messages_state.toasts.info(&e),
-                    }
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
-            }
-            B::LspInterface => {
-                self.ui_state.command_mode = false;
-                let arg = argument;
-                if arg.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .info("Usage: /lsp-interface <path[:symbol]>");
-                } else if self.core_client.is_some() {
-                    self.enqueue_tui_command(TuiCommand::LspWorkflowRequested {
-                        command_id: "lsp_interface",
-                        argument: arg.to_string(),
-                    });
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let parts: Vec<&str> = arg.splitn(2, ':').collect();
-                    let path = parts[0].to_string();
-                    let symbol = parts.get(1).map(|s| s.to_string());
-                    let invocation = LspWorkflowInvocation {
-                        recipe: LspWorkflowRecipe::InterfaceBoundary,
-                        primary_path: Some(path),
-                        symbol,
-                        ..Default::default()
-                    };
-                    match tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
-                    }) {
-                        Ok(display) => {
-                            let text = render_workflow_display(&display);
-                            self.messages_state.toasts.info(&text);
-                        }
-                        Err(e) => self.messages_state.toasts.info(&e),
-                    }
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
-            }
-            B::LspCrossRepair => {
-                self.ui_state.command_mode = false;
-                let arg = argument;
-                if arg.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .info("Usage: /lsp-cross-repair <primary> [related...]");
-                } else if self.core_client.is_some() {
-                    self.enqueue_tui_command(TuiCommand::LspWorkflowRequested {
-                        command_id: "lsp_cross_repair",
-                        argument: arg.to_string(),
-                    });
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let parts: Vec<&str> = arg.split_whitespace().collect();
-                    let primary = parts[0].to_string();
-                    let related_files: Vec<String> =
-                        parts[1..].iter().map(|s| s.to_string()).collect();
-                    let invocation = LspWorkflowInvocation {
-                        recipe: LspWorkflowRecipe::CrossFileRepair,
-                        primary_path: Some(primary),
-                        related_files,
-                        ..Default::default()
-                    };
-                    match tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
-                    }) {
-                        Ok(display) => {
-                            let text = render_workflow_display(&display);
-                            self.messages_state.toasts.info(&text);
-                        }
-                        Err(e) => self.messages_state.toasts.info(&e),
-                    }
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
-            }
-            B::LspCallNeighbors => {
-                self.ui_state.command_mode = false;
-                let arg = argument;
-                if arg.is_empty() {
-                    self.messages_state.toasts.info(
-                        "Usage: /lsp-call-neighbors <path:line:col> [incoming|outgoing|both]",
-                    );
-                } else if self.core_client.is_some() {
-                    self.enqueue_tui_command(TuiCommand::LspWorkflowRequested {
-                        command_id: "lsp_call_neighbors",
-                        argument: arg.to_string(),
-                    });
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let parts: Vec<&str> = arg.splitn(2, ' ').collect();
-                    let (path, line, col) = parse_path_line_col(parts[0]);
-                    let direction = match parts.get(1).copied() {
-                        Some("incoming") => Some(egglsp::context::HierarchyDirection::Incoming),
-                        Some("outgoing") => Some(egglsp::context::HierarchyDirection::Outgoing),
-                        Some("both") => Some(egglsp::context::HierarchyDirection::Both),
-                        _ => None,
-                    };
-                    let invocation = LspWorkflowInvocation {
-                        recipe: LspWorkflowRecipe::CallNeighborhood,
-                        primary_path: Some(path),
-                        line,
-                        column: col,
-                        direction,
-                        ..Default::default()
-                    };
-                    match tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
-                    }) {
-                        Ok(display) => {
-                            let text = render_workflow_display(&display);
-                            self.messages_state.toasts.info(&text);
-                        }
-                        Err(e) => self.messages_state.toasts.info(&e),
-                    }
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
-            }
-            B::LspRestart => {
-                self.ui_state.command_mode = false;
-                let key = argument;
-                if key.is_empty() {
-                    self.messages_state.toasts.info(
-                        "Usage: /lsp-restart <server-key>\nUse /lsp-servers to see available keys.",
-                    );
-                } else {
-                    self.enqueue_tui_command(TuiCommand::LspRestartRequested {
-                        server_id: key.to_string(),
-                    });
-                }
-            }
-            B::LspStop => {
-                self.ui_state.command_mode = false;
-                let arg = argument;
-                if self.core_client.is_some() {
-                    if arg.trim().is_empty() || arg.trim() == "--all" {
-                        self.messages_state.toasts.info(
-                            "Usage: /lsp-stop <server-key> (select one server from /lsp-servers)",
-                        );
-                    } else {
-                        self.enqueue_tui_command(TuiCommand::LspControlRequested {
-                            command_id: "lsp_stop",
-                            argument: arg.trim().to_string(),
-                        });
-                    }
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let key_opt = if arg.is_empty() || arg == "--all" {
-                        None
-                    } else {
-                        Some(arg)
-                    };
-                    let result = tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(lsp_tool.lsp_stop_server(key_opt))
-                    });
-                    self.messages_state.toasts.info(&result);
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
-            }
-            B::LspCacheStatus => {
-                self.ui_state.command_mode = false;
-                if self.core_client.is_some() {
-                    self.enqueue_tui_command(TuiCommand::LspControlRequested {
-                        command_id: "lsp_cache_status",
-                        argument: String::new(),
-                    });
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let text = lsp_tool.lsp_cache_status();
-                    self.messages_state.toasts.info(&text);
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
-            }
-            B::LspCacheClear => {
-                self.ui_state.command_mode = false;
-                let arg = argument;
-                if self.core_client.is_some() {
-                    if !arg.trim().is_empty() && arg.trim() != "--all" {
-                        self.messages_state.toasts.info(
-                            "Cache clear is scoped to the active session workspace; no root argument is accepted",
-                        );
-                    } else {
-                        self.enqueue_tui_command(TuiCommand::LspControlRequested {
-                            command_id: "lsp_cache_clear",
-                            argument: String::new(),
-                        });
-                    }
-                } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    if arg.is_empty() || arg == "--all" {
-                        let count = lsp_tool.clear_semantic_cache();
-                        self.messages_state
-                            .toasts
-                            .info(&format!("Cleared {count} cached entries"));
-                    } else {
-                        let root = std::path::PathBuf::from(arg);
-                        let count = lsp_tool.clear_semantic_cache_for_root(&root);
-                        self.messages_state.toasts.info(&format!(
-                            "Cleared {count} cached entries for root: {}",
-                            root.display()
-                        ));
-                    }
-                } else {
-                    self.messages_state.toasts.info("LSP not available");
-                }
-            }
-            B::ToolBackends => {
-                // Build the report synchronously from the resolved
-                // config. The App doesn't hold a direct reference to
-                // the live `ToolRegistry`, so the connectivity half of
-                // the report is unavailable here (shown by `/mcps`).
-                // M005: this diagnostic must not consult the deprecated
-                // search-backend process-global slots.
-                let config = crate::config::schema::Config::load_or_default();
-                let search_cfg = config.search.clone().unwrap_or_default();
-                let mcp_server_names: Option<Vec<String>> = None;
-                let report = crate::tool::backend::build_report(
-                    &search_cfg,
-                    config.tool_backends.as_ref(),
-                    mcp_server_names.as_deref(),
-                    Some(&crate::tool::integrated_config::resolve_integrated_config(
-                        &config,
-                    )),
-                );
-                let rendered = report.render();
-                self.messages_state.toasts.info(&rendered);
-            }
-            B::Diff => {
-                let path_arg = argument;
-                self.ui_state.command_mode = false;
-                // M007-I (work package A): the daemon owns the read. The TUI
-                // no longer spawns `git` and no longer reads the working
-                // tree for this.
-                crate::tui::commands::diff::start_diff(self, path_arg.to_string());
-            }
-            B::Tests => {
-                let subcmd = argument;
-                self.ui_state.command_mode = false;
-                self.handle_tests_command(subcmd);
-            }
-            B::Test => {
-                let raw_args = argument.to_string();
-                let (scope, args) = crate::tui::commands::test::parse_test_slash_args(&raw_args);
-                self.ui_state.command_mode = false;
-                self.prompt_state.prompt.clear();
-                self.prompt_state.show_completions = false;
-                if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = send_tui(tx, TuiCommand::TestRun { scope, args });
-                }
-                self.messages_state
-                    .toasts
-                    .info("Starting supervised test run...");
-            }
-            B::Revert => {
-                let path_arg = argument;
-                self.ui_state.command_mode = false;
-                if path_arg.is_empty() {
-                    self.messages_state.toasts.warning("Usage: /revert <path>");
-                } else {
-                    // M007-H (work package C): the daemon owns the write.
-                    // The TUI no longer spawns `git` for this.
-                    crate::tui::commands::revert::start_revert(self, path_arg.to_string());
-                }
-            }
-            B::EditUndo => {
-                let arg = argument;
-                self.ui_state.command_mode = false;
-                let (session_id, workspace_id) = match (
-                    self.active_session_id().map(|s| s.to_string()),
-                    self.active_workspace_id().map(|s| s.to_string()),
-                ) {
-                    (Some(sid), Some(wid)) => (sid, wid),
-                    _ => {
-                        self.messages_state
-                            .toasts
-                            .warning("No active session/workspace for undo");
-                        return;
-                    }
-                };
-                if let Some(ref tx) = self.tui_cmd_tx {
-                    if arg.is_empty() {
-                        let _ = send_tui(
-                            tx,
-                            TuiCommand::EditUndoLatest {
-                                session_id,
-                                workspace_id,
-                            },
-                        );
-                        self.messages_state
-                            .toasts
-                            .info("Undoing latest checkpoint...");
-                    } else {
-                        let _ = send_tui(
-                            tx,
-                            TuiCommand::EditUndo {
-                                checkpoint_id: arg.to_string(),
-                                session_id,
-                                workspace_id,
-                            },
-                        );
-                        self.messages_state
-                            .toasts
-                            .info(&format!("Undoing checkpoint {arg}..."));
-                    }
-                } else {
-                    self.messages_state
-                        .toasts
-                        .warning("TUI command channel unavailable for undo");
-                }
-            }
-            B::EditReapply => {
-                let arg = argument;
-                self.ui_state.command_mode = false;
-                let (session_id, workspace_id) = match (
-                    self.active_session_id().map(|s| s.to_string()),
-                    self.active_workspace_id().map(|s| s.to_string()),
-                ) {
-                    (Some(sid), Some(wid)) => (sid, wid),
-                    _ => {
-                        self.messages_state
-                            .toasts
-                            .warning("No active session/workspace for reapply");
-                        return;
-                    }
-                };
-                if let Some(ref tx) = self.tui_cmd_tx {
-                    if arg.is_empty() {
-                        let _ = send_tui(
-                            tx,
-                            TuiCommand::EditReapplyLatest {
-                                session_id,
-                                workspace_id,
-                            },
-                        );
-                        self.messages_state
-                            .toasts
-                            .info("Reapplying latest undone checkpoint...");
-                    } else {
-                        let _ = send_tui(
-                            tx,
-                            TuiCommand::EditReapply {
-                                checkpoint_id: arg.to_string(),
-                                session_id,
-                                workspace_id,
-                            },
-                        );
-                        self.messages_state
-                            .toasts
-                            .info(&format!("Reapplying checkpoint {arg}..."));
-                    }
-                } else {
-                    self.messages_state
-                        .toasts
-                        .warning("TUI command channel unavailable for reapply");
-                }
-            }
-            B::EditCheckpoints => {
-                let _arg = argument;
-                self.ui_state.command_mode = false;
-                let (session_id, workspace_id) = match (
-                    self.active_session_id().map(|s| s.to_string()),
-                    self.active_workspace_id().map(|s| s.to_string()),
-                ) {
-                    (Some(sid), Some(wid)) => (sid, wid),
-                    _ => {
-                        self.messages_state
-                            .toasts
-                            .warning("No active session/workspace for checkpoints");
-                        return;
-                    }
-                };
-                if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = send_tui(
-                        tx,
-                        TuiCommand::EditCheckpointList {
-                            session_id,
-                            workspace_id,
-                        },
-                    );
-                    self.messages_state.toasts.info("Loading checkpoints...");
-                } else {
-                    self.messages_state
-                        .toasts
-                        .warning("TUI command channel unavailable for checkpoints");
-                }
-            }
-            B::Research => {
-                let args = argument;
-                self.ui_state.command_mode = false;
-                if args.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /research <question> [--mode <mode>] [--depth <depth>]");
-                } else {
-                    self.handle_research_command(args);
-                }
-            }
-            B::ResearchRuns => {
-                self.ui_state.command_mode = false;
-                self.handle_research_runs_command();
-            }
-            B::ResearchOpen => {
-                let run_id = argument;
-                self.ui_state.command_mode = false;
-                if run_id.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /research-open <run_id>");
-                } else {
-                    self.handle_research_open_command(run_id);
-                }
-            }
-            B::ResearchShow => {
-                let rest = argument;
-                self.ui_state.command_mode = false;
-                if rest.is_empty() {
-                    self.handle_research_runs_command();
-                } else {
-                    let parts: Vec<&str> = rest.splitn(2, ' ').collect();
-                    let section = parts[0];
-                    let run_id = parts.get(1).copied().unwrap_or("").trim();
-                    if run_id.is_empty() {
-                        self.messages_state.toasts.warning(
-                            "Usage: /research-show <section> <run_id> (section: report, brief, claims, handoff)",
-                        );
-                    } else {
-                        self.open_dialog(Dialog::ResearchBrowser);
-                        if let Some(ref mut browser) = self.dialog_state.research_browser {
-                            browser.loading = true;
-                        }
-                        let run_id_owned = run_id.to_string();
-                        let section_owned = section.to_string();
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = send_tui(
-                                tx,
-                                TuiCommand::ResearchLoadRun {
-                                    run_id: run_id_owned.clone(),
-                                },
-                            );
-                            let _ = send_tui(
-                                tx,
-                                TuiCommand::ResearchLoadSection {
-                                    run_id: run_id_owned,
-                                    section: section_owned,
-                                },
-                            );
-                        }
-                    }
-                }
-            }
-            B::SecurityReview => {
-                self.ui_state.command_mode = false;
-                let raw_args = argument;
-                let parsed_args = crate::security::workflow::parse_security_review_args(raw_args);
-
-                let root = match self.project_execution_context() {
-                    Ok(context) => context.workspace_root,
-                    Err(error) => {
-                        self.messages_state.toasts.error(&error);
-                        return;
-                    }
-                };
-
-                // Reentrancy guard: only one security review runs at a
-                // time. The flag is cleared by the handler in
-                // `src/tui/mod.rs` on both success and failure.
-                if self.security_review_running.is_some() {
-                    self.messages_state.toasts.warning(
-                        "Security review already running. Wait for it to finish or cancel it.",
-                    );
-                    return;
-                }
-
-                let id = crate::security::workflow::SecurityReviewRunId::new();
-                let lsp_tool = self.lsp_tool.clone();
-
-                self.messages_state
-                    .toasts
-                    .info("Security review started. The result will appear in the message log when complete.");
-
-                // Spawn the review in a tokio task so the renderer stays
-                // responsive. The completion path sends
-                // `TuiCommand::SecurityReviewFinished` back through
-                // `tui_cmd_tx`. The `AbortHandle` is stored on the App
-                // for the duration of the run so the user can cancel
-                // via `/security-review-cancel`.
-                let tx = self.tui_cmd_tx.clone();
-                if let Some(tx) = tx {
-                    let run_id = id.0.clone();
-                    let task_id = self.task_registry.spawn(
-                        TuiTaskKind::SecurityReview,
-                        "security-review",
-                        async move {
-                            let result = crate::security::workflow::run_security_review_background(
-                                root,
-                                parsed_args,
-                                lsp_tool,
-                            )
-                            .await;
-                            let (receipt, error) = match result {
-                                Ok(r) => (Some(Box::new(r)), None),
-                                Err(e) => (None, Some(e)),
-                            };
-                            let _ = send_tui(
-                                &tx,
-                                TuiCommand::SecurityReviewFinished {
-                                    id: run_id,
-                                    receipt,
-                                    error,
-                                },
-                            );
-                        },
-                    );
-                    self.security_review_running =
-                        Some(crate::security::workflow::SecurityReviewTaskState {
-                            id: id.0,
-                            task_id,
-                        });
-                } else {
-                    // Fallback: no channel available (e.g. test fixture).
-                    self.messages_state
-                        .toasts
-                        .error("TUI command channel unavailable; cannot run security review");
-                }
-            }
-            B::SecurityReviewShow => {
-                self.ui_state.command_mode = false;
-                if self.latest_security_review.is_some() {
-                    self.open_dialog(Dialog::SecurityReview);
-                } else {
-                    self.messages_state.toasts.warning(
-                        "No security review result available yet. Run /security-review first.",
-                    );
-                }
-            }
-            B::SecurityReviewCancel => {
-                self.ui_state.command_mode = false;
-                self.cancel_security_review();
-            }
-            B::ShellInclude => {
-                self.ui_state.command_mode = false;
-                let args_str = argument;
-                let args: Vec<&str> = args_str.splitn(3, ' ').collect();
-                let id_str = args.first().copied().unwrap_or("");
-                let flag = args.get(1).copied().unwrap_or("all");
-                let extra = args.get(2).map(|s| s.to_string());
-                match self.resolve_shell_id(id_str) {
-                    Some(id) => {
-                        let mode = match flag {
-                            "--tail" => {
-                                let n = extra
-                                    .as_deref()
-                                    .and_then(|s| s.parse::<usize>().ok())
-                                    .unwrap_or(200);
-                                format!("tail {}", n)
-                            }
-                            "--stdout" => "stdout".to_string(),
-                            "--stderr" => "stderr".to_string(),
-                            "--summary" => "summary".to_string(),
-                            "stdout" => "stdout".to_string(),
-                            "stderr" => "stderr".to_string(),
-                            "summary" => "summary".to_string(),
-                            "all" => "all".to_string(),
-                            _ => "all".to_string(),
-                        };
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = send_tui(
-                                tx,
-                                TuiCommand::ShellInclude {
-                                    id,
-                                    mode,
-                                    question: None,
-                                },
-                            );
-                        }
-                    }
-                    None => {
-                        self.messages_state.toasts.warning(
-                            "Usage: /shell-include <id|last> [--tail N|--stdout|--stderr|--summary|all]",
-                        );
-                    }
-                }
-            }
-            B::ShellRerun => {
-                self.ui_state.command_mode = false;
-                let id_str = argument;
-                match self.resolve_shell_id(id_str) {
-                    Some(id) => {
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = send_tui(tx, TuiCommand::ShellRerun { id });
-                        }
-                    }
-                    None => {
-                        self.messages_state
-                            .toasts
-                            .warning("Usage: /shell-rerun <id|last>");
-                    }
-                }
-            }
-            B::ShellKill => {
-                self.ui_state.command_mode = false;
-                let id_str = argument;
-                match self.resolve_shell_id(id_str) {
-                    Some(id) => {
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = send_tui(tx, TuiCommand::ShellKill { id });
-                        }
-                    }
-                    None => {
-                        self.messages_state
-                            .toasts
-                            .warning("Usage: /shell-kill <id|last>");
-                    }
-                }
-            }
-            B::ShellList => {
-                self.ui_state.command_mode = false;
-                if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = send_tui(tx, TuiCommand::ShellList);
-                } else {
-                    let recent = self.shell_store.list_recent(10);
-                    if recent.is_empty() {
-                        self.messages_state
-                            .toasts
-                            .info("No shell commands in history");
-                    } else {
-                        let lines: Vec<String> = recent
-                            .iter()
-                            .map(|e| {
-                                format!(
-                                    "[{}] ${} ({})",
-                                    e.id.0,
-                                    e.command,
-                                    match e.status {
-                                        crate::shell::types::ShellStatus::Running => "running",
-                                        crate::shell::types::ShellStatus::Exited => "done",
-                                        crate::shell::types::ShellStatus::TimedOut => "timeout",
-                                        crate::shell::types::ShellStatus::FailedToStart => "failed",
-                                        crate::shell::types::ShellStatus::Killed => "killed",
-                                    }
-                                )
-                            })
-                            .collect();
-                        self.messages_state.toasts.info(&lines.join("\n"));
-                    }
-                }
-            }
-            B::ShellShow => {
-                self.ui_state.command_mode = false;
-                let id_str = argument;
-                match self.resolve_shell_id(id_str) {
-                    Some(id) => {
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = send_tui(tx, TuiCommand::ShellShow { id });
-                        }
-                    }
-                    None => {
-                        self.messages_state
-                            .toasts
-                            .warning("Usage: /shell-show <id|last>");
-                    }
-                }
-            }
-            B::ShellExpand => {
-                self.ui_state.command_mode = false;
-                let args_str = argument;
-                let args: Vec<&str> = args_str.splitn(3, ' ').collect();
-                let id_str = args.first().copied().unwrap_or("");
-                let stream_str = args.get(1).copied().unwrap_or("stdout");
-                let range_str = args.get(2).map(|s| s.to_string());
-                match self.resolve_shell_id(id_str) {
-                    Some(id) => {
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = send_tui(
-                                tx,
-                                TuiCommand::ShellExpand {
-                                    id,
-                                    stream: stream_str.to_string(),
-                                    range: range_str,
-                                },
-                            );
-                        }
-                    }
-                    None => {
-                        self.messages_state
-                            .toasts
-                            .warning("Usage: /shell-expand <id|last> stdout|stderr [start..end]");
-                    }
-                }
-            }
-            B::Plugins => {
-                crate::tui::commands::plugin_management::show_plugins(self);
-            }
-            B::TerminalCreate => {
-                let args = argument;
-                if args.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /terminal-create <command> [args...]");
-                } else {
-                    // Simple whitespace split: interactive terminals run
-                    // through the daemon PTY engine, not a shell, so no
-                    // shell metacharacters are interpreted.
-                    let argv: Vec<String> = args.split_whitespace().map(str::to_string).collect();
-                    crate::tui::commands::interactive_terminal::start_terminal_create(self, argv);
-                }
-            }
-            B::TerminalList => {
-                crate::tui::commands::interactive_terminal::start_terminal_list(self);
-            }
-            B::TerminalAttach => {
-                let args = argument;
-                if args.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /terminal-attach <handle>");
-                } else {
-                    crate::tui::commands::interactive_terminal::start_terminal_attach(
-                        self,
-                        args.to_string(),
-                    );
-                }
-            }
-            B::TerminalShow => {
-                let args = argument;
-                if args.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /terminal-show <handle>");
-                } else if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = send_tui(
-                        tx,
-                        TuiCommand::TerminalShow {
-                            handle: args.to_string(),
-                        },
-                    );
-                }
-            }
-            B::Terminal => {
-                // The everyday spelling of "give me a terminal". Opening a
-                // terminal is expected to produce one, so a missing or dead
-                // view is answered with a shell rather than an instruction to
-                // go run a different command — the two-step is exactly what
-                // made this feel like it did not work.
-                let args = argument;
-                let explicit = !args.is_empty();
-                let handle = if explicit {
-                    Some(args.to_string())
-                } else {
-                    self.interactive_terminals
-                        .active_handle()
-                        .map(str::to_string)
-                };
-                match handle {
-                    Some(handle) if self.interactive_terminals.is_live(&handle) => {
-                        crate::tui::commands::interactive_terminal::show_terminal(self, handle);
-                    }
-                    // An explicitly named handle is honoured as typed: if it
-                    // is not there, say so rather than silently substituting a
-                    // shell for a command the user actually asked for.
-                    Some(handle) if explicit => {
-                        if self.interactive_terminals.view(&handle).is_none() {
-                            self.messages_state
-                                .toasts
-                                .warning("That terminal is gone — /terminal-list to see the rest");
-                        } else {
-                            crate::tui::commands::interactive_terminal::show_terminal(self, handle);
-                        }
-                    }
-                    _ => crate::tui::commands::interactive_terminal::spawn_default_terminal(self),
-                }
-            }
-            B::TerminalClear => {
-                let args = argument;
-                // No argument means "whichever one I am looking at" — the
-                // box if it is open, else the panel, else the active view.
-                let handle = if args.is_empty() {
-                    self.dialog_state
-                        .terminal_detail_handle
-                        .clone()
-                        .or_else(|| self.panel_host.terminal_handle().map(str::to_string))
-                        .or_else(|| {
-                            self.interactive_terminals
-                                .active_handle()
-                                .map(str::to_string)
-                        })
-                } else {
-                    Some(args.to_string())
-                };
-                match handle {
-                    Some(handle) => {
-                        crate::tui::commands::interactive_terminal::clear_terminal(self, &handle)
-                    }
-                    None => self
-                        .messages_state
-                        .toasts
-                        .warning("No terminal to clear — /terminal-list"),
-                }
-            }
-            B::TerminalFocus => {
-                let args = argument;
-                let handle = if args.is_empty() {
-                    None
-                } else {
-                    Some(args.to_string())
-                };
-                crate::tui::commands::interactive_terminal::focus_terminal(self, handle);
-            }
-            B::TerminalSend => {
-                let args = argument;
-                match args.split_once(' ') {
-                    Some((handle, text)) if !handle.is_empty() && !text.is_empty() => {
-                        crate::tui::commands::interactive_terminal::send_terminal_input(
-                            self,
-                            handle.to_string(),
-                            text.as_bytes().to_vec(),
-                        );
-                    }
-                    _ => {
-                        self.messages_state
-                            .toasts
-                            .warning("Usage: /terminal-send <handle> <text>");
-                    }
-                }
-            }
-            B::TerminalResize => {
-                let args = argument;
-                let parts: Vec<&str> = args.split_whitespace().collect();
-                match parts.as_slice() {
-                    [handle, cols, rows] => match (cols.parse::<u16>(), rows.parse::<u16>()) {
-                        (Ok(cols), Ok(rows)) => {
-                            crate::tui::commands::interactive_terminal::start_terminal_resize(
-                                self,
-                                handle.to_string(),
-                                cols,
-                                rows,
-                            );
-                        }
-                        _ => {
-                            self.messages_state.toasts.warning(
-                                "Usage: /terminal-resize <handle> <cols> <rows> (numbers)",
-                            );
-                        }
-                    },
-                    _ => {
-                        self.messages_state
-                            .toasts
-                            .warning("Usage: /terminal-resize <handle> <cols> <rows>");
-                    }
-                }
-            }
-            B::TerminalResume => {
-                let args = argument;
-                let handle = if args.is_empty() {
-                    None
-                } else {
-                    Some(args.to_string())
-                };
-                crate::tui::commands::interactive_terminal::start_terminal_resume(self, handle);
-            }
-            B::TerminalDetach => {
-                let args = argument;
-                let handle = if args.is_empty() {
-                    None
-                } else {
-                    Some(args.to_string())
-                };
-                crate::tui::commands::interactive_terminal::start_terminal_detach(self, handle);
-            }
+            B::ProjectInit => project_init::dispatch_project_init(self),
+            B::Queue => queue::open_queue_box(self),
+            B::SubagentSend => subagent_steer::dispatch_addressee_command(self, argument),
+            B::Reload => agents::dispatch_reload(self),
+            B::Skills => skills::dispatch_skills(self, argument),
+            B::Exit => exit_control::dispatch_exit(self),
+            B::Help => help::dispatch_help(self),
+            B::Tree => file_tree::dispatch_tree(self),
+            B::AgentSelect => agents::dispatch_agent_select(self, argument),
+            B::Agents => agents::dispatch_agents(self, argument),
+            B::New => sessions::dispatch_new(self),
+            B::Compact => compaction::handle_compact_session(self),
+            B::Connect => provider_connections::dispatch_connect(self),
+            B::Connections => provider_connections::dispatch_connections(self),
+            B::Status => session_report::dispatch_status(self),
+            B::Policy => policy::dispatch_policy(self),
+            B::Approval => policy::dispatch_approval(self, argument),
+            B::Sandbox => policy::dispatch_sandbox(self, argument),
+            B::Network => policy::dispatch_network(self, argument),
+            B::Context => session_report::dispatch_context(self),
+            B::Cost => session_report::dispatch_cost(self),
+            B::Usage => session_report::dispatch_usage(self),
+            B::Themes => appearance::dispatch_themes(self, argument),
+            B::Tui => appearance::dispatch_tui(self),
+            B::TuiStats => appearance::dispatch_tui_stats(self),
+            B::Tts => appearance::dispatch_tts(self),
+            B::Collaborators => presence::dispatch_collaborators(self, argument),
+            B::Team => team::dispatch_team(self, argument),
+            B::Control => control::dispatch_control(self, argument),
+            B::Observe => observe::dispatch_observe(self, argument),
+            B::StopObserving => observe::dispatch_stop_observing(self),
+            B::Panels => panels::dispatch_panels(self),
+            B::Chat => chat::dispatch_chat(self),
+            B::ChatSend => chat::dispatch_chat_send(self, argument),
+            B::ChatReply => chat::dispatch_chat_reply(self, argument),
+            B::ChatHistory => chat::dispatch_chat_history(self),
+            B::ChatSync => chat::dispatch_chat_sync(self),
+            B::ChatRead => chat::dispatch_chat_read(self),
+            B::ChatEdit => chat::dispatch_chat_edit(self, argument),
+            B::ChatRedact => chat::dispatch_chat_redact(self, argument),
+            B::ChatComposing => chat::dispatch_chat_composing(self, argument),
+            B::ChatActionTask => chat::dispatch_chat_action_task(self, argument),
+            B::ChatActionReview => chat::dispatch_chat_action_review(self, argument),
+            B::ChatActionList => chat::dispatch_chat_action_list(self, argument),
+            B::Sessions => sessions::dispatch_sessions(self),
+            B::Projects => project_picker::dispatch_projects(self),
+            B::Stop => turn_control::stop(self),
+            B::StartTurn => turn_control::start(self),
+            B::Share => sessions::dispatch_share(self),
+            B::Unshare => sessions::dispatch_unshare(self),
+            B::Rename => sessions::dispatch_rename(self),
+            B::Timeline => transcript::dispatch_timeline(self),
+            B::Undo => transcript::dispatch_undo(self),
+            B::Redo => transcript::dispatch_redo(self),
+            B::Export => sessions::dispatch_export(self, argument),
+            B::Import => import::dispatch_import(self),
+            B::Timestamps => transcript::dispatch_timestamps(self),
+            B::Thinking => transcript::dispatch_thinking(self),
+            B::ExpandAllDisclosures => transcript::dispatch_expand_all_disclosures(self),
+            B::Reasoning => reasoning::dispatch_reasoning(self),
+            B::ModelsRefresh => session_selection::dispatch_models_refresh(self),
+            B::Variants => session_selection::dispatch_variants(self),
+            B::Fork => sessions::dispatch_fork(self),
+            B::Workspaces => workspace_dashboard::dispatch_workspaces(self),
+            B::Worktree => tasks::dispatch_worktree(self),
+            B::Editor => editor::dispatch_editor(self),
+            B::OpenDocument => editor::dispatch_open_document(self, argument),
+            B::Loop => tasks::dispatch_loop(self, argument),
+            B::Tasks => work_orders::dispatch_tasks(self),
+            B::Task => work_orders::open_task_view(self, "task"),
+            B::Workspace => workspace_dashboard::dispatch_workspace(self),
+            B::Schedules => tasks::dispatch_schedules(self),
+            B::TaskDel => tasks::dispatch_task_del(self, argument),
+            B::Memory => memory::dispatch_memory(self),
+            B::MemorySearch => memory::dispatch_memory_search(self, argument),
+            B::MemoryList => memory::dispatch_memory_list(self, argument),
+            B::MemoryRemember => memory::dispatch_memory_remember(self, argument),
+            B::MemoryForget => memory::dispatch_memory_forget(self, argument),
+            B::MemoryConsolidate => memory::dispatch_memory_consolidate(self),
+            B::Habits => memory::dispatch_habits(self, argument),
+            B::HabitDismiss => memory::dispatch_habit_dismiss(self, argument),
+            B::SkillPromote => promotion::dispatch_skill_promote(self, argument),
+            B::SkillProposals => promotion::dispatch_skill_proposals(self),
+            B::SkillProposal => promotion::dispatch_skill_proposal(self, argument),
+            B::Goal => goals::dispatch_goal(self, argument),
+            B::Plan => session_report::dispatch_plan(self, argument),
+            B::State => session_report::dispatch_state(self),
+            B::Search => transcript::dispatch_search(self, argument),
+            B::Doctor => diagnostics::dispatch_doctor(self),
+            B::Logs => diagnostics::dispatch_logs(self),
+            B::ToolContracts => diagnostics::dispatch_tool_contracts(self),
+            B::LspStatus => diagnostics::dispatch_lsp_status(self),
+            B::Nodes => diagnostics::dispatch_nodes(self),
+            B::LspPreviews => lsp::dispatch_lsp_previews(self),
+            B::LspPreview => lsp::dispatch_lsp_preview(self, argument),
+            B::LspPreviewClear => lsp::dispatch_lsp_preview_clear(self, argument),
+            B::LspPreviewRefresh => lsp::dispatch_lsp_preview_refresh(self, argument),
+            B::Review => change_review::dispatch_review(self, argument),
+            B::LspPreviewApply => change_review::dispatch_lsp_preview_apply(self, argument),
+            B::LspServers => lsp::dispatch_lsp_servers(self),
+            B::LspCapabilities => lsp::dispatch_lsp_capabilities(self, argument),
+            B::LspErrors => lsp::dispatch_lsp_errors(self, argument),
+            B::LspRoot => lsp::dispatch_lsp_root(self, argument),
+            B::LspDoctor => lsp::dispatch_lsp_doctor(self, argument),
+            B::LspContextDiagnostics => lsp::dispatch_lsp_context_diagnostics(self, argument),
+            B::LspRepairLocal => lsp::dispatch_lsp_repair_local(self, argument),
+            B::LspRepairHunk => lsp::dispatch_lsp_repair_hunk(self, argument),
+            B::LspReviewFile => lsp::dispatch_lsp_review_file(self, argument),
+            B::LspReviewDiff => lsp::dispatch_lsp_review_diff(self),
+            B::LspSecurityReview => lsp::dispatch_lsp_security_review(self, argument),
+            B::LspImpact => lsp::dispatch_lsp_impact(self, argument),
+            B::LspTestRepair => lsp::dispatch_lsp_test_repair(self, argument),
+            B::LspInterface => lsp::dispatch_lsp_interface(self, argument),
+            B::LspCrossRepair => lsp::dispatch_lsp_cross_repair(self, argument),
+            B::LspCallNeighbors => lsp::dispatch_lsp_call_neighbors(self, argument),
+            B::LspRestart => lsp::dispatch_lsp_restart(self, argument),
+            B::LspStop => lsp::dispatch_lsp_stop(self, argument),
+            B::LspCacheStatus => lsp::dispatch_lsp_cache_status(self),
+            B::LspCacheClear => lsp::dispatch_lsp_cache_clear(self, argument),
+            B::ToolBackends => diagnostics::dispatch_tool_backends(self),
+            B::Diff => diff::dispatch_diff(self, argument),
+            B::Tests => test::dispatch_tests(self, argument),
+            B::Test => test::dispatch_test(self, argument),
+            B::Revert => revert::dispatch_revert(self, argument),
+            B::EditUndo => edit_history::dispatch_edit_undo(self, argument),
+            B::EditReapply => edit_history::dispatch_edit_reapply(self, argument),
+            B::EditCheckpoints => edit_history::dispatch_edit_checkpoints(self, argument),
+            B::Research => research::dispatch_research(self, argument),
+            B::ResearchRuns => research::dispatch_research_runs(self),
+            B::ResearchOpen => research::dispatch_research_open(self, argument),
+            B::ResearchShow => research::dispatch_research_show(self, argument),
+            B::SecurityReview => security::dispatch_security_review(self, argument),
+            B::SecurityReviewShow => security::dispatch_security_review_show(self),
+            B::SecurityReviewCancel => security::dispatch_security_review_cancel(self),
+            B::ShellInclude => shell::dispatch_shell_include(self, argument),
+            B::ShellRerun => shell::dispatch_shell_rerun(self, argument),
+            B::ShellKill => shell::dispatch_shell_kill(self, argument),
+            B::ShellList => shell::dispatch_shell_list(self),
+            B::ShellShow => shell::dispatch_shell_show(self, argument),
+            B::ShellExpand => shell::dispatch_shell_expand(self, argument),
+            B::Plugins => plugin_management::show_plugins(self),
+            B::TerminalCreate => interactive_terminal::dispatch_terminal_create(self, argument),
+            B::TerminalList => interactive_terminal::start_terminal_list(self),
+            B::TerminalAttach => interactive_terminal::dispatch_terminal_attach(self, argument),
+            B::TerminalShow => interactive_terminal::dispatch_terminal_show(self, argument),
+            B::Terminal => interactive_terminal::dispatch_terminal(self, argument),
+            B::TerminalClear => interactive_terminal::dispatch_terminal_clear(self, argument),
+            B::TerminalFocus => interactive_terminal::dispatch_terminal_focus(self, argument),
+            B::TerminalSend => interactive_terminal::dispatch_terminal_send(self, argument),
+            B::TerminalResize => interactive_terminal::dispatch_terminal_resize(self, argument),
+            B::TerminalResume => interactive_terminal::dispatch_terminal_resume(self, argument),
+            B::TerminalDetach => interactive_terminal::dispatch_terminal_detach(self, argument),
             B::TerminalTerminate => {
-                let args = argument;
-                let handle = if args.is_empty() {
-                    None
-                } else {
-                    Some(args.to_string())
-                };
-                crate::tui::commands::interactive_terminal::start_terminal_terminate(self, handle);
+                interactive_terminal::dispatch_terminal_terminate(self, argument)
             }
-            B::TerminalRemove => {
-                let args = argument;
-                let handle = if args.is_empty() {
-                    None
-                } else {
-                    Some(args.to_string())
-                };
-                crate::tui::commands::interactive_terminal::start_terminal_remove(self, handle);
-            }
-            B::PluginInfo => {
-                let args = argument;
-                if args.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /plugin-info <plugin-id-or-name>");
-                } else {
-                    crate::tui::commands::plugin_management::show_plugin_info(self, args);
-                }
-            }
-            B::PluginEnable => {
-                let args = argument;
-                if args.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /plugin-enable <plugin-id-or-name>");
-                } else {
-                    crate::tui::commands::plugin_management::enable_plugin(self, args);
-                }
-            }
-            B::PluginDisable => {
-                let args = argument;
-                if args.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /plugin-disable <plugin-id-or-name>");
-                } else {
-                    crate::tui::commands::plugin_management::disable_plugin(self, args);
-                }
-            }
-            B::PluginDoctor => {
-                let args = argument;
-                let query_opt = if args.is_empty() { None } else { Some(args) };
-                crate::tui::commands::plugin_management::doctor_plugin(self, query_opt);
-            }
-            B::PluginRemove => {
-                let args = argument;
-                if args.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /plugin-remove <plugin-id-or-name>");
-                } else {
-                    crate::tui::commands::plugin_management::remove_plugin(self, args);
-                }
-            }
-            B::PluginInstall => {
-                let args = argument;
-                if args.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /plugin-install <path>");
-                } else {
-                    crate::tui::commands::plugin_management::install_plugin(self, args);
-                }
-            }
-            B::ShellAsk => {
-                self.ui_state.command_mode = false;
-                let args_str = argument;
-                let parts: Vec<&str> = args_str.splitn(2, ' ').collect();
-                let id_str = parts.first().copied().unwrap_or("");
-                let question = parts.get(1).copied().unwrap_or("").to_string();
-                if question.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /shell-ask <id|last> <question>");
-                } else {
-                    match self.resolve_shell_id(id_str) {
-                        Some(id) => {
-                            if let Some(ref tx) = self.tui_cmd_tx {
-                                let _ = send_tui(tx, TuiCommand::ShellAsk { id, question });
-                            }
-                        }
-                        None => {
-                            self.messages_state
-                                .toasts
-                                .warning("Usage: /shell-ask <id|last> <question>");
-                        }
-                    }
-                }
-            }
+            B::TerminalRemove => interactive_terminal::dispatch_terminal_remove(self, argument),
+            B::PluginInfo => plugin_management::dispatch_plugin_info(self, argument),
+            B::PluginEnable => plugin_management::dispatch_plugin_enable(self, argument),
+            B::PluginDisable => plugin_management::dispatch_plugin_disable(self, argument),
+            B::PluginDoctor => plugin_management::dispatch_plugin_doctor(self, argument),
+            B::PluginRemove => plugin_management::dispatch_plugin_remove(self, argument),
+            B::PluginInstall => plugin_management::dispatch_plugin_install(self, argument),
+            B::ShellAsk => shell::dispatch_shell_ask(self, argument),
         }
     }
 
@@ -8931,29 +5971,6 @@ impl App {
             let (w, h) = crossterm::terminal::size().unwrap_or((0, 0));
             self.send_remote_message(RemoteTuiMessage::Resize { w, h });
         }
-    }
-
-    fn update_context_hint(&mut self, target: &ClickTarget) {
-        self.context_hint = match target {
-            ClickTarget::Viewport => {
-                if self.messages_state.messages.sel_msg.is_some() {
-                    "Click: Select message | j/k: Navigate".to_string()
-                } else {
-                    "j/k: Scroll | Enter: Read more".to_string()
-                }
-            }
-            ClickTarget::Prompt => {
-                "Enter: Send | Shift+Enter: New line | Tab: Complete".to_string()
-            }
-            ClickTarget::Dialog => "Enter: Select | Esc: Close".to_string(),
-            ClickTarget::Completion => "Tab/Enter: Complete | Esc: Close".to_string(),
-            ClickTarget::Sidebar => "Click: Collapse section | Wheel: Scroll sidebar".to_string(),
-            ClickTarget::Scrollbar { .. } => "Click/drag: Jump | Scroll: Page up/down".to_string(),
-            ClickTarget::Panel { .. } => {
-                "Click: Focus panel | Drag: Select text | Ctrl+C: Copy".to_string()
-            }
-            ClickTarget::None => String::new(),
-        };
     }
 
     pub fn on_mouse(&mut self, event: crossterm::event::MouseEvent) {
@@ -9033,25 +6050,13 @@ impl App {
                     self.on_scroll_up(&target);
                 }
             },
-            MouseEventKind::Up(btn) => {
-                match btn {
-                    MouseButton::Left | MouseButton::Right => {
-                        // Complete click or drag operation
-                        // Clear any drag state if present
-                    }
-                    MouseButton::Middle => {
-                        // Middle button release - could paste or other action
-                    }
-                }
-            }
+            MouseEventKind::Up(btn) => match btn {
+                MouseButton::Left | MouseButton::Right => {}
+                MouseButton::Middle => {}
+            },
             MouseEventKind::Moved => {
-                let prev_target = self.hover_target.clone();
                 self.hover_target = Some(target.clone());
                 self.hover_position = Some((event.column, event.row));
-
-                if prev_target != Some(target.clone()) {
-                    self.update_context_hint(&target);
-                }
 
                 if target == ClickTarget::Sidebar {
                     self.sidebar
@@ -9176,28 +6181,22 @@ impl App {
                 return ClickTarget::Dialog;
             }
         }
-        if let Some(ref area) = self.completion_area {
-            if Self::in_rect(x, y, *area) {
+        let plan = self.frame_plan;
+        if let Some(area) = plan.completion {
+            if Self::in_rect(x, y, area) {
                 return ClickTarget::Completion;
             }
         }
-        if let Some(ref area) = self.prompt_area {
-            if Self::in_rect(x, y, *area) {
-                return ClickTarget::Prompt;
-            }
+        if Self::in_rect(x, y, plan.prompt) {
+            return ClickTarget::Prompt;
         }
-        if let Some(ref area) = self.viewport_area {
-            if Self::in_rect(x, y, *area) {
-                return ClickTarget::Viewport;
-            }
+        if Self::in_rect(x, y, plan.viewport) {
+            return ClickTarget::Viewport;
         }
-        if let Some(ref area) = self.scrollbar_area {
-            if Self::in_rect(x, y, *area) {
-                let track_y = area
-                    .y
-                    .saturating_sub(self.viewport_area.map(|v| v.y).unwrap_or(0));
+        if let Some(area) = plan.scrollbar {
+            if Self::in_rect(x, y, area) {
                 return ClickTarget::Scrollbar {
-                    track_y,
+                    track_y: area.y.saturating_sub(plan.viewport.y),
                     track_height: area.height,
                 };
             }
@@ -9253,41 +6252,38 @@ impl App {
     fn on_click(&mut self, target: &ClickTarget, x: u16, y: u16) {
         match target {
             ClickTarget::Viewport => {
-                if let Some(viewport) = self.viewport_area {
-                    let row = y.saturating_sub(viewport.y) as usize;
-                    // The row's owner, not the message, is the unit of
-                    // disclosure. Resolving the message first made the
-                    // reasoning arm win every time: in a message carrying
-                    // both a reasoning block and a tool call, the tool call
-                    // could never be reached by clicking.
-                    let owner = self.messages_state.messages.part_at_viewport_line(row);
-                    if let Some(idx) = self.messages_state.messages.select_at_viewport_line(row) {
-                        // A row waiting on an approval is an action, not a
-                        // disclosure. Answering is otherwise only reachable
-                        // while the dialog is up, and the dialog can be gone.
-                        if self.open_pending_permission_for_message(idx) {
-                            return;
+                let viewport = self.frame_plan.viewport;
+                let row = y.saturating_sub(viewport.y) as usize;
+                // The row's owner, not the message, is the unit of
+                // disclosure. Resolving the message first made the
+                // reasoning arm win every time: in a message carrying
+                // both a reasoning block and a tool call, the tool call
+                // could never be reached by clicking.
+                let owner = self.messages_state.messages.part_at_viewport_line(row);
+                if let Some(idx) = self.messages_state.messages.select_at_viewport_line(row) {
+                    // A row waiting on an approval is an action, not a
+                    // disclosure. Answering is otherwise only reachable
+                    // while the dialog is up, and the dialog can be gone.
+                    if self.open_pending_permission_for_message(idx) {
+                        return;
+                    }
+                    match owner {
+                        Some((_, RowPart::ToolCall { part_idx })) => {
+                            self.messages_state
+                                .messages
+                                .toggle_tool_call_part(idx, part_idx);
                         }
-                        match owner {
-                            Some((_, RowPart::ToolCall { part_idx })) => {
-                                self.messages_state
-                                    .messages
-                                    .toggle_tool_call_part(idx, part_idx);
-                            }
-                            Some((_, RowPart::Reasoning { part_idx })) => {
-                                self.messages_state
-                                    .messages
-                                    .toggle_reasoning_part(idx, part_idx);
-                            }
-                            // A row that holds nothing expandable changes
-                            // nothing. This is an explicit no-op: falling
-                            // back to the message-level toggle would
-                            // reintroduce exactly the defect this path
-                            // exists to fix.
-                            None => {}
+                        Some((_, RowPart::Reasoning { part_idx })) => {
+                            self.messages_state
+                                .messages
+                                .toggle_reasoning_part(idx, part_idx);
                         }
-                    } else {
-                        self.messages_state.messages.sel_msg = None;
+                        // A row that holds nothing expandable changes
+                        // nothing. This is an explicit no-op: falling
+                        // back to the message-level toggle would
+                        // reintroduce exactly the defect this path
+                        // exists to fix.
+                        None => {}
                     }
                 } else {
                     self.messages_state.messages.sel_msg = None;
@@ -9301,7 +6297,7 @@ impl App {
                 }
             }
             ClickTarget::Completion => {
-                if let Some(ref area) = self.completion_area {
+                if let Some(area) = self.frame_plan.completion {
                     let rel_y = y.saturating_sub(area.y);
                     // Row 0 is the top border, so the first entry is at
                     // `rel_y == 1`. The popup scrolls to keep the selection
@@ -9315,13 +6311,12 @@ impl App {
                 }
             }
             ClickTarget::Prompt => {
-                if let Some(ref area) = self.prompt_area {
-                    let rel_x = x.saturating_sub(area.x);
-                    let rel_y = y.saturating_sub(area.y) as usize;
-                    let line = rel_y.saturating_sub(1) + self.prompt_state.prompt.scroll;
-                    let column = rel_x as usize + self.prompt_state.prompt.horizontal_scroll;
-                    self.prompt_state.prompt.set_cursor_at_column(line, column);
-                }
+                let area = self.frame_plan.prompt;
+                let rel_x = x.saturating_sub(area.x);
+                let rel_y = y.saturating_sub(area.y) as usize;
+                let line = rel_y.saturating_sub(1) + self.prompt_state.prompt.scroll;
+                let column = rel_x as usize + self.prompt_state.prompt.horizontal_scroll;
+                self.prompt_state.prompt.set_cursor_at_column(line, column);
             }
             ClickTarget::Sidebar => {
                 self.sidebar.focus_hovered();
@@ -9354,24 +6349,23 @@ impl App {
                 track_y,
                 track_height,
             } => {
-                if let Some(viewport) = self.viewport_area {
-                    let rel_y = y.saturating_sub(viewport.y).saturating_sub(*track_y);
-                    if *track_height > 0 {
-                        let max_scroll = self.messages_state.messages.max_scroll();
-                        let new_scroll = (rel_y as usize) * max_scroll / (*track_height as usize);
-                        // Landing on the last track row (or anywhere already at
-                        // the bottom) must resume following the stream. This
-                        // handler used to clear `auto_scroll` unconditionally,
-                        // so dragging the thumb to the bottom left the view
-                        // visibly pinned there while new output was produced
-                        // off-screen — the turn looked frozen and then
-                        // appeared all at once.
-                        if rel_y + 1 >= *track_height || new_scroll >= max_scroll {
-                            self.messages_state.messages.scroll_to_bottom();
-                        } else {
-                            self.messages_state.messages.scroll = new_scroll.min(max_scroll);
-                            self.messages_state.messages.auto_scroll = false;
-                        }
+                let viewport = self.frame_plan.viewport;
+                let rel_y = y.saturating_sub(viewport.y).saturating_sub(*track_y);
+                if *track_height > 0 {
+                    let max_scroll = self.messages_state.messages.max_scroll();
+                    let new_scroll = (rel_y as usize) * max_scroll / (*track_height as usize);
+                    // Landing on the last track row (or anywhere already at
+                    // the bottom) must resume following the stream. This
+                    // handler used to clear `auto_scroll` unconditionally,
+                    // so dragging the thumb to the bottom left the view
+                    // visibly pinned there while new output was produced
+                    // off-screen — the turn looked frozen and then
+                    // appeared all at once.
+                    if rel_y + 1 >= *track_height || new_scroll >= max_scroll {
+                        self.messages_state.messages.scroll_to_bottom();
+                    } else {
+                        self.messages_state.messages.scroll = new_scroll.min(max_scroll);
+                        self.messages_state.messages.auto_scroll = false;
                     }
                 }
             }
@@ -9555,7 +6549,7 @@ impl App {
                     self.dialog_state.session_dialog.select_index(idx);
                 }
                 Dialog::Tree => {
-                    let cur = self.dialog_state.tree_dialog.selected;
+                    let cur = self.dialog_state.tree_dialog.selected();
                     if idx > cur {
                         for _ in cur..idx {
                             self.dialog_state.tree_dialog.select_down();
@@ -9628,7 +6622,7 @@ impl App {
                 }
             }
             Dialog::Tree => {
-                let cur = self.dialog_state.tree_dialog.selected;
+                let cur = self.dialog_state.tree_dialog.selected();
                 if idx > cur {
                     for _ in cur..idx {
                         self.dialog_state.tree_dialog.select_down();
@@ -9745,7 +6739,7 @@ impl App {
         }
     }
 
-    fn resolve_shell_id(&self, id_str: &str) -> Option<u64> {
+    pub(crate) fn resolve_shell_id(&self, id_str: &str) -> Option<u64> {
         match id_str {
             "last" => self.shell_store.get_last().map(|e| e.id.0),
             s => s.parse::<u64>().ok(),
@@ -10818,7 +7812,7 @@ impl App {
     /// and pressing Ctrl+N again was a no-op on an already-empty state. A new
     /// session is now actually created through the core so the session-scoped
     /// surfaces work immediately.
-    fn new_session(&mut self) {
+    pub(crate) fn new_session(&mut self) {
         // Refresh the cached consolidation flag at session start so the
         // per-turn handler does not re-parse the config TOML.
         self.memory_auto_consolidate = crate::config::schema::Config::load()
@@ -10879,7 +7873,7 @@ impl App {
     ///
     /// `argument` is the argument the user typed after the command
     /// spelling — the dispatcher already removed `/theme` and its aliases.
-    fn handle_theme_command(&mut self, argument: &str) {
+    pub(crate) fn handle_theme_command(&mut self, argument: &str) {
         self.ui_state.command_mode = false;
         let arg = argument;
 
@@ -11003,7 +7997,7 @@ impl App {
     /// The outcome is reported in the same toast surface the `/thinking`
     /// command uses, because the gesture changes what the buffer shows and
     /// the user needs to know which way it went.
-    fn expand_all_disclosures(&mut self) {
+    pub(crate) fn expand_all_disclosures(&mut self) {
         let expand = self.messages_state.messages.any_disclosure_collapsed();
         self.messages_state
             .messages
@@ -11016,7 +8010,7 @@ impl App {
         self.messages_state.toasts.info(msg);
     }
 
-    fn toggle_tts(&mut self) {
+    pub(crate) fn toggle_tts(&mut self) {
         self.ui_state.tts_enabled = !self.ui_state.tts_enabled;
         if self.ui_state.tts_via_daemon {
             if self.ui_state.tts_enabled {
@@ -11136,7 +8130,7 @@ impl App {
         self.messages_state.toasts.info("TTS stop sent to daemon");
     }
 
-    fn toggle_fullscreen(&mut self) {
+    pub(crate) fn toggle_fullscreen(&mut self) {
         self.ui_state.fullscreen = !self.ui_state.fullscreen;
         use std::io::Write;
         if self.ui_state.fullscreen {
@@ -11148,7 +8142,7 @@ impl App {
         }
     }
 
-    fn open_external_editor(&mut self) {
+    pub(crate) fn open_external_editor(&mut self) {
         if let Some(ref file) = self.session_state.last_edited_file {
             let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
             if let Err(e) = std::process::Command::new(&editor).arg(file).spawn() {
@@ -11167,7 +8161,7 @@ impl App {
         }
     }
 
-    fn handle_tests_command(&mut self, subcmd: &str) {
+    pub(crate) fn handle_tests_command(&mut self, subcmd: &str) {
         match subcmd {
             "" | "last" => {
                 let state = &self.session_state_derived;
@@ -11241,7 +8235,7 @@ impl App {
         }
     }
 
-    fn handle_memory_command(&mut self, action: Option<(&str, &str)>) {
+    pub(crate) fn handle_memory_command(&mut self, action: Option<(&str, &str)>) {
         let mem_store = match &self.memory_store {
             Some(s) => s,
             None => {
@@ -11412,7 +8406,7 @@ impl App {
         }
     }
 
-    fn handle_research_command(&mut self, args: &str) {
+    pub(crate) fn handle_research_command(&mut self, args: &str) {
         if self.prompt_state.pending_send {
             self.messages_state
                 .toasts
@@ -11505,7 +8499,7 @@ impl App {
         }
     }
 
-    fn handle_research_open_command(&mut self, run_id: &str) {
+    pub(crate) fn handle_research_open_command(&mut self, run_id: &str) {
         self.open_dialog(Dialog::ResearchBrowser);
         if let Some(ref mut browser) = self.dialog_state.research_browser {
             browser.loading = true;
@@ -11633,7 +8627,7 @@ impl App {
         self.persist_model_selection(&model);
     }
 
-    fn open_connect_dialog(&mut self) {
+    pub(crate) fn open_connect_dialog(&mut self) {
         // Provider-neutral `/connect`: the dialog opens in a short loading
         // state and populates from the daemon-owned setup catalog. The TUI
         // never hard-codes an Eggpool-only provider list and never falls
@@ -11778,7 +8772,7 @@ impl App {
     /// dialog. The dialog is session-scoped and reads the current
     /// selection before showing choices, so the user sees what they have
     /// now and what they can change it to.
-    fn open_connection_selection_dialog(&mut self) {
+    pub(crate) fn open_connection_selection_dialog(&mut self) {
         let session_id = match self.session_state.session.as_ref() {
             Some(s) => s.id.clone(),
             None => {
@@ -11808,7 +8802,7 @@ impl App {
         }
     }
 
-    fn open_tree_dialog(&mut self) {
+    pub(crate) fn open_tree_dialog(&mut self) {
         self.open_dialog(Dialog::Tree);
         if let Some(ref tx) = self.tui_cmd_tx {
             let _ = send_tui(tx, TuiCommand::OpenTreeDialog);
@@ -13239,10 +10233,10 @@ impl App {
             ));
         }
         if let Some(seed) = self.prompt_state.chat_seed.as_ref() {
-            return Some(format!(
-                "CHAT · {}",
-                crate::tui::chat_browser::input_hints(seed)
-            ));
+            let mut hint = crate::tui::components::hint_line::HintLine::new();
+            let fragment = crate::tui::chat_browser::input_hints(seed);
+            hint.push("CHAT", "").push_line(&fragment);
+            return Some(hint.render(budget));
         }
         // The **editor** owns a keymap of its own — the `space ?` palette and
         // the keymap overlay in the editor's bottom-right corner — so the
@@ -13318,7 +10312,7 @@ impl App {
         if parts.is_empty() {
             None
         } else {
-            Some(fit_parts(&parts, " · ", budget))
+            Some(fit_row(&parts, budget))
         }
     }
 
@@ -13378,7 +10372,6 @@ impl App {
     /// is present in Normal and in Insert alike, so `Esc` does not reflow the
     /// transcript. The mode changes the row's *text*.
     fn composer_hint_row(&self, input_mode: InputMode, budget: usize) -> String {
-        let separator = " · ";
         if input_mode == InputMode::Insert {
             // In Insert the composer's own verbs are not available — the
             // letters are text — so the row must not list them.
@@ -13386,11 +10379,11 @@ impl App {
             // No mode badge here either: the badge directly above the input
             // box already says `[INS]`, and a second copy of it in the row
             // below is the same fact said twice.
-            return fit_parts(&["type", "Esc normal"], separator, budget);
+            return fit_row(&["Esc normal", "type"], budget);
         }
         // The `space` chord opens the composer's help, where every verb is
         // described. The row points at it rather than repeating it.
-        fit_parts(&["space help"], separator, budget)
+        fit_row(&["space help"], budget)
     }
 
     /// The stop/resume keys for the main buffer, or `None` when idle.
@@ -15421,9 +12414,9 @@ impl App {
         // gesture that asks before a frame) correct at the cost of building
         // the list it needs; the render path never takes it.
         if let Some(frame) = self.frame_task_rows.as_ref() {
-            return frame.bounded.len().max(1) as u16;
+            return frame.bounded.len().max(1) as u16 + 1;
         }
-        self.bounded_task_rows().len().max(1) as u16
+        self.bounded_task_rows().len().max(1) as u16 + 1
     }
 
     /// Build the tasks overlay rows from the canonical session-work selector.
@@ -16368,7 +13361,7 @@ impl App {
         frame.render_widget(pos_para, pos_area);
     }
 
-    fn export_handoff(&mut self) {
+    pub(crate) fn export_handoff(&mut self) {
         let derived = &self.session_state_derived;
 
         let goal = derived.goal.as_deref().unwrap_or("(no goal set)");
@@ -16860,14 +13853,6 @@ pub(crate) fn format_goal_status_line(g: &crate::bus::events::GoalSnapshot) -> S
         format!("  {}", budget_parts.join(" "))
     };
     format!("[{}] {}{}", g.status, title, budget)
-}
-
-fn parse_path_line_col(s: &str) -> (String, Option<u32>, Option<u32>) {
-    let parts: Vec<&str> = s.splitn(3, ':').collect();
-    let path = parts[0].to_string();
-    let line = parts.get(1).and_then(|l| l.parse::<u32>().ok());
-    let col = parts.get(2).and_then(|c| c.parse::<u32>().ok());
-    (path, line, col)
 }
 
 #[cfg(test)]
@@ -20605,7 +17590,7 @@ mod row_precise_disclosure_tests {
         app.messages_state.messages.messages.push(mixed_message());
         app.messages_state.messages.invalidate_rows();
         app.messages_state.messages.scroll_to_top();
-        app.viewport_area = Some(VIEWPORT);
+        app.frame_plan.viewport = VIEWPORT;
         app
     }
 
@@ -20787,6 +17772,47 @@ mod row_precise_disclosure_tests {
                 )
             ),
             "the palette command must run the expand-all gesture"
+        );
+    }
+}
+
+/// `/keybinds` Export mode is answered by the app, not by the component's own
+/// `handle_key`: the modal path routes `DialogType::Keybind` to
+/// `handle_keybind_key` before `FocusManager` sees the key.
+#[cfg(test)]
+mod keybind_export_dispatch_tests {
+    use super::*;
+
+    /// Export's `Esc` goes back to the list; it does not close the box.
+    #[test]
+    fn export_esc_returns_to_the_list_instead_of_closing() {
+        use crate::tui::components::dialogs::keybind::KeybindMode;
+
+        let mut app = App::new_for_testing("/tmp".into());
+        app.open_dialog(Dialog::Keybind);
+        let dialog = app
+            .dialog_state
+            .keybind_dialog
+            .as_mut()
+            .expect("opening /keybinds must mount the dialog");
+        dialog.start_export();
+        assert_eq!(dialog.mode, KeybindMode::Export, "the fixture must export");
+
+        app.on_key(KeyEvent::from(crossterm::event::KeyCode::Esc));
+
+        let dialog = app
+            .dialog_state
+            .keybind_dialog
+            .as_ref()
+            .expect("Esc in Export returns to the list; it must not close the box");
+        assert_eq!(
+            dialog.mode,
+            KeybindMode::Normal,
+            "Export's Esc backs out to the list rather than closing"
+        );
+        assert!(
+            !app.focus_manager.is_empty(),
+            "the box must still be mounted after Esc in Export"
         );
     }
 }

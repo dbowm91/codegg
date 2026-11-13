@@ -132,6 +132,8 @@ async fn stream_with_retry_inner(
         )));
     }
 
+    let ledger = open_ledger_turn(loop_).await;
+
     for attempt_index in 0..effective_max {
         if is_cancelled(loop_) {
             tracing::info!(
@@ -148,7 +150,15 @@ async fn stream_with_retry_inner(
             attempt_index,
         });
 
-        match stream_once(loop_, &attempt_request, &attempt_id).await {
+        match stream_once(
+            loop_,
+            &attempt_request,
+            &attempt_id,
+            attempt_index,
+            ledger.as_ref(),
+        )
+        .await
+        {
             Ok((events, _visible)) => {
                 tracing::debug!(
                     session_id = %session_id,
@@ -481,6 +491,116 @@ fn publish_attempt_failed(
     });
 }
 
+struct LedgerTurn {
+    store: crate::session::request_ledger::TurnRequestLedgerStore,
+    session_id: String,
+    turn_index: i64,
+    /// The compiled prompt's section digests for the loop this turn runs on.
+    /// Threaded from the compile site so the seam never recompiles the prompt.
+    section_digests: Option<std::collections::BTreeMap<String, String>>,
+}
+
+async fn open_ledger_turn(loop_: &AgentLoop) -> Option<LedgerTurn> {
+    let pool = loop_.services.todo_pool.clone()?;
+    let store = crate::session::request_ledger::TurnRequestLedgerStore::new(pool);
+    match store.next_turn_index(&loop_.session_id).await {
+        Ok(turn_index) => Some(LedgerTurn {
+            store,
+            session_id: loop_.session_id.clone(),
+            turn_index,
+            section_digests: loop_.prompt_section_digests().cloned(),
+        }),
+        Err(error) => {
+            tracing::warn!(
+                session_id = %loop_.session_id,
+                error = %error,
+                "request ledger turn index unavailable; this turn records no attempt"
+            );
+            None
+        }
+    }
+}
+
+fn ledger_effort(request: &ChatRequest) -> Option<String> {
+    if let Some(effort) = request.reasoning_effort.as_deref() {
+        return Some(effort.to_string());
+    }
+    if let Some(budget) = request.thinking_budget {
+        return Some(format!("thinking_budget:{budget}"));
+    }
+    if request.context.reasoning == Default::default() {
+        return None;
+    }
+    Some(format!("control:{:?}", request.context.reasoning))
+}
+
+async fn ledger_open_attempt(
+    ledger: &LedgerTurn,
+    request: &ChatRequest,
+    attempt_index: usize,
+    attempt_id: &str,
+) -> Option<String> {
+    let system_digest = crate::context::tool_hash::system_prompt_digest(request);
+    let tools_digest =
+        crate::context::tool_definitions_hash(request.tools.as_deref().unwrap_or(&[]));
+    let message_digest = crate::context::tool_hash::message_range_digest(&request.messages);
+    let effort = ledger_effort(request);
+    let attempt = crate::session::request_ledger::TurnRequestAttempt {
+        session_id: &ledger.session_id,
+        turn_index: ledger.turn_index,
+        attempt_index: attempt_index as i64,
+        attempt_id,
+        model: &request.model,
+        effort: effort.as_deref(),
+        system_digest: &system_digest,
+        tools_digest: &tools_digest,
+        message_digest: &message_digest,
+        message_count: request.messages.len() as i64,
+        section_digests: ledger.section_digests.as_ref(),
+    };
+    match ledger.store.record_attempt(attempt).await {
+        Ok(id) => Some(id),
+        Err(error) => {
+            tracing::warn!(
+                session_id = %ledger.session_id,
+                attempt_id = %attempt_id,
+                error = %error,
+                "request ledger write failed; the request proceeds without its record"
+            );
+            None
+        }
+    }
+}
+
+async fn ledger_settle_attempt(
+    ledger: &LedgerTurn,
+    row_id: &str,
+    request: &ChatRequest,
+    result: &Result<(Vec<ChatEvent>, bool), (AppError, bool)>,
+) {
+    use crate::session::request_ledger::TurnRequestOutcome;
+    let (outcome, body) = match result {
+        Ok(_) => (TurnRequestOutcome::Ok, None),
+        Err((AppError::Cancelled, _)) => (TurnRequestOutcome::Cancelled, None),
+        Err(_) => (
+            TurnRequestOutcome::Failed,
+            Some(crate::context::tool_hash::request_body_text(request)),
+        ),
+    };
+    if let Err(error) = ledger
+        .store
+        .settle_attempt(row_id, outcome, body.as_deref())
+        .await
+    {
+        tracing::warn!(
+            session_id = %ledger.session_id,
+            row_id = %row_id,
+            error = %error,
+            "request ledger outcome not recorded; the turn's result stands"
+        );
+    }
+}
+
 /// Deterministic pre-jitter backoff ceiling for retry ordinal
 /// `failed_attempt_index` (0-based index of the attempt that just failed).
 /// Bounded exponential (`BASE * 2^n`, capped at [`MAX_RETRY_DELAY`]);
@@ -529,6 +649,24 @@ async fn sleep_cancellable(loop_: &mut AgentLoop, duration: Duration) -> bool {
 /// policy. On failure the partial event buffer is discarded: the caller
 /// never executes a tool from an abandoned incomplete attempt.
 async fn stream_once(
+    loop_: &mut AgentLoop,
+    request: &ChatRequest,
+    attempt_id: &str,
+    attempt_index: usize,
+    ledger: Option<&LedgerTurn>,
+) -> Result<(Vec<ChatEvent>, bool), (AppError, bool)> {
+    let ledger_row = match ledger {
+        Some(ledger) => ledger_open_attempt(ledger, request, attempt_index, attempt_id).await,
+        None => None,
+    };
+    let outcome = stream_once_inner(loop_, request, attempt_id).await;
+    if let (Some(ledger), Some(row_id)) = (ledger, ledger_row.as_deref()) {
+        ledger_settle_attempt(ledger, row_id, request, &outcome).await;
+    }
+    outcome
+}
+
+async fn stream_once_inner(
     loop_: &mut AgentLoop,
     request: &ChatRequest,
     attempt_id: &str,
@@ -712,6 +850,9 @@ async fn stream_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::Message;
+    use std::str::FromStr;
+    use std::time::Instant;
 
     #[test]
     fn backoff_cap_grows_and_respects_hint_cap() {
@@ -830,5 +971,353 @@ mod tests {
             ["read", "write"]
         );
         assert!(tools.iter().all(|tool| tool.defer_loading.is_none()));
+    }
+
+    async fn ledger_pool() -> sqlx::SqlitePool {
+        let name = format!("provider_turn_ledger_{}", uuid::Uuid::new_v4().simple());
+        let options = sqlx::sqlite::SqliteConnectOptions::from_str(&format!(
+            "file:{name}?mode=memory&cache=shared"
+        ))
+        .expect("valid sqlite options")
+        .create_if_missing(true)
+        .busy_timeout(Duration::from_secs(10));
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("connect in-memory sqlite");
+        codegg_core::session::schema::migrate(&pool)
+            .await
+            .expect("migrations run inside the helper");
+        pool
+    }
+
+    fn ledger_turn(pool: sqlx::SqlitePool, turn_index: i64) -> LedgerTurn {
+        LedgerTurn {
+            store: crate::session::request_ledger::TurnRequestLedgerStore::new(pool),
+            session_id: "session-ledger".to_string(),
+            turn_index,
+            section_digests: None,
+        }
+    }
+
+    fn compiled_ledger_prompt() -> crate::agent::prompt::CompiledPrompt {
+        let agent = crate::agent::builtins::generated_builtin_agents()
+            .into_iter()
+            .find(|agent| agent.name == "build")
+            .expect("the build agent is a built-in");
+        let config = crate::config::schema::Config::default();
+        let profile =
+            crate::model_profile::ModelProfileResolver::new(&config).resolve("test-model");
+        crate::agent::prompt::PromptCompiler::compile(crate::agent::prompt::PromptCompilerInput {
+            agent: &agent,
+            model_profile: &profile,
+            config: &config,
+            tools: &["read".to_string(), "write".to_string()],
+            skills: &[],
+            agents: std::slice::from_ref(&agent),
+            is_plan_mode: false,
+            snapshot: None,
+            pin: None,
+            execution: None,
+            adapter_fingerprint: None,
+            runtime_blocks: &[],
+        })
+    }
+
+    fn loop_with_ledger(pool: sqlx::SqlitePool, workspace: &std::path::Path) -> AgentLoop {
+        AgentLoop::new(
+            Vec::new(),
+            Box::new(crate::research::tests::StubProvider),
+            crate::permission::PermissionChecker::new(None, None),
+            crate::tool::ToolRegistry::default(),
+            crate::config::schema::Config::default(),
+            None,
+            Some(pool),
+            std::sync::Arc::new(crate::context::InMemoryArtifactStore::new()),
+            workspace.to_path_buf(),
+            "session-ledger".to_string(),
+            None,
+            None,
+        )
+    }
+
+    fn ledger_request() -> ChatRequest {
+        ChatRequest {
+            messages: vec![Message::User {
+                content: vec![crate::provider::ContentPart::Text {
+                    text: std::sync::Arc::new("inspect the tree".to_string()),
+                }],
+            }],
+            model: "ledger-model".to_string(),
+            tools: Some(vec![crate::provider::ToolDefinition {
+                name: "read".to_string(),
+                description: "read a file".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+                defer_loading: None,
+            }]),
+            system: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            context: Default::default(),
+        }
+    }
+
+    #[test]
+    fn the_ledger_effort_label_names_the_selection() {
+        let mut request = ledger_request();
+        assert_eq!(ledger_effort(&request), None);
+        request.reasoning_effort = Some("xhigh".to_string());
+        assert_eq!(ledger_effort(&request).as_deref(), Some("xhigh"));
+        let mut budgeted = ledger_request();
+        budgeted.thinking_budget = Some(4096);
+        assert_eq!(
+            ledger_effort(&budgeted).as_deref(),
+            Some("thinking_budget:4096")
+        );
+        assert_ne!(ledger_effort(&request), ledger_effort(&budgeted));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_stored_tools_digest_is_the_registry_hash() {
+        let turn = ledger_turn(ledger_pool().await, 1);
+        let request = ledger_request();
+        let definitions = request.tools.clone().expect("the request carries tools");
+        let expected = crate::context::tool_definitions_hash(&definitions);
+        ledger_open_attempt(&turn, &request, 0, "attempt-1")
+            .await
+            .expect("the attempt is recorded");
+
+        let rows = turn
+            .store
+            .turn_attempts("session-ledger", 1)
+            .await
+            .expect("read the turn");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].tools_digest, expected);
+        assert_eq!(rows[0].message_count, request.messages.len() as i64);
+        assert_eq!(rows[0].model, "ledger-model");
+        assert_eq!(rows[0].effort, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn settling_records_ok_cancelled_and_failed_outcomes() {
+        use crate::session::request_ledger::TurnRequestOutcome;
+        let turn = ledger_turn(ledger_pool().await, 1);
+        let request = ledger_request();
+        let ok_row = ledger_open_attempt(&turn, &request, 0, "attempt-1")
+            .await
+            .expect("ok attempt recorded");
+        let cancelled_row = ledger_open_attempt(&turn, &request, 1, "attempt-2")
+            .await
+            .expect("cancelled attempt recorded");
+        let failed_row = ledger_open_attempt(&turn, &request, 2, "attempt-3")
+            .await
+            .expect("failed attempt recorded");
+
+        ledger_settle_attempt(&turn, &ok_row, &request, &Ok((Vec::new(), false))).await;
+        ledger_settle_attempt(
+            &turn,
+            &cancelled_row,
+            &request,
+            &Err((cancelled_error(), false)),
+        )
+        .await;
+        ledger_settle_attempt(
+            &turn,
+            &failed_row,
+            &request,
+            &Err((AppError::Other(anyhow::anyhow!("boom")), false)),
+        )
+        .await;
+
+        let rows = turn
+            .store
+            .turn_attempts("session-ledger", 1)
+            .await
+            .expect("read the turn");
+        assert_eq!(
+            rows.iter().map(|row| row.outcome).collect::<Vec<_>>(),
+            vec![
+                TurnRequestOutcome::Ok,
+                TurnRequestOutcome::Cancelled,
+                TurnRequestOutcome::Failed
+            ]
+        );
+        assert_eq!(rows[0].body, None);
+        assert_eq!(rows[1].body, None);
+        assert!(
+            rows[2]
+                .body
+                .as_deref()
+                .is_some_and(|body| body.contains("inspect the tree")),
+            "the failed attempt retains the dispatched request"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_ledger_write_failure_leaves_the_request_unrecorded_but_unharmed() {
+        let options = sqlx::sqlite::SqliteConnectOptions::from_str(&format!(
+            "file:provider_turn_unmigrated_{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4().simple()
+        ))
+        .expect("valid sqlite options")
+        .create_if_missing(true);
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("connect in-memory sqlite");
+        let turn = ledger_turn(pool, 1);
+
+        assert_eq!(
+            ledger_open_attempt(&turn, &ledger_request(), 0, "attempt-1").await,
+            None,
+            "an unavailable store yields no row instead of failing the turn"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn recording_an_attempt_leaves_the_dispatched_request_unchanged() {
+        let turn = ledger_turn(ledger_pool().await, 1);
+        let mut request = ledger_request();
+        request.reasoning_effort = Some("high".to_string());
+        let before = format!("{request:?}");
+        let digests_before = (
+            crate::context::tool_hash::system_prompt_digest(&request),
+            crate::context::tool_definitions_hash(request.tools.as_deref().unwrap_or(&[])),
+            crate::context::tool_hash::message_range_digest(&request.messages),
+        );
+
+        ledger_open_attempt(&turn, &request, 0, "attempt-1")
+            .await
+            .expect("the attempt is recorded");
+
+        assert_eq!(
+            format!("{request:?}"),
+            before,
+            "the ledger only reads the request; what is sent is unchanged"
+        );
+        assert_eq!(
+            (
+                crate::context::tool_hash::system_prompt_digest(&request),
+                crate::context::tool_definitions_hash(request.tools.as_deref().unwrap_or(&[]),),
+                crate::context::tool_hash::message_range_digest(&request.messages),
+            ),
+            digests_before,
+            "the recorded identity is the identity of the dispatched value"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_dispatched_turn_records_the_compiled_prompts_section_digests() {
+        let compiled = compiled_ledger_prompt();
+        let digests = crate::agent::prompt::section_digests(&compiled.blocks);
+        assert!(
+            !digests.is_empty(),
+            "the compiled prompt has sections to attribute"
+        );
+        assert!(
+            digests.contains_key("harness_contract"),
+            "the compiled prompt carries the harness contract section"
+        );
+
+        let pool = ledger_pool().await;
+        let workspace = tempfile::tempdir().expect("ledger workspace");
+        let mut loop_ = loop_with_ledger(pool.clone(), workspace.path());
+        loop_.set_prompt_section_digests(digests.clone());
+        let mut request = ledger_request();
+        request.system = Some(compiled.text);
+
+        let events = ProviderTurnAdapter::receive_with_retry_context(&mut loop_, &request, None)
+            .await
+            .expect("the attempt completes");
+        assert!(events.is_empty(), "the stub provider streams no events");
+
+        let rows = crate::session::request_ledger::TurnRequestLedgerStore::new(pool)
+            .turn_attempts("session-ledger", 1)
+            .await
+            .expect("read the dispatched turn");
+        assert_eq!(rows.len(), 1, "one row for the one attempt");
+        assert_eq!(
+            rows[0].section_digests.as_ref(),
+            Some(&digests),
+            "the row carries the compiled prompt's section digests, not a rebuild"
+        );
+        assert_eq!(
+            rows[0].system_digest,
+            crate::context::tool_hash::system_prompt_digest(&request),
+            "the section map describes the same dispatched system prompt the digest covers"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_sectionless_prompt_records_an_empty_map_rather_than_null() {
+        let pool = ledger_pool().await;
+        let workspace = tempfile::tempdir().expect("ledger workspace");
+        let mut loop_ = loop_with_ledger(pool.clone(), workspace.path());
+        loop_.set_prompt_section_digests(std::collections::BTreeMap::new());
+
+        ProviderTurnAdapter::receive_with_retry_context(&mut loop_, &ledger_request(), None)
+            .await
+            .expect("the attempt completes");
+
+        let rows = crate::session::request_ledger::TurnRequestLedgerStore::new(pool)
+            .turn_attempts("session-ledger", 1)
+            .await
+            .expect("read the dispatched turn");
+        let recorded = rows[0]
+            .section_digests
+            .as_ref()
+            .expect("a prompt with no sections still records a present, empty map");
+        assert!(
+            recorded.is_empty(),
+            "the empty map says 'sections known, none present', not 'unknown'"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_turn_without_a_compiled_prompt_identity_records_no_section_map() {
+        let turn = ledger_turn(ledger_pool().await, 1);
+        ledger_open_attempt(&turn, &ledger_request(), 0, "attempt-1")
+            .await
+            .expect("the attempt is recorded");
+
+        let rows = turn
+            .store
+            .turn_attempts("session-ledger", 1)
+            .await
+            .expect("read the turn");
+        assert_eq!(
+            rows[0].section_digests, None,
+            "a loop built without a compiled prompt identity records no section map"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_ledger_insert_cost_is_bounded() {
+        let turn = ledger_turn(ledger_pool().await, 1);
+        let request = ledger_request();
+        ledger_open_attempt(&turn, &request, 0, "warm-up")
+            .await
+            .expect("warm-up write");
+
+        let rounds: u32 = 20;
+        let started = Instant::now();
+        for index in 1..=rounds {
+            ledger_open_attempt(&turn, &request, index as usize, "timed")
+                .await
+                .expect("timed write");
+        }
+        let per_insert = started.elapsed() / rounds;
+        println!("request ledger insert cost: {per_insert:?} per attempt");
+        assert!(
+            per_insert < Duration::from_millis(50),
+            "one indexed insert must not stall dispatch: {per_insert:?}"
+        );
     }
 }

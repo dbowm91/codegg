@@ -24,30 +24,45 @@
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::{Margin, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
 use super::super::scroll::CenteredScroll;
+use super::super::section::{Section, SectionFrame};
 
 use crate::tui::app::state::file_tree::{
     filter_rows, FileTreeStatus, FileTreeStructure, TreePanelMode, FALLBACK_PAGE_ROWS,
 };
 use crate::tui::app::TuiMsg;
+use crate::tui::components::hint_line::HintLine;
 use crate::tui::file_icons::{self, FileIconStyle};
 use crate::tui::file_tree::{TreeFilterField, TreeNodeKind, TreeRow};
 
-/// Hints rendered under the listing. Kept in one place so the box, its
-/// hosted panel, and the help dialog cannot disagree about what the keys do.
-/// [`Component::keymap_hint`] hands this exact string to the panel host.
-///
+/// The pinned rendering of [`hint`], which is the producer: the docking test in
+/// `panels` reads this constant, and
+/// `the_keymap_the_host_advertises_is_this_box_keymap` binds the two.
+/// [`Component::keymap_hint`] hands the builder's rendering to the panel host.
 /// The panel chrome owns the word **back**, so `h` is **up** one level here.
 pub const HINT: &str =
     "j/k move · ^d/^u page · l/→ peek · h/← up · enter open · i filter · r refresh · q/⇧Q close";
+
+fn hint() -> HintLine {
+    let mut hint = HintLine::new();
+    hint.push("j/k", "move")
+        .push("^d/^u", "page")
+        .push("l/→", "peek")
+        .push("h/←", "up")
+        .push("enter", "open")
+        .push("i", "filter")
+        .push("r", "refresh")
+        .push("q/⇧Q", "close");
+    hint
+}
 /// Separator between breadcrumb components. A `›` reads as "down one level".
 const BREADCRUMB_SEP: &str = " › ";
 
@@ -451,13 +466,15 @@ impl Component for FilesDialog {
     }
 
     /// The verbs this box implements, for the panel host to reuse verbatim.
-    fn keymap_hint(&self) -> Option<String> {
-        Some(HINT.to_string())
+    fn keymap_hint_line(&self) -> Option<HintLine> {
+        Some(hint())
     }
 
     /// The listing alone: no border, no title, no footer.
     fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        let inner = area.inner(Margin::new(1, 1));
+        let inner = Section::plain(theme)
+            .frame(SectionFrame::Hosted)
+            .draw(area, frame.buffer_mut());
         if inner.height == 0 || inner.width == 0 {
             return;
         }
@@ -547,12 +564,8 @@ impl Component for FilesDialog {
                 rows.len(),
             )
         };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(title)
-            .border_style(Style::default().fg(theme.border));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        let section = Section::verbatim(&title, theme).focused(true);
+        let inner = section.draw(area, frame.buffer_mut());
 
         // The listing gets the whole box. The hotkey line that used to sit
         // at the bottom of the box duplicated the keymap the composer status

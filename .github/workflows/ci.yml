@@ -102,8 +102,22 @@ jobs:
       - name: codegg-core boundary guard
         run: ./scripts/check-core-boundary.sh
 
+      # The sandbox guards protect the silent containment defects (dropped
+      # profile thread, widened child ceiling, degraded uncontained launch,
+      # unregistered backend, Seatbelt deny order, hardlinked deny refusal,
+      # durable-payload containment rebuild). Both run with their self-tests:
+      # a guard that cannot fail on an injected defect is not evidence.
+      - name: Sandbox contract guard (self-test)
+        run: python3 scripts/check_sandbox_contract.py --self-test
+
       - name: Sandbox contract guard
         run: python3 scripts/check_sandbox_contract.py
+
+      - name: Sandbox policy wiring guard (self-test)
+        run: python3 scripts/check_sandbox_policy_wiring.py --self-test
+
+      - name: Sandbox policy wiring guard
+        run: python3 scripts/check_sandbox_policy_wiring.py
 
       # M007-D: the daemon owns the command catalog (ADR-0052). Both guards
       # run here with their self-tests: a guard that cannot fail on an
@@ -119,6 +133,21 @@ jobs:
 
       - name: Frontend action set guard
         run: python3 scripts/check_frontend_action_set.py
+
+      - name: Storage catalog guard (self-test)
+        run: python3 scripts/check_storage_catalog.py --self-test
+
+      - name: Storage catalog guard
+        run: python3 scripts/check_storage_catalog.py
+
+      - name: Tool catalog guard (self-test)
+        run: python3 scripts/check_tool_catalog.py --self-test
+
+      - name: Tool catalog guard
+        run: python3 scripts/check_tool_catalog.py
+
+      - name: Project catalog invariants guard
+        run: python3 scripts/check_project_catalog_invariants.py
 
       - name: ADR identity and link guard
         run: python3 scripts/check_adr_integrity.py
@@ -248,11 +277,20 @@ jobs:
       - name: TUI project authority guard
         run: python3 scripts/check_tui_project_authority.py
 
+      - name: TUI editor text-authority guard self-test
+        run: python3 scripts/check_tui_editor_text_authority.py --self-test
+
       - name: TUI editor text-authority guard
         run: python3 scripts/check_tui_editor_text_authority.py
 
+      - name: TUI editor key-authority guard self-test
+        run: python3 scripts/check_tui_editor_key_authority.py --self-test
+
       - name: TUI editor key-authority guard
         run: python3 scripts/check_tui_editor_key_authority.py
+
+      - name: TUI editor leaf-authority guard self-test
+        run: python3 scripts/check_tui_editor_leaf_authority.py --self-test
 
       - name: TUI editor leaf-authority guard
         run: python3 scripts/check_tui_editor_leaf_authority.py
@@ -260,11 +298,20 @@ jobs:
       - name: TUI editor completion-authority guard
         run: python3 scripts/check_tui_editor_completion_authority.py
 
+      - name: TUI editor apply-path guard self-test
+        run: python3 scripts/check_tui_editor_apply_path.py --self-test
+
       - name: TUI editor apply-path guard
         run: python3 scripts/check_tui_editor_apply_path.py
 
+      - name: TUI editor prefix-state guard self-test
+        run: python3 scripts/check_tui_editor_prefix_state.py --self-test
+
       - name: TUI editor prefix-state guard
         run: python3 scripts/check_tui_editor_prefix_state.py
+
+      - name: TUI editor doc-drift guard self-test
+        run: python3 scripts/check_tui_editor_doc_drift.py --self-test
 
       - name: TUI editor doc-drift guard
         run: python3 scripts/check_tui_editor_doc_drift.py
@@ -319,6 +366,24 @@ jobs:
       - name: TUI render cost guard
         run: python3 scripts/check_tui_render_cost.py
 
+      - name: TUI render-invariant baseline self-test
+        run: python3 scripts/check_tui_render_invariant_baseline.py --self-test
+
+      - name: TUI render-invariant baseline guard
+        run: python3 scripts/check_tui_render_invariant_baseline.py
+
+      - name: Session replay fixture self-test
+        run: python3 scripts/check_session_replay_fixtures.py --self-test
+
+      - name: Session replay fixture guard
+        run: python3 scripts/check_session_replay_fixtures.py
+
+      - name: Request ledger writer self-test
+        run: python3 scripts/check_request_ledger_writers.py --self-test
+
+      - name: Request ledger writer guard
+        run: python3 scripts/check_request_ledger_writers.py
+
       - name: HTTP route disposition guard
         run: python3 scripts/check_http_route_disposition.py
 
@@ -342,6 +407,15 @@ jobs:
 
       - name: Config merge coverage guard
         run: python3 scripts/check_config_merge_coverage.py
+
+      - name: Config merge coverage guard self-test
+        run: python3 scripts/check_config_merge_coverage.py --self-test
+
+      - name: Config provenance guard self-test
+        run: python3 scripts/check_config_provenance.py --self-test
+
+      - name: Config provenance guard
+        run: python3 scripts/check_config_provenance.py
 
       - name: Reasoning intent fidelity self-test
         run: python3 scripts/check_reasoning_intent_fidelity.py --self-test
@@ -441,6 +515,14 @@ jobs:
 
       - name: Shell policy test-safety fixtures
         run: python3 scripts/test_shell_policy_test_safety.py
+
+      # An escaped defect gets a dated postmortem naming the guard that now
+      # prevents it, and this guard fails when that claim stops being true.
+      - name: Postmortem guard self-test
+        run: python3 scripts/check_postmortems.py --self-test
+
+      - name: Postmortem guard
+        run: python3 scripts/check_postmortems.py
 
       - name: Build CodeGG for native Harness Lab job lifecycle test
         run: |

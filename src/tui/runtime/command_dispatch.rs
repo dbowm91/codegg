@@ -9,6 +9,7 @@
 
 use super::super::app::state::session::GitSidebarInfo;
 use super::super::app::{send_tui, App, TuiCommand};
+use crate::tui::components::hint_line::HintLine;
 
 #[allow(unused_imports)]
 use super::super::commands::agents::{apply_asset_refresh_finished, start_refresh_assets};
@@ -125,7 +126,10 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                     app.focus_manager
                         .dialog_mut_any::<crate::tui::components::dialogs::info::InfoDialog>()
                 {
-                    dialog.set_custom_footer("a: publish   Esc: cancel".into());
+                    dialog.set_custom_footer(HintLine::from_items(&[
+                        ("a", "publish"),
+                        ("Esc", "cancel"),
+                    ]));
                 }
             }
         }

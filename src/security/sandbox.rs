@@ -796,10 +796,16 @@ impl SandboxPathIdentity {
     }
 }
 
-/// One-shot helper status. `Enforced` is a setup event; the other variants
-/// are terminal events. The parent accepts `Enforced` followed by EOF for a
-/// successful target exec, or `Enforced` followed by `ExecError` when exec
-/// returns.
+/// One-shot helper status. `Enforced` is the only setup event; the other
+/// variants are terminal events. The parent accepts `Enforced` followed by
+/// EOF for a successful target exec, or `Enforced` followed by `ExecError`
+/// when exec returns.
+///
+/// The type carries exactly the shapes some producer writes. There is no
+/// variant for a protected-mount-view receipt: that route reports through
+/// Bubblewrap's own `--json-status-fd`, so no helper writes such a frame
+/// onto this channel, and a decoder arm for a claim nothing produces was
+/// removed rather than left accepted-and-unverified.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SandboxLaunchOutcome {
     /// Containment is in force. `abi` is the backend's reported version and
@@ -812,10 +818,6 @@ pub enum SandboxLaunchOutcome {
         guarantees: Vec<String>,
         limits: Vec<String>,
     },
-    /// Bubblewrap has completed mount setup and started only the trusted
-    /// in-sandbox gate. The gate waits for parent acknowledgment before it
-    /// execs the requested target.
-    BubblewrapReady,
     Unavailable {
         reason: String,
     },
@@ -847,6 +849,29 @@ impl SandboxLaunchOutcome {
     }
 }
 
+/// Accept a decoded setup frame only when it names `selected`.
+///
+/// The helper's `Enforced` frame is its own report; the parent's selection is
+/// the decision, so a frame naming another mechanism is refused rather than
+/// recorded as containment. A non-setup frame carries no backend to compare.
+pub fn verify_reported_backend(
+    selected: BackendId,
+    outcome: &SandboxLaunchOutcome,
+) -> Result<(), String> {
+    match outcome.backend() {
+        Some(reported) if reported != selected => Err(format!(
+            "sandbox helper reported backend '{reported}', but this launch selected '{selected}'"
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// The backend a legacy helper launch can enforce here: the only registered
+/// backend this platform admits, so it is a route invariant rather than a
+/// second selection. A second admissible backend must become a carried one.
+#[cfg(target_os = "macos")]
+pub(crate) const LEGACY_HELPER_BACKEND: BackendId = BackendId::SEATBELT;
+
 /// Version for the private helper status frame. This is local process
 /// plumbing, not a public or durable protocol.
 pub const SANDBOX_STATUS_VERSION: u8 = 1;
@@ -857,6 +882,21 @@ pub const MAX_SANDBOX_SPEC_BYTES: usize = 64 * 1024;
 pub const SANDBOX_STATUS_FD: i32 = 3;
 #[cfg(unix)]
 pub const SANDBOX_ACK_FD: i32 = 198;
+
+/// The record the trusted helper writes on Bubblewrap's status stream to carry
+/// the Landlock process-scope ABI it obtained.
+///
+/// Bubblewrap reports no scope and the helper is replaced by Bubblewrap at the
+/// end of setup, so this is the only window in which the fact can be reported.
+/// It is a JSON object in Bubblewrap's one-record-per-line shape, so the stream
+/// stays line-decodable, and it rides the status descriptor rather than stderr.
+pub const PROCESS_SCOPE_ABI_RECORD: &str = "codegg-landlock-process-scope-abi";
+
+/// Render the helper-authored record line that carries `abi`. The key comes
+/// from [`PROCESS_SCOPE_ABI_RECORD`], so the writer and the decoder agree.
+pub fn encode_process_scope_abi_record(abi: u32) -> String {
+    format!("{{\"{PROCESS_SCOPE_ABI_RECORD}\":{abi}}}\n")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxStatusFrame {
@@ -934,8 +974,12 @@ pub fn decode_sandbox_status(bytes: &[u8]) -> Result<SandboxLaunchOutcome, Strin
         }
         cursor = payload_end;
 
+        // No producer writes a setup shape other than `Enforced`, and the type
+        // has no variant to carry one — a frame naming a removed or
+        // never-produced outcome fails deserialization above — so the accepted
+        // setup set stays identical to the produced one.
         match &frame.outcome {
-            SandboxLaunchOutcome::Enforced { .. } | SandboxLaunchOutcome::BubblewrapReady => {
+            SandboxLaunchOutcome::Enforced { .. } => {
                 if setup_seen.replace(()).is_some() || terminal.is_some() {
                     return Err("sandbox helper produced a duplicate setup status".to_string());
                 }
@@ -1557,5 +1601,78 @@ mod tests {
         assert!(decode_sandbox_status(&[enforced.clone(), enforced.clone()].concat()).is_err());
         assert!(decode_sandbox_status(&[enforced, setup].concat()).is_err());
         assert!(decode_sandbox_status(&vec![0_u8; MAX_SANDBOX_STATUS_BYTES + 1]).is_err());
+    }
+
+    /// The decoder accepts exactly the setup shapes a producer writes.
+    /// The protected mount view reports through Bubblewrap's own
+    /// `--json-status-fd`, so no helper writes a mount-setup receipt onto this
+    /// channel. A frame naming one must therefore fail as malformed rather
+    /// than decode into an enforcement record nothing obtained.
+    #[test]
+    fn status_decoder_rejects_a_setup_shape_this_tree_never_produces() {
+        let enforced = SandboxLaunchOutcome::enforced(
+            BackendId::LANDLOCK,
+            BackendEnforcement::new(Some(6), &["guarantee"], &["limit"]),
+        );
+        let frame =
+            encode_sandbox_status(enforced.clone()).expect("a produced setup shape must encode");
+        assert_eq!(
+            decode_sandbox_status(&frame).expect("a produced setup shape must decode"),
+            enforced
+        );
+
+        let unproduced = br#"{"version":1,"outcome":"BubblewrapReady"}"#;
+        let mut frame = (unproduced.len() as u32).to_be_bytes().to_vec();
+        frame.extend_from_slice(unproduced);
+        let error = decode_sandbox_status(&frame)
+            .expect_err("a setup shape nothing produces must not decode");
+        assert!(
+            error.contains("malformed"),
+            "an unproduced setup shape must fail as malformed: {error}"
+        );
+    }
+
+    #[test]
+    fn a_frame_naming_another_backend_is_refused() {
+        let forged = SandboxLaunchOutcome::Enforced {
+            backend: BackendId::SEATBELT,
+            abi: None,
+            guarantees: Vec::new(),
+            limits: Vec::new(),
+        };
+        let error = verify_reported_backend(BackendId::LANDLOCK, &forged)
+            .expect_err("a frame naming another backend must be refused");
+        assert!(
+            error.contains("seatbelt") && error.contains("landlock"),
+            "the refusal must name both identities: {error}"
+        );
+        assert!(
+            verify_reported_backend(
+                BackendId::LANDLOCK,
+                &SandboxLaunchOutcome::SetupError {
+                    reason: "setup failed".to_string(),
+                },
+            )
+            .is_ok(),
+            "a non-setup frame carries no backend to compare"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_legacy_helper_backend_is_the_only_one_the_registry_admits() {
+        assert!(
+            backend::backend(LEGACY_HELPER_BACKEND).is_some(),
+            "the route's backend must be one the registry ships: {LEGACY_HELPER_BACKEND}"
+        );
+        let admitted = backend::BACKENDS
+            .iter()
+            .filter(|candidate| (candidate.probe)().is_ok())
+            .map(|candidate| candidate.id)
+            .collect::<Vec<BackendId>>();
+        assert!(
+            admitted.is_empty() || admitted == [LEGACY_HELPER_BACKEND],
+            "a second admissible backend makes the route invariant inexact: {admitted:?}"
+        );
     }
 }

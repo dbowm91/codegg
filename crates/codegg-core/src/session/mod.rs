@@ -6,6 +6,7 @@ pub mod events;
 pub mod human_shell_promotion;
 pub mod legacy_resolution;
 pub mod message;
+pub mod request_ledger;
 pub mod schema;
 pub mod selection_catalog;
 pub mod skill_promotion;
@@ -43,6 +44,11 @@ pub use human_shell_promotion::{
 pub use models::{
     CreateSession, LegacyResolution, PermissionEntry, Session, SessionAnalytics,
     SessionSummaryProvider, TodoItem, TodoItemInput, UpdateSession, UsageRecord,
+};
+pub use request_ledger::{
+    is_missing_table, RequestLedgerError, RequestLedgerHealth, TurnRequestAttempt,
+    TurnRequestLedgerStore, TurnRequestOutcome, TurnRequestRecord,
+    MAX_REQUEST_LEDGER_ROWS_PER_SESSION, REQUEST_LEDGER_MAX_BODY_BYTES,
 };
 pub use row::{MessageRow, PartRow, PermissionRow, SessionRow, TodoRow};
 pub use skill_promotion::{

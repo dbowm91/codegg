@@ -1139,16 +1139,16 @@ async fn run_inner(
     configure_process_session(&mut command);
     #[cfg(unix)]
     if let Some(writer) = status_writer.as_ref() {
-        #[cfg(not(target_os = "linux"))]
-        let close_unapproved_fds = false;
-        #[cfg(target_os = "linux")]
-        let close_unapproved_fds =
-            matches!(&sandbox, SandboxRequest::Required(spec) if spec.linux_process_isolation);
+        // `prepare_launch_argv` creates the status pipe only for a
+        // `SandboxRequest::Required` launch, so reaching this block *is* the
+        // contained path. Every tier closes the descriptors it does not hand
+        // the helper: the descriptor table is part of the containment
+        // boundary whether or not the launch asked for process isolation.
         configure_status_fds(
             &mut command,
             writer.as_raw_fd(),
             status_ack_reader.as_ref().map(AsRawFd::as_raw_fd),
-            close_unapproved_fds,
+            true,
         );
     }
 
@@ -1987,11 +1987,7 @@ fn configure_status_fds(
     command: &mut Command,
     source_status_fd: i32,
     source_ack_fd: Option<i32>,
-    // Closing the unapproved descriptors is a Linux `close_range` operation.
-    // The parameter is cfg-split rather than suppressed so the non-Linux
-    // build carries no dead binding.
-    #[cfg(target_os = "linux")] close_unapproved_fds: bool,
-    #[cfg(not(target_os = "linux"))] _close_unapproved_fds: bool,
+    close_unapproved_fds: bool,
 ) {
     unsafe {
         command.pre_exec(move || {
@@ -2037,25 +2033,59 @@ fn configure_status_fds(
             {
                 return Err(io::Error::last_os_error());
             }
-            #[cfg(target_os = "linux")]
+            // Both channel descriptors now sit on their fixed numbers with
+            // close-on-exec cleared, so the closure below cannot remove them
+            // and the helper receives them by construction.
             if close_unapproved_fds {
-                close_unapproved_linux_fds()?;
+                close_unapproved_fds_in_child()?;
             }
             Ok(())
         });
     }
 }
 
-/// Keep only stdio plus the private sandbox status and acknowledgment
-/// descriptors in an M004 helper. `close_range` is available well before the
-/// Landlock ABI 6 floor required by this mode; failure aborts before exec.
+/// Close every descriptor this launch does not hand to the helper.
+///
+/// Runs between `fork` and `exec`, so it stays async-signal-safe: it calls
+/// `close_range`/`close`, allocates nothing, takes no lock, and never logs.
+/// Failure aborts the spawn rather than continuing with a descriptor the
+/// containment did not approve.
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
-fn close_unapproved_linux_fds() -> io::Result<()> {
+fn close_unapproved_fds_in_child() -> io::Result<()> {
     for (first, last) in [(4_u32, 197_u32), (199_u32, u32::MAX)] {
         let result = unsafe { libc::syscall(libc::SYS_close_range, first, last, 0_u32) };
         if result != 0 {
             return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// Close every descriptor this launch does not hand to the helper.
+///
+/// Darwin has neither `close_range(2)` nor `closefrom(3)`, so this is a scan
+/// of the descriptor table bounded by the process's own `RLIMIT_NOFILE`.
+/// `getdtablesize` is a `getrlimit` wrapper and `close` is a syscall; neither
+/// allocates, takes a lock, or logs, so the `pre_exec` contract holds. The
+/// scan starts at 4 because stdio is already set up on 0..=2 and the status
+/// descriptor is already on its fixed number; the acknowledgment descriptor
+/// is skipped explicitly so a mount-view launch keeps it.
+#[cfg(all(unix, not(target_os = "linux")))]
+#[allow(unsafe_code)]
+fn close_unapproved_fds_in_child() -> io::Result<()> {
+    let table = unsafe { libc::getdtablesize() };
+    if table < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    for fd in 4..table {
+        if fd == crate::security::sandbox::SANDBOX_STATUS_FD
+            || fd == crate::security::sandbox::SANDBOX_ACK_FD
+        {
+            continue;
+        }
+        unsafe {
+            libc::close(fd);
         }
     }
     Ok(())
@@ -2074,45 +2104,130 @@ async fn read_status(mut reader: tokio::fs::File) -> Result<Vec<u8>, io::Error> 
     Ok(bytes)
 }
 
-#[cfg(target_os = "linux")]
+/// One complete line of a mount-view status stream. The stream has two writers
+/// in sequence: the trusted helper, then Bubblewrap.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MountViewStatusLine {
+    Helper,
+    ChildReceipt,
+    /// Neither writer's: the stream is refused rather than scanned further.
+    Foreign,
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn classify_mount_view_status_line(line: &[u8]) -> Result<MountViewStatusLine, String> {
+    if parse_helper_status_record(line)?.is_some() {
+        return Ok(MountViewStatusLine::Helper);
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
+        return Ok(MountViewStatusLine::Foreign);
+    };
+    let child = value
+        .as_object()
+        .and_then(|object| object.get("child-pid"))
+        .and_then(|pid| pid.as_u64())
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid != 0);
+    Ok(if child.is_some() {
+        MountViewStatusLine::ChildReceipt
+    } else {
+        MountViewStatusLine::Foreign
+    })
+}
+
+/// Parse one complete line as a helper-authored scope record.
+///
+/// `Ok(None)` means the line is not one. A key with an unusable value is an
+/// error rather than a line to skip: silently dropping the ABI is the discard
+/// this record exists to end.
+#[cfg(any(target_os = "linux", test))]
+fn parse_helper_status_record(line: &[u8]) -> Result<Option<u32>, String> {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
+        return Ok(None);
+    };
+    let Some(recorded) = value
+        .as_object()
+        .and_then(|object| object.get(crate::security::sandbox::PROCESS_SCOPE_ABI_RECORD))
+    else {
+        return Ok(None);
+    };
+    recorded
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value != 0)
+        .map(Some)
+        .ok_or_else(|| "the helper's process-scope ABI record carries no usable ABI".to_string())
+}
+
+/// Split the trusted helper's records off the front of a status stream.
+///
+/// They are a prefix, and the remainder is exactly Bubblewrap's stream —
+/// including the framed setup error the helper writes when its `exec` fails.
+/// Stripping them keeps one decoder for one producer and keeps that failure
+/// reason readable.
+#[cfg(any(target_os = "linux", test))]
+fn split_helper_status(bytes: &[u8]) -> Result<(Option<u32>, &[u8]), String> {
+    let mut rest = bytes;
+    let mut process_scope_abi = None;
+    while let Some(end) = rest.iter().position(|byte| *byte == b'\n') {
+        let Some(recorded) = parse_helper_status_record(&rest[..=end])? else {
+            break;
+        };
+        if process_scope_abi.is_some() {
+            return Err("the helper reported its process-scope ABI more than once".to_string());
+        }
+        process_scope_abi = Some(recorded);
+        rest = &rest[end + 1..];
+    }
+    Ok((process_scope_abi, rest))
+}
+
+#[cfg(any(target_os = "linux", test))]
 async fn read_bubblewrap_status_with_ack(
     mut reader: tokio::fs::File,
     ack_writer: OwnedFd,
 ) -> Result<Vec<u8>, io::Error> {
     let mut bytes = Vec::new();
-    let mut first = [0_u8; 1];
-    if reader.read(&mut first).await? == 0 {
+    let mut line_start = 0;
+    let mut receipt = false;
+    // Bubblewrap blocks the target on `--block-fd` until this acknowledgment,
+    // and the helper's record comes first. Refusing a line instead of reading
+    // it would leave Bubblewrap blocked forever: a hang, not a refusal.
+    while bytes.len() < MAX_SANDBOX_STATUS_BYTES {
+        let mut byte = [0_u8; 1];
+        if reader.read(&mut byte).await? == 0 {
+            break;
+        }
+        bytes.push(byte[0]);
+        if byte[0] != b'\n' {
+            continue;
+        }
+        match classify_mount_view_status_line(&bytes[line_start..])
+            .map_err(|reason| io::Error::new(io::ErrorKind::InvalidData, reason))?
+        {
+            MountViewStatusLine::ChildReceipt => {
+                receipt = true;
+                break;
+            }
+            MountViewStatusLine::Helper => line_start = bytes.len(),
+            MountViewStatusLine::Foreign => break,
+        }
+    }
+    // A stream that filled the bound before a receipt keeps its unacknowledged
+    // state: the target stays blocked and the caller refuses the truncation.
+    if !receipt && bytes.len() >= MAX_SANDBOX_STATUS_BYTES {
         drop(ack_writer);
         return Ok(bytes);
     }
-    bytes.push(first[0]);
 
     let mut ack_error = None;
-    if first[0] == b'{' {
-        while bytes.last() != Some(&b'\n') {
-            if bytes.len() >= MAX_SANDBOX_STATUS_BYTES {
-                drop(ack_writer);
-                return Ok(bytes);
-            }
-            let mut byte = [0_u8; 1];
-            if reader.read(&mut byte).await? == 0 {
-                drop(ack_writer);
-                return Ok(bytes);
-            }
-            bytes.push(byte[0]);
-        }
-        let ready = decode_bubblewrap_json_status(&bytes).is_ok_and(|_| {
-            bytes
-                .windows(b"\"child-pid\"".len())
-                .any(|window| window == b"\"child-pid\"")
-        });
-        if ready {
-            let mut writer = tokio::fs::File::from_std(std::fs::File::from(ack_writer));
-            if let Err(error) = writer.write_all(&[0xA5]).await {
-                ack_error = Some(error);
-            } else if let Err(error) = writer.flush().await {
-                ack_error = Some(error);
-            }
+    if receipt {
+        let mut writer = tokio::fs::File::from_std(std::fs::File::from(ack_writer));
+        if let Err(error) = writer.write_all(&[0xA5]).await {
+            ack_error = Some(error);
+        } else if let Err(error) = writer.flush().await {
+            ack_error = Some(error);
         }
     } else {
         drop(ack_writer);
@@ -2140,14 +2255,15 @@ async fn read_bubblewrap_status_with_ack(
     Ok(bytes)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 async fn await_bubblewrap_ready(
     mut reader: tokio::fs::File,
     ack_writer: OwnedFd,
 ) -> Result<(tokio::fs::File, Vec<u8>), io::Error> {
-    let mut line = Vec::new();
+    let mut bytes = Vec::new();
+    let mut line_start = 0;
     loop {
-        if line.len() >= MAX_SANDBOX_STATUS_BYTES {
+        if bytes.len() >= MAX_SANDBOX_STATUS_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Bubblewrap setup receipt exceeds the status bound",
@@ -2160,35 +2276,38 @@ async fn await_bubblewrap_ready(
                 "Bubblewrap closed status before setup receipt",
             ));
         }
-        line.push(byte[0]);
-        if byte[0] == b'\n' {
-            break;
+        bytes.push(byte[0]);
+        if byte[0] != b'\n' {
+            continue;
+        }
+        match classify_mount_view_status_line(&bytes[line_start..])
+            .map_err(|reason| io::Error::new(io::ErrorKind::InvalidData, reason))?
+        {
+            MountViewStatusLine::ChildReceipt => break,
+            MountViewStatusLine::Helper => line_start = bytes.len(),
+            MountViewStatusLine::Foreign => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Bubblewrap setup receipt did not identify its child",
+                ))
+            }
         }
     }
-    let observed = decode_bubblewrap_json_status(&line)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    // Only Bubblewrap's own records are handed to the terminal decode.
+    let receipt = bytes[line_start..].to_vec();
+    let observed = decode_bubblewrap_json_status(&receipt)
+        .map_err(|reason| io::Error::new(io::ErrorKind::InvalidData, reason))?;
     if observed.exit_code_reported {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Bubblewrap reported target exit before the setup acknowledgment",
         ));
     }
-    let status: serde_json::Value = serde_json::from_slice(&line)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    if !status
-        .as_object()
-        .is_some_and(|object| object.contains_key("child-pid"))
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Bubblewrap setup receipt did not identify its child",
-        ));
-    }
 
     let mut writer = tokio::fs::File::from_std(std::fs::File::from(ack_writer));
     writer.write_all(&[0xA5]).await?;
     writer.flush().await?;
-    Ok((reader, line))
+    Ok((reader, receipt))
 }
 
 #[cfg(target_os = "linux")]
@@ -2509,6 +2628,13 @@ fn interpret_sandbox_status_for_termination(
         crate::security::sandbox::linux_launch::observe_legacy_outcome(&request, &decoded)
             .map_err(ManagedProcessError::SandboxFailed)?;
     }
+    // The helper's report must name the backend this route admits.
+    #[cfg(target_os = "macos")]
+    crate::security::sandbox::verify_reported_backend(
+        crate::security::sandbox::LEGACY_HELPER_BACKEND,
+        &decoded,
+    )
+    .map_err(ManagedProcessError::SandboxFailed)?;
     match decoded {
         SandboxLaunchOutcome::Enforced {
             backend,
@@ -2518,9 +2644,8 @@ fn interpret_sandbox_status_for_termination(
         } => Ok(SandboxExecutionOutcome::Enforced {
             backend,
             abi,
-            // The legacy Landlock route has no network dimension: it scopes
-            // the filesystem and nothing else, so the obtained network
-            // boundary is truthfully unrestricted.
+            // The legacy Landlock route scopes the filesystem and nothing
+            // else, so its network boundary is truthfully unrestricted.
             network: codegg_core::approval::NetworkEnforcement::Unrestricted,
             guarantees,
             limits,
@@ -2537,9 +2662,6 @@ fn interpret_sandbox_status_for_termination(
         SandboxLaunchOutcome::ExecError { reason } => Err(ManagedProcessError::SandboxFailed(
             format!("sandbox target exec failed: {reason}"),
         )),
-        SandboxLaunchOutcome::BubblewrapReady => Err(ManagedProcessError::SandboxFailed(
-            "legacy sandbox helper reported an unexpected Bubblewrap setup receipt".into(),
-        )),
     }
 }
 
@@ -2549,14 +2671,16 @@ fn interpret_bubblewrap_status(
     spec: &SandboxLaunchSpec,
     termination: TerminationReason,
 ) -> Result<SandboxExecutionOutcome, ManagedProcessError> {
-    let observed = if status
+    let (process_scope_abi, bubblewrap) =
+        split_helper_status(status).map_err(ManagedProcessError::SandboxFailed)?;
+    let observed = if bubblewrap
         .iter()
         .copied()
         .find(|byte| !byte.is_ascii_whitespace())
         == Some(b'{')
     {
-        let observed =
-            decode_bubblewrap_json_status(status).map_err(ManagedProcessError::SandboxFailed)?;
+        let observed = decode_bubblewrap_json_status(bubblewrap)
+            .map_err(ManagedProcessError::SandboxFailed)?;
         if !observed.exit_code_reported && termination == TerminationReason::Exited {
             return Err(ManagedProcessError::SandboxFailed(
                 "Bubblewrap exited without confirming successful target execution".into(),
@@ -2564,7 +2688,7 @@ fn interpret_bubblewrap_status(
         }
         observed
     } else {
-        match decode_sandbox_status(status).map_err(ManagedProcessError::SandboxFailed)? {
+        match decode_sandbox_status(bubblewrap).map_err(ManagedProcessError::SandboxFailed)? {
             SandboxLaunchOutcome::Unavailable { reason }
             | SandboxLaunchOutcome::SetupError { reason } => {
                 return Err(ManagedProcessError::SandboxFailed(format!(
@@ -2578,10 +2702,37 @@ fn interpret_bubblewrap_status(
             }
         }
     };
-
-    let network = obtained_network_enforcement(spec, observed.child_pid);
-    let mut guarantees = crate::security::sandbox::linux_mount_view::enforcement_scope(spec)
+    let mount_scope = crate::security::sandbox::linux_mount_view::enforcement_scope(spec)
         .map_err(ManagedProcessError::SandboxFailed)?;
+    Ok(mount_view_enforcement(
+        spec,
+        observed.child_pid,
+        process_scope_abi,
+        mount_scope,
+    ))
+}
+
+/// The limit a process-isolation launch states when the helper reported no
+/// scope ABI. The tier applies the scope and reports the ABI it obtained, so
+/// absence is a fact about the stream; `abi: None` alone could not be told
+/// apart from an unversioned backend.
+#[cfg(any(target_os = "linux", test))]
+const PROCESS_SCOPE_ABI_UNREPORTED_LIMIT: &str = "Landlock process-scope ABI was not reported \
+     by the helper: signal and abstract AF_UNIX socket isolation is not claimed";
+
+/// Compose the mount-view descriptor from the records the launch observed.
+///
+/// Platform-independent so the claim assembly is testable without a Linux
+/// host; `process_scope_abi` is what the helper reported and `mount_scope` is
+/// the compiled path scope.
+#[cfg(any(target_os = "linux", test))]
+fn mount_view_enforcement(
+    spec: &SandboxLaunchSpec,
+    observed_child_pid: u32,
+    process_scope_abi: Option<u32>,
+    mount_scope: Vec<String>,
+) -> SandboxExecutionOutcome {
+    let mut guarantees = mount_scope;
     guarantees.insert(
         0,
         "Bubblewrap block-fd barrier releases the target only after mount setup".into(),
@@ -2592,38 +2743,70 @@ fn interpret_bubblewrap_status(
                 .into(),
         );
     }
-    let limits = if spec.linux_process_isolation {
+    let mut limits = protected_mount_view_limits(spec);
+    if spec.linux_process_isolation {
         guarantees.extend([
             "PID namespace with a private procfs mounted after namespace creation".into(),
             "IPC namespace isolates System V IPC objects".into(),
-            "Landlock ABI 6 scopes outgoing signals and abstract Unix socket connections to the sandbox domain".into(),
-            "architecture-checked seccomp filter denies namespace and mount changes, tracing, and selected kernel control interfaces".into(),
         ]);
-        let mut limits = vec![
-            "resource limits are not claimed by this launch".into(),
+        // The ABI named here is the number the helper returned, never a
+        // baseline the host may not have granted.
+        match process_scope_abi {
+            Some(abi) => guarantees.push(
+                crate::security::sandbox::landlock::process_scope_guarantee(abi),
+            ),
+            None => limits.push(PROCESS_SCOPE_ABI_UNREPORTED_LIMIT.into()),
+        }
+        guarantees.push(
+            "architecture-checked seccomp filter denies namespace and mount changes, tracing, and selected kernel control interfaces".into(),
+        );
+    }
+    SandboxExecutionOutcome::Enforced {
+        backend: crate::security::sandbox::BackendId::BUBBLEWRAP,
+        // Bubblewrap reports no version of its own; the Landlock ABI is in the
+        // guarantee list above, named with the scope it belongs to.
+        abi: None,
+        network: obtained_network_enforcement(spec, observed_child_pid),
+        guarantees,
+        limits,
+    }
+}
+
+/// What the protected mount view did **not** obtain, for either tier.
+///
+/// One list for both mount-view shapes, so a channel cannot be disclosed on
+/// the process-isolation tier and omitted on the filesystem-only one. The
+/// descriptor entry is shared verbatim with the Landlock and Seatbelt lists
+/// (`backend::INHERITED_DESCRIPTOR_LIMIT`): the daemon closes what it hands
+/// down, but the helper's own descriptors cross the final `exec`, so every
+/// tier passes a descriptor channel and every tier must name it the same way.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn protected_mount_view_limits(spec: &SandboxLaunchSpec) -> Vec<String> {
+    let mut limits = vec![
+        crate::security::sandbox::backend::INHERITED_DESCRIPTOR_LIMIT.to_string(),
+        "resource limits are not claimed by this launch".into(),
+    ];
+    if spec.linux_process_isolation {
+        limits.push(
             "pathname Unix socket access is not qualified and must not be treated as denied".into(),
-        ];
+        );
         if !spec.linux_offline_network {
             limits.push(
                 "network isolation not requested; outbound networking retains its existing policy"
                     .into(),
             );
         }
-        limits
     } else {
-        vec![
-            "network isolation not requested".into(),
-            "PID/IPC isolation and seccomp are not claimed by this launch".into(),
-            "resource limits are not claimed by this launch".into(),
-        ]
-    };
-    Ok(SandboxExecutionOutcome::Enforced {
-        backend: crate::security::sandbox::BackendId::BUBBLEWRAP,
-        abi: None,
-        network,
-        guarantees,
-        limits,
-    })
+        limits.push("network isolation not requested".into());
+        // This tier applies no process scope, so it has no ABI to report; the
+        // words keep `abi: None` from reading as a scope that was lost.
+        limits.push(
+            "PID/IPC isolation and seccomp are not claimed by this launch, so no process-scope \
+             ABI is reported"
+                .into(),
+        );
+    }
+    limits
 }
 
 /// The network boundary a Bubblewrap launch **obtained**.
@@ -2645,7 +2828,7 @@ fn interpret_bubblewrap_status(
 /// child was placed in. It says nothing about transports that do not use the
 /// network, and M004's seccomp filter denies the child from creating or
 /// joining a namespace of its own, so the child cannot widen it.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 fn obtained_network_enforcement(
     spec: &SandboxLaunchSpec,
     child_pid: u32,
@@ -2671,7 +2854,7 @@ fn obtained_network_enforcement(
 /// therefore the **observation** that the setup completed: a requested
 /// namespace that could not be created aborts the launch before the child
 /// exists, and the status stream then carries no `child-pid`.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BubblewrapObservedStatus {
     /// The sandbox child Bubblewrap forked and identified.
@@ -2680,7 +2863,7 @@ struct BubblewrapObservedStatus {
     exit_code_reported: bool,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 fn decode_bubblewrap_json_status(bytes: &[u8]) -> Result<BubblewrapObservedStatus, String> {
     if bytes.is_empty() {
         return Err("Bubblewrap produced no JSON status".into());
@@ -2728,11 +2911,9 @@ mod tests {
     use super::*;
     use std::ffi::OsString;
 
-    /// A launch spec carrying only the dimensions the network producer reads.
-    ///
-    /// The tests that use it assert the Linux network-boundary contract, so
-    /// it is compiled on Linux only.
-    #[cfg(target_os = "linux")]
+    /// A launch spec carrying only the dimensions the mount-view producers
+    /// read: the network boundary, the process-scope ABI, and the tier that
+    /// decides which of them can be claimed.
     fn spec_with(offline_network: bool, process_isolation: bool) -> SandboxLaunchSpec {
         SandboxLaunchSpec {
             target: PathBuf::from("/bin/true"),
@@ -2814,6 +2995,248 @@ mod tests {
             .expect("receipt");
         assert_eq!(observed.child_pid, 4242);
         assert!(observed.exit_code_reported);
+    }
+
+    /// A pipe whose two ends are both owned descriptors. The readers are
+    /// driven by real pipes because the hazard is a blocked writer.
+    #[cfg(unix)]
+    #[allow(unsafe_code)]
+    fn status_pipe() -> (OwnedFd, OwnedFd) {
+        let mut fds = [0_i32; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "create a pipe");
+        unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
+    }
+
+    /// Bubblewrap blocks the target until its child receipt is acknowledged,
+    /// and the helper's record comes first. A reader that only inspected the
+    /// first line would never acknowledge and the launch would hang, so the
+    /// writer waits for the acknowledgment before releasing the exit record —
+    /// exactly as Bubblewrap does.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_streaming_reader_acknowledges_a_receipt_behind_a_helper_record() {
+        let (status_read, status_write) = status_pipe();
+        let (ack_read, ack_write) = status_pipe();
+        let reader = tokio::fs::File::from_std(std::fs::File::from(status_read));
+        let reading = tokio::spawn(read_bubblewrap_status_with_ack(reader, ack_write));
+        let record = crate::security::sandbox::encode_process_scope_abi_record(9);
+
+        let mut writer = std::fs::File::from(status_write);
+        writer
+            .write_all(record.as_bytes())
+            .expect("write the helper record");
+        writer
+            .write_all(b"{\"child-pid\":4242}\n")
+            .expect("write the child receipt");
+
+        let mut acknowledgments = tokio::fs::File::from_std(std::fs::File::from(ack_read));
+        let mut ack = [0_u8; 1];
+        tokio::time::timeout(Duration::from_secs(5), acknowledgments.read_exact(&mut ack))
+            .await
+            .expect("a receipt behind a helper record must still be acknowledged")
+            .expect("read the acknowledgment byte");
+        assert_eq!(
+            ack,
+            [0xA5],
+            "the acknowledgment byte is the one that releases the target"
+        );
+
+        writer
+            .write_all(b"{\"exit-code\":0}\n")
+            .expect("write the terminal record the acknowledgment released");
+        drop(writer);
+        let stream = reading.await.expect("reader task").expect("status stream");
+        assert_eq!(
+            String::from_utf8(stream).expect("the status stream is UTF-8"),
+            format!("{record}{{\"child-pid\":4242}}\n{{\"exit-code\":0}}\n"),
+            "every record the reader consumed must reach the decoder"
+        );
+    }
+
+    /// The live-child reader returns Bubblewrap's stream alone, so the
+    /// terminal decoder never sees a record Bubblewrap did not write.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_live_child_reader_returns_only_bubblewraps_own_records() {
+        let (status_read, status_write) = status_pipe();
+        let (ack_read, ack_write) = status_pipe();
+        let reader = tokio::fs::File::from_std(std::fs::File::from(status_read));
+        let reading = tokio::spawn(await_bubblewrap_ready(reader, ack_write));
+        let record = crate::security::sandbox::encode_process_scope_abi_record(11);
+
+        let mut writer = std::fs::File::from(status_write);
+        writer
+            .write_all(record.as_bytes())
+            .expect("write the helper record");
+        writer
+            .write_all(b"{\"child-pid\":4242}\n")
+            .expect("write the child receipt");
+
+        let mut acknowledgments = tokio::fs::File::from_std(std::fs::File::from(ack_read));
+        let mut ack = [0_u8; 1];
+        tokio::time::timeout(Duration::from_secs(5), acknowledgments.read_exact(&mut ack))
+            .await
+            .expect("a receipt behind a helper record must still be acknowledged")
+            .expect("read the acknowledgment byte");
+        assert_eq!(ack, [0xA5]);
+
+        writer
+            .write_all(b"{\"exit-code\":0}\n")
+            .expect("write the terminal record");
+        drop(writer);
+        let (mut rest, receipt) = reading.await.expect("reader task").expect("setup receipt");
+        assert_eq!(
+            receipt, b"{\"child-pid\":4242}\n",
+            "the helper's record is not Bubblewrap's and must not be carried"
+        );
+        let mut terminal = Vec::new();
+        rest.read_to_end(&mut terminal)
+            .await
+            .expect("read the terminal status");
+        assert_eq!(terminal, b"{\"exit-code\":0}\n");
+    }
+
+    /// The helper's record is split off the front, which is what keeps the
+    /// helper's own failure reason readable when Bubblewrap never starts.
+    #[test]
+    fn a_helper_record_is_split_from_the_bubblewrap_stream() {
+        let record = crate::security::sandbox::encode_process_scope_abi_record(9);
+        let receipt = b"{\"child-pid\":4242}\n{\"exit-code\":0}\n";
+        let mut stream = record.clone().into_bytes();
+        stream.extend_from_slice(receipt);
+        let (abi, bubblewrap) = split_helper_status(&stream).expect("a well-formed helper record");
+        assert_eq!(abi, Some(9), "the record and the encoder agree on the ABI");
+        assert_eq!(bubblewrap, receipt, "Bubblewrap's stream is untouched");
+
+        // Bubblewrap never started: the helper's framed reason follows its own
+        // record and must still decode as the frame it is.
+        let mut failed = record.clone().into_bytes();
+        failed.extend_from_slice(
+            &crate::security::sandbox::encode_sandbox_status(SandboxLaunchOutcome::SetupError {
+                reason: "exec trusted Bubblewrap: missing".into(),
+            })
+            .expect("a setup error must encode"),
+        );
+        let (_, remainder) = split_helper_status(&failed).expect("the record is well formed");
+        let decoded =
+            decode_sandbox_status(remainder).expect("the helper's frame survives the split");
+        assert!(
+            matches!(
+                decoded,
+                SandboxLaunchOutcome::SetupError { ref reason }
+                    if reason == "exec trusted Bubblewrap: missing"
+            ),
+            "the helper's failure reason must survive the prefix split: {decoded:?}"
+        );
+
+        // A record carrying no usable ABI is a refusal, not a line to skip.
+        let unusable = format!(
+            "{{\"{}\":0}}\n",
+            crate::security::sandbox::PROCESS_SCOPE_ABI_RECORD
+        );
+        assert!(
+            split_helper_status(unusable.as_bytes()).is_err(),
+            "a zero ABI is not a value the helper can have obtained"
+        );
+        assert!(
+            split_helper_status(format!("{record}{record}").as_bytes()).is_err(),
+            "two records would leave the effective ABI ambiguous"
+        );
+    }
+
+    /// The process-isolation descriptor must name the ABI the helper reported.
+    /// 11 is neither the 6 this route used to state as a baseline nor this
+    /// host's ABI, so it cannot pass on the platform's default value.
+    #[test]
+    fn the_mount_view_descriptor_names_the_abi_the_helper_reported() {
+        let outcome = mount_view_enforcement(&spec_with(false, true), 4242, Some(11), Vec::new());
+        let SandboxExecutionOutcome::Enforced {
+            abi,
+            guarantees,
+            limits,
+            ..
+        } = &outcome
+        else {
+            panic!("a mount-view launch that completed setup is enforced: {outcome:?}");
+        };
+        assert!(
+            guarantees
+                .iter()
+                .any(|guarantee| guarantee.contains("Landlock ABI 11 process scope obtained")),
+            "the guarantee must name the reported ABI: {guarantees:?}"
+        );
+        assert!(
+            guarantees
+                .iter()
+                .all(|guarantee| !guarantee.contains("ABI 6")),
+            "no baseline may be stated once the effective ABI is known: {guarantees:?}"
+        );
+        assert_eq!(
+            *abi, None,
+            "the ABI field is the backend's version, and Bubblewrap has none"
+        );
+        assert!(
+            limits
+                .iter()
+                .all(|limit| !limit.contains("was not reported")),
+            "an obtained ABI is not a gap: {limits:?}"
+        );
+    }
+
+    /// The tier that applies the scope must state a missing record as a limit,
+    /// or an unobserved scope reads like an unversioned mechanism.
+    #[test]
+    fn a_process_isolation_launch_without_an_abi_record_states_the_gap() {
+        let outcome = mount_view_enforcement(&spec_with(false, true), 4242, None, Vec::new());
+        let SandboxExecutionOutcome::Enforced {
+            guarantees, limits, ..
+        } = &outcome
+        else {
+            panic!("a mount-view launch that completed setup is enforced: {outcome:?}");
+        };
+        assert!(
+            limits
+                .iter()
+                .any(|limit| limit.contains("process-scope ABI was not reported")),
+            "the absence of the ABI must be stated: {limits:?}"
+        );
+        assert!(
+            guarantees
+                .iter()
+                .all(|guarantee| !guarantee.contains("process scope obtained")),
+            "no scope guarantee may survive without the ABI that names it: {guarantees:?}"
+        );
+    }
+
+    /// The filesystem-only tier applies no process scope: it reports no ABI and
+    /// says why, which is not a failure and not an unreported record.
+    #[test]
+    fn the_filesystem_only_tier_reports_no_scope_abi_and_says_why() {
+        let outcome = mount_view_enforcement(&spec_with(false, false), 4242, None, Vec::new());
+        let SandboxExecutionOutcome::Enforced {
+            guarantees, limits, ..
+        } = &outcome
+        else {
+            panic!("a mount-view launch that completed setup is enforced: {outcome:?}");
+        };
+        assert!(
+            guarantees
+                .iter()
+                .all(|guarantee| !guarantee.contains("Landlock ABI")),
+            "a tier that applied no scope may state no ABI: {guarantees:?}"
+        );
+        assert!(
+            limits
+                .iter()
+                .any(|limit| limit.contains("no process-scope ABI is reported")),
+            "the tier must say why no ABI appears: {limits:?}"
+        );
+        assert!(
+            limits
+                .iter()
+                .all(|limit| !limit.contains("Landlock process-scope ABI was not reported")),
+            "a tier that applies no scope has no record to miss: {limits:?}"
+        );
     }
 
     fn request(script: &str) -> ManagedProcessRequest {
@@ -3416,31 +3839,76 @@ mod tests {
         );
     }
 
+    fn required_launch_request() -> SandboxRequest {
+        SandboxRequest::Required(SandboxLaunchSpec {
+            env: Vec::new(),
+            linux_protected_mount_view: false,
+            linux_process_isolation: false,
+            linux_offline_network: false,
+            protected_readonly_paths: Vec::new(),
+            path_identities: Vec::new(),
+            expected_created_git_pointers: Vec::new(),
+            deny_paths: Vec::new(),
+            target: PathBuf::from("/bin/sh"),
+            args: vec!["-c".to_string(), "true".to_string()],
+            read_paths: Vec::new(),
+            write_paths: Vec::new(),
+        })
+    }
+
     #[test]
     fn required_request_with_helper_unavailable_still_fails_closed() {
         // A `Required` request that loses containment mid-flight must fail
         // closed rather than falling through to any uncontained path.
-        let outcome = interpret_sandbox_status(
-            None,
-            &SandboxRequest::Required(SandboxLaunchSpec {
-                env: Vec::new(),
-                linux_protected_mount_view: false,
-                linux_process_isolation: false,
-                linux_offline_network: false,
-                protected_readonly_paths: Vec::new(),
-                path_identities: Vec::new(),
-                expected_created_git_pointers: Vec::new(),
-                deny_paths: Vec::new(),
-                target: PathBuf::from("/bin/sh"),
-                args: vec!["-c".to_string(), "true".to_string()],
-                read_paths: Vec::new(),
-                write_paths: Vec::new(),
-            }),
-        );
+        let outcome = interpret_sandbox_status(None, &required_launch_request());
         assert!(matches!(
             outcome,
             Err(ManagedProcessError::SandboxFailed(reason)) if reason.contains("status")
         ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_frame_naming_another_backend_fails_closed_on_macos() {
+        let forged =
+            crate::security::sandbox::encode_sandbox_status(SandboxLaunchOutcome::enforced(
+                crate::security::sandbox::BackendId::LANDLOCK,
+                crate::security::sandbox::seatbelt::enforcement(),
+            ))
+            .expect("a setup frame must encode");
+        let error = interpret_sandbox_status(Some(&forged), &required_launch_request())
+            .expect_err("a frame naming another backend must not be recorded as containment");
+        assert!(
+            matches!(
+                error,
+                ManagedProcessError::SandboxFailed(ref reason)
+                    if reason.contains("landlock") && reason.contains("seatbelt")
+            ),
+            "the refusal must name the reported and the selected backend: {error:?}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_frame_naming_the_selected_backend_is_recorded_as_containment() {
+        let frame =
+            crate::security::sandbox::encode_sandbox_status(SandboxLaunchOutcome::enforced(
+                crate::security::sandbox::LEGACY_HELPER_BACKEND,
+                crate::security::sandbox::seatbelt::enforcement(),
+            ))
+            .expect("a setup frame must encode");
+        let outcome = interpret_sandbox_status(Some(&frame), &required_launch_request())
+            .expect("a frame naming the route's own backend must be accepted");
+        assert!(
+            matches!(
+                outcome,
+                SandboxExecutionOutcome::Enforced {
+                    backend: crate::security::sandbox::BackendId::SEATBELT,
+                    ..
+                }
+            ),
+            "unexpected recorded outcome: {outcome:?}"
+        );
     }
 
     #[cfg(all(test, target_os = "linux"))]
@@ -4874,5 +5342,69 @@ mod tests {
             after, before,
             "C013 diagnostic expects to reproduce the current root-only restoration limitation"
         );
+    }
+
+    /// The closure runs on every tier, so it must leave the two channel
+    /// descriptors on their fixed numbers and close everything else.
+    ///
+    /// The child only *observes* the descriptors: a closure that took the
+    /// status or acknowledgment number would break every contained launch,
+    /// and one that kept the caller's file table would hand the target a
+    /// descriptor the policy never approved.
+    #[cfg(unix)]
+    #[allow(unsafe_code)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn descriptor_closure_preserves_the_channel_and_closes_the_rest() {
+        let (status_reader, status_writer) = std::io::pipe().expect("status pipe");
+        let (ack_reader, _ack_writer) = std::io::pipe().expect("acknowledgment pipe");
+        let held = std::fs::File::open("/etc/hosts").expect("fixture file");
+        let inherited = unsafe { libc::fcntl(held.as_raw_fd(), libc::F_DUPFD, 200) };
+        assert!(
+            inherited >= 200,
+            "the fixture descriptor must sit above the channel numbers: {}",
+            io::Error::last_os_error()
+        );
+        if unsafe { libc::fcntl(inherited, libc::F_SETFD, 0) } < 0 {
+            panic!(
+                "the fixture descriptor must not be close-on-exec: {}",
+                io::Error::last_os_error()
+            );
+        }
+
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(
+                "for n in 3 198 200; do \
+                 if [ -e /dev/fd/$n ]; then echo \"FD$n-OPEN\"; \
+                 else echo \"FD$n-CLOSED\"; fi; done",
+            )
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        configure_status_fds(
+            &mut command,
+            status_writer.as_raw_fd(),
+            Some(ack_reader.as_raw_fd()),
+            true,
+        );
+        let output = command.output().await.expect("child process");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("FD3-OPEN"),
+            "the status descriptor must survive the closure: {stdout}"
+        );
+        assert!(
+            stdout.contains("FD198-OPEN"),
+            "the acknowledgment descriptor must survive the closure: {stdout}"
+        );
+        assert!(
+            stdout.contains("FD200-CLOSED"),
+            "an unapproved descriptor must be closed before exec: {stdout}"
+        );
+
+        unsafe {
+            libc::close(inherited);
+        }
+        drop(status_reader);
     }
 }

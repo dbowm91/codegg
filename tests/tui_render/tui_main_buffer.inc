@@ -80,7 +80,7 @@ fn buffer_text(buf: &Buffer) -> String {
 /// todos and no overlay open — the default in these tests — the row above the
 /// input box is the hint line.
 fn hint_row_text(app: &App, buf: &Buffer) -> String {
-    let prompt = app.prompt_area.expect("prompt area recorded");
+    let prompt = app.frame_plan.prompt;
     if prompt.y == 0 {
         return String::new();
     }
@@ -142,7 +142,7 @@ fn app_with_collapsible_tool_output() -> App {
 fn clicking_a_message_in_the_viewport_expands_its_tool_output() {
     let mut app = app_with_collapsible_tool_output();
     let buffer = render_to_buffer(&mut app, 120, 40);
-    let area = app.viewport_area.expect("viewport area recorded");
+    let area = app.frame_plan.viewport;
 
     // Click the row that actually renders the assistant text, so this tests
     // hit-testing against real rendered geometry rather than a guess.
@@ -164,7 +164,7 @@ fn clicking_a_message_in_the_viewport_expands_its_tool_output() {
 fn dragging_in_the_viewport_still_selects_and_does_not_expand() {
     let mut app = app_with_collapsible_tool_output();
     let _ = render_to_buffer(&mut app, 120, 40);
-    let area = app.viewport_area.expect("viewport area recorded");
+    let area = app.frame_plan.viewport;
 
     let before = tool_output_expanded(&app);
     let y = area.y + 2;
@@ -202,7 +202,7 @@ fn dragging_in_the_viewport_still_selects_and_does_not_expand() {
 fn a_click_cancels_rather_than_copying_one_character() {
     let mut app = test_app();
     let _ = render_to_buffer(&mut app, 120, 40);
-    let area = app.viewport_area.expect("viewport area recorded");
+    let area = app.frame_plan.viewport;
     click(&mut app, area.x + 2, area.y + 2);
     assert!(app.selection_anchor.is_none());
     assert!(app.selection_focus.is_none());
@@ -233,8 +233,8 @@ fn the_main_buffer_reserves_no_status_row() {
     );
     // The row above the composer is the hint line, and it is the *only*
     // thing between the transcript and the input.
-    let prompt = app.prompt_area.expect("prompt area recorded");
-    let viewport = app.viewport_area.expect("viewport area recorded");
+    let prompt = app.frame_plan.prompt;
+    let viewport = app.frame_plan.viewport;
     assert!(
         prompt.y > viewport.y + viewport.height,
         "the prompt chunk must start below the transcript: {prompt:?} {viewport:?}"
@@ -261,8 +261,8 @@ fn the_composer_does_not_move_between_session_states() {
         let mut app = test_app();
         app.session_state.session_status = status;
         render_to_buffer(&mut app, 100, 30);
-        prompt_tops.push(app.prompt_area.expect("prompt area recorded").y);
-        viewport_heights.push(app.viewport_area.expect("viewport area recorded").height);
+        prompt_tops.push(app.frame_plan.prompt.y);
+        viewport_heights.push(app.frame_plan.viewport.height);
     }
 
     assert!(
@@ -492,7 +492,11 @@ fn active_subagents_are_listed_in_the_tasks_overlay() {
         "a finished subagent is not work in flight: {text}"
     );
     assert!(
-        app.tasks_area.expect("the overlay reserves rows").height > 0,
+        app.frame_plan
+            .tasks
+            .expect("the overlay reserves rows")
+            .height
+            > 0,
         "the overlay must be on screen when it is expanded"
     );
 }
@@ -967,7 +971,7 @@ fn every_row_of_the_viewport_is_filled_at_the_bottom_of_a_long_transcript() {
     let mut app = app_with_long_wrapping_transcript();
     app.messages_state.messages.scroll_to_bottom();
     let buffer = render_to_buffer(&mut app, 100, 30);
-    let area = app.viewport_area.expect("viewport area recorded");
+    let area = app.frame_plan.viewport;
 
     // The viewport is 30 rows less the prompt/footer chrome. At the bottom of
     // the buffer every one of those rows has content: a row index that
@@ -1031,7 +1035,7 @@ fn a_search_highlight_survives_a_re_render() {
         .messages
         .search("THE-TRANSCRIPT-ENDS-HERE");
     let buffer = render_to_buffer(&mut app, 100, 30);
-    let area = app.viewport_area.expect("viewport area recorded");
+    let area = app.frame_plan.viewport;
     assert!(
         row_containing(&buffer, area, "THE-TRANSCRIPT-ENDS-HERE").is_some(),
         "the match must still be drawn after the search invalidates the rows"
@@ -1197,14 +1201,14 @@ fn a_saturated_overlay_never_squeezes_the_transcript_below_its_floor() {
 
         render_to_buffer(&mut app, width, height);
 
-        let viewport = app.viewport_area.expect("viewport area recorded");
+        let viewport = app.frame_plan.viewport;
         assert!(
             viewport.height >= 10,
             "transcript fell to {} rows at {width}x{height}; the floor is 10",
             viewport.height
         );
         // Whatever rows the overlay did take, the composer still has a box.
-        let prompt = app.prompt_area.expect("prompt area recorded");
+        let prompt = app.frame_plan.prompt;
         assert!(
             prompt.height >= 1,
             "the composer vanished at {width}x{height}"
@@ -1241,7 +1245,8 @@ fn the_overlay_appears_when_the_pane_has_room_for_it() {
 
     render_to_buffer(&mut app, 100, 50);
     let area = app
-        .tasks_area
+        .frame_plan
+        .tasks
         .expect("the overlay reserves rows when there is room");
     assert!(area.height > 0);
 
@@ -1294,7 +1299,7 @@ fn a_collapsed_tasks_overlay_reserves_nothing() {
     assert_eq!(app.tasks_strip_height(), 0);
     render_to_buffer(&mut app, 100, 30);
     assert!(
-        app.tasks_area.is_none(),
+        app.frame_plan.tasks.is_none(),
         "a collapsed overlay must not paint"
     );
 }
@@ -1303,7 +1308,7 @@ fn a_collapsed_tasks_overlay_reserves_nothing() {
 ///
 /// The renderer has a "Nothing pending" line for exactly this state, but it
 /// could never paint: `tasks_strip_height` returned 0, so no rows were carved,
-/// so `tasks_area` was `None`, so `render_tasks_strip` returned before reaching
+/// so `frame_plan.tasks` was `None`, so `render_tasks_strip` returned before reaching
 /// it. `Shift+T` was therefore a silently dead key on an idle session — which is
 /// the first thing a user tries when they go looking for the feature.
 #[test]
@@ -1318,19 +1323,23 @@ fn an_expanded_but_empty_tasks_overlay_confirms_the_key_worked() {
     );
     assert_eq!(
         app.tasks_strip_height(),
-        1,
-        "an expanded overlay must reserve the 'Nothing pending' row"
+        2,
+        "an expanded overlay reserves the 'Nothing pending' row and its hint row"
     );
 
     render_to_buffer(&mut app, 100, 30);
     assert!(
-        app.tasks_area.is_some(),
+        app.frame_plan.tasks.is_some(),
         "the overlay must be given space so it can confirm the toggle"
     );
     let text = buffer_text(&render_to_buffer(&mut app, 100, 30));
     assert!(
         text.contains("Nothing pending"),
         "the confirmation line must actually paint:\n{text}"
+    );
+    assert!(
+        text.contains("Ctrl+T close"),
+        "the hint row must paint:\n{text}"
     );
 }
 
@@ -1445,7 +1454,7 @@ fn app_with_subagents(rows: Vec<SubagentRow>) -> App {
 /// toast column is an overlay pinned to the top right, so a whole-buffer scan
 /// cannot distinguish "the bar says this" from "a toast happens to say this".
 fn tab_bar_text(app: &App, buf: &Buffer) -> String {
-    let viewport = app.viewport_area.expect("viewport drawn");
+    let viewport = app.frame_plan.viewport;
     // The bar is carved off the top of the viewport, so it is the row above it.
     (0..buf.area.width)
         .map(|x| buf[(x, viewport.y - 1)].symbol())
@@ -1550,7 +1559,7 @@ fn the_tab_bar_names_every_open_tab_and_marks_the_active_one() {
 /// about *how* the text is painted, and a whole-row text comparison cannot
 /// tell an italic persona from a plain one.
 fn tab_bar_cells(app: &App, buf: &Buffer) -> (String, Vec<Cell>) {
-    let viewport = app.viewport_area.expect("viewport drawn");
+    let viewport = app.frame_plan.viewport;
     let cells: Vec<Cell> = (0..buf.area.width)
         .map(|x| buf[(x, viewport.y - 1)].clone())
         .collect();
@@ -1675,7 +1684,7 @@ fn the_tab_bar_keeps_its_content_on_its_own_row() {
         app.open_subagent_tab("1");
         app.open_subagent_tab("2");
         let buffer = render_to_buffer(&mut app, width, 30);
-        let viewport = app.viewport_area.expect("viewport drawn");
+        let viewport = app.frame_plan.viewport;
 
         let strip: String = (0..width)
             .map(|x| buffer[(x, viewport.y - 1)].symbol())
@@ -1728,13 +1737,13 @@ fn tab_bar_layout_cost(width: u16, height: u16) -> (u16, u16) {
         subagent("3", "Cleo", "running"),
     ]);
     render_to_buffer(&mut app, width, height);
-    let baseline = app.viewport_area.expect("viewport drawn").height;
+    let baseline = app.frame_plan.viewport.height;
 
     for task_id in ["1", "2", "3"] {
         app.open_subagent_tab(task_id);
     }
     render_to_buffer(&mut app, width, height);
-    (baseline, app.viewport_area.expect("viewport drawn").height)
+    (baseline, app.frame_plan.viewport.height)
 }
 
 #[test]
@@ -2248,7 +2257,7 @@ fn the_subagent_view_fills_the_viewport_to_its_last_column() {
     assert!(app.open_subagent_tab("1"));
 
     let buffer = render_to_buffer(&mut app, 100, 30);
-    let viewport = app.viewport_area.expect("viewport drawn");
+    let viewport = app.frame_plan.viewport;
     let last = viewport.x + viewport.width - 1;
     let column: String = (viewport.y..viewport.y + viewport.height)
         .map(|y| buffer[(last, y)].symbol().to_string())
@@ -2267,7 +2276,7 @@ fn the_tab_strip_row_is_opaque() {
     let mut app = app_with_transcript_marker();
     open_tabbed_subagent(&mut app);
     let buffer = render_to_buffer(&mut app, 100, 30);
-    let viewport = app.viewport_area.expect("viewport drawn");
+    let viewport = app.frame_plan.viewport;
     // The bar is carved off the top of the viewport, so it is the row above it.
     let row = viewport.y - 1;
 

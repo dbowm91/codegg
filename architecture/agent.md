@@ -176,6 +176,25 @@ chain. Every attempt publishes `ProviderAttemptStarted`; failures publish
   `None` in `map_app_event_to_core_event` (diagnostic-only, older clients
   unaffected).
 
+### Request ledger at the attempt seam (harness-practice-adoption M002)
+
+- The seam records the request's identity **before** the provider stream is
+  consumed, so an attempt that fails at setup still has a row.
+- A ledger store failure is logged and the request proceeds. The record
+  serves the request, never the other way round.
+- `outcome = streaming` is the row a process that died mid-attempt leaves
+  behind; `ok`, `failed` and `cancelled` are written when the attempt
+  settles.
+- The section digests are threaded from the compile site
+  (`AgentLoop::set_prompt_section_digests`, set beside the compiler
+  fingerprint), never rebuilt here. The system, tool and message digests are
+  computed from the `ChatRequest` that reaches `provider.stream`.
+- The ledger only reads the request: no field, ordering, retry count or
+  provider selection changes.
+
+The table, the single writer, the 256-row retention bound, and the
+digest-versus-body rule are in [session.md](session.md).
+
 ### Agent Resolution (5-layer priority)
 
 1. Compiled built-in agents (from `assets/agents/*.toml` → generated.rs)
@@ -548,21 +567,25 @@ pub enum AgentRuntimeKind {
 
 ### AgentLoop (`src/agent/loop.rs:90`)
 
-The loop has 42 direct fields. Service and policy handles are grouped in
+The loop has 50 direct fields. Service and policy handles are grouped in
 `AgentLoopServices` so the coordinator cannot accidentally initialize one
 canonical concern independently of the others.
 
 Full field list: `services`, `lifecycle`, `state`, `limits`, `steering`,
 `follow_up_tx`, `follow_up_rx`, `question_tx`, `question_rx`, `plugin_service`,
-`session_id`, `turn_id`, `workspace_id`, `workspace_locks`,
+`session_id`, `usage_session_id`, `turn_id`, `prompt_section_digests`,
+`inherited_execution_audit`, `workspace_id`, `workspace_locks`,
 `workspace_service_lease`, `workspace_path_policy`, `checkpoint_batch_seq`,
 `recent_findings`, `reviewer_denial_counts`, `original_user_prompt`,
-`current_user_prompt`, `subagent_pool`, `submission`, `workspace_root`,
-`max_tool_calls`, `goal_wall_clock`, `cancel_rx`, `steer_rx`, `pending_steer`,
-`local_paths`, `context_ledger`, `run_id`, `scratch_scope`,
-`peer_observation_rx`, `peer_observation_session_id`, `peer_group_members`,
-`peer_claim_targets`, `peer_observation_seen`, `peer_observation_gap`,
-`habit_project_namespace`, `habit_actions`, `habit_had_failure`.
+`current_user_prompt`, `incoming_prefix_identities`,
+`peer_observations_present_this_turn`, `frontend_user_controls_possible`,
+`compaction_chain_base`, `subagent_pool`, `submission`, `workspace_root`,
+`working_directory`, `max_tool_calls`, `goal_wall_clock`, `cancel_rx`,
+`steer_rx`, `pending_steer`, `local_paths`, `context_ledger`, `run_id`,
+`scratch_scope`, `peer_observation_rx`, `peer_observation_session_id`,
+`peer_group_members`, `peer_claim_targets`, `peer_observation_seen`,
+`peer_observation_gap`, `habit_project_namespace`, `habit_actions`,
+`habit_had_failure`.
 
 - **Coordinator state**: `state`, `limits`, `lifecycle`, `pending_steer`, and live control channels
 - **Identity**: `session_id`, `turn_id`, `run_id`, and immutable `workspace_root`

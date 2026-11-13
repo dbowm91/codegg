@@ -27,14 +27,16 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Widget},
+    widgets::{Paragraph, Widget},
 };
 
 use crate::tui::app::TuiMsg;
 use crate::tui::commands::agent_editor::AgentOrigin;
 pub use crate::tui::commands::agent_editor::AgentRow;
+use crate::tui::components::hint_line::HintLine;
 use crate::tui::input::InputAction;
 
+use super::chrome::PanelChrome;
 use super::{PanelCtx, PanelHints, PanelKey, SidePanel, SidePanelId};
 
 /// Maximum rows the list holds before the viewport scrolls.
@@ -187,24 +189,11 @@ impl SidePanel for AgentsPanel {
 
     fn render(&mut self, ctx: &mut PanelCtx<'_>, buf: &mut Buffer, area: Rect) {
         let theme = Arc::clone(&ctx.theme);
-        let title = if ctx.focused {
-            " AGENTS ● "
-        } else {
-            " AGENTS "
-        };
-        let block = Block::default()
-            .title(Span::styled(
-                title,
-                Style::default()
-                    .fg(theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            ))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
-            .style(Style::default().bg(theme.background));
-        let inner = block.inner(area);
-        buf.set_string(area.x, area.y, "", Style::default());
-        block.render(area, buf);
+        // The panel's name is the registry's, and the border and title styles
+        // are the shared focus policy's: a focused Agents panel now differs
+        // from an unfocused one in colour, not only by a glyph.
+        let inner =
+            PanelChrome::new(SidePanelId::Agents.label(), ctx.focused, &theme).draw(area, buf);
 
         if self.rows.is_empty() {
             Paragraph::new(Line::from(Span::styled(
@@ -250,29 +239,37 @@ impl SidePanel for AgentsPanel {
 
     fn composer_hints(&self, hints: &PanelHints<'_>) -> Option<String> {
         hints.focused.then(|| {
+            let mut line = HintLine::new();
+            line.push("AGENTS", "");
             let Some(row) = self.selected() else {
-                return "AGENTS · n new · ⇧H/⇧L panel · /agents help".to_string();
+                line.push("n", "new")
+                    .push("⇧H/⇧L", "panel")
+                    .push("/agents", "help");
+                return line.render(0);
             };
-            let mut verbs = vec!["jk move".to_string()];
+            line.push("jk", "move");
             if self.can(AgentSelection::Edit) {
-                verbs.push(format!(
-                    "e {}",
-                    crate::tui::commands::agent_editor::primary_action_label(row)
-                ));
+                line.push(
+                    "e",
+                    crate::tui::commands::agent_editor::primary_action_label(row),
+                );
             }
-            verbs.push("t deactivate".to_string());
+            line.push("t", "deactivate");
             if row.origin.can_delete() {
-                verbs.push("d delete".to_string());
+                line.push("d", "delete");
             }
             if self.can(AgentSelection::Restore) {
-                verbs.push("r restore".to_string());
+                line.push("r", "restore");
             }
             // Spell out how to reach each scope rather than making the user
             // guess: `n` follows the row's own scope (and is project-scoped
             // for a row with no file yet), while global creation is explicit.
-            verbs.push("n new".to_string());
-            verbs.push(":new global <name>".to_string());
-            format!("AGENTS · {}", verbs.join(" · "))
+            // The scope form is one part, not a `(key, verb)` pair: it is a
+            // spelling the reader types, so splitting it would lowercase half
+            // of it and name a command that does not exist.
+            line.push("n", "new");
+            line.push(":new global <name>", "");
+            line.render(0)
         })
     }
 

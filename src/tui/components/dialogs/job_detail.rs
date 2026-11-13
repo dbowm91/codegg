@@ -3,15 +3,17 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Clear, Paragraph, Wrap},
     Frame,
 };
 use std::sync::Arc;
 
 use crate::protocol::dto::{JobAttemptDto, JobRecordDto};
+use crate::tui::components::hint_line::HintLine;
 use crate::tui::{
     app::TuiMsg,
     components::component::{Component, DialogType},
+    components::section::Section,
     theme::Theme,
 };
 
@@ -82,12 +84,11 @@ impl Component for JobDetailDialog {
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
         let area = centered(area, 76, 24);
         frame.render_widget(Clear, area);
-        let outer = Block::default()
-            .title(" Job detail ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border));
-        let inner = outer.inner(area);
-        frame.render_widget(outer, area);
+        // The dialog's outer frame, title and (below) footer all come from the
+        // one `Section` producer; a modal is the focused surface, so its edge
+        // and title take the primary colour and no marker.
+        let section = Section::new("Job detail", theme).focused(true);
+        let inner = section.draw(area, frame.buffer_mut());
         let mut lines = vec![Line::from(vec![
             Span::styled("Job: ", Style::default().fg(theme.muted)),
             Span::raw(&self.job_id),
@@ -144,15 +145,21 @@ impl Component for JobDetailDialog {
                 }
             }
         }
-        let footer = if self.cancel_pending {
-            "Cancel requested… · r refresh · Esc close"
+        // Four states, one row each. `Esc` leads because the row is clipped by
+        // the box's width; the status words (`read only`, `Cancel
+        // requested…`) are values in the empty-verb form, not verbs.
+        let mut hint = HintLine::new();
+        hint.push_required("Esc", "close");
+        if self.cancel_pending {
+            hint.push("r", "refresh").push("Cancel requested…", "");
         } else if self.live() && self.can_cancel {
-            "x request cancel · r refresh · Esc close"
+            hint.push("x", "request cancel").push("r", "refresh");
         } else if self.live() {
-            "read only · r refresh · Esc close"
+            hint.push("r", "refresh").push("read only", "");
         } else {
-            "r refresh · Esc close"
-        };
+            hint.push("r", "refresh");
+        }
+        let footer = hint.render(0);
         let areas = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(1)])

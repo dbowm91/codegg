@@ -5,7 +5,9 @@
 //! and legacy test-only synchronous handlers.
 
 use crate::protocol::core::{CoreRequest, CoreResponse};
+use crate::tui::app::send_tui;
 use crate::tui::app::App;
+use crate::tui::app::Dialog;
 use crate::tui::app::SessionMutationOp;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
@@ -3659,5 +3661,88 @@ mod transcript_reload_tests {
             app.messages_state.messages.messages[0].role,
             crate::tui::components::messages::MessageRole::Assistant
         );
+    }
+}
+
+pub(crate) fn dispatch_new(app: &mut App) {
+    // `/new` (alias `/clear`) previously only cleared the message
+    // list, which left the TUI attached to the old session and
+    // never actually created a new one. Route it through the same
+    // path as Ctrl+N so both produce a real new session.
+    app.new_session();
+}
+
+pub(crate) fn dispatch_sessions(app: &mut App) {
+    app.open_dialog(Dialog::Session);
+}
+
+pub(crate) fn dispatch_share(app: &mut App) {
+    if let Some(ref session) = app.session_state.session {
+        if let Some(ref existing) = session.share_url {
+            let mut dialog = crate::tui::components::dialogs::share::ShareDialog::new(Arc::clone(
+                &app.ui_state.theme,
+            ));
+            dialog.set_theme(&app.ui_state.theme);
+            dialog.set_url(existing.clone());
+            app.dialog_state.share_dialog = Some(dialog);
+            app.open_dialog(Dialog::Share);
+        } else if app.tui_cmd_tx.is_some() {
+            let session_id = session.id.clone();
+            if let Some(ref tx) = app.tui_cmd_tx {
+                let _ = send_tui(tx, TuiCommand::ShareSession { session_id });
+            }
+        } else {
+            app.messages_state
+                .toasts
+                .error("Session store not available");
+        }
+    } else {
+        app.messages_state.toasts.info("No active session to share");
+    }
+}
+
+pub(crate) fn dispatch_unshare(app: &mut App) {
+    // Dispatch a real unshare round-trip. This used to only
+    // toast "Session unshared", leaving the share URL live
+    // server-side while reporting success.
+    if let Some(session) = app.session_state.session.as_ref() {
+        let session_id = session.id.clone();
+        app.enqueue_tui_command(TuiCommand::UnshareSession { session_id });
+    } else {
+        app.messages_state.toasts.info("No active session");
+    }
+}
+
+pub(crate) fn dispatch_rename(app: &mut App) {
+    app.messages_state
+        .toasts
+        .info("Use /sessions to rename - select and press Enter");
+}
+
+pub(crate) fn dispatch_export(app: &mut App, argument: &str) {
+    let sub = argument;
+    if sub == "handoff" {
+        app.export_handoff();
+    } else if let Some(session) = app.session_state.session.as_ref() {
+        // Dispatch a real export round-trip. This used to
+        // only toast "Exporting session - copy to clipboard"
+        // without copying anything.
+        let session_id = session.id.clone();
+        app.enqueue_tui_command(TuiCommand::ExportSession { session_id });
+    } else {
+        app.messages_state.toasts.info("No active session");
+    }
+}
+
+pub(crate) fn dispatch_fork(app: &mut App) {
+    if let Some(idx) = app.messages_state.messages.sel_msg {
+        app.messages_state.toasts.info(&format!(
+            "Fork from message {} - use CLI --fork flag for now",
+            idx
+        ));
+    } else {
+        app.messages_state
+            .toasts
+            .info("Select a message with arrow keys first, then use /fork");
     }
 }

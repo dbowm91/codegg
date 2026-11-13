@@ -19,9 +19,20 @@
 //! was its own cargo target, which the Windows lane never built, so gating
 //! the member `#[cfg(unix)]` loses no coverage — it only stops the Windows
 //! build of the `security_permission` family from failing on Unix-only APIs.
+//!
+//! ## Qualification mode
+//!
+//! `CODEGG_SANDBOX_QUALIFICATION` makes an absent backend a failure rather
+//! than a skip: when it is set to anything but `optional`, `require_backend!`
+//! panics with the platform's own reason; unset, the skip stands. A
+//! qualification lane that promises a backend sets it to `required`.
 
 #![cfg(unix)]
 
+use codegg::managed_process::{
+    EnvironmentPolicy, ManagedProcessRequest, ManagedProcessService, ProcessProvenance,
+    SandboxRequest,
+};
 use codegg::security::sandbox::{
     decode_sandbox_status, platform_sandbox_capability, BackendId, SandboxCapability,
     SandboxConfig, SandboxLaunchOutcome, SandboxLaunchSpec, SandboxMode, SANDBOX_STATUS_FD,
@@ -31,9 +42,7 @@ use std::io::Read;
 use std::io::Write as _;
 #[cfg(target_os = "linux")]
 use std::net::TcpListener;
-use std::os::fd::AsRawFd;
-#[cfg(target_os = "macos")]
-use std::os::fd::RawFd;
+use std::os::fd::{AsRawFd, RawFd};
 #[cfg(target_os = "linux")]
 use std::os::linux::net::SocketAddrExt;
 #[cfg(target_os = "linux")]
@@ -164,10 +173,13 @@ fn launch_helper_impl(helper: PathBuf, spec: &Path, overrides: &[(&str, &str)]) 
 }
 
 /// Launch a helper while deliberately preserving one already-open descriptor
-/// across the sandbox application and target exec. Seatbelt's status report
-/// calls this out as a limit; this fixture proves the behavior without
-/// touching any real user data.
-#[cfg(target_os = "macos")]
+/// across the sandbox application and target exec.
+///
+/// This is the positive control for descriptor hygiene: it reaches the real
+/// helper directly, so containment is applied but the daemon's `pre_exec`
+/// closure is not in the path — the descriptor arrives exactly as an
+/// unclosed launch would deliver it.
+#[cfg(unix)]
 fn launch_helper_with_inherited_fd(
     helper: PathBuf,
     spec: &SandboxLaunchSpec,
@@ -274,9 +286,36 @@ fn skip_reason() -> Option<String> {
     }
 }
 
+const QUALIFICATION_MARKER: &str = "CODEGG_SANDBOX_QUALIFICATION";
+
+fn qualification_required(marker: Option<&std::ffi::OsStr>) -> bool {
+    marker.is_some_and(|value| value != std::ffi::OsStr::new("optional"))
+}
+
+#[test]
+fn the_qualification_marker_turns_an_absent_backend_into_a_failure() {
+    assert!(!qualification_required(None), "unset keeps the skip");
+    assert!(!qualification_required(Some(std::ffi::OsStr::new(
+        "optional"
+    ))));
+    assert!(qualification_required(Some(std::ffi::OsStr::new(
+        "required"
+    ))));
+    assert!(
+        qualification_required(Some(std::ffi::OsStr::new(""))),
+        "a set marker fails closed whatever its value"
+    );
+}
+
 macro_rules! require_backend {
     () => {
         if let Some(reason) = skip_reason() {
+            if qualification_required(std::env::var_os(QUALIFICATION_MARKER).as_deref()) {
+                panic!(
+                    "{QUALIFICATION_MARKER} requires a containment backend, but this host \
+                     has none: {reason}"
+                );
+            }
             eprintln!("skipped: no containment backend available ({reason})");
             return;
         }
@@ -324,18 +363,19 @@ fn denied_credential_nested_under_workspace_is_not_read_or_written() {
         ),
     ];
     let write = run_helper(&write_spec);
+    assert!(
+        marker.exists(),
+        "the contained child must have run for the credential write to have been \
+         attempted: outcome={:?} stderr={:?}",
+        write.outcome(),
+        write.stderr
+    );
     assert_eq!(
         std::fs::read_to_string(credentials).expect("credential remains readable to fixture"),
         "token: secret-value\n",
         "a broad writable workspace root must not override a credential deny; output={:?}",
         write.stdout
     );
-    if write.backend().is_none() {
-        assert!(
-            !marker.exists(),
-            "unrepresentable Landlock policy must refuse launch"
-        );
-    }
 }
 
 #[test]
@@ -669,9 +709,8 @@ fn landlock_truncation_is_confined_to_workspace_write_roots() {
     );
 }
 
-#[cfg(target_os = "linux")]
 #[test]
-fn landlock_blocks_rename_and_link_from_workspace_into_outside_roots() {
+fn rename_and_link_from_the_workspace_into_outside_roots_are_denied() {
     require_backend!();
     let workspace = tempfile::tempdir().expect("workspace");
     let outside = outside_dir();
@@ -687,8 +726,8 @@ fn landlock_blocks_rename_and_link_from_workspace_into_outside_roots() {
         SandboxMode::WorkspaceWrite,
         &[],
         &format!(
-            "mv {} {} 2>/dev/null && echo RENAME-OUTSIDE-LEAK || echo RENAME-OUTSIDE-DENIED\n\
-             ln {} {} 2>/dev/null && echo LINK-OUTSIDE-LEAK || echo LINK-OUTSIDE-DENIED",
+            "mv {} {} && echo RENAME-OUTSIDE-LEAK || echo RENAME-OUTSIDE-DENIED\n\
+             ln {} {} && echo LINK-OUTSIDE-LEAK || echo LINK-OUTSIDE-DENIED",
             sh_quote(&rename_source),
             sh_quote(&rename_target),
             sh_quote(&link_source),
@@ -780,6 +819,46 @@ fn workspace_write_allows_workspace_and_refuses_everything_else() {
     );
 }
 
+// ── Non-vacuity control ──────────────────────────────────────────────────
+
+/// Defect injection: the outside-write denial above must not be vacuous.
+///
+/// The same probe against a spec that names the outside directory writable.
+/// It asserts the opposite outcome, so it is not a duplicate of the denial.
+#[test]
+fn a_widened_write_grant_is_observable_by_the_same_probe() {
+    require_backend!();
+    let workspace = tempfile::tempdir().expect("workspace");
+    let outside = outside_dir();
+    let outside_new = outside.path().join("escaped.txt");
+    let mut spec = spec_for(workspace.path(), SandboxMode::WorkspaceWrite, &[]);
+    spec.write_paths.push(outside.path().to_path_buf());
+    spec.args = vec![
+        "-c".to_string(),
+        format!(
+            "(exec 3> {}) 2>/dev/null && echo WIDENED-LEAK || echo WIDENED-DENIED",
+            sh_quote(&outside_new)
+        ),
+    ];
+    let run = run_helper(&spec);
+    assert!(
+        run.backend().is_some(),
+        "the widened spec must still be enforced, not refused: {:?}",
+        run.outcome()
+    );
+    assert!(
+        run.stdout.contains("WIDENED-LEAK"),
+        "an injected write root must let the same outside write succeed, or every \
+         denial in this file is vacuous: {}",
+        run.stdout
+    );
+    assert!(
+        outside_new.exists(),
+        "the widened grant must leave the file it allowed: {}",
+        outside_new.display()
+    );
+}
+
 // ── Read-only contract ───────────────────────────────────────────────────
 
 #[test]
@@ -853,6 +932,109 @@ fn explicitly_denied_paths_are_unreachable() {
     assert!(
         run.stdout.contains("SECRET-DENIED"),
         "a denied path must be unreadable: {}",
+        run.stdout
+    );
+}
+
+#[test]
+fn curated_credential_deny_entries_are_kernel_denied_reads_with_a_positive_control() {
+    require_backend!();
+    let home = std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+        .expect("HOME must exist for the curated deny fixture");
+    let curated = codegg::security::sandbox::policy::sensitive_deny_paths();
+    let rows: &[(&str, bool)] = &[
+        (".git-credentials", false),
+        (".config/git/credentials", false),
+        (".pgpass", false),
+        (".my.cnf", false),
+        (".vault-token", false),
+        (".password-store", true),
+        (".local/share/keyrings", true),
+        (".config/op", true),
+        (".yarnrc.yml", false),
+        (".bash_history", false),
+        (".zsh_history", false),
+        ("Library/Messages", true),
+        ("Library/Mail", true),
+        ("Library/Safari", true),
+        ("Library/Cookies", true),
+    ];
+    let fixture = tempfile::tempdir().expect("curated deny fixture root");
+    let fixture_root = fixture.path();
+    let control = fixture_root.join("readable-control");
+    std::fs::write(&control, "control-value").expect("positive control fixture");
+    let mut script = String::from(
+        "probe() { if cat \"$1\" >/dev/null 2>&1; then echo \"$2-READ\"; else echo \"$2-DENIED\"; fi; }\n",
+    );
+    let mut deny = Vec::new();
+    for (relative, directory) in rows {
+        assert!(
+            curated.iter().any(|path| path == &home.join(relative)),
+            "{relative} is classified for denial in architecture/security.md \
+             but is absent from sensitive_deny_paths()"
+        );
+        let target = fixture_root.join(relative);
+        let probe_target = if *directory {
+            std::fs::create_dir_all(&target).expect("denied directory fixture");
+            let secret = target.join("secret");
+            std::fs::write(&secret, "curated-deny-secret").expect("denied secret fixture");
+            secret
+        } else {
+            std::fs::create_dir_all(target.parent().expect("denied fixture parent"))
+                .expect("denied fixture parent");
+            std::fs::write(&target, "curated-deny-secret").expect("denied secret fixture");
+            target.clone()
+        };
+        assert!(
+            probe_target.exists(),
+            "the fixture must create {relative} before the launch, or a missing-file denial would be vacuous"
+        );
+        let label = relative
+            .trim_start_matches('.')
+            .replace(['.', '/'], "-")
+            .to_ascii_uppercase();
+        script.push_str(&format!("probe {} {label}\n", sh_quote(&probe_target)));
+        deny.push(target);
+    }
+    script.push_str(&format!("probe {} CONTROL\n", sh_quote(&control)));
+    let workspace = tempfile::tempdir().expect("workspace");
+    let mut spec = spec_for(workspace.path(), SandboxMode::WorkspaceWrite, &deny);
+    spec.read_paths.push(fixture_root.to_path_buf());
+    spec.args = vec!["-c".to_string(), script];
+    let run = run_helper(&spec);
+    assert!(
+        run.success,
+        "contained curated-deny probe failed: {}",
+        run.stderr
+    );
+    #[cfg(target_os = "macos")]
+    assert_eq!(
+        run.backend(),
+        Some(BackendId::SEATBELT),
+        "the macOS arm must exercise the deny list on Seatbelt"
+    );
+    assert!(
+        run.stdout.contains("CONTROL-READ"),
+        "the positive control must be readable or every denial is vacuous: {}",
+        run.stdout
+    );
+    for (relative, _) in rows {
+        let label = relative
+            .trim_start_matches('.')
+            .replace(['.', '/'], "-")
+            .to_ascii_uppercase();
+        assert!(
+            run.stdout.contains(&format!("{label}-DENIED")),
+            "{relative} is in the curated deny set but the kernel allowed its read: {}",
+            run.stdout
+        );
+    }
+    assert!(
+        !run.stdout.contains("curated-deny-secret"),
+        "no denied fixture content may reach the child's stdout: {}",
         run.stdout
     );
 }
@@ -993,6 +1175,105 @@ fn seatbelt_preserves_and_reports_preopened_denied_file_descriptors() {
                 .any(|limit| limit.contains("open file descriptors")));
         }
         other => panic!("expected Seatbelt enforcement, got {other:?}"),
+    }
+}
+
+// ── Descriptor hygiene ───────────────────────────────────────────────────
+
+/// Hold one inheritable descriptor at a stable number above the fixed channel
+/// numbers, so the fixture knows which number to ask the target to read.
+fn hold_inheritable_descriptor(source: &std::fs::File) -> RawFd {
+    let fd = unsafe { libc::fcntl(source.as_raw_fd(), libc::F_DUPFD, 200) };
+    assert!(
+        fd >= 200,
+        "cannot hold the fixture descriptor above the channel numbers: {}",
+        std::io::Error::last_os_error()
+    );
+    let cleared = unsafe { libc::fcntl(fd, libc::F_SETFD, 0) };
+    assert!(
+        cleared >= 0,
+        "the fixture descriptor must not be close-on-exec: {}",
+        std::io::Error::last_os_error()
+    );
+    fd
+}
+
+/// Run a real `SandboxRequest::Required` launch through the production process
+/// owner, which is where the `pre_exec` descriptor closure lives.
+async fn run_contained_request(
+    workspace: &Path,
+    spec: SandboxLaunchSpec,
+) -> codegg::managed_process::ManagedProcessResult {
+    let mut argv = vec![spec.target.clone().into_os_string()];
+    argv.extend(spec.args.iter().map(std::ffi::OsString::from));
+    let mut request = ManagedProcessRequest::new(
+        argv,
+        workspace.to_path_buf(),
+        ProcessProvenance::new("c006-descriptor", "c006-descriptor"),
+    );
+    request.environment_policy = EnvironmentPolicy::sanitized();
+    request.sandbox = SandboxRequest::Required(spec);
+    ManagedProcessService::run(request)
+        .await
+        .expect("the contained launch must run")
+}
+
+/// A descriptor the launching process holds is not readable by a contained
+/// child on macOS or on the default Linux tier.
+///
+/// The positive control bypasses the daemon's closure and reaches the real
+/// helper directly, so the same descriptor *is* readable there: the refusal is
+/// the closure, not the sandbox mechanism. The process-isolation tier uses the
+/// same closure and keeps its behaviour.
+#[tokio::test(flavor = "current_thread")]
+async fn a_contained_child_cannot_read_an_inherited_descriptor() {
+    require_backend!();
+    let workspace = tempfile::tempdir().expect("workspace");
+    let outside = tempfile::tempdir().expect("outside fixture");
+    let secret = outside.path().join("token");
+    std::fs::write(&secret, "inherited-descriptor-sentinel").expect("secret fixture");
+    let opened = std::fs::File::open(&secret).expect("pre-open the sensitive file");
+    let held = hold_inheritable_descriptor(&opened);
+
+    let read_script =
+        |fd: RawFd| format!("cat <&{fd} 2>/dev/null && echo FD-READ || echo FD-DENIED");
+
+    // Positive control: containment is applied by the real helper, but the
+    // daemon never had a chance to close what it hands down.
+    let mut control_spec = spec_for(workspace.path(), SandboxMode::WorkspaceWrite, &[]);
+    control_spec.args = vec!["-c".to_string(), read_script(42)];
+    let control = launch_helper_with_inherited_fd(helper_path(), &control_spec, held);
+    assert!(
+        control.stdout.contains("inherited-descriptor-sentinel"),
+        "the control must prove the descriptor is otherwise readable: stdout={:?} stderr={:?}",
+        control.stdout,
+        control.stderr
+    );
+
+    // The production path closes every descriptor it does not hand the helper.
+    let mut spec = spec_for(workspace.path(), SandboxMode::WorkspaceWrite, &[]);
+    spec.args = vec!["-c".to_string(), read_script(held)];
+    let result = run_contained_request(workspace.path(), spec).await;
+    let stdout = result.stdout.to_string_lossy();
+    assert!(
+        stdout.contains("FD-DENIED"),
+        "the target must run and report the closed descriptor: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("inherited-descriptor-sentinel"),
+        "an inherited descriptor must not reach a contained child: {stdout:?}"
+    );
+    assert!(
+        matches!(
+            result.sandbox,
+            codegg::managed_process::SandboxExecutionOutcome::Enforced { .. }
+        ),
+        "the descriptor must be closed by a contained launch, not by a failed one: {:?}",
+        result.sandbox
+    );
+
+    unsafe {
+        libc::close(held);
     }
 }
 
@@ -1352,25 +1633,112 @@ fn a_malformed_spec_never_produces_an_enforced_status() {
     );
 }
 
-/// Landlock is intentionally filesystem-only. This fixture connects a
-/// sandboxed child to same-UID host process, loopback TCP, and abstract UDS
-/// endpoints so later namespace work has real, deterministic baseline
-/// effects to deny.
+#[cfg(target_os = "linux")]
+fn spawn_sentinel() -> std::process::Child {
+    Command::new("sleep")
+        .arg("30")
+        .env("CODEGG_C002_SENTINEL", "fixture-only")
+        .spawn()
+        .expect("controlled same-UID fixture process")
+}
+
+/// `true` while the sentinel runs; a delivered `SIGTERM` kills `sleep` at once.
+#[cfg(target_os = "linux")]
+fn sentinel_survives(child: &mut std::process::Child) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < deadline {
+        if child.try_wait().expect("poll fixture process").is_some() {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    true
+}
+
+/// The default route obtains the ABI 6 process scope: a contained child
+/// cannot signal a same-uid process outside the scope or reach an abstract
+/// AF_UNIX socket bound outside it; the descriptor names the limits.
 #[cfg(target_os = "linux")]
 #[test]
-fn legacy_landlock_leaves_host_process_tcp_and_abstract_uds_reachable() {
+fn default_landlock_scopes_signals_and_abstract_sockets_with_positive_control() {
     require_backend!();
     let workspace = tempfile::tempdir().expect("workspace");
-    let mut host_process = Command::new("sleep")
-        .arg("30")
-        .env("CODEGG_C007_SENTINEL", "fixture-only")
-        .spawn()
-        .expect("controlled same-UID fixture process");
-    let host_pid = host_process.id();
 
+    let socket_name = format!(
+        "codegg-c002-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    );
+    let abstract_addr =
+        UnixSocketAddr::from_abstract_name(socket_name.as_bytes()).expect("abstract UDS address");
+    let abstract_listener = UnixListener::bind_addr(&abstract_addr).expect("abstract UDS fixture");
+    abstract_listener
+        .set_nonblocking(true)
+        .expect("bound the fixture wait");
+    let abstract_server = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut stream, _) = loop {
+            match abstract_listener.accept() {
+                Ok(connection) => break connection,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "abstract UDS fixture accept timed out"
+                    );
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("abstract UDS fixture accept failed: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("bound the fixture read");
+        let mut byte = [0];
+        stream
+            .read_exact(&mut byte)
+            .expect("abstract UDS probe byte");
+        assert_eq!(byte[0], b'U');
+        stream.write_all(b"B").expect("abstract UDS reply");
+    });
+
+    let mut positive_sentinel = spawn_sentinel();
+    let positive_script = format!(
+        "import os, signal, socket\nos.kill({pid}, signal.SIGTERM)\n\
+         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\ns.settimeout(3)\n\
+         s.connect('\\0{name}')\ns.sendall(b'U')\nassert s.recv(1) == b'B'\n\
+         print('POSITIVE_SIGNAL_OK POSITIVE_ABSTRACT_OK')",
+        pid = positive_sentinel.id(),
+        name = socket_name,
+    );
+    let positive = Command::new("python3")
+        .args(["-c", positive_script.as_str()])
+        .output()
+        .expect("positive control python");
+    assert!(
+        positive.status.success(),
+        "the uncontained control must signal and connect: {}",
+        String::from_utf8_lossy(&positive.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&positive.stdout)
+            .contains("POSITIVE_SIGNAL_OK POSITIVE_ABSTRACT_OK"),
+        "positive control output: {:?}",
+        String::from_utf8_lossy(&positive.stdout)
+    );
+    let positive_status = positive_sentinel.wait().expect("reap positive sentinel");
+    assert_eq!(
+        positive_status.signal(),
+        Some(libc::SIGTERM),
+        "the positive control's SIGTERM must actually reach the fixture process"
+    );
+
+    let mut contained_sentinel = spawn_sentinel();
     let tcp = TcpListener::bind(("127.0.0.1", 0)).expect("loopback TCP fixture");
-    tcp.set_nonblocking(true).unwrap();
-    let tcp_addr = tcp.local_addr().unwrap();
+    tcp.set_nonblocking(true).expect("bound the fixture wait");
+    let tcp_addr = tcp.local_addr().expect("loopback address");
     let tcp_server = thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(5);
         let (mut stream, _) = loop {
@@ -1385,102 +1753,106 @@ fn legacy_landlock_leaves_host_process_tcp_and_abstract_uds_reachable() {
         };
         stream
             .set_read_timeout(Some(Duration::from_secs(3)))
-            .unwrap();
-        let mut request = [0; 1];
-        stream.read_exact(&mut request).unwrap();
-        assert_eq!(&request, b"T");
-        stream.write_all(b"A").unwrap();
-    });
-
-    let socket_name = format!(
-        "codegg-c007-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos()
-    );
-    let uds_addr =
-        UnixSocketAddr::from_abstract_name(socket_name.as_bytes()).expect("abstract UDS address");
-    let uds = UnixListener::bind_addr(&uds_addr).expect("abstract UDS fixture");
-    uds.set_nonblocking(true).unwrap();
-    let uds_server = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let (mut stream, _) = loop {
-            match uds.accept() {
-                Ok(connection) => break connection,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(Instant::now() < deadline, "UDS fixture accept timed out");
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Err(error) => panic!("UDS fixture accept failed: {error}"),
-            }
-        };
-        stream
-            .set_read_timeout(Some(Duration::from_secs(3)))
-            .unwrap();
-        let mut request = [0; 1];
-        stream.read_exact(&mut request).unwrap();
-        assert_eq!(&request, b"U");
-        stream.write_all(b"B").unwrap();
+            .expect("bound the fixture read");
+        let mut byte = [0];
+        stream.read_exact(&mut byte).expect("TCP probe byte");
+        assert_eq!(byte[0], b'T');
+        stream.write_all(b"A").expect("TCP reply");
     });
 
     let script = format!(
         r#"import os, signal, socket
 try:
-    open('/proc/{host_pid}/environ', 'rb').read()
+    os.kill({pid}, signal.SIGTERM)
+    signal_result = 'SIGNAL_OK'
+except PermissionError:
+    signal_result = 'SIGNAL_DENIED'
+try:
+    open('/proc/{pid}/environ', 'rb').read()
     proc_result = 'HOST_PROC_READ'
 except PermissionError:
     proc_result = 'HOST_PROC_DENIED_BY_HOST'
-os.kill({host_pid}, 0)
-os.kill({host_pid}, signal.SIGTERM)
-tcp = socket.create_connection(('127.0.0.1', {tcp_port}), timeout=3)
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(3)
+    s.connect('\0{name}')
+    abstract_result = 'ABSTRACT_OK'
+except OSError:
+    abstract_result = 'ABSTRACT_DENIED'
+tcp = socket.create_connection(('127.0.0.1', {port}), timeout=3)
 tcp.sendall(b'T')
 assert tcp.recv(1) == b'A'
-uds = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-uds.settimeout(3)
-uds.connect('\0{socket_name}')
-uds.sendall(b'U')
-assert uds.recv(1) == b'B'
-print(proc_result, 'HOST_PID_VISIBLE HOST_SIGNAL_OK TCP_LOOPBACK_OK ABSTRACT_UDS_OK')"#,
-        tcp_port = tcp_addr.port()
+print(signal_result, proc_result, abstract_result, 'TCP_OK')"#,
+        pid = contained_sentinel.id(),
+        name = socket_name,
+        port = tcp_addr.port(),
     );
     let mut spec = spec_for(workspace.path(), SandboxMode::WorkspaceWrite, &[]);
     spec.target = PathBuf::from("python3");
     spec.args = vec!["-c".to_string(), script];
     let run = run_helper(&spec);
+    let abstract_result = abstract_server.join();
     let tcp_result = tcp_server.join();
-    let uds_result = uds_server.join();
-    let host_status = match host_process.try_wait().expect("poll fixture process") {
-        Some(status) => status,
-        None => {
-            host_process.kill().expect("clean up fixture process");
-            host_process.wait().expect("reap fixture process")
-        }
-    };
 
-    assert!(run.success, "legacy fixture failed: {}", run.stderr);
-    assert!(tcp_result.is_ok());
-    assert!(uds_result.is_ok());
+    assert!(run.success, "default-route fixture failed: {}", run.stderr);
     assert!(
-        host_status.signal().is_some(),
-        "target did not signal fixture process"
+        abstract_result.is_ok(),
+        "the abstract UDS server thread failed; the out-of-scope socket was not reachable"
     );
     assert!(
-        run.stdout
-            .contains("HOST_PROC_DENIED_BY_HOST HOST_PID_VISIBLE HOST_SIGNAL_OK TCP_LOOPBACK_OK ABSTRACT_UDS_OK"),
-        "legacy Landlock effects changed: {}",
+        tcp_result.is_ok(),
+        "the TCP server thread failed; loopback connectivity was lost"
+    );
+    assert!(
+        run.stdout.contains("SIGNAL_DENIED"),
+        "the default route must deny signalling a same-uid process outside the scope: {}",
         run.stdout
     );
+    assert!(
+        run.stdout.contains("ABSTRACT_DENIED"),
+        "the ABI 6 scope must deny connecting to an abstract socket bound outside it: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout.contains("TCP_OK"),
+        "network isolation is not claimed; loopback TCP must stay reachable: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout.contains("HOST_PROC_"),
+        "the /proc posture probe must run: {}",
+        run.stdout
+    );
+    assert!(
+        sentinel_survives(&mut contained_sentinel),
+        "the contained child signalled a same-uid process outside its scope"
+    );
+    contained_sentinel
+        .kill()
+        .expect("clean up contained sentinel");
+    contained_sentinel.wait().expect("reap contained sentinel");
+
     match run.outcome().expect("helper status frame") {
         SandboxLaunchOutcome::Enforced {
-            backend, limits, ..
+            backend,
+            guarantees,
+            limits,
+            ..
         } => {
             assert_eq!(backend, BackendId::LANDLOCK);
-            assert!(limits
-                .iter()
-                .any(|limit| limit.contains("no network isolation")));
+            assert!(
+                guarantees
+                    .iter()
+                    .any(|guarantee| guarantee.contains("process scope obtained")),
+                "the default route must report the ABI 6 scope it obtained: {guarantees:?}"
+            );
+            assert!(
+                limits
+                    .iter()
+                    .any(|limit| limit.contains("pathname AF_UNIX")),
+                "the descriptor must state the pathname-socket limit: {limits:?}"
+            );
         }
-        other => panic!("expected the legacy filesystem-only status, got {other:?}"),
+        other => panic!("expected the default Landlock status, got {other:?}"),
     }
 }

@@ -46,6 +46,24 @@ pub struct EditCheckpoint {
     pub files: Vec<EditFileState>,
 }
 
+/// The bounded set of paths a single turn wrote, read from the durable
+/// checkpoint record. `truncated` says the read stopped at its cap before the
+/// turn's record was exhausted, so the set is evidence *for* the paths it
+/// names and no evidence about any other path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnWriteEvidence {
+    pub paths: Vec<String>,
+    pub truncated: bool,
+}
+
+impl TurnWriteEvidence {
+    /// Exact string comparison; a caller resolving paths through a
+    /// canonicalising resolver must normalise both sides the same way first.
+    pub fn contains(&self, path: &str) -> bool {
+        self.paths.iter().any(|candidate| candidate == path)
+    }
+}
+
 #[derive(Debug, sqlx::FromRow)]
 struct EditCheckpointRow {
     id: String,
@@ -312,6 +330,59 @@ impl EditCheckpointManager {
             }
             None => Ok(None),
         }
+    }
+
+    /// The paths one turn wrote, read from the durable checkpoint record.
+    ///
+    /// Narrower than "paths in the turn's checkpoints": a batch persists every
+    /// affected path it captured, including siblings whose `pre` and `post`
+    /// states are equal because the batch left them alone, so only a path whose
+    /// recorded state **changed** was written by the turn.
+    ///
+    /// The per-file fields are projected in SQL, so the pre/post content blobs
+    /// are never materialised here, and `LIMIT` bounds the scan. Order is
+    /// `(batch_seq, created_at, id)` then position within the batch — the sorted
+    /// order `affected_paths::normalize_and_dedup` recorded. A path written
+    /// twice appears once, at its first position.
+    pub async fn paths_written_for_turn(
+        &self,
+        workspace_id: &str,
+        session_id: &str,
+        turn_id: &str,
+        max_paths: usize,
+    ) -> Result<TurnWriteEvidence, String> {
+        if max_paths == 0 {
+            return Err("path cap must be greater than zero".to_string());
+        }
+        // `->>` yields the serialized `FileState`; equal states serialize
+        // identically, so the inequality tests the recorded state, not the
+        // file's current bytes.
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT files.value ->> '$.path' AS path \
+               FROM edit_checkpoint AS cp, json_each(cp.data) AS files \
+              WHERE cp.workspace_id = ?1 \
+                AND cp.session_id = ?2 \
+                AND cp.turn_id = ?3 \
+                AND (files.value ->> '$.pre') <> (files.value ->> '$.post') \
+              ORDER BY cp.batch_seq ASC, cp.created_at ASC, cp.id ASC, files.key ASC \
+              LIMIT ?4",
+        )
+        .bind(workspace_id)
+        .bind(session_id)
+        .bind(turn_id)
+        .bind(max_paths as i64 + 1)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let truncated = rows.len() > max_paths;
+        let mut paths: Vec<String> = Vec::new();
+        for (path,) in rows.into_iter().take(max_paths) {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+        Ok(TurnWriteEvidence { paths, truncated })
     }
 
     pub async fn list_for_session(&self, session_id: &str) -> Result<Vec<EditCheckpoint>, String> {
@@ -1042,5 +1113,162 @@ mod tests {
             }],
         };
         assert!(mgr.persist_checkpoint(cp).await.is_err());
+    }
+
+    fn present(hash: &str, content: &str) -> FileState {
+        FileState::Present {
+            hash: hash.into(),
+            content: content.into(),
+        }
+    }
+
+    /// One file entry whose recorded state changed, i.e. a write.
+    fn wrote(path: &str) -> EditFileState {
+        EditFileState {
+            path: path.into(),
+            pre: FileState::Absent,
+            post: present("h-new", "new"),
+        }
+    }
+
+    /// One file entry the batch captured but did not change. A batch persists
+    /// these alongside the paths it did write.
+    fn captured_only(path: &str) -> EditFileState {
+        EditFileState {
+            path: path.into(),
+            pre: present("h-same", "same"),
+            post: present("h-same", "same"),
+        }
+    }
+
+    fn checkpoint(id: &str, turn: &str, batch: i64, files: Vec<EditFileState>) -> EditCheckpoint {
+        EditCheckpoint {
+            id: id.into(),
+            workspace_id: "ws1".into(),
+            session_id: "sess1".into(),
+            turn_id: Some(turn.into()),
+            batch_seq: batch,
+            created_at: 1_000 + batch,
+            files,
+        }
+    }
+
+    #[tokio::test]
+    async fn turn_write_evidence_names_the_turns_changed_paths_and_no_other_turns() {
+        let pool = test_pool().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = EditCheckpointManager::new(pool, tmp.path().to_path_buf());
+        mgr.persist_checkpoint(checkpoint(
+            "cp1",
+            "turn-1",
+            1,
+            vec![wrote("a.txt"), captured_only("b.txt")],
+        ))
+        .await
+        .unwrap();
+        mgr.persist_checkpoint(checkpoint("cp2", "turn-2", 1, vec![wrote("c.txt")]))
+            .await
+            .unwrap();
+
+        let evidence = mgr
+            .paths_written_for_turn("ws1", "sess1", "turn-1", 8)
+            .await
+            .unwrap();
+
+        // The path the batch changed only, in recorded order: `b.txt` proves a
+        // captured sibling is not authorship, `c.txt` proves the turn scope.
+        assert_eq!(evidence.paths, vec!["a.txt".to_string()]);
+        assert!(!evidence.truncated);
+        assert!(evidence.contains("a.txt"));
+        assert!(!evidence.contains("c.txt"));
+    }
+
+    #[tokio::test]
+    async fn turn_write_evidence_is_capped_and_deterministically_ordered() {
+        let pool = test_pool().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = EditCheckpointManager::new(pool, tmp.path().to_path_buf());
+        mgr.persist_checkpoint(checkpoint(
+            "cp1",
+            "turn-1",
+            1,
+            vec![wrote("a.txt"), wrote("b.txt")],
+        ))
+        .await
+        .unwrap();
+        mgr.persist_checkpoint(checkpoint(
+            "cp2",
+            "turn-1",
+            2,
+            vec![wrote("c.txt"), wrote("d.txt")],
+        ))
+        .await
+        .unwrap();
+
+        let first = mgr
+            .paths_written_for_turn("ws1", "sess1", "turn-1", 3)
+            .await
+            .unwrap();
+        let second = mgr
+            .paths_written_for_turn("ws1", "sess1", "turn-1", 3)
+            .await
+            .unwrap();
+
+        // Batch order, then position within the batch: the cap truncates the
+        // tail rather than sampling, and the flag says the set is partial.
+        assert_eq!(
+            first.paths,
+            vec![
+                "a.txt".to_string(),
+                "b.txt".to_string(),
+                "c.txt".to_string()
+            ]
+        );
+        assert!(first.truncated);
+        assert_eq!(first, second, "the read is deterministic across calls");
+        assert!(!first.contains("d.txt"));
+    }
+
+    #[tokio::test]
+    async fn turn_write_evidence_lists_a_path_written_twice_once_at_its_first_position() {
+        let pool = test_pool().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = EditCheckpointManager::new(pool, tmp.path().to_path_buf());
+        mgr.persist_checkpoint(checkpoint("cp1", "turn-1", 1, vec![wrote("a.txt")]))
+            .await
+            .unwrap();
+        mgr.persist_checkpoint(checkpoint(
+            "cp2",
+            "turn-1",
+            2,
+            vec![wrote("a.txt"), wrote("b.txt")],
+        ))
+        .await
+        .unwrap();
+
+        let evidence = mgr
+            .paths_written_for_turn("ws1", "sess1", "turn-1", 8)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            evidence.paths,
+            vec!["a.txt".to_string(), "b.txt".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn turn_write_evidence_refuses_a_zero_cap() {
+        let pool = test_pool().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = EditCheckpointManager::new(pool, tmp.path().to_path_buf());
+
+        let refused = mgr
+            .paths_written_for_turn("ws1", "sess1", "turn-1", 0)
+            .await;
+
+        // A cap of zero would report "nothing written" for every turn, which is
+        // the permissive default this read must never become.
+        assert!(refused.is_err());
     }
 }

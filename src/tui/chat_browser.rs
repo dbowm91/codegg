@@ -45,6 +45,7 @@ use ratatui::{
 use crate::protocol::core::{ChatChannelDto, ChatMessageDto};
 use crate::tui::app::state::chat::ChatStatus;
 use crate::tui::app::TuiMsg;
+use crate::tui::components::hint_line::HintLine;
 use crate::tui::render_cost;
 use crate::tui::theme::Theme;
 use crate::tui::wrap::wrap_to_strings;
@@ -815,25 +816,46 @@ pub fn selected_row_end(rows: &[ChatRow], cursor: usize) -> usize {
 ///
 /// Shared verbatim by both surfaces so the two can never advertise different
 /// verbs for the same keymap.
-pub fn normal_hints(show_help: bool) -> &'static str {
+pub fn normal_hints(show_help: bool) -> HintLine {
     if show_help {
-        "jk move · i compose · r reply · e edit · X redact · m read · u older · R refresh · [ ] channel · L dock · ? hide help"
+        HintLine::from_items(&[
+            ("jk", "move"),
+            ("i", "compose"),
+            ("r", "reply"),
+            ("e", "edit"),
+            ("X", "redact"),
+            ("m", "read"),
+            ("u", "older"),
+            ("R", "refresh"),
+            ("[ ]", "channel"),
+            ("L", "dock"),
+            ("?", "hide help"),
+        ])
     } else {
-        "jk move · r reply · e edit · X redact · m read · u older · [ ] channel · L dock · ? help"
+        HintLine::from_items(&[
+            ("jk", "move"),
+            ("r", "reply"),
+            ("e", "edit"),
+            ("X", "redact"),
+            ("m", "read"),
+            ("u", "older"),
+            ("[ ]", "channel"),
+            ("L", "dock"),
+            ("?", "help"),
+        ])
     }
 }
 
 /// Contextual keys for an armed editor.
-pub fn input_hints(seed: &ChatComposeSeed) -> String {
+pub fn input_hints(seed: &ChatComposeSeed) -> HintLine {
+    let mut hint = HintLine::new();
     if seed.is_contextual() {
-        format!(
-            "↵ send {} · Esc cancel {} (keeps text)",
-            seed.label(),
-            seed.label()
-        )
+        hint.push_required("Esc", &format!("cancel {} (keeps text)", seed.label()))
+            .push("↵", &format!("send {}", seed.label()));
     } else {
-        "↵ send · Esc cancel".to_string()
+        hint.push_required("Esc", "cancel").push("↵", "send");
     }
+    hint
 }
 
 /// Terminal columns a string occupies. Used to reserve the author prefix so
@@ -1294,21 +1316,33 @@ mod tests {
 
     #[test]
     fn hints_cover_every_normal_mode_verb() {
-        let short = normal_hints(false);
-        for verb in ["jk", "r reply", "e edit", "X redact", "m read", "u older"] {
+        let short = normal_hints(false).render(0);
+        for verb in [
+            "jk move", "r reply", "e edit", "X redact", "m read", "u older",
+        ] {
             assert!(short.contains(verb), "short hints missing {verb}");
         }
-        let long = normal_hints(true);
+        let long = normal_hints(true).render(0);
         assert!(long.contains("R refresh"));
         assert!(long.contains("hide help"));
+        assert!(!short.contains("compose"), "short hints gained an item");
+        assert!(!short.contains("R refresh"), "short hints gained an item");
     }
 
     #[test]
     fn input_hints_describe_an_armed_reply_but_not_a_plain_say() {
         let reply = ChatComposeSeed::reply("bob", "m1".to_string());
-        assert!(input_hints(&reply).contains("reply"));
-        assert!(input_hints(&ChatComposeSeed::say()).contains("send"));
-        assert!(!input_hints(&ChatComposeSeed::say()).contains("cancel say"));
+        let rendered = input_hints(&reply).render(0);
+        assert!(rendered.contains("reply"));
+        let plain = input_hints(&ChatComposeSeed::say());
+        assert!(plain.render(0).contains("send"));
+        assert!(!plain.render(0).contains("cancel say"));
+        assert_eq!(
+            plain.items().next().map(|item| item.key()),
+            Some("Esc"),
+            "the exit key must be the row's first item: {}",
+            plain.render(0)
+        );
     }
 
     #[test]

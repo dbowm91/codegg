@@ -13,6 +13,7 @@ use crate::permission::PermissionRequest;
 use crate::session::events::ToolRisk;
 use crate::tool::risk::classify_tool_risk;
 use crate::tui::app::TuiMsg;
+use crate::tui::components::hint_line::HintLine;
 
 /// Option index for `DenyOnce` in the dialog's fixed row order
 /// (`AllowOnce`, `AlwaysAllow`, `DenyOnce`, `AlwaysDeny`). Dismissing the
@@ -312,9 +313,22 @@ impl PermissionDialog {
             .collect();
 
         let hint = if self.confirm_persistent {
-            " Options — y/1 confirm & persist  |  n/2 cancel "
+            HintLine::from_items(&[
+                ("Esc", "cancel"),
+                ("y/1", "confirm & persist"),
+                ("n/2", "cancel"),
+            ])
+            .render(0)
         } else {
-            " Options — y/1 yes  |  p/2 yes always  |  n/3 no  |  4 always deny  |  ↑↓/j/k navigate  |  Esc cancel "
+            HintLine::from_items(&[
+                ("Esc", "cancel"),
+                ("y/1", "yes"),
+                ("p/2", "yes always"),
+                ("n/3", "no"),
+                ("4", "always deny"),
+                ("↑↓/j/k", "navigate"),
+            ])
+            .render(0)
         };
 
         let options_para = Paragraph::new(options).block(

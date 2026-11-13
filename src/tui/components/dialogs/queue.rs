@@ -32,31 +32,19 @@
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::{Margin, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::super::component::{Component, DialogType};
 use super::super::scroll::CenteredScroll;
+use super::super::section::{Section, SectionFrame};
 use crate::protocol::core::UserPromptQueueEntryDto;
 use crate::tui::app::TuiMsg;
+use crate::tui::components::hint_line::HintLine;
 use crate::tui::theme::Theme;
-
-/// Who owns this render's chrome.
-///
-/// Same per-widget convention as `tree.rs`: [`Chrome::Owned`] is the modal box
-/// and draws its own border, heading, and keymap footer; [`Chrome::Hosted`] is
-/// a column in a side panel where the host already painted all three into the
-/// same rect. There is no shared helper for this — panel-convergence M003
-/// deferred one and never opened it — so this widget duplicates the shape
-/// rather than inventing a second abstraction.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Chrome {
-    Owned,
-    Hosted,
-}
 
 /// The verbs this box implements while it is only navigating.
 ///
@@ -70,11 +58,24 @@ enum Chrome {
 /// `Enter` is absent for a different reason and must stay that way: it is this
 /// box's **confirm** key inside a text step, so naming it here would describe a
 /// verb that does not apply to what is on screen.
-const HINT_BROWWSING: &str =
-    "j/k move · [ ] reorder · a add · e edit · d delete · s send now · r refresh";
+fn hint_browsing() -> HintLine {
+    let mut hint = HintLine::new();
+    hint.push("j/k", "move")
+        .push("[ ]", "reorder")
+        .push("a", "add")
+        .push("e", "edit")
+        .push("d", "delete")
+        .push("s", "send now")
+        .push("r", "refresh");
+    hint
+}
 
 /// The verbs while a text step has the keyboard.
-const HINT_TEXT: &str = "Enter next · Esc cancel";
+fn hint_text() -> HintLine {
+    let mut hint = HintLine::new();
+    hint.push_required("Esc", "cancel").push("Enter", "next");
+    hint
+}
 
 /// The verbs while the duration step has the keyboard.
 ///
@@ -82,7 +83,14 @@ const HINT_TEXT: &str = "Enter next · Esc cancel";
 /// a user who has to leave the box to learn `1h` has already lost the entry
 /// they were composing. "Enter with nothing" is stated because it is the common
 /// case, not an edge case — most prompts are immediate.
-const HINT_SCHEDULE: &str = "Enter set · 30s/5min/2h/1d · empty = next turn · Esc back";
+fn hint_schedule() -> HintLine {
+    let mut hint = HintLine::new();
+    hint.push_required("Esc", "back")
+        .push("Enter", "set")
+        .push("30s/5min/2h/1d", "")
+        .push("empty = next turn", "");
+    hint
+}
 
 /// Row height budget before the list starts paging.
 const DEFAULT_VISIBLE_HEIGHT: usize = 10;
@@ -745,16 +753,19 @@ impl QueueDialog {
         }
     }
 
-    fn render_body(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: Chrome) {
+    fn render_body(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &Arc<Theme>,
+        chrome: SectionFrame,
+    ) {
         let (rows_area, compose_area, hint_area) = match chrome {
-            Chrome::Owned => {
-                let block = Block::default()
-                    .title(self.title())
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.border))
-                    .style(Style::default().bg(theme.background));
-                let inner = block.inner(area);
-                frame.render_widget(Paragraph::new("").block(block), area);
+            SectionFrame::Owned => {
+                let title = self.title();
+                let inner = Section::new(&title, theme)
+                    .focused(true)
+                    .draw(area, frame.buffer_mut());
                 // M005: the composer only takes a row when a text step is
                 // actually running. Reserving it unconditionally would reflow
                 // the list on every `a` and `Esc`, which is the same class of
@@ -773,11 +784,15 @@ impl QueueDialog {
                 };
                 (chunks[0], compose, Some(hint))
             }
-            Chrome::Hosted => {
+            SectionFrame::Hosted => {
                 // The host has already painted a border, a title, and the focus
                 // marker into this rect. A second border overwrites all three
-                // and a focused column renders like an unfocused one.
-                let inner = area.inner(Margin::new(1, 1));
+                // and a focused column renders like an unfocused one. The
+                // hosted arm of `Section` is that rule as a variant: it writes
+                // nothing and answers the rect the host's edge leaves.
+                let inner = Section::plain(theme)
+                    .frame(SectionFrame::Hosted)
+                    .draw(area, frame.buffer_mut());
                 (inner, None, None)
             }
         };
@@ -862,9 +877,11 @@ impl QueueDialog {
         }
 
         if let Some(hint_area) = hint_area {
+            let budget = usize::from(hint_area.width).saturating_sub(2);
+            let row = self.hint().render(budget);
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
-                    format!(" {} ", self.hint()),
+                    format!(" {row} "),
                     Style::default().fg(theme.muted),
                 ))),
                 hint_area,
@@ -878,13 +895,13 @@ impl QueueDialog {
     /// *inert* in a text step, so advertising them while a composer is open
     /// teaches keys that would not work. Rendering the browsing hint under an
     /// active text field is the same lie as advertising an unimplemented key.
-    fn hint(&self) -> &'static str {
+    fn hint(&self) -> HintLine {
         if self.is_schedule_step() {
-            HINT_SCHEDULE
+            hint_schedule()
         } else if self.is_text_step() {
-            HINT_TEXT
+            hint_text()
         } else {
-            HINT_BROWWSING
+            hint_browsing()
         }
     }
 }
@@ -1130,21 +1147,23 @@ impl Component for QueueDialog {
     }
 
     /// The verbs this box owns, spelled the way this box spells them.
-    fn keymap_hint(&self) -> Option<String> {
-        Some(self.hint().to_string())
+    fn keymap_hint_line(&self) -> Option<HintLine> {
+        Some(self.hint())
     }
 
     fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        let inner = area.inner(Margin::new(1, 1));
+        let inner = Section::plain(theme)
+            .frame(SectionFrame::Hosted)
+            .draw(area, frame.buffer_mut());
         if inner.height == 0 || inner.width == 0 {
             return;
         }
-        self.render_body(frame, inner, theme, Chrome::Hosted);
+        self.render_body(frame, inner, theme, SectionFrame::Hosted);
     }
 
     #[allow(clippy::incompatible_msrv)]
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        self.render_body(frame, area, theme, Chrome::Owned);
+        self.render_body(frame, area, theme, SectionFrame::Owned);
     }
 
     fn dialog_type(&self) -> DialogType {
@@ -1419,7 +1438,10 @@ mod tests {
     fn user_prompt_queue_keymap_hint_names_only_keys_it_handles() {
         let d = dialog(vec![entry("a", 0, "first", "pending")]);
         let hint = d.keymap_hint().expect("hint");
-        assert_eq!(hint, HINT_BROWWSING);
+        assert_eq!(
+            hint,
+            "j/k move · [ ] reorder · a add · e edit · d delete · s send now · r refresh"
+        );
         for named in ["j", "k", "r", "d", "a", "e", "[", "]"] {
             assert!(hint.contains(named), "hint is missing {named}: {hint:?}");
         }
@@ -1443,21 +1465,27 @@ mod tests {
     #[test]
     fn user_prompt_queue_hint_follows_the_step() {
         let mut d = dialog(vec![entry("a", 0, "first", "pending")]);
-        assert_eq!(d.keymap_hint().as_deref(), Some(HINT_BROWWSING));
-
-        d.begin_add();
         assert_eq!(
             d.keymap_hint().as_deref(),
-            Some(HINT_TEXT),
+            Some("j/k move · [ ] reorder · a add · e edit · d delete · s send now · r refresh")
+        );
+
+        d.begin_add();
+        let text_step = d.keymap_hint().expect("a text step names its own verbs");
+        assert_eq!(
+            text_step, "Esc cancel · Enter next",
             "a text step must not advertise the browsing verbs, which are inert there"
         );
         assert!(
-            !HINT_TEXT.contains('d'),
-            "the text hint must not contain a letter that is an action key: {HINT_TEXT:?}"
+            !text_step.contains('d'),
+            "the text hint must not contain a letter that is an action key: {text_step:?}"
         );
 
         d.cancel_text_step();
-        assert_eq!(d.keymap_hint().as_deref(), Some(HINT_BROWWSING));
+        assert_eq!(
+            d.keymap_hint().as_deref(),
+            Some("j/k move · [ ] reorder · a add · e edit · d delete · s send now · r refresh")
+        );
     }
 
     /// Every key the hint names must actually reach an action through
@@ -2260,21 +2288,23 @@ mod tests {
         type_text(&mut d, "prompt");
         d.handle_key(key(KeyCode::Enter));
         assert_eq!(d.step(), QueueStep::Scheduling);
+        let schedule = d
+            .keymap_hint()
+            .expect("the duration step names its own verbs");
         assert_eq!(
-            d.keymap_hint().as_deref(),
-            Some(HINT_SCHEDULE),
-            "the duration step must advertise its own verbs"
+            schedule,
+            "Esc back · Enter set · 30s/5min/2h/1d · empty = next turn"
         );
         for expected in ["30s", "5min", "2h", "1d", "empty"] {
             assert!(
-                HINT_SCHEDULE.contains(expected),
-                "the duration hint must state {expected}: {HINT_SCHEDULE:?}"
+                schedule.contains(expected),
+                "the duration hint must state {expected}: {schedule:?}"
             );
         }
         // The browsing verbs are inert here, so the hint must not offer them.
         for inert in ["reorder", "delete", "send now"] {
             assert!(
-                !HINT_SCHEDULE.contains(inert),
+                !schedule.contains(inert),
                 "the duration hint must not advertise the inert verb {inert}"
             );
         }

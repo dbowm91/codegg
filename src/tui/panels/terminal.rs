@@ -53,15 +53,17 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Widget},
+    widgets::{Paragraph, Widget},
 };
 
 use crate::tui::app::TuiMsg;
 use crate::tui::commands::interactive_terminal::{apply_nav, map_key, NavOutcome};
+use crate::tui::components::hint_line::HintLine;
 use crate::tui::input::{InputAction, InputMode};
 use crate::tui::interactive_terminal::TerminalKeyAction;
 use crate::tui::theme::Theme;
 
+use super::chrome::PanelChrome;
 use super::{PanelCtx, PanelHints, PanelKey, SidePanel, SidePanelId};
 
 /// Interactive terminal side panel.
@@ -196,30 +198,10 @@ impl SidePanel for TerminalPanel {
 
     fn render(&mut self, ctx: &mut PanelCtx<'_>, buf: &mut Buffer, area: Rect) {
         let theme = ctx.theme.clone();
-        if area.width < 12 || area.height < 4 {
-            return;
-        }
-        let title = if ctx.focused {
-            " Terminal ● "
-        } else {
-            " Terminal "
-        };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(if ctx.focused {
-                theme.primary
-            } else {
-                theme.border
-            }))
-            .title(title)
-            .title_style(Style::default().fg(if ctx.focused {
-                theme.primary
-            } else {
-                theme.muted
-            }))
-            .style(Style::default().bg(theme.background));
-        let inner = block.inner(area);
-        block.render(area, buf);
+        // See `panels::chrome`: the threshold and the styles are one policy,
+        // not a per-panel guard.
+        let inner =
+            PanelChrome::new(SidePanelId::Terminal.label(), ctx.focused, &theme).draw(area, buf);
         if inner.height == 0 || inner.width == 0 {
             return;
         }
@@ -411,12 +393,32 @@ impl SidePanel for TerminalPanel {
             return None;
         }
         Some(if self.handle.is_none() {
-            "TERM · i start a shell · v chars · x lines · d delete · space+y copy · C clear"
-                .to_string()
+            HintLine::new()
+                .push("TERM", "")
+                .push("i", "start a shell")
+                .push("v", "chars")
+                .push("x", "lines")
+                .push("d", "delete")
+                .push("space+y", "copy")
+                .push("C", "clear")
+                .render(0)
         } else if hints.input_mode == InputMode::Insert {
-            "TERM · INS typing to the shell · Esc read · Ctrl+] literal esc".to_string()
+            HintLine::new()
+                .push("TERM", "")
+                .push("INS typing to the shell", "")
+                .push("Esc", "read")
+                .push("Ctrl+]", "literal esc")
+                .render(0)
         } else {
-            "TERM · i type · hjkl move · v chars · x lines · space+y copy · C clear".to_string()
+            HintLine::new()
+                .push("TERM", "")
+                .push("i", "type")
+                .push("hjkl", "move")
+                .push("v", "chars")
+                .push("x", "lines")
+                .push("space+y", "copy")
+                .push("C", "clear")
+                .render(0)
         })
     }
 

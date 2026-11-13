@@ -235,6 +235,11 @@ pub struct AgentLoop {
     /// Durable child loops retain the originating turn for provenance while
     /// their run ID remains the invocation owner scope.
     pub(super) turn_id: Option<String>,
+    /// The section digests of the prompt this loop dispatches, when its
+    /// caller compiled one. The request ledger records these instead of
+    /// rebuilding the prompt at the dispatch seam. `None` means the loop was
+    /// built without a compiled-prompt identity.
+    pub(super) prompt_section_digests: Option<std::collections::BTreeMap<String, String>>,
     /// M005 corrective C009: the actor this loop's writes run on behalf of,
     /// when the loop has no turn of its own.
     ///
@@ -603,6 +608,7 @@ impl AgentLoop {
             usage_session_id: session_id.clone(),
             session_id,
             turn_id: None,
+            prompt_section_digests: None,
             inherited_execution_audit: None,
             workspace_id: None,
             workspace_locks: None,
@@ -704,6 +710,18 @@ impl AgentLoop {
 
     pub fn set_prompt_compiler_fingerprint(&mut self, fingerprint: String) {
         self.services.prompt_compiler_fingerprint = Some(fingerprint);
+    }
+
+    /// Retain the section digests of the compiled prompt this loop dispatches.
+    pub fn set_prompt_section_digests(
+        &mut self,
+        digests: std::collections::BTreeMap<String, String>,
+    ) {
+        self.prompt_section_digests = Some(digests);
+    }
+
+    pub fn prompt_section_digests(&self) -> Option<&std::collections::BTreeMap<String, String>> {
+        self.prompt_section_digests.as_ref()
     }
 
     pub fn runtime_asset_pin(

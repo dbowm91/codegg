@@ -27,9 +27,11 @@ use crate::protocol::interactive_process::{
     InteractiveOutputChunk, InteractiveProcessCreateRequest, InteractiveProcessMetadata,
     InteractiveResync,
 };
+use crate::tui::app::send_tui;
 use crate::tui::app::TerminalResumeRequest;
 use crate::tui::app::{App, TuiCommand};
 use crate::tui::async_cmd::spawn_registered_tui_task;
+use crate::tui::components::hint_line::HintLine;
 use crate::tui::interactive_terminal::{TerminalInputError, TerminalKey, TerminalKeyAction};
 use crate::tui::task_lifecycle::TuiTaskKind;
 
@@ -1714,17 +1716,24 @@ pub(crate) fn refresh_terminal_dialog(app: &mut App, handle: &str) {
     } else {
         styled_content.extend(output);
     }
-    let footer = format!(
-        "j/k scroll  |  ^-u/^-d page  |  e/b word  |  v select chars  |  x select lines  |  d delete  |  space+y copy  |  C clear  |  i focus  |  ^-] unfocus  |  D diagnostics  |  Esc closes{}",
-        if app.interactive_terminals.redaction_count(handle) > 0 {
-            format!(
-                "  |  {} deleted",
-                app.interactive_terminals.redaction_count(handle)
-            )
-        } else {
-            String::new()
-        },
-    );
+    let mut footer = HintLine::new();
+    footer
+        .push_required("Esc", "close")
+        .push("j/k", "scroll")
+        .push("^-u/^-d", "page")
+        .push("e/b", "word")
+        .push("v", "select chars")
+        .push("x", "select lines")
+        .push("d", "delete")
+        .push("space+y", "copy")
+        .push("C", "clear")
+        .push("i", "focus")
+        .push("^-]", "unfocus")
+        .push("D", "diagnostics");
+    let redactions = app.interactive_terminals.redaction_count(handle);
+    if redactions > 0 {
+        footer.push(&format!("{redactions} deleted"), "");
+    }
     if let Some(dialog) = app
         .focus_manager
         .dialog_mut_any::<crate::tui::components::dialogs::info::InfoDialog>()
@@ -2236,6 +2245,204 @@ fn terminal_error_hint(code: &str, message: &str) -> String {
         }
         _ => format!("{code}: {message}"),
     }
+}
+
+pub(crate) fn dispatch_terminal_create(app: &mut App, argument: &str) {
+    let args = argument;
+    if args.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /terminal-create <command> [args...]");
+    } else {
+        // Simple whitespace split: interactive terminals run
+        // through the daemon PTY engine, not a shell, so no
+        // shell metacharacters are interpreted.
+        let argv: Vec<String> = args.split_whitespace().map(str::to_string).collect();
+        crate::tui::commands::interactive_terminal::start_terminal_create(app, argv);
+    }
+}
+
+pub(crate) fn dispatch_terminal_attach(app: &mut App, argument: &str) {
+    let args = argument;
+    if args.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /terminal-attach <handle>");
+    } else {
+        crate::tui::commands::interactive_terminal::start_terminal_attach(app, args.to_string());
+    }
+}
+
+pub(crate) fn dispatch_terminal_show(app: &mut App, argument: &str) {
+    let args = argument;
+    if args.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /terminal-show <handle>");
+    } else if let Some(ref tx) = app.tui_cmd_tx {
+        let _ = send_tui(
+            tx,
+            TuiCommand::TerminalShow {
+                handle: args.to_string(),
+            },
+        );
+    }
+}
+
+pub(crate) fn dispatch_terminal(app: &mut App, argument: &str) {
+    // The everyday spelling of "give me a terminal". Opening a
+    // terminal is expected to produce one, so a missing or dead
+    // view is answered with a shell rather than an instruction to
+    // go run a different command — the two-step is exactly what
+    // made this feel like it did not work.
+    let args = argument;
+    let explicit = !args.is_empty();
+    let handle = if explicit {
+        Some(args.to_string())
+    } else {
+        app.interactive_terminals
+            .active_handle()
+            .map(str::to_string)
+    };
+    match handle {
+        Some(handle) if app.interactive_terminals.is_live(&handle) => {
+            crate::tui::commands::interactive_terminal::show_terminal(app, handle);
+        }
+        // An explicitly named handle is honoured as typed: if it
+        // is not there, say so rather than silently substituting a
+        // shell for a command the user actually asked for.
+        Some(handle) if explicit => {
+            if app.interactive_terminals.view(&handle).is_none() {
+                app.messages_state
+                    .toasts
+                    .warning("That terminal is gone — /terminal-list to see the rest");
+            } else {
+                crate::tui::commands::interactive_terminal::show_terminal(app, handle);
+            }
+        }
+        _ => crate::tui::commands::interactive_terminal::spawn_default_terminal(app),
+    }
+}
+
+pub(crate) fn dispatch_terminal_clear(app: &mut App, argument: &str) {
+    let args = argument;
+    // No argument means "whichever one I am looking at" — the
+    // box if it is open, else the panel, else the active view.
+    let handle = if args.is_empty() {
+        app.dialog_state
+            .terminal_detail_handle
+            .clone()
+            .or_else(|| app.panel_host.terminal_handle().map(str::to_string))
+            .or_else(|| {
+                app.interactive_terminals
+                    .active_handle()
+                    .map(str::to_string)
+            })
+    } else {
+        Some(args.to_string())
+    };
+    match handle {
+        Some(handle) => crate::tui::commands::interactive_terminal::clear_terminal(app, &handle),
+        None => app
+            .messages_state
+            .toasts
+            .warning("No terminal to clear — /terminal-list"),
+    }
+}
+
+pub(crate) fn dispatch_terminal_focus(app: &mut App, argument: &str) {
+    let args = argument;
+    let handle = if args.is_empty() {
+        None
+    } else {
+        Some(args.to_string())
+    };
+    crate::tui::commands::interactive_terminal::focus_terminal(app, handle);
+}
+
+pub(crate) fn dispatch_terminal_send(app: &mut App, argument: &str) {
+    let args = argument;
+    match args.split_once(' ') {
+        Some((handle, text)) if !handle.is_empty() && !text.is_empty() => {
+            crate::tui::commands::interactive_terminal::send_terminal_input(
+                app,
+                handle.to_string(),
+                text.as_bytes().to_vec(),
+            );
+        }
+        _ => {
+            app.messages_state
+                .toasts
+                .warning("Usage: /terminal-send <handle> <text>");
+        }
+    }
+}
+
+pub(crate) fn dispatch_terminal_resize(app: &mut App, argument: &str) {
+    let args = argument;
+    let parts: Vec<&str> = args.split_whitespace().collect();
+    match parts.as_slice() {
+        [handle, cols, rows] => match (cols.parse::<u16>(), rows.parse::<u16>()) {
+            (Ok(cols), Ok(rows)) => {
+                crate::tui::commands::interactive_terminal::start_terminal_resize(
+                    app,
+                    handle.to_string(),
+                    cols,
+                    rows,
+                );
+            }
+            _ => {
+                app.messages_state
+                    .toasts
+                    .warning("Usage: /terminal-resize <handle> <cols> <rows> (numbers)");
+            }
+        },
+        _ => {
+            app.messages_state
+                .toasts
+                .warning("Usage: /terminal-resize <handle> <cols> <rows>");
+        }
+    }
+}
+
+pub(crate) fn dispatch_terminal_resume(app: &mut App, argument: &str) {
+    let args = argument;
+    let handle = if args.is_empty() {
+        None
+    } else {
+        Some(args.to_string())
+    };
+    crate::tui::commands::interactive_terminal::start_terminal_resume(app, handle);
+}
+
+pub(crate) fn dispatch_terminal_detach(app: &mut App, argument: &str) {
+    let args = argument;
+    let handle = if args.is_empty() {
+        None
+    } else {
+        Some(args.to_string())
+    };
+    crate::tui::commands::interactive_terminal::start_terminal_detach(app, handle);
+}
+
+pub(crate) fn dispatch_terminal_terminate(app: &mut App, argument: &str) {
+    let args = argument;
+    let handle = if args.is_empty() {
+        None
+    } else {
+        Some(args.to_string())
+    };
+    crate::tui::commands::interactive_terminal::start_terminal_terminate(app, handle);
+}
+
+pub(crate) fn dispatch_terminal_remove(app: &mut App, argument: &str) {
+    let args = argument;
+    let handle = if args.is_empty() {
+        None
+    } else {
+        Some(args.to_string())
+    };
+    crate::tui::commands::interactive_terminal::start_terminal_remove(app, handle);
 }
 
 #[cfg(test)]

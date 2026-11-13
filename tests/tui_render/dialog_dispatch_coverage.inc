@@ -1,33 +1,30 @@
-//! The live dialog dispatch, checked branch by branch against the branches
-//! the `#[cfg(any())]` `handle_dialog_key_legacy` body handled.
+//! The live dialog dispatch, checked against the branches the `#[cfg(any())]`
+//! `handle_dialog_key_legacy` body handled — the record of the dialog key
+//! contract the `FocusManager`-owned dispatch replaced.
 //!
-//! `handle_dialog_key_legacy` is a 615-line body that has never been
-//! compiled (`#[cfg(any())]`) and has no caller. It was retained as the
-//! record of the dialog key contract that the live `FocusManager`-owned
-//! dispatch replaced. This member is the executable part of that record: it
-//! drives the live dispatch with the same keys the legacy body handled and
-//! asserts that the live dispatch still owns them.
-//!
-//! Three branches the legacy body handled have **no** live counterpart, and
-//! this member deliberately does not assert them — asserting them would lock
-//! the gap in place rather than report it. They are recorded in
-//! `plans/closure/repository-audit-corrective/005-status.md`:
-//!
-//! - the Model dialog's `Tab` — the `FocusManager` consumes `Tab` for its
-//!   focus ring, so it never reaches the component that owns the tabs;
-//! - the `/shell-show` modal's `i`/`a`/`r`/`k`/`e` verbs, which the modal's
-//!   own footer still advertises;
-//! - the Import dialog's text input (`Char`/`Backspace`): the live
-//!   `ImportDialog` component handles only `Esc` and `Enter`, so a typed URL
-//!   never reaches the preview, and the legacy body holds the only
-//!   implementation of that input.
+//! Of its three branches with no live counterpart: Import `Char`/`Backspace`
+//! is **closed** (`ImportDialog::handle_key` edits its input in
+//! `ImportState::Input`); `/shell-show`'s `i`/`a`/`r`/`k`/`e` is **closed by
+//! removing the advertisement** — no arm dispatches those five **verbs**, and
+//! `k` reaches the scroll arm rather than a kill, so the row named one working
+//! key and four intents that each need a shell-detail id the widget is never
+//! handed; the modal therefore paints its own row and the verbs stay
+//! unimplemented. Model `Tab` is **retained**, because `FocusManager` owns
+//! `Tab` for every dialog (ADR-0042) and this milestone does not amend it.
+//! Long form: `docs/tui-render-invariant-baseline.toml`.
 
-use codegg::tui::components::component::{DialogType, FocusManager};
+use codegg::tui::app::TuiMsg;
+use codegg::tui::components::component::{Component, DialogType, FocusManager};
+use codegg::tui::components::dialogs::import::ImportDialog;
+use codegg::tui::components::dialogs::info::{InfoDialog, InfoType};
 use codegg::tui::components::dialogs::model::ModelDialog;
 use codegg::tui::components::dialogs::question::{QuestionDialog, QuestionSpec};
 use codegg::tui::components::dialogs::session::SessionDialog;
+use codegg::tui::components::hint_line::HintLine;
 use codegg::tui::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::backend::TestBackend;
+use ratatui::Terminal;
 use std::sync::Arc;
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -57,6 +54,34 @@ fn the_model_dialog_owns_its_filter_keys() {
         .with_dialog::<ModelDialog, _>(DialogType::Model, |dialog| dialog.filter.clone())
         .expect("the model dialog is mounted");
     assert_eq!(filter, "g", "backspace must pop the model dialog's filter");
+}
+
+/// The Import dialog takes a typed URL through the live dispatch, and `Enter`
+/// offers its preview.
+#[test]
+fn the_import_dialog_takes_a_typed_url_and_offers_its_preview() {
+    let mut focus = FocusManager::new();
+    focus.push(Box::new(ImportDialog::new(theme())));
+
+    for c in "codegg://share/abc".chars() {
+        assert!(
+            focus.handle_key(key(KeyCode::Char(c))).is_none(),
+            "typing edits the input and reports no message"
+        );
+    }
+    let input = focus
+        .with_dialog::<ImportDialog, _>(DialogType::Import, |dialog| dialog.input.clone())
+        .expect("the import dialog is mounted");
+    assert_eq!(
+        input, "codegg://share/abc",
+        "typing must reach the import dialog's input"
+    );
+
+    assert_eq!(
+        focus.handle_key(key(KeyCode::Enter)),
+        Some(TuiMsg::SubmitImportPreview),
+        "Enter must offer the preview of what was typed"
+    );
 }
 
 /// The Question dialog owns its answer-editing keys: typing appends,
@@ -147,5 +172,73 @@ fn an_unhandled_dialog_key_produces_no_message() {
     assert!(
         focus.handle_key(key(KeyCode::F(5))).is_none(),
         "an unhandled dialog key must be dropped, not turned into a message"
+    );
+}
+
+/// The modal's verb row, read back from a rendered frame: it is the last of the
+/// three stacked sections, so its text is the second-to-last row.
+fn painted_footer(dialog: &mut InfoDialog, theme: &Arc<Theme>) -> String {
+    let (width, height) = (100u16, 20u16);
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal
+        .draw(|frame| dialog.render(frame, frame.area(), theme))
+        .expect("draw");
+    let buffer = terminal.backend().buffer();
+    (0..width)
+        .map(|x| buffer[(x, height - 2)].symbol().to_string())
+        .collect()
+}
+
+/// `/shell-show` paints only the verbs it dispatches. The caller still sets the
+/// six-verb row, so this reads the **painted** footer rather than the intent.
+#[test]
+fn the_shell_show_modal_advertises_only_keys_it_handles() {
+    let theme = theme();
+    let mut shell = InfoDialog::new(
+        Arc::clone(&theme),
+        InfoType::ShellShow,
+        vec!["  $ cargo test".to_string()],
+    );
+    shell.set_custom_footer(HintLine::from_items(&[
+        ("i", "include"),
+        ("a", "ask"),
+        ("r", "rerun"),
+        ("k", "kill"),
+        ("e", "expand"),
+        ("j/k", "scroll"),
+        ("Esc", "close"),
+    ]));
+    let footer = painted_footer(&mut shell, &theme);
+
+    for unhandled in ["i include", "a ask", "r rerun", "k kill", "e expand"] {
+        assert!(
+            !footer.contains(unhandled),
+            "the /shell-show footer advertises `{unhandled}`, which no arm dispatches: \
+             {footer:?}"
+        );
+    }
+    assert!(
+        footer.contains("j/k scroll") && footer.contains("Esc/Enter close"),
+        "the footer must name the verbs the box really dispatches: {footer:?}"
+    );
+}
+
+/// ...and the substitution is scoped to `/shell-show`, so a caller row whose
+/// verbs *are* dispatched still paints.
+#[test]
+fn a_caller_footer_still_paints_where_its_verbs_are_dispatched() {
+    let theme = theme();
+    let mut init = InfoDialog::new(
+        Arc::clone(&theme),
+        InfoType::ProjectInit,
+        vec!["  candidate".to_string()],
+    );
+    init.set_custom_footer(HintLine::from_items(&[("a", "publish"), ("Esc", "cancel")]));
+
+    let footer = painted_footer(&mut init, &theme);
+    assert!(
+        footer.contains("a publish"),
+        "the de-advertisement leaked off /shell-show: {footer:?}"
     );
 }

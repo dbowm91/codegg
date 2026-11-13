@@ -38,6 +38,7 @@ use ratatui::{buffer::Buffer, Frame};
 
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
+use crate::tui::components::hint_line::HintLine;
 use crate::tui::theme::Theme;
 
 use super::{PanelCtx, PanelHints, PanelKey, SidePanel, SidePanelId};
@@ -99,11 +100,6 @@ impl HostPanel {
     ) -> Option<R> {
         self.widget.as_any_mut().downcast_mut::<T>().map(f)
     }
-
-    fn title(&self, focused: bool) -> String {
-        let dot = if focused { "●" } else { " " };
-        format!(" {} {} ", self.id.label(), dot)
-    }
 }
 
 /// The verbs a hosted panel falls back to describing when its widget has no
@@ -120,9 +116,17 @@ impl SidePanel for HostPanel {
         self.id
     }
 
+    /// The edge is the shared chrome's, and the name is the registry's, so a
+    /// hosted panel indicates focus the same way a bespoke one does.
     fn render(&mut self, ctx: &mut PanelCtx<'_>, buf: &mut Buffer, area: Rect) {
-        let title = self.title(ctx.focused);
-        crate::tui::panels::render_hosted(&mut *self.widget, buf, area, &ctx.theme, &title);
+        crate::tui::panels::render_hosted(
+            &mut *self.widget,
+            buf,
+            area,
+            &ctx.theme,
+            self.id.label(),
+            ctx.focused,
+        );
     }
 
     fn handle_key(
@@ -162,19 +166,28 @@ impl SidePanel for HostPanel {
             .widget
             .keymap_hint()
             .unwrap_or_else(|| GENERIC_KEYS.to_string());
+        // Built through the one hint vocabulary rather than a `format!`
+        // string: the separator, the lowercasing and the "whole parts only"
+        // rule are `HintLine`'s, so a panel row cannot invent a second dialect
+        // the vocabulary check would have to be taught about. `render(0)` is
+        // unbounded because this is not a reserved row — the frame gives it the
+        // column's width, and the composer row is the surface that must survive
+        // a budget. `keys` stays one part: it is the widget's own keymap, and
+        // splitting a string this function did not compose would guess at where
+        // its pairs end.
+        let mut line = HintLine::new();
+        line.push(self.id.title(), "");
         if hints.focused {
-            Some(format!("{} · {keys} · Shift+← back", self.id.title()))
+            line.push(&keys, "").push("Shift+←", "back");
         } else {
             // The verbs are not live yet, so the line leads with the gesture
             // that makes them live. Placement-correct, because it is a different
             // key on every edge: `Shift+→` for the right column, `Shift+←` for
             // the left, `Shift+↓` for the bottom row.
-            Some(format!(
-                "{} · {} in · {keys}",
-                self.id.title(),
-                hints.enter_gesture()
-            ))
+            line.push(&format!("{} in", hints.enter_gesture()), "")
+                .push(&keys, "");
         }
+        Some(line.render(0))
     }
 }
 
@@ -319,10 +332,10 @@ mod tests {
     /// A column big enough that the copy under test is not wrapped away.
     const AREA: Rect = Rect::new(0, 0, 44, 12);
 
-    fn rendered(placeholder: &mut Placeholder, title: &str) -> String {
+    fn rendered(placeholder: &mut Placeholder, label: &str, focused: bool) -> String {
         let theme = Arc::new(Theme::default());
         let mut buf = Buffer::empty(AREA);
-        crate::tui::panels::render_hosted(placeholder, &mut buf, AREA, &theme, title);
+        crate::tui::panels::render_hosted(placeholder, &mut buf, AREA, &theme, label, focused);
         (0..AREA.height)
             .map(|y| {
                 (0..AREA.width)
@@ -338,9 +351,9 @@ mod tests {
     }
 
     /// The host's border and title are the panel's identity, and the `●` in
-    /// that title is the only thing telling a focused panel from an unfocused
-    /// one. A placeholder that painted its own all-borders `Block` over the
-    /// whole column destroyed all three at once.
+    /// that title plus the border colour are what tell a focused panel from an
+    /// unfocused one. A placeholder that painted its own all-borders `Block`
+    /// over the whole column destroyed all three at once.
     #[test]
     fn a_hosted_placeholder_keeps_the_panel_title_and_focus_dot() {
         for state in [
@@ -350,9 +363,9 @@ mod tests {
         ] {
             let mut placeholder = Placeholder::new(SidePanelId::Files);
             placeholder.state = state;
-            let text = rendered(&mut placeholder, " ● Files ");
+            let text = rendered(&mut placeholder, SidePanelId::Files.label(), true);
             assert!(
-                text.contains("● Files"),
+                text.contains("Files ●"),
                 "{state:?}: the panel title and its focus marker are the host's, not the widget's, got {text:?}"
             );
         }
@@ -383,7 +396,7 @@ mod tests {
             ] {
                 let mut placeholder = Placeholder::new(id);
                 placeholder.state = state;
-                let text = rendered(&mut placeholder, " x ");
+                let text = rendered(&mut placeholder, "x", false);
                 assert!(
                     !text.contains("Shift+←"),
                     "{id:?}/{state:?} told the user to move a box that is already in place, got {text:?}"
@@ -407,7 +420,7 @@ mod tests {
     fn a_declared_state_is_described_rather_than_denied() {
         let mut loading = Placeholder::new(SidePanelId::Goal);
         loading.state = PlaceholderState::Loading;
-        let text = rendered(&mut loading, " Goal ");
+        let text = rendered(&mut loading, SidePanelId::Goal.label(), false);
         assert!(
             text.contains("Loading Goal"),
             "a load in flight must read as a load in flight, got {text:?}"
@@ -415,7 +428,7 @@ mod tests {
 
         let mut blocked = Placeholder::new(SidePanelId::Memory);
         blocked.state = PlaceholderState::Cannot("memory search needs a query");
-        let text = rendered(&mut blocked, " Memory ");
+        let text = rendered(&mut blocked, SidePanelId::Memory.label(), false);
         assert!(
             text.contains("memory search needs a query"),
             "a panel that cannot act must say why, got {text:?}"
