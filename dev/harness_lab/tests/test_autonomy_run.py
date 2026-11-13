@@ -144,6 +144,68 @@ class JobIdArgumentTelemetryTests(unittest.TestCase):
         for private_value in (private_id, digest, "PRIVATE_DETAIL", "PRIVATE_UNRECOGNIZED_OUTPUT"):
             self.assertNotIn(private_value, encoded)
 
+    def test_failed_job_status_attribution_joins_error_and_result_binding_safely(self) -> None:
+        requested_id = "5a4c2d88-29a7-4ea7-b617-1833bcb6c80b"
+        digest = hashlib.sha256(requested_id.encode("utf-8")).hexdigest()
+        projector = autonomy_run._ToolCallProjector()
+        calls = (
+            ("backend", "string", digest,
+             "Error: Execution backend unavailable: PRIVATE_BACKEND_DETAIL"),
+            ("missing", "missing", None,
+             "Error: tool execution failed: job not found"),
+        )
+        for index, (call_id, argument_state, argument_digest, output) in enumerate(calls):
+            started = {
+                "sessionUpdate": "tool_call", "toolCallId": call_id,
+                "title": "job", "codeggAction": "status",
+                "codeggJobIdArgumentState": argument_state,
+                "codeggArgumentsSha256": "a" * 64,
+            }
+            if argument_digest is not None:
+                started["codeggJobIdArgumentSha256"] = argument_digest
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": 10 + index,
+                              "params": {"update": started}})
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": 20 + index,
+                              "params": {"update": {
+                                  "sessionUpdate": "tool_call_update", "toolCallId": call_id,
+                                  "status": "failed", "rawOutput": output,
+                              }}})
+
+        sequence = autonomy_run.diagnostics.summarize_job_tool_sequence(projector.calls())
+        attribution = sequence["failed_job_status_attribution"]
+        self.assertEqual(attribution["state"], "observed")
+        self.assertEqual(attribution["rows"], [
+            {
+                "error_class": "execution_backend_unavailable",
+                "argument_state": "string",
+                "result_job_id_state": "absent",
+                "request_result_state": "unobserved",
+                "count": 1,
+            },
+            {
+                "error_class": "job_not_found",
+                "argument_state": "missing",
+                "result_job_id_state": "absent",
+                "request_result_state": "mismatched",
+                "count": 1,
+            },
+        ])
+        safe = autonomy_run.diagnostics.safe_job_status_failure_attribution({
+            **attribution,
+            "private_marker": "PRIVATE_ATTRIBUTION_SENTINEL",
+            "rows": [{**row, "private_id": requested_id} for row in attribution["rows"]],
+        })
+        self.assertEqual(safe, attribution)
+        self.assertIsNone(autonomy_run.diagnostics.safe_job_status_failure_attribution({
+            **attribution,
+            "rows": [{**attribution["rows"][0], "count": True}],
+        }))
+        encoded = json.dumps({"calls": projector.calls(), "safe": safe})
+        for private_value in (
+            requested_id, digest, "PRIVATE_BACKEND_DETAIL", "PRIVATE_ATTRIBUTION_SENTINEL",
+        ):
+            self.assertNotIn(private_value, encoded)
+
     def test_failed_background_test_submit_keeps_only_allowlisted_error_class(self) -> None:
         projector = autonomy_run._ToolCallProjector()
         for call_id, error_class in (

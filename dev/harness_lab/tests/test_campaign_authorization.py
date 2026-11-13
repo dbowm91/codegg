@@ -188,6 +188,95 @@ class CampaignAuthorizationTests(unittest.TestCase):
 
         self.assertEqual(projected, {"attempt": 2, "provider_requests_observed": 3})
 
+    def test_safe_campaign_projects_phase_statuses_and_job_failure_binding(self) -> None:
+        case_receipt = {
+            "task_completion_diagnostic": {
+                "schema": "h007_task_completion_diagnostic_v2",
+                "state": "verification_failed",
+                "reasons": ["independent_verifier_failures"],
+                "verifier_outcome": "assertion_failures",
+                "raw_note_retained": False,
+                "raw_job_ids_retained": False,
+                "verifier_public_reconciliation": {
+                    "schema": "h007_verifier_public_reconciliation_v1",
+                    "failure_domain_counts": {"transcript_job_lifecycle": 1},
+                    "public_domain_states": {"transcript_job_lifecycle": "incomplete"},
+                    "classification": {
+                        "transcript_job_lifecycle": "public_evidence_incomplete",
+                    },
+                    "public_checks": {},
+                    "failed_job_status_attribution": {
+                        "schema": "h007_failed_job_status_attribution_v1",
+                        "state": "observed",
+                        "private_marker": "PRIVATE_ATTRIBUTION",
+                        "rows": [{
+                            "error_class": "execution_backend_unavailable",
+                            "argument_state": "string",
+                            "result_job_id_state": "absent",
+                            "request_result_state": "unobserved",
+                            "count": 1,
+                            "private_id": "PRIVATE_JOB_ID",
+                        }],
+                    },
+                    "assertion_text_retained": False,
+                    "raw_output_retained": False,
+                    "raw_job_ids_retained": False,
+                    "transcript_retained": False,
+                },
+            },
+            "continuation_diagnostic": {
+                "schema": "h007_continuation_diagnostic_v1",
+                "present": True,
+                "document_valid": False,
+                "raw_note_retained": False,
+                "raw_job_ids_retained": False,
+                "phase_statuses": {
+                    "versioned_records": "complete",
+                    "durable_import": "in_progress",
+                    "private_phase": "completed",
+                },
+                "contract_phase_statuses": {
+                    "cli_export": "not_started",
+                    "private_contract_phase": "complete",
+                },
+            },
+        }
+
+        projected = safe_campaign_run_fields(
+            _run(), canonical_identity=_run(), case_receipt=case_receipt)
+        diagnostic = projected["h007_completion_diagnostic"]
+        continuation = diagnostic["continuation"]
+        self.assertEqual(continuation["phase_statuses"], {
+            "versioned_records": "complete", "durable_import": "in_progress",
+        })
+        self.assertEqual(continuation["phase_complete_count"], 1)
+        self.assertEqual(continuation["first_missing_phase"], "durable_import")
+        self.assertEqual(continuation["contract_phase_statuses"], {"cli_export": "not_started"})
+        attribution = diagnostic["verifier_public_reconciliation"][
+            "failed_job_status_attribution"]
+        self.assertEqual(attribution["rows"], [{
+            "error_class": "execution_backend_unavailable",
+            "argument_state": "string",
+            "result_job_id_state": "absent",
+            "request_result_state": "unobserved",
+            "count": 1,
+        }])
+        encoded = json.dumps(projected)
+        for private_marker in ("PRIVATE_ATTRIBUTION", "PRIVATE_JOB_ID", "private_phase",
+                               "private_contract_phase"):
+            self.assertNotIn(private_marker, encoded)
+
+        invalid_receipt = copy.deepcopy(case_receipt)
+        invalid_receipt["task_completion_diagnostic"][
+            "verifier_public_reconciliation"]["failed_job_status_attribution"][
+                "rows"][0]["count"] = True
+        invalid = safe_campaign_run_fields(
+            _run(), canonical_identity=_run(), case_receipt=invalid_receipt)
+        self.assertNotIn(
+            "failed_job_status_attribution",
+            invalid["h007_completion_diagnostic"]["verifier_public_reconciliation"],
+        )
+
     def test_event_measurement_projection_rejects_malformed_and_raw_fields(self) -> None:
         malformed = _safe_event_measurement_diagnostic({
             "schema": "h007_event_measurement_v1",
