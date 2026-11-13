@@ -232,10 +232,7 @@ fn is_dependency_file(path: &Path) -> bool {
         return true;
     }
     // Check .github/workflows/*.yml
-    if path.to_string_lossy().starts_with(GITHUB_WORKFLOWS_PREFIX) {
-        return true;
-    }
-    false
+    path.to_string_lossy().starts_with(GITHUB_WORKFLOWS_PREFIX)
 }
 
 fn make_finding(path: Option<&Path>, line: usize, rule: &Rule, evidence: &str) -> SecurityFinding {
