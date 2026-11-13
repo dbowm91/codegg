@@ -62,7 +62,13 @@ For each required final success-job label, preserve only its fixed label and the
 - Focused Python suites, assertion-quality and duplication guards, Python compilation, and `git diff --check` pass.
 - Each live attempt uses the unchanged v97 manifest, paired ARM64 binary/helper, Muse route, exact current authorization, and all existing caps. H007 qualifies only if all current checks and the unchanged independent verifier pass.
 
-Offline implementation status: the parser now matches the public interleaved layout; campaign evidence carries only the two fixed final-job summaries and fails closed for missing or invalid status. Transcript diagnostics and public campaign reconciliation carry an allowlisted terminal and stop reason. The five focused Python modules pass (221 tests). Both repository test-quality guards pass, as do Python compilation and whitespace checks. Attempt 63 is unqualified: it had 45.48 active minutes, 179 provider requests, two qualified repair pairs, complete event measurement, all 12 gates, both final jobs, review, and public artifacts, but the independent verifier failed. Its previously recorded pointer-layout failure was a diagnostic false positive. Attempt 64 is the next unchanged live qualification attempt after the correction is pushed and a fresh preflight completes.
+Offline implementation status: the parser now matches the public interleaved layout; campaign evidence carries only the two fixed final-job summaries and fails closed for missing or invalid status. Transcript diagnostics and public campaign reconciliation carry an allowlisted terminal and stop reason. The five focused Python modules pass (221 tests). Both repository test-quality guards pass, as do Python compilation and whitespace checks. Attempt 63 is unqualified: it had 45.48 active minutes, 179 provider requests, two qualified repair pairs, complete event measurement, all 12 gates, both final jobs, review, and public artifacts, but the independent verifier failed. Its previously recorded pointer-layout failure was a diagnostic false positive. Attempt 64 was also unqualified and consumed: it had 34 provider requests and 239 seconds of observed tool activity before the external controller cancelled it. The controller wrongly treated the post-run campaign ledger's lack of an in-progress row as evidence of no provider admission. The safe provider-boundary receipt and causal trace proved the attempt had been active; the trace had 52 starts, 51 terminals, 16 job observations, and no terminal record or verifier start. This was a controller monitoring error, not evidence of a harness or model defect. Attempt 65 is next after fresh preflight, with the monitor following the exact `lane/case00/artifacts/provider-request-admissions.jsonl` receipt and safe causal trace during execution.
+
+Attempt 64 evidence:
+
+- Preflight: `plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt64-preflight-20261113.json`
+- Safe interruption diagnostic: `plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt64-safe-diagnostic-20261113.json`
+- The attempt consumed one campaign/grant/task start and 34 provider requests. It was externally cancelled before the verifier; do not treat it as a model or product failure.
 
 ## 6. Ordered work packages
 
@@ -76,7 +82,7 @@ Carry the fixed per-label completion summaries through safe campaign evidence us
 
 ### C — Offline verification and continued live qualification
 
-Run focused tests and guards; verify exact manifest and paired artifacts, campaign/grant/task headroom, credential availability without printing the value, and a fresh 30-GiB preflight reserve. Start only after all checks pass. Reconcile the safe transcript terminal and stop reason after each attempt without inspecting private raw artifacts.
+Run focused tests and guards; verify exact manifest and paired artifacts, campaign/grant/task headroom, credential availability without printing the value, and a fresh 30-GiB preflight reserve. Start only after all checks pass. While a run is active, observe request admissions from its lane-local provider-boundary receipt and progress from the bounded causal trace; the campaign ledger is reconciled only after `run_suite` returns. Reconcile the safe transcript terminal and stop reason after each attempt without inspecting private raw artifacts.
 
 ## 7. Stop conditions
 
