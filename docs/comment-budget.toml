@@ -919,7 +919,7 @@ max_ratio = 0.1364
 "tests/scheduler_jobs/scratch_record_less_tree.inc" = { max_comment_lines = 32, max_ratio = 0.2353 }
 "tests/scheduler_jobs/scratch_retention_sweep.inc" = { max_comment_lines = 119, max_ratio = 0.1748 }
 "tests/scheduler_jobs/scratch_usage_census.inc" = { max_comment_lines = 32, max_ratio = 0.1181 }
-"tests/security_permission/sandbox_landlock.inc" = { max_comment_lines = 58, max_ratio = 0.1327 }
+"tests/security_permission/sandbox_landlock.inc" = { max_comment_lines = 58, max_ratio = 0.1328 }
 "tests/security_permission/approval_reviewer.inc" = { max_comment_lines = 49, max_ratio = 0.0705 }
 "tests/security_permission/destructive_delete_classification.inc" = { max_comment_lines = 33, max_ratio = 0.22 }
 "tests/security_permission/host_admission_manifest.inc" = { max_comment_lines = 28, max_ratio = 0.224 }
