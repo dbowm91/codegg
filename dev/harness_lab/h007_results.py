@@ -12,7 +12,11 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .diagnostics import SAFE_JOB_STATUS_ERROR_CLASSES, SAFE_TEST_SUBMIT_ERROR_CLASSES
+from .diagnostics import (
+    SAFE_JOB_STATUS_ERROR_CLASSES,
+    SAFE_TEST_SUBMIT_ERROR_CLASSES,
+    safe_job_status_failure_attribution,
+)
 
 H007_RESULT_SCHEMA_VERSION = 3
 H007_MIN_ACTIVE_DURATION_MS = 30 * 60 * 1000
@@ -51,6 +55,10 @@ _EVENT_OBSERVATION_STATES = frozenset({
 _MEASURED_TERMINAL_TOOL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 _PHASE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 _PHASE_ENTRY = re.compile(r"^([a-z][a-z0-9_]*)(?:\s*:\s*(.*))?$")
+_PROGRESS_STATUSES = frozenset({
+    "complete", "completed", "pending", "failed", "in_progress", "not_started",
+})
+_COMPLETE_PROGRESS_STATUSES = frozenset({"complete", "completed"})
 _GATE_LINE = re.compile(
     r"^-\s+([a-z][a-z0-9_]*)\s*:\s*([a-z][a-z0-9_-]*)(?:\s+.*)?$"
 )
@@ -521,6 +529,64 @@ def documented_contract_phases(text: str) -> list[str] | None:
     return [phase for phase, complete in phases.items() if complete]
 
 
+def documented_progress_statuses(
+    text: str | None,
+    header: str,
+    *,
+    allow_inline_list: bool = False,
+) -> dict[str, str] | None:
+    """Read one progress section with an explicit, bounded status vocabulary.
+
+    This strict parser is used by the current H007 contract, whose continuation
+    requires `complete`/`completed` for every finished phase. The legacy phase
+    readers above remain unchanged for earlier fixtures that used free-form
+    evidence after a phase name.
+    """
+    if not isinstance(text, str) or header not in {"completed_phases", "contract_phases"}:
+        return None
+    lines = text.splitlines()
+    headers = [index for index, line in enumerate(lines)
+               if line.partition(":")[0].strip() == header]
+    if len(headers) != 1:
+        return None
+
+    _key, separator, value = lines[headers[0]].partition(":")
+    if not separator:
+        return None
+    inline = value.strip()
+    if inline:
+        if not allow_inline_list or header != "completed_phases":
+            return None
+        if not (inline.startswith("[") and inline.endswith("]")):
+            return None
+        inner = inline[1:-1].strip()
+        if not inner:
+            return {}
+        names = [name.strip() for name in inner.split(",")]
+        if (any(not _PHASE_NAME.fullmatch(name) for name in names)
+                or len(names) != len(set(names))):
+            return None
+        return {name: "complete" for name in names}
+
+    statuses: dict[str, str] = {}
+    for line in lines[headers[0] + 1:]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not stripped.startswith("-"):
+            break
+        match = _PHASE_ENTRY.fullmatch(stripped[1:].strip())
+        if match is None:
+            return None
+        phase, evidence = match.groups()
+        if phase in statuses:
+            return None
+        raw_status = evidence.strip().lower() if evidence is not None else ""
+        status = raw_status.split(maxsplit=1)[0] if raw_status else ""
+        statuses[phase] = status if status in _PROGRESS_STATUSES else "other"
+    return statuses or None
+
+
 def documented_gates(text: str) -> dict[str, str] | None:
     """Read the optional bounded ``gates:`` checklist from the public note.
 
@@ -728,8 +794,28 @@ def summarize_continuation_document(
             "raw_job_ids_retained": False,
         }
 
-    phases = documented_phases(text)
-    contract_phases = documented_contract_phases(text)
+    strict_progress = (
+        required_contract_phases is not None
+        and required_stages is not None
+        and required_gates is not None
+    )
+    phase_statuses = (
+        documented_progress_statuses(text, "completed_phases", allow_inline_list=True)
+        if strict_progress else None
+    )
+    contract_phase_statuses = (
+        documented_progress_statuses(text, "contract_phases") if strict_progress else None
+    )
+    if strict_progress:
+        phases = ([name for name, status in phase_statuses.items()
+                   if status in _COMPLETE_PROGRESS_STATUSES]
+                  if isinstance(phase_statuses, Mapping) else None)
+        contract_phases = ([name for name, status in contract_phase_statuses.items()
+                            if status in _COMPLETE_PROGRESS_STATUSES]
+                           if isinstance(contract_phase_statuses, Mapping) else None)
+    else:
+        phases = documented_phases(text)
+        contract_phases = documented_contract_phases(text)
     stages = documented_stages(text) if required_stages is not None else None
     gates = documented_gates(text) if required_gates is not None else None
     lines = text.splitlines()
@@ -799,6 +885,16 @@ def summarize_continuation_document(
         "contract_phase_order_matches": (
             contract_phases == list(required_contract_phases)
             if required_contract_phases is not None else None
+        ),
+        "phase_statuses": (
+            {name: (phase_statuses or {}).get(name, "other")
+             for name in required_phases}
+            if strict_progress else None
+        ),
+        "contract_phase_statuses": (
+            {name: (contract_phase_statuses or {}).get(name, "other")
+             for name in required_contract_phases}
+            if strict_progress and required_contract_phases is not None else None
         ),
         "stages": projected_stages,
         "incomplete_stages": (
@@ -902,7 +998,26 @@ def continuation_document_confirmed(text: str,
             if next_gates != ["none"]:
                 return False
 
-    phases = documented_phases(text)
+    strict_progress = (
+        required_phases is not None
+        and required_contract_phases is not None
+        and required_stages is not None
+        and required_gates is not None
+    )
+    phase_statuses = (
+        documented_progress_statuses(text, "completed_phases", allow_inline_list=True)
+        if strict_progress else None
+    )
+    contract_phase_statuses = (
+        documented_progress_statuses(text, "contract_phases") if strict_progress else None
+    )
+    if strict_progress:
+        phases = (list(phase_statuses)
+                  if isinstance(phase_statuses, Mapping)
+                  and all(status in _COMPLETE_PROGRESS_STATUSES
+                          for status in phase_statuses.values()) else None)
+    else:
+        phases = documented_phases(text)
     if phases is None:
         return False
     if (not phases or len(phases) != len(set(phases))
@@ -913,7 +1028,15 @@ def continuation_document_confirmed(text: str,
         return False
 
     if required_contract_phases is not None:
-        contract_phases = documented_contract_phases(text)
+        if strict_progress:
+            contract_phases = (
+                list(contract_phase_statuses)
+                if isinstance(contract_phase_statuses, Mapping)
+                and all(status in _COMPLETE_PROGRESS_STATUSES
+                        for status in contract_phase_statuses.values()) else None
+            )
+        else:
+            contract_phases = documented_contract_phases(text)
         if (contract_phases is None
                 or contract_phases != list(required_contract_phases)):
             return False
@@ -1319,6 +1442,20 @@ def _verifier_public_reconciliation(
             if isinstance(continuation.get("line_layout"), Mapping) else None
         ),
     }
+    phase_statuses = continuation.get("phase_statuses")
+    if isinstance(phase_statuses, Mapping):
+        continuation_checks["phase_statuses_complete"] = (
+            bool(phase_statuses)
+            and all(isinstance(status, str) and status in _COMPLETE_PROGRESS_STATUSES
+                    for status in phase_statuses.values())
+        )
+    contract_phase_statuses = continuation.get("contract_phase_statuses")
+    if isinstance(contract_phase_statuses, Mapping):
+        continuation_checks["contract_phase_statuses_complete"] = (
+            bool(contract_phase_statuses)
+            and all(isinstance(status, str) and status in _COMPLETE_PROGRESS_STATUSES
+                    for status in contract_phase_statuses.values())
+        )
     unbound_count = job_sequence.get("unbound_job_tool_call_count")
     unbound_state_counts = job_sequence.get("unbound_call_state_counts")
     if not isinstance(unbound_state_counts, Mapping):
@@ -1481,6 +1618,11 @@ def _verifier_public_reconciliation(
     )
     if event_measurement is not None:
         result["event_measurement_diagnostic"] = event_measurement
+    failed_job_status_attribution = safe_job_status_failure_attribution(
+        job_sequence.get("failed_job_status_attribution")
+    )
+    if failed_job_status_attribution is not None:
+        result["failed_job_status_attribution"] = failed_job_status_attribution
     return result
 
 

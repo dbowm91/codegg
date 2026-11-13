@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement Resumption S051 — Continuation and Terminal Evidence
 
-Status: **active**
+Status: **implemented**
 
 Repository baseline: `6ee1e1a1ec1a279125a26c646f949cbf4a428b92`
 
@@ -62,13 +62,19 @@ For each required final success-job label, preserve only its fixed label and the
 - Focused Python suites, assertion-quality and duplication guards, Python compilation, and `git diff --check` pass.
 - Each live attempt uses the unchanged v97 manifest, paired ARM64 binary/helper, Muse route, exact current authorization, and all existing caps. H007 qualifies only if all current checks and the unchanged independent verifier pass.
 
-Offline implementation status: the parser now matches the public interleaved layout; campaign evidence carries only the two fixed final-job summaries and fails closed for missing or invalid status. Transcript diagnostics and public campaign reconciliation carry an allowlisted terminal and stop reason. The five focused Python modules pass (221 tests). Both repository test-quality guards pass, as do Python compilation and whitespace checks. Attempt 63 is unqualified: it had 45.48 active minutes, 179 provider requests, two qualified repair pairs, complete event measurement, all 12 gates, both final jobs, review, and public artifacts, but the independent verifier failed. Its previously recorded pointer-layout failure was a diagnostic false positive. Attempt 64 was also unqualified and consumed: it had 34 provider requests and 239 seconds of observed tool activity before the external controller cancelled it. The controller wrongly treated the post-run campaign ledger's lack of an in-progress row as evidence of no provider admission. The safe provider-boundary receipt and causal trace proved the attempt had been active; the trace had 52 starts, 51 terminals, 16 job observations, and no terminal record or verifier start. This was a controller monitoring error, not evidence of a harness or model defect. Attempt 65 is next after fresh preflight, with the monitor following the exact `lane/case00/artifacts/provider-request-admissions.jsonl` receipt and safe causal trace during execution.
+Offline implementation status: the parser matches the public interleaved layout; campaign evidence carries only the two fixed final-job summaries and fails closed for missing or invalid status. Transcript diagnostics and public campaign reconciliation carry an allowlisted terminal and stop reason. The five focused Python modules passed (221 tests); both repository test-quality guards, Python compilation, and whitespace checks passed. Attempt 63 was unqualified: 45.48 active minutes, 179 provider requests, two qualified repair pairs, complete event measurement, all 12 gates, both final jobs, review, and public artifacts, but the independent verifier failed. Its pointer-layout failure was a diagnostic false positive. Attempt 64 was cancelled after 34 provider requests and 239 seconds of observed activity because the external controller misread the post-run campaign ledger; this was not a harness/model failure. Attempt 65 ran 35.29 active minutes with 182 provider requests, 201 matched tool starts/terminals, all 7 stages and 12 gates, both repair pairs, final jobs, review, artifacts, and an observed `completed`/`end_turn` transcript terminal. It remains unqualified: public continuation checks passed while the independent verifier reported a continuation-boundary failure, and the lifecycle projection recorded one failed status call with an unobserved request/result correlation. S052 owns those two remaining diagnostic gaps. The external monitor sampled 108 times; minimum free disk was 122,088,800,256 bytes. Private receipts, runner logs, raw transcripts, and hidden-verifier output were not inspected.
 
 Attempt 64 evidence:
 
 - Preflight: `plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt64-preflight-20261113.json`
 - Safe interruption diagnostic: `plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt64-safe-diagnostic-20261113.json`
 - The attempt consumed one campaign/grant/task start and 34 provider requests. It was externally cancelled before the verifier; do not treat it as a model or product failure.
+
+Attempt 65 evidence:
+
+- Preflight: `plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt65-preflight-20261113.json`
+- Safe diagnostic: `plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt65-safe-diagnostic-20261113.json`
+- The live monitor observed 108 samples, 182 provider requests, 201 starts and terminals, and a 122,088,800,256-byte minimum free disk. Active work was 2,117.620 seconds. The unchanged independent verifier did not pass. Its public reconciliation identifies one unbound failed job-status call; the safe evidence does not associate that call with the status error-class histogram. The continuation-domain checks all pass publicly despite the verifier's continuation-boundary failure. S052 owns those unresolved attributions.
 
 ## 6. Ordered work packages
 

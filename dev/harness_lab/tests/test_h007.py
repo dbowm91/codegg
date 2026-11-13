@@ -692,6 +692,26 @@ class H007CaseAndResultTests(unittest.TestCase):
                                  "- versioned records: malformed name")
         self.assertIsNone(h007_results.documented_phases(malformed))
 
+    def test_strict_progress_statuses_preserve_only_allowlisted_values(self):
+        statuses = h007_results.documented_progress_statuses(
+            "completed_phases:\n"
+            "- versioned_records: complete\n"
+            "- durable_import: in_progress (currently active)\n"
+            "- dependency_index: future status\n"
+            "next_phase: durable_import\n",
+            "completed_phases",
+        )
+
+        self.assertEqual(statuses, {
+            "versioned_records": "complete",
+            "durable_import": "in_progress",
+            "dependency_index": "other",
+        })
+        self.assertIsNone(h007_results.documented_progress_statuses(
+            "contract_phases:\n- phase_one: complete\n- phase_one: completed\n",
+            "contract_phases",
+        ))
+
     def test_documented_stages_tracks_latest_status_and_rejects_malformed_rows(self):
         note = (
             "required_stages:\n"
@@ -793,6 +813,30 @@ class H007CaseAndResultTests(unittest.TestCase):
                                     encoding="utf-8")
             self.assertTrue(_h007_continuation_confirmed(
                 calls, fixture, case_prompt=prompt))
+
+            in_progress_phase = note.replace(
+                "- versioned_records: completed",
+                "- versioned_records: in_progress",
+                1,
+            )
+            (fixture / "CONTINUATION.md").write_text(in_progress_phase, encoding="utf-8")
+            self.assertFalse(_h007_continuation_confirmed(
+                calls, fixture, case_prompt=prompt))
+            phase_projection = h007_results.summarize_continuation_document(
+                in_progress_phase,
+                calls,
+                required_phases=H007_S018_REQUIRED_STAGE_ORDER,
+                required_contract_phases=H007_S018_CONTRACT_PHASE_ORDER,
+                required_stages=H007_S018_REQUIRED_STAGE_ORDER,
+                required_gates=H007_S018_REQUIRED_GATE_ORDER,
+                required_success_job_labels=("workspace_tests", "clippy"),
+                require_all_test_jobs_terminal=True,
+            )
+            self.assertFalse(phase_projection["document_valid"])
+            self.assertEqual(
+                phase_projection["phase_statuses"]["versioned_records"], "in_progress")
+            self.assertEqual(
+                phase_projection["contract_phase_statuses"]["cli_export"], "completed")
 
             misordered_pointer = note.replace(
                 f"contract_phases:\n{contract_phase_lines}\nnext_contract_phase: none\n",

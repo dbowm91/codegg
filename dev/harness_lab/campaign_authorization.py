@@ -12,7 +12,10 @@ import re
 from collections.abc import Mapping, MutableMapping
 from typing import Any
 
-from .diagnostics import SAFE_JOB_STATUS_ERROR_CLASSES
+from .diagnostics import (
+    SAFE_JOB_STATUS_ERROR_CLASSES,
+    safe_job_status_failure_attribution,
+)
 
 
 class CampaignLedgerError(ValueError):
@@ -137,6 +140,16 @@ _PUBLIC_PROGRESS_STATUSES = frozenset({
     "complete", "completed", "pending", "failed", "in_progress", "not_started", "other",
 })
 _PUBLIC_REQUIRED_SUCCESS_JOB_LABELS = frozenset({"workspace_tests", "clippy"})
+_PUBLIC_H007_PHASE_ORDER = (
+    "versioned_records", "durable_import", "dependency_index", "provenance_queries",
+    "cli_contract", "acceptance_audit", "workspace_qualification",
+)
+_PUBLIC_H007_PHASE_LABELS = frozenset(_PUBLIC_H007_PHASE_ORDER)
+_PUBLIC_H007_CONTRACT_PHASE_ORDER = (
+    "versioned_records", "durable_import", "dependency_index", "provenance_queries",
+    "cli_export",
+)
+_PUBLIC_H007_CONTRACT_PHASE_LABELS = frozenset(_PUBLIC_H007_CONTRACT_PHASE_ORDER)
 _PUBLIC_REQUIRED_SUCCESS_JOB_STATUSES = frozenset({
     "completed", "failed", "cancelled", "canceled", "timed_out", "unobserved",
 })
@@ -160,6 +173,7 @@ _PUBLIC_VERIFIER_CHECKS = {
     "continuation_boundary": frozenset({
         "document_present", "document_valid", "phase_order_matches",
         "contract_phase_order_matches", "stage_order_matches", "next_phase_none",
+        "phase_statuses_complete", "contract_phase_statuses_complete",
         "next_contract_phase_none", "next_stage_none", "next_gate_none",
         "incomplete_stages_empty", "incomplete_gates_empty", "missing_phases_empty",
         "missing_contract_phases_empty", "required_success_jobs_complete",
@@ -258,12 +272,16 @@ def preflight_campaign_run_start(
         preview, run, provider_requests=1, status="in_progress")
 
 
-def _safe_public_statuses(value: Any) -> dict[str, str]:
+def _safe_public_statuses(
+    value: Any,
+    allowed_labels: frozenset[str] | None = None,
+) -> dict[str, str]:
     if not isinstance(value, Mapping) or len(value) > _MAX_PUBLIC_PROGRESS_ITEMS:
         return {}
     return {
         key: status for key, status in value.items()
         if isinstance(key, str) and _PUBLIC_IDENTIFIER.fullmatch(key)
+        and (allowed_labels is None or key in allowed_labels)
         and isinstance(status, str) and status in _PUBLIC_PROGRESS_STATUSES
     }
 
@@ -607,6 +625,44 @@ def _safe_h007_completion_projection(case_receipt: Mapping[str, Any] | None) -> 
                 continuation.get("repair_job_diagnostic")
             ),
         }
+        if isinstance(continuation.get("phase_statuses"), Mapping):
+            phase_statuses = _safe_public_statuses(
+                continuation.get("phase_statuses"),
+                _PUBLIC_H007_PHASE_LABELS,
+            )
+            incomplete_phases = [
+                name for name in _PUBLIC_H007_PHASE_ORDER
+                if phase_statuses.get(name) not in {"complete", "completed"}
+            ]
+            continuation_projection.update({
+                "phase_statuses": phase_statuses,
+                "phase_complete_count": sum(
+                    status in {"complete", "completed"}
+                    for status in phase_statuses.values()),
+                "phase_total_count": len(_PUBLIC_H007_PHASE_ORDER),
+                "incomplete_phases": incomplete_phases,
+                "first_missing_phase": incomplete_phases[0] if incomplete_phases else None,
+            })
+        if isinstance(continuation.get("contract_phase_statuses"), Mapping):
+            contract_phase_statuses = _safe_public_statuses(
+                continuation.get("contract_phase_statuses"),
+                _PUBLIC_H007_CONTRACT_PHASE_LABELS,
+            )
+            incomplete_contract_phases = [
+                name for name in _PUBLIC_H007_CONTRACT_PHASE_ORDER
+                if contract_phase_statuses.get(name) not in {"complete", "completed"}
+            ]
+            continuation_projection.update({
+                "contract_phase_statuses": contract_phase_statuses,
+                "contract_phase_complete_count": sum(
+                    status in {"complete", "completed"}
+                    for status in contract_phase_statuses.values()),
+                "contract_phase_total_count": len(_PUBLIC_H007_CONTRACT_PHASE_ORDER),
+                "incomplete_contract_phases": incomplete_contract_phases,
+                "first_missing_contract_phase": (
+                    incomplete_contract_phases[0] if incomplete_contract_phases else None
+                ),
+            })
 
     reconciliation = completion.get("verifier_public_reconciliation") \
         if isinstance(completion, Mapping) else None
@@ -642,6 +698,13 @@ def _safe_h007_completion_projection(case_receipt: Mapping[str, Any] | None) -> 
                 reconciliation.get("failed_job_status_error_class_counts"),
                 SAFE_JOB_STATUS_ERROR_CLASSES, maximum=1_600),
         }
+        failed_job_status_attribution = safe_job_status_failure_attribution(
+            reconciliation.get("failed_job_status_attribution")
+        )
+        if failed_job_status_attribution is not None:
+            verifier_projection["failed_job_status_attribution"] = (
+                failed_job_status_attribution
+            )
         event_measurement = _safe_event_measurement_diagnostic(
             reconciliation.get("event_measurement_diagnostic")
         )

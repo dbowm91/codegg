@@ -20,6 +20,7 @@ from urllib.parse import quote
 VERIFIER_SCHEMA = "h007_verifier_diagnostic_v4"
 REVIEWER_SCHEMA = "h007_reviewer_lifecycle_diagnostic_v2"
 PROVIDER_ATTEMPT_SCHEMA = "h007_provider_attempt_diagnostic_v1"
+JOB_STATUS_ATTRIBUTION_SCHEMA = "h007_failed_job_status_attribution_v1"
 MAX_DIAGNOSTIC_TESTS = 100
 MAX_TEST_ID_CHARS = 240
 MAX_REVIEW_EVENTS = 200
@@ -91,6 +92,13 @@ SAFE_TEST_SUBMIT_ERROR_CLASSES = frozenset({
 })
 SAFE_JOB_STATUS_ERROR_CLASSES = SAFE_TEST_SUBMIT_ERROR_CLASSES | frozenset({
     "job_not_found", "unobserved",
+})
+SAFE_JOB_ID_ARGUMENT_STATES = frozenset({
+    "invalid_json", "not_object", "missing", "non_string", "empty_string",
+    "string", "unobserved",
+})
+SAFE_JOB_ID_CORRELATION_STATES = frozenset({
+    "matched", "mismatched", "unobserved", "not_applicable",
 })
 _JOB_ID = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
@@ -280,6 +288,7 @@ def summarize_job_tool_sequence(
     unbound_states: Counter[str] = Counter()
     failed_submit_error_classes: Counter[str] = Counter()
     failed_job_status_error_classes: Counter[str] = Counter()
+    failed_job_status_binding: Counter[tuple[str, str, str, str]] = Counter()
     id_correlation_states: Counter[str] = Counter()
     id_correlation_instrumented = False
     total = 0
@@ -340,6 +349,13 @@ def summarize_job_tool_sequence(
         )
         if correlation_state != "not_applicable":
             id_correlation_states[correlation_state] += 1
+        if tool == "job" and action == "status" and call_status == "failed":
+            failed_job_status_binding[(
+                job_status_error_class or "unobserved",
+                argument_state,
+                "present" if valid_id else "absent",
+                correlation_state,
+            )] += 1
         if alias is None:
             unbound_states[f"{action}:{argument_state}:{call_status}"] += 1
         index = call.get("index")
@@ -365,6 +381,23 @@ def summarize_job_tool_sequence(
         })
     events.sort(key=lambda event: (event["index"] is None, event["index"] or 0))
     truncated = len(events) > MAX_JOB_SEQUENCE_EVENTS
+    attribution_count = sum(failed_job_status_binding.values())
+    attribution_truncated = attribution_count > MAX_JOB_SEQUENCE_EVENTS
+    attribution = {
+        "schema": JOB_STATUS_ATTRIBUTION_SCHEMA,
+        "state": "truncated" if attribution_truncated else "observed",
+        "rows": [
+            {
+                "error_class": error_class,
+                "argument_state": argument_state,
+                "result_job_id_state": result_job_id_state,
+                "request_result_state": request_result_state,
+                "count": count,
+            }
+            for (error_class, argument_state, result_job_id_state,
+                 request_result_state), count in sorted(failed_job_status_binding.items())
+        ][:MAX_JOB_SEQUENCE_EVENTS] if not attribution_truncated else [],
+    }
     return {
         "schema": "h007_job_tool_sequence_v1",
         "state": "observed" if total else "no_job_calls",
@@ -378,6 +411,7 @@ def summarize_job_tool_sequence(
         "failed_job_status_error_class_counts": dict(
             sorted(failed_job_status_error_classes.items())
         ),
+        "failed_job_status_attribution": attribution,
         "job_id_request_result_correlation": {
             "applicable_call_count": sum(id_correlation_states.values()),
             "state_counts": dict(sorted(id_correlation_states.items())),
@@ -394,6 +428,59 @@ def summarize_job_tool_sequence(
         "tool_arguments_retained": False,
         "tool_outputs_retained": False,
     }
+
+
+def safe_job_status_failure_attribution(value: Any) -> dict[str, Any] | None:
+    """Validate and copy the bounded content-free failed-status cross-tab."""
+    if not isinstance(value, Mapping) or value.get("schema") != JOB_STATUS_ATTRIBUTION_SCHEMA:
+        return None
+    state = value.get("state")
+    if state == "truncated":
+        return {"schema": JOB_STATUS_ATTRIBUTION_SCHEMA, "state": "truncated", "rows": []}
+    rows = value.get("rows")
+    if state != "observed" or not isinstance(rows, list) or len(rows) > MAX_JOB_SEQUENCE_EVENTS:
+        return None
+    result_rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    total = 0
+    for row in rows:
+        if not isinstance(row, Mapping):
+            return None
+        error_class = row.get("error_class")
+        argument_state = row.get("argument_state")
+        result_id_state = row.get("result_job_id_state")
+        correlation_state = row.get("request_result_state")
+        count = row.get("count")
+        if (not isinstance(error_class, str)
+                or error_class not in SAFE_JOB_STATUS_ERROR_CLASSES
+                or not isinstance(argument_state, str)
+                or argument_state not in SAFE_JOB_ID_ARGUMENT_STATES
+                or not isinstance(result_id_state, str)
+                or result_id_state not in {"present", "absent"}
+                or not isinstance(correlation_state, str)
+                or correlation_state not in SAFE_JOB_ID_CORRELATION_STATES
+                or not isinstance(count, int) or isinstance(count, bool)
+                or not 1 <= count <= MAX_JOB_SEQUENCE_EVENTS):
+            return None
+        key = (error_class, argument_state, result_id_state, correlation_state)
+        if key in seen:
+            return None
+        seen.add(key)
+        total += count
+        if total > MAX_JOB_SEQUENCE_EVENTS:
+            return None
+        result_rows.append({
+            "error_class": error_class,
+            "argument_state": argument_state,
+            "result_job_id_state": result_id_state,
+            "request_result_state": correlation_state,
+            "count": count,
+        })
+    result_rows.sort(key=lambda row: (
+        row["error_class"], row["argument_state"], row["result_job_id_state"],
+        row["request_result_state"],
+    ))
+    return {"schema": JOB_STATUS_ATTRIBUTION_SCHEMA, "state": "observed", "rows": result_rows}
 
 
 def audit_serialized_transcript(
