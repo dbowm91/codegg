@@ -390,15 +390,19 @@ pub fn tool_read_allowances() -> Vec<PathBuf> {
         "/opt",
         "/etc",
         "/dev",
-        "/proc",
         "/sys",
-        "/var/run",
         "/private/etc",
         "/private/var/db/timezone",
     ]
     .iter()
     .map(PathBuf::from)
     .collect();
+
+    // `/proc` and `/var/run` were granted as trees until C002. A tree grant on
+    // `/proc` makes `/proc/<other-pid>/environ` readable for a same-uid
+    // process, and Landlock cannot subtract from a granted tree, so the two
+    // are named narrowly instead of granted whole.
+    paths.extend(narrow_host_reads());
 
     if let Some(home) = home_dir() {
         // Shared configuration and cache ancestors may hold credentials.
@@ -410,6 +414,51 @@ pub fn tool_read_allowances() -> Vec<PathBuf> {
     }
     if let Some(rustup_home) = configured_rustup_home() {
         paths.extend(rustup_read_allowances(&rustup_home));
+    }
+    paths
+}
+
+/// The narrow replacements for the `/proc` and `/var/run` tree grants.
+///
+/// Every entry is a file or a directory that carries no other process's state:
+/// the self-scoped `/proc` entries, the kernel's informational files, the
+/// read-only sysctl view, and the resolver file a name lookup reads when a
+/// distribution places it under `/run` rather than `/etc`.
+///
+/// A rule for `/proc/self` is resolved to **this** process's pid directory when
+/// the rule is added, and `exec` keeps the pid, so the self-scoped grant
+/// survives the exec for the command itself. A *child* of the command has its
+/// own pid and does not inherit it — a recorded residue, not an implied
+/// guarantee.
+#[cfg(unix)]
+fn narrow_host_reads() -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = [
+        "/proc/self",
+        "/proc/thread-self",
+        "/proc/meminfo",
+        "/proc/cpuinfo",
+        "/proc/stat",
+        "/proc/loadavg",
+        "/proc/uptime",
+        "/proc/version",
+        "/proc/filesystems",
+        "/proc/sys",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect();
+
+    // Name lookup reads the resolver's file; grant the file that exists rather
+    // than the directory that holds it.
+    for candidate in [
+        "/run/systemd/resolve/stub-resolv.conf",
+        "/run/systemd/resolve/resolv.conf",
+        "/run/resolvconf/resolv.conf",
+    ] {
+        let path = PathBuf::from(candidate);
+        if path.exists() {
+            paths.push(path);
+        }
     }
     paths
 }
@@ -798,6 +847,33 @@ mod tests {
                 "{required} must be readable or no command can start: {roots:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_host_read_grants_name_no_process_tree() {
+        let reads = tool_read_allowances();
+        let names: Vec<String> = reads
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect();
+        // A tree grant on either root is the C002 finding: `/proc` makes
+        // `/proc/<other-pid>/environ` readable for a same-uid process, and
+        // `/var/run` exposes whatever a distribution keeps under `/run`.
+        for tree in ["/proc", "/var/run", "/run"] {
+            assert!(
+                !names.iter().any(|name| name == tree),
+                "`{tree}` is granted as a tree again: {names:?}"
+            );
+        }
+        assert!(
+            names.iter().any(|name| name == "/proc/self"),
+            "the self-scoped `/proc` entry is what keeps the command's own \
+             `/proc/self/exe` readable: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name.contains("/environ")),
+            "a grant naming `environ` is a leak, not a narrowing: {names:?}"
+        );
     }
 
     #[test]

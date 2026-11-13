@@ -13,8 +13,8 @@ max_block_lines = 50
 unlisted_max_comment_lines = 20
 
 [global]
-max_comment_lines = 139245
-max_comment_words = 1241570
+max_comment_lines = 139301
+max_comment_words = 1242180
 max_ratio = 0.1364
 
 # Per-file ceilings. A file may shrink; it may not grow past what is
@@ -487,7 +487,10 @@ max_ratio = 0.1364
 "src/security/sandbox/landlock.rs" = { max_comment_lines = 75, max_ratio = 0.1778 }
 "src/security/sandbox/linux_launch.rs" = { max_comment_lines = 27, max_ratio = 0.0381 }
 "src/security/sandbox/linux_mount_view.rs" = { max_comment_lines = 75, max_ratio = 0.0893 }
-"src/security/sandbox/policy.rs" = { max_comment_lines = 164, max_ratio = 0.1392 }
+# +21 comment lines: the C002 narrowing states why `/proc` and `/var/run` are no
+# longer trees, what the self-scoped entry survives, and what a child does not
+# inherit.
+"src/security/sandbox/policy.rs" = { max_comment_lines = 185, max_ratio = 0.1505 }
 "src/security/sandbox/seatbelt.rs" = { max_comment_lines = 108, max_ratio = 0.3429 }
 "src/security/workflow/context.rs" = { max_comment_lines = 115, max_ratio = 0.2118 }
 "src/security/workflow/diff.rs" = { max_comment_lines = 88, max_ratio = 0.236 }
@@ -916,6 +919,7 @@ max_ratio = 0.1364
 "tests/scheduler_jobs/scratch_record_less_tree.inc" = { max_comment_lines = 32, max_ratio = 0.2353 }
 "tests/scheduler_jobs/scratch_retention_sweep.inc" = { max_comment_lines = 119, max_ratio = 0.1748 }
 "tests/scheduler_jobs/scratch_usage_census.inc" = { max_comment_lines = 32, max_ratio = 0.1181 }
+"tests/security_permission/sandbox_landlock.inc" = { max_comment_lines = 44, max_ratio = 0.1071 }
 "tests/security_permission/approval_reviewer.inc" = { max_comment_lines = 49, max_ratio = 0.0705 }
 "tests/security_permission/destructive_delete_classification.inc" = { max_comment_lines = 33, max_ratio = 0.22 }
 "tests/security_permission/host_admission_manifest.inc" = { max_comment_lines = 28, max_ratio = 0.224 }

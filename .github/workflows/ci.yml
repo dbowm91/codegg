@@ -670,6 +670,13 @@ jobs:
           # home directory, and the root stays outside every workspace root the
           # tests grant.
           XDG_CACHE_HOME: ${{ runner.temp }}/codegg-sweep-cache
+          # A qualification lane, not a best-effort one. Without this marker a
+          # runner that loses its Landlock backend *skips* the sandbox
+          # fixtures, so a regression turns the suite green; with it, the skip
+          # arms fail and the ABI-6 assertion runs. A pre-6.12 kernel fails
+          # that assertion rather than skipping it, so a green run here now
+          # implies ABI >= 6 and a present backend.
+          CODEGG_SANDBOX_QUALIFICATION: "1"
         run: |
           if [ "${{ steps.live.outputs.live_required }}" = "true" ]; then
             echo "Live Eggwork qualification included (relevant change or main push)."

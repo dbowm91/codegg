@@ -114,6 +114,10 @@ fn base_spec(root: &Path, script: &str, writable: bool) -> SandboxLaunchSpec {
 #[test]
 fn supported_kernel_enforces_read_only_write_and_outside_root_contract() {
     if let Err(reason) = probe_landlock() {
+        assert!(
+            !qualification_required(),
+            "the qualification lane requires a Landlock backend: {reason}"
+        );
         eprintln!("skipped: {reason}");
         return;
     }
@@ -194,6 +198,10 @@ fn supported_kernel_enforces_read_only_write_and_outside_root_contract() {
 #[test]
 fn required_rule_failure_stops_before_target_execution() {
     if let Err(reason) = probe_landlock() {
+        assert!(
+            !qualification_required(),
+            "the qualification lane requires a Landlock backend: {reason}"
+        );
         eprintln!("skipped: {reason}");
         return;
     }
@@ -219,6 +227,10 @@ fn required_rule_failure_stops_before_target_execution() {
 #[test]
 fn target_cannot_write_private_status_endpoint_after_exec() {
     if let Err(reason) = probe_landlock() {
+        assert!(
+            !qualification_required(),
+            "the qualification lane requires a Landlock backend: {reason}"
+        );
         eprintln!("skipped: {reason}");
         return;
     }
@@ -240,6 +252,229 @@ fn target_cannot_write_private_status_endpoint_after_exec() {
         decode_sandbox_status(&output.status).unwrap(),
         SandboxLaunchOutcome::Enforced { .. }
     ));
+}
+
+/// True when this run is a qualification lane, where a missing backend is a
+/// **failure** rather than a skip.
+///
+/// `ci.yml` sets the marker on the Linux job, so a runner that loses its
+/// Landlock backend turns red instead of reporting a green skip. Locally it is
+/// unset, so a host without Landlock still skips.
+#[cfg(target_os = "linux")]
+fn qualification_required() -> bool {
+    matches!(
+        std::env::var("CODEGG_SANDBOX_QUALIFICATION").as_deref(),
+        Ok("1") | Ok("true")
+    )
+}
+
+/// The grant set a launch is measured under.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, PartialEq)]
+enum GrantArm {
+    /// The production set, exactly as `policy::tool_read_allowances` builds it.
+    Production,
+    /// Production plus the `/proc` tree the narrowing removed: the positive
+    /// control for "the grant is the barrier, not the kernel".
+    WithProcTree,
+    /// Production with every `/proc` entry removed: what the narrow entries are
+    /// load-bearing for.
+    WithoutProc,
+}
+
+/// A launch under the **production** read grants, not a hand-made set.
+#[cfg(target_os = "linux")]
+fn production_spec(root: &Path, script: &str, arm: GrantArm) -> SandboxLaunchSpec {
+    use codegg::security::sandbox::policy;
+
+    let mut spec = base_spec(root, script, false);
+    let mut read_paths: Vec<PathBuf> = vec![root.to_path_buf()];
+    for path in policy::tool_read_allowances() {
+        if !path.exists() {
+            continue;
+        }
+        let Ok(resolved) = policy::resolve_policy_path(&path) else {
+            continue;
+        };
+        if arm == GrantArm::WithoutProc && resolved.starts_with("/proc") {
+            continue;
+        }
+        read_paths.push(resolved);
+    }
+    if arm == GrantArm::WithProcTree {
+        read_paths.push(PathBuf::from("/proc"));
+    }
+    spec.read_paths = read_paths;
+    spec
+}
+
+/// The probes the narrowing must not break.
+#[cfg(target_os = "linux")]
+fn toolchain_probes() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("shell", "true"),
+        ("git", "git --version >/dev/null"),
+        ("python", "python3 -c 'import json' >/dev/null"),
+        ("resolver", "getent hosts localhost >/dev/null"),
+        ("self-proc", "[ -e /proc/self/exe ]"),
+    ]
+}
+
+/// The C002 finding, proved on a real launch: another process's `/proc` entry
+/// is out of reach under the default grant set, and the grant is the barrier.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_default_grant_set_denies_another_processes_proc_entry() {
+    if let Err(reason) = probe_landlock() {
+        assert!(
+            !qualification_required(),
+            "the qualification lane requires a Landlock backend: {reason}"
+        );
+        eprintln!("skipped: {reason}");
+        return;
+    }
+    let workspace = tempfile::tempdir().expect("workspace");
+    // A same-uid process to look at. `/proc/<pid>/stat` is world-readable, so
+    // the kernel permits the read and only the grant can deny it.
+    let mut holder = Command::new("/bin/sh")
+        .args(["-c", "sleep 30"])
+        .spawn()
+        .expect("environment holder");
+    let pid = holder.id();
+    let stat = format!("cat /proc/{pid}/stat >/dev/null");
+    let environ = format!("cat /proc/{pid}/environ >/dev/null");
+
+    let denied = run_helper(
+        &production_spec(workspace.path(), &stat, GrantArm::Production),
+        workspace.path(),
+    );
+    assert!(
+        !denied.output.status.success(),
+        "the default grant set still reaches another process's `/proc/<pid>/stat`"
+    );
+
+    // The property itself: another process's environment is unreadable.
+    let denied_environ = run_helper(
+        &production_spec(workspace.path(), &environ, GrantArm::Production),
+        workspace.path(),
+    );
+    assert!(
+        !denied_environ.output.status.success(),
+        "the default grant set still reads `/proc/<pid>/environ`"
+    );
+
+    // The command's own `/proc/self` survives: `[` is a shell builtin, so the
+    // shell itself stats the path at the pid the helper exec'd into.
+    let own = run_helper(
+        &production_spec(
+            workspace.path(),
+            "[ -e /proc/self/exe ]",
+            GrantArm::Production,
+        ),
+        workspace.path(),
+    );
+    assert!(
+        own.output.status.success(),
+        "the narrowing denied the command its own `/proc/self/exe`: {}",
+        String::from_utf8_lossy(&own.output.stderr)
+    );
+
+    // Positive control: with the `/proc` tree restored the same entry reads, so
+    // the denials above are the grant and not the kernel.
+    let allowed = run_helper(
+        &production_spec(workspace.path(), &stat, GrantArm::WithProcTree),
+        workspace.path(),
+    );
+    assert!(
+        allowed.output.status.success(),
+        "the positive control could not read `/proc/<pid>/stat` with `/proc` restored: {}",
+        String::from_utf8_lossy(&allowed.output.stderr)
+    );
+
+    let _ = holder.kill();
+    let _ = holder.wait();
+}
+
+/// The narrowing is sufficient for the toolchain, and its `/proc` entries are
+/// load-bearing rather than decorative.
+///
+/// This is the committed matrix the plan asked for, reduced from three arms to
+/// two: `/var/run` is no longer granted at all, so the "without `/var/run`" arm
+/// has nothing left to remove — its only surviving entries are the resolver
+/// files, and they are conditional on the distribution's layout.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_narrowed_grant_set_runs_the_toolchain_and_its_proc_entries_are_load_bearing() {
+    if let Err(reason) = probe_landlock() {
+        assert!(
+            !qualification_required(),
+            "the qualification lane requires a Landlock backend: {reason}"
+        );
+        eprintln!("skipped: {reason}");
+        return;
+    }
+    let workspace = tempfile::tempdir().expect("workspace");
+    let probes = toolchain_probes();
+
+    let mut broken = Vec::new();
+    for (name, script) in &probes {
+        let out = run_helper(
+            &production_spec(workspace.path(), script, GrantArm::Production),
+            workspace.path(),
+        );
+        if !out.output.status.success() {
+            broken.push(format!(
+                "{name}: {}",
+                String::from_utf8_lossy(&out.output.stderr).trim()
+            ));
+        }
+    }
+    assert!(
+        broken.is_empty(),
+        "the narrowed grant set broke the toolchain: {broken:?}"
+    );
+
+    let mut dependent = Vec::new();
+    for (name, script) in &probes {
+        let out = run_helper(
+            &production_spec(workspace.path(), script, GrantArm::WithoutProc),
+            workspace.path(),
+        );
+        if !out.output.status.success() {
+            dependent.push(*name);
+        }
+    }
+    assert!(
+        !dependent.is_empty(),
+        "no probe needed `/proc` at all, so the narrow `/proc` entries are dead weight"
+    );
+}
+
+/// A green qualification lane implies a Landlock ABI 6 runner.
+///
+/// The two failure modes used to be indistinguishable from a green run: a
+/// runner without a backend *skipped* the fixtures, and a pre-6.12 kernel
+/// *failed* the ABI-6 assertions. With the marker set the first becomes a
+/// failure too, and this test names the ABI the run actually obtained.
+///
+/// The marker itself is asserted on every host, so a typo in `ci.yml` cannot
+/// silently disable the lane and leave this test green for the wrong reason.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_qualification_lane_obtains_landlock_abi_six() {
+    let marker = std::env::var("CODEGG_SANDBOX_QUALIFICATION").ok();
+    assert!(
+        matches!(
+            marker.as_deref(),
+            None | Some("") | Some("0") | Some("1") | Some("true")
+        ),
+        "`CODEGG_SANDBOX_QUALIFICATION` carries an unrecognised value: {marker:?}"
+    );
+    if qualification_required() {
+        codegg::security::sandbox::landlock::probe_process_scopes().unwrap_or_else(|reason| {
+            panic!("the qualification lane requires Landlock ABI 6 process scopes: {reason}")
+        });
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
