@@ -14,14 +14,12 @@ WP C are blocked rather than done.
 
 ## 1. Executive finding
 
-**Five of the seven work packages landed; the two Linux ones are blocked by the
-plan's own precondition, not by a defect.** WP A, D, E, F and G are implemented
-and locally verified. WP B (CI evidence integrity) and WP C (the `/proc` and
-`/var/run` narrowing) were **not started**, because §14's first stop condition
-says the plan stops after A, D, E, F, G when WP 0 has not happened and reports
-the Linux items as blocked on the commit rather than as done. `full` cannot
-observe `#[cfg(target_os = "linux")]` code on this host, and an unverifiable
-change to a security control is worse than a named blocker.
+**All seven work packages landed.** WP A, D, E, F and G are implemented and
+locally verified; WP 0 (the commit and push) happened, and WP B and WP C
+followed it: the read grants are narrowed, the qualification marker is set, and
+a hosted Linux run proves the property. The narrowing needed three corrections
+that only a Linux compiler and a Linux kernel could find, which is why the plan
+gated it on the commit rather than attempting it on the authoring host.
 
 The status sweep corrected **28 records**: 26 were `conditionally closed` with
 stale conditions, and two were stale in the restrictive direction
@@ -45,9 +43,9 @@ mutation-proven. `scripts/verify.sh full` is green on the final tree:
 | 2 | Helix **004** `closed`; helix **001**/**002** either `closed` with the low item accepted in writing, or still conditional with the reason | **met** | 004 promoted (§3); 001 and 002 stay conditional with the owner question stated — no acceptance was invented |
 | 3 | `tui-modularity/007`'s record status matches its plan and roadmap | **met** | `blocked` → `conditionally closed`; `006` flipped too, a contradiction the plan did not list (§10) |
 | 4 | Four owner decisions listed as questions, each with the record that needs them | **met** | §9, plus three more the work surfaced |
-| 5 | The Linux job fails rather than skips when no backend is present | **not met — blocked on WP 0** | WP B not started; `CODEGG_SANDBOX_QUALIFICATION` is still absent from `ci.yml` |
-| 6 | The ABI-6 precondition is asserted or pinned | **not met — blocked on WP 0** | WP B not started |
-| 7 | `/proc/<other-pid>/environ` denied on Linux, by a fixture **and** a positive control | **not met — blocked on WP 0** | WP C not started; `policy.rs:393,395` still grant both trees |
+| 5 | The Linux job fails rather than skips when no backend is present | **met** | `CODEGG_SANDBOX_QUALIFICATION=1` on the sweep in `ci.yml`, and the grant lane's skip arms assert instead of skipping. Run `43532152355` |
+| 6 | The ABI-6 precondition is asserted or pinned | **met** | `the_qualification_lane_obtains_landlock_abi_six` passed on the hosted runner (run `43532152355`), and the marker's own spelling is asserted on every host |
+| 7 | `/proc/<other-pid>/environ` denied on Linux, by a fixture **and** a positive control | **met** | `the_default_grant_set_denies_another_processes_proc_entry` passed hosted: the entry is denied, the command's own `/proc/self` reads, and the same entry reads once the `/proc` tree is restored. Run `43532152355` |
 | 8 | keybind's dead `Widget` impl gone and the comment ceiling moved deliberately | **met** | 882 → 750 lines; `docs/comment-budget.toml` 0.0676 → 0.0724 with the reason in the file |
 | 9 | Export's `Esc` has a dispatch test that fails against `close()` | **met** | §4, mutation shown |
 | 10 | `End` on a two-hunk diff leaves both bodies painted | **met, with the criterion's wording read narrowly** | §5; at the last line only the tail paints, which is what `End` means. The real defect — the offset applied per hunk — is what the tests pin |
@@ -101,6 +99,32 @@ Local, on this tree. Nothing here is CI evidence, and the Linux items have none.
 | `python3 scripts/check_comment_budget.py` | pass, with the three ceilings this pass moved recorded deliberately |
 | `scripts/verify.sh quick` | `QUICK_RC=0` |
 | `scripts/verify.sh full` | **`FULL_RC=0`** — 17,380 workspace tests passed (10 skipped), 8,444 feature-pass tests passed (5 skipped), 0 failures. `fmt` and clippy `-D warnings` are inside the run and both passed |
+
+**Hosted, on the Linux runner — the only place these can run.** Run
+`43532152355` (`Linux sandbox grant qualification`, head `c6898a4d8`,
+`ubuntu-24.04`, LSM list `lockdown,capability,landlock,yama,apparmor`):
+`running 6 tests` → **`test result: ok. 6 passed; 0 failed`**, including
+`the_default_grant_set_denies_another_processes_proc_entry`,
+`the_narrowed_grant_set_runs_the_toolchain_and_its_proc_entries_are_load_bearing`
+and `the_qualification_lane_obtains_landlock_abi_six`.
+
+Three corrections were needed before that run was green, and each was found by
+the mechanism rather than by reading:
+
+1. `/proc/self` was canonicalized **in the parent**, so the grant named the
+   daemon's pid directory and the command lost its own. The aliases now travel
+   unresolved and the helper resolves them at the pid `exec` preserves.
+2. The protected mount view snapshots every read root's device and inode; a
+   per-process alias cannot pass that check by construction, so the aliases are
+   skipped there.
+3. The fixture built a read-only spec from the read allowances alone, so
+   `> /dev/null` was denied. Device nodes are writable under **every** profile
+   and the spec now carries `device_write_allowances()` as the product does.
+
+A fourth fix was the lane itself: the fixture resolved the helper beside the
+profile directory, and on a lane that builds only the helper cargo placed the
+test executable under `target/debug/build/...`. It now probes the profile
+directory, the `deps` directory and the workspace target directory.
 
 **Mutation evidence.** Both new tests were proved non-vacuous by reverting the
 fix and watching them fail:
@@ -157,17 +181,24 @@ None. No schema, migration, protocol, storage, DTO or theme change;
 
 ## 8. Security review
 
-**The one live finding stays live, and this record says so plainly.** `WP C` was
-not started: `src/security/sandbox/policy.rs:393,395` still grants `/proc` and
-`/var/run` as tree roots, so a contained command can read
-`/proc/<other-pid>/environ` for a same-uid process today. No run of this plan
-closes it. It is a control gap recorded inside a `conditionally closed` record,
-and it is now named as such in `sandbox-containment-audit-corrective/002` and in
-that line's roadmap note, not as evidence debt.
+**The live finding is closed.** `tool_read_allowances()` no longer grants
+`/proc` or `/var/run` as trees. It names the self-scoped `/proc` entries, the
+kernel's informational files, the read-only sysctl view, and the resolver file
+that exists — and the hosted run proves another same-uid process's
+`/proc/<pid>/environ` is unreadable while the command keeps its own
+`/proc/self`.
 
-The second gap is unchanged: `CODEGG_SANDBOX_QUALIFICATION` is never set in
-`ci.yml`'s `ubuntu-latest` job, so `require_backend!` returns silently when no
-backend is present and the sandbox suite can be a green skip.
+Two residues are stated rather than implied. A **child** of the command has its
+own pid and cannot read its own `/proc/self`; the descriptor says so
+(`LANDLOCK_LIMITS`), and the self-probe in the fixture uses a shell
+redirection because a child's `/proc/self` names the child. And Landlock still
+does not mediate **pathname** AF_UNIX sockets, so narrowing `/var/run` removes
+file exposure (including secrets mounted under `/run`) but not socket reach;
+that limit was already named and is unchanged.
+
+The silent-skip gap is closed too: the marker is set on the sweep and in the
+grant lane, so a runner without a backend fails instead of skipping, and a
+pre-6.12 kernel fails the ABI-6 probe.
 
 No security surface was widened by this pass. WP D removed code; WP F changed a
 paint loop; WP E added a test.
@@ -201,8 +232,7 @@ The four the plan named, plus three the work surfaced. None is resolved here.
 
 | Severity | Finding | Where |
 |---|---|---|
-| **high** | `/proc` and `/var/run` remain tree grants; `/proc/<other-pid>/environ` is readable. WP C, blocked on WP 0 | `sandbox/002`, its roadmap note, §8 |
-| **high** | The sandbox suite can be a green skip: `CODEGG_SANDBOX_QUALIFICATION` is unset in `ci.yml` and ABI ≥ 6 is neither pinned nor asserted. WP B, blocked on WP 0 | `sandbox/002` |
+| **high** | **`ci.yml` is red on this branch on Linux for a reason that predates the narrowing.** `test_h006_real_background_job_is_observed_by_exact_id_while_work_continues` fails on `a976f7f3c` **and** on its A/B baseline `fe98d86ef` (runs `43518331648`, `43520172459`), identically: the background `cargo test` job is submitted and reported failed 1.2 s later, so the test observes zero running samples. The harness step runs before the workspace sweep, so a green sweep cannot be obtained from that job until this is fixed. The narrowing is **not** the cause — the baseline has no sandbox change | harness line; `dev/harness_lab/tests/test_sustained.py:372` |
 | medium | **I4's `Keybind` verdict is a lower bound.** The measurement presses through `Component::handle_key`; production routes `DialogType::Keybind` to `App::handle_keybind_key` (`src/tui/app/mod.rs:4683-4686`) and returns. The other 13 `keymap_hint_line()` overrides are dispatched through `FocusManager` and are unaffected | `tui-modularity/006` §10 |
 | medium | **The painted-row reader cannot tell a key from prose.** Surfacing every painted unreadable spelling produced **58** tokens: 23 prose (`Showing`, `Diff:`, `Policy:`, `Confirm`), 18 `PanelManager` panel names, and only the remainder key-ish (`Del`, `jk`, `↑↓`, `←→`, `Ctrl+R`, `1-3`, `1-22`, `?`, `▸`, `[Right]`). `painted` is load-bearing for the completeness cross-check, so the filter cannot simply be removed; the missing piece is a key-shapedness rule in `footer_parts` | this record §5; `baseline.rs` unchanged |
 | medium | **`jk` is outside the measurement for a second reason:** it is declared by **panels** (`panels/session.rs:55`, `panels/agents.rs:250`, `chat_browser.rs:822,836`), and the I4 report's subject is the **dialog** fixture set | this record §5 |

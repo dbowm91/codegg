@@ -279,6 +279,30 @@ work does not depend on the narrowing.
 - Unblock audit: nothing downstream is blocked by the conditional state except the milestone
   that would claim the narrowed default grant. C006 remains unblocked.
 
+## The narrowing landed (2026-11-13)
+
+The read-grant half is **done**, and it is no longer an outstanding item.
+`policy::tool_read_allowances()` names the self-scoped `/proc` entries, the
+kernel's informational files, the read-only sysctl view and the resolver file
+that exists; `/proc` and `/var/run` are no longer granted as trees.
+
+Evidence, hosted: run `43532152355` (`Linux sandbox grant qualification`, head
+`c6898a4d8`) — `running 6 tests`, `test result: ok. 6 passed; 0 failed`,
+including the `/proc/<pid>/environ` denial with its positive control, the
+toolchain matrix under the narrowed set, and the ABI-6 assertion.
+
+Three corrections the mechanism forced, recorded so the next reader does not
+re-derive them: the aliases must travel **unresolved** to the helper (a parent
+that canonicalizes `/proc/self` grants its own pid); the protected mount view
+must **skip** them in its identity snapshot (a per-process alias cannot pass a
+canonical-identity check); and a read-only spec still needs
+`device_write_allowances()` or every `> /dev/null` is denied.
+
+Two residues are stated, not implied: a **child** of the command cannot read its
+own `/proc/self` (the descriptor says so), and Landlock does not mediate
+pathname AF_UNIX sockets, so narrowing `/var/run` removes file exposure but not
+socket reach.
+
 ## Correction log (2026-11-13)
 
 Status unchanged: **`conditionally closed`**. Nothing here is promoted to `closed` — the Linux

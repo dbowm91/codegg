@@ -539,8 +539,9 @@ sets `CODEGG_SANDBOX_QUALIFICATION` in the Linux job so `require_backend!` fails
 loudly instead of returning, asserts or pins Landlock ABI ≥ 6, and wires the
 committed three-run toolchain matrix as a CI step; WP C narrows the `/proc` and
 `/var/run` tree grants in `src/security/sandbox/policy.rs` and adds the
-`/proc/<other-pid>/environ` denial fixture **with a positive control**. WP C is a
-**live** security narrowing — `/proc/<other-pid>/environ` is readable today —
-and recording it as an outstanding evidence item would understate it. Both are
-unobservable until the tree is committed and pushed, because
-`#[cfg(target_os = "linux")]` modules do not compile on darwin.
+`/proc/<other-pid>/environ` denial fixture **with a positive control**. WP C was
+a **live** security narrowing, not an evidence item — `/proc/<other-pid>/environ`
+was readable — and both are now **done**: the grants are narrowed and the
+property is proved by hosted run `43532152355` (6/6 fixtures, including the
+denial with its positive control and the ABI-6 assertion). The lane that runs
+them is `.github/workflows/linux-sandbox-grants-native.yml`.
