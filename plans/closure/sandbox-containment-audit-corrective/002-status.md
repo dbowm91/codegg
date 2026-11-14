@@ -18,7 +18,7 @@ Implementation commits or pull requests:
   (C001, C006) on `feat-auto-20261109-f8abad0d`. No commit, stage, or push identifies this
   milestone.
 
-Authority: `plans/adrs/ADR-0061-default-linux-containment-policy.md`, accepted 2026-11-10
+Authority: `plans/adrs/ADR-0063-default-linux-containment-policy.md`, accepted 2026-11-10
 (Option B). Clauses 1, 3, 4 and 5 are implemented; clause 2 is implemented for `Scope` and
 **not** implemented for the read-grant narrowing; clause 6 is unchanged; clause 7 is not
 reached.
@@ -44,7 +44,7 @@ material the deny list protects by path. No CI run closes this. The narrowing an
 `/proc/<other-pid>/environ` denial fixture with a positive control are **work package C** of
 `plans/implementation/five-line-closure-corrective/001-closure-evidence-and-residue.md`, and
 that package is blocked on the tree being committed and pushed (its **WP 0**).
-Removing the grants on intuition is still what ADR-0061 clause 3 and this plan's §14 stop
+Removing the grants on intuition is still what ADR-0063 clause 3 and this plan's §14 stop
 conditions forbid, and the measurement requirement is real — but it is now a
 `ubuntu-latest`-hosted precursor to the fix rather than a host this record lacks (see §10).
 Until WP C lands, the exposure the milestone exists to close survives, and the descriptor and
@@ -175,7 +175,7 @@ applies its own scope to its own process.
 ## 7. Migration and compatibility review
 
 No persisted configuration, durable payload, protocol frame, or public DTO change; no
-migration; no legacy path removed. `process_scope_abi` is in-memory only, following ADR-0061's
+migration; no legacy path removed. `process_scope_abi` is in-memory only, following ADR-0063's
 "Compatibility and migration" clause. A host below Landlock ABI 6 runs the filesystem-only
 tier and reports the scope as a limit, not a guarantee — the existing `PartiallyEnforced`
 convention. Rollback is a single call site: removing `process_scope_from` from
@@ -214,7 +214,7 @@ convention. Rollback is a single call site: removing `process_scope_from` from
 |---|---|---|---|
 | High | `/proc` is still granted as a tree on the default route, so a contained command can read `/proc/<pid>/environ` for a same-uid process — the daemon's environment, which holds the provider credential material the deny list protects by path | The plan's §13.4 is unmet and the roadmap's C002 objective is only half achieved; the descriptor now discloses it rather than claiming otherwise. **This is an unimplemented control, not evidence debt: no CI run closes it** | Work package C of `plans/implementation/five-line-closure-corrective/001-closure-evidence-and-residue.md` narrows `/proc` and adds the `/proc/<other-pid>/environ` denial fixture with a positive control; it is blocked on that plan's WP 0 (the commit). The work-package-A matrix stays the precursor: if nothing narrower restores it, record the residue as a named limit — do not restore the broad grant |
 | High | `/var/run` is still granted as a tree, so session-bus, agent and container-runtime sockets stay reachable whenever the socket mode admits the target uid | Plan §13.5 unmet; the ABI 6 scope covers abstract sockets only and does not mediate pathname `connect(2)` | Same work package — WP C narrows both tree grants, with the matrix as the precursor. Until it lands `/var/run` stays a tree grant and the pathname residue stays disclosed |
-| Medium | No committed toolchain matrix exists, so "the toolchain still works under the narrowed set" is unmeasured | Plan §13.6 unmet and ADR-0061 clause 2 is unverifiable | Commit the matrix (shell, `git status`, `cargo metadata`, a Python import, a Node import, a name lookup) with its three runs and wire it into `ci.yml`'s `ubuntu-latest` job, which already builds the helper (`:659-663`) and runs the sweep (`:665-680`). The blocker is WP 0 of the five-line plan (the commit), not a host |
+| Medium | No committed toolchain matrix exists, so "the toolchain still works under the narrowed set" is unmeasured | Plan §13.6 unmet and ADR-0063 clause 2 is unverifiable | Commit the matrix (shell, `git status`, `cargo metadata`, a Python import, a Node import, a name lookup) with its three runs and wire it into `ci.yml`'s `ubuntu-latest` job, which already builds the helper (`:659-663`) and runs the sweep (`:665-680`). The blocker is WP 0 of the five-line plan (the commit), not a host |
 | Medium | No Linux kernel evidence for the scope: `SIGNAL_DENIED`, `ABSTRACT_DENIED` and the obtained ABI are asserted only by unit tests on a host that cannot apply the scope | Plan §13.1-13.3 have unit evidence but no kernel evidence; a wiring defect between `apply_backend` and `landlock::apply` would not be caught here | That job runs this family. With `CODEGG_SANDBOX_QUALIFICATION=required` set, run `default_landlock_scopes_signals_and_abstract_sockets_with_positive_control` there on a kernel that enforces Landlock ABI 6, and record the status frame's guarantee string. The blocker is the commit plus the marker/ABI gap recorded below |
 | Medium | `CODEGG_SANDBOX_QUALIFICATION` is never set in `ci.yml` — the only place it is set is `.github/workflows/shared-checkout-macos-qualification.yml:132`, a macOS lane — so `require_backend!` returns silently on the `ubuntu-latest` job when no backend is present and the sandbox suite can be a **green skip** | Every Linux item in this record — the scope assertions, the containment family, the future matrix — can report green without executing. A pre-6.12 kernel would instead *fail* the ABI-6 assertions, so a green run on that job implies ABI ≥ 6 **only if** a backend was present, and nothing in the lane asserts that it was. The ABI-6 precondition is neither pinned nor asserted anywhere in the repository | **WP B** of `plans/implementation/five-line-closure-corrective/001-closure-evidence-and-residue.md`: set the marker in the Linux job so an absent backend fails loudly, and assert or document the ABI ≥ 6 pin. Blocked on that plan's WP 0 (the commit) |
 | Low | The `/proc` posture probe in the Linux fixture accepts either outcome (`HOST_PROC_READ` or `HOST_PROC_DENIED_BY_HOST`) | It records posture rather than asserting a denial, which is correct today but would silently keep passing if a narrowing landed without a denial assertion | When work package C lands, tighten that arm into a denial assertion with its own positive control |
@@ -224,7 +224,7 @@ convention. Rollback is a single call site: removing `process_scope_from` from
 **Milestone conditionally closed** — production implementation is complete for the phase the
 environment permits, and named external evidence is outstanding. This is not a
 decision-by-omission: the plan's own stop condition ("the matrix fails with a narrowed grant
-and no narrower entry restores it … **do not restore the broad grant**") and ADR-0061 clause
+and no narrower entry restores it … **do not restore the broad grant**") and ADR-0063 clause
 3 require measurement before removal, and this review's macOS host cannot measure. The lane
 that can is `ci.yml`'s `ubuntu-latest` job — helper built at `:659-663`, workspace sweep at
 `:665-680` — so the closure is **one commit away rather than host-blocked**. Condition 4 says

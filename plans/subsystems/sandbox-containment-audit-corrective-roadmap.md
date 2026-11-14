@@ -24,7 +24,7 @@ Related ADRs:
 - `plans/adrs/ADR-0004-approval-routing-sandbox-and-runtime-preferences.md` (accepted)
 - `plans/adrs/ADR-0016-cross-platform-sandbox-launch-authority.md` (accepted)
 - `plans/adrs/ADR-0046-composable-linux-execution-isolation.md` (accepted)
-- `plans/adrs/ADR-0061-default-linux-containment-policy.md` (accepted 2026-11-10 — the C002 gate is discharged)
+- `plans/adrs/ADR-0063-default-linux-containment-policy.md` (accepted 2026-11-10 — the C002 gate is discharged)
 
 ## 1. Purpose and ownership boundary
 
@@ -38,7 +38,7 @@ This roadmap owns:
   the two shipped backends;
 - the **macOS Seatbelt profile contract** and its credential deny list;
 - the **default Linux containment policy** — which Landlock rights and scopes a
-  contained launch obtains when no opt-in tier is requested — subject to ADR-0061;
+  contained launch obtains when no opt-in tier is requested — subject to ADR-0063;
 - the **truthfulness of the enforcement descriptor** that an operator reads;
 - the **containment test suite and its guards**, as evidence that the above hold.
 
@@ -218,7 +218,7 @@ fixture made non-vacuous (C004, C005).
 ## 6. Dependency graph
 
 ```text
-ADR-0061 (accepted 2026-11-10 — gate discharged)
+ADR-0063 (accepted 2026-11-10 — gate discharged)
                                   │
                                   v
 C001 macOS deny set ── operational ──> C002 Linux default policy
@@ -236,8 +236,8 @@ C005 guard and lane integrity                   v
                                             (infrastructure)
 ```
 
-**Satisfied:** C002 ← ADR-0061 acceptance. The default Linux containment policy
-was reserved to an explicit decision by ADR-0046 §8; ADR-0061 Option B was
+**Satisfied:** C002 ← ADR-0063 acceptance. The default Linux containment policy
+was reserved to an explicit decision by ADR-0046 §8; ADR-0063 Option B was
 accepted on 2026-11-10, so the edge is closed and C002 was handed off. C002 is
 now implemented and `conditionally closed`: the outstanding conditions are Linux
 kernel evidence, not the ADR, and they are named in
@@ -291,7 +291,7 @@ Objective: apply Landlock ABI 6 scopes on the default route and narrow the defau
 read-grant set so `/proc` and `/var/run` no longer expose same-uid process
 environment or host service sockets.
 
-Dependencies: none outstanding — `ADR-0061` Option B was accepted 2026-11-10.
+Dependencies: none outstanding — `ADR-0063` Option B was accepted 2026-11-10.
 Operational after C001.
 
 Deliverable boundary: `policy::tool_read_allowances()`, `landlock::apply`,
@@ -488,7 +488,7 @@ wall-clock claim and none may be justified by a benchmark that was not run.
    `nlink > 1`. Adding paths widens the set of hosts that can hit it. This is
    fail-closed and stays; it must be recorded so it is not mistaken for a new
    defect.
-5. **ADR-0061 is amended after acceptance (C002).** It was accepted on
+5. **ADR-0063 is amended after acceptance (C002).** It was accepted on
    2026-11-10, so the rejection outcome recorded when this roadmap was authored
    did not occur and C002 was implemented. An amendment that narrows the accepted
    policy would leave the affected residue named in the descriptor and in the

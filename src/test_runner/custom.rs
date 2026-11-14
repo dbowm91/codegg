@@ -25,6 +25,10 @@ pub const CUSTOM_COMMAND_ALLOWLIST: &[AllowedTestCommand] = &[
         argv_prefix: &["cargo", "test"],
     },
     AllowedTestCommand {
+        label: "cargo clippy",
+        argv_prefix: &["cargo", "clippy"],
+    },
+    AllowedTestCommand {
         label: "cargo nextest",
         argv_prefix: &["cargo", "nextest"],
     },
@@ -198,6 +202,17 @@ pub fn validate_custom_command(
     cmd: &str,
 ) -> Result<ValidatedCustomCommand, CustomCommandValidationError> {
     let tokens = tokenize(cmd)?;
+    let is_cargo_clippy = tokens.first().is_some_and(|first| {
+        std::path::Path::new(first)
+            .file_name()
+            .and_then(|name| name.to_str())
+            == Some("cargo")
+    }) && tokens
+        .get(1)
+        .is_some_and(|subcommand| subcommand == "clippy");
+    if is_cargo_clippy && tokens.iter().any(|arg| arg == "--fix") {
+        return Err(CustomCommandValidationError::UnsupportedCommand);
+    }
     for allowed in CUSTOM_COMMAND_ALLOWLIST {
         let prefix = allowed.argv_prefix;
         if tokens.len() >= prefix.len()
@@ -215,7 +230,7 @@ pub fn validate_custom_command(
     }
     // Absolute-cargo allowlist: an absolute `cargo` path (e.g. a rustup
     // toolchain `.../bin/cargo`) basename-matches `cargo`, then the
-    // remainder must match the `cargo test` / `cargo nextest` argv prefix.
+    // remainder must match an allowlisted Cargo subcommand prefix.
     // Shell metacharacters were already rejected by `tokenize`, so this
     // only widens the executable identity, never the allowed syntax.
     if let Some(first) = tokens.first() {
@@ -268,6 +283,10 @@ mod tests {
                 "cargo test",
             ),
             (
+                "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo clippy --offline",
+                "cargo clippy",
+            ),
+            (
                 "/usr/local/cargo/bin/cargo nextest run --workspace",
                 "cargo nextest",
             ),
@@ -295,6 +314,10 @@ mod tests {
             validate_custom_command("/usr/bin/cargo"),
             Err(CustomCommandValidationError::UnsupportedCommand)
         ));
+        assert!(matches!(
+            validate_custom_command("/usr/bin/cargo clippy --fix"),
+            Err(CustomCommandValidationError::UnsupportedCommand)
+        ));
     }
 
     #[test]
@@ -311,6 +334,7 @@ mod tests {
             "cargo test --lib",
             "cargo test -p codegg-core",
             "cargo test --no-fail-fast -- --nocapture",
+            "cargo clippy --offline --workspace --all-targets -- -D warnings",
             "cargo nextest run",
             "cargo nextest run --workspace",
             "pytest tests/",
@@ -342,6 +366,13 @@ mod tests {
         let v = validate_custom_command("cargo test --lib").unwrap();
         assert_eq!(v.argv, vec!["cargo", "test", "--lib"]);
         assert_eq!(v.label, "cargo test");
+
+        let v = validate_custom_command("cargo clippy --offline -- -D warnings").unwrap();
+        assert_eq!(
+            v.argv,
+            vec!["cargo", "clippy", "--offline", "--", "-D", "warnings"]
+        );
+        assert_eq!(v.label, "cargo clippy");
 
         let v = validate_custom_command("uv run pytest -k slow").unwrap();
         assert_eq!(v.argv, vec!["uv", "run", "pytest", "-k", "slow"]);
@@ -392,6 +423,22 @@ mod tests {
     fn custom_allows_cargo_test_with_normal_args() {
         assert!(validate_custom_command("cargo test --lib").is_ok());
         assert!(validate_custom_command("cargo test -p codegg-core -- --nocapture").is_ok());
+    }
+
+    #[test]
+    fn custom_allows_cargo_clippy_with_normal_args() {
+        assert!(validate_custom_command(
+            "cargo clippy --offline --workspace --all-targets -- -D warnings"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn custom_rejects_mutating_cargo_clippy_fix_flag() {
+        assert!(matches!(
+            validate_custom_command("cargo clippy --fix"),
+            Err(CustomCommandValidationError::UnsupportedCommand)
+        ));
     }
 
     #[test]

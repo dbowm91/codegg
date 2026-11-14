@@ -570,6 +570,20 @@ profile is added; ADR-0030 remains proposed, not authorized:
 | landlock | deny-first allowlist, ABI 3+ write and truncate rights, ABI 2+ refer rights, `no_new_privs` privilege drop, inherited across `exec`; on an ABI 6 host, signal and abstract-AF_UNIX-socket scoping recorded as an obtained fact | no network isolation; open file descriptors inherited before the profile apply remain usable; filesystem permissions still apply; pathname AF_UNIX sockets are not mediated; the default read set grants `/proc` and `/var/run` as trees |
 | seatbelt | writes confined to workspace + scratch, credential paths denied, inherited across `exec` | no network isolation; **no `no_new_privs` equivalent**, so a setuid binary in an allowed read root may regain privilege; open file descriptors inherited before the profile apply remain usable; Apple Events / Launch Services are a cross-process channel; reads are broadly allowed — containment is write-confined, not read-allowlisted |
 
+The autonomy runner passes `CODEGG_HARNESS_PRIVATE_ROOT` to the CodeGG process
+for each case. `sandbox_config_for_profile_with_roots` treats it only as a
+deny: it does not add a read or write grant. Landlock subtracts the root from
+broader grants; Seatbelt emits the explicit read/write denies after its broad
+baseline and workspace write grants. The runner also seeds one harmless
+canary file under that private root and a known symlink to it inside the
+editable fixture. The agent can test the OS-level read denial with native
+`bash` without receiving a private path through the managed shell environment,
+which is intentionally sanitized. This keeps verifier, case-metadata, and
+trace files unreadable through symlinks from the fixture on constrained
+profiles. A `FullHost` profile has no filesystem containment and therefore
+cannot make this guarantee; long-horizon harness cases use a constrained
+profile.
+
 **Seatbelt (`src/security/sandbox/seatbelt.rs`).** `sandbox_init` accepts an
 arbitrary SBPL string **in-process** and is available on macOS 26.6.2
 (verified: a `deny file-read*` subpath rule blocks reads, rules are
@@ -687,7 +701,7 @@ fixture never opens a real credential file; the membership assertions in
 `policy.rs` tie each relocated copy back to the curated list, and every added
 entry is kernel-verified rather than only structurally asserted.
 
-**Linux default containment (C002, ADR-0061 Option B).** The default
+**Linux default containment (C002, ADR-0063 Option B).** The default
 (`LegacyPrivateHelper`) route is Landlock filesystem rules **plus the Landlock
 ABI 6 process scope** — `Scope::SIGNAL | Scope::ABSTRACT_UNIX_SOCKET`, applied by
 a second `restrict_self()` in the helper before `exec`. No namespace, container

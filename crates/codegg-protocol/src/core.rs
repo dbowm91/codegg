@@ -4565,6 +4565,7 @@ pub enum TurnFailureCategory {
     ProviderTimeout,
     /// The provider answered with an API-level failure.
     ProviderApi,
+    ProviderRequestBudget,
     /// The turn was cancelled before it completed.
     Cancelled,
     /// The daemon restarted while the turn was active.
@@ -4584,6 +4585,7 @@ impl TurnFailureCategory {
             Self::ProviderRateLimit => "provider_rate_limit",
             Self::ProviderTimeout => "provider_timeout",
             Self::ProviderApi => "provider_api",
+            Self::ProviderRequestBudget => "provider_request_budget",
             Self::Cancelled => "cancelled",
             Self::DaemonRestarted => "daemon_restarted",
             Self::AgentInternal => "agent_internal",
@@ -5633,6 +5635,10 @@ mod tests {
             ),
             (TurnFailureCategory::ProviderTimeout, "provider_timeout"),
             (TurnFailureCategory::ProviderApi, "provider_api"),
+            (
+                TurnFailureCategory::ProviderRequestBudget,
+                "provider_request_budget",
+            ),
             (TurnFailureCategory::Cancelled, "cancelled"),
             (TurnFailureCategory::DaemonRestarted, "daemon_restarted"),
             (TurnFailureCategory::AgentInternal, "agent_internal"),

@@ -9959,10 +9959,7 @@ impl App {
         if self.ui_state.timeline_visible {
             return false;
         }
-        if self.editor_buffer_owns_keyboard() {
-            return false;
-        }
-        true
+        !self.editor_buffer_owns_keyboard()
     }
 
     /// Run a composer claim that the key chain has already matched.

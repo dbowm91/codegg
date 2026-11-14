@@ -1,4 +1,4 @@
-# ADR-0061: Default Linux Containment Policy and Host-Runtime-Root Exposure
+# ADR-0063: Default Linux Containment Policy and Host-Runtime-Root Exposure
 
 Status: accepted — Option B selected 2026-11-10 by the project maintainer as the explicit default-policy decision ADR-0046 §8 reserves
 

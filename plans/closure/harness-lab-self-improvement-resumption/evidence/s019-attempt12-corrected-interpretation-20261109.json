@@ -1,0 +1,140 @@
+{
+  "active_work_span_ms": 2245808,
+  "activity_stall_triggered": false,
+  "agent_terminal": "completed",
+  "all_public_artifacts_present": true,
+  "attempt": 12,
+  "billed_usd": "unknown",
+  "causal_events": 487,
+  "causal_events_dropped": 0,
+  "continuation_document_valid": true,
+  "continuation_schema_complete": false,
+  "continuation_schema_missing_fields": [
+    "contract_phases",
+    "next_contract_phase",
+    "required_stages",
+    "next_stage"
+  ],
+  "continuation_stop_reason": "continuation_complete",
+  "diagnosis": "Attempt 12 sustained more than 37 minutes of active work with complete event/tool telemetry, exact-ID productive overlap, three repairs, terminal test jobs, a compliant reviewer lifecycle, and valid public artifacts. The independent verifier ran five tests (three passed, one error, one assertion failure), so the task failed and did not qualify. The run manifest used the v69 prompt copied from tracked v68 rather than the preceding attempt 11 prompt; v69 omitted the separate contract/stage continuation-ledger fields. This explains why the continuation projection could not observe those fields; the exact causal relationship to the verifier outcomes remains unknown. No runtime stall or daemon/scheduler/ACP/provider failure was observed. v70 restores the prior ledger schema and retains the artifact JSON parse gate.",
+  "duration_ms": 2257225,
+  "event_gap_count": 0,
+  "frozen_case_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "horizon_evidence": {
+    "active_work_span_ms": 2245808,
+    "agent_terminal": "completed",
+    "continuation_confirmed": true,
+    "exact_job_running_and_terminal": true,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 153303,
+    "measurement_complete": true,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": true,
+    "repair_cycles": 3,
+    "test_job_lifecycle": {
+      "all_terminal_observed": true,
+      "raw_job_arguments_retained": false,
+      "raw_job_ids_retained": false,
+      "submission_count": 11,
+      "terminal_observed_count": 11,
+      "terminal_status_counts": {
+        "completed": 8,
+        "failed": 3
+      },
+      "unique_submitted_job_count": 11,
+      "unobserved_count": 0,
+      "unobserved_status_counts": {}
+    },
+    "tool_call_cap_exceeded": false,
+    "tool_call_count": 221,
+    "tool_call_limit": 1600
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "task_not_passed",
+  "lowest_free_disk_bytes": 35229900800,
+  "manifest_sha256": "7ab5aa826fa8af5bb12eec22f4bd1b86cc0a20a31a4dee6d77317744bba9795d",
+  "maximum_activity_gap_ms": 153303,
+  "minimum_free_disk_bytes": 10737418240,
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "native_tool_calls": 221,
+  "native_tool_terminals": 221,
+  "post_run_artifact_probe": {
+    "artifact_contents_retained": false,
+    "hidden_verifier_inspected": false,
+    "performed_at_utc": "2026-11-09T15:04:01Z",
+    "raw_transcript_inspected": false,
+    "scope": "receipt-only path and parse-validity booleans"
+  },
+  "provider_allowance_usd": 0.019215,
+  "provider_requests": 181,
+  "public_artifact_files_present": true,
+  "public_artifact_status": {
+    "HARNESS_PROBE_REPORT.json": true,
+    "PUBLIC_ACCEPTANCE_AUDIT.md": true,
+    "tools/catalog_probe.py": true
+  },
+  "raw_receipt_path": "/private/tmp/s019-muse-runs/attempt12.json",
+  "raw_receipt_preserved": true,
+  "raw_receipt_sha256": "3e7ed7a8ac4e9f6ee99bd85abc28c164216d2381c05d8d2d77e05d1cfe0b4797",
+  "release_job_running_terminal_productive_overlap": true,
+  "repair_cycles": 3,
+  "reviewer": {
+    "completed_get_count": 1,
+    "completed_status_observations": 1,
+    "duplicate_get_count": 0,
+    "exact_get_count": 1,
+    "final_status": "completed",
+    "raw_task_arguments_retained": false,
+    "required_review_observed_under_corrected_rule": true,
+    "single_fetch_ordered_lifecycle_compliant": true,
+    "spawn_count": 1,
+    "task_result_body_retained": false,
+    "transcript_retained": false
+  },
+  "route": "opencode_go/muse-spark-1.3-contributor",
+  "schema": "s019_attempt_corrected_interpretation_v1",
+  "stop_reason": "end_turn",
+  "submitted_test_jobs": {
+    "all_terminal_observed": true,
+    "raw_job_arguments_retained": false,
+    "raw_job_ids_retained": false,
+    "submission_count": 11,
+    "terminal_observed_count": 11,
+    "terminal_status_counts": {
+      "completed": 8,
+      "failed": 3
+    },
+    "unique_submitted_job_count": 11,
+    "unobserved_count": 0,
+    "unobserved_status_counts": {}
+  },
+  "task_outcome": "failed",
+  "verifier": {
+    "assertion_text_retained": false,
+    "diagnostic_detail_complete": true,
+    "exit_code": 1,
+    "failed_tests": [
+      {
+        "exception_class": "ValueError",
+        "failure_kind": "test_error",
+        "outcome": "error",
+        "test_id": "test_durable_continuation_records_completed_phases_and_next_boundary (test_catalog_contract.CatalogContract.test_durable_continuation_records_completed_phases_and_next_boundary)"
+      },
+      {
+        "exception_class": "AssertionError",
+        "failure_kind": "assertion_failure",
+        "outcome": "fail",
+        "test_id": "test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation (test_catalog_contract.CatalogContract.test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation)"
+      }
+    ],
+    "failure_counts": {
+      "errors": 1,
+      "failures": 1
+    },
+    "passed_count": 3,
+    "raw_output_retained": false,
+    "state": "mixed_test_failures",
+    "tests_run": 5,
+    "traceback_retained": false
+  }
+}

@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from dev.harness_lab import h007_attribution as attribution
+from dev.harness_lab import supervisor
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -16,6 +17,12 @@ MANIFEST = ROOT / attribution.DEFAULT_MANIFEST
 
 
 class H007AttributionTests(unittest.TestCase):
+    def test_provider_request_budget_failure_category_is_preserved(self) -> None:
+        failure = supervisor.decode_turn_failure({
+            "codeggFailureCategory": "provider_request_budget",
+        })
+        self.assertEqual(failure.category, "provider_request_budget")
+
     def test_shallow_checkout_uses_digest_checked_frozen_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -29,10 +36,16 @@ class H007AttributionTests(unittest.TestCase):
                     b'{"frozen":true}\n',
                 )
 
-    def test_shallow_checkout_uses_the_pinned_h007_fixture_snapshot(self) -> None:
+    def test_shallow_checkout_uses_the_pinned_h007_input_snapshots(self) -> None:
         changed_fixture = ROOT / "dev/harness_lab/fixtures/build_provenance_catalog/fixture/README.md"
         snapshot = ROOT / attribution.S001_FIXTURE_SNAPSHOT / "README.md"
         self.assertNotEqual(changed_fixture.read_bytes(), snapshot.read_bytes())
+        current_metadata = ROOT / attribution.S001_METADATA_SOURCE
+        metadata_snapshot = ROOT / attribution.S001_METADATA_SNAPSHOT
+        self.assertNotEqual(current_metadata.read_bytes(), metadata_snapshot.read_bytes())
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        expected = manifest["case_identity"]["metadata_sha256"]
+        self.assertEqual(hashlib.sha256(metadata_snapshot.read_bytes()).hexdigest(), expected)
         with mock.patch.object(
             attribution.subprocess, "run", return_value=mock.Mock(returncode=128),
         ):

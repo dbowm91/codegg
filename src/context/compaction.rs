@@ -4,16 +4,9 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-/// # Compaction Invariant
-/// All compaction strategies must uphold the following invariants:
-/// 1. No orphan `Message::Tool`: every tool result must have a corresponding assistant tool call
-///    with matching `tool_call_id` in the retained messages.
-/// 2. No assistant tool-call message may exist without all its required tool results in the retained
-///    transcript, unless the provider-specific serializer can safely handle missing results.
-/// 3. The relative order of assistant tool calls and their matching tool results must be preserved.
-/// 4. Truncation of tool outputs must preserve the `tool_call_id` field unchanged.
-/// 5. Multi-tool pairs (assistant with multiple tool calls + matching tool results) must preserve
-///    all IDs and their original order.
+/// Compaction preserves tool-call/result pairing, IDs, and order. It leaves no
+/// orphan results or calls unless the provider serializer explicitly supports
+/// missing results; truncating output never changes its call ID.
 pub use eggcontext::TokenizerType;
 
 fn estimate_tokens_sync(text: &str, model: Option<&str>) -> usize {
@@ -62,6 +55,13 @@ impl ContextTracker {
         estimate_tokens_sync(text, None)
     }
 
+    /// Estimate provider-facing text with the tokenizer selected for a model.
+    /// Callers that account for non-message request fields (such as tool
+    /// definitions) must use the same model hint as message accounting.
+    pub fn estimate_text_tokens(text: &str, model: Option<&str>) -> usize {
+        estimate_tokens_sync(text, model)
+    }
+
     fn estimate_tokens_model(&self, text: &str) -> usize {
         estimate_tokens_sync(text, self.model.as_deref())
     }
@@ -76,13 +76,22 @@ impl ContextTracker {
                     _ => 0,
                 })
                 .sum(),
-            Message::Assistant { content, .. } => content
-                .iter()
-                .map(|p| match p {
-                    ContentPart::Text { text } => self.estimate_tokens_model(text),
-                    _ => 0,
-                })
-                .sum(),
+            Message::Assistant {
+                content,
+                tool_calls,
+            } => {
+                let content_tokens = content
+                    .iter()
+                    .map(|p| match p {
+                        ContentPart::Text { text } => self.estimate_tokens_model(text),
+                        _ => 0,
+                    })
+                    .sum::<usize>();
+                let tool_call_tokens = serde_json::to_string(tool_calls)
+                    .map(|serialized| self.estimate_tokens_model(&serialized))
+                    .unwrap_or(0);
+                content_tokens.saturating_add(tool_call_tokens)
+            }
             Message::Tool { content, .. } => self.estimate_tokens_model(content),
         };
         self.message_token_counts.push(tokens);
@@ -167,13 +176,22 @@ impl ContextTracker {
                         _ => 0,
                     })
                     .sum(),
-                Message::Assistant { content, .. } => content
-                    .iter()
-                    .map(|p| match p {
-                        ContentPart::Text { text } => self.estimate_tokens_model(text),
-                        _ => 0,
-                    })
-                    .sum(),
+                Message::Assistant {
+                    content,
+                    tool_calls,
+                } => {
+                    let content_tokens = content
+                        .iter()
+                        .map(|p| match p {
+                            ContentPart::Text { text } => self.estimate_tokens_model(text),
+                            _ => 0,
+                        })
+                        .sum::<usize>();
+                    let tool_call_tokens = serde_json::to_string(tool_calls)
+                        .map(|serialized| self.estimate_tokens_model(&serialized))
+                        .unwrap_or(0);
+                    content_tokens.saturating_add(tool_call_tokens)
+                }
                 Message::Tool { content, .. } => self.estimate_tokens_model(content),
             };
         }
@@ -460,12 +478,7 @@ fn drop_middle_messages(messages: Vec<Message>) -> Vec<Message> {
         return messages;
     }
 
-    let keep_each_side = 2;
-    let mut result = Vec::new();
-
-    result.extend(messages.iter().take(keep_each_side).cloned());
-    result.extend(messages.iter().rev().take(keep_each_side).rev().cloned());
-    result
+    emergency_pair_safe_compaction(&messages, &ResolvedCompactionConfig::default())
 }
 
 pub fn detect_overflow(messages: &[Message], context_limit: usize, reserved: usize) -> bool {
@@ -3690,6 +3703,80 @@ mod tests {
         assert_eq!(result.status, CompactionStatus::Compacted);
         assert!(result.messages.len() < messages.len());
         assert_eq!(result.capacity.available_context_tokens, 40);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn compatibility_compaction_preserves_tool_call_history() {
+        let long_text = "history ".repeat(2_000);
+        let messages = vec![
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: long_text.clone().into(),
+                }],
+            },
+            Message::Assistant {
+                content: vec![],
+                tool_calls: vec![crate::provider::ToolCall {
+                    id: "first-call".to_string().into(),
+                    name: "read".to_string().into(),
+                    arguments: serde_json::json!({"path": "first.rs"}),
+                }],
+            },
+            Message::Tool {
+                tool_call_id: "first-call".to_string().into(),
+                content: long_text.clone().into(),
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: long_text.clone().into(),
+                }],
+            },
+            Message::Assistant {
+                content: vec![],
+                tool_calls: vec![crate::provider::ToolCall {
+                    id: "second-call".to_string().into(),
+                    name: "read".to_string().into(),
+                    arguments: serde_json::json!({"path": "second.rs"}),
+                }],
+            },
+            Message::Tool {
+                tool_call_id: "second-call".to_string().into(),
+                content: long_text.clone().into(),
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: long_text.clone().into(),
+                }],
+            },
+            Message::Assistant {
+                content: vec![ContentPart::Text {
+                    text: long_text.into(),
+                }],
+                tool_calls: vec![],
+            },
+        ];
+
+        let result = compact_context(ContextCompactionRequest {
+            messages: &messages,
+            context_limit: 128,
+            threshold: 0.5,
+            reserved_output_tokens: 16,
+            max_tool_result_tokens: 100,
+            auto: false,
+            prune: false,
+            force: false,
+            compaction_config: None,
+            active_model: Some("deepseek-v4.1-flash"),
+            provider: None,
+            provider_context: ProviderRequestContext::default(),
+            cancellation: None,
+            baseline: None,
+            proposed_checkpoint_id: None,
+        })
+        .await;
+
+        assert_ne!(result.status, CompactionStatus::InvalidHistoryOrBudget);
+        assert!(validate_message_invariants(&result.messages).is_ok());
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -18,7 +18,7 @@ Long-term requirements:
 Applicable ADRs:
 
 - `plans/adrs/ADR-0046-composable-linux-execution-isolation.md` (accepted; §5 and §8 are the authority for this milestone)
-- `plans/adrs/ADR-0061-default-linux-containment-policy.md` (accepted 2026-11-10 — Option B)
+- `plans/adrs/ADR-0063-default-linux-containment-policy.md` (accepted 2026-11-10 — Option B)
 - `plans/adrs/ADR-0016-cross-platform-sandbox-launch-authority.md`
 
 Primary class: invariant
@@ -33,7 +33,7 @@ privileged helper.
 
 ## 2. Why this milestone is ready
 
-Its one hard dependency is satisfied. `ADR-0061` Option B was accepted on
+Its one hard dependency is satisfied. `ADR-0063` Option B was accepted on
 2026-11-10 by the project maintainer. ADR-0046 §8 reserves the default
 containment policy to "compatibility measurements and an explicit default-policy
 decision", and §54 says the Landlock-only backend "continues to report its
@@ -50,7 +50,7 @@ Everything else is stable:
   (`a_sandboxed_shell_can_still_read_the_system_and_resolve_a_command`, the
   Cargo metadata probe).
 
-ADR-0061 is accepted, so this plan is `ready for handoff` without further
+ADR-0063 is accepted, so this plan is `ready for handoff` without further
 authoring; the work packages below are already ordered against the decision's
 clauses.
 
@@ -97,7 +97,7 @@ host parent, and re-adds a minimal `/dev`, a fresh `/tmp`, and eight explicit
 "The namespace helper must not expose daemon/SSH-agent/Docker/container-runtime/
 session-bus sockets, host `/proc`, secret-bearing inherited FDs or uncontrolled
 `/run` by mounting broad parents." That clause is scoped to the namespace helper;
-this milestone extends its intent to the default backend under ADR-0061.
+this milestone extends its intent to the default backend under ADR-0063.
 
 ## 4. Invariants that must not regress
 
@@ -136,7 +136,7 @@ this milestone extends its intent to the default backend under ADR-0061.
 - `SandboxProfile`, `ApprovalMode`, and approval routing.
 - macOS and Windows.
 - Descriptor hygiene and grant-path pinning (C006).
-- Any new seccomp filter on the default route. ADR-0061 does not select it.
+- Any new seccomp filter on the default route. ADR-0063 does not select it.
 
 ## 6. Required production changes
 
@@ -204,7 +204,7 @@ Required changes: call `apply_process_scopes()` in the helper's Landlock dispatc
 for `LegacyPrivateHelper` as well as the protected route; fail closed on error;
 capture the returned ABI instead of discarding it. Gate it on
 `probe_process_scopes()` so a host below ABI 6 reports the scope as absent rather
-than failing the launch, unless ADR-0061's accepted text requires a hard
+than failing the launch, unless ADR-0063's accepted text requires a hard
 requirement.
 
 Acceptance evidence: a native fixture proves a contained child cannot signal a
@@ -325,14 +325,14 @@ Do not claim it.
 
 - `architecture/security.md` — the default Linux posture, the obtained scope ABI,
   and the named `/proc` and pathname-socket limits.
-- `plans/adrs/ADR-0061-default-linux-containment-policy.md` — status transition
+- `plans/adrs/ADR-0063-default-linux-containment-policy.md` — status transition
   only; the decision text is immutable once accepted.
 - The roadmap §12 status table and `plans/registry.md` on closure.
 
 ## 13. Acceptance criteria
 
 1. A default (`LegacyPrivateHelper`) contained launch reports an obtained scope ABI
-   and refuses when the scope cannot be applied, if ADR-0061 requires it as a hard
+   and refuses when the scope cannot be applied, if ADR-0063 requires it as a hard
    requirement.
 2. A contained child cannot signal a same-uid process outside the scope, proved
    with a positive control.
@@ -349,7 +349,7 @@ Do not claim it.
 
 Stop and report rather than improvise when:
 
-- ADR-0061 is rejected or amended. Then this plan stays blocked and the exposure is
+- ADR-0063 is rejected or amended. Then this plan stays blocked and the exposure is
   disclosed in the descriptor only.
 - the matrix fails with a narrowed grant and no narrower entry restores it. Record
   the residue as a named limit; **do not restore the broad grant**.
@@ -361,7 +361,7 @@ Stop and report rather than improvise when:
 
 ## 15. Closure evidence required
 
-- ADR-0061's accepted status and the exact clauses implemented.
+- ADR-0063's accepted status and the exact clauses implemented.
 - The committed matrix with the three runs and their outcomes.
 - Native kernel evidence for signal, abstract-socket and `/proc` scoping, each with
   a positive control.

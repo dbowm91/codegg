@@ -516,6 +516,14 @@ enum Commands {
         #[command(flatten)]
         policy: ExecutionPolicyArgs,
     },
+    #[command(about = "Run one embedding-host session over newline-delimited JSON-RPC on stdio")]
+    Host {
+        #[arg(
+            long,
+            help = "Serve the protocol on stdin/stdout (the only v1 transport)"
+        )]
+        stdio: bool,
+    },
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -1727,6 +1735,15 @@ mod cli_surface_tests {
     }
 
     #[test]
+    fn host_stdio_parses_without_project_or_tui_state() {
+        let cli = Cli::try_parse_from(["codegg", "host", "--stdio"]).expect("host parses");
+        assert!(matches!(cli.command, Some(Commands::Host { stdio: true })));
+
+        let cli = Cli::try_parse_from(["codegg", "host"]).expect("bare host parses");
+        assert!(matches!(cli.command, Some(Commands::Host { stdio: false })));
+    }
+
+    #[test]
     fn internal_transports_stay_parseable_but_hidden() {
         for args in [
             vec!["codegg", "--core-transport", "stdio"],
@@ -1969,7 +1986,7 @@ async fn main() -> Result<(), AppError> {
         }
     } else if matches!(
         cli.command,
-        Some(Commands::CoreStdio) | Some(Commands::Acp { .. })
+        Some(Commands::CoreStdio) | Some(Commands::Acp { .. }) | Some(Commands::Host { .. })
     ) {
         // core-stdio reserves stdout for the JSONL protocol.  Keep tracing
         // on stderr so a diagnostic can never corrupt a response frame.
@@ -2063,6 +2080,20 @@ async fn main() -> Result<(), AppError> {
                 let policy = merge_cli_policy_overrides(root_policy, command_policy)
                     .map_err(|e| AppError::Other(anyhow::anyhow!(e)))?;
                 codegg::acp::run(policy).await?;
+            }
+            Commands::Host { stdio } => {
+                if !*stdio {
+                    return Err(AppError::Other(anyhow::anyhow!(
+                        "`codegg host` requires --stdio; it is the only v1 transport"
+                    )));
+                }
+                match codegg::host::run_stdio(tokio::io::stdin(), tokio::io::stdout()).await {
+                    Ok(()) => {}
+                    Err(error) => {
+                        eprintln!("host: {error}");
+                        std::process::exit(error.exit_code());
+                    }
+                }
             }
             Commands::Validate { config } => {
                 cmd_validate(config.as_deref()).await?;
@@ -5167,6 +5198,9 @@ async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
         )
         .await;
 
+    daemon.shutdown_jobs().await;
+    drop(daemon);
+
     // Cleanup: drop pid, Unix socket, and metadata (in that order so observers
     // never see socket-gone + PID-present). Windows pipe names are not files;
     // dropping the listener closes the kernel object. Guard removes metadata.
@@ -5266,6 +5300,7 @@ async fn run_core_stdio() -> Result<(), AppError> {
         stdout.write_all(b"\n").await.map_err(AppError::Io)?;
         stdout.flush().await.map_err(AppError::Io)?;
     }
+    core.shutdown_jobs().await;
     Ok(())
 }
 
@@ -5376,9 +5411,10 @@ async fn cmd_server(host: &str, port: u16, standalone_core: bool) -> Result<(), 
     // generation left in flight.
     daemon.reconcile_git_index_publications().await;
 
-    codegg::server::run_server(host, port, Some(daemon))
-        .await
-        .map_err(|e| AppError::Other(anyhow::anyhow!("Server error: {}", e)))
+    let serve_result = codegg::server::run_server(host, port, Some(Arc::clone(&daemon))).await;
+    daemon.shutdown_jobs().await;
+    drop(daemon);
+    serve_result.map_err(|e| AppError::Other(anyhow::anyhow!("Server error: {}", e)))
 }
 
 #[cfg(feature = "server")]

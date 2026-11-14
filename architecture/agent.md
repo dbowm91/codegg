@@ -151,6 +151,14 @@ No coordinator field reconstructs context-token policy, subprocess lifecycle,
 Git safety/provenance, provider transport, tool authorization, scheduler
 admission, or durable completion authority.
 
+The turn's watch-based cancel channel is mirrored to a `CancellationToken`
+threaded through `ToolExecutionContext` and the broker. On cancellation, the
+broker gives the active tool a bounded cleanup window instead of dropping its
+future immediately. Managed process owners then terminate and reap the child;
+foreground scheduler-backed test calls request cancellation for their exact
+job and wait for its terminal state. Explicit background jobs keep their
+durable lifetime beyond the submitting turn.
+
 ### Provider-turn attempt safety (execution-reliability M001)
 
 Each logical turn runs at most 3 attempts under one UUID-scoped attempt
@@ -472,11 +480,14 @@ adopt yield-and-resume rather than a wall-clock cut-off.
 
 `codegg_core::agent_run_control` owns the ordered, bounded mailbox and the
 stable-boundary journal. `src/agent/run_control.rs` is the daemon bridge: it
-authorizes the exact originating turn for a top-level run or the direct parent
-run for a child, persists a control, then feeds a live
-run's existing follow-up, steering, and cancellation channels. Live channels
-are an optimization; queued/delivered records are replayed when a run
-reattaches after disconnect or restart.
+authorizes the exact originating turn for mutating controls on a top-level run
+or the direct parent run for a child, persists a control, then feeds a live
+run's existing follow-up, steering, and cancellation channels. Read-only
+`status`, bounded `wait`, and journal observation use the durable originating
+session for a top-level run, so an owner can observe its child after the
+spawning turn ends; nested observers still need the direct parent run handle.
+Live channels are an optimization; queued/delivered records are replayed when
+a run reattaches after disconnect or restart.
 
 The same bridge keeps a bounded live-turn map keyed by the exact
 (session_id, turn_id) supplied by TurnRunInput. A top-level child completion
@@ -665,6 +676,15 @@ matches. Completion, cancellation, submission failure, and startup
 recovery use first-terminal-wins semantics; scheduler-owned cancellation and
 generation recovery reconcile the durable run rather than relying only on a
 live `CancellationToken`.
+
+Each delegated attempt carries `AgentRunBudget.max_wall_clock_secs` through
+the scheduler into its worker. The worker applies the smaller of that budget
+and `subagent.wall_clock_timeout_secs`; an unset or zero config value uses the
+600-second default. When the deadline expires, the worker signals the child's
+existing cancellation channel, allows up to five seconds for tool and process
+cleanup, then records a typed timeout as `deadline_exceeded`. This bound is
+per delegated attempt; it does not impose a total deadline on a foreground
+agent turn.
 
 Mutation-capable durable children are automatically allocated a
 `WorktreeLease` during `Preparing`, before the child loop is built. The

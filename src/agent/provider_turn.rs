@@ -1,28 +1,11 @@
-//! Provider-turn normalization boundary with attempt safety.
+//! Provider-turn normalization and attempt safety (M001).
 //!
-//! M001 (execution-reliability) owns this retry loop. The policy is:
-//!
-//! - Every logical turn gets one UUID-scoped attempt chain; each replay is
-//!   a new `ProviderAttemptId` published on the bus for attribution.
-//! - Failures are classified by the canonical
-//!   [`ProviderError::retry_disposition`](crate::provider::ProviderError::retry_disposition)
-//!   taxonomy. Only `Transient` failures retry; `Permanent` (auth, invalid
-//!   request, missing model) and `Conditional` (circuit-open, credential
-//!   refresh) never retry inside this loop.
-//! - Once an attempt has emitted externally visible output (`TextDelta`,
-//!   `ReasoningDelta`, `ToolCallStarted`), the turn does NOT transparently
-//!   replay. It publishes an explicit supersession marker and returns a
-//!   typed interrupted-attempt error carrying the attempt ID, so two
-//!   generations can never masquerade as one authoritative stream and an
-//!   abandoned tool-call start is never executed.
-//! - Backoff is bounded exponential with full jitter plus a capped
-//!   server `Retry-After` hint, and sleeps are cancellation-aware.
-//! - The session-selected provider object is never replaced here; retry
-//!   reuses the same request and provider handle. `FallbackProvider`
-//!   (`crates/codegg-providers/src/fallback.rs`) is a library-only
-//!   compatibility primitive and is never constructed on this production
-//!   turn path; provider switching here would require an explicit planning
-//!   change (C003).
+//! Each logical turn has a UUID-scoped chain; retries publish new attempt IDs.
+//! Only transient failures retry, with bounded cancellation-aware backoff.
+//! Once visible output starts, the adapter emits supersession and returns a
+//! typed interruption rather than replaying an ambiguous stream. It reuses
+//! the selected provider and request; fallback switching is not a production
+//! turn-path behavior (C003).
 
 use super::r#loop::AgentLoop;
 use crate::agent::provider_qualification::InferenceCredentialOutcome;
@@ -30,7 +13,7 @@ use crate::bus::events::AppEvent;
 use crate::error::{AppError, ProviderError};
 use crate::provider::{ChatEvent, ChatRequest, RetryContext, RetryDisposition};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Adapter-owned entry point for provider streaming, retries, and normalized
 /// chat events. The turn driver does not need to know wire compatibility
@@ -55,10 +38,44 @@ impl ProviderTurnAdapter {
 
     pub(super) async fn receive_with_retry_context(
         loop_: &mut AgentLoop,
-        request: &ChatRequest,
+        request: &mut ChatRequest,
         retry: Option<RetryContext>,
     ) -> Result<Vec<ChatEvent>, AppError> {
-        stream_with_retry(loop_, request, retry).await
+        let first = stream_with_retry_inner(loop_, request, retry).await;
+        let result = match first {
+            Err(error) => {
+                if let Some(provider_context_limit) = provider_context_limit(&error) {
+                    let model_profile =
+                        crate::model_profile::ModelProfileResolver::new(&loop_.services.config)
+                            .resolve(&request.model);
+                    let fits = loop_
+                        .compact_after_provider_context_overflow(
+                            request,
+                            &model_profile,
+                            provider_context_limit,
+                        )
+                        .await;
+                    if !fits {
+                        Err(error)
+                    } else {
+                        // The provider rejected the old context. This one
+                        // bounded remediation attempt sends a changed request;
+                        // provider admission still enforces the caller's cap.
+                        stream_with_retry_inner(
+                            loop_,
+                            request,
+                            Some(RetryContext::new(1, Duration::from_secs(120))),
+                        )
+                        .await
+                    }
+                } else {
+                    Err(error)
+                }
+            }
+            Ok(events) => Ok(events),
+        };
+        report_credential_outcome(loop_, &result);
+        result
     }
 }
 
@@ -66,7 +83,17 @@ const MAX_ATTEMPTS: usize = 3;
 const BASE_RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 const STREAM_SETUP_TIMEOUT: Duration = Duration::from_secs(120);
-const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+// Give the first event 240 seconds; keep the later-event idle bound unchanged.
+const FIRST_EVENT_IDLE_TIMEOUT: Duration = Duration::from_secs(240);
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+
+fn stream_idle_timeout(decoded_event_count: u64) -> Duration {
+    if decoded_event_count == 0 {
+        FIRST_EVENT_IDLE_TIMEOUT
+    } else {
+        STREAM_IDLE_TIMEOUT
+    }
+}
 
 async fn stream_with_retry(
     loop_: &mut AgentLoop,
@@ -81,6 +108,39 @@ async fn stream_with_retry(
     // and never blocks or retries the turn.
     report_credential_outcome(loop_, &result);
     result
+}
+
+/// Return a provider's explicit hard context maximum for a rejected request.
+/// Other invalid requests remain permanent and are never automatically
+/// retried.
+fn provider_context_limit(error: &AppError) -> Option<usize> {
+    let AppError::Provider(ProviderError::Api { message, .. }) = error else {
+        return None;
+    };
+    let lowered = message.to_ascii_lowercase();
+    let marker = ["maximum context length is ", "maximum context window is "]
+        .iter()
+        .find_map(|marker| lowered.find(marker).map(|index| index + marker.len()))
+        .or_else(|| {
+            // OpenCode Go forwards the upstream DeepSeek error as:
+            // `context_length_exceeded ... Input too long: X input tokens, limit is Y for this model`.
+            // Only accept this generic `limit is` form when the message also
+            // identifies a context-length rejection, so unrelated API limits
+            // cannot trigger a context rewrite and replay.
+            (lowered.contains("context_length_exceeded") || lowered.contains("input too long"))
+                .then(|| {
+                    lowered
+                        .find("limit is ")
+                        .map(|index| index + "limit is ".len())
+                })
+                .flatten()
+        })?;
+    let digits: String = lowered[marker..]
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    let limit = digits.parse::<usize>().ok()?;
+    (limit > 0 && limit <= 16_777_216).then_some(limit)
 }
 
 /// Feed the terminal credential implication of this turn into connection
@@ -311,6 +371,10 @@ async fn stream_with_retry_inner(
                         attempt_id = %attempt_id,
                         attempt_index,
                         error_class = %error_class,
+                        attempts_left = chain.attempts_remaining(),
+                        remaining_ms = chain.remaining_time().map_or(0, |remaining| {
+                            remaining.as_millis().min(u64::MAX as u128) as u64
+                        }),
                         "provider retry chain deadline reached; stopping"
                     );
                     return Err(error);
@@ -671,12 +735,36 @@ async fn stream_once_inner(
     request: &ChatRequest,
     attempt_id: &str,
 ) -> Result<(Vec<ChatEvent>, bool), (AppError, bool)> {
+    let stream_span = tracing::info_span!(
+        "provider_stream_attempt",
+        session_id = %loop_.session_id,
+        attempt_id = %attempt_id,
+        provider = %loop_.services.provider.id(),
+        model = %request.model,
+    );
+    let span_id = stream_span.id().map(|id| id.into_u64());
+    let setup_started = Instant::now();
+    tracing::debug!(
+        attempt_id = %attempt_id,
+        provider_span_id = ?span_id,
+        "provider_stream_setup_started"
+    );
     let stream = tokio::time::timeout(
         STREAM_SETUP_TIMEOUT,
-        loop_.services.provider.stream(request),
+        tracing::Instrument::instrument(
+            loop_.services.provider.stream(request),
+            stream_span.clone(),
+        ),
     )
     .await
     .map_err(|_| {
+        tracing::warn!(
+            attempt_id = %attempt_id,
+            provider_span_id = ?span_id,
+            elapsed_ms = setup_started.elapsed().as_millis() as u64,
+            stage = "response_headers",
+            "provider_stream_setup_timeout"
+        );
         (
             AppError::Provider(ProviderError::Timeout(
                 "provider stream timeout".to_string(),
@@ -684,7 +772,24 @@ async fn stream_once_inner(
             false,
         )
     })?
-    .map_err(|e| (AppError::Provider(e), false))?;
+    .map_err(|e| {
+        let error = AppError::Provider(e);
+        tracing::warn!(
+            attempt_id = %attempt_id,
+            provider_span_id = ?span_id,
+            elapsed_ms = setup_started.elapsed().as_millis() as u64,
+            stage = "response_headers",
+            error_class = %provider_error_class(&error),
+            "provider_stream_setup_failed"
+        );
+        (error, false)
+    })?;
+    tracing::debug!(
+        attempt_id = %attempt_id,
+        provider_span_id = ?span_id,
+        setup_elapsed_ms = setup_started.elapsed().as_millis() as u64,
+        "provider_stream_setup_completed"
+    );
     let mut events = Vec::with_capacity(64);
     let mut visible_output = false;
     let session_id_arc: Arc<str> = Arc::from(loop_.session_id.as_str());
@@ -696,25 +801,59 @@ async fn stream_once_inner(
 
     use futures_util::StreamExt;
     let mut stream = stream;
+    let mut decoded_event_count = 0u64;
+    let mut last_decoded_event_elapsed = setup_started.elapsed();
     loop {
         if is_cancelled(loop_) {
             return Err((cancelled_error(), visible_output));
         }
-        let next_event = tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next())
-            .await
-            .map_err(|_| {
-                (
-                    AppError::Provider(ProviderError::Timeout(
-                        "provider stream stalled waiting for next event".to_string(),
-                    )),
-                    visible_output,
-                )
-            })?;
+        let wait_started = Instant::now();
+        let next_event = next_event_with_idle_timeout(
+            tracing::Instrument::instrument(stream.next(), stream_span.clone()),
+            stream_idle_timeout(decoded_event_count),
+        )
+        .await
+        .map_err(|_| {
+            tracing::warn!(
+                attempt_id = %attempt_id,
+                provider_span_id = ?span_id,
+                decoded_event_count,
+                    elapsed_since_setup_ms = setup_started.elapsed().as_millis() as u64,
+                    since_last_decoded_event_ms = setup_started
+                        .elapsed()
+                        .saturating_sub(last_decoded_event_elapsed)
+                        .as_millis() as u64,
+                idle_wait_ms = wait_started.elapsed().as_millis() as u64,
+                "provider_stream_idle_timeout"
+            );
+            (
+                AppError::Provider(ProviderError::Timeout(
+                    "provider stream stalled waiting for next event".to_string(),
+                )),
+                visible_output,
+            )
+        })?;
         let Some(event) = next_event else {
+            tracing::debug!(
+                attempt_id = %attempt_id,
+                provider_span_id = ?span_id,
+                decoded_event_count,
+                "provider_stream_eof_consumed"
+            );
             break;
         };
+        decoded_event_count = decoded_event_count.saturating_add(1);
+        last_decoded_event_elapsed = setup_started.elapsed();
         match event {
             Ok(evt) => {
+                tracing::debug!(
+                    attempt_id = %attempt_id,
+                    provider_span_id = ?span_id,
+                    event_index = decoded_event_count,
+                    event_kind = chat_event_kind(&evt),
+                    elapsed_ms = last_decoded_event_elapsed.as_millis() as u64,
+                    "provider_turn_event_received"
+                );
                 match &evt {
                     ChatEvent::TextDelta(text) => {
                         visible_output = true;
@@ -847,10 +986,32 @@ async fn stream_once_inner(
     Ok((events, visible_output))
 }
 
+async fn next_event_with_idle_timeout<T, F>(
+    next: F,
+    idle_timeout: Duration,
+) -> Result<Option<T>, tokio::time::error::Elapsed>
+where
+    F: std::future::Future<Output = Option<T>>,
+{
+    tokio::time::timeout(idle_timeout, next).await
+}
+
+fn chat_event_kind(event: &ChatEvent) -> &'static str {
+    match event {
+        ChatEvent::TextDelta(_) => "text_delta",
+        ChatEvent::ReasoningDelta(_) => "reasoning_delta",
+        ChatEvent::ToolCall(_) => "tool_call",
+        ChatEvent::ToolResult { .. } => "tool_result",
+        ChatEvent::Finish { .. } => "finish",
+        ChatEvent::Error(_) => "error",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::provider::Message;
+    use futures_util::{stream, StreamExt};
     use std::str::FromStr;
     use std::time::Instant;
 
@@ -891,6 +1052,44 @@ mod tests {
         let b = new_attempt_id();
         assert_eq!(a.len(), 8);
         assert_ne!(a, b);
+    }
+
+    #[tokio::test]
+    async fn delayed_first_event_is_allowed_within_stream_idle_bound() {
+        assert_eq!(stream_idle_timeout(0), Duration::from_secs(240));
+        assert_eq!(stream_idle_timeout(1), Duration::from_secs(120));
+        let mut events = Box::pin(stream::once(async {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            Ok::<_, ProviderError>(ChatEvent::TextDelta(Arc::new("first event".to_string())))
+        }));
+
+        let next = next_event_with_idle_timeout(events.next(), stream_idle_timeout(0))
+            .await
+            .expect("first event should arrive within the configured idle bound");
+        assert!(
+            matches!(next, Some(Ok(ChatEvent::TextDelta(text))) if text.as_str() == "first event")
+        );
+    }
+
+    #[test]
+    fn operation_retry_window_covers_a_first_event_timeout_and_retry_backoff() {
+        let retry = RetryContext::for_operation();
+        let minimum_retry_window = FIRST_EVENT_IDLE_TIMEOUT + MAX_RETRY_DELAY;
+        assert!(
+            retry.remaining_time().unwrap() > minimum_retry_window,
+            "operation retry window must exceed the first-event timeout plus maximum backoff"
+        );
+        assert!(retry.attempts_remaining() > 1);
+    }
+
+    #[tokio::test]
+    async fn a_silent_provider_stream_still_times_out() {
+        let mut events = Box::pin(stream::pending::<Result<ChatEvent, ProviderError>>());
+        let timeout = Duration::from_millis(10);
+
+        assert!(next_event_with_idle_timeout(events.next(), timeout)
+            .await
+            .is_err());
     }
 
     #[test]
@@ -1233,9 +1432,10 @@ mod tests {
         let mut request = ledger_request();
         request.system = Some(compiled.text);
 
-        let events = ProviderTurnAdapter::receive_with_retry_context(&mut loop_, &request, None)
-            .await
-            .expect("the attempt completes");
+        let events =
+            ProviderTurnAdapter::receive_with_retry_context(&mut loop_, &mut request, None)
+                .await
+                .expect("the attempt completes");
         assert!(events.is_empty(), "the stub provider streams no events");
 
         let rows = crate::session::request_ledger::TurnRequestLedgerStore::new(pool)
@@ -1262,7 +1462,7 @@ mod tests {
         let mut loop_ = loop_with_ledger(pool.clone(), workspace.path());
         loop_.set_prompt_section_digests(std::collections::BTreeMap::new());
 
-        ProviderTurnAdapter::receive_with_retry_context(&mut loop_, &ledger_request(), None)
+        ProviderTurnAdapter::receive_with_retry_context(&mut loop_, &mut ledger_request(), None)
             .await
             .expect("the attempt completes");
 

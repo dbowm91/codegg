@@ -1,0 +1,270 @@
+{
+  "attempt_number": 52,
+  "binary_sha256": "2b264cfae0c64a9a8362d9a16f98c4350444885ee9521ce084ca9b683e54c3ca",
+  "continuation_line_layout": {
+    "first_pointer_line_index": 12,
+    "last_pointer_line_index": 42,
+    "line_count": 79,
+    "pointer_block_is_terminal": false,
+    "pointer_field_count": 4,
+    "pointer_fields_follow_progress_sections": null,
+    "pointer_fields_in_expected_order": true,
+    "progress_end_line_index": null,
+    "progress_section_count": 3,
+    "progress_sections_ordered": null,
+    "raw_note_retained": false,
+    "schema": "h007_continuation_line_layout_v1",
+    "state": "observed"
+  },
+  "continuation_public_gates": {
+    "all_public_artifacts_present": true,
+    "completed_gate_count": 0,
+    "completed_stage_count": 0,
+    "line_layout": {
+      "first_pointer_line_index": 12,
+      "last_pointer_line_index": 42,
+      "line_count": 79,
+      "pointer_block_is_terminal": false,
+      "pointer_field_count": 4,
+      "pointer_fields_follow_progress_sections": null,
+      "pointer_fields_in_expected_order": true,
+      "progress_end_line_index": null,
+      "progress_section_count": 3,
+      "progress_sections_ordered": null,
+      "raw_note_retained": false,
+      "schema": "h007_continuation_line_layout_v1",
+      "state": "observed"
+    },
+    "public_checks": {},
+    "repair_cycle_count_matches": true,
+    "repair_cycle_count_observed": 3,
+    "repair_cycles_documented": 3,
+    "repair_pair_count": 2,
+    "required_repair_pair_count": 2,
+    "required_review_observed": true,
+    "test_job_submissions": 10,
+    "test_job_terminal_status_counts": {
+      "completed": 7,
+      "failed": 3
+    },
+    "test_job_terminals": 10,
+    "test_jobs_all_terminal": true
+  },
+  "disk": {
+    "disk_floor_triggered": false,
+    "external_hard_stop": false,
+    "external_watcher_minimum_bytes": 42173583360,
+    "last_free_bytes": 60036497408,
+    "minimum_free_bytes": 42018541568,
+    "minimum_free_bytes_source": "runner_and_external_disk_monitor",
+    "preflight_reserve_bytes": 32212254720,
+    "preflight_reserve_dipped_during_run": false,
+    "runtime_floor_bytes": 10737418240
+  },
+  "event_measurement": {
+    "complete": true,
+    "dropped_events": 0,
+    "event_gap_count": 0,
+    "open_tool_calls_at_boundary": 0,
+    "ordered_activity_sequence_truncated": false,
+    "ordered_activity_tool_calls": 214,
+    "tool_started_count": 214,
+    "tool_terminal_count": 214,
+    "tool_unpaired_start_count": 0
+  },
+  "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "fixture_version": 97,
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "horizon": {
+    "active_work_span_ms": 2354283,
+    "agent_terminal": "completed",
+    "continuation_confirmed": true,
+    "duration_qualified": null,
+    "event_measurement_complete": true,
+    "exact_job_running_and_terminal": true,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 74256,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": true,
+    "repair_cycles": 3,
+    "tool_call_cap_exceeded": false,
+    "tool_call_count": 214
+  },
+  "job_sequence": {
+    "job_tool_call_count": 30,
+    "raw_job_ids_retained": false,
+    "schema": "h007_job_tool_sequence_v1",
+    "sequence_truncated": false,
+    "state": "observed",
+    "tool_arguments_retained": false,
+    "tool_outputs_retained": false,
+    "unbound_call_state_counts": {},
+    "unbound_job_tool_call_count": 0
+  },
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "outcome": {
+    "active_work_span_ms": 2354254,
+    "agent_terminal": "completed",
+    "cancellation_source": null,
+    "duration_ms": 2359239,
+    "duration_qualified": true,
+    "horizon_outcome": "not_qualified",
+    "horizon_reason": "task_not_passed",
+    "stop_reason": "end_turn",
+    "task_outcome": "failed",
+    "terminal": "completed",
+    "verifier_outcome": "assertion_failures"
+  },
+  "preflight_evidence_path": "plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt52-preflight-20261111.json",
+  "privacy": {
+    "failed_test_names_retained": false,
+    "raw_job_ids_retained": false,
+    "raw_prompt_retained": false,
+    "raw_provider_text_retained": false,
+    "raw_tool_arguments_retained": false,
+    "raw_tool_outputs_retained": false,
+    "raw_verifier_text_retained": false,
+    "underlying_process_state_inferred": false
+  },
+  "private_receipt_sha256": "6c17e4b02467a668e162ac918e232c102869911aa163cf7b7fbf1623b84e9964",
+  "provider": {
+    "external_billed_usd": "unknown",
+    "provider_allowance_usd": 0.046783,
+    "provider_attempts_failed": 2,
+    "provider_attempts_started": 160,
+    "provider_attempts_succeeded": 158,
+    "provider_request_limit": 1200,
+    "provider_requests": 160,
+    "unreported_usd_treatment": "external provider USD is unknown when not reported",
+    "unresolved_provider_attempt_count": 0
+  },
+  "reviewer_schedule": {
+    "completed_get_result_observed_count": 1,
+    "completed_review_result_observed": true,
+    "compliant_status_then_get_lifecycle": true,
+    "due_prompt_count": 0,
+    "spawn_count": 1,
+    "spawn_elapsed_ms": null,
+    "task_action_counts": {
+      "get": 1,
+      "spawn": 1,
+      "status": 7
+    },
+    "threshold_ms": 900000
+  },
+  "route": "opencode_go",
+  "runner": {
+    "elapsed_seconds": 2376.809,
+    "external_hard_stop": false,
+    "raw_runner_log_inspected": false,
+    "receipt_present": true,
+    "runner_exit_code": 2
+  },
+  "schema": "s019_safe_diagnostic_v1",
+  "start_number": 53,
+  "task_completion_diagnostic": {
+    "raw_job_ids_retained": false,
+    "raw_note_retained": false,
+    "reasons": [
+      "independent_verifier_failures"
+    ],
+    "state": "verification_failed",
+    "verifier_outcome": "assertion_failures"
+  },
+  "verifier_public_reconciliation": {
+    "assertion_text_retained": false,
+    "classification": {
+      "transcript_job_lifecycle": "verifier_public_projection_disagreement"
+    },
+    "failure_domain_counts": {
+      "transcript_job_lifecycle": 1
+    },
+    "public_checks": {
+      "transcript_job_lifecycle": {
+        "event_measurement_complete": true,
+        "exact_job_running_and_terminal": true,
+        "job_tool_calls_bound_to_id": true,
+        "minimum_repair_cycles_observed": true,
+        "productive_work_during_job": true,
+        "release_overlap_confirmed": true,
+        "repair_count_matches": true,
+        "repair_pairs_complete": true,
+        "required_review_observed": true,
+        "test_jobs_terminal": true
+      }
+    },
+    "public_domain_states": {
+      "transcript_job_lifecycle": "complete"
+    },
+    "raw_job_ids_retained": false,
+    "raw_output_retained": false,
+    "schema": "h007_verifier_public_reconciliation_v1",
+    "transcript_retained": false,
+    "unbound_call_state_counts": {},
+    "unbound_job_tool_call_count": 0
+  },
+  "verifier_safe_diagnostic": {
+    "assertion_operation_counts": {
+      "pattern": 1
+    },
+    "assertion_text_retained": false,
+    "diagnostic_detail_complete": true,
+    "exit_code": 1,
+    "failure_counts": {
+      "errors": 0,
+      "failures": 1
+    },
+    "failure_domain_counts": {
+      "transcript_job_lifecycle": 1
+    },
+    "failure_domain_details": {
+      "transcript_job_lifecycle": {
+        "assertion_operations": {
+          "pattern": 1
+        },
+        "exception_classes": {
+          "AssertionError": 1
+        },
+        "failure_count": 1,
+        "failure_kinds": {
+          "assertion_failure": 1
+        },
+        "message_categories": {
+          "assertion_message": 1
+        },
+        "safe_term_counts": {
+          "after": 1,
+          "before": 1,
+          "completed": 1,
+          "continuation": 1,
+          "failed": 1,
+          "format": 1,
+          "index": 1,
+          "job": 1,
+          "line": 1,
+          "none": 1,
+          "not": 1,
+          "observed": 1,
+          "overlap": 1,
+          "parse": 1,
+          "record": 1,
+          "repair": 1,
+          "running": 1,
+          "test": 1,
+          "workspace": 1
+        }
+      }
+    },
+    "input_truncated": false,
+    "passed_count": 4,
+    "raw_output_retained": false,
+    "schema": "h007_verifier_diagnostic_v4",
+    "setup_exception_class": null,
+    "skipped_count": 0,
+    "state": "assertion_failures",
+    "tests_run": 5,
+    "timed_out": false,
+    "traceback_retained": false,
+    "verbose_tests_observed": 5
+  }
+}

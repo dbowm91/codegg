@@ -1,0 +1,221 @@
+{
+  "schema_version": 1,
+  "attempt": 27,
+  "recorded_at_utc": "2026-11-10T11:01:53.100098+00:00",
+  "status": "completed_unqualified",
+  "route": "opencode_go",
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "binary_sha256": "ac6687258c7dbb20f3059a836280f9629fa020e69378a18d748182f3406aa204",
+  "sandbox_helper_sha256": null,
+  "fixture_metadata_sha256": "14c22072e7881e61486433d476f7ec742f9ad81f1cc5fff364a4dfd424c35593",
+  "requested_manifest_sha256": "c593389268b71587846d3d44d09d1c952c5c4c69aa8b36a4619859d2fba930f7",
+  "resolved_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "receipt_sha256": "4c4361f6a656c0efcf9ebfa6125d89f80c7617773c47bf68bc308d5701a35c4b",
+  "execution": {
+    "duration_ms": 3299888,
+    "active_work_span_ms": 3292551,
+    "horizon_active_work_span_ms": 3292808,
+    "duration_qualified": true,
+    "terminal": "timeout",
+    "stop_reason": "end_turn",
+    "continuation_stop_reason": "turn_timeout",
+    "autonomous_followup_count": 12,
+    "provider_requests": 310,
+    "provider_request_limit": 1200,
+    "native_tool_calls": 361,
+    "native_tool_call_limit": 1600,
+    "wallclock_limit_seconds": 3600,
+    "prompt_work_limit_seconds": 3300,
+    "same_session_followup_limit": 100,
+    "activity_stall_limit_seconds": 300,
+    "activity_stall_triggered": false,
+    "event_max_gap_ms": 124734,
+    "event_max_gap_limit_ms": 300000
+  },
+  "task": {
+    "outcome": "failed",
+    "completion_state": "agent_incomplete",
+    "completion_reasons": [
+      "agent_terminal_incomplete",
+      "continuation_not_confirmed"
+    ],
+    "solved": false,
+    "horizon_outcome": "not_qualified",
+    "horizon_reason": "task_not_passed",
+    "verifier_outcome": "assertion_failures",
+    "verifier_confirmed": false
+  },
+  "continuation": {
+    "present": true,
+    "document_valid": false,
+    "all_public_artifacts_present": true,
+    "completed_phase_count": 7,
+    "contract_phase_count": 5,
+    "stage_count": 7,
+    "gate_count": 12,
+    "incomplete_stage_count": 0,
+    "incomplete_gate_count": 0,
+    "incomplete_required_success_jobs_count": 0,
+    "release_overlap_confirmed": true,
+    "required_review_observed": true,
+    "required_success_jobs": {
+      "summary_complete": null
+    },
+    "test_job_lifecycle": {
+      "submission_count": 12,
+      "unique_submitted_job_count": 12,
+      "terminal_observed_count": 12,
+      "all_terminal_observed": true,
+      "unobserved_count": 0,
+      "terminal_status_counts": {
+        "completed": 10,
+        "failed": 2
+      }
+    },
+    "raw_job_ids_retained": false,
+    "raw_job_arguments_retained": false,
+    "raw_note_retained": false
+  },
+  "repair_diagnostic": {
+    "required_pair_count": 2,
+    "qualified_pair_count": 1,
+    "documented_repair_cycle_count": 2,
+    "observed_repair_cycle_count": 0,
+    "repair_cycle_count_matches": false,
+    "job_ids_unique_across_groups": true,
+    "raw_job_ids_retained": false,
+    "raw_job_arguments_retained": false,
+    "groups": {
+      "catalog_format": {
+        "documented_states_match_observations": true,
+        "failed_job_status_called_immediately": false,
+        "failed_job_submitted_once": true,
+        "failed_terminal_observed": true,
+        "job_ids_are_distinct": true,
+        "productive_change_between_failure_and_rerun": true,
+        "qualified": false,
+        "repair_followed_failure": true,
+        "repair_job_status_called_immediately": true,
+        "repair_job_submitted_once": true,
+        "repair_terminal_observed": true
+      },
+      "catalog_store": {
+        "documented_states_match_observations": true,
+        "failed_job_status_called_immediately": true,
+        "failed_job_submitted_once": true,
+        "failed_terminal_observed": true,
+        "job_ids_are_distinct": true,
+        "productive_change_between_failure_and_rerun": true,
+        "qualified": true,
+        "repair_followed_failure": true,
+        "repair_job_status_called_immediately": true,
+        "repair_job_submitted_once": true,
+        "repair_terminal_observed": true
+      }
+    },
+    "trace": {
+      "observed_repair_cycle_count": 0,
+      "persisted_correlated_repair_events": 0,
+      "event_count_matches": true,
+      "trace_complete": true,
+      "raw_job_ids_retained": false
+    }
+  },
+  "event_observation": {
+    "state": "observed_complete",
+    "causal_trace_state": "complete",
+    "causal_trace_event_count": 815,
+    "causal_trace_dropped_events": 0,
+    "event_gap_count": 0,
+    "dropped_events": 0,
+    "tool_started_count": 361,
+    "tool_terminal_count": 361,
+    "unpaired_start_count": 0,
+    "exact_job_running_and_terminal": true,
+    "productive_work_during_job": true,
+    "measurement_complete": true,
+    "event_measurement_complete": true
+  },
+  "reviewer_diagnostic": {
+    "reviewer_spawn_count": 1,
+    "compliant_status_then_get_lifecycle": true,
+    "explicit_terminal_observation_count": 1,
+    "get_after_terminal_status_count": 1,
+    "ordered_completed_get_result_count": 1,
+    "completed_review_result_observed": true,
+    "duplicate_get_count": 0,
+    "get_nonterminal_count": 0,
+    "final_status": "completed",
+    "raw_task_arguments_retained": false,
+    "task_result_body_retained": false,
+    "task_transcript_retained": false
+  },
+  "verifier_diagnostic": {
+    "state": "assertion_failures",
+    "tests_run": 5,
+    "passed_count": 2,
+    "failure_count": 3,
+    "failure_counts": {
+      "errors": 0,
+      "failures": 3
+    },
+    "timed_out": false,
+    "assertion_text_retained": false,
+    "raw_output_retained": false,
+    "traceback_retained": false,
+    "failed_tests": [
+      {
+        "test_id": "test_durable_continuation_records_completed_phases_and_next_boundary (test_catalog_contract.CatalogContract.test_durable_continuation_records_completed_phases_and_next_boundary)",
+        "exception_class": "AssertionError",
+        "failure_kind": "assertion_failure"
+      },
+      {
+        "test_id": "test_end_to_end_import_recovery_lineage_diff_and_deterministic_export (test_catalog_contract.CatalogContract.test_end_to_end_import_recovery_lineage_diff_and_deterministic_export)",
+        "exception_class": "AssertionError",
+        "failure_kind": "assertion_failure"
+      },
+      {
+        "test_id": "test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation (test_catalog_contract.CatalogContract.test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation)",
+        "exception_class": "AssertionError",
+        "failure_kind": "assertion_failure"
+      }
+    ]
+  },
+  "provider_diagnostic": {
+    "state": "observed",
+    "provider_attempts_started": 310,
+    "provider_attempts_succeeded": 309,
+    "provider_attempts_failed": 0,
+    "stream_idle_timeout_count": 0,
+    "first_response_event_timeout_count": 0,
+    "later_stream_timeout_count": 0,
+    "retry_scheduled_count": 0,
+    "last_failure": null,
+    "raw_log_in_receipt": false,
+    "raw_provider_text_in_receipt": false
+  },
+  "provider_cost": {
+    "usd": 0.179443,
+    "source": "opencode_go_allowance_receipt",
+    "cap_usd": null,
+    "when_unreported": "unknown"
+  },
+  "resources": {
+    "disk_floor_triggered": false,
+    "lowest_observed_free_disk_bytes": 183848476672,
+    "hard_floor_bytes": 10737418240,
+    "lane_disk_growth_bytes": 241605795,
+    "free_disk_after_bytes": 191334563840
+  },
+  "excluded_material": {
+    "hidden_verifier_output_or_source": true,
+    "raw_job_ids": true,
+    "raw_job_arguments": true,
+    "continuation_text": true,
+    "transcript": true,
+    "provider_content": true,
+    "credential_value": true,
+    "raw_provider_log": true
+  }
+}

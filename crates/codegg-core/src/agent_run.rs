@@ -231,6 +231,10 @@ pub struct DelegatedAgentExecutionContext {
     pub repository_id: Option<RepositoryId>,
     pub workspace_id: WorkspaceId,
     pub worktree_id: Option<WorktreeId>,
+    /// Durable per-attempt ceiling; old serialized contexts inherit the
+    /// worker's configured ceiling.
+    #[serde(default)]
+    pub max_wall_clock_secs: Option<u64>,
     #[serde(default)]
     pub shared_scratch: Vec<SharedScratchGrant>,
 }
@@ -248,6 +252,7 @@ impl DelegatedAgentExecutionContext {
             repository_id: task.repository_id.clone(),
             workspace_id: task.workspace_id.clone(),
             worktree_id: run.worktree_id.clone(),
+            max_wall_clock_secs: run.budget.max_wall_clock_secs,
             shared_scratch: run.shared_scratch.clone(),
         }
     }
@@ -2298,6 +2303,21 @@ mod tests {
             },
             shared_scratch: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn delegated_execution_context_carries_the_run_wall_clock_budget() {
+        let store = InMemoryAgentRunStore::new();
+        let mut new_run = run(None);
+        new_run.budget.max_wall_clock_secs = Some(321);
+        let created = store
+            .create_or_get(task("wall-clock-budget", None), new_run)
+            .await
+            .expect("the durable run should be created");
+
+        let context = DelegatedAgentExecutionContext::from_records(&created.task, &created.run);
+
+        assert_eq!(context.max_wall_clock_secs, Some(321));
     }
 
     #[tokio::test]

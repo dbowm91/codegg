@@ -1,0 +1,24 @@
+{
+  "attempt": 19,
+  "cleanup": {
+    "completed": true,
+    "method": "existing owner-verified supervisor.stop_lane_daemon",
+    "owned_process_count_after_cleanup": 0
+  },
+  "finding": "A lane-owned CodeGG daemon process associated with the cancelled attempt was still present during the post-attempt disk audit.",
+  "ownership_check": {
+    "lane_metadata_present": true,
+    "metadata_pid_matched_verified_binary_and_lane_root": true,
+    "owned_process_count_before_cleanup": 1
+  },
+  "privacy": {
+    "command_line_retained": false,
+    "daemon_id_retained": false,
+    "raw_pid_retained": false,
+    "task_or_provider_content_retained": false
+  },
+  "recorded_at_utc": "2026-11-10T00:27:41+00:00",
+  "resource_effect": "Disk availability remained below the 30-GiB operational reserve; this cleanup did not recover enough space for a new run.",
+  "root_cause": "unknown; the audit cannot distinguish cancellation bypassing finally cleanup from a prior stop attempt that did not remove the process.",
+  "schema": "s019_postcancel_process_audit_v1"
+}

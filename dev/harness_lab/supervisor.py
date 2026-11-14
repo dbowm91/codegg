@@ -31,6 +31,7 @@ FAILURE_CATEGORIES = (
     "provider_rate_limit",
     "provider_timeout",
     "provider_api",
+    "provider_request_budget",
     "cancelled",
     "daemon_restarted",
     "agent_internal",
@@ -236,7 +237,9 @@ class SubjectSpec:
             "TMP": str(self.root / "scratch"),
             "TEMP": str(self.root / "scratch"),
             "RUST_LOG": (
-                "error,codegg_providers::request_budget=info"
+                "error,codegg_providers::request_budget=info,"
+                "codegg_providers::opencode_go=debug,codegg::agent::provider_turn=debug,"
+                "codegg::agent::context_runtime=debug,codegg::agent::loop=debug"
                 if has_request_limit else "error"
             ),
         })

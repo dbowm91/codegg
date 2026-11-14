@@ -406,6 +406,7 @@ pub struct TaskTool {
     workspace_id: Option<WorkspaceId>,
     orchestration_owner: Option<AgentOrchestrationOwner>,
     max_depth: u32,
+    max_wall_clock_secs: Option<u64>,
     convergence_store: Option<Arc<dyn ConvergenceStore>>,
     orchestration_config: crate::config::schema::OrchestrationConfig,
     /// M005 corrective C009: the parent's checkout writer fence.
@@ -555,28 +556,92 @@ fn format_control_outcome(outcome: ControlOutcome) -> String {
             }
         }
         ControlOutcome::Terminal(status) => format!("Run is terminal: {}", status.as_str()),
-        ControlOutcome::Status(run) => append_run_failure(
-            format!(
-                "Run: {}\nStatus: {}\nTask: {}\nResult: {}",
-                run.run_id,
-                run.status.as_str(),
-                run.task_id,
-                run.result_ref.clone().unwrap_or_default()
+        ControlOutcome::Status(run) => append_terminal_recovery_guidance(
+            append_run_failure(
+                format!(
+                    "Run: {}\nStatus: {}\nTask: {}\nResult: {}",
+                    run.run_id,
+                    run.status.as_str(),
+                    run.task_id,
+                    run.result_ref.clone().unwrap_or_default()
+                ),
+                &run,
             ),
             &run,
+            false,
         ),
-        ControlOutcome::Wait { run, timed_out } => append_run_failure(
-            format!(
-                "Run: {}\nStatus: {}\nTask: {}\nTimed out: {}\nResult: {}",
-                run.run_id,
-                run.status.as_str(),
-                run.task_id,
-                timed_out,
-                run.result_ref.clone().unwrap_or_default()
+        ControlOutcome::Wait { run, timed_out } => append_terminal_recovery_guidance(
+            append_run_failure(
+                format!(
+                    "Run: {}\nStatus: {}\nTask: {}\nTimed out: {}\nResult: {}",
+                    run.run_id,
+                    run.status.as_str(),
+                    run.task_id,
+                    timed_out,
+                    run.result_ref.clone().unwrap_or_default()
+                ),
+                &run,
             ),
             &run,
+            false,
         ),
     }
+}
+
+fn append_terminal_recovery_guidance(
+    mut output: String,
+    run: &codegg_core::agent_run::AgentRunRecord,
+    result_retrieved: bool,
+) -> String {
+    let Some(guidance) =
+        terminal_recovery_guidance(run.status, run.failure_class.as_deref(), result_retrieved)
+    else {
+        return output;
+    };
+    output.push_str(guidance);
+    output
+}
+
+fn terminal_recovery_guidance(
+    status: codegg_core::agent_run::AgentRunStatus,
+    failure_class: Option<&str>,
+    result_retrieved: bool,
+) -> Option<&'static str> {
+    if !status.is_terminal() {
+        return None;
+    }
+
+    let guidance = match status {
+        codegg_core::agent_run::AgentRunStatus::Failed => {
+            let class =
+                codegg_core::agent_run_attempt::DelegatedFailureClass::classify(failure_class);
+            if class.is_continuable() {
+                if result_retrieved {
+                    "\nTerminal recovery: do not call status or wait again. If this work is still wanted, use action=continue once for this recognized transient failure."
+                } else {
+                    "\nTerminal recovery: status and wait will not advance this run. Retrieve its recorded result once with action=get; if this work is still wanted and the failure class is transient, use action=continue once."
+                }
+            } else if result_retrieved {
+                "\nTerminal recovery: do not call status or wait again. This failure class is not eligible for continuation."
+            } else {
+                "\nTerminal recovery: status and wait will not advance this run. Retrieve its recorded result once with action=get. This failure class is not eligible for continuation."
+            }
+        }
+        codegg_core::agent_run::AgentRunStatus::Cancelled => {
+            if result_retrieved {
+                "\nTerminal recovery: this run was cancelled; do not call status or wait again, and do not continue a cancellation."
+            } else {
+                "\nTerminal recovery: this run was cancelled; status and wait will not advance it. Retrieve its result once with action=get if needed; cancellation cannot be continued."
+            }
+        }
+        _ if result_retrieved => {
+            "\nTerminal run: do not call status or wait again; its recorded result is already retrieved."
+        }
+        _ => {
+            "\nTerminal run: status and wait will not advance it. Retrieve its recorded result once with action=get."
+        }
+    };
+    Some(guidance)
 }
 
 fn append_run_failure(mut output: String, run: &codegg_core::agent_run::AgentRunRecord) -> String {
@@ -1111,6 +1176,9 @@ impl TaskTool {
             workspace_id: None,
             orchestration_owner: None,
             max_depth: 3,
+            max_wall_clock_secs: Some(
+                crate::config::schema::DEFAULT_SUBAGENT_WALL_CLOCK_TIMEOUT_SECS,
+            ),
             convergence_store: None,
             orchestration_config: Default::default(),
             writer_fence: None,
@@ -1147,6 +1215,9 @@ impl TaskTool {
             workspace_id: None,
             orchestration_owner: None,
             max_depth: 3,
+            max_wall_clock_secs: Some(
+                crate::config::schema::DEFAULT_SUBAGENT_WALL_CLOCK_TIMEOUT_SECS,
+            ),
             convergence_store: None,
             orchestration_config: Default::default(),
             writer_fence: None,
@@ -1239,6 +1310,15 @@ impl TaskTool {
 
     pub fn with_max_depth(mut self, max_depth: u32) -> Self {
         self.max_depth = max_depth.max(1);
+        self
+    }
+
+    pub fn with_max_wall_clock_secs(mut self, max_wall_clock_secs: u64) -> Self {
+        self.max_wall_clock_secs = Some(if max_wall_clock_secs > 0 {
+            max_wall_clock_secs
+        } else {
+            crate::config::schema::DEFAULT_SUBAGENT_WALL_CLOCK_TIMEOUT_SECS
+        });
         self
     }
 
@@ -1475,6 +1555,7 @@ impl TaskTool {
             run.status.as_str(),
         ));
         text = append_run_failure(text, run);
+        text = append_terminal_recovery_guidance(text, run, true);
         // Parent-visible liveness: whether a live run loop is attached right
         // now. A non-terminal run with no live loop is queued or between
         // attempts, not executing. Absent without a control service.
@@ -1835,7 +1916,7 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> &str {
-        "Spawn a subagent to handle a task independently. Use spawn_many for a bounded group of independent children, then wait_group/status_group/cancel_group; prefer wait or push notifications over polling get/status. Retrieve flow: spawn returns both Task and Run ids together (durable path: `Task: <task_id> Run: <run_id>`), then poll status|wait with run_id and fetch the recorded result with get using task_id; either id is accepted as an alias in both paths (status/wait resolve task_id to their run, get resolves run_id to its task). Example: spawn -> `Task: agt-abc Run: agr-def` -> wait {\"run_id\": \"agr-def\"} -> get {\"task_id\": \"agt-abc\"} returns recorded_result (bounded to 4096 bytes, see recorded_result_* fields) plus a transcript tail of the last 20 lines / 2000 chars. On the durable delegated path (a daemon-scheduled subagent) the child's completion is pushed as a durable terminal notice at the next turn boundary, so that promise holds there; the legacy in-process path has no such push. Mutating durable runs receive a managed isolated worktree before model execution; read-only runs inherit the parent workspace. Child completion never merges into the parent automatically—inspect the structured result and request explicit typed integration. A durable child that failed with a transient failure (provider rate limit or transient upstream error, deadline or budget exhaustion, or a tool permission refusal) can be continued with action=continue: it starts one new attempt of the same run, seeded with the child's recorded transcript, under the same tools, paths, sandbox, worktree and model as the first attempt. The bound is one continuation per terminal failure, only the parent that spawned the child may continue it, and a continuation cannot widen the child's authority. Use it when the failure was transient and the work is still wanted; an authentication failure or a cancellation is never continued, and a child that has already been continued is not continued again. Waits hold no batch execution slot: never batch a wait with work — issue waits solo or they head-of-line-block their siblings. The wait timeout is clamped to 30s."
+        "Spawn a subagent to handle a task independently. Use spawn_many for a bounded group of independent children. For a nonterminal run, prefer wait or push notifications over polling. A terminal run will not advance under more status/wait calls: retrieve its result once with get; if it failed with a recognized transient class and the work is still wanted, use the single permitted continue action. Terminal status/wait/get results repeat this next-step guidance. Spawn returns both Task and Run ids (durable path: `Task: <task_id> Run: <run_id>`); status/wait use run_id and get uses task_id, with aliases accepted on the durable path. Example: spawn -> `Task: agt-abc Run: agr-def` -> wait {\"run_id\": \"agr-def\"} -> get {\"task_id\": \"agt-abc\"} returns recorded_result (bounded to 4096 bytes, see recorded_result_* fields) plus a transcript tail of the last 20 lines / 2000 chars. On the durable delegated path (a daemon-scheduled subagent) the child's completion is pushed as a durable terminal notice at the next turn boundary; the legacy in-process path has no such push. Mutating durable runs receive a managed isolated worktree before model execution; read-only runs inherit the parent workspace. Child completion never merges automatically—inspect the structured result and request explicit typed integration. A failed durable child can be continued with action=continue only for a recognized transient class (provider rate limit/transient error, deadline or budget exhaustion, or tool permission refusal); continuation starts one new attempt with the recorded transcript under the same tools, paths, sandbox, worktree and model. Only the parent that spawned it may continue it, at most once per terminal failure, and continuation cannot widen authority. Authentication failure, cancellation, and unclassified failure cannot be continued. Waits hold no batch execution slot: never batch a wait with work. Wait timeout is clamped to 30s."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -3071,6 +3152,7 @@ impl TaskTool {
                                 authority_digest,
                                 budget: AgentRunBudget {
                                     max_depth: Some(self.max_depth),
+                                    max_wall_clock_secs: self.max_wall_clock_secs,
                                     ..Default::default()
                                 },
                                 shared_scratch: shared_scratch.clone(),
@@ -3353,6 +3435,7 @@ impl TaskTool {
                     allowed_paths,
                     depth: self.depth + 1,
                     max_tool_calls: None,
+                    max_wall_clock_secs: self.max_wall_clock_secs,
                     parent_model: child_model,
                     workspace_root: self.workspace_root.clone(),
                     default_working_directory: self
@@ -4300,6 +4383,43 @@ mod tests {
         assert!(
             text.starts_with("Control queued (delivery pending:"),
             "non-cancel pending keeps the queued wording, got: {text}"
+        );
+    }
+
+    #[test]
+    fn terminal_run_guidance_stops_polling_and_bounds_continuation() {
+        use codegg_core::agent_run::AgentRunStatus;
+
+        let failed =
+            terminal_recovery_guidance(AgentRunStatus::Failed, Some("deadline_exceeded"), false)
+                .expect("terminal failure guidance");
+        assert!(failed.contains("status and wait will not advance"));
+        assert!(failed.contains("action=get"));
+        assert!(failed.contains("action=continue once"));
+
+        let retrieved =
+            terminal_recovery_guidance(AgentRunStatus::Failed, Some("provider_transient"), true)
+                .expect("retrieved terminal failure guidance");
+        assert!(retrieved.contains("do not call status or wait again"));
+        assert!(retrieved.contains("action=continue once"));
+
+        for class in ["provider_authentication", "unclassified"] {
+            let guidance = terminal_recovery_guidance(AgentRunStatus::Failed, Some(class), false)
+                .expect("non-continuable terminal guidance");
+            assert!(guidance.contains("not eligible for continuation"));
+            assert!(!guidance.contains("action=continue once"));
+        }
+
+        let cancelled =
+            terminal_recovery_guidance(AgentRunStatus::Cancelled, Some("cancelled"), false)
+                .expect("cancelled terminal guidance");
+        assert!(cancelled.contains("cancellation cannot be continued"));
+        assert!(terminal_recovery_guidance(AgentRunStatus::Running, None, false).is_none());
+
+        let task_tool = TaskTool::default();
+        let description = task_tool.description();
+        assert!(
+            description.contains("A terminal run will not advance under more status/wait calls")
         );
     }
 

@@ -54,6 +54,7 @@ durable-connection entries.
 | `crates/codegg-providers/src/auth_types.rs` | Credential, CredentialStore, AuthResolver |
 | `crates/codegg-providers/src/crypto.rs` | AES-256-GCM / Argon2id primitives |
 | `crates/codegg-providers/src/error.rs` | `ProviderError` taxonomy and retry disposition |
+| `crates/codegg-providers/src/inline.rs` | Inline provider descriptor, header bounds, descriptor registration |
 | `crates/codegg-providers/src/retry.rs` | Bounded retry chain contract (`RetryContext`, dispositions) |
 
 ## How It Works
@@ -116,6 +117,71 @@ replacement path retires the superseded row in place rather than deleting it
 connection replaced would otherwise become permanently unresolvable through the
 legacy string. With no selectable row, the first matching row is still classified
 so the caller gets an actionable state instead of a silent pick.
+
+### Inline Provider Descriptor (E001)
+
+An embedding host may supply one provider connection per session instead of a
+config file or a credential-store entry. The wire type is
+`InlineProviderDescriptor` (`crates/codegg-providers/src/inline.rs`); it is
+serialized in camelCase and is never persisted.
+
+```json
+{
+  "id": "eggui",
+  "displayName": "EggUI",
+  "baseUrl": "https://opencode.ai/inference/go/openai/v1/",
+  "protocol": "chat_completions",
+  "headers": [{"name": "x-opencode-session", "value": "…"}],
+  "credential": {"kind": "api_key", "value": "…"},
+  "models": [{"id": "deepseek-v4.1-flash", "contextWindow": 128000,
+              "maxOutputTokens": 8192, "supportsTools": true}]
+}
+```
+
+`register_inline_provider(registry, &descriptor)` validates, resolves the
+credential, builds an `OpenAiCompatibleProvider`, and registers it under
+`descriptor.id`. It consults no `Config`, no credential store, and no reviewed
+wire mapping. `protocol` is an allow-list of one (`chat_completions`), so an
+undeclared surface is refused rather than guessed; a model id outside every
+built-in list is valid on this provider. Empty `models` is legal and leaves the
+ordinary resolver in charge.
+
+Bounds and refusal reasons are typed by `InlineProviderError`, one variant per
+rejection, naming the field. `id` is 1–64 characters of `[a-z0-9._-]`;
+`displayName` ≤ 64; `baseUrl` is an absolute `http`/`https` URL with no
+userinfo, query, fragment, or traversal segment; `headers` is at most 16
+`{name, value}` pairs and 8 KiB total, with valid HTTP names, no duplicates, no
+CR/LF, and `authorization`, `proxy-authorization`, `content-type` and
+`user-agent` reserved; `models` is at most 64 entries.
+
+`OpenAiCompatibleProvider` holds a bounded declared-header list rather than the
+single session-affinity name it used to. `with_session_affinity_header` pushes
+one dynamic entry, `with_provider_headers(ProviderHeaders)` pushes static
+entries, and every declared header is written to the request verbatim. A
+duplicate or transport-owned name is refused when the provider is built, before
+any network I/O.
+
+Descriptor model metadata reaches the loop through its existing
+`ModelProfileResolver` seam: `InlineModelProfile::apply_to_config` installs the
+declared `contextWindow` and `maxOutputTokens` into the per-session `Config`
+(`model_profile` plus the compaction bounds the execution policy reads first).
+Fields that are absent are not installed, so the built-in resolver's value
+stands. There is no process-global profile.
+
+`ProviderErrorClass` (`crates/codegg-providers/src/error.rs`) is the typed
+failure taxonomy (`auth`, `model_not_found`, `model_not_supported`,
+`context_length`, `rate_limit`, `invalid_request`, `transport`, `protocol`,
+`upstream`), reachable as `ProviderError::class()`. It uses the upstream status
+and transport kind where known and leaves every existing message and code
+unchanged.
+
+**Secrets.** The credential is resolved only inside
+`register_inline_provider`; the `env` form reads its variable there and retains
+only the value in the live `Credential`. `Debug` for the descriptor and the
+credential prints `<redacted>`, and `redacted_json()` redacts both the
+credential and every header value (header values are treated as secrets by the
+host contract). Validation errors name fields and indexes, never values. A
+descriptor is never written to disk and never merged into configuration.
 
 ### Credential Resolution
 

@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "campaign_id": "s016-deepseek-long-run-corrective-loop-20261031",
+  "run_index": 16,
+  "run_kind": "long_qualification",
+  "run_status": "request_cap_exhausted_horizon_not_qualified",
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "controller_commit": "2801df4cab813da4cd37c76df77460bb34321d7c",
+  "source_binary_commit": "94fc8d41ff61e5963adf5779475fd9ee08569493",
+  "binary_architecture": "arm64",
+  "binary_sha256": "16481cc8bf0d8866db352c3aab90c35950bde37e5799be1458a43012d594fe2a",
+  "sandbox_helper_sha256": "37ee6c8cd876d1e05bbd650c7a26520753fe55534ac821a52d9089712d751d43",
+  "fixture_manifest": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v4/cases.jsonl",
+  "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "qualification_fixture_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d3f187c2f6f4fc178",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "started_at_utc": "2026-10-31T22:54:24Z",
+  "terminal_observed_at_utc": "2026-10-31T23:00:50Z",
+  "elapsed_seconds": 384.104,
+  "case_duration_ms": 380859,
+  "active_work_span_ms": 377119,
+  "provider_requests": 60,
+  "request_cap": 60,
+  "request_cap_exhausted": true,
+  "usd_cost": 0.043495,
+  "provider_stream_lifecycle": {
+    "transport_requests_started": 60,
+    "response_headers_received": 60,
+    "body_eof": 60,
+    "decoded_event_idle_timeouts": 0,
+    "budget_refused_request_61_before_transport": true,
+    "raw_sse_retained": false
+  },
+  "task": {
+    "agent_terminal": "failed",
+    "task_outcome": "inconclusive",
+    "horizon_outcome": "not_qualified",
+    "horizon_reason": "measurement_incomplete",
+    "repair_cycles": 0,
+    "continuation_confirmed": true,
+    "exact_job_running_and_terminal": false,
+    "productive_work_during_job": false,
+    "maximum_activity_gap_ms": 75951,
+    "test_jobs": [
+      {
+        "job_id": "9682adf3-8d69-4309-a2d2-795a59400b13",
+        "status_observed": false
+      },
+      {
+        "job_id": "7c9a0e02-83eb-43e4-bb62-76f90d1c4bd4",
+        "status_observed": false
+      },
+      {
+        "job_id": "e98a6ec8-7aee-471e-ab12-77d53b78b450",
+        "status_observed": false
+      },
+      {
+        "job_id": "487e3d56-9ad1-486f-90f1-fd05de4e71c3",
+        "status_observed": false
+      },
+      {
+        "job_id": "14d53456-c84f-4300-9a84-4407f3100293",
+        "status_observed": false
+      },
+      {
+        "job_id": "ac8fd71b-15b9-4756-9196-ff50edcb2577",
+        "status_observed": false
+      },
+      {
+        "job_id": "58949a9a-e426-4e37-a115-90264a9b509a",
+        "status_observed": true,
+        "status": "failed",
+        "output_status": "failed"
+      }
+    ],
+    "test_submissions": 7,
+    "exact_job_status_polls": 1,
+    "fake_id_boundary_polls": 1,
+    "subagent_tasks": 1,
+    "patch_calls": 6,
+    "patch_failures": 5,
+    "successful_edits": 2,
+    "tool_calls": 51,
+    "terminal_failure": {
+      "category": "provider_api",
+      "kind": "HarnessTurnFailure",
+      "usage_reason": null
+    }
+  },
+  "event_observation": {
+    "tool_started_count": 51,
+    "tool_terminal_count": 51,
+    "event_gaps": 0,
+    "unpaired_tool_events": 0,
+    "dropped_causal_events": 0
+  },
+  "verification": {
+    "harness_automatically_invoked_unchanged_verifier": true,
+    "exit_code": 1,
+    "tests_run": 0,
+    "reason": "agent turn failed at request cap; verifier contents were not inspected"
+  },
+  "disk": {
+    "floor_bytes": 10737418240,
+    "floor_triggered": false,
+    "free_bytes_at_start": 33101193216,
+    "minimum_free_bytes": 33092169728,
+    "free_bytes_at_end": 34111913984
+  },
+  "interpretation": "Run 16 used prompt v4 and stopped at the 60-request ceiling after 384.104 seconds. All 60 provider streams reached EOF; request 61 was refused before transport. The agent completed the boundary probes, spawned one subagent, and wrote continuation records. It submitted seven test jobs but made only one fake-ID status call until its final test, then polled only that final exact ID and observed failed. It did not observe running or productive overlap; the horizon recorder counted zero repair cycles. Five of six apply_patch calls failed. All 51 ACP tool calls paired, with no gaps, idle timeouts, or dropped causal events. Disk stayed above 30 GiB; cost was $0.043495. The unchanged harness verifier ran automatically and reported zero tests. This is not a provider/ACP/job projection defect; the full task still loses per-test ID sequencing and spends requests on repeated patches/tests. Run 17 will verify a one-test exact-ID sequence with no additional tools. The final two long attempts will keep the simpler explicit sequencing demonstrated in run 12 and use the natural full-workspace overlap job, without changing H007 inputs or thresholds.",
+  "private_artifacts": {
+    "receipt_path": "/private/tmp/s016-attempt16.json",
+    "receipt_sha256": "f3084a66f56b1d3935194702ba72046861332d167f49fe1840d333e7607632541",
+    "diagnostic_log_path": "/private/tmp/s016-live16/case00/case/codegg_debug.log",
+    "diagnostic_log_sha256": "d169da81df69c28009560adbac1d729767932cd5c03adddc22cf892d207d557f",
+    "provider_admission_receipt_path": "/private/tmp/s016-live16/case00/artifacts/provider-request-admissions.jsonl",
+    "provider_admission_receipt_sha256": "46b357703f7a730f3539e2d67c3d6f5598c002d994656a95cafbe7db3d63c86e",
+    "causal_trace_path": "/private/tmp/s016-live16/case00/private/causal-trace.jsonl",
+    "causal_trace_sha256": "df9b213adf3513d5aaf2c2d2a1deb0a63c5a030df4fdfdeee49ba45617fc2f74",
+    "fixture_metadata_sha256": "08b51eaf8c61373ddf492a5594e84991cac9b1e2dabb03388662286e454f24bd"
+  }
+}

@@ -39,7 +39,7 @@ pub(super) const LANDLOCK_LIMITS: &[&str] = &[
 ];
 
 /// Stated when the host cannot obtain the ABI 6 scope. The scope is never
-/// reported as a guarantee the mechanism did not obtain (ADR-0061 §4).
+/// reported as a guarantee the mechanism did not obtain (ADR-0063 §4).
 #[cfg(any(target_os = "linux", test))]
 const PROCESS_SCOPE_ABSENT_LIMIT: &str =
     "Landlock ABI 6 process scope not obtained: signals and abstract AF_UNIX sockets are not isolated";
@@ -171,7 +171,7 @@ pub fn apply(spec: &SandboxLaunchSpec) -> Result<BackendEnforcement, String> {
                     "Landlock effective ABI {effective_abi:?} is below required ABI V3"
                 ));
             }
-            // ADR-0061: ABI 6 scopes are part of the default route and need
+            // ADR-0063: ABI 6 scopes are part of the default route and need
             // no namespace. They restrict signals and abstract AF_UNIX
             // sockets at no cost to the filesystem ruleset above.
             let process_scope_abi = process_scope_from(probe_process_scopes, apply_process_scopes)?;
