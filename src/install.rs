@@ -78,28 +78,34 @@ impl EggsearchResolution {
 
 /// Resolve the installation directory for a given executable path.
 ///
-/// Canonicalizes the executable, takes its parent, and canonicalizes the
-/// parent. Cargo places test executables under `target/<profile>/deps`; the
-/// parent is lifted one level so integration tests (whose library dependency
-/// is not compiled with `cfg(test)`) resolve the same `target/<profile>`
-/// directory that holds the real sibling helper built by `cargo build`.
+/// The profile directory is the ancestor that owns `deps/`, because that is
+/// the one directory every Cargo layout puts beside the binaries it runs:
+/// test executables live in `deps/`, the `codegg` binary lives directly in the
+/// profile directory, and a build script's outputs live under
+/// `build/<pkg>/<hash>/out/`. Lifting only `deps/` found the first and the
+/// second and missed the third, so a helper resolved from a build-script
+/// output was sought in `<pkg>/<hash>/out/` and never existed there.
+///
+/// An installed binary has no ancestor that owns `deps/`, so it keeps using
+/// its own directory — which is what the installation-sibling rule means.
 pub fn installation_dir_for(current: &Path) -> Result<PathBuf, String> {
     let current = current
         .canonicalize()
         .map_err(|e| format!("CodeGG executable could not be resolved: {e}"))?;
-    let install_root = current
+    let parent = current
         .parent()
         .ok_or_else(|| "CodeGG executable has no installation directory".to_string())?
         .canonicalize()
         .map_err(|e| format!("CodeGG installation directory could not be resolved: {e}"))?;
-    if install_root.file_name().is_some_and(|name| name == "deps") {
-        return install_root
-            .parent()
-            .ok_or_else(|| "Cargo test executable has no target directory".to_string())?
-            .canonicalize()
-            .map_err(|e| format!("Cargo target directory could not be resolved: {e}"));
-    }
-    Ok(install_root)
+    Ok(profile_directory(&parent).unwrap_or(parent))
+}
+
+/// The nearest ancestor that owns a `deps` directory.
+fn profile_directory(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .find(|candidate| candidate.join("deps").is_dir())
+        .map(Path::to_path_buf)
 }
 
 /// Resolve the installation directory of the running executable.
@@ -547,6 +553,31 @@ mod tests {
             EggsearchResolution::ExplicitCommand {
                 command: "my-eggsearch".to_string(),
             }
+        );
+    }
+
+    /// A build-script output sits three directories below the profile
+    /// directory. Lifting only `deps/` sent the sibling lookup to
+    /// `build/<pkg>/<hash>/out/`, where no helper exists, and every lane that
+    /// launches a contained process from such an output failed on it.
+    #[test]
+    fn build_script_output_resolves_the_profile_directory() {
+        let target = tempfile::tempdir().expect("target directory");
+        let profile = target.path().join("debug");
+        std::fs::create_dir_all(profile.join("deps")).expect("deps directory");
+        let out = profile
+            .join("build")
+            .join("codegg")
+            .join("hash")
+            .join("out");
+        std::fs::create_dir_all(&out).expect("build-script output");
+        let exe = out.join("codegg");
+        std::fs::write(&exe, b"stub").expect("executable");
+
+        assert_eq!(
+            installation_dir_for(&exe).expect("profile directory"),
+            profile.canonicalize().expect("canonical profile"),
+            "a build-script output must resolve the profile directory that owns deps/"
         );
     }
 
