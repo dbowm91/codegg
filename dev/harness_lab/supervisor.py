@@ -806,13 +806,13 @@ _JOB_FAILURE_CLASSES = (
 )
 
 
-def _job_failure_class(summary: Any) -> str:
+def _job_failure_class(summary: Any) -> str | None:
     if not isinstance(summary, str):
-        return "unclassified"
+        return None
     for marker, label in _JOB_FAILURE_CLASSES:
         if marker in summary:
             return label
-    return "unclassified"
+    return None
 
 
 def _project_job_observation(tool: str, action: Any, raw_output: Any) -> dict[str, Any] | None:
@@ -865,6 +865,11 @@ def _project_job_observation(tool: str, action: Any, raw_output: Any) -> dict[st
                     r"\bjob\s+(queued|running|completed|failed|cancelled|canceled|timed_out|expired|blocked)\b",
                     raw_output, re.IGNORECASE)
             status = status_match.group(1).lower() if status_match else None
+    # The provider adapter can render a structured result as text, in which
+    # case the JSON path above never ran. The failure class is derived from
+    # whatever this observation actually carried, so it is set here for both.
+    if status == "failed" and failure_class is None:
+        failure_class = _job_failure_class(raw_output)
     allowed_statuses = {
         "queued", "running", "completed", "failed", "cancelled", "canceled",
         "timed_out", "expired", "blocked",

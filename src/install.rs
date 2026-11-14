@@ -111,7 +111,11 @@ fn profile_directory(start: &Path) -> Option<PathBuf> {
 /// Resolve the installation directory of the running executable.
 pub fn installation_dir() -> Result<PathBuf, String> {
     let current = std::env::current_exe().map_err(|e| format!("current executable: {e}"))?;
+    // Name the running executable. The sibling refusal already names the path
+    // it tried; without this the reader cannot tell whether that path was
+    // derived from the wrong executable or was simply absent.
     installation_dir_for(&current)
+        .map_err(|e| format!("{e} (running executable: {})", current.display()))
 }
 
 /// Strict sibling validation shared by the sandbox helper and the managed
