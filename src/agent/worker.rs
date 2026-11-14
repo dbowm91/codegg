@@ -1565,6 +1565,7 @@ async fn run_subagent_task_with_cancel(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_agent_task(
     request: &SubAgentRequest,
     usage_session_id: &str,

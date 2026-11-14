@@ -149,8 +149,10 @@ mod tests {
         // it with the controlled scheduler used by this lifecycle test.
         daemon.shutdown_jobs().await;
 
-        let mut config = crate::scheduler::config::ResolvedSchedulerConfig::default();
-        config.enabled = true;
+        let config = crate::scheduler::config::ResolvedSchedulerConfig {
+            enabled: true,
+            ..Default::default()
+        };
         let scheduler = crate::scheduler::JobScheduler::new(
             daemon.deps.job_store.clone(),
             daemon.workspace_services.clone(),

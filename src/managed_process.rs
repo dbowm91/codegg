@@ -2183,7 +2183,7 @@ fn split_helper_status(bytes: &[u8]) -> Result<(Option<u32>, &[u8]), String> {
     Ok((process_scope_abi, rest))
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(all(unix, any(target_os = "linux", test)))]
 async fn read_bubblewrap_status_with_ack(
     mut reader: tokio::fs::File,
     ack_writer: OwnedFd,
@@ -2255,7 +2255,7 @@ async fn read_bubblewrap_status_with_ack(
     Ok(bytes)
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(all(unix, any(target_os = "linux", test)))]
 async fn await_bubblewrap_ready(
     mut reader: tokio::fs::File,
     ack_writer: OwnedFd,
