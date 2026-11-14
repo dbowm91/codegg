@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement Resumption S044 — Terminal Review Recovery and Submit Error Attribution
 
-Status: **active; failed-submit error-class projection corrected; attempt 70 will verify the full safe path**
+Status: **active; failed-submit error-class projection corrected; attempt 70 did not exercise a failed test submit; H007 remains unqualified**
 
 Repository baseline: `ac584c886f03847ff6b829f8509667637e42a052` (shared dirty worktree; preserve unrelated edits)
 
@@ -92,3 +92,5 @@ An attempt55 wrapper probe was invoked with `--help`; the wrapper emitted a moni
 The active continuation-goal authorization reported 25/120 starts before attempt 55. Attempt 55 was admitted and is now preserved at 26/120 task starts, 55/200 durable campaign starts, and grant `s019-supplemental-20261111-04` at 11/40. Keep these counters distinct; reconcile each provider-admitted attempt in both scopes without rewriting historical rows. S045 owns the preflight identity mismatch found during this requalification attempt.
 
 Current handoff (2026-11-13): S019 attempt 69 is preserved as unqualified at 69/200 campaign starts, 25/40 starts in grant `s019-supplemental-20261111-04`, and 40/120 task-authorized starts. The failed-submit projection correction passes 18 `test_campaign_authorization` tests, the assertion-quality and duplication guards, Python compilation, and `git diff --check`. It changes no Rust source, paired binary, task manifest, or verifier. Attempt 70 is next after a fresh exact-head preflight; 15 starts remain in the grant. The attempt 69 safe diagnostic and monitor summary remain the source for that run's immutable outcomes; the projected error class could not be recovered retroactively.
+
+Attempt 70 ended normally after 39.98 active minutes with all public continuation and transcript-lifecycle checks true, but the unchanged verifier failed both domains. It contained no failed test submission, so the new `failed_test_submit_error_class_counts` sanitizer path remains covered offline but was not exercised live. Safe diagnostic: `plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt70-safe-diagnostic-20261113.json`. S053 owns the separate runner sequencing gap: verifier failure is currently delivered only after the ACP session closes.

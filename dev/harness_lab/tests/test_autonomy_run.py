@@ -1577,6 +1577,206 @@ class H007TimeoutDiagnosticTests(unittest.TestCase):
         self.assertEqual(exhausted["prompt_work_consumed_ms"], 3_300_000)
         self.assertEqual(exhausted["prompt_work_remaining_ms"], 0)
 
+    def test_verifier_feedback_filters_domains_and_requires_all_runway(self) -> None:
+        failed = {
+            "exit_code": 1,
+            "diagnostic": {
+                "state": "assertion_failures",
+                "failure_domain_counts": {
+                    "continuation_boundary": 2,
+                    "transcript_job_lifecycle": 1,
+                    "private_test_name": 8,
+                    "unmapped": 3,
+                    "invalid_count": True,
+                },
+            },
+            "output_tail": "private assertion text",
+        }
+
+        domains, reason = autonomy_run._h007_verifier_feedback_decision(
+            verification=failed,
+            terminal="completed",
+            stop_reason="end_turn",
+            continuation_complete=True,
+            feedback_followup_count=0,
+            autonomous_followup_count=4,
+            remaining_wallclock_seconds=900.0,
+            remaining_provider_requests=10,
+            remaining_tool_calls=20,
+        )
+
+        self.assertEqual(domains, {
+            "continuation_boundary": 2,
+            "transcript_job_lifecycle": 1,
+        })
+        self.assertEqual(reason, "requested")
+        prompt = autonomy_run._h007_verifier_feedback_prompt(
+            {**domains, "private_test_name": "secret"},
+            remaining_provider_requests=10,
+            remaining_tool_calls=20,
+            remaining_work_seconds=600.0,
+        )
+        self.assertIn("continuation_boundary (2)", prompt)
+        self.assertIn("transcript_job_lifecycle (1)", prompt)
+        self.assertNotIn("private_test_name", prompt)
+        self.assertNotIn("secret", prompt)
+        self.assertNotIn("private assertion text", prompt)
+
+        refused_inputs = (
+            {"terminal": "failed"},
+            {"stop_reason": "cancelled"},
+            {"continuation_complete": False},
+            {"feedback_followup_count": 1},
+            {"remaining_wallclock_seconds": 359.9},
+            {"remaining_provider_requests": 0},
+            {"remaining_provider_requests": None},
+            {"remaining_tool_calls": 0},
+        )
+        defaults = {
+            "terminal": "completed",
+            "stop_reason": "end_turn",
+            "continuation_complete": True,
+            "feedback_followup_count": 0,
+            "remaining_wallclock_seconds": 900.0,
+            "remaining_provider_requests": 10,
+            "remaining_tool_calls": 20,
+        }
+        for override in refused_inputs:
+            with self.subTest(override=override):
+                self.assertEqual(
+                    autonomy_run._h007_verifier_feedback_decision(
+                        verification=failed,
+                        autonomous_followup_count=4,
+                        **(defaults | override),
+                    )[0],
+                    {},
+                )
+
+    def test_verifier_feedback_sequence_uses_final_verifier_and_stops_after_one(self) -> None:
+        failed = {
+            "exit_code": 1,
+            "diagnostic": {
+                "state": "test_errors",
+                "failure_domain_counts": {"transcript_job_lifecycle": 1},
+            },
+        }
+        first_decision, first_reason = autonomy_run._h007_verifier_feedback_decision(
+            verification=failed, terminal="completed", stop_reason="end_turn",
+            continuation_complete=True, feedback_followup_count=0,
+            autonomous_followup_count=0, remaining_wallclock_seconds=900.0,
+            remaining_provider_requests=5, remaining_tool_calls=40,
+        )
+        self.assertEqual(first_decision, {"transcript_job_lifecycle": 1})
+        self.assertEqual(first_reason, "requested")
+        self.assertFalse(autonomy_run._h007_can_reuse_verification(
+            failed,
+            verified_transcript_sha256="a" * 64,
+            final_transcript_sha256="a" * 64,
+            feedback_followup_count_at_verification=0,
+            feedback_followup_count=1,
+        ))
+
+        final_pass = {"exit_code": 0, "diagnostic": {"state": "passed"}}
+        second_decision, second_reason = autonomy_run._h007_verifier_feedback_decision(
+            verification=final_pass, terminal="completed", stop_reason="end_turn",
+            continuation_complete=True, feedback_followup_count=1,
+            autonomous_followup_count=1, remaining_wallclock_seconds=500.0,
+            remaining_provider_requests=4, remaining_tool_calls=39,
+        )
+        self.assertEqual(second_decision, {})
+        self.assertEqual(second_reason, "verifier_passed")
+        self.assertTrue(final_pass["exit_code"] == 0)
+        self.assertTrue(autonomy_run._h007_can_reuse_verification(
+            final_pass,
+            verified_transcript_sha256="b" * 64,
+            final_transcript_sha256="b" * 64,
+            feedback_followup_count_at_verification=1,
+            feedback_followup_count=1,
+        ))
+        self.assertFalse(autonomy_run._h007_can_reuse_verification(
+            final_pass,
+            verified_transcript_sha256="b" * 64,
+            final_transcript_sha256="c" * 64,
+            feedback_followup_count_at_verification=1,
+            feedback_followup_count=1,
+        ))
+
+        repeated_failure, repeated_reason = autonomy_run._h007_verifier_feedback_decision(
+            verification=failed, terminal="completed", stop_reason="end_turn",
+            continuation_complete=True, feedback_followup_count=1,
+            autonomous_followup_count=1, remaining_wallclock_seconds=500.0,
+            remaining_provider_requests=4, remaining_tool_calls=39,
+        )
+        self.assertEqual(repeated_failure, {})
+        self.assertEqual(repeated_reason, "followup_limit")
+        self.assertEqual(
+            autonomy_run._h007_followup_decision(
+                stop_reason="end_turn",
+                continuation_confirmed=False,
+                followup_count=1,
+                native_progress=True,
+                remaining_wallclock_seconds=500.0,
+                active_work_span_ms=autonomy_run.H007_MIN_ACTIVE_DURATION_MS,
+                minimum_active_work_span_ms=autonomy_run.H007_MIN_ACTIVE_DURATION_MS,
+                verifier_feedback_followup_count=1,
+            ),
+            "verifier_feedback_limit",
+        )
+
+    def test_verifier_feedback_rejects_nonassertion_outcomes_and_bad_counts(self) -> None:
+        for state in ("passed", "setup_error", "empty_suite", "timeout", "runner_error"):
+            self.assertEqual(
+                autonomy_run._h007_safe_verifier_failure_domains({
+                    "exit_code": 1,
+                    "diagnostic": {
+                        "state": state,
+                        "failure_domain_counts": {"continuation_boundary": 1},
+                    },
+                }),
+                {},
+            )
+        self.assertEqual(
+            autonomy_run._h007_safe_verifier_failure_domains({
+                "exit_code": None,
+                "diagnostic": {
+                    "state": "assertion_failures",
+                    "failure_domain_counts": {"continuation_boundary": 1},
+                },
+            }),
+            {},
+        )
+
+    def test_host_verifier_pause_is_excluded_only_from_h007_activity_clock(self) -> None:
+        calls = [
+            {"index": 0, "started_elapsed_ms": 90, "finished_elapsed_ms": 100},
+            {"index": 1, "started_elapsed_ms": 250_000,
+             "finished_elapsed_ms": 250_100},
+        ]
+
+        adjusted = autonomy_run._h007_activity_calls_excluding_verifier_pauses(
+            calls, [(1, 150_000)],
+        )
+
+        self.assertEqual(adjusted[0]["finished_elapsed_ms"], 100)
+        self.assertEqual(adjusted[1]["started_elapsed_ms"], 100_000)
+        self.assertEqual(adjusted[1]["finished_elapsed_ms"], 100_100)
+        self.assertEqual(autonomy_run._active_work_span_ms(adjusted), 100_000)
+        self.assertEqual(autonomy_run._maximum_activity_gap_ms(150_000, adjusted), 99_900)
+        self.assertEqual(calls[1]["started_elapsed_ms"], 250_000)
+        self.assertEqual(
+            autonomy_run._h007_safe_verifier_failure_domains({
+                "exit_code": 1,
+                "diagnostic": {
+                    "state": "assertion_failures",
+                    "failure_domain_counts": {
+                        "continuation_boundary": 0,
+                        "transcript_job_lifecycle": 101,
+                    },
+                },
+            }),
+            {},
+        )
+
     def test_prompt_progress_snapshot_is_bounded_and_malformed_notes_are_unavailable(self) -> None:
         suite_root = REPO_ROOT / "dev/harness_lab/fixtures/agent_autonomy_s018_muse_continuation_v93"
         case = autonomy.load_autonomy_suite(suite_root).case("build-provenance-catalog")

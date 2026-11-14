@@ -45,6 +45,7 @@ _SAFE_RUN_FIELDS = frozenset({
     "disk_reserve_dipped_during_run",
     "dropped_events",
     "duration_ms",
+    "qualification_duration_ms",
     "duration_qualified",
     "event_gap_count",
     "event_measurement_complete",
@@ -170,6 +171,12 @@ _VERIFIER_OUTCOMES = frozenset({
     "mixed_test_failures", "timeout", "runner_error", "unclassified_failure", "not_run",
 })
 _VERIFIER_FAILURE_DOMAINS = frozenset({"continuation_boundary", "transcript_job_lifecycle"})
+_VERIFIER_FEEDBACK_DECISION_REASONS = frozenset({
+    "not_evaluated", "session_not_complete", "verifier_passed",
+    "verifier_outcome_ineligible", "no_recognized_domain", "followup_limit",
+    "wallclock_reserve", "provider_request_reserve", "native_call_reserve",
+    "disk_floor", "requested",
+})
 _PUBLIC_VERIFIER_CHECKS = {
     "continuation_boundary": frozenset({
         "document_present", "document_valid", "phase_order_matches",
@@ -330,6 +337,53 @@ def _safe_public_domain_map(value: Any, allowed_values: frozenset[str]) -> dict[
         elif isinstance(item, str) and item in allowed_values:
             result[key] = item
     return result
+
+
+def _safe_h007_verifier_feedback_diagnostic(value: Any) -> dict[str, Any]:
+    """Project bounded same-session verifier-feedback metadata."""
+    unavailable = {"state": "unavailable"}
+    if (not isinstance(value, Mapping)
+            or value.get("schema") != "h007_verifier_feedback_diagnostic_v1"
+            or value.get("raw_verifier_material_retained") is not False):
+        return unavailable
+    final_state = value.get("final_verifier_state")
+    final_exit = value.get("final_verifier_exit_class")
+    return {
+        "state": "observed",
+        "verifier_attempt_count": _safe_count(value.get("verifier_attempt_count"),
+                                               maximum=16),
+        "feedback_followup_count": _safe_count(value.get("feedback_followup_count"),
+                                                maximum=1),
+        "same_acp_session_reused": (
+            value.get("same_acp_session_reused")
+            if isinstance(value.get("same_acp_session_reused"), bool) else None
+        ),
+        "feedback_domain_counts": _safe_public_domain_map(
+            value.get("feedback_domain_counts"), frozenset()),
+        "feedback_decision_reason": (
+            value.get("feedback_decision_reason")
+            if isinstance(value.get("feedback_decision_reason"), str)
+            and value.get("feedback_decision_reason")
+            in _VERIFIER_FEEDBACK_DECISION_REASONS else "unavailable"
+        ),
+        "final_verifier_state": (
+            final_state if isinstance(final_state, str) and final_state in _VERIFIER_OUTCOMES
+            else "unavailable"
+        ),
+        "final_verifier_exit_class": (
+            final_exit if isinstance(final_exit, str)
+            and final_exit in {"success", "failure", "unknown"} else "unknown"
+        ),
+        "final_transcript_verified": (
+            value.get("final_transcript_verified")
+            if isinstance(value.get("final_transcript_verified"), bool) else None
+        ),
+        "host_verifier_pause_count": _safe_count(
+            value.get("host_verifier_pause_count"), maximum=16),
+        "host_verifier_pause_ms": _safe_count(
+            value.get("host_verifier_pause_ms"), maximum=3_600_000),
+        "raw_verifier_material_retained": False,
+    }
 
 
 def _safe_public_verifier_checks(value: Any) -> dict[str, dict[str, bool | None]]:
@@ -715,6 +769,10 @@ def _safe_h007_completion_projection(case_receipt: Mapping[str, Any] | None) -> 
         if event_measurement is not None:
             verifier_projection["event_measurement_diagnostic"] = event_measurement
 
+    verifier_feedback_projection = _safe_h007_verifier_feedback_diagnostic(
+        case_receipt.get("verifier_feedback_diagnostic")
+    )
+
     timeout_projection = _safe_timeout_diagnostic(
         case_receipt.get("turn_timeout_diagnostic")
     )
@@ -726,6 +784,7 @@ def _safe_h007_completion_projection(case_receipt: Mapping[str, Any] | None) -> 
         "task_completion": task_projection,
         "continuation": continuation_projection,
         "verifier_public_reconciliation": verifier_projection,
+        "verifier_feedback": verifier_feedback_projection,
         "timeout": timeout_projection,
         "raw_note_retained": False,
         "raw_job_ids_retained": False,
