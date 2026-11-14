@@ -99,6 +99,8 @@ impl Tool for JobTool {
         input: serde_json::Value,
         ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
+        let is_status_query =
+            input.get("action").and_then(|action| action.as_str()) == Some("status");
         let requested_status_job_id = requested_status_job_id(&input);
         let value = match self.execute_impl(input, ctx).await {
             Ok(value) => value,
@@ -114,7 +116,12 @@ impl Tool for JobTool {
             .and_then(|s| s.as_str())
             .unwrap_or("unknown")
             .to_string();
-        let success = !matches!(status.as_str(), "failed" | "timed_out" | "denied" | "error");
+        // A successful status lookup is a successful tool call even when the
+        // job itself ended unsuccessfully. Keep the job outcome in `value` and
+        // the bounded output so callers can distinguish observation from work
+        // completion. Lookup errors still take the failure path above.
+        let success = is_status_query
+            || !matches!(status.as_str(), "failed" | "timed_out" | "denied" | "error");
         // The pre-change output was a bare `job <status>` with the summary
         // only in the structured value, so background-job stdout was not
         // retrievable from the transcript. Surface the bounded terminal

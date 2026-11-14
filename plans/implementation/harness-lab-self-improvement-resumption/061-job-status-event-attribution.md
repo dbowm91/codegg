@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement Resumption S061 — Job-Status Event Attribution
 
-Status: **active**
+Status: **closed at event-attribution scope; attempt 82 completed unqualified**
 
 Repository baseline: `88d064dec604146ec657ee6cf706083bee7b6ae4`
 
@@ -22,7 +22,7 @@ Primary class: infrastructure
 
 ## 1. Objective
 
-Add bounded post-run attribution for failed H007 `job.status` calls, using run-local aliases and call order without retaining job IDs, arguments, outputs, or transcript content. Then run one unchanged H007 attempt (attempt 82) to determine whether the observed failed status calls cluster around particular jobs or sequences and whether the model can qualify the frozen task.
+Add bounded post-run attribution for failed H007 `job.status` calls, using run-local aliases and call order without retaining job IDs, arguments, outputs, or transcript content. Attempt 82 used the unchanged H007 workload to determine whether the observed failed status calls clustered around particular jobs or sequences and whether the model could qualify the frozen task.
 
 ## 2. Why this milestone is ready
 
@@ -145,8 +145,8 @@ Then run one exact-head live attempt 82 with the existing campaign preflight/wat
 ## 12. Documentation updates
 
 - Close S060 conditionally with attempt 81's evidence and counters.
-- Update `plans/closure/harness-lab-self-improvement-resumption/019-status.md` and roadmap counters with attempt 81.
-- Record attempt 82 evidence and decide the next owner; keep H007 unqualified unless every gate passes.
+- Update `plans/closure/harness-lab-self-improvement-resumption/019-status.md` and roadmap counters with attempt 82.
+- Record the evidence-backed next owner; keep H007 unqualified unless every gate passes.
 
 ## 13. Acceptance criteria
 
@@ -166,4 +166,4 @@ Record S061 source commit, focused check results, task/verifier fingerprints, at
 
 ## 16. Handoff notes
 
-Attempt 81 is immutable failed evidence. After it, grant `s019-supplemental-20261111-04` has three starts remaining; combined campaign counters are 81/200 and current task authorization is 52/120. Attempt 82 uses one of those starts. The shell is translated x86_64 under Rosetta on an ARM64 Apple Silicon host; use the qualified ARM64 Rust toolchain and `/opt/local/bin/pkg-config`. Maintain at least 30 GiB free disk before start and the 10-GiB runtime floor. USD cost is unknown if unreported.
+Attempt 82 is immutable failed qualification evidence. It used one start from grant `s019-supplemental-20261111-04`; counters after reconciliation are 82/200 combined, 38/40 in the grant, and 53/120 task-authorized, leaving two grant starts. The shell is translated x86_64 under Rosetta on an ARM64 Apple Silicon host. The exact runtime owner is handed to S062 based on the observed status-query semantics; see `plans/closure/harness-lab-self-improvement-resumption/061-status.md`. USD cost is unknown if unreported.
