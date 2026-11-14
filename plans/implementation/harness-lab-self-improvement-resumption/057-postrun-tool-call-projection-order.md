@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement Resumption S057 — Post-Run Tool-Call Projection Order
 
-Status: **active**
+Status: **closed at post-run projection correction scope; attempt 76 unqualified**
 
 Repository baseline: `e3fce7b99f13380d9e36fafc49c844ccc646be69`
 
@@ -28,9 +28,11 @@ Ensure the autonomy runner collects post-run ACP tool calls before using them to
 
 Attempt 75's exact-head safe context reported `NameError` at `dev.harness_lab.autonomy_run:run_case` line 3729 and the outer `run_suite` call at line 4236. At the pinned source head, `qualification_tool_calls` reads local `tool_calls` before its later assignment at line 3746. This is a reproducible CodeGG ordering defect; the bounded exception-origin projection added by S056 supplied enough evidence to distinguish it from agent behavior.
 
-## 3. Current implementation evidence
+## 3. Implementation and live evidence
 
-`run_case` drains the ACP stream and cleans up its watchers, then computes `qualification_tool_calls` before assigning `tool_calls = _observed_tool_calls(client)`. All case paths reaching this block can raise `NameError`, interrupting receipt/verifier processing. The pause-adjustment helper itself is present and has an independent behavior test; the defect is the collection/use ordering.
+At baseline `e3fce7b99`, `run_case` drained the ACP stream and cleaned up its watchers, then computed `qualification_tool_calls` before assigning `tool_calls = _observed_tool_calls(client)`. Attempt 75 exposed the resulting `NameError`, interrupting receipt/verifier processing before safe task/verifier projections existed. The pause-adjustment helper itself was present; the defect was the collection/use ordering.
+
+Commit `a8c6e93a25` collects the raw projection exactly once through `_postrun_tool_call_projection` before H007 pause adjustment. The 85-test autonomy-run module passes. Exact-head attempt 76 produced a safe completion/verifier projection without a runner exception, confirming the corrected post-run path. The task itself remained unqualified: the agent timed out after 54.84 minutes active, only one of two repair pairs qualified, and the public continuation document was invalid. Closure: `plans/closure/harness-lab-self-improvement-resumption/057-status.md`.
 
 ## 4. Invariants that must not regress
 
@@ -142,4 +144,4 @@ Record source head, binary hashes, focused checks, attempt 75/76 safe evidence h
 
 ## 16. Handoff notes
 
-After attempt 75, the current grant has 9 starts remaining and task authorization has 74 remaining. Use only `opencode_go/muse-spark-1.3-contributor`; unreported USD remains `unknown`. The product Rust sources are unchanged since the ARM64 pair was built at `e94435fb1ad82c92e6bebd1bd2adcfee178f0e4b`; verify their unchanged status before reuse.
+After attempt 76, the current grant has 8 starts remaining and task authorization has 73 remaining. Use only `opencode_go/muse-spark-1.3-contributor`; unreported USD remains `unknown`. Attempt 76 confirms the CodeGG post-run ordering correction but does not qualify H007. It showed no event gaps or unpaired tool calls; its task-level repair and continuation requirements were incomplete. The single safe `execution_backend_unavailable` submit class does not prove a daemon or scheduler defect. Preserve the unchanged task, verifier, route, and caps in the next authorized run.
