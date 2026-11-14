@@ -6429,7 +6429,7 @@ mod tests {
                 .expect("test.command remains declared");
             assert_eq!(
                 entry.get("description").and_then(|d| d.as_str()),
-                Some("Custom test command (required when scope is custom, ignored otherwise). Must pass test command safety checks. Example: {\"scope\":\"custom\",\"command\":\"cargo test -p mycrate\"}."),
+                Some("Custom supervised test or quality command (required when scope is custom, ignored otherwise). Must pass command safety checks. Allowed prefixes include cargo test, cargo clippy, cargo nextest, pytest, go test, and make check. Example: {\"scope\":\"custom\",\"command\":\"cargo test -p mycrate\"}."),
                 "unexpected post-M003 test.command description"
             );
             entry.insert(
