@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement Resumption S059 — Typed Tool Execution and Verifier Setup Attribution
 
-Status: **active**
+Status: **implemented**
 
 Repository baseline: `22c1d481ec8cefe8a29b275f3ce232dbb059c185`
 
@@ -171,3 +171,8 @@ Record the implementation commit, exact tests and guards, execution/backend term
 ## 16. Handoff notes
 
 S058 committed as `22c1d481ec8cefe8a29b275f3ce232dbb059c185`. Attempt 79 used that exact ARM64 pair, admitted 427 requests in 54.98 minutes, and remained unqualified: the agent timed out after completing seven implementation stages, both repair pairs, and review, but neither required final test job completed and the independent verifier reported `setup_error`. No verifier setup reason survived the safe campaign projection. Five starts remain in grant `s019-supplemental-20261111-04`; total/task authorization counters must be read from the reconciled campaign ledger before any new preflight. Use only `opencode_go/muse-spark-1.3-contributor`; USD remains unknown if unreported.
+
+
+## Attempt 80 handoff update
+
+S059's exact ARM64 pair at `1761f8689bdaa36f29ba3b9dd2545929a1e0c9b8` passed its offline focused checks and ran attempt 80 against the unchanged v97 task and verifier. The broker error-type correction and allowlisted setup-reason projection are complete at this plan's source scope. Attempt 80 remained unqualified: the agent timed out at the prompt-work boundary, completed both final test jobs, but failed the `catalog_store` seed-before-repair ordering predicate; the independent verifier reported assertion failures in the continuation and transcript/job-lifecycle domains. No event gap, job-ID mismatch, disk stop, inactivity stop, or external wall stop occurred. S060 owns one controlled unchanged-task requalification; no production defect was established by attempt 80. Four starts remain in grant `s019-supplemental-20261111-04`; task count is 51/120 and combined count is 80/200.
