@@ -3764,6 +3764,7 @@ mod tests {
             max_tool_result_tokens: 100,
             auto: false,
             prune: false,
+            force: false,
             compaction_config: None,
             active_model: Some("deepseek-v4.1-flash"),
             provider: None,
