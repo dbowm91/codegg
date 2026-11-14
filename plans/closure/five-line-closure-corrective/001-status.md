@@ -53,7 +53,7 @@ mutation-proven. `scripts/verify.sh full` is green on the final tree:
 | 9 | Export's `Esc` has a dispatch test that fails against `close()` | **met** | §4, mutation shown |
 | 10 | `End` on a two-hunk diff leaves both bodies painted | **met, with the criterion's wording read narrowly** | §5; at the last line only the tail paints, which is what `End` means. The real defect — the offset applied per hunk — is what the tests pin |
 | 11 | The ratchets are unchanged: `[contrast] = 0`, `[advertised_keys] = 4`, `[hint_truncation] = 0` | **met** | `invariants::baseline` 13/13; the four advertised-key rows keep their reasons |
-| 12 | `scripts/verify.sh full` is green on the final tree | **met** | `FULL_RC=0`: 17,380 workspace tests passed (10 skipped) and 8,444 feature-pass tests passed (5 skipped), 0 failures, with `cargo fmt --all --check` and clippy `-D warnings` inside the run |
+| 12 | `scripts/verify.sh full` is green on the final tree | **met** | `FULL_RC=0` after the decisions landed: 17,382 workspace tests passed (11 skipped) and 8,446 feature-pass tests passed (6 skipped), 0 failures, with `cargo fmt --all --check` and clippy `-D warnings` inside the run |
 
 ## 3. Production implementation evidence
 
@@ -101,7 +101,7 @@ Local, on this tree. Nothing here is CI evidence, and the Linux items have none.
 | `cargo test --test tui_render` (whole corpus) | **1237 passed, 0 failed** — the count is unchanged, so no recorded frame moved |
 | `python3 scripts/check_comment_budget.py` | pass, with the three ceilings this pass moved recorded deliberately |
 | `scripts/verify.sh quick` | `QUICK_RC=0` |
-| `scripts/verify.sh full` | **`FULL_RC=0`** — 17,380 workspace tests passed (10 skipped), 8,444 feature-pass tests passed (5 skipped), 0 failures. `fmt` and clippy `-D warnings` are inside the run and both passed |
+| `scripts/verify.sh full` | **`FULL_RC=0`** — 17,382 workspace tests passed (11 skipped), 8,446 feature-pass tests passed (6 skipped), 0 failures. `fmt` and clippy `-D warnings` are inside the run and both passed. The two extra tests are the ones the decisions added, one of them the `#[ignore]`d Help 20×6 measurement |
 
 **Hosted, on the Linux runner — the only place these can run.** Run
 `43532152355` (`Linux sandbox grant qualification`, head `c6898a4d8`,
