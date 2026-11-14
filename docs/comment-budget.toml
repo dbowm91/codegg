@@ -13,8 +13,8 @@ max_block_lines = 50
 unlisted_max_comment_lines = 20
 
 [global]
-max_comment_lines = 139331
-max_comment_words = 1242468
+max_comment_lines = 139335
+max_comment_words = 1242518
 max_ratio = 0.1364
 
 # Per-file ceilings. A file may shrink; it may not grow past what is
@@ -919,7 +919,7 @@ max_ratio = 0.1364
 "tests/scheduler_jobs/scratch_record_less_tree.inc" = { max_comment_lines = 32, max_ratio = 0.2353 }
 "tests/scheduler_jobs/scratch_retention_sweep.inc" = { max_comment_lines = 119, max_ratio = 0.1748 }
 "tests/scheduler_jobs/scratch_usage_census.inc" = { max_comment_lines = 32, max_ratio = 0.1181 }
-"tests/security_permission/sandbox_landlock.inc" = { max_comment_lines = 58, max_ratio = 0.1328 }
+"tests/security_permission/sandbox_landlock.inc" = { max_comment_lines = 62, max_ratio = 0.1404 }
 "tests/security_permission/approval_reviewer.inc" = { max_comment_lines = 49, max_ratio = 0.0705 }
 "tests/security_permission/destructive_delete_classification.inc" = { max_comment_lines = 33, max_ratio = 0.22 }
 "tests/security_permission/host_admission_manifest.inc" = { max_comment_lines = 28, max_ratio = 0.224 }

@@ -343,6 +343,15 @@ fn production_spec(root: &Path, script: &str, arm: GrantArm) -> SandboxLaunchSpe
         read_paths.push(PathBuf::from("/proc"));
     }
     spec.read_paths = read_paths;
+    // Device nodes are writable under **every** profile, including ReadOnly:
+    // `> /dev/null` is how a shell discards output, and the product grants them
+    // separately from the write roots. A fixture that skipped this would fail
+    // every probe for a reason that has nothing to do with `/proc`.
+    spec.write_paths = policy::device_write_allowances()
+        .into_iter()
+        .filter(|path| path.exists())
+        .filter_map(|path| policy::resolve_policy_path(&path).ok())
+        .collect();
     spec
 }
 
