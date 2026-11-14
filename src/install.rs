@@ -94,11 +94,14 @@ pub fn installation_dir_for(current: &Path) -> Result<PathBuf, String> {
     Ok(profile_directory(&parent))
 }
 
-/// Map a Cargo executable path to its profile directory.
+/// The Cargo profile directory for a path that sits inside one.
 ///
-/// Build-script outputs are recognized structurally; other layouts use the
-/// nearest ancestor that owns `deps/`. A direct `deps/` parent also maps to
-/// its profile when the directory is absent.
+/// Two shapes are known and both are matched structurally, because a probe
+/// cannot see the third: a test binary can itself live in a build-script
+/// output, and no ancestor of it owns a `deps` directory.
+///
+/// - `<profile>/build/<pkg>/<hash>/out/<exe>` -- a build-script output.
+/// - `<profile>/deps/<exe>` and `<profile>/<exe>` -- the ordinary shapes.
 fn profile_directory(start: &Path) -> PathBuf {
     let components: Vec<&std::ffi::OsStr> = start.iter().collect();
     for (index, component) in components.iter().enumerate() {
@@ -112,11 +115,7 @@ fn profile_directory(start: &Path) -> PathBuf {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| start.to_path_buf());
     }
-    start
-        .ancestors()
-        .find(|candidate| candidate.join("deps").is_dir())
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| start.to_path_buf())
+    start.to_path_buf()
 }
 
 /// Resolve the installation directory of the running executable.
