@@ -78,16 +78,10 @@ impl EggsearchResolution {
 
 /// Resolve the installation directory for a given executable path.
 ///
-/// Canonicalizes the executable, takes its parent, then maps that parent to
-/// the Cargo profile directory that holds the sibling binaries. Test
-/// executables live in `deps/`, the `codegg` binary lives directly in the
-/// profile directory, and a build-script output lives under
-/// `build/<pkg>/<hash>/out/`. Lifting only `deps/` found the first two and
-/// missed the third, so a helper resolved from a build-script output was
-/// sought in `<pkg>/<hash>/out/` and never existed there.
-///
-/// An installed binary has none of those shapes, so it keeps using its own
-/// directory — which is what the installation-sibling rule means.
+/// Cargo executables can run from `deps/`, the profile directory itself, or
+/// `build/<pkg>/<hash>/out/`. Resolve those Cargo layouts to the profile
+/// directory containing sibling binaries. Installed binaries keep using their
+/// own executable directory when no Cargo profile layout matches.
 pub fn installation_dir_for(current: &Path) -> Result<PathBuf, String> {
     let current = current
         .canonicalize()
@@ -100,14 +94,11 @@ pub fn installation_dir_for(current: &Path) -> Result<PathBuf, String> {
     Ok(profile_directory(&parent))
 }
 
-/// The Cargo profile directory for a path that sits inside one.
+/// Map a Cargo executable path to its profile directory.
 ///
-/// Two shapes are known and both are matched structurally, because a probe
-/// cannot see the third: a test binary can itself live in a build-script
-/// output, and no ancestor of it owns a `deps` directory.
-///
-/// - `<profile>/build/<pkg>/<hash>/out/<exe>` -- a build-script output.
-/// - `<profile>/deps/<exe>` and `<profile>/<exe>` -- the ordinary shapes.
+/// Build-script outputs are recognized structurally; other layouts use the
+/// nearest ancestor that owns `deps/`. A direct `deps/` parent also maps to
+/// its profile when the directory is absent.
 fn profile_directory(start: &Path) -> PathBuf {
     let components: Vec<&std::ffi::OsStr> = start.iter().collect();
     for (index, component) in components.iter().enumerate() {
@@ -121,7 +112,11 @@ fn profile_directory(start: &Path) -> PathBuf {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| start.to_path_buf());
     }
-    start.to_path_buf()
+    start
+        .ancestors()
+        .find(|candidate| candidate.join("deps").is_dir())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| start.to_path_buf())
 }
 
 /// Resolve the installation directory of the running executable.
