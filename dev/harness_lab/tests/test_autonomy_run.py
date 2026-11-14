@@ -971,6 +971,17 @@ class ProviderRequestAccountingTests(unittest.TestCase):
             self.assertIsNone(autonomy_run._provider_request_admissions(
                 pathlib.Path(temp) / "missing.log"))
 
+    def test_oversized_or_non_utf8_provider_admission_source_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            source = pathlib.Path(temp) / "provider-admissions.jsonl"
+            source.write_bytes(b"{" * 9)
+            with mock.patch.object(autonomy_run,
+                                   "_MAX_PROVIDER_ADMISSION_SOURCE_BYTES", 8):
+                self.assertIsNone(autonomy_run._provider_request_admissions(source))
+
+            source.write_bytes(b"\xff\xfe")
+            self.assertIsNone(autonomy_run._provider_request_admissions(source))
+
     def test_each_lane_receives_only_the_remaining_shared_suite_cap(self) -> None:
         policy = budget.BudgetPolicy(max_provider_requests=5)
         guard = budget.SpendGuard(policy)

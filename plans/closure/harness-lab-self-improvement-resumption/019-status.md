@@ -1,10 +1,12 @@
 # S019 status — verifier and reviewer diagnostics with Muse requalification
 
-Status: **active; attempt 71 unqualified; 71/200 combined starts consumed, 129 remain; current grant 27/40 consumed, 13 remain; current task authorization 42/120 consumed, 78 remain; S044 active; S053 implementation offline-verified; H007 unqualified**
+Status: **active; attempts 71–72 unqualified; 72/200 combined starts consumed, 128 remain; current grant 28/40 consumed, 12 remain; current task authorization 43/120 consumed, 77 remain; S044 active; S053 implementation offline-verified but not live-qualified; S054 implementation offline-verified with attempt 73 pending; H007 unqualified**
 
-Attempts 53–71 are summarized in the current subsystem roadmap at §§37–47. Attempt 71 remains unqualified; its safe diagnostic and reconciled monitor summary are linked there. S053's same-session verifier-feedback correction and safe refusal-reason projection are implemented and offline-verified. The exact-head ARM64 pair was rebuilt and preflight passed; one provider request was admitted before an operator SIGINT ended the run without completion diagnostics.
+Attempts 53–72 are summarized in the current subsystem roadmap at §§37–48. Attempt 71 remains unqualified; its safe diagnostic and reconciled monitor summary are linked there. Attempt 72 used the exact-head pair and passed preflight; it admitted 66 requests but exited 1 before writing the normal receipt or safe campaign diagnostic. S053's same-session verifier-feedback correction and safe refusal-reason projection remain offline-verified but live-unqualified.
 
 The combined authorization ceiling is 200 starts after the user's latest 40-start grant. Stop on qualification or when the authorized starts are exhausted. Use only `opencode_go/muse-spark-1.3-contributor`. The temporary replacement OpenCode Go credential is configured in the protected auth file, which remains mode `0600`; the value is not recorded.
+
+S054 exception reconciliation is implemented and offline-verified on 2026-11-14: focused CLI, campaign authorization, and request-counter tests passed (112 total), as did Python compilation, both Python test-quality guards, and `git diff --check`. The request aggregate reader refuses sources larger than 16 MiB. Positive admissions are counted once after a runner exception, a verified empty receipt remains unconsumed, and missing or unavailable counts create a fail-closed identity marker. Attempt 73 remains necessary to evaluate the corrective against the unchanged H007 task; H007 remains unqualified.
 
 ## Attempt 71
 
@@ -472,3 +474,11 @@ Attempt 52 is not yet started and consumes no additional authorization. Local ve
 At 15:50 UTC, completed campaign-owned fixture `target` directories with no open file handles were removed, freeing 1,725,108,723 bytes; raw receipts, logs, manifests, safe evidence, and paired binaries were preserved. Free space measured 27.55 GiB afterward, still below the 30-GiB preflight reserve. No other worktree artifacts were touched, and attempt 52 remains unstarted.
 
 At 16:04 UTC, free space measured 28.16 GiB, still below the 30-GiB preflight reserve. Several Cargo test/build processes were active in a different worktree; they were left untouched. The ARM64 test/build and attempt 52 provider start remain gated, and no new authorization has been consumed.
+
+## Attempt 72
+
+Attempt 72 passed exact-head preflight and used the v97 task, verifier, Muse route, and ARM64 pair. It ran for 3,306.180 seconds and exited 1; the external disk and wall stops did not fire. The normal private receipt and safe campaign evidence were absent. The official provider-boundary admission counter safely returned 66 requests, below the 1,200-request cap. That aggregate was used to reconcile one consumed start; the private receipt and runner output were not inspected.
+
+Task completion, active-work span, continuation, event/lifecycle gates, verifier-feedback behavior, and final verifier outcome are unavailable. H007 remains unqualified, and the underlying exception category is unknown. Minimum free disk was 47,693,434,880 bytes; external billed USD is unknown. Safe diagnostic and monitor summary: `evidence/s019-attempt72-safe-diagnostic-20261114.json` and `evidence/s019-attempt72-monitor-summary-20261114.json`.
+
+Authorization after attempt 72: 72/200 combined starts, 28/40 starts in grant `s019-supplemental-20261111-04`, and 43/120 task-authorized starts. Remaining: 128 combined, 12 grant, 77 task-authorized. S054's safe exception-category projection, bounded request-count recovery, and fail-closed unresolved accounting passed focused offline verification. Attempt 73 follows a pushed corrective and fresh exact-head preflight.

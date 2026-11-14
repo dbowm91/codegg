@@ -87,6 +87,7 @@ H007_CONTINUATION_MAX_BYTES = 64 * 1024
 # Keep continuation bounded, but do not let a turn-count cap undercut the
 # larger run-wide provider-request, native-call, wall-clock, and disk limits.
 H007_MAX_AUTONOMOUS_FOLLOWUP_TURNS = 100
+_MAX_PROVIDER_ADMISSION_SOURCE_BYTES = 16 * 1024 * 1024
 H007_S018_REQUIRED_STAGE_ORDER = (
     "versioned_records", "durable_import", "dependency_index", "provenance_queries",
     "cli_contract", "acceptance_audit", "workspace_qualification",
@@ -2796,11 +2797,43 @@ def _h007_can_reuse_verification(
     )
 
 
-def _provider_request_admissions(stderr_path: Path) -> Optional[int]:
+def _provider_request_admissions(
+    stderr_path: Path, *, require_receipt_jsonl: bool = False,
+) -> Optional[int]:
     """Count safe provider-boundary request admissions from JSONL or CodeGG logs."""
     try:
-        contents = stderr_path.read_text(encoding="utf-8")
+        with stderr_path.open("rb") as source:
+            raw_contents = source.read(_MAX_PROVIDER_ADMISSION_SOURCE_BYTES + 1)
     except OSError:
+        return None
+    if len(raw_contents) > _MAX_PROVIDER_ADMISSION_SOURCE_BYTES:
+        return None
+    try:
+        contents = raw_contents.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if require_receipt_jsonl:
+        if not contents.strip():
+            return 0
+        try:
+            rows = [json.loads(line) for line in contents.splitlines() if line.strip()]
+        except json.JSONDecodeError:
+            return None
+        if any(not isinstance(row, dict) for row in rows):
+            return None
+        for row in rows:
+            kind = row.get("kind", "request")
+            if not isinstance(kind, str) or kind not in {"request", "allowance_observed"}:
+                return None
+        requests = [row for row in rows if row.get("kind", "request") == "request"]
+        if all(isinstance(row.get("request_number"), int)
+               and not isinstance(row.get("request_number"), bool)
+               and row["request_number"] > 0
+               and isinstance(row.get("limit"), int)
+               and not isinstance(row.get("limit"), bool)
+               and row["limit"] > 0
+               for row in requests):
+            return len(requests)
         return None
     if contents.lstrip().startswith("{"):
         try:

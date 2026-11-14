@@ -137,6 +137,36 @@ _STATUS_RANK = {
     "qualified": 3,
 }
 
+_SAFE_RUNNER_FAILURE_CLASSES = frozenset({
+    "harness_error", "budget_exhausted", "timeout", "os_error",
+    "value_error", "runtime_error", "unexpected_exception",
+})
+
+
+def _unresolved_provider_admission_markers(
+    ledger: Mapping[str, Any],
+) -> list[Mapping[str, Any]]:
+    markers = ledger.get("unresolved_provider_admissions", [])
+    if not isinstance(markers, list):
+        raise CampaignLedgerError("unresolved provider admission table is invalid")
+    attempts: set[int] = set()
+    for marker in markers:
+        if not isinstance(marker, Mapping) or set(marker) != set(_IDENTITY_FIELDS):
+            raise CampaignLedgerError("unresolved provider admission marker is invalid")
+        if (any(not isinstance(value, (str, int)) or isinstance(value, bool)
+                for value in marker.values())
+                or not isinstance(marker["attempt"], int)
+                or not isinstance(marker["start_number"], int)
+                or marker["attempt"] <= 0 or marker["start_number"] <= 0
+                or not all(marker[key] for key in (
+                    "authorization_grant_id", "model", "route", "manifest_sha256",
+                    "binary_sha256"))):
+            raise CampaignLedgerError("unresolved provider admission marker is invalid")
+        if marker["attempt"] in attempts:
+            raise CampaignLedgerError("unresolved provider admission is duplicated")
+        attempts.add(marker["attempt"])
+    return markers
+
 _PUBLIC_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _PUBLIC_PROGRESS_STATUSES = frozenset({
     "complete", "completed", "pending", "failed", "in_progress", "not_started", "other",
@@ -274,6 +304,11 @@ def preflight_campaign_run_start(
             and fixture_manifest_sha256 != expected_manifest_sha256:
         raise CampaignLedgerError(
             "campaign preflight fixture manifest digest conflicts with canonical digest")
+
+    unresolved = _unresolved_provider_admission_markers(ledger)
+    if unresolved:
+        raise CampaignLedgerError(
+            "campaign has unresolved provider admission accounting")
 
     preview = copy.deepcopy(dict(ledger))
     return reconcile_campaign_run_start(
@@ -804,6 +839,13 @@ def safe_campaign_run_fields(
         key: run[key] for key in _SAFE_RUN_FIELDS
         if key in run and (canonical_identity is None or key not in _IDENTITY_FIELDS)
     }
+    failure_class = run.get("runner_failure_class")
+    if failure_class is not None:
+        safe["runner_failure_class"] = (
+            failure_class if isinstance(failure_class, str)
+            and failure_class in _SAFE_RUNNER_FAILURE_CLASSES
+            else "unexpected_exception"
+        )
     if canonical_identity is not None:
         identity = {key: canonical_identity.get(key) for key in _IDENTITY_FIELDS}
         if any(not isinstance(value, (str, int)) or isinstance(value, bool)
@@ -918,6 +960,14 @@ def reconcile_campaign_run_start(
     max_grant_starts = grant.get("maximum_additional_starts")
     if not isinstance(max_grant_starts, int) or isinstance(max_grant_starts, bool):
         raise CampaignLedgerError("grant start ceiling is invalid")
+    unresolved = _unresolved_provider_admission_markers(ledger)
+    matching_unresolved = [item for item in unresolved
+                           if item.get("attempt") == identity["attempt"]]
+    if len(matching_unresolved) > 1:
+        raise CampaignLedgerError("unresolved provider admission is duplicated")
+    if matching_unresolved and any(
+            matching_unresolved[0].get(key) != value for key, value in identity.items()):
+        raise CampaignLedgerError("unresolved provider admission identity conflicts")
     prior_grant_rows = sum(
         bool(row.get("counted_as_start"))
         and row.get("authorization_grant_id") == grant_id
@@ -965,6 +1015,10 @@ def reconcile_campaign_run_start(
     )
     grant["starts_consumed"] = grant_consumed
     grant["starts_remaining"] = max(0, max_grant_starts - grant_consumed)
+    ledger["unresolved_provider_admissions"] = [
+        marker for marker in unresolved
+        if not isinstance(marker, Mapping) or marker.get("attempt") != identity["attempt"]
+    ]
     return {
         "attempt": identity["attempt"],
         "start_number": identity["start_number"],
@@ -976,3 +1030,29 @@ def reconcile_campaign_run_start(
         "unrepresented_counted_starts": offset,
         "status": status,
     }
+
+
+def record_unresolved_provider_admission(
+    ledger: MutableMapping[str, Any], run: Mapping[str, Any],
+) -> None:
+    """Persist an identity-only marker when provider admissions cannot be counted."""
+    identity = {key: run.get(key) for key in _IDENTITY_FIELDS}
+    if (any(not isinstance(value, (str, int)) or isinstance(value, bool)
+            for value in identity.values())
+            or not isinstance(identity["attempt"], int)
+            or not isinstance(identity["start_number"], int)
+            or identity["attempt"] <= 0 or identity["start_number"] <= 0
+            or not all(identity[key] for key in (
+                "authorization_grant_id", "model", "route", "manifest_sha256",
+                "binary_sha256"))):
+        raise CampaignLedgerError("unresolved provider admission identity is invalid")
+    markers = _unresolved_provider_admission_markers(ledger)
+    existing = [item for item in markers if item.get("attempt") == identity["attempt"]]
+    if len(existing) > 1:
+        raise CampaignLedgerError("unresolved provider admission is duplicated")
+    if existing:
+        if any(existing[0].get(key) != value for key, value in identity.items()):
+            raise CampaignLedgerError("unresolved provider admission identity conflicts")
+        return
+    markers.append(identity)
+    ledger["unresolved_provider_admissions"] = markers

@@ -54,6 +54,158 @@ class AutonomyCompareCliTests(unittest.TestCase):
 
 
 class AutonomyCampaignCliTests(unittest.TestCase):
+    def _run_h007_exception(self, root: pathlib.Path, *, admission_rows: str | None,
+                            expected_reconciliation_requests: int | None) -> tuple[
+            int, pathlib.Path, pathlib.Path, pathlib.Path, str]:
+        binary = root / "codegg"
+        binary.write_bytes(b"test binary")
+        binary.chmod(0o755)
+        manifest_sha = "e" * 64
+        budget_path = root / "budget.json"
+        budget_path.write_text(json.dumps({
+            "cost_observable": True,
+            "cost_limit_usd": 1.0,
+            "cost_enforcement": "controller_enforced",
+            "max_provider_requests": 1200,
+            "max_wallclock_seconds": 3600,
+        }), encoding="utf-8")
+        ledger_path = root / "campaign-ledger.json"
+        ledger_path.write_text(json.dumps({"runs": []}), encoding="utf-8")
+        preflight_path = root / "preflight.json"
+        preflight = {
+            "attempt": 2,
+            "start_number": 2,
+            "authorization_grant_id": "test-grant",
+            "model": "opencode_go/muse-spark-1.3-contributor",
+            "route": "opencode_go",
+            "manifest_sha256": manifest_sha,
+            "fixture_manifest_sha256": manifest_sha,
+            "binary_sha256": harness_cli._sha256(binary),
+            "provider_request_limit": 1200,
+            "wallclock_limit_seconds": 3600,
+            "start_counted": False,
+            "provider_budget_admission": "pending",
+            "current_goal_authorized_starts": 120,
+            "current_goal_starts_consumed_before": 27,
+            "current_goal_starts_remaining_before": 93,
+            "preflight_disk_reserve_bytes": 30 * 1024**3,
+            "preflight_disk_reserve_met": True,
+        }
+        preflight_path.write_text(json.dumps(preflight), encoding="utf-8")
+        evidence_path = root / "safe-campaign.json"
+        private_receipt_path = root / "private-receipt.json"
+        lane = root / "lane"
+        admissions_path = lane / "case00" / "artifacts" / "provider-request-admissions.jsonl"
+        if admission_rows is not None:
+            admissions_path.parent.mkdir(parents=True)
+            admissions_path.write_text(admission_rows, encoding="utf-8")
+        suite = SimpleNamespace(suite_sha256=manifest_sha, cases=())
+        preview = {
+            "attempt": 2,
+            "start_number": 2,
+            "combined_starts_consumed": 2,
+            "combined_starts_remaining": 198,
+            "grant_starts_consumed": 1,
+            "grant_starts_remaining": 39,
+        }
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(harness_cli.autonomy_module, "load_autonomy_suite",
+                              return_value=suite),
+            mock.patch.object(harness_cli.autonomy_run_module, "run_suite",
+                              side_effect=RuntimeError("PRIVATE runner exception text")),
+            mock.patch.object(harness_cli, "_binary", return_value=binary),
+            mock.patch.object(harness_cli.shutil, "disk_usage",
+                              return_value=SimpleNamespace(free=40 * 1024**3)),
+            mock.patch.object(harness_cli.campaign_authorization,
+                              "preflight_campaign_run_start", return_value=preview),
+            mock.patch.object(harness_cli.campaign_authorization,
+                              "reconcile_campaign_run_start", return_value=preview) as reconcile,
+            contextlib.redirect_stdout(stdout),
+        ):
+            status = harness_cli.main([
+                "autonomy", "--model", "opencode_go/muse-spark-1.3-contributor",
+                "--case", harness_cli.autonomy_run_module.H007_CASE_ID,
+                "--case-manifest", str(root / "cases.jsonl"),
+                "--binary", str(binary), "--profile", "workspace-write",
+                "--timeout", "3600", "--min-free-disk-bytes", str(10 * 1024**3),
+                "--lane-root", str(lane), "--budget", str(budget_path),
+                "--live-provider", "--output", str(private_receipt_path),
+                "--campaign-ledger", str(ledger_path),
+                "--campaign-preflight", str(preflight_path),
+                "--campaign-evidence", str(evidence_path),
+            ])
+
+        if expected_reconciliation_requests is not None:
+            reconcile.assert_called_once()
+            self.assertEqual(reconcile.call_args.kwargs["provider_requests"],
+                             expected_reconciliation_requests)
+            self.assertEqual(reconcile.call_args.kwargs["status"],
+                             "completed_unqualified")
+        else:
+            reconcile.assert_not_called()
+        return status, evidence_path, ledger_path, private_receipt_path, stdout.getvalue()
+
+    def test_h007_runner_exception_reconciles_positive_provider_admissions_safely(self) -> None:
+        admission_rows = "".join(json.dumps({
+            "kind": "request", "request_number": number, "limit": 1200,
+        }) + "\n" for number in range(1, 4))
+        with tempfile.TemporaryDirectory() as temp:
+            status, evidence_path, _, private_receipt_path, stdout = (
+                self._run_h007_exception(pathlib.Path(temp), admission_rows=admission_rows,
+                                         expected_reconciliation_requests=3))
+
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            self.assertEqual(status, 2)
+            self.assertEqual(evidence["status"], "completed_unqualified")
+            self.assertEqual(evidence["provider_requests_observed"], 3)
+            self.assertEqual(evidence["provider_request_count_source"],
+                             "provider_boundary_safe_aggregate")
+            self.assertEqual(evidence["runner_failure_class"], "runtime_error")
+            self.assertFalse(evidence["runner_failure_text_retained"])
+            self.assertFalse(evidence["safe_completion_projection_available"])
+            self.assertFalse(private_receipt_path.exists())
+            self.assertNotIn("PRIVATE runner exception text", stdout)
+            self.assertNotIn("PRIVATE runner exception text", json.dumps(evidence))
+
+    def test_h007_runner_exception_with_zero_admissions_does_not_consume_start(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            status, evidence_path, ledger_path, private_receipt_path, stdout = (
+                self._run_h007_exception(pathlib.Path(temp), admission_rows="",
+                                         expected_reconciliation_requests=None))
+
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            self.assertEqual(status, 2)
+            self.assertEqual(evidence["status"], "preflight_passed_without_provider_admission")
+            self.assertEqual(evidence["provider_requests_observed"], 0)
+            self.assertEqual(json.loads(ledger_path.read_text(encoding="utf-8")), {"runs": []})
+            self.assertFalse(private_receipt_path.exists())
+            self.assertNotIn("PRIVATE runner exception text", stdout)
+
+    def test_h007_runner_exception_with_unavailable_count_blocks_future_start(self) -> None:
+        malformed = "{\"kind\":\"request\",\"request_number\":\"bad\",\"limit\":1200}\n"
+        sources = (("missing", None), ("malformed_jsonl", malformed),
+                   ("non_json_text", "no structured provider receipt\n"),
+                   ("unknown_kind", "{\"kind\":\"unknown\"}\n"))
+        for source_name, admission_rows in sources:
+            with self.subTest(source=source_name):
+                with tempfile.TemporaryDirectory() as temp:
+                    status, evidence_path, ledger_path, private_receipt_path, stdout = (
+                        self._run_h007_exception(
+                            pathlib.Path(temp), admission_rows=admission_rows,
+                            expected_reconciliation_requests=None))
+
+                    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+                    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+                    self.assertEqual(status, 2)
+                    self.assertEqual(evidence["status"], "provider_admission_unresolved")
+                    self.assertIsNone(evidence["provider_requests_observed"])
+                    self.assertEqual(len(ledger["unresolved_provider_admissions"]), 1)
+                    self.assertEqual(
+                        ledger["unresolved_provider_admissions"][0]["attempt"], 2)
+                    self.assertFalse(private_receipt_path.exists())
+                    self.assertNotIn("PRIVATE runner exception text", stdout)
+
     def test_h007_campaign_projects_case_diagnostics_from_suite_envelope(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)

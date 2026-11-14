@@ -11,6 +11,7 @@ from dev.harness_lab.campaign_authorization import (
     _safe_event_measurement_diagnostic,
     _safe_required_success_jobs,
     preflight_campaign_run_start,
+    record_unresolved_provider_admission,
     reconcile_campaign_run_start,
     safe_campaign_run_fields,
 )
@@ -69,6 +70,53 @@ def _run(**overrides: object) -> dict:
 
 
 class CampaignAuthorizationTests(unittest.TestCase):
+    def test_unresolved_admission_blocks_preflight_until_reconciled(self) -> None:
+        ledger = _ledger()
+        pending = _run()
+        record_unresolved_provider_admission(ledger, pending)
+        record_unresolved_provider_admission(ledger, pending)
+
+        self.assertEqual(len(ledger["unresolved_provider_admissions"]), 1)
+        with self.assertRaisesRegex(CampaignLedgerError, "unresolved provider admission"):
+            preflight_campaign_run_start(
+                ledger, pending, expected_model=MODEL, expected_route="opencode_go",
+                expected_manifest_sha256="c" * 64,
+                expected_binary_sha256="d" * 64,
+                expected_provider_request_limit=1200,
+                expected_wallclock_limit_seconds=3600)
+
+        reconcile_campaign_run_start(
+            ledger, pending, provider_requests=3, status="completed_unqualified")
+        self.assertEqual(ledger["unresolved_provider_admissions"], [])
+        next_run = _run(attempt=3, start_number=4)
+        preview = preflight_campaign_run_start(
+            ledger, next_run, expected_model=MODEL, expected_route="opencode_go",
+            expected_manifest_sha256="c" * 64,
+            expected_binary_sha256="d" * 64,
+            expected_provider_request_limit=1200,
+            expected_wallclock_limit_seconds=3600)
+        self.assertEqual(preview["start_number"], 4)
+
+    def test_unresolved_admission_identity_conflict_is_refused(self) -> None:
+        ledger = _ledger()
+        record_unresolved_provider_admission(ledger, _run())
+        before = copy.deepcopy(ledger)
+
+        with self.assertRaisesRegex(CampaignLedgerError, "identity conflicts"):
+            record_unresolved_provider_admission(
+                ledger, _run(binary_sha256="f" * 64))
+
+        self.assertEqual(ledger, before)
+
+    def test_runner_failure_projection_is_fixed_and_drops_raw_values(self) -> None:
+        projected = safe_campaign_run_fields({
+            "runner_failure_class": "PRIVATE_EXCEPTION_WITH_DETAILS",
+            "exception_text": "do not retain",
+        })
+
+        self.assertEqual(projected, {"runner_failure_class": "unexpected_exception"})
+        self.assertNotIn("PRIVATE", json.dumps(projected))
+
     def test_required_success_job_projection_fails_closed_for_missing_or_bad_status(self) -> None:
         projected = _safe_required_success_jobs({
             "workspace_tests": {
