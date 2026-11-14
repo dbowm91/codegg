@@ -111,11 +111,38 @@ class CampaignAuthorizationTests(unittest.TestCase):
     def test_runner_failure_projection_is_fixed_and_drops_raw_values(self) -> None:
         projected = safe_campaign_run_fields({
             "runner_failure_class": "PRIVATE_EXCEPTION_WITH_DETAILS",
+            "runner_failure_sites": {
+                "state": "observed",
+                "sites": [
+                    "dev.harness_lab.autonomy_run:run_case",
+                    "dev.harness_lab.tests.test_cli:private_test_name",
+                    "/private/worktree/source.py:main",
+                ],
+            },
             "exception_text": "do not retain",
         })
 
-        self.assertEqual(projected, {"runner_failure_class": "unexpected_exception"})
+        self.assertEqual(projected, {
+            "runner_failure_class": "unexpected_exception",
+            "runner_failure_sites": {
+                "state": "observed",
+                "sites": ["dev.harness_lab.autonomy_run:run_case"],
+            },
+        })
         self.assertNotIn("PRIVATE", json.dumps(projected))
+
+    def test_runner_failure_sites_fail_closed_for_malformed_or_unbounded_values(self) -> None:
+        projected = safe_campaign_run_fields({
+            "runner_failure_sites": {
+                "state": "observed",
+                "sites": ["/private/path:secret", "dev.harness_lab.autonomy_run:" + "x" * 240],
+            },
+        })
+
+        self.assertEqual(projected["runner_failure_sites"], {
+            "state": "unavailable",
+            "sites": [],
+        })
 
     def test_required_success_job_projection_fails_closed_for_missing_or_bad_status(self) -> None:
         projected = _safe_required_success_jobs({

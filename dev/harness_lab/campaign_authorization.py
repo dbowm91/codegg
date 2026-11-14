@@ -141,6 +141,9 @@ _SAFE_RUNNER_FAILURE_CLASSES = frozenset({
     "harness_error", "budget_exhausted", "timeout", "os_error",
     "value_error", "runtime_error", "unexpected_exception",
 })
+_SAFE_RUNNER_FAILURE_SITE = re.compile(
+    r"dev\.harness_lab(?:\.[A-Za-z_][A-Za-z0-9_]*)+:[A-Za-z_][A-Za-z0-9_]*\Z"
+)
 
 
 def _unresolved_provider_admission_markers(
@@ -846,6 +849,21 @@ def safe_campaign_run_fields(
             and failure_class in _SAFE_RUNNER_FAILURE_CLASSES
             else "unexpected_exception"
         )
+    failure_sites = run.get("runner_failure_sites")
+    if isinstance(failure_sites, Mapping):
+        raw_sites = failure_sites.get("sites")
+        sites = []
+        if isinstance(raw_sites, list):
+            for site in raw_sites[:8]:
+                if (isinstance(site, str) and len(site) <= 192
+                        and ".tests." not in site
+                        and _SAFE_RUNNER_FAILURE_SITE.fullmatch(site)
+                        and site not in sites):
+                    sites.append(site)
+        safe["runner_failure_sites"] = {
+            "state": "observed" if sites else "unavailable",
+            "sites": sites,
+        }
     if canonical_identity is not None:
         identity = {key: canonical_identity.get(key) for key in _IDENTITY_FIELDS}
         if any(not isinstance(value, (str, int)) or isinstance(value, bool)

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import tempfile
@@ -38,6 +39,31 @@ def _safe_runner_failure_class(error: Exception) -> str:
     if isinstance(error, RuntimeError):
         return "runtime_error"
     return "unexpected_exception"
+
+
+_SAFE_RUNNER_FAILURE_SITE_MODULE = re.compile(
+    r"dev\.harness_lab(?:\.[A-Za-z_][A-Za-z0-9_]*)+\Z"
+)
+_SAFE_RUNNER_FAILURE_SITE_FUNCTION = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def _safe_runner_failure_sites(error: Exception) -> dict[str, object]:
+    """Project bounded in-repository frame names, without paths, lines, or locals."""
+    sites: list[str] = []
+    traceback = error.__traceback__
+    while traceback is not None:
+        frame = traceback.tb_frame
+        module = frame.f_globals.get("__name__")
+        function = frame.f_code.co_name
+        if (isinstance(module, str) and ".tests." not in module
+                and _SAFE_RUNNER_FAILURE_SITE_MODULE.fullmatch(module)
+                and _SAFE_RUNNER_FAILURE_SITE_FUNCTION.fullmatch(function)):
+            site = f"{module}:{function}"
+            if len(site) <= 192 and site not in sites:
+                sites.append(site)
+        traceback = traceback.tb_next
+    sites = sites[-8:]
+    return {"state": "observed" if sites else "unavailable", "sites": sites}
 
 
 def _sustained_plans(trials: int) -> list:
@@ -588,6 +614,7 @@ def main(argv: list[str] | None = None) -> int:
                         "solved": False,
                         "runner_exit_code": 1,
                         "runner_failure_class": runner_exception_class,
+                        "runner_failure_sites": _safe_runner_failure_sites(error),
                         "safe_completion_projection_available": False,
                         "runner_failure_text_retained": False,
                     }

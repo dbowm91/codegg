@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement Resumption S054 — Provider Attempt Exception Reconciliation
 
-Status: **active; exception reconciliation is implemented and offline-verified; attempt 73 remains**
+Status: **implemented; attempt 73 verified positive-count reconciliation; H007 remains unqualified and S055 owns failure-site diagnosis**
 
 Repository baseline: `b4f927cfc324049498afdbc23aee8687cf625d01`
 
@@ -62,10 +62,12 @@ Implementation: `dev/harness_lab/__main__.py` catches exceptions only for the ca
 
 Offline verification on 2026-11-14: the focused CLI, campaign authorization, and autonomy-run modules passed 112 tests; Python compilation, both test-quality guards, and `git diff --check` passed. This qualifies the accounting correction offline only. It does not qualify H007 or explain attempt 72's underlying runner exception.
 
+Attempt 73 evaluated the reconciliation path on the exact pushed head and unchanged v97 workload. After 3,302.526 seconds, the runner exited exceptionally with the fixed safe class `unexpected_exception`; the bounded provider-boundary aggregate reconciled 396 requests and exactly one start. The normal task-completion projection was unavailable, so task and verifier outcomes remain unknown and H007 remains unqualified. No external disk or wall stop fired; minimum free disk was 53,515,751,424 bytes and end free disk was 59,795,861,504 bytes. External billed USD is unknown. Safe diagnostic and monitor evidence: `plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt73-safe-diagnostic-20261114.json` and `s019-attempt73-monitor-summary-20261114.json`. The generic exception class does not identify its source function; S055 owns that remaining safe observability gap.
+
 ## 7. Stop conditions
 
 Do not launch a subsequent live attempt if request admission remains unresolved, the ledger and attempt identity disagree, the task/verifier/manifest/route/caps changed, either exact-head binary hash or architecture is wrong, or free disk is below the 30-GiB reserve.
 
 ## 8. Handoff
 
-Attempt 72's 66 provider requests consume one start: 72/200 campaign, 28/40 in grant `s019-supplemental-20261111-04`, and 43/120 task-authorized starts. Twelve starts remain in that grant and 77 in the task authorization. Attempt 73 follows this corrective and a fresh exact-head preflight. H007 remains unqualified.
+After attempt 73, 73/200 campaign starts are consumed, 29/40 starts in grant `s019-supplemental-20261111-04`, and 44/120 task-authorized starts. Eleven starts remain in that grant and 76 in the task authorization. S054 closes at its safe exception-accounting scope. Attempt 74 follows S055's offline-verified exception-site projection, a fresh exact-head preflight, and an ARM64 pair built from that exact head. H007 remains unqualified.

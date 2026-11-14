@@ -54,6 +54,24 @@ class AutonomyCompareCliTests(unittest.TestCase):
 
 
 class AutonomyCampaignCliTests(unittest.TestCase):
+    def test_safe_runner_failure_sites_include_autonomy_suite_frame(self) -> None:
+        refusal = SimpleNamespace(status="refused", as_dict=lambda: {"status": "refused"})
+        try:
+            with mock.patch.object(harness_cli.autonomy_run_module.budget, "admit_budget",
+                                   return_value=refusal):
+                harness_cli.autonomy_run_module.run_suite(
+                    pathlib.Path("unused-codegg"), object(), "opencode_go/model",
+                    budget_policy=object(), lane_root=pathlib.Path("unused-lane"),
+                    case_ids=["unused-case"])
+        except harness_cli.HarnessError as error:
+            projected = harness_cli._safe_runner_failure_sites(error)
+        else:
+            self.fail("run_suite should refuse the mocked budget admission")
+        self.assertEqual(projected["state"], "observed")
+        self.assertIn("dev.harness_lab.autonomy_run:run_suite", projected["sites"])
+        self.assertNotIn("/", json.dumps(projected))
+        self.assertNotIn("refused", json.dumps(projected))
+
     def _run_h007_exception(self, root: pathlib.Path, *, admission_rows: str | None,
                             expected_reconciliation_requests: int | None) -> tuple[
             int, pathlib.Path, pathlib.Path, pathlib.Path, str]:
@@ -164,6 +182,11 @@ class AutonomyCampaignCliTests(unittest.TestCase):
             self.assertEqual(evidence["runner_failure_class"], "runtime_error")
             self.assertFalse(evidence["runner_failure_text_retained"])
             self.assertFalse(evidence["safe_completion_projection_available"])
+            failure_sites = evidence["safe_run_fields"]["runner_failure_sites"]
+            self.assertEqual(failure_sites["state"], "observed")
+            self.assertTrue(any(site.endswith(":main") for site in failure_sites["sites"]))
+            self.assertNotIn("PRIVATE", json.dumps(failure_sites))
+            self.assertNotIn("/private", json.dumps(failure_sites))
             self.assertFalse(private_receipt_path.exists())
             self.assertNotIn("PRIVATE runner exception text", stdout)
             self.assertNotIn("PRIVATE runner exception text", json.dumps(evidence))
