@@ -953,6 +953,20 @@ def _h007_activity_calls_excluding_verifier_pauses(
     return adjusted
 
 
+def _postrun_tool_call_projection(
+    client: AcpClient,
+    case: AutonomyCase,
+    verifier_pause_points: list[tuple[int, int]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Collect raw calls before deriving the H007 qualification clock."""
+    tool_calls = _observed_tool_calls(client)
+    qualification_tool_calls = (
+        _h007_activity_calls_excluding_verifier_pauses(tool_calls, verifier_pause_points)
+        if case.case_id == H007_CASE_ID else tool_calls
+    )
+    return tool_calls, qualification_tool_calls
+
+
 def _h007_repair_cycles(tool_calls: list[dict[str, Any]], *,
                         preferred_job_pairs: tuple[tuple[str, str], ...] = ()) -> int:
     """Count one-to-one failed-test → productive-repair → completed-test pairs."""
@@ -3725,9 +3739,8 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
 
     duration_ms = int((time.monotonic() - started) * 1000)
     qualification_duration_ms = max(0, duration_ms - verifier_pause_total_ms)
-    qualification_tool_calls = (
-        _h007_activity_calls_excluding_verifier_pauses(tool_calls, verifier_pause_points)
-        if case.case_id == H007_CASE_ID else tool_calls
+    tool_calls, qualification_tool_calls = _postrun_tool_call_projection(
+        client, case, verifier_pause_points,
     )
     provider_attempt_diagnostic = (
         diagnostics.summarize_provider_attempt_log(
@@ -3743,7 +3756,6 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
             "category": "infrastructure_error",
             "cancel_error": infrastructure_watcher.cancel_error,
         }
-    tool_calls = _observed_tool_calls(client)
     if case.case_id == H007_CASE_ID:
         required_repair_ids = (
             h007_results.documented_repair_job_id_pairs(

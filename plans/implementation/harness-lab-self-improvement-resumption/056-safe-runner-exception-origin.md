@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement Resumption S056 — Safe Runner Exception Origin
 
-Status: **active**
+Status: **closed at safe exception-origin telemetry scope; attempt 75 unqualified**
 
 Repository baseline: `e94435fb1ad82c92e6bebd1bd2adcfee178f0e4b`
 
@@ -90,9 +90,11 @@ Acceptance evidence: The safe aggregate and campaign row both report 233 request
 
 Intent: Validate the source-context sanitizer before using it on the unchanged H007 workload.
 
-Required changes: Run the focused Python tests, test-quality guards, Python compilation, and diff checks. Push the corrective, build/verify the exact-head ARM64 pair, perform fresh preflight, and execute attempt 75 with the current Muse authorization.
+Required changes: Run the focused Python tests, test-quality guards, Python compilation, and diff checks. Push the corrective, verify the exact-head ARM64 pair, perform fresh preflight, and execute attempt 75 with the current Muse authorization.
 
 Acceptance evidence: Offline checks pass; exact route, task, verifier, limits, and binaries pass preflight; attempt 75 reports the safe context or a normal completion projection. H007 qualifies only when every original duration, active-work, lifecycle, continuation, repair, review, and independent-verifier gate passes.
+
+Offline verification passed 116 focused tests, both test-quality guards, Python compilation, and `git diff --check`. The exact-head attempt 75 ran 3,252.913 seconds and admitted 209 requests. Its safe context identified `NameError` at `autonomy_run.run_case` line 3729, with the outer call at `run_suite` line 4236. The attempt remained unqualified; task and verifier projections were unavailable. This satisfies S056's source-origin telemetry objective and identifies the narrow runtime-ordering correction owned by S057.
 
 ## 8. Failure, cancellation, restart, and contention semantics
 
@@ -149,4 +151,4 @@ Record exact commit/source-head and binary hashes; focused test/guard results; a
 
 ## 16. Handoff notes
 
-After attempt 74, the current grant has 10 starts remaining and task authorization has 75 remaining. Use only `opencode_go/muse-spark-1.3-contributor`; retain `unknown` USD when unreported. Preserve the exact v97 manifest and hidden verifier. Do not inspect private runner output, receipt contents, transcript, raw payloads, or verifier source/output.
+After attempt 75, the current grant has 9 starts remaining and task authorization has 74 remaining. Use only `opencode_go/muse-spark-1.3-contributor`; retain `unknown` USD when unreported. Preserve the exact v97 manifest and hidden verifier. Do not inspect private runner output, receipt contents, transcript, raw payloads, or verifier source/output.

@@ -1,0 +1,82 @@
+{
+  "attempt": 75,
+  "campaign_row_matches_admission_count": true,
+  "campaign_row_provider_requests_observed": 209,
+  "campaign_row_status": "completed_unqualified",
+  "credential_value_retained": false,
+  "elapsed_seconds": 3252.913,
+  "ended_at_utc": "2026-11-14T09:28:05+00:00",
+  "external_billed_usd": null,
+  "external_stop_reason": null,
+  "free_disk_bytes_at_end": 169186324480,
+  "free_disk_bytes_at_start": 52085145600,
+  "manifest_sha256": "e87faea3f5da93ae300f2ae21ec46e6ff1f899cff0fdf6c1b9e860c97ffe57ee",
+  "minimum_free_disk_bytes": 51126001664,
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "preflight_reserve_bytes": 32212254720,
+  "private_receipt_contents_inspected": false,
+  "private_runner_output_inspected": false,
+  "provider_admission_count_after_exit": 209,
+  "provider_admission_mode": "provider_boundary_safe_aggregate_after_exit",
+  "provider_admission_observed_live": false,
+  "raw_prompt_transcript_tool_arguments_tool_outputs_and_verifier_output_inspected": false,
+  "route": "opencode_go",
+  "runner_exit_code": 2,
+  "runner_failure_class": "unexpected_exception",
+  "runner_failure_context": {
+    "exception_type": "NameError",
+    "locations": [
+      {
+        "line": 4236,
+        "site": "dev.harness_lab.autonomy_run:run_suite"
+      },
+      {
+        "line": 3729,
+        "site": "dev.harness_lab.autonomy_run:run_case"
+      }
+    ],
+    "state": "observed"
+  },
+  "runner_failure_sites": {
+    "sites": [
+      "dev.harness_lab.autonomy_run:run_suite",
+      "dev.harness_lab.autonomy_run:run_case"
+    ],
+    "state": "observed"
+  },
+  "runtime_disk_floor_bytes": 10737418240,
+  "safe_campaign_evidence_exists": true,
+  "safe_campaign_status": "completed_unqualified",
+  "safe_completion_diagnostic": {
+    "assertion_text_retained": false,
+    "continuation": {
+      "state": "unavailable"
+    },
+    "raw_job_ids_retained": false,
+    "raw_note_retained": false,
+    "raw_output_retained": false,
+    "schema": "campaign_h007_completion_v1",
+    "state": "unavailable",
+    "task_completion": {
+      "state": "unavailable"
+    },
+    "timeout": {
+      "state": "unavailable"
+    },
+    "transcript_retained": false,
+    "verifier_feedback": {
+      "state": "unavailable"
+    },
+    "verifier_public_reconciliation": {
+      "state": "unavailable"
+    }
+  },
+  "safe_completion_projection_available": false,
+  "safe_qualification_projection": {},
+  "sample_count": 651,
+  "sample_interval_seconds": 5.0,
+  "schema": "s019_live_monitor_summary_v1",
+  "source_head": "e3fce7b99f13380d9e36fafc49c844ccc646be69",
+  "started_at_utc": "2026-11-14T08:33:52+00:00",
+  "usd_cost_when_unreported": "unknown"
+}

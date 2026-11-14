@@ -1788,6 +1788,27 @@ class H007TimeoutDiagnosticTests(unittest.TestCase):
             {},
         )
 
+    def test_postrun_projection_collects_calls_before_h007_pause_adjustment(self) -> None:
+        suite = autonomy.load_autonomy_suite(
+            REPO_ROOT / "dev/harness_lab/fixtures/agent_autonomy_s018_muse_continuation_v96")
+        case = suite.case(autonomy_run.H007_CASE_ID)
+        observed_calls = [
+            {"index": 0, "started_elapsed_ms": 900, "finished_elapsed_ms": 1_000},
+            {"index": 1, "started_elapsed_ms": 2_500, "finished_elapsed_ms": 2_800},
+        ]
+        with mock.patch.object(autonomy_run, "_observed_tool_calls",
+                               return_value=observed_calls) as collect:
+            raw_calls, qualification_calls = autonomy_run._postrun_tool_call_projection(
+                object(), case, [(1, 500)],
+            )
+
+        collect.assert_called_once()
+        self.assertIs(raw_calls, observed_calls)
+        self.assertEqual(qualification_calls[0]["finished_elapsed_ms"], 1_000)
+        self.assertEqual(qualification_calls[1]["started_elapsed_ms"], 2_000)
+        self.assertEqual(qualification_calls[1]["finished_elapsed_ms"], 2_300)
+        self.assertEqual(observed_calls[1]["started_elapsed_ms"], 2_500)
+
     def test_prompt_progress_snapshot_is_bounded_and_malformed_notes_are_unavailable(self) -> None:
         suite_root = REPO_ROOT / "dev/harness_lab/fixtures/agent_autonomy_s018_muse_continuation_v93"
         case = autonomy.load_autonomy_suite(suite_root).case("build-provenance-catalog")
