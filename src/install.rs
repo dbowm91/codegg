@@ -181,7 +181,16 @@ pub fn managed_eggsearch_path_for(current_exe: &Path) -> Result<PathBuf, String>
 /// Resolve the trusted sandbox helper sibling (strict; no PATH fallback).
 pub fn trusted_sandbox_helper_path() -> Result<PathBuf, String> {
     let dir = installation_dir()?;
-    validate_installation_sibling(&dir, &sandbox_helper_name())
+    // The derived directory can be wrong without being invalid, so the
+    // sibling check is where a bad derivation surfaces. Name the executable
+    // that produced it: the candidate path alone cannot distinguish "derived
+    // from the wrong executable" from "correctly derived and absent".
+    validate_installation_sibling(&dir, &sandbox_helper_name()).map_err(|e| {
+        let running = std::env::current_exe()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|_| "unavailable".to_string());
+        format!("{e} (running executable: {running})")
+    })
 }
 
 /// Resolve the trusted helper for an explicit executable location.
