@@ -2,7 +2,7 @@
 
 Status: **active; attempt 70 unqualified; 70/200 combined starts consumed, 130 remain; current grant 26/40 consumed, 14 remain; current task authorization 41/120 consumed, 79 remain; S044 active; S053 implementation offline-verified; H007 unqualified**
 
-Attempts 53–70 are summarized in the current subsystem roadmap at §§37–47. Attempt 70 remains unqualified; its detailed immutable safe diagnostic, preflight, and monitor summary are linked there. S053's same-session verifier-feedback correction and safe refusal-reason projection are implemented and offline-verified; attempt 71 still requires fresh exact-head preflight and live evidence.
+Attempts 53–70 are summarized in the current subsystem roadmap at §§37–47. Attempt 70 remains unqualified; its detailed immutable safe diagnostic, preflight, and monitor summary are linked there. S053's same-session verifier-feedback correction and safe refusal-reason projection are implemented and offline-verified. Rebase onto current `origin/main` changed production Rust inputs relative to attempt 70, so attempt 71 must rebuild and hash both ARM64 binaries from the final source head before fresh exact-head preflight; no start has been consumed for this rebuild.
 
 The combined authorization ceiling is 200 starts after the user's latest 40-start grant. Stop on qualification or when the authorized starts are exhausted. Use only `opencode_go/muse-spark-1.3-contributor`. The temporary replacement OpenCode Go credential is configured in the protected auth file, which remains mode `0600`; the value is not recorded.
 

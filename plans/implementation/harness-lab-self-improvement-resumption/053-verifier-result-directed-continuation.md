@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement Resumption S053 — Verifier-Result-Directed Continuation
 
-Status: **implemented and offline-verified; live attempt 71 pending exact-head preflight**
+Status: **implemented and offline-verified; attempt 71 pending fresh paired-binary build and exact-head preflight**
 
 Repository baseline: `c59e04b687a5790bc7f4516efb954840e7984db1`
 
@@ -30,7 +30,7 @@ After feedback, the unchanged verifier runs again against the final workspace an
 
 ## 4. Invariants
 
-- Keep the v97 manifest, task prompt, independent verifier, model route, paired ARM64 binaries, and verifier isolation unchanged.
+- Keep the v97 manifest, task prompt, independent verifier, model route, and verifier isolation unchanged. The paired ARM64 binaries must be built from the exact source head used by the run; rebuild both if source changes make the existing pair stale.
 - Keep the existing limits unchanged: 1,200 provider requests, 1,600 native calls, 3,300 seconds prompt work, 3,600 seconds wall time, 300-second inactivity cancellation, 100 same-session follow-ups, 10-GiB runtime disk floor, and 30-GiB preflight reserve.
 - Never expose verifier test names, assertion text, source, raw output, transcript, tool arguments/results, continuation body, or job IDs to the agent or public evidence.
 - Pass only fixed allowlisted failure-domain names and bounded counts to one same-session feedback prompt.
@@ -66,7 +66,7 @@ Keep the same `AcpClient`, session ID, lane, task inputs, and verifier command a
 3. Ensure the final transcript, tool-call projection, event measurement, repair/review/job diagnostics, cleanup, and task outcome include any follow-up activity exactly once. **Complete.**
 4. Add focused tests for safe-domain filtering, prompt privacy, verifier pass/fail sequencing, one-follow-up enforcement, final-verifier authority, and reserve/cancellation behavior. **Offline coverage complete; attempt 71 exercises the production path.**
 5. Run the focused Harness Lab tests, both test-quality guards, Python compilation, and `git diff --check`; record exact results. **Complete.**
-6. Recheck the unchanged v97 manifest/verifier hashes, paired ARM64 binaries, credential presence without reading its value, request budget, grant/task authorization balances, and free disk ≥30 GiB before the next live start. **Required in attempt 71 preflight.**
+6. Recheck the unchanged v97 manifest/verifier hashes, paired ARM64 binaries, credential presence without reading its value, request budget, grant/task authorization balances, and free disk ≥30 GiB before the next live start. Rebuild both ARM64 binaries if the source head changed. **Required in attempt 71 preflight.**
 7. Run one new Muse attempt under the unchanged controls. Preserve its safe outcome; qualify only if the final unchanged verifier and every original H007 gate pass. **Pending.**
 
 ## 8. Failure and cancellation semantics
@@ -119,4 +119,6 @@ Record the implementation commit, focused test and guard results, unchanged mani
 
 Attempt 70 is preserved as unqualified at 70/200 campaign starts, 26/40 starts in grant `s019-supplemental-20261111-04`, and 41/120 task-authorized starts. Fourteen starts remain in the grant and 79 in the task authorization. The run used 157 provider requests, 2,398.938 seconds active work, and at least 60,918,022,144 bytes free disk; external billed USD is unknown. All public gates were true, but the final verifier failed both recognized domains. Attempt 71 must follow this corrective and a fresh exact-head preflight.
 
-Offline verification on 2026-11-14: the three focused Harness Lab modules passed 191 tests; both test-quality guards, Python compilation, and `git diff --check` passed. No Rust source or paired binary changed. This qualifies the corrective implementation only, not H007.
+Offline verification on 2026-11-14: the three focused Harness Lab modules passed 191 tests; both test-quality guards, Python compilation, and `git diff --check` passed. ARM64 Rust 1.89 `cargo check -p codegg --lib --tests` passed. With `RUSTC`, `RUSTDOC`, and `--target aarch64-apple-darwin` explicitly selected, the focused compaction, provider-turn, context-runtime, and command-route groups passed (1, 9, 14, and 8 tests). A default x86_64 link attempt failed on native zlib, iconv, and LZMA symbols before running tests; the explicit ARM64 command avoided that host mismatch.
+
+The rebase onto current `origin/main` brought production Rust changes beyond the S053 Python correction, so the attempt-70 paired ARM64 binaries are stale for the rebased source head. Attempt 71 must rebuild both binaries from the final pushed head and record their new hashes; the manifest, task, verifier, route, limits, and privacy boundary remain frozen. This qualifies the corrective implementation only, not H007.
