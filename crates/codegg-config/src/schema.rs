@@ -2012,6 +2012,18 @@ pub struct SubagentConfig {
     pub wall_clock_timeout_secs: Option<u64>,
 }
 
+/// Default ceiling for one delegated child attempt when the operator does not
+/// configure a different subagent timeout.
+pub const DEFAULT_SUBAGENT_WALL_CLOCK_TIMEOUT_SECS: u64 = 600;
+
+impl SubagentConfig {
+    pub fn effective_wall_clock_timeout_secs(&self) -> u64 {
+        self.wall_clock_timeout_secs
+            .filter(|seconds| *seconds > 0)
+            .unwrap_or(DEFAULT_SUBAGENT_WALL_CLOCK_TIMEOUT_SECS)
+    }
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
 #[serde(default)]
 pub struct SkillsConfig {
@@ -4722,6 +4734,11 @@ mod tests {
         assert_eq!(subagent.max_active_descendants, Some(5));
         assert_eq!(subagent.max_total_child_tool_calls, Some(40));
         assert_eq!(subagent.wall_clock_timeout_secs, Some(90));
+        assert_eq!(subagent.effective_wall_clock_timeout_secs(), 90);
+        assert_eq!(
+            SubagentConfig::default().effective_wall_clock_timeout_secs(),
+            DEFAULT_SUBAGENT_WALL_CLOCK_TIMEOUT_SECS
+        );
     }
 
     #[test]

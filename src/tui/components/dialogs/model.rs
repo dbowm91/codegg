@@ -6,13 +6,15 @@ use std::sync::Arc;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::Frame;
 
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
 use super::super::scroll::CenteredScroll;
+use super::super::section::Section;
 use crate::tui::app::TuiMsg;
+use crate::tui::components::hint_line::HintLine;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum ModelDialogTab {
@@ -1154,9 +1156,13 @@ impl Component for ModelDialog {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        // Set visible_height based on actual popup area (subtract borders)
-        self.visible_height = (area.height as usize).saturating_sub(2);
         self.set_theme(theme);
+        // The frame is drawn first, so the body's viewport is measured from
+        // the rect the section answers rather than guessed from `area`.
+        let inner = Section::new("Models", theme)
+            .focused(true)
+            .draw(area, frame.buffer_mut());
+        self.visible_height = inner.height as usize;
         let mut lines: Vec<Line> = Vec::new();
 
         let tab_select = if self.tab == ModelDialogTab::SelectModel {
@@ -1270,7 +1276,14 @@ impl Component for ModelDialog {
 
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
-                    "↑/↓ navigate  |  Enter select  |  Backspace filter  |  Tab configure  |  Esc close",
+                    HintLine::from_items(&[
+                        ("Esc", "close"),
+                        ("↑/↓", "navigate"),
+                        ("Enter", "select"),
+                        ("Backspace", "filter"),
+                        ("Tab", "configure"),
+                    ])
+                    .render(0),
                     Style::default().fg(theme.muted),
                 )));
             }
@@ -1413,14 +1426,9 @@ impl Component for ModelDialog {
             }
         }
 
-        let block = Block::default()
-            .title(" Models ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
-            .style(Style::default().bg(theme.background));
-
-        let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
-        paragraph.render(area, frame.buffer_mut());
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .render(inner, frame.buffer_mut());
     }
 
     fn dialog_type(&self) -> DialogType {

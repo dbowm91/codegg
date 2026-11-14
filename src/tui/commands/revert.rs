@@ -91,3 +91,15 @@ pub(crate) fn apply_revert_finished(
         }
     }
 }
+
+pub(crate) fn dispatch_revert(app: &mut App, argument: &str) {
+    let path_arg = argument;
+    app.ui_state.command_mode = false;
+    if path_arg.is_empty() {
+        app.messages_state.toasts.warning("Usage: /revert <path>");
+    } else {
+        // M007-H (work package C): the daemon owns the write.
+        // The TUI no longer spawns `git` for this.
+        crate::tui::commands::revert::start_revert(app, path_arg.to_string());
+    }
+}

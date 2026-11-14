@@ -1,0 +1,89 @@
+name: Linux sandbox grant qualification
+
+# The narrowing's own lane. `tool_read_allowances` no longer grants `/proc` or
+# `/var/run` as trees, and these fixtures are the evidence for that: another
+# process's `/proc/<pid>` entry is out of reach, the command's own
+# `/proc/self/exe` still reads, the toolchain still runs, and removing the
+# narrow `/proc` entries breaks a probe. They need a real Landlock host, so
+# they cannot run anywhere else.
+#
+# The marker makes the lane a qualification rather than a best effort: a
+# runner without a Landlock backend fails instead of skipping, and a pre-6.12
+# kernel fails the ABI-6 probe rather than passing silently.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/linux-sandbox-grants-native.yml'
+      - 'src/bin/codegg-sandbox-helper.rs'
+      - 'src/security/sandbox.rs'
+      - 'src/security/sandbox/**'
+      - 'tests/security_permission/sandbox_landlock.inc'
+      - 'tests/security_permission/mod.rs'
+      # The filter registry is an input to this lane: an unregistered step is
+      # refused, and a registry entry that drifts from the command is a
+      # failure rather than a silently green subset.
+      - 'docs/security-test-filters.toml'
+  push:
+    paths:
+      - '.github/workflows/linux-sandbox-grants-native.yml'
+      - 'src/bin/codegg-sandbox-helper.rs'
+      - 'src/security/sandbox.rs'
+      - 'src/security/sandbox/**'
+      - 'tests/security_permission/sandbox_landlock.inc'
+      - 'tests/security_permission/mod.rs'
+      # The filter registry is an input to this lane: an unregistered step is
+      # refused, and a registry entry that drifts from the command is a
+      # failure rather than a silently green subset.
+      - 'docs/security-test-filters.toml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-sandbox-grants-native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  grants:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: 4
+      # A qualification lane, not a best-effort one: the skip arms fail when
+      # this is set, and the ABI-6 probe is asserted rather than attempted.
+      CODEGG_SANDBOX_QUALIFICATION: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Record the Landlock posture this lane depends on
+        run: |
+          uname -a
+          printf 'LSM list: '
+          cat /sys/kernel/security/lsm 2>/dev/null || true
+          printf 'kernel release: '
+          uname -r
+
+      # Constrained Linux integration tests resolve this managed sidecar from
+      # the target profile directory shared with their Cargo `deps` binaries.
+      - name: Build trusted sandbox helper
+        run: |
+          cargo build --locked --bin codegg-sandbox-helper
+          mkdir -p target/debug/deps
+          cp target/debug/codegg-sandbox-helper target/debug/deps/codegg-sandbox-helper
+
+      - name: Sandbox grant fixtures
+        run: |
+          # The fixtures launch the helper as a separate process and resolve it
+          # beside the profile directory, so the step states what it built
+          # rather than leaving a missing sidecar to look like a test failure.
+          ls -l target/debug/codegg-sandbox-helper target/debug/deps/codegg-sandbox-helper
+          python3 scripts/check_test_filter_execution.py --run -- \
+            cargo test --locked --test security_permission sandbox_landlock -- --nocapture --test-threads=1

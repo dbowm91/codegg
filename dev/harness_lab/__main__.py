@@ -5,14 +5,18 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
+import tempfile
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 from .supervisor import HarnessError, lane_root as supervisor_lane_root, run_exec_trial, run_smoke, run_tool_trial
 from . import autonomy as autonomy_module
 from . import autonomy_run as autonomy_run_module
 from . import budget
+from . import campaign_authorization
 from . import ledger
 from . import improve
 from . import pilot as pilot_module
@@ -231,6 +235,12 @@ def _parser() -> argparse.ArgumentParser:
                            help="where to write the receipt JSON; stdout when absent")
     autonomy.add_argument("--lane-root", type=Path, default=None,
                            help="private lane directory; a temporary lane when absent")
+    autonomy.add_argument("--campaign-ledger", type=Path, default=None,
+                          help="durable campaign authorization ledger required for H007")
+    autonomy.add_argument("--campaign-preflight", type=Path, default=None,
+                          help="canonical pre-provider campaign identity record required for H007")
+    autonomy.add_argument("--campaign-evidence", type=Path, default=None,
+                          help="safe campaign diagnostic output path required for H007")
     _add_budget_arguments(autonomy)
     autonomy_compare = commands.add_parser(
         "autonomy-compare",
@@ -425,20 +435,198 @@ def main(argv: list[str] | None = None) -> int:
             suite = autonomy_module.load_autonomy_suite(
                 args.case_manifest.parent if args.case_manifest else None)
             lane = args.lane_root or supervisor_lane_root("autonomy")
+            case_ids = list(args.case) if args.case else None
+            selected_case_ids = case_ids or [
+                case.case_id for case in suite.cases if case.support == "supported"
+            ]
+            h007_selected = autonomy_run_module.H007_CASE_ID in selected_case_ids
+            campaign_ledger_path = None
+            campaign_ledger = None
+            campaign_preflight = None
+            campaign_preview = None
+            campaign_evidence_path = None
+            if h007_selected:
+                if selected_case_ids != [autonomy_run_module.H007_CASE_ID]:
+                    raise HarnessError(
+                        "campaign-accounted H007 runs must select only the frozen H007 case")
+                if not args.campaign_ledger or not args.campaign_preflight \
+                        or not args.campaign_evidence:
+                    raise HarnessError(
+                        "H007 requires --campaign-ledger, --campaign-preflight, and "
+                        "--campaign-evidence before provider admission")
+                campaign_ledger_path = args.campaign_ledger.expanduser().resolve(strict=True)
+                preflight_path = args.campaign_preflight.expanduser().resolve(strict=True)
+                campaign_evidence_path = args.campaign_evidence.expanduser().resolve()
+                if args.output is None:
+                    raise HarnessError(
+                        "H007 campaign runs require --output for the private full receipt")
+                if args.output.expanduser().resolve().exists():
+                    raise HarnessError("H007 private receipt output already exists")
+                if not args.output.expanduser().resolve().parent.is_dir():
+                    raise HarnessError("H007 private receipt directory does not exist")
+                if campaign_evidence_path.exists():
+                    raise HarnessError("campaign evidence output already exists")
+                if not campaign_evidence_path.parent.is_dir():
+                    raise HarnessError("campaign evidence output directory does not exist")
+                output_path = args.output.expanduser().resolve()
+                if campaign_evidence_path in {
+                        campaign_ledger_path, preflight_path, output_path}:
+                    raise HarnessError("H007 evidence, preflight, ledger, and receipt paths must differ")
+                try:
+                    campaign_ledger = json.loads(
+                        campaign_ledger_path.read_text(encoding="utf-8"))
+                    campaign_preflight = json.loads(
+                        preflight_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as error:
+                    raise HarnessError("campaign ledger or preflight is unreadable") from error
+                if not isinstance(campaign_ledger, dict) \
+                        or not isinstance(campaign_preflight, dict):
+                    raise HarnessError("campaign ledger and preflight must be JSON objects")
+                if campaign_preflight.get("start_counted") is not False \
+                        or campaign_preflight.get("provider_budget_admission") != "pending":
+                    raise HarnessError("campaign preflight is already admitted or consumed")
+                binary = _binary(args.binary)
+                if policy.max_provider_requests is None \
+                        or policy.max_wallclock_seconds is None:
+                    raise HarnessError("H007 campaign admission requires request and wall-clock caps")
+                if args.timeout > policy.max_wallclock_seconds:
+                    raise HarnessError("H007 timeout exceeds the admitted wall-clock cap")
+                if args.min_free_disk_bytes != 10 * 1024**3:
+                    raise HarnessError("H007 requires the existing 10 GiB runtime disk floor")
+                if campaign_preflight.get("preflight_disk_reserve_bytes") != 30 * 1024**3 \
+                        or campaign_preflight.get("preflight_disk_reserve_met") is not True:
+                    raise HarnessError("H007 requires a passed 30 GiB preflight disk reserve")
+                goal_limit = campaign_preflight.get("current_goal_authorized_starts")
+                goal_consumed = campaign_preflight.get(
+                    "current_goal_starts_consumed_before")
+                goal_remaining = campaign_preflight.get(
+                    "current_goal_starts_remaining_before")
+                if any(not isinstance(value, int) or isinstance(value, bool)
+                       for value in (goal_limit, goal_consumed, goal_remaining)) \
+                        or goal_limit <= 0 or goal_consumed < 0 \
+                        or goal_remaining < 1 or goal_consumed + goal_remaining != goal_limit:
+                    raise HarnessError("H007 current task authorization balance is invalid or exhausted")
+                disk_probe = (lane.expanduser().resolve().parent
+                              if args.lane_root else Path(tempfile.gettempdir()))
+                if shutil.disk_usage(disk_probe).free < 30 * 1024**3:
+                    raise HarnessError("H007 current free disk is below the 30 GiB preflight reserve")
+                campaign_preview = campaign_authorization.preflight_campaign_run_start(
+                    campaign_ledger,
+                    campaign_preflight,
+                    expected_model=args.model,
+                    expected_route=args.model.split("/", 1)[0],
+                    expected_manifest_sha256=suite.suite_sha256,
+                    expected_binary_sha256=_sha256(binary),
+                    expected_provider_request_limit=policy.max_provider_requests,
+                    expected_wallclock_limit_seconds=policy.max_wallclock_seconds,
+                )
+            elif any((args.campaign_ledger, args.campaign_preflight, args.campaign_evidence)):
+                raise HarnessError("campaign accounting flags are only valid for the H007 case")
             receipt = autonomy_run_module.run_suite(
                 _binary(args.binary), suite, args.model, budget_policy=policy,
                 lane_root=lane, profile=args.profile, timeout=args.timeout,
-                case_ids=list(args.case) if args.case else None,
+                case_ids=case_ids,
                 min_free_disk_bytes=args.min_free_disk_bytes)
+            campaign_result = None
+            if h007_selected and campaign_ledger_path is not None \
+                    and campaign_preflight is not None \
+                    and campaign_evidence_path is not None:
+                h007_run = next((run for run in receipt.get("runs", [])
+                                 if run.get("case_id") == autonomy_run_module.H007_CASE_ID), {})
+                provider_requests = h007_run.get("provider_request_count")
+                if not isinstance(provider_requests, int) or isinstance(provider_requests, bool):
+                    provider_requests = receipt.get("budget", {}).get("provider_requests")
+                if not isinstance(provider_requests, int) or isinstance(provider_requests, bool):
+                    raise HarnessError("H007 provider request count is unavailable for reconciliation")
+                safe_fields = campaign_authorization.safe_campaign_run_fields(
+                    h007_run,
+                    canonical_identity=campaign_preflight,
+                    case_receipt=h007_run,
+                )
+                campaign_result = None
+                if provider_requests > 0:
+                    counted_run = dict(safe_fields)
+                    # The validated launch identity is authoritative. Per-case
+                    # manifest fields describe fixture metadata and must not
+                    # overwrite the suite digest that was admitted preflight.
+                    counted_run.update(campaign_preflight)
+                    counted_run["provider_requests_observed"] = provider_requests
+                    counted_run["preflight_evidence_path"] = str(
+                        args.campaign_preflight.expanduser().resolve())
+                    counted_run["authorization_preflight_evidence_path"] = str(
+                        args.campaign_preflight.expanduser().resolve())
+                    status = "qualified" if h007_run.get("solved") is True \
+                        else "completed_unqualified"
+                    evidence = {
+                        "schema": "s019_campaign_run_diagnostic_v1",
+                        "attempt": campaign_preflight["attempt"],
+                        "start_number": campaign_preflight["start_number"],
+                        "authorization_grant_id": campaign_preflight[
+                            "authorization_grant_id"],
+                        "model": campaign_preflight["model"],
+                        "route": campaign_preflight["route"],
+                        "manifest_sha256": campaign_preflight["manifest_sha256"],
+                        "binary_sha256": campaign_preflight["binary_sha256"],
+                        "status": status,
+                        "provider_requests_observed": provider_requests,
+                        "current_goal_authorized_starts": goal_limit,
+                        "current_goal_starts_consumed_before": goal_consumed,
+                        "current_goal_starts_consumed_after": goal_consumed + 1,
+                        "current_goal_starts_remaining_after": goal_remaining - 1,
+                        "raw_prompt_transcript_tool_arguments_tool_outputs_and_verifier_output_inspected": False,
+                        "credential_value_retained": False,
+                        "external_billed_usd": None,
+                        "billed_usd_treatment": "unknown if unreported",
+                        "preflight_evidence_path": str(
+                            args.campaign_preflight.expanduser().resolve()),
+                        "campaign_preview": campaign_preview,
+                        "safe_run_fields": safe_fields,
+                    }
+                    evidence_text = json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+                    campaign_evidence_path.write_text(evidence_text, encoding="utf-8")
+                    counted_run["safe_evidence_path"] = str(campaign_evidence_path)
+                    counted_run["safe_evidence_sha256"] = hashlib.sha256(
+                        evidence_text.encode("utf-8")).hexdigest()
+                    latest_ledger = json.loads(
+                        campaign_ledger_path.read_text(encoding="utf-8"))
+                    campaign_result = campaign_authorization.reconcile_campaign_run_start(
+                        latest_ledger, counted_run,
+                        provider_requests=provider_requests, status=status)
+                    latest_ledger["last_reconciled_at_utc"] = datetime.now(
+                        timezone.utc).isoformat(timespec="seconds")
+                    _write_json_atomic(campaign_ledger_path, latest_ledger)
+                else:
+                    evidence = {
+                        "schema": "s019_campaign_run_diagnostic_v1",
+                        "attempt": campaign_preflight.get("attempt"),
+                        "status": "preflight_passed_without_provider_admission",
+                        "provider_requests_observed": 0,
+                        "current_goal_authorized_starts": goal_limit,
+                        "current_goal_starts_consumed_before": goal_consumed,
+                        "current_goal_starts_consumed_after": goal_consumed,
+                        "current_goal_starts_remaining_after": goal_remaining,
+                        "raw_prompt_transcript_tool_arguments_tool_outputs_and_verifier_output_inspected": False,
+                        "credential_value_retained": False,
+                        "campaign_ledger_unchanged": True,
+                        "preflight_evidence_path": str(
+                            args.campaign_preflight.expanduser().resolve()),
+                    }
+                    campaign_evidence_path.write_text(
+                        json.dumps(evidence, indent=2, sort_keys=True) + "\n",
+                        encoding="utf-8")
             rendered = json.dumps(receipt, indent=2, sort_keys=True)
             if args.output is not None:
                 args.output.parent.mkdir(parents=True, exist_ok=True)
                 args.output.write_text(rendered, encoding="utf-8")
-                print(json.dumps({"ok": receipt["solved_cases"] == len(receipt["runs"]),
-                                  "output": str(args.output),
-                                  "solved_cases": receipt["solved_cases"],
-                                  "case_count": len(receipt["runs"]),
-                                  "model": receipt["model"]}, sort_keys=True))
+                summary = {"ok": receipt["solved_cases"] == len(receipt["runs"]),
+                           "output": str(args.output),
+                           "solved_cases": receipt["solved_cases"],
+                           "case_count": len(receipt["runs"]),
+                           "model": receipt["model"]}
+                if campaign_result is not None:
+                    summary["campaign_reconciliation"] = campaign_result
+                    summary["campaign_evidence"] = str(campaign_evidence_path)
+                print(json.dumps(summary, sort_keys=True))
             else:
                 print(rendered)
             return 0 if receipt["solved_cases"] == len(receipt["runs"]) else 2
@@ -816,6 +1004,29 @@ def _binary(value: Path | None) -> Path:
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise HarnessError(f"candidate binary is not executable: {binary}")
     return binary
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    """Replace one JSON ledger atomically without exposing partial writes."""
+    path = path.expanduser().resolve(strict=True)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=path.parent,
+                prefix=path.name + ".", suffix=".tmp", delete=False) as stream:
+            temporary_path = Path(stream.name)
+            stream.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
 
 
 def _recorded_runs(path: Path) -> list[dict]:

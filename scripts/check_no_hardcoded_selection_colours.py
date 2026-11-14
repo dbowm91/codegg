@@ -31,6 +31,11 @@ What is allowed:
   * `#[cfg(test)]` fixtures
   * `Color::Reset` / `Color::Indexed` / `Color::Named` elsewhere, which are not
     literal colours
+
+The test fixtures are excluded through `rust_test_scan.production_mask`, never
+through a regex over raw source: a fixture's `{` cannot decide where the module
+ends, and the blanked view keeps every line on its own line so a reported line
+number is the file's own.
 """
 
 from pathlib import Path
@@ -38,6 +43,10 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import rust_test_scan  # noqa: E402  (path is set above)
+
 DIALOGS = ROOT / "src" / "tui" / "components" / "dialogs"
 
 # `Color::White` here is the *hex→name* table the theme picker uses to label a
@@ -54,41 +63,30 @@ FORBIDDEN_FG = ("White", "Black")
 
 
 def strip_test_modules(src: str) -> str:
-    """Blank out `#[cfg(test)] mod tests { ... }` bodies."""
-    out = []
-    i = 0
-    n = len(src)
-    while i < n:
-        m = re.compile(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]").search(src, i)
-        if not m:
-            out.append(src[i:])
-            break
-        out.append(src[i : m.start()])
-        brace = src.find("{", m.end())
-        if brace == -1:
-            out.append(src[m.start() :])
-            break
-        depth = 0
-        j = brace
-        while j < n:
-            if src[j] == "{":
-                depth += 1
-            elif src[j] == "}":
-                depth -= 1
-                if depth == 0:
-                    break
-            j += 1
-        out.append(re.sub(r"[^\n]", "", src[m.start() : j + 1]))
-        i = j + 1
-    return "".join(out)
+    """The production view, with every line still on its own line.
+
+    `rust_test_scan.production_mask` blanks each `#[cfg(test)]`-governed
+    module rather than removing it, so the length and the newline count are
+    the original's and the line this guard reports is the file's own line.
+
+    The hand-rolled counter this replaced treated *any* `#[cfg(test)]` as a
+    module gate: it blanked forward to the next `{`, so a `#[cfg(test)] use`
+    erased the production item that followed it (the false-pass direction),
+    and a module whose fixture spelled a brace ended early (leaving test-only
+    source matchable). On this tree the measured impact before the fix was
+    zero: 0 production lines hidden, 0 test-module lines retained across the
+    42 files this guard scans. The class is removed before it bites, not
+    because it had already bitten here.
+    """
+    return rust_test_scan.production_mask(src)
 
 
-def scan(path: Path) -> list[str]:
-    """Report `.fg(...)` calls naming a forbidden literal colour."""
-    src = strip_test_modules(path.read_text())
-    # Tolerate a path outside the repo so the scanner can be exercised
-    # directly; in normal use every file it sees is under ROOT.
-    rel = path.relative_to(ROOT) if path.is_relative_to(ROOT) else path
+def scan_text(src: str, rel) -> list[str]:
+    """Report `.fg(...)` calls naming a forbidden literal colour.
+
+    `src` is a production view from `strip_test_modules`, so a hit lives in
+    code that ships and a line number computed here is the file's own line.
+    """
     hits = []
     # `.fg(Color::White)`, `.fg(ratatui::style::Color::White)`, `.fg(Color::White
     # .to_string())` — match the colour name directly after the call.
@@ -104,6 +102,15 @@ def scan(path: Path) -> list[str]:
             f"theme.accent_text (over theme.primary)"
         )
     return hits
+
+
+def scan(path: Path) -> list[str]:
+    """Report the forbidden foregrounds in one dialog source file."""
+    src = strip_test_modules(path.read_text())
+    # Tolerate a path outside the repo so the scanner can be exercised
+    # directly; in normal use every file it sees is under ROOT.
+    rel = path.relative_to(ROOT) if path.is_relative_to(ROOT) else path
+    return scan_text(src, rel)
 
 
 def main() -> int:

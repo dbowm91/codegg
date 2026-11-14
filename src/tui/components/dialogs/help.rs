@@ -22,19 +22,19 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
-};
+use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use ratatui::widgets::{StatefulWidget, Widget};
 use ratatui::Frame;
 use std::sync::Arc;
 
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
+use crate::tui::components::section::Section;
 use crate::tui::input::{build_help_lines, help_entries_for_mode_and_route, HelpMode, InputMode};
 
 /// Rows moved by PageUp/PageDown.
 const PAGE_STEP: isize = 10;
+use crate::tui::components::hint_line::HintLine;
 use crate::tui::theme::Theme;
 
 /// Upper bound on the live filter query. Bounded so a held-down key cannot
@@ -473,7 +473,7 @@ impl Component for HelpDialog {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        self.render_into(frame.buffer_mut(), area, theme, " Help ");
+        self.render_into(frame.buffer_mut(), area, theme);
     }
 
     fn dialog_type(&self) -> DialogType {
@@ -491,7 +491,7 @@ impl HelpDialog {
     /// row, on the filter, and on which keys are live, or docking the box
     /// would quietly change the interface. [`Component::render`] is a thin
     /// adapter over this.
-    pub fn render_into(&mut self, buf: &mut Buffer, area: Rect, theme: &Arc<Theme>, title: &str) {
+    pub fn render_into(&mut self, buf: &mut Buffer, area: Rect, theme: &Arc<Theme>) {
         let chunks = Layout::vertical([
             Constraint::Length(3), // title
             Constraint::Length(3), // filter
@@ -500,17 +500,9 @@ impl HelpDialog {
         ])
         .split(area);
 
-        let title = Paragraph::new(Line::from(Span::styled(
-            "Help",
-            Style::default().fg(theme.primary),
-        )))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title.to_string())
-                .border_style(Style::default().fg(theme.border)),
-        );
-        Widget::render(title, chunks[0], buf);
+        Section::new("Help", theme)
+            .focused(true)
+            .draw(chunks[0], buf);
 
         // ── Filter row ──────────────────────────────────────────────────
         // Always visible, so it is discoverable without pressing anything
@@ -542,16 +534,10 @@ impl HelpDialog {
         // nothing has no way to tell why.
         let mut filter_spans = filter_spans;
         filter_spans.extend(self.mode_badge(theme));
-        let filter = Paragraph::new(Line::from(filter_spans)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(if filtering {
-                    theme.primary
-                } else {
-                    theme.border
-                })),
-        );
-        Widget::render(filter, chunks[1], buf);
+        let filter_inner = Section::plain(theme)
+            .focused(filtering)
+            .draw(chunks[1], buf);
+        Widget::render(Paragraph::new(Line::from(filter_spans)), filter_inner, buf);
 
         // ── Content ─────────────────────────────────────────────────────
         let content_height = chunks[2].height as usize;
@@ -583,12 +569,8 @@ impl HelpDialog {
             .map(|line| Line::from(Span::styled(line, Style::default().fg(theme.foreground))))
             .collect();
 
-        let content = Paragraph::new(visible_lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.border)),
-        );
-        Widget::render(content, chunks[2], buf);
+        let content_inner = Section::plain(theme).draw(chunks[2], buf);
+        Widget::render(Paragraph::new(visible_lines), content_inner, buf);
 
         let mut scrollbar_state = ScrollbarState::new(total_lines).position(self.scroll);
         StatefulWidget::render(
@@ -603,28 +585,48 @@ impl HelpDialog {
         // ── Footer ──────────────────────────────────────────────────────
         // Mode-specific, because the keys that differ are exactly the ones a
         // user reaches for and then finds do nothing.
-        let footer_text = match (self.mode, filtering) {
+        // One row, one producer, and the exit leads: the footer is clipped by
+        // the box's width, and `Esc` is the key that changes the mode.
+        let mut hint = HintLine::new();
+        match (self.mode, filtering) {
             (InputMode::Insert, true) => {
-                "Esc normal  |  ↑/↓ PgUp/PgDn scroll  |  Backspace edit filter"
+                hint.push_required("Esc", "normal")
+                    .push("↑/↓", "scroll")
+                    .push("PgUp/PgDn", "page")
+                    .push("Backspace", "edit filter");
             }
-            (InputMode::Insert, false) => "type to filter  |  Esc normal  |  ↑/↓ PgUp/PgDn scroll",
+            (InputMode::Insert, false) => {
+                hint.push_required("Esc", "normal")
+                    .push("↑/↓", "scroll")
+                    .push("PgUp/PgDn", "page")
+                    .push("type", "to filter");
+            }
             (InputMode::Normal, true) => {
-                "i insert  |  ↑/↓ PgUp/PgDn scroll  |  Esc clear filter  |  q close"
+                hint.push_required("Esc", "clear filter")
+                    .push("↑/↓", "scroll")
+                    .push("PgUp/PgDn", "page")
+                    .push("i", "insert")
+                    .push("q", "close");
             }
             (InputMode::Normal, false) => {
-                "i insert  |  ↑/↓ PgUp/PgDn scroll  |  Shift+L dock  |  q close"
+                hint.push_required("Esc", "clear filter")
+                    .push("↑/↓", "scroll")
+                    .push("PgUp/PgDn", "page")
+                    .push("i", "insert")
+                    .push("Shift+L", "dock")
+                    .push("q", "close");
             }
-        };
-        let footer = Paragraph::new(Line::from(Span::styled(
-            footer_text,
-            Style::default().fg(theme.secondary),
-        )))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.border)),
+        }
+        let footer_text = hint.render(0);
+        let footer_inner = Section::plain(theme).draw(chunks[3], buf);
+        Widget::render(
+            Paragraph::new(Line::from(Span::styled(
+                footer_text,
+                Style::default().fg(theme.secondary),
+            ))),
+            footer_inner,
+            buf,
         );
-        Widget::render(footer, chunks[3], buf);
     }
 }
 
@@ -645,6 +647,62 @@ mod tests {
     /// The docked panel as it actually opens: **Normal**, ready to scroll.
     fn normal_dialog() -> HelpDialog {
         HelpDialog::new_with_mode(Arc::new(Theme::dark()), false, InputMode::Normal)
+    }
+
+    /// The box's cells, one string per row, through the **hosted** path.
+    ///
+    /// `render_in_panel` is handed the host's full rect and must not paint a
+    /// second border into it, so the host's chrome is drawn first exactly as
+    /// `render_hosted` does.
+    fn hosted_rows(dialog: &mut HelpDialog, width: u16, height: u16) -> Vec<String> {
+        use ratatui::backend::TestBackend;
+        use ratatui::widgets::{Block, Borders};
+        use ratatui::Terminal;
+
+        let theme = Arc::new(Theme::dark());
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    Block::default().borders(Borders::ALL).title(" Help "),
+                    frame.area(),
+                );
+                dialog.render_in_panel(frame, frame.area(), &theme);
+            })
+            .expect("draw");
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol().to_string())
+            .collect::<Vec<_>>()
+            .chunks(width as usize)
+            .map(|row| row.concat())
+            .collect()
+    }
+
+    /// 20×6 is the smallest docked column the box must survive.
+    ///
+    /// The host's chrome takes two of the six rows, so at least one of the four
+    /// interior rows must paint **content** — letters rather than border. This
+    /// is the hosted content-row assertion the corpus diff note's substitute
+    /// names: without it, "the panel still reads" was asserted in prose.
+    #[test]
+    #[ignore = "Help paints no content row at 20x6: render_into reserves 3+3+Min(1)+3 rows. \
+                The fix is a degradation policy for the fixed chrome; the condition is \
+                tui-modularity/002's, and this test is its measurement."]
+    fn the_minimum_hosted_size_keeps_a_readable_content_row() {
+        let mut d = dialog();
+        let rows = hosted_rows(&mut d, 20, 6);
+        assert_eq!(rows.len(), 6, "the host rect must be fully painted");
+        let interior = &rows[1..5];
+        assert!(
+            interior
+                .iter()
+                .any(|row| row.chars().filter(|c| c.is_alphabetic()).count() >= 3),
+            "no content row painted at 20x6: {rows:#?}"
+        );
     }
 
     #[test]

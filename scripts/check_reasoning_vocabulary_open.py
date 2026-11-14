@@ -38,6 +38,9 @@ import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import rust_test_scan  # noqa: E402  (path is set above)
 
 
 def protocol_core(root: Path) -> Path:
@@ -104,53 +107,22 @@ def _read(path: Path) -> str:
 
 
 def _strip_test_modules(source: str) -> str:
-    """Remove `#[cfg(test)]` module blocks, keeping the rest of the file.
+    """Blank the `#[cfg(test)]` module blocks, keeping every line in place.
 
     Truncating at the **first** `#[cfg(test)]` marker is wrong: a file may
     carry a small test module in the middle, and truncating there hides every
     line of production code that follows — which is exactly the code a guard
-    about turn-admission paths has to see. The blocks are removed by brace
-    matching instead, so the production half is the whole file minus its
-    test modules.
+    about turn-admission paths has to see.
+
+    The block boundaries are `rust_test_scan.production_mask`'s, not a
+    hand-rolled counter's: the scanner's mask blanks literals and comments,
+    so a brace spelled in a fixture string cannot end a module early, and the
+    attributes governing the `mod` are read as a run, so
+    `#[cfg(test)] #[allow(..)] mod tests` is removed too. The view keeps the
+    original's length and newline count, so a line number computed on it is
+    the file's own.
     """
-    out: list[str] = []
-    index = 0
-    length = len(source)
-    while True:
-        marker = source.find("#[cfg(test)]", index)
-        if marker < 0:
-            out.append(source[index:])
-            break
-        out.append(source[index:marker])
-        brace = source.find("{", marker)
-        if brace < 0:
-            out.append(source[marker:])
-            break
-        depth = 0
-        cursor = brace
-        in_string = False
-        escaped = False
-        while cursor < length:
-            char = source[cursor]
-            if in_string:
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == '"':
-                    in_string = False
-            elif char == '"':
-                in_string = True
-            elif char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0:
-                    cursor += 1
-                    break
-            cursor += 1
-        index = cursor
-    return "".join(out)
+    return rust_test_scan.production_mask(source)
 
 
 def _production_source(source: str) -> str:

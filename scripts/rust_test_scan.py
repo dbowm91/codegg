@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Rust-aware scanner for the repository's test suite.
 
-This module is the shared foundation of two static guards:
+This module is the shared foundation of the repository's Rust source
+guards, including:
 
 - `scripts/check_test_assertion_quality.py` (milestone M006)
 - `scripts/check_test_duplication.py` (milestone M007)
+- `scripts/check_request_ledger_writers.py`, and the catalogue guards that
+  need a file's *production view* rather than a regex over raw text
 
 It exists because a regular expression over Rust source cannot answer the
 questions those guards ask. The failure modes measured while preparing the
@@ -63,6 +66,7 @@ import sys
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -639,6 +643,182 @@ def _governing_attributes(
             attributes, mask, fn_keyword_start
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Test-gated modules: the production and test views of one file
+# ---------------------------------------------------------------------------
+
+# A module declaration that has a body. Matched against the mask, in which
+# every literal and comment is already blanked, so a `mod` spelled inside a
+# fixture string is not a declaration and a brace inside one is not the
+# module's own brace.
+_TEST_MODULE = re.compile(r"\bmod\s+[A-Za-z_][A-Za-z0-9_]*\s*\{")
+
+# The fast-path hint. It is a *superset* test: a `#[cfg(test)]` attribute
+# always contains this text, so a file that does not match it cannot contain
+# a test-gated module and need not be lexed. A match that happens to live
+# inside a literal or a comment only costs the parse; it can never make a
+# test module invisible, which is the direction that produces a false pass.
+_CFG_TEST_HINT = re.compile(r"cfg\s*\(\s*test\s*\)")
+
+_ATTRIBUTE_WHITESPACE = re.compile(r"\s+")
+
+# A predicate over an attribute's inner text: "does this attribute gate
+# the module it governs as test-only?".
+GatePredicate = Callable[[str], bool]
+
+
+def is_cfg_test_attribute(inner: str) -> bool:
+    """True when an attribute's inner text is exactly `cfg(test)`.
+
+    `inner` comes from the mask, where literals are already blanked, so
+    `#[cfg(feature = "test")]` -- a predicate that can select production
+    code -- does not read as a test gate.
+    """
+    return _ATTRIBUTE_WHITESPACE.sub("", inner) == "cfg(test)"
+
+
+def cfg_test_module_spans(
+    text: str,
+    scan: SourceScan | None = None,
+    *,
+    is_gate: GatePredicate | None = None,
+) -> list[tuple[int, int]]:
+    """Every test-gated module item in `text`, as `(start, end)`.
+
+    A span runs from the first attribute that governs the module to the
+    module's own closing brace, so removing it removes its attributes too
+    and leaves the neighbouring items intact.
+
+    The governing attributes come from `_governing_attribute_spans`, so the
+    attribute-separated form the suite actually writes --
+    `#[cfg(test)]` / `#[allow(clippy::...)]` / `mod tests {` -- is governed
+    by the same run as the bare form, and an attribute belonging to the
+    item above cannot take the module with it. This is the false-retention
+    direction: a raw regex matching `#[cfg(test)]` immediately followed by
+    `mod tests` sees neither form and leaves test-only source in the
+    "production" text.
+
+    The module's extent comes from `_match_brace` over the mask, so a brace
+    spelled inside a fixture string or a format template is not structural.
+    A counter over raw text reads such a brace as one, never sees the real
+    closing brace return its depth to zero, and blanks everything to
+    end-of-file -- in `src/main.rs` that hid the production `ledger_health()`
+    call from `check_request_ledger_writers.py`.
+
+    Semantics are deliberately narrow: only a `mod` **with a body** is a
+    module. `#[cfg(test)]` on a `fn`, a `use`, a `static`, or a module
+    *declaration* (`mod tests;`) selects an item this function leaves alone,
+    because none of them encloses production code a guard has to see
+    through. Widening to every `#[cfg(test)]` item would delete a test-only
+    helper that production code legitimately calls and hide the call site
+    from the guard; conversely `#[cfg(all(test, unix))]` is *not* stripped,
+    because guessing at compound predicates is how a guard starts
+    disagreeing with the compiler.
+
+    `is_gate` overrides the predicate for a guard that deliberately treats a
+    wider set of gates as test-only (`#[cfg(all(test, unix))]`, which the
+    transport guards must exclude). A gate predicate smaller than the
+    documented suite convention is not anticipated, and the default --
+    `is_cfg_test_attribute` -- is the narrow rule above.
+    """
+    predicate = is_gate or is_cfg_test_attribute
+    if is_gate is None and _CFG_TEST_HINT.search(text) is None:
+        return []
+    if scan is None:
+        scan = scan_source(text)
+    mask = scan.mask()
+    attributes = _iter_attributes(mask)
+    spans: list[tuple[int, int]] = []
+    for match in _TEST_MODULE.finditer(mask):
+        governing = _governing_attribute_spans(attributes, mask, match.start())
+        if not any(predicate(attribute.inner) for attribute in governing):
+            continue
+        close_index = _match_brace(mask, match.end() - 1)
+        if close_index < 0:
+            # An unterminated module is not a span. Removing it to
+            # end-of-file is the false truncation this helper exists to
+            # prevent, so an unbalanced file keeps its text and the guard
+            # that reads it fails on its own terms instead.
+            continue
+        spans.append((governing[0].start, close_index + 1))
+    return spans
+
+
+def production_view(
+    text: str, scan: SourceScan | None = None, *, is_gate: GatePredicate | None = None
+) -> str:
+    """`text` with every `#[cfg(test)]`-governed module item removed.
+
+    This is the view a guard about *shipping* code must inspect: a test that
+    exercises a second writer cannot hide from the check, and a test-only
+    consumer cannot satisfy it. Line numbers below a removed module shift,
+    so a guard that reports a line number wants `production_mask` instead.
+
+    Both errors the hand-rolled strippers made are excluded by construction:
+    a brace inside a literal cannot end the module early (the mask makes it
+    invisible) and therefore cannot leave test source in the result, and an
+    unbalanced brace cannot run the removal to end-of-file and drop
+    production code.
+    """
+    spans = cfg_test_module_spans(text, scan, is_gate=is_gate)
+    if not spans:
+        return text
+    kept: list[str] = []
+    cursor = 0
+    for start, end in spans:
+        if start < cursor:
+            # A module nested inside a module already removed.
+            continue
+        kept.append(text[cursor:start])
+        cursor = end
+    kept.append(text[cursor:])
+    return "".join(kept)
+
+
+def production_mask(
+    text: str, scan: SourceScan | None = None, *, is_gate: GatePredicate | None = None
+) -> str:
+    """`text` with every `#[cfg(test)]`-governed module item blanked.
+
+    The converse of `production_view` for a guard that reports a line
+    number: the result keeps the original's length and newline count, so an
+    offset or line number computed on it is the original's, while the
+    module's contents can no longer match a production rule.
+    """
+    spans = cfg_test_module_spans(text, scan, is_gate=is_gate)
+    if not spans:
+        return text
+    buf = list(text)
+    for start, end in spans:
+        for index in range(start, min(end, len(buf))):
+            if buf[index] != "\n":
+                buf[index] = " "
+    return "".join(buf)
+
+
+def test_view(
+    text: str, scan: SourceScan | None = None, *, is_gate: GatePredicate | None = None
+) -> str:
+    """`text` with everything **except** its test modules blanked.
+
+    The companion to `production_mask`, for a rule about what tests do. It
+    keeps the original's length and newline count, so both views share one
+    coordinate system.
+    """
+    spans = cfg_test_module_spans(text, scan, is_gate=is_gate)
+    buf = list(text)
+    cursor = 0
+    for start, end in spans:
+        for index in range(cursor, min(start, len(buf))):
+            if buf[index] != "\n":
+                buf[index] = " "
+        cursor = max(cursor, min(end, len(buf)))
+    for index in range(cursor, len(buf)):
+        if buf[index] != "\n":
+            buf[index] = " "
+    return "".join(buf)
 
 
 @dataclass(frozen=True)
@@ -1289,6 +1469,158 @@ fn three() { classify("brew"); }
     check(
         "a single-member body is not a group",
         not duplicate_groups(detector_functions[:1]),
+    )
+
+    # Failure mode 5: a `#[cfg(test)]` module whose fixtures spell braces
+    # in string literals. A counter over raw text reads the fixture's brace
+    # as structural, never returns to depth zero, and blanks the rest of
+    # the file -- which is how 135k characters of `src/main.rs` production
+    # code once disappeared from a guard's view.
+    truncated_source = """
+pub fn ledger_health() -> u8 { 1 }
+
+#[cfg(test)]
+mod tests {
+    fn fixture() {
+        let doc = "{\\"unclosed": true";
+        let other = "}}";
+        assert!(!doc.is_empty() && !other.is_empty());
+    }
+}
+
+pub fn after_the_module() -> u8 { 2 }
+"""
+    view = production_view(truncated_source)
+    check(
+        "a brace in a test fixture does not truncate the production view",
+        "ledger_health" in view and "after_the_module" in view and "fixture" not in view,
+        f"got {view!r}",
+    )
+
+    # The attribute-separated form is the one the suite writes for a test
+    # module with a lint allowance. A raw regex for `#[cfg(test)] mod tests`
+    # cannot see it, and the test-only source stays in the production view.
+    separated_source = """
+pub fn production() -> u8 { 1 }
+
+#[cfg(test)]
+#[allow(clippy::needless_return)]
+mod tests {
+    fn only_a_test() {}
+}
+"""
+    separated = production_view(separated_source)
+    check(
+        "an attribute-separated #[cfg(test)] module is removed",
+        "only_a_test" not in separated and "production" in separated,
+        f"got {separated!r}",
+    )
+
+    # Narrow semantics: a `#[cfg(test)]` that does not govern a module is
+    # left alone. Stripping a test-only helper would hide a production call
+    # site from the guard, which is the opposite of what a production view
+    # is for.
+    non_module_source = """
+#[cfg(test)]
+use std::sync::ONCE;
+#[cfg(test)]
+fn only_a_test() {}
+#[cfg(test)]
+mod declared_only;
+pub fn production() -> u8 { 1 }
+"""
+    non_module = production_view(non_module_source)
+    check(
+        "a #[cfg(test)] that governs no module with a body is kept",
+        "only_a_test" in non_module
+        and "declared_only" in non_module
+        and "ONCE" in non_module,
+        f"got {non_module!r}",
+    )
+    check(
+        "a module with a body is the only thing the view strips",
+        cfg_test_module_spans(non_module_source) == [],
+        f"got {cfg_test_module_spans(non_module_source)}",
+    )
+
+    # A compound predicate that can select production code is not a test
+    # module. The semantics are not widened past `cfg(test)`.
+    compound_source = """
+#[cfg(all(test, unix))]
+mod unix_only {
+    fn only_a_test() {}
+}
+pub fn production() -> u8 { 1 }
+"""
+    compound = production_view(compound_source)
+    check(
+        "a compound #[cfg(all(test, ...))] module is not stripped",
+        "only_a_test" in compound,
+        f"got {compound!r}",
+    )
+
+    # A guard that deliberately treats a compound gate as test-only passes
+    # its own predicate. The default must stay narrow: one predicate, one
+    # structure, so the two never disagree about where a module ends.
+    broad = production_view(
+        compound_source, is_gate=lambda inner: "test" in inner
+    )
+    check(
+        "an explicit gate predicate strips a compound test module",
+        "only_a_test" not in broad and "production" in broad,
+        f"got {broad!r}",
+    )
+    check(
+        "the explicit gate predicate does not change the default view",
+        "only_a_test" in production_view(compound_source),
+    )
+
+    # An unterminated module must not be removed: removal to end-of-file is
+    # the truncation defect wearing a different hat.
+    unterminated_source = "pub fn production() -> u8 { 1 }\n#[cfg(test)]\nmod tests {\n    fn broken() {\n"
+    unterminated = production_view(unterminated_source)
+    check(
+        "an unterminated test module is not removed",
+        "production" in unterminated and "broken" in unterminated,
+        f"got {unterminated!r}",
+    )
+
+    # The masked view shares the original's coordinates, so a line number
+    # computed on it is the file's own line, and the test body cannot match
+    # a production rule.
+    masked = production_mask(truncated_source)
+    check(
+        "the production mask keeps length and newline count",
+        len(masked) == len(truncated_source)
+        and newline_count(masked) == newline_count(truncated_source),
+        f"got {len(masked)} vs {len(truncated_source)}",
+    )
+    check(
+        "the production mask blanks the test body only",
+        "fixture" not in masked and "after_the_module" in masked,
+        f"got {masked!r}",
+    )
+    masked_line = masked[: masked.index("after_the_module")].count("\n") + 1
+    check(
+        "a production mask offset is the original line",
+        masked_line == truncated_source[: truncated_source.index("after_the_module")].count("\n") + 1,
+        f"got {masked_line}",
+    )
+
+    # The test view is the complement of the production mask, in the same
+    # coordinate system.
+    tests_only = test_view(truncated_source)
+    check(
+        "the test view keeps the test body and blanks production",
+        "fixture" in tests_only
+        and "after_the_module" not in tests_only
+        and len(tests_only) == len(truncated_source)
+        and newline_count(tests_only) == newline_count(truncated_source),
+        f"got {tests_only!r}",
+    )
+    check(
+        "a file without a test module has an empty test view",
+        "production" not in test_view("pub fn production() -> u8 { 1 }\n"),
     )
 
     if failures:

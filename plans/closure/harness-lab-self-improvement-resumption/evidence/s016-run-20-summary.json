@@ -1,0 +1,162 @@
+{
+  "schema_version": 1,
+  "campaign_id": "s016-deepseek-long-run-corrective-loop-20261031",
+  "run_index": 20,
+  "run_kind": "long_qualification",
+  "run_status": "request_cap_exhausted_horizon_not_qualified",
+  "counts_as_live_provider_run": true,
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "controller_commit": "c082faec4",
+  "source_binary_commit": "94fc8d41ff61e5963adf5779475fd9ee08569493",
+  "binary_architecture": "arm64",
+  "binary_sha256": "16481cc8bf0d8866db352c3aab90c35950bde37e5799be1458a43012d594fe2a",
+  "sandbox_helper_sha256": "37ee6c8cd876d1e05bbd650c7a26520753fe55534ac821a52d9089712d751d43",
+  "fixture_manifest": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v6/cases.jsonl",
+  "fixture_manifest_sha256": "66ac9e633e57c16c2e6f1552be767cfebd76e81a22774a34c31de808a20d02d7",
+  "qualification_fixture_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "started_at_utc": "2026-10-31T23:16:30Z",
+  "terminal_observed_at_utc": "2026-10-31T23:20:30Z",
+  "elapsed_seconds": 240.019,
+  "case_duration_ms": 231199,
+  "active_work_span_ms": 228472,
+  "provider_requests": 60,
+  "request_cap": 60,
+  "request_cap_exhausted": true,
+  "usd_cost": 0.030678,
+  "provider_stream_lifecycle": {
+    "transport_requests_started": 60,
+    "response_headers_received": 60,
+    "body_eof": 60,
+    "decoded_event_idle_timeouts": 0,
+    "budget_refused_request_61_before_transport": true,
+    "request_budget_setup_failures": 1,
+    "raw_sse_retained": false
+  },
+  "task": {
+    "agent_terminal": "failed",
+    "terminal_failure": {
+      "category": "provider_api",
+      "kind": "HarnessTurnFailure",
+      "usage_reason": null
+    },
+    "task_outcome": "inconclusive",
+    "continuation_confirmed": true,
+    "repair_cycles": 0,
+    "active_work_span_ms": 228790,
+    "maximum_activity_gap_ms": 31027,
+    "maximum_activity_gap_limit_ms": 300000,
+    "exact_job_running_and_terminal": false,
+    "productive_work_during_job": false,
+    "test_jobs": [
+      {
+        "job_id": "fb96e577-6dae-4d20-ade7-9f17dc0d0005",
+        "observed_actions": [
+          "submit",
+          "status",
+          "status",
+          "output"
+        ],
+        "observed_statuses": [
+          null,
+          "running",
+          "failed",
+          "failed"
+        ],
+        "kind": "test",
+        "durable_terminal_state": "failed",
+        "durable_duration_ms": 1588,
+        "command": "cargo test --offline --locked -p catalog-format",
+        "cwd": "/private/tmp/s016-live20/case00/case/fixture"
+      },
+      {
+        "job_id": "5dfcbf5e-3dc2-46b9-8331-6c086639b04a",
+        "observed_actions": [
+          "submit",
+          "status",
+          "status",
+          "output"
+        ],
+        "observed_statuses": [
+          null,
+          "running",
+          "failed",
+          "failed"
+        ],
+        "kind": "test",
+        "durable_terminal_state": "failed",
+        "durable_duration_ms": 2591,
+        "command": "cargo test --offline --locked -p catalog-format",
+        "cwd": "/private/tmp/s016-live20/case00/case/fixture"
+      },
+      {
+        "job_id": "7dc5bb50-a798-4ac2-bb7c-7bcb1d5823f4",
+        "observed_actions": [
+          "submit",
+          "status"
+        ],
+        "observed_statuses": [
+          null,
+          "running"
+        ],
+        "kind": "test",
+        "durable_terminal_state": "failed",
+        "durable_duration_ms": 1734,
+        "command": "cargo test --offline --locked -p catalog-format",
+        "cwd": "/private/tmp/s016-live20/case00/case/fixture"
+      }
+    ],
+    "tool_call_count": 52,
+    "tool_results": {
+      "bash:completed": 19,
+      "edit:completed": 5,
+      "job:completed": 3,
+      "job:failed": 5,
+      "python_script:completed": 1,
+      "read:completed": 8,
+      "read:failed": 2,
+      "task:completed": 1,
+      "test:completed": 3,
+      "write:completed": 5
+    }
+  },
+  "event_observation": {
+    "tool_started_count": 52,
+    "tool_terminal_count": 52,
+    "unpaired_tool_events": 0,
+    "event_gaps": 0,
+    "dropped_causal_events": 0,
+    "causal_trace_events": 118
+  },
+  "verification": {
+    "harness_automatically_invoked_unchanged_verifier": true,
+    "exit_code": 1,
+    "tests_run": 0,
+    "verifier_contents_not_inspected": true
+  },
+  "disk": {
+    "floor_bytes": 10737418240,
+    "floor_triggered": false,
+    "free_bytes_at_start": 33897799680,
+    "minimum_free_bytes": 33894371328,
+    "free_bytes_at_end": 40301043712
+  },
+  "interpretation": "All 60 admitted streams reached body EOF; request 61 was refused before transport by the configured cap. The 52 ACP tool starts paired with terminals, with no causal gaps, stall cancellation, or disk-floor event. Three package-scoped catalog-format test jobs failed; the first two were polled by exact ID from running to failed, while the third was left at running in the agent transcript and later reached failed in the durable store. Job durations were 1.588s, 2.591s, and 1.734s, so there was no productive work during actual job execution. The model did not attempt catalog-store repair or the priority release-workspace overlap job, completed zero repair cycles, and used 60 requests in 231.199 seconds. The unchanged verifier was automatically invoked with exit code 1 and zero tests reported; its contents were not inspected. H007 did not qualify.",
+  "private_artifacts": {
+    "receipt_path": "/private/tmp/s016-attempt20.json",
+    "receipt_sha256": "562e79b3f6f49c026af097e86cc0434e53005674cc56e7f7c2e59168c7a29f2b",
+    "transcript_path": "/private/tmp/s016-live20/case00/private/TRANSCRIPT.json",
+    "transcript_sha256": "9e50bec9f8f0838bc197a6ddf36c7b42b4a0a57d83a0e08311285142563a015d",
+    "diagnostic_log_path": "/private/tmp/s016-live20/case00/case/codegg_debug.log",
+    "diagnostic_log_sha256": "f980f634beb8c55f5fb42417df94834cd7b1c37c5071ea0f0ebe2dac50820596",
+    "provider_admission_receipt_path": "/private/tmp/s016-live20/case00/artifacts/provider-request-admissions.jsonl",
+    "provider_admission_receipt_sha256": "294bcbfc243daa5f86bc897e0da5b60725838fc18bbcca02562f4b8d19743a9d",
+    "causal_trace_path": "/private/tmp/s016-live20/case00/private/causal-trace.jsonl",
+    "causal_trace_sha256": "91b9d33c5e3de2dd7f08d1217f08149e9200f0b0d91b6f757d929eff4deda327",
+    "daemon_log_path": "/private/tmp/s016-live20/case00/daemon/daemon.log",
+    "daemon_log_sha256": "f999a69d9519f87de5deec93f1077b2885509be5f72cc3128291aafaabbe5046",
+    "acp_stderr_path": "/private/tmp/s016-live20/case00/acp.stderr",
+    "acp_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fixture_metadata_sha256": "08b51eaf8c61373ddf492a5594e84991cac9b1e2dabb03388662286e454f24bd"
+  }
+}

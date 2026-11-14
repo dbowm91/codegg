@@ -84,6 +84,15 @@ struct ActivePrompt {
     /// tool call whose completion was dropped must not be read as a tool
     /// that never finished.
     gap_dropped: u64,
+    /// Bounded per-call metadata needed to enrich matching completions safely.
+    safe_tool_metadata: HashMap<String, SafeToolMetadata>,
+}
+
+#[derive(Debug, Clone)]
+struct SafeToolMetadata {
+    title: String,
+    action: Option<String>,
+    task_agent: Option<String>,
 }
 
 impl ActivePrompt {
@@ -313,6 +322,7 @@ pub async fn run(
                                 close_requested: false,
                                 cancel_sent: false,
                                 gap_dropped: 0,
+                                safe_tool_metadata: HashMap::new(),
                             }),
                             CoreResponse::TurnAdmissionReceipt { receipt }
                                 if receipt.status == "accepted" =>
@@ -328,6 +338,7 @@ pub async fn run(
                                     close_requested: false,
                                     cancel_sent: false,
                                     gap_dropped: 0,
+                                    safe_tool_metadata: HashMap::new(),
                                 })
                             }
                             CoreResponse::TurnAdmissionReceipt { receipt } => {
@@ -916,11 +927,27 @@ async fn handle_event(
                             .filter(|action| {
                                 matches!(action.as_str(), "status" | "wait" | "output" | "cancel")
                             })
+                    } else if tool_name == "task" {
+                        safe_task_action(arguments)
                     } else if tool_name == "test" {
                         Some("submit".to_owned())
                     } else {
                         None
                     };
+                    let task_agent =
+                        if tool_name == "task" && safe_action.as_deref() == Some("spawn") {
+                            safe_task_spawn_agent(arguments)
+                        } else {
+                            None
+                        };
+                    prompt.safe_tool_metadata.insert(
+                        tool_id.clone(),
+                        SafeToolMetadata {
+                            title: tool_name.clone(),
+                            action: safe_action.clone(),
+                            task_agent,
+                        },
+                    );
                     update(stdout, &prompt.session_id, {
                         let mut update = json!({
                             "sessionUpdate":"tool_call",
@@ -932,6 +959,28 @@ async fn handle_event(
                         });
                         if let Some(observation) = placement_observation {
                             update["codeggTaskPlacement"] = observation;
+                        }
+                        if tool_name == "job" {
+                            update["codeggJobIdArgumentState"] =
+                                json!(safe_job_id_argument_state(arguments));
+                            if let Some(job_id_sha256) = safe_job_id_argument_sha256(arguments) {
+                                update["codeggJobIdArgumentSha256"] = json!(job_id_sha256);
+                            }
+                        }
+                        if tool_name == "task" && safe_action.as_deref() == Some("get") {
+                            if let Some(task_id_sha256) = safe_task_get_id_sha256(arguments) {
+                                update["codeggTaskIdSha256"] = json!(task_id_sha256);
+                            }
+                        }
+                        if tool_name == "task"
+                            && matches!(
+                                safe_action.as_deref(),
+                                Some("status" | "wait" | "continue")
+                            )
+                        {
+                            if let Some(run_id_sha256) = safe_task_run_id_sha256(arguments) {
+                                update["codeggTaskRunIdSha256"] = json!(run_id_sha256);
+                            }
                         }
                         update
                     })
@@ -951,6 +1000,7 @@ async fn handle_event(
                 if !prompt.bind_turn(turn_id) {
                     return Ok(false);
                 }
+                let safe_tool = prompt.safe_tool_metadata.remove(tool_id);
                 if !prompt.close_requested {
                     let placement_accepted =
                         output.contains("Placement rationale:") && output.contains("Run: ");
@@ -961,8 +1011,34 @@ async fn handle_event(
                         "status":acp_tool_terminal_status(*success),
                         "rawOutput":output,
                         });
+                        if let Some(error_class) = safe_test_submit_error_class(
+                            safe_tool.as_ref().map(|tool| tool.title.as_str()),
+                            safe_tool.as_ref().and_then(|tool| tool.action.as_deref()),
+                            *success,
+                            output,
+                        ) {
+                            update["codeggToolErrorClass"] = json!(error_class);
+                        }
                         if placement_accepted {
                             update["codeggPlacementAccepted"] = json!(true);
+                        }
+                        if safe_tool.as_ref().is_some_and(|tool| {
+                            tool.title == "task" && tool.action.as_deref() == Some("spawn")
+                        }) {
+                            if let Some(mut task_ids) = safe_task_spawn_metadata(output) {
+                                task_ids["agent"] = json!(safe_tool
+                                    .as_ref()
+                                    .and_then(|tool| tool.task_agent.as_deref())
+                                    .unwrap_or("other"));
+                                update["codeggTaskSpawn"] = task_ids;
+                            }
+                        }
+                        if safe_tool.as_ref().is_some_and(|tool| {
+                            tool.title == "task" && tool.action.as_deref() == Some("get")
+                        }) {
+                            if let Some(task_result) = safe_task_result_metadata(output) {
+                                update["codeggTaskResult"] = task_result;
+                            }
                         }
                         update
                     })
@@ -973,6 +1049,229 @@ async fn handle_event(
         }
     }
     Ok(true)
+}
+
+fn safe_task_action(arguments: &str) -> Option<String> {
+    let input: Value = serde_json::from_str(arguments).ok()?;
+    let action = input
+        .as_object()?
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("spawn");
+    matches!(action, "spawn" | "get" | "status" | "wait" | "continue").then(|| action.to_owned())
+}
+
+fn safe_test_submit_error_class(
+    tool: Option<&str>,
+    action: Option<&str>,
+    success: bool,
+    output: &str,
+) -> Option<&'static str> {
+    if success || tool != Some("test") || action != Some("submit") {
+        return None;
+    }
+
+    let output = output
+        .trim_start()
+        .strip_prefix("Error: ")
+        .unwrap_or(output.trim_start());
+    Some(if output.starts_with("tool not found:") {
+        "tool_not_found"
+    } else if output.starts_with("tool execution failed:") {
+        "tool_execution_failed"
+    } else if output.starts_with("tool timeout:") {
+        "tool_timeout"
+    } else if output.starts_with("permission denied:") {
+        "permission_denied"
+    } else if output.starts_with("tool formatting failed:") {
+        "tool_formatting_failed"
+    } else if output.starts_with("tool disabled:") {
+        "tool_disabled"
+    } else if output.starts_with("no workspace root was resolved") {
+        "missing_workspace_root"
+    } else if output.starts_with("refusing to start a ") {
+        "shared_process_denied"
+    } else if output.starts_with("execution backend unavailable:") {
+        "execution_backend_unavailable"
+    } else if output.starts_with("I/O error:") {
+        "io_error"
+    } else if output.starts_with("network error:") {
+        "network_error"
+    } else {
+        "unclassified"
+    })
+}
+
+fn safe_job_id_argument_state(arguments: &str) -> &'static str {
+    let Ok(input) = serde_json::from_str::<Value>(arguments) else {
+        return "invalid_json";
+    };
+    let Some(object) = input.as_object() else {
+        return "not_object";
+    };
+    match object.get("job_id") {
+        None => "missing",
+        Some(Value::String(value)) if value.is_empty() => "empty_string",
+        Some(Value::String(_)) => "string",
+        Some(_) => "non_string",
+    }
+}
+
+fn safe_job_id_argument_sha256(arguments: &str) -> Option<String> {
+    let input: Value = serde_json::from_str(arguments).ok()?;
+    let object = input.as_object()?;
+    let action = object.get("action").and_then(Value::as_str)?;
+    if !matches!(action, "status" | "wait" | "output" | "cancel") {
+        return None;
+    }
+    let job_id = object.get("job_id").and_then(Value::as_str)?;
+    if job_id.is_empty() || job_id.len() > 256 {
+        return None;
+    }
+    let canonical = uuid::Uuid::parse_str(job_id)
+        .map(|id| id.hyphenated().to_string())
+        .unwrap_or_else(|_| job_id.to_owned());
+    Some(sha256_text(&canonical))
+}
+
+fn safe_task_get_id_sha256(arguments: &str) -> Option<String> {
+    let input: Value = serde_json::from_str(arguments).ok()?;
+    let object = input.as_object()?;
+    if object.get("action").and_then(Value::as_str) != Some("get") {
+        return None;
+    }
+    let task_id = object.get("task_id").and_then(Value::as_str)?;
+    valid_opaque_task_id(task_id).then(|| sha256_text(task_id))
+}
+
+fn safe_task_run_id_sha256(arguments: &str) -> Option<String> {
+    let input: Value = serde_json::from_str(arguments).ok()?;
+    let object = input.as_object()?;
+    if !matches!(
+        object.get("action").and_then(Value::as_str),
+        Some("status" | "wait" | "continue")
+    ) {
+        return None;
+    }
+    let run_id = object.get("run_id").and_then(Value::as_str)?;
+    valid_opaque_task_id(run_id).then(|| sha256_text(run_id))
+}
+
+fn safe_task_spawn_agent(arguments: &str) -> Option<String> {
+    let input: Value = serde_json::from_str(arguments).ok()?;
+    let object = input.as_object()?;
+    if object
+        .get("action")
+        .and_then(Value::as_str)
+        .is_some_and(|action| action != "spawn")
+    {
+        return None;
+    }
+    let agent = object
+        .get("agent")
+        .and_then(Value::as_str)
+        .unwrap_or("general");
+    Some(if agent == "verifier" {
+        "verifier".to_owned()
+    } else {
+        "other".to_owned()
+    })
+}
+
+fn valid_opaque_task_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+fn task_result_identity(output: &str) -> Option<(&str, &str, &str)> {
+    // Durable task-get responses place these three typed fields after the
+    // result reference. The child result itself is arbitrary text, so parse
+    // only the final bounded metadata block and never persist its contents.
+    let metadata_start = output.rfind("\nResult ref: ")?;
+    let metadata = &output[metadata_start + 1..];
+    let task_id = metadata
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("Task: "))?;
+    let run_id = metadata
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("Run: "))?;
+    let status = metadata
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("Status: "))?;
+    let status = status.split_whitespace().next()?;
+    let allowed_status = matches!(
+        status,
+        "created"
+            | "queued"
+            | "preparing"
+            | "running"
+            | "waiting"
+            | "cancelling"
+            | "completed"
+            | "failed"
+            | "interrupted"
+            | "cancelled"
+    );
+    (task_id != run_id
+        && valid_opaque_task_id(task_id)
+        && valid_opaque_task_id(run_id)
+        && allowed_status)
+        .then_some((task_id, run_id, status))
+}
+
+fn safe_task_spawn_metadata(output: &str) -> Option<Value> {
+    if !output.starts_with("Task queued\n") {
+        return None;
+    }
+    let (task_id, run_id, status) = task_result_identity_for_spawn(output)?;
+    Some(json!({
+        "task_id_sha256": sha256_text(task_id),
+        "run_id_sha256": sha256_text(run_id),
+        "run_status": status,
+    }))
+}
+
+fn task_result_identity_for_spawn(output: &str) -> Option<(&str, &str, &str)> {
+    let task_id = output
+        .lines()
+        .find_map(|line| line.strip_prefix("Task: "))?;
+    let run_id = output.lines().find_map(|line| line.strip_prefix("Run: "))?;
+    let status = output
+        .lines()
+        .find_map(|line| line.strip_prefix("Status: "))?;
+    let status = status.split_whitespace().next()?;
+    let allowed_status = matches!(status, "queued" | "running" | "completed" | "failed");
+    (task_id != run_id
+        && valid_opaque_task_id(task_id)
+        && valid_opaque_task_id(run_id)
+        && allowed_status)
+        .then_some((task_id, run_id, status))
+}
+
+fn safe_task_result_metadata(output: &str) -> Option<Value> {
+    // Durable TaskTool::get returns a JSON envelope whose `text` member holds
+    // the human-readable record. Inspect only that typed member; the recorded
+    // child summary is arbitrary and may itself contain misleading labels.
+    let parsed = serde_json::from_str::<Value>(output).ok();
+    let text = match parsed.as_ref() {
+        Some(Value::Object(object)) => object.get("text")?.as_str()?,
+        _ => output,
+    };
+    if !text.starts_with("Recorded result") {
+        return None;
+    }
+    let (task_id, run_id, status) = task_result_identity(text)?;
+    Some(json!({
+        "task_id_sha256": sha256_text(task_id),
+        "run_id_sha256": sha256_text(run_id),
+        "run_status": status,
+    }))
 }
 
 fn safe_task_placement_observation(tool_name: &str, arguments: &str) -> Option<Value> {
@@ -1348,6 +1647,208 @@ mod tests {
     use super::*;
 
     #[test]
+    fn task_action_telemetry_is_typed_and_does_not_expose_arguments() {
+        assert_eq!(
+            safe_task_action(r#"{"action":"spawn","prompt":"private reviewer instructions"}"#),
+            Some("spawn".to_owned())
+        );
+        assert_eq!(
+            safe_task_action(r#"{"action":"get","task_id":"task-1"}"#),
+            Some("get".to_owned())
+        );
+        assert_eq!(
+            safe_task_action(r#"{"action":"continue","run_id":"private-run"}"#),
+            Some("continue".to_owned())
+        );
+        let run_id = "private-run";
+        let digest =
+            safe_task_run_id_sha256(&json!({"action":"continue","run_id":run_id}).to_string())
+                .expect("continue run identity digest");
+        assert_eq!(digest, sha256_text(run_id));
+        assert!(!digest.contains(run_id));
+        assert_eq!(safe_task_action(r#"{"action":"board"}"#), None);
+        assert_eq!(
+            safe_task_action(r#"{"prompt":"legacy default spawn"}"#),
+            Some("spawn".to_owned())
+        );
+    }
+
+    #[test]
+    fn failed_background_test_submit_projects_only_allowlisted_error_class() {
+        let private_detail = "Error: tool execution failed: PRIVATE_PATH and PRIVATE_TEST";
+        let class =
+            safe_test_submit_error_class(Some("test"), Some("submit"), false, private_detail);
+        assert_eq!(class, Some("tool_execution_failed"));
+        let encoded = serde_json::to_string(&class).expect("serialize safe class");
+        assert!(!encoded.contains("PRIVATE_PATH"));
+        assert!(!encoded.contains("PRIVATE_TEST"));
+
+        assert_eq!(
+            safe_test_submit_error_class(
+                Some("test"),
+                Some("submit"),
+                false,
+                "Error: permission denied: secret"
+            ),
+            Some("permission_denied")
+        );
+        assert_eq!(
+            safe_test_submit_error_class(Some("test"), Some("submit"), false, "novel secret"),
+            Some("unclassified")
+        );
+        assert_eq!(
+            safe_test_submit_error_class(
+                Some("test"),
+                Some("submit"),
+                true,
+                "tool execution failed: detail"
+            ),
+            None
+        );
+        assert_eq!(
+            safe_test_submit_error_class(
+                Some("bash"),
+                Some("submit"),
+                false,
+                "tool execution failed: detail"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn job_id_argument_telemetry_keeps_only_shape_and_presence() {
+        assert_eq!(
+            safe_job_id_argument_state(r#"{"action":"status"}"#),
+            "missing"
+        );
+        assert_eq!(
+            safe_job_id_argument_state(r#"{"action":"status","job_id":7}"#),
+            "non_string"
+        );
+        assert_eq!(
+            safe_job_id_argument_state(r#"{"action":"status","job_id":""}"#),
+            "empty_string"
+        );
+        let projected =
+            safe_job_id_argument_state(r#"{"action":"status","job_id":"private-job-id"}"#);
+        assert_eq!(projected, "string");
+        assert!(!projected.contains("private-job-id"));
+        assert_eq!(safe_job_id_argument_state("not-json"), "invalid_json");
+        assert_eq!(safe_job_id_argument_state("[]"), "not_object");
+    }
+
+    #[test]
+    fn job_id_argument_digest_is_action_scoped_and_never_exposes_the_id() {
+        let id = "5a4c2d88-29a7-4ea7-b617-1833bcb6c80b";
+        let args = format!(r#"{{"action":"status","job_id":"{id}"}}"#);
+        let digest = safe_job_id_argument_sha256(&args).expect("status ID digest");
+        assert_eq!(digest, sha256_text(id));
+        assert!(!digest.contains(id));
+
+        let uppercase = format!(r#"{{"action":"wait","job_id":"{}"}}"#, id.to_uppercase());
+        assert_eq!(
+            safe_job_id_argument_sha256(&uppercase),
+            Some(sha256_text(id))
+        );
+        assert!(safe_job_id_argument_sha256(r#"{"action":"submit","job_id":"x"}"#).is_none());
+        assert!(safe_job_id_argument_sha256(r#"{"action":"status"}"#).is_none());
+        assert!(safe_job_id_argument_sha256(r#"{"action":"status","job_id":7}"#).is_none());
+        assert!(safe_job_id_argument_sha256(&format!(
+            r#"{{"action":"status","job_id":"{}"}}"#,
+            "x".repeat(257)
+        ))
+        .is_none());
+    }
+
+    #[test]
+    fn durable_task_get_projection_hashes_ids_and_keeps_only_terminal_metadata() {
+        let task_id = "task-123";
+        let run_id = "run-456";
+        let args = format!(r#"{{"action":"get","task_id":"{task_id}"}}"#);
+        let text = format!("Recorded result (completed)\nNo reproducible findings.\nResult ref: agent-run-result:{run_id}\nTask: {task_id}\nRun: {run_id}\nStatus: completed");
+        let output = json!({
+            "recorded_result": "No reproducible findings.",
+            "result_ref": format!("agent-run-result:{run_id}"),
+            "text": text,
+        })
+        .to_string();
+        assert_eq!(safe_task_get_id_sha256(&args), Some(sha256_text(task_id)));
+        let metadata = safe_task_result_metadata(&output).expect("durable task result");
+        assert_eq!(metadata["task_id_sha256"], sha256_text(task_id));
+        assert_eq!(metadata["run_id_sha256"], sha256_text(run_id));
+        assert_eq!(metadata["run_status"], "completed");
+        assert!(!metadata.to_string().contains(task_id));
+        assert!(!metadata.to_string().contains(run_id));
+        assert!(safe_task_result_metadata("Status: completed\nordinary output").is_none());
+        assert!(safe_task_result_metadata(
+            r#"{"recorded_result":"Task: task-123\nRun: run-456\nStatus: completed","text":"Recorded result: absent"}"#
+        )
+        .is_none());
+        assert!(safe_task_result_metadata(
+            &("Recorded result (completed)\nResult ref: x\nTask: invalid id\n".to_owned()
+                + "Run: run-456\nStatus: completed")
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn task_run_observation_hashes_only_explicit_status_wait_or_continue_run_ids() {
+        assert_eq!(
+            safe_task_run_id_sha256(r#"{"action":"status","run_id":"run-456"}"#),
+            Some(sha256_text("run-456"))
+        );
+        assert_eq!(
+            safe_task_run_id_sha256(r#"{"action":"wait","run_id":"run-456"}"#),
+            Some(sha256_text("run-456"))
+        );
+        assert_eq!(
+            safe_task_run_id_sha256(r#"{"action":"continue","run_id":"run-456"}"#),
+            Some(sha256_text("run-456"))
+        );
+        assert_eq!(
+            safe_task_run_id_sha256(r#"{"action":"status","task_id":"task-123"}"#),
+            None
+        );
+        assert_eq!(
+            safe_task_run_id_sha256(r#"{"action":"get","run_id":"run-456"}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn task_spawn_projection_hashes_returned_ids_without_persisting_them() {
+        let output = "Task queued\nTask: task-123\nRun: run-456\nStatus: queued";
+        let metadata = safe_task_spawn_metadata(output).expect("durable task spawn");
+        assert_eq!(metadata["task_id_sha256"], sha256_text("task-123"));
+        assert_eq!(metadata["run_id_sha256"], sha256_text("run-456"));
+        assert_eq!(metadata["run_status"], "queued");
+        assert!(!metadata.to_string().contains("task-123"));
+        assert!(!metadata.to_string().contains("run-456"));
+        assert!(safe_task_spawn_metadata("Task queued\nTask: x\nRun: x\nStatus: queued").is_none());
+    }
+
+    #[test]
+    fn task_spawn_agent_projection_only_distinguishes_the_read_only_verifier() {
+        assert_eq!(
+            safe_task_spawn_agent(r#"{"action":"spawn","agent":"verifier"}"#),
+            Some("verifier".to_owned())
+        );
+        assert_eq!(
+            safe_task_spawn_agent(r#"{"action":"spawn","agent":"research"}"#),
+            Some("other".to_owned())
+        );
+        assert_eq!(
+            safe_task_spawn_agent(r#"{"action":"spawn"}"#),
+            Some("other".to_owned())
+        );
+        assert_eq!(
+            safe_task_spawn_agent(r#"{"action":"get","agent":"verifier"}"#),
+            None
+        );
+    }
+
+    #[test]
     fn task_placement_telemetry_keeps_only_the_typed_mode_and_id_presence() {
         let projected = safe_task_placement_observation(
             "task",
@@ -1390,6 +1891,7 @@ mod tests {
             close_requested: false,
             cancel_sent: false,
             gap_dropped: 0,
+            safe_tool_metadata: HashMap::new(),
         }
     }
 
@@ -1584,7 +2086,7 @@ mod tests {
                 // A provider message with a credential-shaped string in it:
                 // none of this may reach the wire payload.
                 message: "Agent error: provider error: 529 overloaded sk-live-SECRET".into(),
-                category: Some(TurnFailureCategory::ProviderApi),
+                category: Some(TurnFailureCategory::ProviderRequestBudget),
                 usage: Some(TurnUsage {
                     input_tokens: Some(120),
                     output_tokens: Some(35),
@@ -1608,7 +2110,7 @@ mod tests {
         assert_eq!(data["kind"], "turn_failed");
         assert_eq!(data["sessionId"], "session-1");
         assert_eq!(data["turnId"], "turn-1");
-        assert_eq!(data["codeggFailureCategory"], "provider_api");
+        assert_eq!(data["codeggFailureCategory"], "provider_request_budget");
         assert_eq!(data["codeggUsage"]["inputTokens"], 120);
         assert_eq!(data["codeggUsage"]["outputTokens"], 35);
         assert_eq!(data["codeggUsage"]["cachedTokens"], 20);

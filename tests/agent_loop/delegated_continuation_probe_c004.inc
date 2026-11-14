@@ -40,7 +40,7 @@ async fn the_task_tool_description_states_the_continuations_bound_and_warrant() 
         "the description must name the continuation action: {description}"
     );
     assert!(
-        description.contains("one continuation per terminal failure"),
+        description.contains("at most once per terminal failure"),
         "the description must state the bound: {description}"
     );
     assert!(

@@ -63,3 +63,8 @@ pub(crate) fn exit_arm_hint(app: &App) -> Option<String> {
         ExitArm::Force => Some("press ctrl+c again to exit".to_string()),
     }
 }
+
+pub(crate) fn dispatch_exit(app: &mut App) {
+    app.ui_state.running = false;
+    let _ = app.ui_state.shutdown_tx.take().map(|tx| tx.send(()));
+}

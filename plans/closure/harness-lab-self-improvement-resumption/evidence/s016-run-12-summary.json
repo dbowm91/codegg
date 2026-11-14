@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "campaign_id": "s016-deepseek-long-run-corrective-loop-20261031",
+  "run_index": 12,
+  "run_kind": "long_qualification",
+  "run_status": "request_cap_exhausted_horizon_not_qualified",
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "controller_commit": "905ec8ae2d8a06c16ac95ecb043487b2b9e1380e",
+  "source_binary_commit": "94fc8d41ff61e5963adf5779475fd9ee08569493",
+  "binary_architecture": "arm64",
+  "binary_sha256": "16481cc8bf0d8866db352c3aab90c35950bde37e5799be1458a43012d594fe2a",
+  "sandbox_helper_sha256": "37ee6c8cd876d1e05bbd650c7a26520753fe55534ac821a52d9089712d751d43",
+  "fixture_manifest": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v3/cases.jsonl",
+  "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "qualification_fixture_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "started_at_utc": "2026-10-31T22:32:31Z",
+  "terminal_observed_at_utc": "2026-10-31T22:42:57Z",
+  "elapsed_seconds": 613.849,
+  "case_duration_ms": 601405,
+  "active_work_span_ms": 596001,
+  "provider_requests": 60,
+  "request_cap": 60,
+  "request_cap_exhausted": true,
+  "usd_cost": 0.049266,
+  "provider_stream_lifecycle": {
+    "transport_requests_started": 60,
+    "response_headers_received": 60,
+    "body_streams_started": 60,
+    "body_eof": 60,
+    "decoded_event_idle_timeouts": 0,
+    "budget_refused_request_61_before_transport": true,
+    "raw_sse_retained": false
+  },
+  "task": {
+    "agent_terminal": "failed",
+    "task_outcome": "inconclusive",
+    "horizon_outcome": "not_qualified",
+    "horizon_reason": "measurement_incomplete",
+    "repair_cycles": 2,
+    "continuation_confirmed": true,
+    "exact_job_running_and_terminal": false,
+    "productive_work_during_job": false,
+    "maximum_activity_gap_ms": 66103,
+    "minimum_active_duration_ms": 1800000,
+    "test_job_observations": [
+      {
+        "job_id": "f246c2c8-80c6-4ee8-aa26-c4a7ef5c93e1",
+        "status": "failed"
+      },
+      {
+        "job_id": "4f1cd0fe-a74a-4b44-a522-712b01e5324d",
+        "status": "completed"
+      },
+      {
+        "job_id": "a9c174f5-4f28-4205-bf57-0a349e353edb",
+        "status": "failed"
+      },
+      {
+        "job_id": "9fd75518-5149-4d96-a525-09fecc488013",
+        "status": "completed"
+      },
+      {
+        "job_id": "e548e3ac-bdad-4320-9528-fd400eebd52d",
+        "status": "completed"
+      }
+    ],
+    "tool_calls": 53,
+    "terminal_failure": {
+      "category": "provider_api",
+      "kind": "HarnessTurnFailure",
+      "usage_reason": null
+    },
+    "hidden_verifier_ran": false
+  },
+  "event_observation": {
+    "tool_started_count": 53,
+    "tool_terminal_count": 53,
+    "event_gaps": 0,
+    "unpaired_tool_events": 0,
+    "dropped_causal_events": 0
+  },
+  "verification": {
+    "hidden_verifier_ran": false,
+    "reason": "provider request cap ended the agent turn before qualification; no manual verifier invocation"
+  },
+  "disk": {
+    "floor_bytes": 10737418240,
+    "floor_triggered": false,
+    "free_bytes_at_start": 21133729792,
+    "minimum_free_bytes": 14497599488,
+    "free_bytes_at_end": 26767138816
+  },
+  "interpretation": "The model completed two repair cycles, wrote continuation evidence, and observed terminal states for five exact test-job IDs. No running state or productive work during a job was observed. All 60 provider requests received headers and body EOF; there were no decoded-event idle timeouts, ACP event gaps, unpaired tool calls, or dropped trace events. Request 61 was refused before transport by the configured request cap. The agent was active for about 9.94 minutes, below the unchanged 30-minute threshold; horizon measurement is incomplete. This run does not reproduce a provider streaming, ACP, or job-status projection fault. It does show the current prompt consumes the request ceiling before it can sustain the required work horizon. Next run 13 should diagnostically test a naturally longer full-workspace Rust test job while the agent makes dependent edits, without adding sleeps or modifying the frozen H007 fixture/verifier/thresholds.",
+  "private_artifacts": {
+    "receipt_path": "/private/tmp/s016-attempt12.json",
+    "receipt_sha256": "276460fecaa99331c9794702ba499e9651aa368b297c63ef9f930a86f34e5a94",
+    "diagnostic_log_path": "/private/tmp/s016-live12/case00/case/codegg_debug.log",
+    "diagnostic_log_sha256": "4eb53cbe830bc326b5a4698ac99b9a1bb17d6a6a426dd81ee74195c876098ef",
+    "provider_admission_receipt_path": "/private/tmp/s016-live12/case00/artifacts/provider-request-admissions.jsonl",
+    "provider_admission_receipt_sha256": "e10cba4e84b8b3c65a9ebb2e6118e245a670d13fa79c4241cf0948ba1c1af6ea",
+    "causal_trace_path": "/private/tmp/s016-live12/case00/private/causal-trace.jsonl",
+    "causal_trace_sha256": "1b10e5df9c02598bbcfbfe5af3ccc40e685831a0b5e789a4578b24901a6b5250",
+    "fixture_metadata_sha256": "08b51eaf8c61373ddf492a5594e84991cac9b1e2dabb03388662286e454f24bd"
+  }
+}

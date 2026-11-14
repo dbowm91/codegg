@@ -544,25 +544,31 @@ impl TextSource for DocumentSnapshot {
             .unwrap_or_else(|_| self.len_lines().saturating_sub(1))
     }
 
-    /// The **first** byte of the character at `offset`, not the byte at
-    /// `offset`.
+    /// The **first** byte of the character at `offset`, or `None` when
+    /// `offset` is not a character boundary.
     ///
-    /// `read_bytes(offset, offset + 1)` needs a character boundary at *both*
-    /// ends, so it is `Err` for the first byte of a multi-byte character as
-    /// much as for its interior. Reading it that way classified every
-    /// non-ASCII character as a separator, and a scan walked straight past
-    /// every one of them: on `日本語 text`, `w` from byte 0 landed on the end
-    /// of the document instead of on `text`. Reading the whole character and
-    /// taking its first byte classifies it as word content, which is what
-    /// `is_word_byte`'s `>= 0x80` clause is for.
+    /// The classification rule is what matters here, and it is subtle enough
+    /// to have been wrong once already. `read_bytes(offset, offset + 1)` needs
+    /// a character boundary at *both* ends, so it is `Err` for the first byte
+    /// of a multi-byte character as much as for its interior — and a scan that
+    /// read one byte that way classified every non-ASCII character as a
+    /// separator, walking straight past all of them: on `日本語 text`, `w`
+    /// from byte 0 landed on the end of the document instead of on `text`.
+    /// The answer is the character's **lead** byte, which is `>= 0x80` and
+    /// therefore word content under [`is_word_byte`].
+    ///
+    /// So the accessor is the raw byte at `offset`, guarded by the boundary
+    /// test — exactly what the `str` adapter answers, so the two surfaces stay
+    /// interchangeable — and it costs one rope lookup instead of a `String`
+    /// per scanned byte, which is what an *n*-byte word motion paid before.
     fn byte_at(&self, offset: usize) -> Option<u8> {
         if !self.is_byte_boundary(offset) {
             return None;
         }
-        let end = next_char_boundary(self, offset).unwrap_or(self.len_bytes());
-        self.read_bytes(offset, end)
-            .ok()
-            .and_then(|text| text.as_bytes().first().copied())
+        // The inherent accessor, named explicitly: the trait method of the
+        // same name would recurse, and relying on inherent-method precedence
+        // to tell them apart is a trap for the next reader.
+        DocumentSnapshot::byte_at(self, offset)
     }
 }
 
@@ -716,6 +722,42 @@ mod tests {
         let buffer = codegg_document::DocumentBuffer::new(text);
         let snapshot = buffer.snapshot();
         assert_eq!(word_forward(&snapshot, 0), 10);
+    }
+
+    /// The two adapters answer `byte_at` for exactly the same offsets.
+    ///
+    /// The editor's adapter used to read a one-byte range through
+    /// `read_bytes`, which allocates a `String` per scanned byte — an
+    /// *n*-byte word motion made *n* of them. The raw accessor answers the
+    /// same question in constant time, and the two surfaces must still agree
+    /// on which offsets exist and which are inside a multi-byte character.
+    #[test]
+    fn a_string_and_a_snapshot_agree_on_every_byte() {
+        let text = "aé日🐻 z";
+        let buffer = codegg_document::DocumentBuffer::new(text);
+        let snapshot = buffer.snapshot();
+        for offset in 0..=text.len() {
+            assert_eq!(
+                TextSource::byte_at(&snapshot, offset),
+                TextSource::byte_at(text, offset),
+                "byte_at disagreed at offset {offset}"
+            );
+        }
+        assert_eq!(
+            TextSource::byte_at(&snapshot, 1),
+            Some(0xC3),
+            "a multi-byte character answers with its lead byte"
+        );
+        assert_eq!(
+            TextSource::byte_at(&snapshot, 2),
+            None,
+            "the interior of a multi-byte character is not an offset"
+        );
+        assert_eq!(
+            TextSource::byte_at(&snapshot, text.len() + 1),
+            None,
+            "past the end is not an offset either"
+        );
     }
 
     #[test]

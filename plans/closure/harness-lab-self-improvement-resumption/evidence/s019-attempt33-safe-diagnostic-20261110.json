@@ -1,0 +1,114 @@
+{
+  "attempt_number": 33,
+  "authorization": {
+    "combined_starts_consumed": 34,
+    "combined_starts_remaining": 86,
+    "supplemental_starts_consumed": 11,
+    "supplemental_starts_remaining": 29
+  },
+  "binary_sha256": "ac6687258c7dbb20f3059a836280f9629fa020e69378a18d748182f3406aa204",
+  "continuation": {
+    "all_public_artifacts_present": true,
+    "all_stages_complete": true,
+    "document_valid": false,
+    "incomplete_gate_count": 0,
+    "release_overlap_confirmed": true,
+    "repair_pair_count": 2,
+    "qualified_repair_pair_count": 1,
+    "observed_repair_cycles": 1,
+    "documented_repair_cycles": 1,
+    "repair_cycle_count_matches": true,
+    "pair_results": {
+      "catalog_format": {
+        "qualified": true,
+        "repair_followed_observed_failure": true,
+        "productive_change_before_rerun": true
+      },
+      "catalog_store": {
+        "qualified": false,
+        "repair_followed_observed_failure": false,
+        "productive_change_before_rerun": false
+      }
+    }
+  },
+  "disk": {
+    "floor_bytes": 10737418240,
+    "lowest_free_bytes": 140011245568,
+    "triggered": false
+  },
+  "event_measurement": {
+    "correlated_repair_events": 1,
+    "dropped_events": 0,
+    "event_count": 657,
+    "explicit_event_gaps": 0,
+    "maximum_native_tool_event_gap_ms": 83030,
+    "tool_started": 279,
+    "tool_terminal": 279,
+    "trace_state": "complete",
+    "unpaired_starts": 0
+  },
+  "fixture_manifest_sha256": "3c3669423d0cf5fde4f65be43a1491e91c1ff01df8572d31119250dcc35eba83",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "horizon": {
+    "active_work_span_ms": 3268583,
+    "minimum_active_duration_ms": 1800000,
+    "duration_qualified": true,
+    "exact_job_running_and_terminal": true,
+    "productive_work_during_job": true,
+    "repair_cycles": 1,
+    "reviewer_completed": true,
+    "test_jobs": {
+      "submitted": 11,
+      "terminal_observed": 11,
+      "terminal_status_counts": {
+        "completed": 8,
+        "failed": 3
+      },
+      "unobserved": 0
+    }
+  },
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "outcome": {
+    "active_work_span_ms": 3268583,
+    "agent_terminal": "timeout",
+    "duration_ms": 3299945,
+    "duration_qualified": true,
+    "h007_qualified": false,
+    "prompt_budget_limit_seconds": 3300,
+    "prompt_timeout_observed": true,
+    "continuation_stop_reason": "turn_timeout",
+    "receipt_stop_reason": "end_turn",
+    "task": "failed",
+    "verifier": "assertion_failures",
+    "verifier_tests_run": 5,
+    "verifier_passed": 3,
+    "verifier_failure_counts": {
+      "errors": 0,
+      "failures": 2
+    },
+    "verifier_failure_domains": {
+      "continuation_boundary": 1,
+      "transcript_job_lifecycle": 1
+    },
+    "verifier_assertion_operations": {
+      "pattern": 1,
+      "truthiness": 1
+    }
+  },
+  "preflight_evidence": "plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt33-preflight-20261110.json",
+  "private_receipt_sha256": "fd9d832c583c674ac0616535e9fb4619e61eb727d1991d240939a1a585035b7d",
+  "provider": {
+    "allowance_usd": 0.178673,
+    "attempts_failed": 3,
+    "attempts_started": 263,
+    "attempts_succeeded": 259,
+    "provider_timeout_events": 0,
+    "request_limit": 1200,
+    "requests": 263,
+    "billed_usd": "unknown"
+  },
+  "schema": "s019_safe_attempt_diagnostic_v2",
+  "source_revision": "ac584c886f03847ff6b829f8509667637e42a052",
+  "verifier_text_retained": false,
+  "raw_output_retained": false
+}

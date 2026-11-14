@@ -104,6 +104,14 @@ fn split_column(area: Rect, placement: PanelPlacement, panel_width: u16) -> (Rec
 /// would leave the transcript with a fraction of what it has today.
 const MIN_MAIN_PANEL_HEIGHT: u16 = 12;
 
+/// Rows the transcript keeps whatever else claims the pane.
+///
+/// Named once because two places are measuring against it: the session layout
+/// gives the transcript this floor, and the budget the tasks overlay and the
+/// tab bar share is what a pane has left *after* it. Two literals that had to
+/// agree would be a floor that agrees with itself until one of them changes.
+const MIN_TRANSCRIPT_HEIGHT: u16 = 10;
+
 /// Layout configuration for the TUI.
 pub struct LayoutConfig {
     /// Default width of a side column in columns.
@@ -170,6 +178,30 @@ impl LayoutConfig {
     pub fn set_right_panel_width(&mut self, width: u16) {
         self.right_panel_width = Some(width);
     }
+
+    /// Rows the tab bar and the tasks overlay share, on a pane of `pane_height`.
+    ///
+    /// What is left once every other claim is honoured, the transcript floor
+    /// included. Sharing one budget is what stops the two from overshooting
+    /// the pane together: without it the carve below yields silently and
+    /// `Ctrl+T` reads as a dead key on exactly the terminals where a status
+    /// overlay is most wanted.
+    fn spare_rows(
+        &self,
+        pane_height: u16,
+        todo_rows: u16,
+        hint_rows: u16,
+        max_prompt_rows: u16,
+    ) -> u16 {
+        let claimed = self
+            .header_height
+            .saturating_add(self.footer_height)
+            .saturating_add(MIN_TRANSCRIPT_HEIGHT)
+            .saturating_add(max_prompt_rows)
+            .saturating_add(todo_rows)
+            .saturating_add(hint_rows);
+        pane_height.saturating_sub(claimed)
+    }
 }
 
 impl Default for LayoutConfig {
@@ -187,6 +219,125 @@ impl Default for LayoutConfig {
             bottom_panel_rows: None,
         }
     }
+}
+
+/// Rows each row-claiming region asked for this frame.
+///
+/// The **asks**, not the answers: [`TuiLayout::plan_frame`] clamps the
+/// on-demand ones against the budget the pane has left. `prompt_rows` is the
+/// composer's `needed_height` at the pane's width, measured by the caller
+/// because wrapping is a function of width and the width is the plan's own
+/// output — the one claim that cannot be stated before the frame is planned.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FrameClaims {
+    /// Rows the above-input todo strip asks for.
+    pub todo_rows: u16,
+    /// Rows the contextual key line asks for.
+    pub hint_rows: u16,
+    /// Rows the subagent tab bar asks for.
+    pub tab_rows: u16,
+    /// Rows the unified tasks overlay asks for.
+    pub tasks_rows: u16,
+    /// Rows the turn-tail deliverable card asks for.
+    pub present_rows: u16,
+    /// Rows the composer asks for, at the pane's width and already capped.
+    pub prompt_rows: u16,
+}
+
+/// The frame's outer geometry: the panel edges it was given, the strip its own
+/// border takes, and the pane the session layout divides.
+///
+/// Settled before a row is claimed, because the hint line and the composer both
+/// wrap at the pane's width and that width is a function of the frame and its
+/// panels — never of a claim. Deriving it once is what lets the plan be planned
+/// from numbers alone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FrameOuter {
+    /// The frame this was carved from.
+    pub frame: Rect,
+    /// One rect per occupied panel edge.
+    pub panels: PanelRegions,
+    /// The 1-column strip the outer left border is painted on.
+    pub left_border: Rect,
+    /// The 1-row strip the outer bottom border is painted on, when the pane
+    /// can spare it.
+    pub bottom_border: Option<Rect>,
+    /// The area the session layout divides.
+    pub pane: Rect,
+}
+
+impl FrameOuter {
+    /// Rows a composer may claim: 40% of the frame, never less than a box.
+    ///
+    /// The cap is on the box, not on the text: text past it stays in the buffer
+    /// and stays reachable by scrolling.
+    pub fn max_prompt_rows(&self) -> u16 {
+        (self.frame.height * 40 / 100).max(3)
+    }
+}
+
+/// Every region one frame composes, and who decided each one.
+///
+/// [`TuiLayout::plan_frame`] derives the regions the arithmetic decides. Three
+/// are not the arithmetic's to decide: `scrollbar` is the transcript's own
+/// gutter, `completion` is the popup the *filtered* rows size, and a dialog's
+/// rect is `App::dialog_rect`'s — one derivation that the painted box and the
+/// clickable box both read. The two painters record theirs here so one value
+/// still answers "where was it", rather than a second field that could
+/// disagree with the painted rect.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FramePlan {
+    /// The panel edges this frame was planned around.
+    pub panels: PanelRegions,
+    /// The area the session layout divided.
+    pub pane: Rect,
+    /// The strip the outer left border is painted on.
+    pub left_border: Rect,
+    /// The strip the outer bottom border is painted on, when it exists.
+    pub bottom_border: Option<Rect>,
+    /// The header chunk.
+    pub header: Rect,
+    /// The footer chunk.
+    pub footer: Rect,
+    /// The composer's whole allocation: the input box *and* the strips carved
+    /// off its top. The completion popup anchors on this, not on the box.
+    pub composer: Rect,
+    /// The input box, after every strip above it has been carved off.
+    pub prompt: Rect,
+    /// The transcript, after the tab bar has been carved off its top.
+    pub viewport: Rect,
+    /// The subagent tab bar, when a tab is open and the transcript can spare
+    /// the row.
+    pub tab_bar: Option<Rect>,
+    /// The contextual key line.
+    pub hint: Option<Rect>,
+    /// The above-input todo strip.
+    pub todo: Option<Rect>,
+    /// The unified tasks overlay (`Ctrl+T`).
+    pub tasks: Option<Rect>,
+    /// The turn-tail deliverable card.
+    pub present: Option<Rect>,
+    /// The transcript's scrollbar gutter, recorded by its painter.
+    pub scrollbar: Option<Rect>,
+    /// The completion popup, recorded by its painter.
+    pub completion: Option<Rect>,
+}
+
+/// Take `rows` off the top of `area`, or yield.
+///
+/// Yields when nothing is claimed, and when the chunk cannot spare the row: a
+/// strip that took the last one would leave its neighbour — the input box or
+/// the transcript — zero rows tall. Yield, never shrink the neighbour, in the
+/// one place it is implemented.
+fn carve_top(area: Rect, rows: u16) -> (Option<Rect>, Rect) {
+    if rows == 0 || area.height <= rows {
+        return (None, area);
+    }
+    let split = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(rows), Constraint::Min(1)])
+        .split(area);
+    (Some(split[0]), split[1])
 }
 
 /// Manages terminal layout and area calculations.
@@ -328,12 +479,113 @@ impl TuiLayout {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(self.config.header_height),
-                Constraint::Min(10),
+                Constraint::Min(MIN_TRANSCRIPT_HEIGHT),
                 Constraint::Length(height),
                 Constraint::Length(self.config.footer_height),
             ])
             .split(area)
             .to_vec()
+    }
+
+    /// Carve the TUI's own borders out of the frame, naming the pane between
+    /// them.
+    ///
+    /// The left border gets a reserved column rather than being painted over
+    /// the content, so the header, viewport, composer and footer never write
+    /// their own text into the leftmost column. The bottom border gets its own
+    /// row, carved off **before** the session layout runs: `footer_height` is
+    /// one, so anchoring the edge on the footer's own last row painted a
+    /// `Borders::BOTTOM` block across the only row the status line had.
+    pub fn frame_outer(&self, area: Rect, panels: PanelRegions) -> FrameOuter {
+        let bordered = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(panels.main);
+        let main_area_inner = bordered[1];
+        let (pane, bottom_border) = if main_area_inner.height > 0 {
+            let split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(0), Constraint::Length(1)])
+                .split(main_area_inner);
+            let usable = main_area_inner.width > 0 && split[0].height > 0;
+            (split[0], if usable { Some(split[1]) } else { None })
+        } else {
+            (main_area_inner, None)
+        };
+        FrameOuter {
+            frame: area,
+            panels,
+            left_border: bordered[0],
+            bottom_border,
+            pane,
+        }
+    }
+
+    /// Plan the frame: the rect every region of this frame owns.
+    ///
+    /// **A claim is carved where it is drawn, in the order it is drawn.** The
+    /// pane divides into header, transcript, composer and footer. Off the
+    /// composer's top, in this order: the hint line, the todo strip, the tasks
+    /// overlay, the deliverable card — and the input box takes what is left. So
+    /// the strips' vertical order *is* the order of the claims, and a claim can
+    /// never be honoured above a row that is drawn below it. The subagent tab
+    /// bar is carved off the **transcript's** top, because that is where it is
+    /// drawn: charging it to the composer would charge one row twice.
+    ///
+    /// **A claim that does not fit yields; it never shrinks its neighbour.**
+    /// Every strip goes through [`carve_top`], and the overlay and the bar draw
+    /// from one budget of rows left after every other claim, the bar first — a
+    /// tab the user opened going invisible is worse than a shorter overlay.
+    ///
+    /// Pure. Every input is a number, a placement, or the layout's own
+    /// configuration; nothing here reads `App`, paints, or touches the world,
+    /// and equal inputs return equal plans.
+    pub fn plan_frame(&self, outer: FrameOuter, claims: FrameClaims) -> FramePlan {
+        let spare_rows = self.config.spare_rows(
+            outer.pane.height,
+            claims.todo_rows,
+            claims.hint_rows,
+            outer.max_prompt_rows(),
+        );
+        let tab_rows = claims.tab_rows.min(spare_rows);
+        let tasks_rows = claims.tasks_rows.min(spare_rows.saturating_sub(tab_rows));
+        let present_rows = claims.present_rows.min(
+            spare_rows
+                .saturating_sub(tab_rows)
+                .saturating_sub(tasks_rows),
+        );
+        let prompt_height = claims
+            .prompt_rows
+            .saturating_add(claims.todo_rows)
+            .saturating_add(tasks_rows)
+            .saturating_add(present_rows)
+            .saturating_add(claims.hint_rows);
+        let chunks = self.session_layout(outer.pane, Some(prompt_height));
+
+        let (hint, available) = carve_top(chunks[2], claims.hint_rows);
+        let (todo, available) = carve_top(available, claims.todo_rows);
+        let (tasks, available) = carve_top(available, tasks_rows);
+        let (present, prompt) = carve_top(available, present_rows);
+        let (tab_bar, viewport) = carve_top(chunks[1], tab_rows);
+
+        FramePlan {
+            panels: outer.panels,
+            pane: outer.pane,
+            left_border: outer.left_border,
+            bottom_border: outer.bottom_border,
+            header: chunks[0],
+            footer: chunks[3],
+            composer: chunks[2],
+            prompt,
+            viewport,
+            tab_bar,
+            hint,
+            todo,
+            tasks,
+            present,
+            scrollbar: None,
+            completion: None,
+        }
     }
 
     /// Split a viewport area into content + scrollbar gutter columns.
@@ -559,5 +811,343 @@ mod tests {
         assert_eq!(chunks.len(), 4);
         assert_eq!(chunks[0].height, 1, "header");
         assert_eq!(chunks[3].height, 1, "footer");
+        assert_eq!(
+            chunks[1].height,
+            area.height - 5,
+            "the transcript is the only chunk that absorbs slack"
+        );
+    }
+
+    /// A three-row composer and nothing else claiming the pane.
+    fn bare_claims() -> FrameClaims {
+        FrameClaims {
+            prompt_rows: 3,
+            ..FrameClaims::default()
+        }
+    }
+
+    /// Plan a frame from inputs alone — no `App`, no terminal, no frame.
+    fn plan_at(area: Rect, claims: FrameClaims) -> FramePlan {
+        let layout = layout();
+        let panels = layout.split(area, &[]);
+        layout.plan_frame(layout.frame_outer(area, panels), claims)
+    }
+
+    fn strips(plan: &FramePlan) -> Vec<(&'static str, Rect)> {
+        let mut ordered = Vec::new();
+        for (name, rect) in [
+            ("hint", plan.hint),
+            ("todo", plan.todo),
+            ("tasks", plan.tasks),
+            ("present", plan.present),
+        ] {
+            if let Some(rect) = rect {
+                ordered.push((name, rect));
+            }
+        }
+        ordered.push(("prompt", plan.prompt));
+        ordered
+    }
+
+    /// The plan is a value: the same frame and the same claims return the same
+    /// plan, and nothing outside the arguments can change the answer.
+    #[test]
+    fn a_plan_is_a_function_of_its_inputs() {
+        let area = Rect::new(0, 0, 120, 40);
+        let claims = FrameClaims {
+            todo_rows: 1,
+            hint_rows: 1,
+            tasks_rows: 2,
+            ..bare_claims()
+        };
+        let first = plan_at(area, claims);
+        assert_eq!(
+            first,
+            plan_at(area, claims),
+            "planning twice from equal inputs must return equal plans"
+        );
+        assert_eq!(first.header.height, 1, "the header keeps its row");
+        assert_eq!(
+            first.prompt.height, 3,
+            "the composer keeps the height it asked for"
+        );
+    }
+
+    /// The load-bearing rule, executable: the strips are laid out top-down in
+    /// the order they are claimed, each directly beneath the one before it, and
+    /// together they tile the composer's allocation exactly.
+    #[test]
+    fn the_carve_order_is_the_order_on_screen() {
+        let area = Rect::new(0, 0, 120, 40);
+        let plan = plan_at(
+            area,
+            FrameClaims {
+                todo_rows: 1,
+                hint_rows: 1,
+                tab_rows: 1,
+                tasks_rows: 2,
+                present_rows: 3,
+                prompt_rows: 3,
+            },
+        );
+        let mut cursor = plan.composer.y;
+        for (name, rect) in strips(&plan) {
+            assert_eq!(
+                rect.y, cursor,
+                "{name} must sit directly below its predecessor"
+            );
+            assert_eq!(rect.width, plan.composer.width, "{name} spans the composer");
+            cursor += rect.height;
+        }
+        assert_eq!(
+            cursor,
+            plan.composer.y + plan.composer.height,
+            "the strips tile the composer: no row is lost and none is counted twice"
+        );
+        assert_eq!(plan.hint.expect("a hint row").height, 1);
+        assert_eq!(plan.todo.expect("a todo row").height, 1);
+        assert_eq!(plan.tasks.expect("task rows").height, 2);
+        assert_eq!(plan.present.expect("card rows").height, 3);
+    }
+
+    /// Reordering the two one-row claims is the bug this catches: swapping the
+    /// hint and the todo strip leaves both present and both one row tall, so
+    /// only their order distinguishes the frame the comments describe from the
+    /// frame a reordering produces.
+    #[test]
+    fn a_swapped_carve_puts_a_strip_on_the_wrong_row() {
+        let area = Rect::new(0, 0, 120, 40);
+        let plan = plan_at(
+            area,
+            FrameClaims {
+                hint_rows: 1,
+                todo_rows: 1,
+                ..bare_claims()
+            },
+        );
+        assert_eq!(plan.hint.expect("a hint row").y, plan.composer.y);
+        assert_eq!(plan.todo.expect("a todo row").y, plan.composer.y + 1);
+    }
+
+    /// A claim that cannot be honoured takes nothing, and what it would have
+    /// taken goes to the region with the floor — never to itself.
+    #[test]
+    fn a_claim_that_does_not_fit_yields_instead_of_taking_the_last_row() {
+        // 12 rows cannot pay the transcript floor and the composer both, so
+        // nothing is left over for the on-demand strips.
+        let short = plan_at(
+            Rect::new(0, 0, 40, 12),
+            FrameClaims {
+                tasks_rows: 40,
+                present_rows: 40,
+                ..bare_claims()
+            },
+        );
+        assert!(
+            short.tasks.is_none() && short.present.is_none(),
+            "an overlay with no budget must drop out, not render short"
+        );
+        assert!(
+            short.viewport.height >= MIN_TRANSCRIPT_HEIGHT,
+            "the rows a yielded claim did not take belong to the transcript, got {}",
+            short.viewport.height
+        );
+
+        // 120x40 can pay the floor and the box, but a card asking for more than
+        // the chunk holds must not take the box's rows.
+        let tall = plan_at(
+            Rect::new(0, 0, 120, 40),
+            FrameClaims {
+                present_rows: 80,
+                ..bare_claims()
+            },
+        );
+        assert_eq!(
+            tall.prompt.height, 3,
+            "a card that outgrew the chunk must not take the input box's rows"
+        );
+        assert_eq!(
+            tall.present.expect("the card is on screen").height,
+            tall.composer.height - 3,
+            "the card takes what is left above the box, no more"
+        );
+    }
+
+    /// The tab bar is drawn on the transcript, so it is charged to the
+    /// transcript. Charging the composer as well would take two rows for one
+    /// bar and move the input box under the user's hands when a tab opens.
+    #[test]
+    fn the_tab_bar_is_charged_to_the_transcript_not_the_composer() {
+        let area = Rect::new(0, 0, 120, 40);
+        let without = plan_at(area, bare_claims());
+        let with = plan_at(
+            area,
+            FrameClaims {
+                tab_rows: 1,
+                ..bare_claims()
+            },
+        );
+        let tab = with.tab_bar.expect("an open tab reserves its bar");
+        assert_eq!(
+            tab.y, without.viewport.y,
+            "the bar is the viewport's top row"
+        );
+        assert_eq!(
+            with.viewport.y,
+            tab.y + tab.height,
+            "the transcript starts below the bar"
+        );
+        assert_eq!(
+            with.viewport.height,
+            without.viewport.height - 1,
+            "the bar costs the transcript exactly one row"
+        );
+        assert_eq!(
+            with.prompt, without.prompt,
+            "and the composer not one row at all"
+        );
+    }
+
+    /// The bar is persistent and the overlay is on demand, so the bar wins the
+    /// last row the pane can spare.
+    #[test]
+    fn the_tab_bar_wins_the_last_row_over_the_overlay() {
+        // 23 rows leaves exactly one spare after the transcript floor.
+        let plan = plan_at(
+            Rect::new(0, 0, 80, 23),
+            FrameClaims {
+                tab_rows: 1,
+                tasks_rows: 2,
+                ..bare_claims()
+            },
+        );
+        assert!(plan.tab_bar.is_some(), "the persistent bar keeps its row");
+        assert!(
+            plan.tasks.is_none(),
+            "the on-demand overlay yields the row to it"
+        );
+    }
+
+    /// A claim set larger than the pane produces a plan, not a panic and not
+    /// an inverted rect.
+    #[test]
+    fn claims_larger_than_the_pane_produce_a_valid_plan() {
+        let area = Rect::new(0, 0, 20, 6);
+        let plan = plan_at(
+            area,
+            FrameClaims {
+                todo_rows: 5,
+                hint_rows: 5,
+                tab_rows: 5,
+                tasks_rows: 5,
+                present_rows: 5,
+                prompt_rows: 9,
+            },
+        );
+        for (name, rect) in [
+            ("pane", plan.pane),
+            ("header", plan.header),
+            ("viewport", plan.viewport),
+            ("composer", plan.composer),
+            ("prompt", plan.prompt),
+            ("footer", plan.footer),
+        ] {
+            assert!(
+                rect.y + rect.height <= area.height && rect.x + rect.width <= area.width,
+                "{name} must stay inside the frame, got {rect:?}"
+            );
+        }
+        assert!(
+            plan.prompt.height <= plan.composer.height,
+            "the box cannot outgrow its allocation"
+        );
+    }
+
+    /// Every terminal size and claim combination the frame can meet: the
+    /// regions tile the pane, no two regions overlap, and the composer's
+    /// strips tile its allocation. A carve that lost a row, counted one twice,
+    /// or painted outside its chunk breaks one of these.
+    #[test]
+    fn the_plan_tiles_the_pane_across_the_size_and_claim_matrix() {
+        let sizes = [(120, 40), (80, 24), (40, 12), (20, 6)];
+        let combinations = [
+            bare_claims(),
+            FrameClaims {
+                todo_rows: 1,
+                ..bare_claims()
+            },
+            FrameClaims {
+                tasks_rows: 2,
+                ..bare_claims()
+            },
+            FrameClaims {
+                todo_rows: 1,
+                tasks_rows: 2,
+                ..bare_claims()
+            },
+            FrameClaims {
+                todo_rows: 1,
+                hint_rows: 1,
+                tab_rows: 1,
+                tasks_rows: 2,
+                ..bare_claims()
+            },
+        ];
+        for (width, height) in sizes {
+            for claims in combinations {
+                let plan = plan_at(Rect::new(0, 0, width, height), claims);
+                let tiled = plan.header.height
+                    + plan.tab_bar.map_or(0, |rect| rect.height)
+                    + plan.viewport.height
+                    + plan.composer.height
+                    + plan.footer.height;
+                assert_eq!(
+                    tiled, plan.pane.height,
+                    "{width}x{height} {claims:?}: the regions must tile the pane"
+                );
+                let composer_rows: u16 = strips(&plan).iter().map(|(_, rect)| rect.height).sum();
+                assert_eq!(
+                    composer_rows, plan.composer.height,
+                    "{width}x{height} {claims:?}: the strips must tile the composer"
+                );
+                // The strips live in the composer chunk, so the chain starts
+                // there — not below the header, which is the other end of the
+                // transcript.
+                let mut previous_bottom = plan.composer.y;
+                for (name, rect) in strips(&plan) {
+                    assert_eq!(
+                        rect.y, previous_bottom,
+                        "{width}x{height}: {name} must not overlap its predecessor"
+                    );
+                    previous_bottom = rect.y + rect.height;
+                }
+                assert_eq!(
+                    previous_bottom, plan.footer.y,
+                    "{width}x{height}: the composer is the chunk above the footer"
+                );
+            }
+        }
+    }
+
+    /// The pane the claims are measured against is narrowed by the frame's own
+    /// border strip, so the width the composer wraps at is the width it is
+    /// painted into.
+    #[test]
+    fn a_panel_edge_and_the_border_narrow_the_pane_the_claims_are_measured_against() {
+        let area = Rect::new(0, 0, 120, 40);
+        let panels = layout().split(area, &[PanelPlacement::Right]);
+        let outer = layout().frame_outer(area, panels);
+        assert_eq!(
+            outer.pane.width,
+            panels.main.width - 1,
+            "the border strip comes out of the main area"
+        );
+        assert_eq!(outer.left_border.width, 1);
+        let plan = layout().plan_frame(outer, bare_claims());
+        assert_eq!(plan.pane, outer.pane);
+        assert_eq!(
+            plan.panels, panels,
+            "the plan records the edges it planned around"
+        );
     }
 }

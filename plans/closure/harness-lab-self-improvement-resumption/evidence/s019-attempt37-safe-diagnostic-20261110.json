@@ -1,0 +1,470 @@
+{
+  "activity_stall": {
+    "stall_limit_seconds": 300,
+    "triggered": false
+  },
+  "attempt_number": 37,
+  "authorization": {
+    "combined_starts_consumed": 38,
+    "combined_starts_remaining": 82,
+    "supplemental_starts_consumed": 15,
+    "supplemental_starts_remaining": 25
+  },
+  "continuation_public_gates": {
+    "contract_phase_order_matches": true,
+    "document_valid": false,
+    "incomplete_gates": [
+      "independent_review"
+    ],
+    "incomplete_stages": [],
+    "next_gate": "independent_review",
+    "next_stage": "none",
+    "phase_order_matches": true,
+    "repair_pair_results": {
+      "catalog_format": {
+        "documented_states_match_observations": true,
+        "failed_job_status_called_immediately": true,
+        "failed_job_submitted_once": true,
+        "failed_terminal_observed": true,
+        "job_ids_are_distinct": true,
+        "productive_change_between_failure_and_rerun": true,
+        "qualified": true,
+        "repair_cycle_correlated": true,
+        "repair_followed_failure": true,
+        "repair_job_status_called_immediately": true,
+        "repair_job_submitted_once": true,
+        "repair_terminal_observed": true
+      },
+      "catalog_store": {
+        "documented_states_match_observations": true,
+        "failed_job_status_called_immediately": true,
+        "failed_job_submitted_once": true,
+        "failed_terminal_observed": true,
+        "job_ids_are_distinct": true,
+        "productive_change_between_failure_and_rerun": true,
+        "qualified": true,
+        "repair_cycle_correlated": true,
+        "repair_followed_failure": true,
+        "repair_job_status_called_immediately": true,
+        "repair_job_submitted_once": true,
+        "repair_terminal_observed": true
+      }
+    },
+    "required_review_observed": false,
+    "required_success_jobs": {
+      "clippy": {
+        "completed": true,
+        "documented_completed": true,
+        "observed_terminal_status": "completed",
+        "submitted_once": true
+      },
+      "workspace_tests": {
+        "completed": true,
+        "documented_completed": true,
+        "observed_terminal_status": "completed",
+        "submitted_once": true
+      }
+    },
+    "stage_order_matches": true,
+    "test_job_lifecycle": {
+      "submission_count": 12,
+      "terminal_observed_count": 12,
+      "terminal_status_counts": {
+        "completed": 10,
+        "failed": 2
+      },
+      "unobserved_count": 0
+    }
+  },
+  "disk": {
+    "current_free_bytes": 80605421568,
+    "external_hard_stop": false,
+    "external_watch_samples": 455,
+    "floor_bytes": 10737418240,
+    "minimum_free_bytes": 74692718592,
+    "runner_exit_code": 2,
+    "triggered": null
+  },
+  "event_measurement": {
+    "correlated_repair_cycles": 2,
+    "dropped_events": 0,
+    "event_count": 675,
+    "explicit_event_gaps": 0,
+    "maximum_native_tool_event_gap_ms": 97255,
+    "tool_started": 313,
+    "tool_terminal": 313,
+    "trace_state": "complete",
+    "unpaired_starts": 0
+  },
+  "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "horizon": {
+    "active_work_span_ms": 3285622,
+    "duration_qualified": true,
+    "exact_job_running_and_terminal": true,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 97255,
+    "minimum_active_duration_ms": 1800000,
+    "outcome": "not_qualified",
+    "productive_work_during_job": true,
+    "reason": "task_not_passed",
+    "repair_cycles": 2
+  },
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "outcome": {
+    "active_work_span_ms": 3285576,
+    "agent_terminal": "timeout",
+    "continuation_stop_reason": "turn_timeout",
+    "duration_ms": 3299686,
+    "duration_qualified": true,
+    "stop_reason": "turn_timeout",
+    "task": "failed",
+    "task_completion_reasons": [
+      "agent_terminal_incomplete",
+      "continuation_not_confirmed",
+      "required_gates_incomplete",
+      "required_review_unobserved",
+      "independent_verifier_failures"
+    ],
+    "terminal": "timeout",
+    "turn_timeout_diagnostic": {
+      "autonomous_followup_count": 10,
+      "last_request_elapsed_ms": 60753,
+      "last_request_timeout_seconds": 60.745,
+      "prompt_request_count": 11,
+      "remaining_wallclock_seconds_at_prompt_start": 360.745,
+      "remaining_wallclock_seconds_at_timeout": 299.978,
+      "state": "observed",
+      "verifier_reserve_seconds": 300.0
+    }
+  },
+  "private_receipt_sha256": "7a593aad42e7c4e99abdebf7ae60b337716bb670346026623e5e751f8d4da8a5",
+  "prompt_boundary_timeline": {
+    "count": 11,
+    "entries": [
+      {
+        "active_work_span_end_ms": 601396,
+        "active_work_span_start_ms": 0,
+        "continuation_decision": "continue",
+        "exception_text_retained": false,
+        "prompt_text_retained": false,
+        "provider_text_retained": false,
+        "raw_tool_arguments_retained": false,
+        "remaining_wallclock_start_ms": 3599075,
+        "request_elapsed_ms": 606376,
+        "request_index": 1,
+        "request_timeout_ms": 900000,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": false,
+        "started_elapsed_ms": 262,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 80,
+        "tool_call_count_start": 0
+      },
+      {
+        "active_work_span_end_ms": 852909,
+        "active_work_span_start_ms": 601396,
+        "continuation_decision": "continue",
+        "exception_text_retained": false,
+        "prompt_text_retained": false,
+        "provider_text_retained": false,
+        "raw_tool_arguments_retained": false,
+        "remaining_wallclock_start_ms": 2992613,
+        "request_elapsed_ms": 291799,
+        "request_index": 2,
+        "request_timeout_ms": 900000,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": false,
+        "started_elapsed_ms": 606724,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 105,
+        "tool_call_count_start": 80
+      },
+      {
+        "active_work_span_end_ms": 1081150,
+        "active_work_span_start_ms": 852909,
+        "continuation_decision": "continue",
+        "exception_text_retained": false,
+        "prompt_text_retained": false,
+        "provider_text_retained": false,
+        "raw_tool_arguments_retained": false,
+        "remaining_wallclock_start_ms": 2700635,
+        "request_elapsed_ms": 191411,
+        "request_index": 3,
+        "request_timeout_ms": 900000,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": false,
+        "started_elapsed_ms": 898701,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 132,
+        "tool_call_count_start": 105
+      },
+      {
+        "active_work_span_end_ms": 1320147,
+        "active_work_span_start_ms": 1081150,
+        "continuation_decision": "continue",
+        "exception_text_retained": false,
+        "prompt_text_retained": false,
+        "provider_text_retained": false,
+        "raw_tool_arguments_retained": false,
+        "remaining_wallclock_start_ms": 2509165,
+        "request_elapsed_ms": 240838,
+        "request_index": 4,
+        "request_timeout_ms": 900000,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": false,
+        "started_elapsed_ms": 1090172,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 166,
+        "tool_call_count_start": 132
+      },
+      {
+        "active_work_span_end_ms": 1936794,
+        "active_work_span_start_ms": 1320147,
+        "continuation_decision": "continue",
+        "exception_text_retained": false,
+        "prompt_text_retained": false,
+        "provider_text_retained": false,
+        "raw_tool_arguments_retained": false,
+        "remaining_wallclock_start_ms": 2268259,
+        "request_elapsed_ms": 610949,
+        "request_index": 5,
+        "request_timeout_ms": 900000,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": true,
+        "started_elapsed_ms": 1331078,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 207,
+        "tool_call_count_start": 166
+      },
+      {
+        "active_work_span_end_ms": 2544665,
+        "active_work_span_start_ms": 1936794,
+        "continuation_decision": "continue",
+        "exception_text_retained": false,
+        "prompt_text_retained": false,
+        "provider_text_retained": false,
+        "raw_tool_arguments_retained": false,
+        "remaining_wallclock_start_ms": 1657233,
+        "request_elapsed_ms": 607798,
+        "request_index": 6,
+        "request_timeout_ms": 900000,
+        "reviewer_due_marker_received": true,
+        "reviewer_due_marker_sent_next": false,
+        "started_elapsed_ms": 1942103,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 270,
+        "tool_call_count_start": 207
+      },
+      {
+        "active_work_span_end_ms": 2611852,
+        "active_work_span_start_ms": 2544665,
+        "continuation_decision": "continue",
+        "exception_text_retained": false,
+        "prompt_text_retained": false,
+        "provider_text_retained": false,
+        "raw_tool_arguments_retained": false,
+        "remaining_wallclock_start_ms": 1049357,
+        "request_elapsed_ms": 88160,
+        "request_index": 7,
+        "request_timeout_ms": 749357,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": false,
+        "started_elapsed_ms": 2549980,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 275,
+        "tool_call_count_start": 270
+      },
+      {
+        "active_work_span_end_ms": 2737298,
+        "active_work_span_start_ms": 2611852,
+        "continuation_decision": "continue",
+        "exception_text_retained": false,
+        "prompt_text_retained": false,
+        "provider_text_retained": false,
+        "raw_tool_arguments_retained": false,
+        "remaining_wallclock_start_ms": 961134,
+        "request_elapsed_ms": 117570,
+        "request_index": 8,
+        "request_timeout_ms": 661134,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": false,
+        "started_elapsed_ms": 2638203,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 284,
+        "tool_call_count_start": 275
+      },
+      {
+        "active_work_span_end_ms": 3028379,
+        "active_work_span_start_ms": 2737298,
+        "continuation_decision": "continue",
+        "exception_text_retained": false,
+        "prompt_text_retained": false,
+        "provider_text_retained": false,
+        "raw_tool_arguments_retained": false,
+        "remaining_wallclock_start_ms": 843491,
+        "request_elapsed_ms": 294265,
+        "request_index": 9,
+        "request_timeout_ms": 543491,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": false,
+        "started_elapsed_ms": 2755845,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 291,
+        "tool_call_count_start": 284
+      },
+      {
+        "active_work_span_end_ms": 3219706,
+        "active_work_span_start_ms": 3028379,
+        "continuation_decision": "continue",
+        "exception_text_retained": false,
+        "prompt_text_retained": false,
+        "provider_text_retained": false,
+        "raw_tool_arguments_retained": false,
+        "remaining_wallclock_start_ms": 549162,
+        "request_elapsed_ms": 188347,
+        "request_index": 10,
+        "request_timeout_ms": 249162,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": false,
+        "started_elapsed_ms": 3050175,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 304,
+        "tool_call_count_start": 291
+      },
+      {
+        "active_work_span_end_ms": 3285576,
+        "active_work_span_start_ms": 3219706,
+        "continuation_decision": "turn_timeout",
+        "exception_text_retained": false,
+        "prompt_text_retained": false,
+        "provider_text_retained": false,
+        "raw_tool_arguments_retained": false,
+        "remaining_wallclock_start_ms": 360745,
+        "request_elapsed_ms": 60753,
+        "request_index": 11,
+        "request_timeout_ms": 60745,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": null,
+        "started_elapsed_ms": 3238592,
+        "stop_class": "turn_timeout",
+        "tool_call_count_end": 313,
+        "tool_call_count_start": 304
+      }
+    ],
+    "exception_text_retained": false,
+    "prompt_text_retained": false,
+    "provider_text_retained": false,
+    "raw_tool_arguments_retained": false,
+    "schema": "h007_prompt_boundary_timeline_v1"
+  },
+  "provider": {
+    "allowance_usd": 0.108583,
+    "attempts_failed": 1,
+    "attempts_started": 250,
+    "attempts_succeeded": 248,
+    "billed_usd": null,
+    "billed_usd_treatment": "unknown",
+    "provider_timeout_events": 0,
+    "request_limit": 1200,
+    "requests": 250,
+    "retry_scheduled_count": 1
+  },
+  "raw_job_arguments_retained": false,
+  "raw_job_ids_retained": false,
+  "raw_output_retained": false,
+  "reviewer_lifecycle": {
+    "completed_get_result_observed_count": 0,
+    "compliant_status_then_get_lifecycle": false,
+    "explicit_terminal_observation_count": 1,
+    "final_status": "failed",
+    "reviewer_event_count": 19,
+    "reviewer_spawn_count": 1,
+    "task_action_counts": {
+      "get": 1,
+      "spawn": 1,
+      "status": 13,
+      "wait": 5
+    },
+    "final_failure_class": "deadline_exceeded",
+    "durable_run_elapsed_ms": 1205086,
+    "continue_action_count": 0
+  },
+  "reviewer_schedule": {
+    "due_prompt_count": 1,
+    "first_due_active_work_span_ms": 1936794,
+    "first_due_followup_number": 5,
+    "reviewer_spawn_count": 1,
+    "start_threshold_active_ms": 1800000
+  },
+  "schema": "s019_attempt_safe_diagnostic_v1",
+  "source_revision": "ac584c886f03847ff6b829f8509667637e42a052",
+  "task_completion": {
+    "reasons": [
+      "agent_terminal_incomplete",
+      "continuation_not_confirmed",
+      "required_gates_incomplete",
+      "required_review_unobserved",
+      "independent_verifier_failures"
+    ],
+    "state": "agent_incomplete",
+    "verifier_outcome": "assertion_failures",
+    "verifier_public_reconciliation": {
+      "classification": {
+        "continuation_boundary": "public_evidence_incomplete",
+        "transcript_job_lifecycle": "public_evidence_incomplete"
+      },
+      "failure_domain_counts": {
+        "continuation_boundary": 1,
+        "transcript_job_lifecycle": 1
+      },
+      "public_domain_states": {
+        "continuation_boundary": "incomplete",
+        "transcript_job_lifecycle": "incomplete"
+      },
+      "raw_output_retained": false,
+      "transcript_retained": false
+    }
+  },
+  "timeline_correlation": {
+    "last_prompt_active_span_ms": 3285576,
+    "last_prompt_stop_class": "turn_timeout",
+    "reviewer_due_marker_injected_count": 1,
+    "reviewer_threshold_active_ms": 1800000
+  },
+  "verifier_aggregate": {
+    "assertion_operation_counts": {
+      "pattern": 1
+    },
+    "assertion_text_retained": false,
+    "failed_test_identities_retained": false,
+    "failure_counts": {
+      "errors": 0,
+      "failures": 2
+    },
+    "failure_domain_counts": {
+      "continuation_boundary": 1,
+      "transcript_job_lifecycle": 1
+    },
+    "passed_count": 3,
+    "raw_output_retained": false,
+    "setup_failure_reason": "other",
+    "state": "assertion_failures",
+    "tests_run": 5
+  },
+  "verifier_text_retained": false,
+  "reviewer_durable_state": {
+    "state": "observed",
+    "run_status": "failed",
+    "run_terminal": "failed",
+    "task_status": "failed",
+    "failure_class": "deadline_exceeded",
+    "elapsed_ms": 1205086,
+    "matched_run_count": 1,
+    "matched_task_count": 1,
+    "failure_message_retained": false,
+    "raw_identifiers_retained": false,
+    "task_result_body_retained": false,
+    "transcript_retained": false
+  }
+}

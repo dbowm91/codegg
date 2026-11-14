@@ -345,6 +345,27 @@ pub fn build_session_tool_registry(
             execution.workspace_root.clone(),
             crate::core::daemon_skills::default_habit_root(),
         ));
+        // M003 (harness practice adoption): `present` verifies a declared
+        // deliverable against the turn's durable edit checkpoint before the
+        // declaration is recorded. It is registered here, in the daemon's
+        // per-turn registry, and deliberately NOT in
+        // `ToolRegistry::with_defaults`: a delegated child builds its registry
+        // through `with_options`, so this is the same denial mechanism that
+        // keeps every unreviewed tool out of a child. A child's result is
+        // machine-derived from Git state; a model-authored declaration about
+        // the same work would be a second, weaker claim.
+        tool_registry.register(crate::tool::present::PresentTool::new(
+            execution.workspace_root.clone(),
+            execution.workspace_id.as_str().to_owned(),
+            session_id.clone(),
+            turn_id.clone(),
+            Some(Arc::new(
+                crate::snapshot::checkpoint::EditCheckpointManager::new(
+                    pool.clone(),
+                    execution.workspace_root.clone(),
+                ),
+            )),
+        ));
         tool_registry.register(
             crate::tool::session_working_directory::SessionWorkingDirectoryTool::new(
                 pool, session_id, root,
@@ -399,6 +420,13 @@ pub fn build_session_tool_registry(
                 .as_ref()
                 .and_then(|s| s.max_depth)
                 .unwrap_or(3) as u32,
+        )
+        .with_max_wall_clock_secs(
+            config
+                .subagent
+                .as_ref()
+                .map(crate::config::schema::SubagentConfig::effective_wall_clock_timeout_secs)
+                .unwrap_or(crate::config::schema::DEFAULT_SUBAGENT_WALL_CLOCK_TIMEOUT_SECS),
         );
         let task_tool = if let Some(submission) = submission {
             task_tool

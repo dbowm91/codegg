@@ -1,6 +1,8 @@
 use crate::session::events::AgentPlan;
 use crate::session::Session;
-use crate::tui::app::state::session::{DiffStatsState, GitSidebarInfo};
+use crate::tui::app::state::session::{
+    ChangedFile, DiffStatsState, GitSidebarInfo, GitSidebarState,
+};
 use crate::tui::app::state::tasks::is_live_state;
 use codegg_protocol::projection::dto::{AgentTreeNodeProjection, AgentTreeStatus};
 use ratatui::layout::Rect;
@@ -15,6 +17,7 @@ use std::sync::Arc;
 
 use super::super::app::TodoEntry;
 use super::super::theme::Theme;
+use crate::tui::panels::chrome::PanelChrome;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SidebarSection {
@@ -197,6 +200,7 @@ pub struct SidebarJob {
 /// never silently reads as a complete one.
 pub const MAX_SIDEBAR_SUBAGENT_ROWS: usize = 16;
 pub const MAX_SIDEBAR_JOB_ROWS: usize = 12;
+pub const MAX_SIDEBAR_RUN_GROUPS: usize = 16;
 
 pub struct SidebarWidget {
     pub theme: Arc<Theme>,
@@ -260,6 +264,12 @@ pub struct SidebarWidget {
     focused_position: Option<usize>,
     scope_project_id: Option<String>,
     collapsed_agent_nodes: HashSet<u64>,
+    /// Whether a multi-setter population is in progress.
+    ///
+    /// While it is, the setters that used to reconcile focus individually
+    /// leave that to one call at the end of the population. A setter called
+    /// from anywhere else still reconciles as before.
+    population_in_progress: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,7 +278,36 @@ pub enum SidebarLiveWorkStatus {
     Unavailable,
 }
 
-const MAX_SIDEBAR_AGENT_TREE_NODES: usize = 64;
+/// The inputs a frame's population step would copy into the sidebar.
+///
+/// Every field is borrowed. The population is a pure copy of exactly these
+/// values, so [`SidebarWidget::population_is_current`] can answer "would the
+/// population change anything?" without cloning the very things the
+/// population exists to clone.
+///
+/// The projection-derived sections are not listed: they all come from one
+/// snapshot, and the frame gates them on the snapshot's
+/// `(stream_id, event_seq)` revision instead. A snapshot that arrives is
+/// therefore always reflected, whatever this comparison says.
+pub struct SidebarPopulationInputs<'a> {
+    pub project_scope: Option<&'a str>,
+    pub session: Option<&'a Session>,
+    pub agent: &'a str,
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub mcp_servers: &'a [(String, String)],
+    pub file_changes: &'a [ChangedFile],
+    /// The cached git state, or `None` when there is no session to show.
+    pub git: Option<&'a GitSidebarState>,
+    /// The root shown when the git cache has not reported one: the session's
+    /// project id.
+    pub git_fallback_root: Option<&'a str>,
+    pub goal: Option<&'a str>,
+    pub plan: Option<&'a AgentPlan>,
+    pub live_work_status: Option<SidebarLiveWorkStatus>,
+}
+
+pub const MAX_SIDEBAR_AGENT_TREE_NODES: usize = 64;
 
 #[derive(Debug, Clone)]
 struct SidebarAgentTreeRow {
@@ -328,6 +367,7 @@ impl SidebarWidget {
             focused_position: None,
             scope_project_id: None,
             collapsed_agent_nodes: HashSet::new(),
+            population_in_progress: false,
         }
     }
 
@@ -369,19 +409,35 @@ impl SidebarWidget {
     /// The truncated remainder is remembered in `subagent_total` rather than
     /// dropped, so the header count and the `… N more` line both stay honest.
     pub fn set_subagents(&mut self, subagents: Vec<SidebarSubagent>) {
-        self.subagent_total = subagents.len();
+        let total = subagents.len();
+        self.set_subagents_with_total(subagents, total);
+    }
+
+    /// Replace the subagent rows, reporting the total before the bound.
+    ///
+    /// The population knows the full length before it clones a row, so the
+    /// header count stays honest while the copy is bounded: the tail this
+    /// truncates was never displayed, but it used to be cloned first.
+    pub fn set_subagents_with_total(&mut self, subagents: Vec<SidebarSubagent>, total: usize) {
+        self.subagent_total = total;
         self.subagents = subagents
             .into_iter()
             .take(MAX_SIDEBAR_SUBAGENT_ROWS)
             .collect();
-        self.reconcile_focus();
+        self.rows_changed();
     }
 
     /// Replace the job rows. Bounded exactly like [`Self::set_subagents`].
     pub fn set_jobs(&mut self, jobs: Vec<SidebarJob>) {
-        self.job_total = jobs.len();
+        let total = jobs.len();
+        self.set_jobs_with_total(jobs, total);
+    }
+
+    /// Replace the job rows, reporting the total before the bound.
+    pub fn set_jobs_with_total(&mut self, jobs: Vec<SidebarJob>, total: usize) {
+        self.job_total = total;
         self.jobs = jobs.into_iter().take(MAX_SIDEBAR_JOB_ROWS).collect();
-        self.reconcile_focus();
+        self.rows_changed();
     }
 
     /// Subagent rows the bound truncated away.
@@ -436,14 +492,14 @@ impl SidebarWidget {
 
     pub fn set_agent_runs(&mut self, runs: Vec<SidebarAgentRun>) {
         self.agent_runs = runs;
-        self.reconcile_focus();
+        self.rows_changed();
     }
 
     pub fn set_run_groups(
         &mut self,
         groups: Vec<codegg_protocol::projection::dto::AgentRunGroupSummaryProjection>,
     ) {
-        self.run_groups = groups.into_iter().take(16).collect();
+        self.run_groups = groups.into_iter().take(MAX_SIDEBAR_RUN_GROUPS).collect();
     }
 
     pub fn set_agent_tree(&mut self, nodes: Vec<AgentTreeNodeProjection>) {
@@ -453,7 +509,7 @@ impl SidebarWidget {
             .collect();
         let present: HashSet<u64> = self.agent_tree.iter().map(|node| node.task_id).collect();
         self.collapsed_agent_nodes.retain(|id| present.contains(id));
-        self.reconcile_focus();
+        self.rows_changed();
     }
 
     /// Keep presentation-only selection scoped to the active project.
@@ -464,6 +520,125 @@ impl SidebarWidget {
             self.focused_target = None;
             self.focused_position = None;
             self.scroll_offset = 0;
+        }
+    }
+
+    /// Begin one frame's population.
+    ///
+    /// Focus reconciliation runs once, at [`Self::end_population`], instead
+    /// of after each of the four row setters. The setters' other callers are
+    /// unaffected: outside a population they still reconcile themselves.
+    pub fn begin_population(&mut self) {
+        self.population_in_progress = true;
+    }
+
+    /// End the population, reconciling focus once against the final rows.
+    pub fn end_population(&mut self) {
+        self.population_in_progress = false;
+        self.reconcile_focus();
+    }
+
+    /// Reconcile focus after a row setter, unless a population will do it.
+    fn rows_changed(&mut self) {
+        if !self.population_in_progress {
+            self.reconcile_focus();
+        }
+    }
+
+    /// Whether populating from `inputs` would change anything this widget
+    /// renders.
+    ///
+    /// Equality here means the population is a no-op, so a frame whose
+    /// inputs did not move can skip it entirely. Anything that differs —
+    /// however it got here — forces the population, so the gate cannot drop
+    /// an update it did not account for.
+    pub fn population_is_current(&self, inputs: &SidebarPopulationInputs<'_>) -> bool {
+        self.scope_project_id.as_deref() == inputs.project_scope
+            && match inputs.session {
+                // The population only writes a session when one exists; a
+                // missing session leaves the last known one in place.
+                Some(session) => self.session.as_ref() == Some(session),
+                None => true,
+            }
+            && self.agent == inputs.agent
+            && self.model == inputs.model
+            && self.provider == inputs.provider
+            && self.mcp_servers.as_slice() == inputs.mcp_servers
+            && self.file_changes_match(inputs.file_changes)
+            && self.git_matches(inputs.git, inputs.git_fallback_root)
+            && self.goal.as_deref() == inputs.goal
+            && self.plan_matches(inputs.plan)
+            && self.live_work_status == inputs.live_work_status
+    }
+
+    /// Compare the session's changed files with the rows already copied.
+    ///
+    /// The comparison is against the sidebar's own copy, so an unchanged
+    /// list costs no allocation — which is exactly the work the population
+    /// step exists to avoid repeating.
+    fn file_changes_match(&self, changes: &[ChangedFile]) -> bool {
+        self.file_changes.len() == changes.len()
+            && self
+                .file_changes
+                .iter()
+                .zip(changes)
+                .all(|(stored, incoming)| {
+                    stored.path.as_str() == incoming.path.to_string_lossy().as_ref()
+                        && stored.action == incoming.action
+                        && stored.diff_preview == incoming.diff_preview
+                        && stored.diff_state == incoming.diff_state
+                })
+    }
+
+    /// Compare the git cache's displayed fields with the sidebar's copy.
+    fn git_matches(&self, git: Option<&GitSidebarState>, fallback_root: Option<&str>) -> bool {
+        let Some(git) = git else {
+            // The population's no-session arm writes the defaults.
+            return self.project_root.is_none()
+                && self.git_branch.is_none()
+                && !self.git_dirty
+                && self.git_staged_count == 0
+                && self.git_unstaged_count == 0
+                && self.git_untracked_count == 0
+                && self.git_conflicted_count == 0
+                && self.git_ahead.is_none()
+                && self.git_behind.is_none()
+                && !self.git_loading
+                && self.git_error.is_none();
+        };
+        let root = git.root.as_deref().or(fallback_root);
+        self.project_root.as_deref() == root
+            && self.git_branch.as_deref() == git.branch.as_deref()
+            && self.git_dirty == git.dirty
+            && self.git_staged_count == git.staged_count
+            && self.git_unstaged_count == git.unstaged_count
+            && self.git_untracked_count == git.untracked_count
+            && self.git_conflicted_count == git.conflicted_count
+            && self.git_ahead == git.ahead
+            && self.git_behind == git.behind
+            && self.git_loading == git.loading
+            && self.git_error.as_deref() == git.error.as_deref()
+    }
+
+    /// Compare the plan's displayed fields. `updated_at` is not displayed,
+    /// so a clock-only change is not a reason to repopulate.
+    fn plan_matches(&self, plan: Option<&AgentPlan>) -> bool {
+        match (self.plan.as_ref(), plan) {
+            (None, None) => true,
+            (Some(stored), Some(incoming)) => {
+                stored.items.len() == incoming.items.len()
+                    && stored
+                        .items
+                        .iter()
+                        .zip(&incoming.items)
+                        .all(|(left, right)| {
+                            left.id == right.id
+                                && left.text == right.text
+                                && left.status == right.status
+                                && left.note == right.note
+                        })
+            }
+            _ => false,
         }
     }
 
@@ -1180,6 +1355,7 @@ impl SidebarWidget {
     }
 
     fn content_lines(&self, area_width: u16) -> Vec<Line<'static>> {
+        crate::tui::render_cost::count_sidebar_line_build();
         let mut lines = Vec::new();
         let width = area_width as usize;
 
@@ -2025,45 +2201,39 @@ impl Default for SidebarWidget {
 
 impl Widget for &SidebarWidget {
     fn render(self, area: Rect, buf: &mut ratatui::prelude::Buffer) {
-        self.render_with_title(area, buf, " Sidebar ", false);
+        let chrome = PanelChrome::new("Sidebar", false, &self.theme);
+        self.render_with_title(area, buf, &chrome);
     }
 }
 
 impl SidebarWidget {
-    /// Render with a caller-supplied title and focus styling.
+    /// Render the body inside `chrome`, which owns the border and its title.
     ///
-    /// The side column is a swappable panel host now, so the border title
-    /// has to name whichever panel is active. The body, scrollbar, and
-    /// tooltip logic is identical to the plain `Widget` path — this only
-    /// moves the title and the border colour to the caller.
+    /// The side column is a swappable panel host now, so the border title has
+    /// to name whichever panel is active. The body, scrollbar, and tooltip
+    /// logic is identical to the plain `Widget` path — this only moves the
+    /// title and the border colour to the panel's one chrome producer.
     pub fn render_with_title(
         &self,
         area: Rect,
         buf: &mut ratatui::prelude::Buffer,
-        title: &str,
-        focused: bool,
+        chrome: &PanelChrome<'_>,
     ) {
+        let inner = chrome.draw(area, buf);
+        // One build of the line model serves the paragraph, the scroll clamp
+        // and the scrollbar's extent. `max_scroll` used to rebuild the whole
+        // model for the clamp and again for the scrollbar's presence guard.
         let lines = self.content_lines(area.width);
-        let scroll_offset = self.scroll_offset.min(self.max_scroll(area));
+        let content_len = lines.len();
+        let viewport_height = inner.height as usize;
+        let max_scroll = content_len.saturating_sub(viewport_height);
+        let scroll_offset = self.scroll_offset.min(max_scroll);
 
-        let block = Block::default()
-            .title(title.to_string())
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(if focused {
-                self.theme.primary
-            } else {
-                self.theme.border
-            }))
-            .style(Style::default().bg(self.theme.background));
+        let paragraph = Paragraph::new(lines).scroll((scroll_offset as u16, 0));
+        paragraph.render(inner, buf);
 
-        let paragraph = Paragraph::new(lines)
-            .block(block)
-            .scroll((scroll_offset as u16, 0));
-        paragraph.render(area, buf);
-
-        if self.max_scroll(area) > 0 {
-            let mut state =
-                ScrollbarState::new(self.content_lines(area.width).len()).position(scroll_offset);
+        if max_scroll > 0 {
+            let mut state = ScrollbarState::new(content_len).position(scroll_offset);
             Scrollbar::default()
                 .orientation(ScrollbarOrientation::VerticalRight)
                 .thumb_style(Style::default().fg(self.theme.foreground))
@@ -2356,7 +2526,8 @@ mod tests {
         }]);
         let area = Rect::new(0, 0, 60, 20);
         let mut buf = ratatui::buffer::Buffer::empty(area);
-        sidebar.render_with_title(area, &mut buf, " SESSIONS ", false);
+        let chrome = PanelChrome::new("Sessions", false, &sidebar.theme);
+        sidebar.render_with_title(area, &mut buf, &chrome);
         let mut text = String::new();
         for y in 0..area.height {
             for x in 0..area.width {

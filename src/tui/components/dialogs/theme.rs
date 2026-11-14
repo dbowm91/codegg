@@ -1,7 +1,7 @@
-use ratatui::layout::{Margin, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 use std::sync::Arc;
 
 use crossterm::event::KeyEvent;
@@ -10,7 +10,11 @@ use ratatui::Frame;
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
 use super::super::scroll::CenteredScroll;
+use super::super::section::{Section, SectionFrame};
+use crate::theme::color::Rgb;
+use crate::theme::schema::derive_text_on;
 use crate::tui::app::TuiMsg;
+use crate::tui::components::hint_line::HintLine;
 
 /// State machine for the live-preview flow. The dialog starts `Inactive`
 /// and the previewed theme equals the last committed theme. The first
@@ -22,18 +26,6 @@ pub enum PreviewState {
     Previewing { original_id: String },
 }
 
-/// Who owns this render's chrome.
-///
-/// The two paths differ only in that. [`Chrome::Owned`] is the modal box, which
-/// draws its own border, heading and footer; [`Chrome::Hosted`] is a column in
-/// a side panel, where the host has already painted all three into the same
-/// rect.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Chrome {
-    Owned,
-    Hosted,
-}
-
 /// The verbs before a navigation arms a live preview.
 ///
 /// `handle_key` below is the implementation and this is the advertisement.
@@ -41,12 +33,39 @@ enum Chrome {
 /// different things here (revert a preview, otherwise close): it is the mode
 /// switch, so it means one thing in the modal box and another in a column, and
 /// a hosted hint cannot promise a revert that a panel cannot perform.
-const HINT_SETTLED: &str = "j/k navigate · enter apply";
+fn hint_settled() -> HintLine {
+    let mut hint = HintLine::new();
+    hint.push("j/k", "navigate").push("enter", "apply");
+    hint
+}
 
 /// The same verbs once a preview is live, with `Enter` meaning commit rather
 /// than apply. A hint that did not change here would understate the commitment
 /// `enter` now carries.
-const HINT_PREVIEWING: &str = "j/k preview · enter commit";
+fn hint_previewing() -> HintLine {
+    let mut hint = HintLine::new();
+    hint.push("j/k", "preview").push("enter", "commit");
+    hint
+}
+
+/// The modal footer: the preview/settled verbs plus the key that leaves.
+///
+/// `Esc` means revert while previewing and cancel otherwise, so the exit verb is
+/// chosen with the state; the other two items are `hint_previewing` /
+/// `hint_settled` so the footer cannot drift from the declaration.
+fn theme_footer(dialog: &ThemePickerDialog) -> String {
+    let mut hint = HintLine::new();
+    if dialog.is_previewing() {
+        hint.push_required("Esc", "revert")
+            .push("j/k/↑/↓", "preview")
+            .push("Enter", "commit");
+    } else {
+        hint.push_required("Esc", "cancel")
+            .push("j/k/↑/↓", "navigate")
+            .push("Enter", "apply");
+    }
+    hint.render(0)
+}
 
 #[derive(Clone)]
 pub struct ThemePickerDialog {
@@ -228,18 +247,8 @@ impl ThemePickerDialog {
     /// window the render pass paints and the window the keys clamp against
     /// cannot disagree. Deriving it some other way here would change modal
     /// rendering, which is the regression net for this whole change.
-    fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: Chrome) {
+    fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: SectionFrame) {
         let mut lines: Vec<Line> = Vec::new();
-
-        if chrome == Chrome::Owned {
-            lines.push(Line::from(Span::styled(
-                " Select Theme ",
-                Style::default()
-                    .fg(theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            lines.push(Line::from(""));
-        }
 
         // See Widget::render for the line budget rationale. Using the
         // actual area height here makes the picker fill the dialog box
@@ -257,13 +266,9 @@ impl ThemePickerDialog {
             push_theme_row(&mut lines, thm, theme, i == self.selected);
         }
 
-        if chrome == Chrome::Owned {
+        if chrome == SectionFrame::Owned {
             lines.push(Line::from(""));
-            let footer = if self.is_previewing() {
-                "j/k/↑/↓ preview  |  Enter commit  |  Esc revert"
-            } else {
-                "j/k/↑/↓ navigate  |  Enter apply  |  Esc cancel"
-            };
+            let footer = theme_footer(self);
             lines.push(Line::from(Span::styled(
                 footer,
                 Style::default().fg(theme.muted),
@@ -271,17 +276,15 @@ impl ThemePickerDialog {
         }
 
         match chrome {
-            Chrome::Owned => {
-                let block = Block::default()
-                    .title(" Themes ")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.border))
-                    .style(Style::default().bg(theme.background));
-
-                let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
-                paragraph.render(area, frame.buffer_mut());
+            SectionFrame::Owned => {
+                let inner = Section::new("Themes", theme)
+                    .focused(true)
+                    .draw(area, frame.buffer_mut());
+                Paragraph::new(lines)
+                    .wrap(Wrap { trim: true })
+                    .render(inner, frame.buffer_mut());
             }
-            Chrome::Hosted => {
+            SectionFrame::Hosted => {
                 let paragraph = Paragraph::new(lines)
                     .style(Style::default().bg(theme.background))
                     .wrap(Wrap { trim: true });
@@ -297,45 +300,79 @@ impl Default for ThemePickerDialog {
     }
 }
 
+/// The mid-grey a colour the theme layer cannot evaluate measures as.
+const UNMEASURABLE_FILL: Rgb = Rgb::new(0x80, 0x80, 0x80);
+
+fn color_to_rgb(color: Color) -> Option<Rgb> {
+    Some(match color {
+        Color::Rgb(r, g, b) => Rgb::new(r, g, b),
+        Color::Black => Rgb::new(0x00, 0x00, 0x00),
+        Color::White => Rgb::new(0xff, 0xff, 0xff),
+        Color::Red => Rgb::new(0xff, 0x00, 0x00),
+        Color::Green => Rgb::new(0x00, 0xff, 0x00),
+        Color::Yellow => Rgb::new(0xff, 0xff, 0x00),
+        Color::Blue => Rgb::new(0x00, 0x00, 0xff),
+        Color::Magenta => Rgb::new(0xff, 0x00, 0xff),
+        Color::Cyan => Rgb::new(0x00, 0xff, 0xff),
+        Color::Gray => Rgb::new(0x80, 0x80, 0x80),
+        Color::DarkGray => Rgb::new(0x40, 0x40, 0x40),
+        Color::LightRed => Rgb::new(0xff, 0x80, 0x80),
+        Color::LightGreen => Rgb::new(0x80, 0xff, 0x80),
+        Color::LightYellow => Rgb::new(0xff, 0xff, 0x80),
+        Color::LightBlue => Rgb::new(0x80, 0x80, 0xff),
+        Color::LightMagenta => Rgb::new(0xff, 0x80, 0xff),
+        Color::LightCyan => Rgb::new(0x80, 0xff, 0xff),
+        _ => return None,
+    })
+}
+
 fn color_to_rgb_string(color: Color) -> String {
     match color {
-        Color::Rgb(r, g, b) => format!("{:02x}{:02x}{:02x}", r, g, b),
         Color::Reset => "reset".to_string(),
-        Color::Black => "000000".to_string(),
-        Color::White => "ffffff".to_string(),
-        Color::Red => "ff0000".to_string(),
-        Color::Green => "00ff00".to_string(),
-        Color::Yellow => "ffff00".to_string(),
-        Color::Blue => "0000ff".to_string(),
-        Color::Magenta => "ff00ff".to_string(),
-        Color::Cyan => "00ffff".to_string(),
-        Color::Gray => "808080".to_string(),
-        Color::DarkGray => "404040".to_string(),
-        Color::LightRed => "ff8080".to_string(),
-        Color::LightGreen => "80ff80".to_string(),
-        Color::LightYellow => "ffff80".to_string(),
-        Color::LightBlue => "8080ff".to_string(),
-        Color::LightMagenta => "ff80ff".to_string(),
-        Color::LightCyan => "80ffff".to_string(),
-        _ => "808080".to_string(),
+        other => color_to_rgb(other)
+            .map(|c| format!("{:02x}{:02x}{:02x}", c.r, c.g, c.b))
+            .unwrap_or_else(|| "808080".to_string()),
     }
 }
 
+/// The fill `color` paints, measured; `Reset` borrows `fallback`, and a colour
+/// nothing can evaluate measures as mid-grey.
+fn fill_of(color: Color, fallback: Color) -> Rgb {
+    color_to_rgb(color)
+        .or_else(|| color_to_rgb(fallback))
+        .unwrap_or(UNMEASURABLE_FILL)
+}
+
+/// A palette sample as a filled chip: the sample is the fill, and the hex is
+/// drawn in a foreground derived to read against it.
+///
+/// The sample used to be the hex's *foreground* on the active theme's
+/// background, so a light sample on a light theme was unreadable text. A colour
+/// sample is a fill, not a glyph, and deriving the glyph from that fill is what
+/// makes the pair legible on every theme.
 fn render_color_swatch(color: Color, theme: &Theme) -> Span<'static> {
     let hex = color_to_rgb_string(color);
+    let fill = fill_of(color, theme.background);
+    let text = derive_text_on(
+        fill_of(theme.foreground, theme.background),
+        fill_of(theme.background, theme.foreground),
+        fill,
+    );
     Span::styled(
         format!(" {} ", hex),
         Style::default()
-            .fg(color)
-            .bg(theme.background)
+            .fg(Color::Rgb(text.r, text.g, text.b))
+            .bg(color)
             .add_modifier(Modifier::BOLD),
     )
 }
 
 fn push_theme_row<'a>(lines: &mut Vec<Line<'a>>, theme: &'a Theme, chrome: &Theme, selected: bool) {
+    // `selection_text` is the token derived to read on `selection`; `primary`
+    // is an accent and fails that fill on 14 themes.
     let style = if selected {
         Style::default()
-            .fg(chrome.primary)
+            .fg(chrome.selection_text)
             .bg(chrome.selection)
             .add_modifier(Modifier::BOLD)
     } else {
@@ -390,24 +427,18 @@ impl Widget for &ThemePickerDialog {
         }
 
         lines.push(Line::from(""));
-        let footer = if self.is_previewing() {
-            "j/k/↑/↓ preview  |  Enter commit  |  Esc revert"
-        } else {
-            "j/k/↑/↓ navigate  |  Enter apply  |  Esc cancel"
-        };
+        let footer = theme_footer(self);
         lines.push(Line::from(Span::styled(
             footer,
             Style::default().fg(self.theme.muted),
         )));
 
-        let block = Block::default()
-            .title(" Themes ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border))
-            .style(Style::default().bg(self.theme.background));
-
-        let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
-        paragraph.render(area, buf);
+        let inner = Section::new("Themes", &self.theme)
+            .focused(true)
+            .draw(area, buf);
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .render(inner, buf);
     }
 }
 
@@ -464,11 +495,11 @@ impl Component for ThemePickerDialog {
     /// two states (revert a preview, otherwise close) and in a column it is
     /// the mode switch rather than either of those. The two states also differ
     /// in what `Enter` costs, so one fixed string would understate the second.
-    fn keymap_hint(&self) -> Option<String> {
+    fn keymap_hint_line(&self) -> Option<HintLine> {
         Some(if self.is_previewing() {
-            HINT_PREVIEWING.to_string()
+            hint_previewing()
         } else {
-            HINT_SETTLED.to_string()
+            hint_settled()
         })
     }
 
@@ -481,15 +512,17 @@ impl Component for ThemePickerDialog {
     /// unfocused one. `area` is the host's full rect, so inset by its border
     /// first.
     fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        let inner = area.inner(Margin::new(1, 1));
+        let inner = Section::plain(theme)
+            .frame(SectionFrame::Hosted)
+            .draw(area, frame.buffer_mut());
         if inner.height == 0 || inner.width == 0 {
             return;
         }
-        self.render_body(frame, inner, theme, Chrome::Hosted);
+        self.render_body(frame, inner, theme, SectionFrame::Hosted);
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        self.render_body(frame, area, theme, Chrome::Owned);
+        self.render_body(frame, area, theme, SectionFrame::Owned);
     }
 
     fn dialog_type(&self) -> DialogType {
@@ -500,7 +533,55 @@ impl Component for ThemePickerDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::schema::MIN_DERIVED_TEXT_RATIO;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn swatch_pair(sample: Color, chrome: &Theme) -> (Rgb, Rgb) {
+        let span = render_color_swatch(sample, chrome);
+        let rgb = |c: Option<Color>, slot: &str| match c {
+            Some(Color::Rgb(r, g, b)) => Rgb::new(r, g, b),
+            other => panic!("a swatch's {slot} must be an RGB colour, got {other:?}"),
+        };
+        (rgb(span.style.fg, "foreground"), rgb(span.style.bg, "fill"))
+    }
+
+    const LIGHT_SAMPLE: Rgb = Rgb::new(0xf0, 0xf0, 0xf0);
+    const DARK_SAMPLE: Rgb = Rgb::new(0x10, 0x10, 0x10);
+
+    /// A sample reads on its own chip, whichever polarity the chrome has. The
+    /// second loop paints the *old* pair — the sample as the hex's foreground on
+    /// the chrome's background — and requires it to fail, so a fixture that
+    /// stopped reproducing the defect cannot pass this.
+    #[test]
+    fn the_swatch_hex_reads_against_its_own_fill() {
+        let light = Theme::light();
+        let dark = Theme::dark();
+        let samples = [("light", LIGHT_SAMPLE), ("dark", DARK_SAMPLE)];
+        for chrome in [&light, &dark] {
+            for (label, sample) in samples {
+                let (fg, fill) = swatch_pair(Color::Rgb(sample.r, sample.g, sample.b), chrome);
+                assert_eq!(fill, sample, "the chip is filled with the sample itself");
+                assert!(
+                    fg.contrast_ratio(fill) >= MIN_DERIVED_TEXT_RATIO,
+                    "{label} sample on the {} theme: {fg} on {fill} is {:.2}:1, \
+                     below the {MIN_DERIVED_TEXT_RATIO}:1 bar",
+                    chrome.id,
+                    fg.contrast_ratio(fill)
+                );
+            }
+        }
+        for (chrome, sample) in [(&light, LIGHT_SAMPLE), (&dark, DARK_SAMPLE)] {
+            let chrome_bg = fill_of(chrome.background, chrome.foreground);
+            assert!(
+                sample.contrast_ratio(chrome_bg) < MIN_DERIVED_TEXT_RATIO,
+                "{} on the {} theme's background is {:.2}:1, so the pair this fix \
+                 replaces is not reproduced",
+                sample.to_hex(),
+                chrome.id,
+                sample.contrast_ratio(chrome_bg)
+            );
+        }
+    }
 
     fn make_themes(names: &[&str]) -> Vec<Theme> {
         names

@@ -48,9 +48,9 @@ impl ThemeDiagnostic {
 /// Pragmatic contrast thresholds. Terminal UIs do not need full WCAG AAA, but
 /// the existing 31 themes were hand-curated, so we lean on the conservative
 /// side.
-const PRIMARY_TEXT_RATIO: f64 = 4.5;
-const MUTED_TEXT_RATIO: f64 = 3.0;
-const ACCENT_RATIO: f64 = 3.0;
+pub(crate) const PRIMARY_TEXT_RATIO: f64 = 4.5;
+pub(crate) const MUTED_TEXT_RATIO: f64 = 3.0;
+pub(crate) const ACCENT_RATIO: f64 = 3.0;
 const SELECTION_TEXT_RATIO: f64 = 3.0;
 
 pub fn validate_theme(theme: &SemanticTheme) -> Vec<ThemeDiagnostic> {

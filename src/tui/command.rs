@@ -1269,6 +1269,14 @@ impl Default for CommandRegistry {
 
 pub static COMMAND_REGISTRY: LazyLock<CommandRegistry> = LazyLock::new(CommandRegistry::new);
 
+/// The exhaustive `BuiltinSlashAction` list, for tests that must visit every
+/// variant (the dispatcher's reachability proof).
+///
+/// Re-exported from the test module so a test in another module reuses this
+/// one list instead of keeping a second copy of the variants.
+#[cfg(test)]
+pub(crate) use tests::all_builtin_variants;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1491,7 +1499,7 @@ mod tests {
         );
     }
 
-    fn all_builtin_variants() -> Vec<BuiltinSlashAction> {
+    pub(crate) fn all_builtin_variants() -> Vec<BuiltinSlashAction> {
         use BuiltinSlashAction as B;
         vec![
             // Eggwork M002: `/nodes`. The variant was added to the enum and

@@ -136,10 +136,18 @@ impl BackendPolicy {
         }
     }
 
-    /// Compile the requested sets into the closest Landlock allowlist. Deny
-    /// descendants are removed from file grants; directory-listing rights on
-    /// their ancestors are retained separately. Seatbelt uses the requested
-    /// roots directly and applies its explicit final deny rules.
+    /// Compile the requested sets into the closest Landlock allowlist.
+    ///
+    /// Deny descendants are removed from file grants while their ancestors
+    /// keep a separate directory-listing right, so a denied file is hidden
+    /// without making its parent unreadable. **That deny-first carving is
+    /// Landlock's alone.**
+    ///
+    /// Seatbelt does not consume the carved result: `seatbelt::sbpl_profile`
+    /// renders `write_roots` and `denied_roots` in SBPL's last-rule-wins order
+    /// and never reads `read_roots` or `read_dir_roots`. Its read posture is
+    /// `(allow default)` plus the explicit credential denies, so this method's
+    /// shape is not the macOS contract and must not be read as one.
     pub fn landlock_effective(&self) -> Self {
         let (read_roots, read_dir_roots) =
             Self::carve_read_denied(self.read_roots.clone(), &self.denied_roots);
@@ -382,15 +390,19 @@ pub fn tool_read_allowances() -> Vec<PathBuf> {
         "/opt",
         "/etc",
         "/dev",
-        "/proc",
         "/sys",
-        "/var/run",
         "/private/etc",
         "/private/var/db/timezone",
     ]
     .iter()
     .map(PathBuf::from)
     .collect();
+
+    // `/proc` and `/var/run` were granted as trees until C002. A tree grant on
+    // `/proc` makes `/proc/<other-pid>/environ` readable for a same-uid
+    // process, and Landlock cannot subtract from a granted tree, so the two
+    // are named narrowly instead of granted whole.
+    paths.extend(narrow_host_reads());
 
     if let Some(home) = home_dir() {
         // Shared configuration and cache ancestors may hold credentials.
@@ -404,6 +416,65 @@ pub fn tool_read_allowances() -> Vec<PathBuf> {
         paths.extend(rustup_read_allowances(&rustup_home));
     }
     paths
+}
+
+/// The narrow replacements for the `/proc` and `/var/run` tree grants.
+///
+/// Every entry is a file or a directory that carries no other process's state:
+/// the self-scoped `/proc` entries, the kernel's informational files, the
+/// read-only sysctl view, and the resolver file a name lookup reads when a
+/// distribution places it under `/run` rather than `/etc`.
+///
+/// A rule for `/proc/self` is resolved to **this** process's pid directory when
+/// the rule is added, and `exec` keeps the pid, so the self-scoped grant
+/// survives the exec for the command itself. A *child* of the command has its
+/// own pid and does not inherit it — a recorded residue, not an implied
+/// guarantee.
+#[cfg(unix)]
+fn narrow_host_reads() -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = [
+        "/proc/self",
+        "/proc/thread-self",
+        "/proc/meminfo",
+        "/proc/cpuinfo",
+        "/proc/stat",
+        "/proc/loadavg",
+        "/proc/uptime",
+        "/proc/version",
+        "/proc/filesystems",
+        "/proc/sys",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect();
+
+    // Name lookup reads the resolver's file; grant the file that exists rather
+    // than the directory that holds it.
+    for candidate in [
+        "/run/systemd/resolve/stub-resolv.conf",
+        "/run/systemd/resolve/resolv.conf",
+        "/run/resolvconf/resolv.conf",
+    ] {
+        let path = PathBuf::from(candidate);
+        if path.exists() {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+/// True for the per-process `/proc` aliases, which only the process that will
+/// use them can resolve.
+///
+/// `/proc/self` and `/proc/thread-self` name the *calling* process. A parent
+/// that canonicalizes one binds its own pid, so the alias has to travel
+/// unresolved to the helper, which runs at the pid `exec` preserves and is
+/// therefore the target's own.
+pub fn is_self_proc_alias(path: &std::path::Path) -> bool {
+    matches!(
+        path.to_str(),
+        Some("/proc/self") | Some("/proc/thread-self")
+    )
 }
 
 fn configured_rustup_home() -> Option<PathBuf> {
@@ -599,6 +670,15 @@ pub fn sensitive_deny_paths() -> Vec<PathBuf> {
             ".netrc",
             ".npmrc",
             ".pypirc",
+            ".git-credentials",
+            ".config/git/credentials",
+            ".pgpass",
+            ".my.cnf",
+            ".vault-token",
+            ".password-store",
+            ".local/share/keyrings",
+            ".config/op",
+            ".yarnrc.yml",
             ".gem/credentials",
             ".cargo/credentials",
             ".cargo/credentials.toml",
@@ -612,6 +692,12 @@ pub fn sensitive_deny_paths() -> Vec<PathBuf> {
             // must never be able to read the secrets the agent itself uses.
             ".config/codegg",
             ".codegg",
+            ".bash_history",
+            ".zsh_history",
+            "Library/Messages",
+            "Library/Mail",
+            "Library/Safari",
+            "Library/Cookies",
             "Library/Keychains",
             "Library/Application Support/codegg",
         ] {
@@ -697,6 +783,58 @@ fn windows_env_dir(name: &str) -> Option<PathBuf> {
         .filter(|path| path.is_dir())
 }
 
+/// Snapshot the device/inode identity of a policy path.
+///
+/// The snapshot is taken **before** the object is opened for a rule, so an
+/// object substituted afterwards is refused by [`verify_path_identity`]
+/// instead of being granted. `symlink_metadata` is deliberate: a canonical
+/// policy root is not an alias, and a path that is one now has changed since
+/// the policy was built.
+#[cfg(any(target_os = "linux", all(test, unix)))]
+pub fn capture_path_identity(path: &Path) -> Result<super::SandboxPathIdentity, String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        format!(
+            "cannot snapshot sandbox path identity {}: {error}",
+            path.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "sandbox path is a symlink and cannot be granted: {}",
+            path.display()
+        ));
+    }
+    Ok(super::SandboxPathIdentity {
+        path: path.to_path_buf(),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+/// Verify that an opened object is the one the policy captured.
+///
+/// A grant is bound to the object, not the name it was reached by: a root that
+/// was renamed or replaced between policy construction and rule compilation is
+/// refused here rather than granted in its new form.
+#[cfg(any(target_os = "linux", all(test, unix)))]
+pub fn verify_path_identity(
+    path: &Path,
+    expected: &super::SandboxPathIdentity,
+    actual: &std::fs::Metadata,
+) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+
+    if actual.dev() == expected.device && actual.ino() == expected.inode {
+        return Ok(());
+    }
+    Err(format!(
+        "sandbox path changed after its identity was captured: {}",
+        path.display()
+    ))
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -723,6 +861,33 @@ mod tests {
                 "{required} must be readable or no command can start: {roots:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_host_read_grants_name_no_process_tree() {
+        let reads = tool_read_allowances();
+        let names: Vec<String> = reads
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect();
+        // A tree grant on either root is the C002 finding: `/proc` makes
+        // `/proc/<other-pid>/environ` readable for a same-uid process, and
+        // `/var/run` exposes whatever a distribution keeps under `/run`.
+        for tree in ["/proc", "/var/run", "/run"] {
+            assert!(
+                !names.iter().any(|name| name == tree),
+                "`{tree}` is granted as a tree again: {names:?}"
+            );
+        }
+        assert!(
+            names.iter().any(|name| name == "/proc/self"),
+            "the self-scoped `/proc` entry is what keeps the command's own \
+             `/proc/self/exe` readable: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name.contains("/environ")),
+            "a grant naming `environ` is a leak, not a narrowing: {names:?}"
+        );
     }
 
     #[test]
@@ -848,6 +1013,111 @@ mod tests {
                 rustup_home.path().join("credentials.toml")
             ]
         );
+    }
+
+    const CURATED_HOME_DENY_ROWS: &[&str] = &[
+        ".git-credentials",
+        ".config/git/credentials",
+        ".pgpass",
+        ".my.cnf",
+        ".vault-token",
+        ".password-store",
+        ".local/share/keyrings",
+        ".config/op",
+        ".yarnrc.yml",
+        ".bash_history",
+        ".zsh_history",
+        "Library/Messages",
+        "Library/Mail",
+        "Library/Safari",
+        "Library/Cookies",
+    ];
+
+    #[test]
+    fn curated_credential_deny_set_is_complete() {
+        let home = home_dir().expect("HOME is required for the curated deny set");
+        let raw = sensitive_deny_paths();
+        for relative in CURATED_HOME_DENY_ROWS {
+            assert!(
+                raw.iter().any(|root| root == &home.join(relative)),
+                "{relative} is classified for denial in architecture/security.md \
+                 but is absent from sensitive_deny_paths()"
+            );
+        }
+    }
+
+    #[test]
+    fn absent_curated_credential_denies_resolve_under_the_nearest_parent() {
+        let home = home_dir().expect("HOME is required for the curated deny set");
+        let canonical_home = home.canonicalize().expect("canonical HOME");
+        for relative in CURATED_HOME_DENY_ROWS {
+            let raw = home.join(relative);
+            let denied = BackendPolicy::new(Vec::new(), Vec::new(), vec![raw.clone()]).denied_roots;
+            assert_eq!(
+                denied.len(),
+                1,
+                "{relative} must resolve to exactly one deny"
+            );
+            let resolved = &denied[0];
+            assert!(
+                resolved.ends_with(relative)
+                    || std::fs::canonicalize(&raw).is_ok_and(|canonical| canonical == *resolved),
+                "a missing deny must stay denied relative to its nearest existing parent: \
+                 {relative} -> {resolved:?}"
+            );
+            assert_ne!(
+                *resolved, canonical_home,
+                "resolving {relative} must never widen into all of HOME"
+            );
+        }
+    }
+
+    #[test]
+    fn curated_credential_denies_render_after_write_reallows() {
+        let workspace = tempfile::tempdir().expect("workspace fixture");
+        let spec = SandboxLaunchSpec {
+            env: Vec::new(),
+            linux_protected_mount_view: false,
+            linux_process_isolation: false,
+            linux_offline_network: false,
+            protected_readonly_paths: Vec::new(),
+            path_identities: Vec::new(),
+            expected_created_git_pointers: Vec::new(),
+            target: PathBuf::from("/bin/sh"),
+            args: vec!["-c".to_string(), "true".to_string()],
+            read_paths: vec![workspace.path().to_path_buf()],
+            write_paths: vec![workspace.path().to_path_buf()],
+            deny_paths: sensitive_deny_paths(),
+        };
+        let policy = BackendPolicy::for_spec(&spec);
+        let profile = crate::security::sandbox::seatbelt::sbpl_profile(&policy);
+        let last_reallow = profile
+            .rfind("(allow file-write*")
+            .expect("a writable root must be re-allowed");
+        let home = home_dir().expect("HOME is required for the curated deny set");
+        for relative in CURATED_HOME_DENY_ROWS {
+            let raw = home.join(relative);
+            let resolved = policy
+                .denied_roots
+                .iter()
+                .find(|root| {
+                    root.ends_with(relative)
+                        || std::fs::canonicalize(&raw).is_ok_and(|canonical| canonical == **root)
+                })
+                .unwrap_or_else(|| {
+                    panic!("no resolved deny for {relative}: {:?}", policy.denied_roots)
+                });
+            for operation in ["file-read*", "file-write*"] {
+                let rule = format!("(deny {operation} (subpath \"{}\"))", resolved.display());
+                let at = profile
+                    .find(&rule)
+                    .unwrap_or_else(|| panic!("{rule} must be rendered in the SBPL profile"));
+                assert!(
+                    at > last_reallow,
+                    "{rule} must follow every write re-allow rule"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1079,6 +1349,41 @@ mod tests {
         assert!(
             !policy.denied_roots.is_empty(),
             "a policy must carry the deny intent into the backend"
+        );
+    }
+
+    #[test]
+    fn a_grant_root_replaced_after_identity_capture_is_refused() {
+        let directory = tempfile::tempdir().expect("fixture root");
+        let root = directory.path().join("granted");
+        std::fs::create_dir(&root).expect("grant root");
+
+        // The policy captures the object before a backend opens it.
+        let identity = capture_path_identity(&root).expect("identity snapshot");
+        let unchanged = std::fs::symlink_metadata(&root).expect("unchanged metadata");
+        verify_path_identity(&root, &identity, &unchanged)
+            .expect("the unchanged root is the object the policy captured");
+
+        // Replace the root with a symlink after the policy saw the directory.
+        let displaced = directory.path().join("displaced");
+        std::fs::rename(&root, &displaced).expect("displace the grant root");
+        std::os::unix::fs::symlink(&displaced, &root).expect("symlink replacement");
+
+        let swapped = std::fs::symlink_metadata(&root).expect("replacement metadata");
+        let error = verify_path_identity(&root, &identity, &swapped)
+            .expect_err("a grant root replaced after policy construction must refuse");
+        assert!(
+            error.contains("changed after its identity was captured"),
+            "the refusal must name the identity change: {error}"
+        );
+
+        // A symlink is never a grant root even before it is opened, because a
+        // path that became an alias is no longer the canonical policy root.
+        let alias_error =
+            capture_path_identity(&root).expect_err("a symlinked grant root must refuse");
+        assert!(
+            alias_error.contains("symlink and cannot be granted"),
+            "the refusal must name the alias: {alias_error}"
         );
     }
 }

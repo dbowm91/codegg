@@ -1,0 +1,79 @@
+{
+  "format": 1,
+  "id": "s2_tool_call",
+  "kind": "scenario",
+  "notes": "tool call: the real read tool returns the committed target, then the model answers (recorded from the shipped loop)",
+  "session_id": "s2_tool_call",
+  "user_input": "Read the replay target file.",
+  "profile": "read",
+  "responses": [
+    [
+      {
+        "type": "tool_call",
+        "id": "call_read_1",
+        "name": "read",
+        "arguments": {
+          "path": "tests/session_replay/fixtures/read_target.txt"
+        }
+      },
+      {
+        "type": "finish",
+        "stop_reason": "tool_calls"
+      }
+    ],
+    [
+      {
+        "type": "text_delta",
+        "text": "The target's first line is replay-target-line-alpha."
+      },
+      {
+        "type": "finish",
+        "stop_reason": "stop"
+      }
+    ],
+    [
+      {
+        "type": "finish",
+        "stop_reason": "stop"
+      }
+    ]
+  ],
+  "expect": {
+    "assistant_text": "The target's first line is replay-target-line-alpha.",
+    "tool_calls": [
+      {
+        "name": "read",
+        "arguments": {
+          "path": "tests/session_replay/fixtures/read_target.txt"
+        }
+      }
+    ],
+    "tool_results": [
+      {
+        "tool": "read",
+        "outcome": "success"
+      }
+    ],
+    "terminal": "completed",
+    "request_count": 3,
+    "request_roles": [
+      [
+        "user"
+      ],
+      [
+        "user",
+        "assistant",
+        "tool"
+      ],
+      [
+        "user",
+        "assistant",
+        "tool",
+        "assistant"
+      ]
+    ],
+    "tools_declared": [
+      "read"
+    ]
+  }
+}

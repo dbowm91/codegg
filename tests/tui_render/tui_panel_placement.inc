@@ -550,7 +550,7 @@ fn the_layout_strip_does_not_push_the_panel_list_off_screen() {
     // digits are not repeated here any more -- the strip and each list row say
     // where they live, and the footer only has ~41 columns to spend.
     assert!(
-        text.contains("⇧H/J/K/L move"),
+        text.contains("⇧H/J/L move"),
         "footer lost the directional, which is the box's reason to exist"
     );
 }

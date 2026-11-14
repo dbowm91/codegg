@@ -6,6 +6,8 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem};
 use ratatui::Frame;
 
+use crate::tui::components::hint_line::HintLine;
+use crate::tui::components::scroll::ListCursor;
 use crate::tui::theme::Theme;
 use crate::util::fuzzy::fuzzy_score;
 
@@ -77,7 +79,7 @@ impl CompletionItem {
 
 pub struct CompletionOverlay {
     pub items: Vec<CompletionItem>,
-    pub selected: usize,
+    pub cursor: ListCursor,
     pub ctype: CompletionType,
     pub filter: String,
     pub visible: bool,
@@ -89,7 +91,7 @@ impl CompletionOverlay {
     pub fn new() -> Self {
         Self {
             items: Vec::new(),
-            selected: 0,
+            cursor: ListCursor::new(),
             ctype: CompletionType::Slash,
             filter: String::new(),
             visible: false,
@@ -108,7 +110,7 @@ impl CompletionOverlay {
         self.ctype = ctype;
         self.items = items;
         self.filter = filter;
-        self.selected = 0;
+        self.cursor.reset();
         self.visible = true;
         self.trigger_x = trigger_x;
         *self.filtered_cache.borrow_mut() = None;
@@ -119,20 +121,19 @@ impl CompletionOverlay {
     }
 
     pub fn select_up(&mut self) {
-        if self.selected > 0 {
-            self.selected -= 1;
-        }
+        self.cursor.up(self.filtered_len(), 0);
     }
 
     pub fn select_down(&mut self) {
-        let max = self.filtered_len().saturating_sub(1);
-        if self.selected < max {
-            self.selected += 1;
-        }
+        self.cursor.down(self.filtered_len(), 0);
+    }
+
+    pub fn selected_index(&self) -> usize {
+        self.cursor.index(self.filtered_len())
     }
 
     pub fn selected_item(&self) -> Option<CompletionItem> {
-        self.filtered_items().get(self.selected).cloned()
+        self.filtered_items().get(self.selected_index()).cloned()
     }
 
     fn update_cache(&self) {
@@ -216,7 +217,7 @@ impl CompletionOverlay {
 
     pub fn set_filter(&mut self, filter: String) {
         self.filter = filter;
-        self.selected = 0;
+        self.cursor.reset();
         *self.filtered_cache.borrow_mut() = None;
     }
 
@@ -282,11 +283,12 @@ impl CompletionOverlay {
             height: 1,
         };
 
+        let selected = self.cursor.index(items.len());
         let list_items: Vec<ListItem> = items
             .iter()
             .enumerate()
             .map(|(i, item)| {
-                let style = if i == self.selected {
+                let style = if i == selected {
                     Style::default().bg(theme.selection).fg(theme.primary)
                 } else {
                     Style::default().fg(theme.foreground)
@@ -314,7 +316,7 @@ impl CompletionOverlay {
         frame.render_widget(list, list_area);
 
         let hint = Span::styled(
-            " Tab: select | Esc: close ",
+            HintLine::from_items(&[("Esc", "close"), ("Tab", "select")]).render(0),
             Style::default().fg(theme.muted),
         );
         frame.render_widget(
@@ -327,5 +329,61 @@ impl CompletionOverlay {
 impl Default for CompletionOverlay {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::components::scroll::ScrollPolicy;
+
+    fn overlay_with(labels: &[&str]) -> CompletionOverlay {
+        let mut overlay = CompletionOverlay::new();
+        overlay.show(
+            CompletionType::Slash,
+            labels
+                .iter()
+                .map(|label| CompletionItem::new(label.to_string(), None))
+                .collect(),
+            String::new(),
+            0,
+        );
+        overlay
+    }
+
+    #[test]
+    fn completion_overlay_cursor_clamps_at_both_ends_and_never_wraps() {
+        let mut overlay = overlay_with(&["/one", "/two", "/three"]);
+
+        overlay.select_up();
+        assert_eq!(
+            overlay.selected_index(),
+            0,
+            "ScrollPolicy::Clamp must stop on the first completion, not wrap to the last"
+        );
+
+        overlay.select_down();
+        overlay.select_down();
+        overlay.select_down();
+        assert_eq!(
+            overlay.selected_index(),
+            2,
+            "ScrollPolicy::Clamp must stop on the last completion, not wrap to the first"
+        );
+        assert_eq!(overlay.cursor.policy(), ScrollPolicy::Clamp);
+    }
+
+    #[test]
+    fn completion_overlay_clamps_a_cursor_left_stale_by_an_empty_filter_result() {
+        let mut overlay = overlay_with(&["/one"]);
+        overlay.cursor.set_index(7);
+        overlay.set_filter("nothing-matches".to_string());
+        assert_eq!(overlay.filtered_len(), 0);
+        assert_eq!(
+            overlay.selected_index(),
+            0,
+            "an empty result must resolve to index 0 rather than pointing past the end"
+        );
+        assert!(overlay.selected_item().is_none());
     }
 }

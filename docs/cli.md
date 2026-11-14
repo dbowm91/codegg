@@ -207,6 +207,7 @@ Run `codegg validate` to confirm.
 | `providers` | Configured providers. Read-only; makes no network probes. |
 | `credentials` | Stored credential metadata. Never prints secrets. |
 | `installation` | Owned runfiles, helper/sidecar state, and the sandbox kernel probe. |
+| `session` | The turn request ledger: row count, the last attempt's identity and digests, and whether a body is present. Never prints bodies. |
 
 `doctor` exits 0 even when it reports problems — read the output rather than
 the exit code.
@@ -472,7 +473,7 @@ Checked 2026-10-23 against the clap definitions in `src/main.rs` (the
   `--output-format` alias, `-q/--quiet`, `--cwd`, `-v`, `--approval-mode`,
   `--sandbox`, `--yolo`, `--standalone`).
 - Subcommands: `src/main.rs` `Commands` — `sessions`, `session`, `launch`,
-  `export`, `import`, `providers`, `models`, `upgrade`, `tool-advisor`,
+  `export`, `import`, `providers`, `models`, `config`, `upgrade`, `tool-advisor`,
   `doctor`, `auth`, `validate`, `edit`, `exec`, `acp`, `completions`, `mcp`,
   `research`, `daemon`, plus the `server`/`attach` pair that is gated on the
   `server` Cargo feature.

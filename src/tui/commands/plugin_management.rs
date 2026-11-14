@@ -488,6 +488,67 @@ pub(crate) fn apply_plugin_install_finished(
 // Tests
 // ---------------------------------------------------------------------------
 
+pub(crate) fn dispatch_plugin_info(app: &mut App, argument: &str) {
+    let args = argument;
+    if args.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /plugin-info <plugin-id-or-name>");
+    } else {
+        crate::tui::commands::plugin_management::show_plugin_info(app, args);
+    }
+}
+
+pub(crate) fn dispatch_plugin_enable(app: &mut App, argument: &str) {
+    let args = argument;
+    if args.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /plugin-enable <plugin-id-or-name>");
+    } else {
+        crate::tui::commands::plugin_management::enable_plugin(app, args);
+    }
+}
+
+pub(crate) fn dispatch_plugin_disable(app: &mut App, argument: &str) {
+    let args = argument;
+    if args.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /plugin-disable <plugin-id-or-name>");
+    } else {
+        crate::tui::commands::plugin_management::disable_plugin(app, args);
+    }
+}
+
+pub(crate) fn dispatch_plugin_doctor(app: &mut App, argument: &str) {
+    let args = argument;
+    let query_opt = if args.is_empty() { None } else { Some(args) };
+    crate::tui::commands::plugin_management::doctor_plugin(app, query_opt);
+}
+
+pub(crate) fn dispatch_plugin_remove(app: &mut App, argument: &str) {
+    let args = argument;
+    if args.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /plugin-remove <plugin-id-or-name>");
+    } else {
+        crate::tui::commands::plugin_management::remove_plugin(app, args);
+    }
+}
+
+pub(crate) fn dispatch_plugin_install(app: &mut App, argument: &str) {
+    let args = argument;
+    if args.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /plugin-install <path>");
+    } else {
+        crate::tui::commands::plugin_management::install_plugin(app, args);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

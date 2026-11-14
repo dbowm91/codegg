@@ -235,6 +235,7 @@ pub fn classify_turn_failure(error: &AppError) -> codegg_protocol::core::TurnFai
         AppError::Provider(provider_error) => match provider_error.error_class() {
             "auth" => TurnFailureCategory::ProviderAuth,
             "rate_limit" => TurnFailureCategory::ProviderRateLimit,
+            "request_budget" => TurnFailureCategory::ProviderRequestBudget,
             "timeout" => TurnFailureCategory::ProviderTimeout,
             "connect" | "tls" | "io" | "transport" | "stream_interrupted" | "circuit_open" => {
                 TurnFailureCategory::ProviderTransport
@@ -1111,6 +1112,12 @@ impl TurnRuntime for DefaultTurnRuntime {
             agent_loop.enter_plan_mode(None);
         }
         agent_loop.set_prompt_compiler_fingerprint(compiled_prompt.fingerprint.clone());
+        // The ledger records this prompt's section identity. Computing it here,
+        // from the blocks whose text became `request.system`, is the only place
+        // the sections still exist; the seam must not recompile to recover them.
+        agent_loop.set_prompt_section_digests(crate::agent::prompt::section_digests(
+            &compiled_prompt.blocks,
+        ));
         agent_loop.set_reasoning_override(reasoning_override);
         agent_loop.set_runtime_asset_pin(asset_pin);
         agent_loop.load_persisted_todos().await;
@@ -1633,6 +1640,13 @@ mod failure_classification_tests {
             (
                 ProviderError::ModelNotFound("model".into()),
                 TurnFailureCategory::ProviderApi,
+            ),
+            (
+                ProviderError::api(
+                    "harness_request_budget_exhausted",
+                    "provider request budget exhausted",
+                ),
+                TurnFailureCategory::ProviderRequestBudget,
             ),
             (
                 ProviderError::api("500", "boom"),

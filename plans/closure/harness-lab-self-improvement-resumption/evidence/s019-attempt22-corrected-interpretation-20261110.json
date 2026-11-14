@@ -1,0 +1,175 @@
+{
+  "attempt": 22,
+  "campaign": "S019",
+  "causal_events": {
+    "activity_stall_triggered": false,
+    "count": 1204,
+    "dropped": 0,
+    "maximum_activity_gap_ms": 98029,
+    "state": "complete"
+  },
+  "continuation": {
+    "all_public_artifacts_present": true,
+    "completed_phases": [
+      "versioned_records",
+      "durable_import",
+      "dependency_index",
+      "provenance_queries",
+      "cli_contract",
+      "acceptance_audit",
+      "workspace_qualification"
+    ],
+    "contract_phase_order_matches": true,
+    "contract_phases": [
+      "versioned_records",
+      "durable_import",
+      "dependency_index",
+      "provenance_queries",
+      "cli_export"
+    ],
+    "document_valid": false,
+    "gate_status_counts": {
+      "other": 11,
+      "pending": 1
+    },
+    "next_contract_phase": "none",
+    "next_gate": "independent_review",
+    "next_phase": "none",
+    "observed_status_vocabulary": "done",
+    "parser_status_vocabulary": [
+      "complete",
+      "completed",
+      "pending",
+      "failed",
+      "in_progress",
+      "not_started"
+    ],
+    "phase_order_matches": true,
+    "required_review_observed": false,
+    "required_stage_status_counts": {
+      "other": 7
+    }
+  },
+  "diagnosis": {
+    "classification": "sustained-work and native job/event/resource observation passed; task outcome failed; reviewer child exceeded its configured 1,200-second deadline; parent never observed its terminal status or fetched a result.",
+    "hidden_verifier_source_or_raw_output_inspected": false,
+    "provider_payload_or_credential_retained": false,
+    "runtime_fault_evidence": "none observed for provider, daemon, scheduler, ACP event pairing, native jobs, activity stall, or disk floor.",
+    "supported_corrective": "project the private durable reviewer terminal state without identifiers or result bodies; narrow the reviewer checklist; state the accepted continuation status words explicitly and make exact-ID terminal polling a top-priority final action.",
+    "task_result_or_transcript_inspected": false
+  },
+  "independent_verifier": {
+    "assertion_operation_counts": {
+      "pattern": 2
+    },
+    "assertion_text_retained": false,
+    "diagnostic_detail_complete": true,
+    "errors": 0,
+    "failed": 2,
+    "passed": 3,
+    "raw_output_retained": false,
+    "safe_failure_categories": [
+      {
+        "assertion_operation": "pattern",
+        "exception_class": "AssertionError",
+        "message_category": "assertion_message",
+        "outcome": "fail",
+        "test_id": "test_durable_continuation_records_completed_phases_and_next_boundary (test_catalog_contract.CatalogContract.test_durable_continuation_records_completed_phases_and_next_boundary)"
+      },
+      {
+        "assertion_operation": "pattern",
+        "exception_class": "AssertionError",
+        "message_category": "assertion_message",
+        "outcome": "fail",
+        "test_id": "test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation (test_catalog_contract.CatalogContract.test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation)"
+      }
+    ],
+    "tests_run": 5,
+    "timed_out": false
+  },
+  "jobs_and_repairs": {
+    "all_test_jobs_terminal_observed": true,
+    "productive_overlap": true,
+    "release_scale_overlap_confirmed": true,
+    "repair_cycles": 4,
+    "terminal_status_counts": {
+      "cancelled": 1,
+      "completed": 10,
+      "failed": 4
+    },
+    "test_jobs_submitted": 15,
+    "test_jobs_terminal_observed": 15
+  },
+  "manifest": {
+    "parent_sha256": "fd333b2474dcb700e89558b9a90947d9bb565f65bd7f8ff720aa8594606449f5",
+    "parent_version": "v76",
+    "sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+    "version": "v77"
+  },
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "native_tools": {
+    "calls": 513,
+    "ceiling": 1600,
+    "started": 513,
+    "terminal": 513,
+    "unpaired_starts": 0
+  },
+  "provider": {
+    "admission_log_rows": 917,
+    "allowance_rows": 458,
+    "allowance_usd": 0.186586,
+    "billed_usd": "unknown",
+    "provider_attempt_state": "observed",
+    "request_ceiling": 1200,
+    "request_count": 459,
+    "request_rows": 459,
+    "retry_chain_deadline_count": 0,
+    "retry_scheduled_count": 0,
+    "route": "opencode_go/muse-spark-1.3-contributor"
+  },
+  "receipt_sha256": "7b4d7981ea1d4f429f002ced98fa38de4c790fbae3a15a0b31d67611cf4d77e1",
+  "resources": {
+    "daemon_process_count_after_cleanup": 0,
+    "disk_floor_bytes": 10737418240,
+    "disk_floor_triggered": false,
+    "lowest_free_disk_bytes": 32611827712
+  },
+  "result": "completed_unqualified",
+  "reviewer": {
+    "configured_wall_clock_seconds": 1200,
+    "durable_state": {
+      "elapsed_ms": 1205088,
+      "failure_class": "deadline_exceeded",
+      "failure_message_retained": false,
+      "matched_run_count": 1,
+      "matched_task_count": 1,
+      "raw_identifiers_retained": false,
+      "run_status": "failed",
+      "run_terminal": "failed",
+      "state": "observed",
+      "task_result_body_retained": false,
+      "task_status": "failed",
+      "transcript_retained": false
+    },
+    "get_count": 0,
+    "last_exact_status_elapsed_ms": 2119790,
+    "last_observed_status": "running",
+    "last_status_count": 8,
+    "native_terminal_observation_count": 0,
+    "spawn_count": 1,
+    "spawn_finished_elapsed_ms": 1851361
+  },
+  "schema_version": 1,
+  "task_outcome": {
+    "active_work_span_ms": 3292060,
+    "agent_terminal": "timeout",
+    "duration_ms": 3299964,
+    "hard_wall_clock_limit_seconds": 3600,
+    "horizon_outcome": "not_qualified",
+    "horizon_reason": "task_not_passed",
+    "minimum_required_active_ms": 1800000,
+    "prompt_work_limit_seconds": 3300,
+    "status": "failed",
+    "terminal": "timeout"
+  }
+}

@@ -1,7 +1,7 @@
-use ratatui::layout::{Constraint, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 use std::sync::Arc;
 
@@ -9,21 +9,10 @@ use crossterm::event::KeyEvent;
 
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
+use super::super::section::{Section, SectionFrame};
 use crate::tui::app::TuiMsg;
+use crate::tui::components::hint_line::HintLine;
 use crate::util::truncate::truncate_prefix;
-
-/// Who owns this render's chrome.
-///
-/// The two paths differ only in that. [`Chrome::Owned`] is the modal box, which
-/// draws its own border on each pane plus a per-pane footer; [`Chrome::Hosted`]
-/// is a column in a side panel, where the host has already painted the border,
-/// the title and the `●` focus marker into the same rect — twice over, once per
-/// pane.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Chrome {
-    Owned,
-    Hosted,
-}
 
 /// The verbs this box owns, for the panel host to reuse verbatim.
 ///
@@ -44,8 +33,12 @@ enum Chrome {
 /// mode, so a docked `/mcp` can enter that mode and cannot leave it from inside
 /// the column. That is the host-level exit gap milestone M002a recorded, not
 /// something this widget can fix by choosing different words.
-const HINT_BROWSE: &str = "j/k move · enter actions";
-const HINT_ACTION: &str = "j/k move · enter run";
+fn hint(action_mode: bool) -> HintLine {
+    let mut hint = HintLine::new();
+    hint.push("j/k", "move")
+        .push("enter", if action_mode { "run" } else { "actions" });
+    hint
+}
 
 #[derive(Debug, Clone)]
 pub struct McpServerInfo {
@@ -206,7 +199,7 @@ impl McpDialog {
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        self.render_body(frame, area, theme, Chrome::Owned);
+        self.render_body(frame, area, theme, SectionFrame::Owned);
     }
 
     /// One routine for both render paths, so the two panes cannot disagree
@@ -216,8 +209,8 @@ impl McpDialog {
     /// panes rather than one, which is what makes a partial fix so easy to
     /// write: a hosted `mcp` that dropped the outer box and kept the inner one
     /// still overwrote the host's title. Both blocks and both footers are
-    /// behind `Chrome::Owned`, and `Chrome::Hosted` draws neither.
-    fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: Chrome) {
+    /// behind `SectionFrame::Owned`, and `SectionFrame::Hosted` draws neither.
+    fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: SectionFrame) {
         let chunks = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
             .split(area);
 
@@ -230,19 +223,9 @@ impl McpDialog {
         area: Rect,
         frame: &mut Frame,
         theme: &Arc<Theme>,
-        chrome: Chrome,
+        chrome: SectionFrame,
     ) {
         let mut lines: Vec<Line> = Vec::new();
-
-        if chrome == Chrome::Owned {
-            lines.push(Line::from(Span::styled(
-                " MCP Servers ",
-                Style::default()
-                    .fg(theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            lines.push(Line::from(""));
-        }
 
         if self.servers.is_empty() {
             lines.push(Line::from(Span::styled(
@@ -288,21 +271,18 @@ impl McpDialog {
             }
         }
 
-        if chrome == Chrome::Owned {
+        if chrome == SectionFrame::Owned {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                "↑/↓ navigate  |  Enter select  |  Esc close",
+                HintLine::from_items(&[("Esc", "close"), ("j/k", "move"), ("Enter", "select")])
+                    .render(0),
                 Style::default().fg(theme.muted),
             )));
 
-            let block = Block::default()
-                .title(" Servers ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.border))
-                .style(Style::default().bg(theme.background));
-
-            let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
-            frame.render_widget(paragraph, area);
+            let inner = Section::new("Servers", theme)
+                .focused(true)
+                .draw(area, frame.buffer_mut());
+            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
             return;
         }
 
@@ -319,19 +299,9 @@ impl McpDialog {
         area: Rect,
         frame: &mut Frame,
         theme: &Arc<Theme>,
-        chrome: Chrome,
+        chrome: SectionFrame,
     ) {
         let mut lines: Vec<Line> = Vec::new();
-
-        if chrome == Chrome::Owned {
-            lines.push(Line::from(Span::styled(
-                " Server Details ",
-                Style::default()
-                    .fg(theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            lines.push(Line::from(""));
-        }
 
         if let Some(server) = self.selected_server() {
             let status_icon = match server.status.as_str() {
@@ -511,21 +481,18 @@ impl McpDialog {
             )));
         }
 
-        if chrome == Chrome::Owned {
+        if chrome == SectionFrame::Owned {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                "↑/↓ navigate  |  Enter select  |  Esc close",
+                HintLine::from_items(&[("Esc", "close"), ("j/k", "move"), ("Enter", "select")])
+                    .render(0),
                 Style::default().fg(theme.muted),
             )));
 
-            let block = Block::default()
-                .title(" Details ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.border))
-                .style(Style::default().bg(theme.background));
-
-            let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
-            frame.render_widget(paragraph, area);
+            let inner = Section::new("Details", theme)
+                .focused(true)
+                .draw(area, frame.buffer_mut());
+            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
             return;
         }
 
@@ -601,15 +568,8 @@ impl Component for McpDialog {
     }
 
     /// The verbs this box owns in the state it is currently in.
-    fn keymap_hint(&self) -> Option<String> {
-        Some(
-            if self.action_mode {
-                HINT_ACTION
-            } else {
-                HINT_BROWSE
-            }
-            .to_string(),
-        )
+    fn keymap_hint_line(&self) -> Option<HintLine> {
+        Some(hint(self.action_mode))
     }
 
     /// Both panes, with neither pane's chrome.
@@ -622,15 +582,17 @@ impl Component for McpDialog {
     /// title and the status line above the composer now say instead. `area` is
     /// the host's full rect, so inset by its border first.
     fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        let inner = area.inner(Margin::new(1, 1));
+        let inner = Section::plain(theme)
+            .frame(SectionFrame::Hosted)
+            .draw(area, frame.buffer_mut());
         if inner.height == 0 || inner.width == 0 {
             return;
         }
-        self.render_body(frame, inner, theme, Chrome::Hosted);
+        self.render_body(frame, inner, theme, SectionFrame::Hosted);
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        self.render_body(frame, area, theme, Chrome::Owned);
+        self.render_body(frame, area, theme, SectionFrame::Owned);
     }
 
     fn dialog_type(&self) -> DialogType {

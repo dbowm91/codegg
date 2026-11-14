@@ -2,17 +2,19 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crossterm::event::KeyEvent;
-use ratatui::layout::{Margin, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::Frame;
 
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
-use super::super::scroll::CenteredScroll;
+use super::super::scroll::ListCursor;
+use super::super::section::{Section, SectionFrame};
 
 use crate::tui::app::TuiMsg;
+use crate::tui::components::hint_line::HintLine;
 
 #[derive(Debug, Clone)]
 pub struct TreeNode {
@@ -27,18 +29,6 @@ pub struct TreeNode {
     pub depth: usize,
 }
 
-/// Who owns this render's chrome.
-///
-/// The two paths differ only in that. [`Chrome::Owned`] is the modal box, which
-/// draws its own border, heading and keymap footer; [`Chrome::Hosted`] is a
-/// column in a side panel, where the host has already painted all three into
-/// the same rect.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Chrome {
-    Owned,
-    Hosted,
-}
-
 /// The verbs this box implements, for the panel host to reuse verbatim.
 ///
 /// `handle_key` below is the implementation and this is the advertisement.
@@ -50,16 +40,38 @@ enum Chrome {
 /// Repeating the footer's old
 /// `"↑/↓ navigate … | Esc close"` would teach a docked panel two keys that
 /// cannot fire.
-const HINT: &str = "j/k move · e expand · f fork · enter select";
+fn hint() -> HintLine {
+    let mut hint = HintLine::new();
+    hint.push("j/k", "move")
+        .push("e", "expand")
+        .push("f", "fork")
+        .push("enter", "select");
+    hint
+}
+
+/// The modal footer: the declared keymap's verbs plus the key that leaves.
+///
+/// `Esc` is modal-only — a docked box is popped off the stack by the host's
+/// gesture — so it is not in `hint()`. It leads because the box clips the row
+/// from the end.
+fn footer() -> String {
+    HintLine::from_items(&[
+        ("Esc", "close"),
+        ("j/k", "move"),
+        ("e", "expand"),
+        ("f", "fork"),
+        ("Enter", "select"),
+    ])
+    .render(0)
+}
 
 #[derive(Clone)]
 pub struct TreeDialog {
     pub theme: Arc<Theme>,
     pub nodes: Vec<TreeNode>,
-    pub selected: usize,
     pub flat: Vec<(TreeNode, usize)>,
     pub expanded: HashSet<String>,
-    pub scroll: CenteredScroll,
+    pub cursor: ListCursor,
     visible_height: usize,
     current_session_id: Option<String>,
 }
@@ -69,10 +81,9 @@ impl TreeDialog {
         Self {
             theme,
             nodes: Vec::new(),
-            selected: 0,
             flat: Vec::new(),
             expanded: HashSet::new(),
-            scroll: CenteredScroll::new(),
+            cursor: ListCursor::new(),
             visible_height: 10,
             current_session_id: None,
         }
@@ -107,12 +118,15 @@ impl TreeDialog {
             self.expanded.insert(first.session_id.clone());
         }
         self.flatten();
-        self.selected = 0;
-        self.scroll.reset();
+        self.cursor.reset();
+    }
+
+    pub fn selected(&self) -> usize {
+        self.cursor.index(self.flat.len())
     }
 
     pub fn toggle_expand(&mut self) {
-        if let Some((node, _)) = self.flat.get(self.selected) {
+        if let Some((node, _)) = self.flat.get(self.selected()) {
             if self.expanded.contains(&node.session_id) {
                 self.expanded.remove(&node.session_id);
             } else {
@@ -123,7 +137,7 @@ impl TreeDialog {
     }
 
     pub fn fork_selected(&mut self) -> Option<String> {
-        if let Some((node, _)) = self.flat.get(self.selected) {
+        if let Some((node, _)) = self.flat.get(self.selected()) {
             return Some(node.session_id.clone());
         }
         None
@@ -163,26 +177,11 @@ impl TreeDialog {
     }
 
     pub fn select_up(&mut self) {
-        if self.selected > 0 {
-            self.selected -= 1;
-        }
-        let scroll = self.scroll.get();
-        if self.selected < scroll || self.selected >= scroll + self.visible_height {
-            self.scroll
-                .clamp(self.selected, self.flat.len(), self.visible_height);
-        }
+        self.cursor.up(self.flat.len(), self.visible_height);
     }
 
     pub fn select_down(&mut self) {
-        let max = self.flat.len().saturating_sub(1);
-        if self.selected < max {
-            self.selected += 1;
-        }
-        let scroll = self.scroll.get();
-        if self.selected < scroll || self.selected >= scroll + self.visible_height {
-            self.scroll
-                .clamp(self.selected, self.flat.len(), self.visible_height);
-        }
+        self.cursor.down(self.flat.len(), self.visible_height);
     }
 
     /// One listing routine for both render paths.
@@ -193,18 +192,8 @@ impl TreeDialog {
     /// is why this is one routine and not two: a hosted path computing its own
     /// viewport from a different rect is how a docked box ends up with an
     /// unreachable tail and no error anywhere.
-    fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: Chrome) {
+    fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: SectionFrame) {
         let mut lines: Vec<Line> = Vec::new();
-
-        if chrome == Chrome::Owned {
-            lines.push(Line::from(Span::styled(
-                " Session Tree ",
-                Style::default()
-                    .fg(theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            lines.push(Line::from(""));
-        }
 
         if self.flat.is_empty() {
             lines.push(Line::from(Span::styled(
@@ -212,7 +201,7 @@ impl TreeDialog {
                 Style::default().fg(theme.muted),
             )));
         } else {
-            let scroll = self.scroll.get();
+            let scroll = self.cursor.offset();
             let mut rendered = 0;
             for (i, (node, indent)) in self.flat.iter().enumerate() {
                 if i < scroll {
@@ -221,7 +210,7 @@ impl TreeDialog {
                 if rendered >= self.visible_height {
                     break;
                 }
-                let is_selected = i == self.selected;
+                let is_selected = i == self.selected();
                 let prefix = "  ".repeat(*indent);
                 let connector = if *indent > 0 { "├─ " } else { "" };
 
@@ -274,25 +263,24 @@ impl TreeDialog {
             }
         }
 
-        if chrome == Chrome::Owned {
+        if chrome == SectionFrame::Owned {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                "↑/↓ navigate  |  Enter select  |  e expand  |  f fork  |  Esc close",
+                footer(),
                 Style::default().fg(theme.muted),
             )));
         }
 
         match chrome {
-            Chrome::Owned => {
-                let block = Block::default()
-                    .title(" Tree ")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.border))
-                    .style(Style::default().bg(theme.background));
-                let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
-                paragraph.render(area, frame.buffer_mut());
+            SectionFrame::Owned => {
+                let inner = Section::new("Tree", theme)
+                    .focused(true)
+                    .draw(area, frame.buffer_mut());
+                Paragraph::new(lines)
+                    .wrap(Wrap { trim: true })
+                    .render(inner, frame.buffer_mut());
             }
-            Chrome::Hosted => {
+            SectionFrame::Hosted => {
                 let paragraph = Paragraph::new(lines)
                     .style(Style::default().bg(theme.background))
                     .wrap(Wrap { trim: true });
@@ -327,7 +315,7 @@ impl Widget for &TreeDialog {
                 Style::default().fg(self.theme.muted),
             )));
         } else {
-            let scroll = self.scroll.get();
+            let scroll = self.cursor.offset();
             let mut rendered = 0;
             for (i, (node, indent)) in self.flat.iter().enumerate() {
                 if i < scroll {
@@ -336,7 +324,7 @@ impl Widget for &TreeDialog {
                 if rendered >= self.visible_height {
                     break;
                 }
-                let is_selected = i == self.selected;
+                let is_selected = i == self.selected();
                 let prefix = "  ".repeat(*indent);
                 let connector = if *indent > 0 { "├─ " } else { "" };
 
@@ -396,18 +384,16 @@ impl Widget for &TreeDialog {
 
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "↑/↓ navigate  |  Enter select  |  e expand  |  f fork  |  Esc close",
+            footer(),
             Style::default().fg(self.theme.muted),
         )));
 
-        let block = Block::default()
-            .title(" Tree ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border))
-            .style(Style::default().bg(self.theme.background));
-
-        let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
-        paragraph.render(area, buf);
+        let inner = Section::new("Tree", &self.theme)
+            .focused(true)
+            .draw(area, buf);
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .render(inner, buf);
     }
 }
 
@@ -432,7 +418,7 @@ impl Component for TreeDialog {
                 None
             }
             crossterm::event::KeyCode::Enter => {
-                if let Some((node, _)) = self.flat.get(self.selected) {
+                if let Some((node, _)) = self.flat.get(self.selected()) {
                     Some(TuiMsg::SelectTreeSession {
                         session_id: node.session_id.clone(),
                     })
@@ -445,7 +431,7 @@ impl Component for TreeDialog {
                 None
             }
             crossterm::event::KeyCode::Char('f') => {
-                if let Some((node, _)) = self.flat.get(self.selected) {
+                if let Some((node, _)) = self.flat.get(self.selected()) {
                     Some(TuiMsg::ForkTreeSession {
                         session_id: node.session_id.clone(),
                     })
@@ -465,8 +451,8 @@ impl Component for TreeDialog {
     }
 
     /// The verbs this box owns, spelled the way this box spells them.
-    fn keymap_hint(&self) -> Option<String> {
-        Some(HINT.to_string())
+    fn keymap_hint_line(&self) -> Option<HintLine> {
+        Some(hint())
     }
 
     /// The listing alone: no border, no title, no footer.
@@ -478,16 +464,18 @@ impl Component for TreeDialog {
     /// unfocused one. The heading goes with it: the host's title already names
     /// the panel. `area` is the host's full rect, so inset by its border first.
     fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        let inner = area.inner(Margin::new(1, 1));
+        let inner = Section::plain(theme)
+            .frame(SectionFrame::Hosted)
+            .draw(area, frame.buffer_mut());
         if inner.height == 0 || inner.width == 0 {
             return;
         }
-        self.render_body(frame, inner, theme, Chrome::Hosted);
+        self.render_body(frame, inner, theme, SectionFrame::Hosted);
     }
 
     #[allow(clippy::incompatible_msrv)]
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        self.render_body(frame, area, theme, Chrome::Owned);
+        self.render_body(frame, area, theme, SectionFrame::Owned);
     }
 
     fn dialog_type(&self) -> DialogType {
@@ -498,8 +486,10 @@ impl Component for TreeDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::components::scroll::ScrollPolicy;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::backend::TestBackend;
+    use ratatui::widgets::{Block, Borders};
     use ratatui::Terminal;
 
     fn nodes(count: usize) -> Vec<TreeNode> {
@@ -613,12 +603,13 @@ mod tests {
             hosted.handle_key(j);
         }
         assert_eq!(
-            modal.selected, hosted.selected,
+            modal.selected(),
+            hosted.selected(),
             "the same keys must leave both boxes on the same node"
         );
         assert_eq!(
-            modal.scroll.get(),
-            hosted.scroll.get(),
+            modal.cursor.offset(),
+            hosted.cursor.offset(),
             "the same keys must leave both boxes at the same scroll offset"
         );
 
@@ -639,6 +630,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tree_cursor_clamps_at_both_ends_and_never_wraps() {
+        let mut dialog = loaded(3);
+
+        dialog.select_up();
+        assert_eq!(
+            dialog.cursor.index(3),
+            0,
+            "ScrollPolicy::Clamp must stop on the first node, not wrap to the last"
+        );
+
+        for _ in 0..4 {
+            dialog.select_down();
+        }
+        assert_eq!(
+            dialog.cursor.index(3),
+            2,
+            "ScrollPolicy::Clamp must stop on the last node, not wrap to the first"
+        );
+        assert_eq!(dialog.cursor.policy(), ScrollPolicy::Clamp);
+    }
+
     /// `handle_key` answers `Esc`, `↑` and `↓`, and the hint names none of them:
     /// the arrows never reach a focused panel, because `SidePanelHost::handle_key`
     /// answers them as panel directions before consulting the widget, and `Esc`
@@ -654,7 +667,10 @@ mod tests {
                 "the hint teaches {dead:?}, which a focused panel cannot deliver: {hint:?}"
             );
         }
-        assert_eq!(dialog.keymap_hint().as_deref(), Some(HINT));
+        assert_eq!(
+            dialog.keymap_hint().as_deref(),
+            Some("j/k move · e expand · f fork · enter select")
+        );
     }
 
     /// A modal keeps its own chrome, which is what makes the hosted override
@@ -683,25 +699,48 @@ mod tests {
             rows[0]
         );
         assert!(
-            rows.join("\n").contains("navigate"),
-            "the modal keeps its own keymap footer"
+            rows.join("\n").contains("Esc close"),
+            "the modal keeps its own keymap footer, led by the key that leaves"
         );
     }
 
-    /// A column too small to hold an interior renders nothing rather than
-    /// panicking on a zero-sized rect. The host's chrome is already painted, so
-    /// the panel shows an empty column.
+    /// Below the chrome threshold the host paints no edge, so there is no
+    /// interior to inset for and the widget owns the whole column. The claim
+    /// that survives that policy is I1: it must not panic, and it must write
+    /// nothing outside the rect it was handed.
     #[test]
-    fn a_column_with_no_interior_paints_nothing_and_does_not_panic() {
+    fn a_column_below_the_chrome_threshold_does_not_paint_outside_its_rect() {
         let mut dialog = loaded(3);
-        let rows = hosted_rows(&mut dialog, 2, 2);
-        // At width 2 the host's border has no room for a rule, so these rows
-        // are the corners themselves. That is the whole claim: the widget
-        // returned before painting, so the column is the host's and nothing else.
-        assert_eq!(
-            rows,
-            vec!["┌┐".to_string(), "└┘".to_string()],
-            "a 2x2 column has no interior, so only the host's border should remain"
+        let theme = Arc::new(Theme::dark());
+        let outer = Rect::new(0, 0, 10, 6);
+        let column = Rect::new(3, 2, 2, 2);
+        let mut terminal =
+            Terminal::new(TestBackend::new(outer.width, outer.height)).expect("test terminal");
+        for cell in terminal.current_buffer_mut().content.iter_mut() {
+            cell.set_symbol("¤");
+        }
+        terminal
+            .draw(|frame| dialog.render_in_panel(frame, column, &theme))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let stray: Vec<(u16, u16)> = (0..outer.height)
+            .flat_map(|y| (0..outer.width).map(move |x| (x, y)))
+            .filter(|(x, y)| {
+                let inside = *x >= column.x
+                    && *y >= column.y
+                    && *x < column.x + column.width
+                    && *y < column.y + column.height;
+                !inside
+                    && buffer
+                        .cell((*x, *y))
+                        .map(|cell| cell.symbol())
+                        .unwrap_or("")
+                        != "¤"
+            })
+            .collect();
+        assert!(
+            stray.is_empty(),
+            "the docked tree painted outside its 2x2 column: {stray:?}"
         );
     }
 }

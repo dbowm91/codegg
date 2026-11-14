@@ -52,28 +52,54 @@ const SEATBELT_LIMITS: &[&str] = &[
 #[cfg(target_os = "macos")]
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
+/// The FFI symbol the helper links and applies.
+#[cfg(target_os = "macos")]
+const SANDBOX_INIT_SYMBOL: &str = "sandbox_init";
+
+/// `true` when `name` resolves in this process's already-loaded images.
+///
+/// Resolution is a linker answer, never an application: `dlsym` returns the
+/// address without invoking it. That is what lets the probe name the facility
+/// the helper uses — `sandbox_init` is one-shot per process, so a probe that
+/// *called* it would consume the helper's only application and every later
+/// launch in that process would fail with a second-call error.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+fn symbol_resolves(name: &str) -> bool {
+    let Ok(symbol) = std::ffi::CString::new(name) else {
+        return false;
+    };
+    // The library's `#![deny(unsafe_code)]` is narrowed here rather than
+    // lifted: `dlsym` is the only way to ask the loader what it bound, and it
+    // resolves a name without applying anything.
+    !unsafe { libc::dlsym(libc::RTLD_DEFAULT, symbol.as_ptr()) }.is_null()
+}
+
 /// Availability probe.
 ///
-/// `sandbox_init` is **one-shot per process**: once a profile is applied a
-/// second call fails. Probing it in this process would therefore consume the
-/// single application the helper has, so the probe deliberately does not call
-/// it.
+/// The helper `exec`s a process that links `sandbox_init`, so availability is
+/// the presence of **that symbol**; the `sandbox-exec` CLI existing said
+/// nothing about the facility the helper applies.
 ///
-/// Instead it checks for `sandbox-exec`, the shipped front end for the same
-/// kernel facility. Its absence means the SBPL profile compiler is not
-/// serviceable here, which is a stronger statement than "the symbol exists".
-/// This is a cheap serviceability signal, not proof that a given profile
-/// compiles — [`apply_profile`] is the real gate and fails closed.
+/// The probe is side-effect free — it resolves the symbol and never calls it,
+/// so the helper's one-shot application survives. The front end is still
+/// required as a serviceability signal for the SBPL compiler, and neither
+/// check proves a profile compiles: [`apply_profile`] is the real gate.
 #[cfg(target_os = "macos")]
 pub fn probe() -> Result<(), String> {
-    let front_end = Path::new(SANDBOX_EXEC);
-    if front_end.exists() {
-        Ok(())
-    } else {
-        Err(format!(
-            "Seatbelt is unavailable: {SANDBOX_EXEC} is not present"
-        ))
+    if !symbol_resolves(SANDBOX_INIT_SYMBOL) {
+        return Err(format!(
+            "Seatbelt is unavailable: the {SANDBOX_INIT_SYMBOL} symbol does not resolve in \
+             this process, so no profile can be applied here"
+        ));
     }
+    if !Path::new(SANDBOX_EXEC).exists() {
+        return Err(format!(
+            "Seatbelt is unavailable: {SANDBOX_EXEC} is not present, so the SBPL profile \
+             compiler is not serviceable"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -223,17 +249,49 @@ mod tests {
         BackendPolicy::new(read, write, vec![PathBuf::from("/etc/ssh")])
     }
 
+    #[cfg(unix)]
     #[test]
-    fn read_only_profile_denies_every_write() {
+    fn read_only_profile_re_allows_only_the_device_nodes() {
         let dir = TempDir::new().expect("workspace fixture");
-        let profile = sbpl_profile(&policy(&dir, false));
+        let devices = crate::security::sandbox::policy::device_write_allowances();
+        let profile = sbpl_profile(&BackendPolicy::new(
+            vec![dir.path().to_path_buf()],
+            devices.clone(),
+            vec![PathBuf::from("/etc/ssh")],
+        ));
         assert!(
             profile.contains("(deny file-write*)"),
             "read-only must deny writes wholesale: {profile}"
         );
+        let allows: Vec<&str> = profile
+            .lines()
+            .filter(|line| line.starts_with("(allow file-write*"))
+            .collect();
+        let mut expected: Vec<String> = devices
+            .iter()
+            .filter_map(|path| path.canonicalize().ok())
+            .map(|path| path.display().to_string())
+            .collect();
+        expected.sort();
+        expected.dedup();
+        assert_eq!(
+            allows.len(),
+            expected.len(),
+            "every re-allow must be a device node and every device node must be \
+             re-allowed: {allows:?} vs {expected:?}\n{profile}"
+        );
+        for device in &expected {
+            assert!(
+                allows.iter().any(|line| line.contains(device.as_str())),
+                "production ReadOnly always re-allows {device}: {allows:?}"
+            );
+        }
+        let workspace = dir.path().canonicalize().expect("canonical root");
         assert!(
-            !profile.contains("(allow file-write*"),
-            "read-only must re-allow no write path: {profile}"
+            !allows
+                .iter()
+                .any(|line| line.contains(workspace.display().to_string().as_str())),
+            "read-only must re-allow no workspace write root: {allows:?}"
         );
     }
 
@@ -285,6 +343,52 @@ mod tests {
                 denied.display()
             )),
             "a denied path must be denied for writes too: {profile}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_sibling_stays_denied_through_a_workspace_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let lane = TempDir::new().expect("lane fixture");
+        let workspace = lane.path().join("case00");
+        let private = lane.path().join("private");
+        std::fs::create_dir_all(&workspace).expect("workspace directory");
+        std::fs::create_dir_all(&private).expect("private directory");
+        let canary = private.join("case-metadata.canary");
+        std::fs::write(&canary, "publicly harmless canary").expect("canary file");
+        let escape = workspace.join("private-canary");
+        symlink(&canary, &escape).expect("workspace symlink");
+
+        let workspace = workspace.canonicalize().expect("canonical workspace");
+        let private = private.canonicalize().expect("canonical private root");
+        assert_eq!(
+            escape.canonicalize().expect("resolved symlink"),
+            canary.canonicalize().unwrap()
+        );
+
+        let profile = sbpl_profile(&BackendPolicy::new(
+            vec![workspace.clone()],
+            vec![workspace.clone()],
+            vec![private.clone()],
+        ));
+        let workspace_write = format!("(allow file-write* (subpath \"{}\"))", workspace.display());
+        let private_read_deny = format!("(deny file-read* (subpath \"{}\"))", private.display());
+        let write_allow_at = profile
+            .find(&workspace_write)
+            .expect("workspace write grant");
+        let private_deny_at = profile
+            .find(&private_read_deny)
+            .expect("private root read deny");
+
+        assert!(
+            private_deny_at > write_allow_at,
+            "private deny must follow grants: {profile}"
+        );
+        assert!(
+            profile.contains("(allow default)"),
+            "profile has broad reads: {profile}"
         );
     }
 
@@ -366,5 +470,33 @@ mod tests {
         if let Err(reason) = probe() {
             assert!(!reason.trim().is_empty(), "{reason}");
         }
+    }
+
+    /// The probe must resolve the symbol the applier calls, and resolving it
+    /// must not spend the one-shot application.
+    ///
+    /// The negative control proves the lookup is a real resolution rather than
+    /// an unconditional `true`; two probes in one process must agree, because a
+    /// probe that had applied a profile would have consumed the one-shot and
+    /// every later launch in this process would fail.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn probe_resolves_the_applied_symbol_without_consuming_the_one_shot() {
+        assert!(
+            symbol_resolves(SANDBOX_INIT_SYMBOL),
+            "Seatbelt availability depends on the {SANDBOX_INIT_SYMBOL} symbol resolving"
+        );
+        assert!(
+            !symbol_resolves("codegg_symbol_that_does_not_exist"),
+            "the resolution must be able to answer no, or the positive case proves nothing"
+        );
+        let first = probe();
+        let second = probe();
+        assert_eq!(
+            first.is_ok(),
+            second.is_ok(),
+            "a probe that consumed the one-shot application would answer differently \
+             the second time: {first:?} then {second:?}"
+        );
     }
 }

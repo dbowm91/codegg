@@ -30,6 +30,11 @@ so they are always available without filesystem access, and the parser
 treats them identically to user-supplied Halloy files. **Cyber Red** is
 the default theme.
 
+The bundled files are the gallery's content, **unedited**: where a value the
+theme author wrote cannot be read as this TUI uses it, the importer derives a
+legible variant of the author's own hue instead of changing the file (see
+[The projection owns legibility](#the-projection-owns-legibility)).
+
 The id is the kebab-case slug (e.g. `cyber-red`); the display name is the
 original case-preserved name from the Halloy gallery (e.g. `"Cyber Red"`).
 `/theme use` accepts the id, any spelling that normalizes to it
@@ -284,31 +289,31 @@ GUI-specific fields that codegg has no equivalent for. We map:
 | Halloy key | codegg slot |
 |------------|-------------|
 | `[general].background` | `base.background` |
-| `[general].border` | `ui.border` |
-| `[general].horizontal_rule` | `ui.border` (only if `border` absent) |
+| `[general].border` | `ui.border` (3rd border source; see below) |
+| `[general].horizontal_rule` | `ui.border` (4th border source) |
 | `[general].unread_indicator` | `ui.accent_primary` (1st choice; see below) |
 | `[general].highlight_indicator` | `ui.accent_primary` (2nd choice) |
-| `[text].primary` | `base.foreground` |
-| `[text].secondary` | `text.muted` |
-| `[text].tertiary` | `conversation.assistant` |
+| `[text].primary` | `base.foreground`, and `conversation.user` / `.assistant` / `.system` |
+| `[text].secondary` | accent candidate only (`ui.accent_primary`, `ui.accent_secondary`) |
+| `[text].tertiary` | `text.muted` |
 | `[text].success` | `status.success`, `diff.added` |
 | `[text].warning` | `status.warning`, `diff.modified` |
 | `[text].error` | `status.error`, `diff.removed` |
 | `[text].info` | `status.info`, `conversation.tool_call`, `agents.planner` |
 | `[text].debug` | `status.debug` |
-| `[text].trace` | `status.trace` |
+| `[text].trace` | declared in the schema, never read (`status.trace` keeps the fallback's value) |
 | `[buffer].background` | `ui.panel_background` |
 | `[buffer].background_text_input` | `ui.input_background` |
-| `[buffer].background_title_bar` | `ui.title_background` |
-| `[buffer].border` | (parsed; alpha-stripped if 8-hex) |
-| `[buffer].border_selected` | `ui.border_focused` |
+| `[buffer].background_title_bar` | `ui.title_background` (semantic-only; not projected) |
+| `[buffer].border` | `ui.border` (2nd border source) |
+| `[buffer].border_selected` | `ui.border` (1st border source) |
 | `[buffer].selection` | `ui.selection` |
 | `[buffer].code` | `code.foreground` |
 | `[buffer].url` | `text.link` |
 | `[buffer].timestamp` | `conversation.timestamp` |
 | `[buffer].action` | `conversation.tool_call` |
-| `[buffer].topic` | `conversation.assistant` |
-| `[buffer].nickname` | `conversation.user` |
+| `[buffer].topic` | not mapped (`text.primary` drives every conversation role) |
+| `[buffer].nickname` | not mapped, same reason |
 | `[buffer].highlight` | `agents.coder` |
 | `[buffer.server_messages].default` | `status.info` |
 | `[buttons.primary].background_selected` | `ui.accent_primary` (3rd choice) |
@@ -338,6 +343,39 @@ most of the gallery unusable: every bundled theme sets
 `buttons.primary.background_selected` at or below its own background (zenburn's
 is `#383838` on a `#383838` background), which rendered as invisible text.
 
+### Border precedence and the legibility gate
+
+`ui.border` paints every *unfocused* panel and dialog edge, so it is chrome rather
+than a focus colour. The precedence is:
+
+1. `[buffer].border_selected` — the selected buffer's indicator.
+2. `[buffer].border` — an unselected buffer's edge.
+3. `[general].border` — the window frame.
+4. `[general].horizontal_rule` — a divider.
+
+An 8-digit value whose alpha byte is `00` is Halloy's "no paint" and is skipped
+rather than parsed into a `#000000` frame. The first resolved value that clears
+**3.0:1** against `[general].background` ships unchanged; otherwise
+`[general].border` is used when it clears; otherwise the value is lifted along
+its own lightness axis until it clears, and a warning names `ui.border`.
+`ui.border_focused` is set to `ui.accent_primary`, which is what the TUI paints
+for focus.
+
+### The projection owns legibility
+
+A colour read through the Halloy importer is a *translation* of another format's
+field, so the projection — not the theme file — owns its legibility. Six
+translated tokens are gated: `base.foreground` (4.5:1, body copy), `text.muted`,
+`status.success`, `status.warning`, `status.error` and `ui.border` (3.0:1 each).
+A value that already clears its bar is untouched; a failing one is moved along
+the lightness axis toward whichever of black or white reads better, keeping its
+hue, and stops at the bar. Every derivation is reported by `/theme diagnostics`.
+
+This is why the bundled files are unedited third-party content: a value that
+cannot be read is a finding about our mapping, and the repair lives in
+`src/theme/halloy.rs`. The rule and its per-token bars are recorded in
+`architecture/theme.md` under "The projection owns legibility".
+
 `ui.selection_dim` is derived by pulling the selection a quarter of the way
 back toward the background (it subtracts a quarter of the background↔selection
 delta per channel). Anything we cannot resolve falls back to a sensible
@@ -348,8 +386,10 @@ default, never an error.
 Halloy themes often use 8-digit hex (`#rrggbbaa`) for "transparent"
 borders or RGBA selection backgrounds. codegg's parser accepts both 6-
 and 8-digit hex; the alpha channel is silently discarded (the theme
-layer has no concept of alpha today). `#00000000` → `#000000`,
-`#73000054` → `#730000`.
+layer has no concept of alpha today), so `#73000054` → `#730000`. The
+border chain is the one place where an alpha of `00` is read as Halloy
+means it — "no paint" — and the key is skipped instead of being painted
+as `#000000`.
 
 ### Halloy text style values
 

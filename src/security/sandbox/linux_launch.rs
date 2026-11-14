@@ -67,10 +67,8 @@ pub struct LinuxLaunchRequest {
 }
 
 impl LinuxLaunchRequest {
-    /// Describe today's behavior without implying that new Linux dimensions
-    /// are enforced. Existing helper policy remains the filesystem authority;
-    /// network stays unrestricted and no namespace/seccomp/cgroup policy is
-    /// requested.
+    /// Describe today's behavior without implying new Linux dimensions are
+    /// enforced: filesystem policy only, network unrestricted, no namespaces.
     pub fn legacy_filesystem(spec: &super::SandboxLaunchSpec) -> Self {
         let filesystem = FilesystemView {
             readable_roots: spec.read_paths.clone(),
@@ -363,13 +361,18 @@ pub fn observe_legacy_outcome(
             abi,
             guarantees,
             limits,
-        } => (
-            ObtainedState::Applied,
-            Some(backend.to_string()),
-            *abi,
-            guarantees.clone(),
-            limits.clone(),
-        ),
+        } => {
+            // The legacy route selects Landlock and nothing else: no other
+            // registered backend's probe can succeed on this host.
+            super::verify_reported_backend(super::BackendId::LANDLOCK, outcome)?;
+            (
+                ObtainedState::Applied,
+                Some(backend.to_string()),
+                *abi,
+                guarantees.clone(),
+                limits.clone(),
+            )
+        }
         super::SandboxLaunchOutcome::Unavailable { reason } => (
             ObtainedState::Unsupported,
             None,
@@ -384,13 +387,6 @@ pub fn observe_legacy_outcome(
             None,
             Vec::new(),
             vec![reason.clone()],
-        ),
-        super::SandboxLaunchOutcome::BubblewrapReady => (
-            ObtainedState::Failed,
-            None,
-            None,
-            Vec::new(),
-            vec!["unexpected Bubblewrap gate receipt on the legacy launch route".into()],
         ),
     };
     Ok(LinuxObtainedEnforcement {
@@ -737,6 +733,40 @@ mod tests {
         assert_eq!(obtained.abi, Some(9));
         assert_eq!(obtained.guarantees, vec!["filesystem path policy"]);
         assert_eq!(obtained.limitations, vec!["no network isolation"]);
+    }
+
+    #[test]
+    fn the_legacy_route_mechanism_is_the_only_serviceable_backend_here() {
+        let others: Vec<_> = super::super::backend::BACKENDS
+            .iter()
+            .filter(|candidate| candidate.id != super::super::BackendId::LANDLOCK)
+            .collect();
+        assert!(
+            !others.is_empty(),
+            "without a second registered backend the route check cannot refuse anything"
+        );
+        for candidate in others {
+            assert!(
+                (candidate.probe)().is_err(),
+                "{} now probes available here; the legacy route check must then compare the \
+                 launch's own selection instead of the route's mechanism",
+                candidate.id
+            );
+        }
+    }
+
+    #[test]
+    fn the_legacy_route_projection_refuses_a_foreign_backend_frame() {
+        let request = legacy_request();
+        let forged = super::super::SandboxLaunchOutcome::Enforced {
+            backend: super::super::BackendId::SEATBELT,
+            abi: None,
+            guarantees: Vec::new(),
+            limits: Vec::new(),
+        };
+        let error = observe_legacy_outcome(&request, &forged)
+            .expect_err("the route projection refuses a mechanism the route did not select");
+        assert!(error.contains("'seatbelt'"), "{error}");
     }
 
     #[test]

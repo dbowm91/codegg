@@ -30,8 +30,13 @@ and exercises shuffled input, repeated imports, one schema upgrade, invalid
 checksum, missing references, a cycle and an incremental update. Its size is
 not intended to create a long-running test.
 
+When adding dependent local crates, the workspace `Cargo.toml`, `Cargo.lock`,
+and `catalog-cli/Cargo.toml` may be updated to list workspace members and local
+path dependencies. Do not add registry dependencies. Other starter manifests,
+the contract, corpus, and public tests remain frozen.
+
 Run `cargo test --offline --locked --workspace` and the CLI contract tests. The
-provided tests and `contract.json` are frozen inputs. No dependencies or
+provided tests and `contract.json` are frozen inputs. No registry dependencies or
 network access are permitted. Preserve a durable phase note in the workspace
 root so a continuation can identify finished phases and the next dependent
 phase without replaying writes.

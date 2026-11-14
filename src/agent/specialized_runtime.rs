@@ -182,6 +182,7 @@ async fn run_research_child(
         description: format!("research evidence: {}", task.id),
         depth: 1,
         max_tool_calls: Some(MAX_CHILD_TOOL_CALLS),
+        max_wall_clock_secs: None,
         parent_model: Some(parent_model.into()),
         workspace_root: Some(workspace.to_path_buf()),
         default_working_directory: None,

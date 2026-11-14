@@ -266,18 +266,10 @@ impl AgentLoop {
                         }),
                     ))
                 }
-                // M007: the coarse, scheduler-owned job status for a
-                // peer group member. The predicate is the same
-                // authorization the other peer hints use: the event must
-                // be scoped to this session, the observer must be a
-                // member of a group in it, and the job must not be the
-                // observer's own.
-                //
-                // The payload carries the job id, the typed kind and the
-                // phase. It never carries the command line, the
-                // environment, the logs, the cache contents or an
-                // artifact path: the durable job record is the
-                // authority for those, and this hint is not it.
+                // M007 exposes coarse job status to same-session peer-group
+                // members, excluding the observer's own job. Commands,
+                // environment, logs and artifacts remain in the durable job
+                // record and are never included in this hint.
                 crate::bus::events::AppEvent::JobStatusObserved {
                     session_id,
                     turn_id,
@@ -452,7 +444,7 @@ impl AgentLoop {
         request: &mut ChatRequest,
         all_events: &mut Vec<ChatEvent>,
         processor: &mut EventProcessor,
-    ) {
+    ) -> Result<(), crate::error::AppError> {
         let model_profile = crate::model_profile::ModelProfileResolver::new(&self.services.config)
             .resolve(&request.model);
         loop {
@@ -465,11 +457,11 @@ impl AgentLoop {
                 Err(mpsc::error::TryRecvError::Empty) => {
                     // No follow-up queued, return immediately without blocking
                     tracing::debug!("No follow-up queued, skipping drain");
-                    return;
+                    return Ok(());
                 }
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     tracing::info!("Follow-up channel disconnected");
-                    return;
+                    return Ok(());
                 }
             };
 
@@ -485,8 +477,7 @@ impl AgentLoop {
             let mut just_executed_tools = false;
             loop {
                 self.lifecycle.set_phase(TurnPhase::ContextPreparation);
-                self.compact_if_needed(&mut request.messages, &model_profile)
-                    .await;
+                self.compact_if_needed(request, &model_profile).await;
                 // Phase 5: observe in follow-up loop after compaction and before provider call.
                 self.observe_context_pack(
                     request,
@@ -511,8 +502,8 @@ impl AgentLoop {
                     {
                         Ok(events) => events,
                         Err(e) => {
-                            tracing::error!("Follow-up stream error: {}", e);
-                            return;
+                            tracing::error!(error = %e, "Follow-up stream failed");
+                            return Err(e);
                         }
                     };
 
@@ -623,7 +614,7 @@ impl AgentLoop {
                         Err(e) => {
                             tracing::error!("Tool execution error: {}", e);
                             processor.reset();
-                            return;
+                            return Ok(());
                         }
                     },
                 };

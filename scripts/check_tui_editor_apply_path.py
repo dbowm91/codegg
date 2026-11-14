@@ -81,6 +81,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import rust_test_scan  # noqa: E402  (path is set above)
+
 TUI_ROOT = REPO_ROOT / "src" / "tui"
 
 # The file that owns the one builder.
@@ -186,40 +190,16 @@ def strip_comments(text: str) -> str:
 
 
 def strip_test_modules(text: str) -> str:
-    """Blank out `#[cfg(test)]` modules, keeping the line count.
+    """Blank the `#[cfg(test)]` module blocks, keeping every line in place.
 
     A test that matches on the request variant is not an apply path. The
-    module is removed by brace matching, so the removal is exact rather than
-    a guess about where the module ends. The attribute and the `mod` line
-    are often separate, so the search looks forward for the module's
-    opening brace rather than requiring them to share a line.
+    block boundaries are `rust_test_scan.production_mask`'s: the scanner's
+    mask blanks literals and comments, so a brace spelled in a fixture string
+    cannot end the module early, and the attributes governing the `mod` are
+    read as a run, so `#[cfg(test)] #[allow(..)] mod tests` is removed too.
+    The view keeps the original's length and newline count.
     """
-    lines = text.splitlines(keepends=True)
-    out = list(lines)
-    index = 0
-    while index < len(lines):
-        if "cfg(test)" not in lines[index]:
-            index += 1
-            continue
-        # Find the module's opening brace: the next line that opens one.
-        depth = 0
-        started = False
-        line_index = index
-        while line_index < len(lines):
-            line = lines[line_index]
-            if line_index != index:
-                out[line_index] = "\n" * line.count("\n")
-            for char in line:
-                if char == "{":
-                    depth += 1
-                    started = True
-                elif char == "}":
-                    depth -= 1
-            if started and depth <= 0:
-                break
-            line_index += 1
-        index = line_index + 1
-    return "".join(out)
+    return rust_test_scan.production_mask(text)
 
 
 def _matching_brace(text: str, open_index: int) -> int:

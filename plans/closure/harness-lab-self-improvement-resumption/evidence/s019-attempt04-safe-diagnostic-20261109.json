@@ -1,0 +1,176 @@
+{
+  "active_work_span_ms": 181925,
+  "activity_observation": {
+    "maximum_causal_event_gap_limit_ms": 300000,
+    "maximum_causal_event_gap_ms": 242210,
+    "maximum_native_tool_gap_limit_ms": 300000,
+    "maximum_native_tool_gap_ms": 50067,
+    "stall_watcher_triggered": false
+  },
+  "activity_stall": {
+    "cancel_error": null,
+    "stall_limit_seconds": 300,
+    "triggered": false
+  },
+  "agent_terminal": "failed",
+  "attempt": 4,
+  "case_id": "build-provenance-catalog",
+  "causal_trace": {
+    "dropped_events": 0,
+    "event_count": 57,
+    "max_sorted_event_gap_ms": 242210,
+    "sha256": "627b7191e53ea85e72b94fc523cc7e34bf01382e70a6951e6a96c250179cbde4",
+    "state": "complete",
+    "trace_age_seconds_at_reconcile": 7,
+    "trace_span_ms": 426485
+  },
+  "cost": {
+    "reported_usd": 0.007658,
+    "source": "opencode_go_allowance_receipt",
+    "unreported_treatment": "unknown"
+  },
+  "derived_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "disk_floor": {
+    "last_free_bytes": 49565933568,
+    "lowest_observed_free_bytes": 49565933568,
+    "minimum_free_bytes": 10737418240,
+    "triggered": false
+  },
+  "duration_ms": 429672,
+  "event_gap": {
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "event_observation_state": "observed_complete",
+    "tool_started_count": 24,
+    "tool_terminal_count": 24,
+    "tool_unpaired_start_count": 0
+  },
+  "horizon_evidence": {
+    "active_work_span_ms": 181954,
+    "continuation_confirmed": false,
+    "exact_job_running_and_terminal": false,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 50067,
+    "measurement_complete": false,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": false,
+    "repair_cycles": 0,
+    "tool_call_cap_exceeded": false,
+    "tool_call_count": 24,
+    "tool_call_limit": 1600
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "measurement_incomplete",
+  "provider_request_count": 15,
+  "provider_request_limit": 1200,
+  "provider_timeout_detail": {
+    "attempt_count_available": false,
+    "note": "The ACP failure projection carried the stable provider_timeout category only.",
+    "phase": null,
+    "phase_available_in_acp_projection": false
+  },
+  "raw_output_retained": false,
+  "receipt_sha256": "ce49d37a90bd67d587fe6e3bd3fe4ad81d4e47522f6e2e4aa7ae773ab90988e6",
+  "reviewer": {
+    "completed_review_result_observed": false,
+    "exact_identity_matched_call_count": 0,
+    "final_failure_class": null,
+    "final_status": null,
+    "get_after_terminal_status_count": 0,
+    "get_count": 0,
+    "get_nonterminal_count": 0,
+    "get_run_status_counts": {},
+    "reviewer_spawn_count": 0,
+    "status_sequence": [],
+    "task_action_counts": {}
+  },
+  "route": "opencode_go/muse-spark-1.3-contributor",
+  "schema": "s019_h007_run_diagnostic_v1",
+  "solved": false,
+  "source_manifest_sha256": "6d549f10df2a8601631d90e385f29f5c9533584d95d4ea5a277d241bd4fea9ff",
+  "task_outcome": "inconclusive",
+  "terminal_failure": {
+    "category": "provider_timeout",
+    "kind": "HarnessTurnFailure",
+    "usage_reason": null
+  },
+  "tool_call_count": 24,
+  "transcript_retained_or_inspected": false,
+  "verification": {
+    "diagnostic": {
+      "assertion_text_retained": false,
+      "diagnostic_detail_complete": true,
+      "exit_code": 1,
+      "failed_tests": [
+        {
+          "exception_class": "AssertionError",
+          "exception_message": {
+            "kind": "assertion_message",
+            "shape": [
+              "[",
+              "'",
+              "<word>",
+              "'",
+              ",",
+              "'",
+              "test",
+              "'",
+              ",",
+              "'",
+              "-",
+              "-",
+              "<word>",
+              "'",
+              ",",
+              "'",
+              "-",
+              "-",
+              "<word>",
+              "'",
+              ",",
+              "'",
+              "-",
+              "-",
+              "workspace",
+              "'",
+              "]",
+              "<word>",
+              "=",
+              "<number>",
+              ":"
+            ],
+            "shape_truncated": false,
+            "terms": [
+              "test",
+              "workspace"
+            ]
+          },
+          "failure_kind": "test_error",
+          "outcome": "error",
+          "test_id": "setUpClass (test_catalog_contract.CatalogContract)"
+        }
+      ],
+      "failure_counts": {
+        "errors": 1,
+        "failures": 0
+      },
+      "input_truncated": false,
+      "passed_count": 2,
+      "raw_output_retained": false,
+      "runner_error_class": null,
+      "schema": "h007_verifier_diagnostic_v1",
+      "setup_exception_class": "failures",
+      "skipped_count": 0,
+      "state": "setup_error",
+      "tests_run": 0,
+      "timed_out": false,
+      "traceback_retained": false,
+      "verbose_tests_observed": 3
+    },
+    "duration_ms": 3187,
+    "exit_code": 1,
+    "tests_run": 0,
+    "timed_out": false
+  },
+  "verifier_source_or_output_inspected": false
+}

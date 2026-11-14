@@ -118,6 +118,9 @@ pub struct SubAgentRequest {
     pub description: String,
     pub depth: usize,
     pub max_tool_calls: Option<usize>,
+    /// Durable per-attempt wall-clock budget. The configured child ceiling
+    /// still wins when it is smaller.
+    pub max_wall_clock_secs: Option<u64>,
     pub parent_model: Option<String>,
     pub workspace_root: Option<PathBuf>,
     /// Relative directory captured from the parent turn. It is resolved
@@ -166,6 +169,101 @@ pub struct SubAgentRequest {
     /// daemon — and the child's write then stays unattributed, which the
     /// shared-checkout fence refuses on a daemon with a team policy.
     pub execution_audit: Option<codegg_core::audit_instrumentation::TrustedExecutionAuditContext>,
+}
+
+fn resolve_subagent_wall_clock_timeout_secs(
+    run_budget_secs: Option<u64>,
+    configured_ceiling_secs: u64,
+) -> u64 {
+    let configured = if configured_ceiling_secs == 0 {
+        crate::config::schema::DEFAULT_SUBAGENT_WALL_CLOCK_TIMEOUT_SECS
+    } else {
+        configured_ceiling_secs
+    };
+    run_budget_secs
+        .filter(|seconds| *seconds > 0)
+        .map(|seconds| seconds.min(configured))
+        .unwrap_or(configured)
+}
+
+const SUBAGENT_TIMEOUT_CANCELLATION_GRACE: tokio::time::Duration =
+    tokio::time::Duration::from_secs(5);
+
+async fn run_with_subagent_wall_clock_timeout<T, F>(
+    timeout: tokio::time::Duration,
+    cancellation: &tokio::sync::watch::Sender<bool>,
+    execution: F,
+) -> Result<T, Box<dyn std::error::Error + Send + Sync>>
+where
+    F: std::future::Future<Output = Result<T, Box<dyn std::error::Error + Send + Sync>>>,
+{
+    tokio::pin!(execution);
+    match tokio::time::timeout(timeout, &mut execution).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(error),
+        Err(_) => {
+            // Ask the child loop to stop its current provider/tool work before
+            // dropping its future. Tool execution receives the same watch
+            // signal, so scheduler-backed work can observe cancellation too.
+            let _ = cancellation.send(true);
+            let _ = tokio::time::timeout(SUBAGENT_TIMEOUT_CANCELLATION_GRACE, &mut execution).await;
+            Err(Box::new(codegg_core::error::AppError::Tool(
+                codegg_core::error::ToolError::Timeout(
+                    "subagent wall-clock timeout exceeded".into(),
+                ),
+            )))
+        }
+    }
+}
+
+#[cfg(test)]
+mod subagent_wall_clock_tests {
+    use super::*;
+
+    #[test]
+    fn durable_budget_is_clamped_to_configured_ceiling() {
+        assert_eq!(
+            resolve_subagent_wall_clock_timeout_secs(Some(900), 600),
+            600
+        );
+        assert_eq!(
+            resolve_subagent_wall_clock_timeout_secs(Some(300), 600),
+            300
+        );
+        assert_eq!(resolve_subagent_wall_clock_timeout_secs(Some(0), 600), 600);
+        assert_eq!(
+            resolve_subagent_wall_clock_timeout_secs(None, 0),
+            crate::config::schema::DEFAULT_SUBAGENT_WALL_CLOCK_TIMEOUT_SECS
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_signals_cancellation_and_returns_a_typed_timeout() {
+        let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+        let execution = async move {
+            let _ = cancel_rx.changed().await;
+            Err::<(), Box<dyn std::error::Error + Send + Sync>>(Box::new(std::io::Error::other(
+                "child observed cancellation",
+            )))
+        };
+
+        let error = run_with_subagent_wall_clock_timeout(
+            tokio::time::Duration::from_millis(1),
+            &cancel_tx,
+            execution,
+        )
+        .await
+        .expect_err("the child must remain a timeout failure after cancellation");
+
+        assert!(error
+            .to_string()
+            .contains("subagent wall-clock timeout exceeded"));
+        assert!(*cancel_tx.borrow(), "timeout must signal the child loop");
+        assert_eq!(
+            classify_delegated_failure(error.as_ref()),
+            Some("deadline_exceeded")
+        );
+    }
 }
 
 /// Stable, typed compatibility lineage for the pre-durable AgentRun path.
@@ -1250,6 +1348,7 @@ pub fn classify_delegated_failure(
         AppError::Cancelled => Some("cancelled"),
         AppError::Permission(_) => Some("tool_permission_denied"),
         AppError::Tool(ToolError::Permission(_)) => Some("tool_permission_denied"),
+        AppError::Tool(ToolError::Timeout(_)) => Some("deadline_exceeded"),
         _ => None,
     }
 }
@@ -1378,6 +1477,7 @@ async fn run_subagent_task_with_cancel(
             SubAgentResult::failure(task_id, "Task cancelled".to_string())
         }
         result = async {
+            let (child_cancel_tx, child_cancel_rx) = tokio::sync::watch::channel(false);
             let execution = execute_agent_task(
                 &request,
                 &session_id,
@@ -1387,19 +1487,24 @@ async fn run_subagent_task_with_cancel(
                 session_store,
                 pool,
                 subagent_pool,
+                child_cancel_tx.clone(),
+                child_cancel_rx,
             );
-            if let Some(seconds) = config
+            let configured_timeout = config
                 .subagent
                 .as_ref()
-                .and_then(|settings| settings.wall_clock_timeout_secs)
-            {
-                match tokio::time::timeout(tokio::time::Duration::from_secs(seconds), execution).await {
-                    Ok(result) => result,
-                    Err(_) => Err("subagent wall-clock timeout exceeded".into()),
-                }
-            } else {
-                execution.await
-            }
+                .map(crate::config::schema::SubagentConfig::effective_wall_clock_timeout_secs)
+                .unwrap_or(crate::config::schema::DEFAULT_SUBAGENT_WALL_CLOCK_TIMEOUT_SECS);
+            let timeout_secs = resolve_subagent_wall_clock_timeout_secs(
+                request.max_wall_clock_secs,
+                configured_timeout,
+            );
+            run_with_subagent_wall_clock_timeout(
+                tokio::time::Duration::from_secs(timeout_secs),
+                &child_cancel_tx,
+                execution,
+            )
+            .await
         } => {
             match result {
                 Ok((output, report, validation, artifacts)) => {
@@ -1460,6 +1565,7 @@ async fn run_subagent_task_with_cancel(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_agent_task(
     request: &SubAgentRequest,
     usage_session_id: &str,
@@ -1469,6 +1575,8 @@ async fn execute_agent_task(
     _session_store: Arc<SessionStore>,
     pool: Option<SqlitePool>,
     subagent_pool: Arc<SubAgentPool>,
+    child_cancel_tx: tokio::sync::watch::Sender<bool>,
+    child_cancel_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<
     (
         String,
@@ -2032,9 +2140,8 @@ async fn execute_agent_task(
     // registration happens only after the loop owns the receivers, so a
     // persisted control can never race provider transcript mutation.
     let live_registration = if let Some(run_id) = request.run_id.clone() {
-        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
         let (steer_tx, steer_rx) = tokio::sync::mpsc::channel(32);
-        agent_loop.set_cancel_receiver(cancel_rx);
+        agent_loop.set_cancel_receiver(child_cancel_rx.clone());
         agent_loop.set_steer_receiver(steer_rx);
         let control = subagent_pool.durable_run_control.lock().await.clone();
         if let Some(control) = control {
@@ -2072,7 +2179,7 @@ async fn execute_agent_task(
                     crate::agent::run_control::LiveRunHandle {
                         follow_up_tx: agent_loop.follow_up_sender(),
                         steer_tx,
-                        cancel_tx,
+                        cancel_tx: child_cancel_tx.clone(),
                         interrupt_flag: agent_loop.interrupt_flag(),
                     },
                 )
@@ -2141,6 +2248,9 @@ async fn execute_agent_task(
             adapter_fingerprint: Some(&adapter.fingerprint),
             runtime_blocks: &runtime_blocks,
         });
+    agent_loop.set_prompt_section_digests(crate::agent::prompt::section_digests(
+        &compiled_prompt.blocks,
+    ));
     // Captured where the child's messages are produced, so the stored body
     // is the text the child acted on. The system message is the child's
     // internal channel; the prompt is the orchestrator-visible one.
@@ -2484,6 +2594,7 @@ mod admission_tests {
             description: format!("task-{task_id}"),
             depth: 0,
             max_tool_calls: None,
+            max_wall_clock_secs: None,
             parent_model: None,
             workspace_root: None,
             default_working_directory: None,
@@ -2848,6 +2959,7 @@ mod writer_fence_tests {
             description: "task-1".into(),
             depth: 0,
             max_tool_calls: None,
+            max_wall_clock_secs: None,
             parent_model: None,
             workspace_root: None,
             default_working_directory: None,
@@ -2999,6 +3111,136 @@ mod writer_fence_tests {
         assert!(
             request_holds_managed_checkout(Some(runs), &request(Some(parent_run_id), None)).await,
             "the parent still holds a managed checkout"
+        );
+    }
+}
+
+#[cfg(test)]
+mod prompt_ledger_tests {
+    use super::*;
+    use crate::agent::provider_turn::ProviderTurnAdapter;
+    use crate::provider::{ChatRequest, ContentPart, Message};
+    use std::str::FromStr;
+    use std::time::Duration;
+
+    async fn delegated_ledger_pool() -> SqlitePool {
+        let name = format!("worker_prompt_ledger_{}", uuid::Uuid::new_v4().simple());
+        let options = sqlx::sqlite::SqliteConnectOptions::from_str(&format!(
+            "file:{name}?mode=memory&cache=shared"
+        ))
+        .expect("valid sqlite options")
+        .create_if_missing(true)
+        .busy_timeout(Duration::from_secs(10));
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("connect in-memory sqlite");
+        codegg_core::session::schema::migrate(&pool)
+            .await
+            .expect("migrations run inside the helper");
+        pool
+    }
+
+    fn compiled_delegated_prompt() -> crate::agent::prompt::CompiledPrompt {
+        let agent = crate::agent::builtins::generated_builtin_agents()
+            .into_iter()
+            .find(|agent| agent.name == "build")
+            .expect("the build agent is a built-in");
+        let config = Config::default();
+        let model_profile =
+            crate::model_profile::ModelProfileResolver::new(&config).resolve("delegated-model");
+        let adapter = crate::model_profile::resolve_adapter(None, "delegated-model");
+        crate::agent::prompt::PromptCompiler::compile(crate::agent::prompt::PromptCompilerInput {
+            agent: &agent,
+            model_profile: &model_profile,
+            config: &config,
+            tools: &["read".to_string(), "write".to_string()],
+            skills: &[],
+            agents: std::slice::from_ref(&agent),
+            is_plan_mode: false,
+            snapshot: None,
+            pin: None,
+            execution: None,
+            adapter_fingerprint: Some(&adapter.fingerprint),
+            runtime_blocks: &[],
+        })
+    }
+
+    fn delegated_ledger_request(compiled: &crate::agent::prompt::CompiledPrompt) -> ChatRequest {
+        ChatRequest {
+            messages: vec![Message::User {
+                content: vec![ContentPart::Text {
+                    text: "inspect the delegated tree".to_string().into(),
+                }],
+            }],
+            model: "delegated-model".to_string(),
+            tools: None,
+            system: Some(compiled.text.clone()),
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            context: Default::default(),
+        }
+    }
+
+    fn delegated_loop_with_ledger(pool: SqlitePool, workspace: &std::path::Path) -> AgentLoop {
+        AgentLoop::new(
+            Vec::new(),
+            Box::new(crate::research::tests::StubProvider),
+            PermissionChecker::new(None, None),
+            ToolRegistry::default(),
+            Config::default(),
+            None,
+            Some(pool),
+            Arc::new(crate::context::InMemoryArtifactStore::new()),
+            workspace.to_path_buf(),
+            "delegated-child-ledger".to_string(),
+            None,
+            None,
+        )
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_delegated_childs_dispatched_prompt_records_its_section_digests() {
+        let compiled = compiled_delegated_prompt();
+        let digests = crate::agent::prompt::section_digests(&compiled.blocks);
+        assert!(
+            digests.contains_key("harness_contract"),
+            "the delegated prompt has a harness contract section to attribute"
+        );
+        let pool = delegated_ledger_pool().await;
+        let workspace = tempfile::tempdir().expect("ledger workspace");
+        let mut child = delegated_loop_with_ledger(pool.clone(), workspace.path());
+        assert_eq!(
+            child.prompt_section_digests(),
+            None,
+            "a fresh child loop carries no section identity until the compiled prompt records it"
+        );
+        child.set_prompt_section_digests(digests.clone());
+        let mut request = delegated_ledger_request(&compiled);
+        let events =
+            ProviderTurnAdapter::receive_with_retry_context(&mut child, &mut request, None)
+                .await
+                .expect("the delegated attempt completes");
+        assert!(events.is_empty(), "the stub provider streams no events");
+        let rows = crate::session::request_ledger::TurnRequestLedgerStore::new(pool)
+            .turn_attempts("delegated-child-ledger", 1)
+            .await
+            .expect("read the delegated turn");
+        assert_eq!(rows.len(), 1, "the delegated attempt wrote its request row");
+        assert_eq!(
+            rows[0].section_digests.as_ref(),
+            Some(&digests),
+            "the row carries the compiled delegated prompt's section digests"
+        );
+        assert_eq!(
+            rows[0].system_digest,
+            crate::context::tool_hash::system_prompt_digest(&request),
+            "the section map belongs to the system prompt the child actually dispatched"
         );
     }
 }

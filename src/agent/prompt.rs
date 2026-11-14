@@ -317,6 +317,48 @@ fn flatten_prompt_blocks(blocks: &[PromptBlock]) -> String {
         .join("\n\n")
 }
 
+pub fn section_digests(blocks: &[PromptBlock]) -> std::collections::BTreeMap<String, String> {
+    let mut grouped: std::collections::BTreeMap<&'static str, Vec<&str>> =
+        std::collections::BTreeMap::new();
+    for block in blocks {
+        grouped
+            .entry(section_label(block.kind))
+            .or_default()
+            .push(block.content.as_str());
+    }
+    grouped
+        .into_iter()
+        .map(|(kind, contents)| {
+            (
+                kind.to_owned(),
+                crate::context::tool_hash::section_digest(kind, &contents),
+            )
+        })
+        .collect()
+}
+
+fn section_label(kind: PromptBlockKind) -> &'static str {
+    match kind {
+        PromptBlockKind::HarnessContract => "harness_contract",
+        PromptBlockKind::RoleContract => "role_contract",
+        PromptBlockKind::ModelAdapter => "model_adapter",
+        PromptBlockKind::CapabilityContract => "capability_contract",
+        PromptBlockKind::ProjectInstructions => "project_instructions",
+        PromptBlockKind::AgentInstructions => "agent_instructions",
+        PromptBlockKind::MemorySummary => "memory_summary",
+        PromptBlockKind::GoalContext => "goal_context",
+        PromptBlockKind::ContinuationState => "continuation_state",
+        PromptBlockKind::SecurityEvidence => "security_evidence",
+        PromptBlockKind::ResearchEvidence => "research_evidence",
+        PromptBlockKind::LspContext => "lsp_context",
+        PromptBlockKind::GitContext => "git_context",
+        PromptBlockKind::PlanMode => "plan_mode",
+        PromptBlockKind::ControlPolicy => "control_policy",
+        PromptBlockKind::ControlInstruction => "control_instruction",
+        PromptBlockKind::Extension => "extension",
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledPrompt {
     pub compiler_version: &'static str,
@@ -1123,5 +1165,98 @@ mod tests {
         });
         assert_ne!(compiled.fingerprint, changed_prompt.fingerprint);
         assert!(!changed_prompt.text.contains("Tool-use contract:"));
+    }
+
+    #[test]
+    fn section_digests_are_stable_and_attribute_a_one_byte_change_to_one_section() {
+        let blocks = vec![
+            PromptBlock::required(
+                PromptBlockKind::HarnessContract,
+                "builtin:harness",
+                "harness text",
+            ),
+            PromptBlock::required(PromptBlockKind::RoleContract, "agent:role", "role text"),
+            PromptBlock::optional(PromptBlockKind::GitContext, "git:context", "git text"),
+        ];
+        let base = section_digests(&blocks);
+        assert_eq!(base, section_digests(&blocks));
+        assert_eq!(
+            base.keys().cloned().collect::<Vec<_>>(),
+            vec![
+                "git_context".to_string(),
+                "harness_contract".to_string(),
+                "role_contract".to_string()
+            ],
+            "every compiled kind with content is attributed"
+        );
+
+        let mut changed_blocks = blocks.clone();
+        changed_blocks[1].content = "role text.".to_string();
+        changed_blocks[1].content_hash =
+            crate::context::stable_hash_hex(&changed_blocks[1].content);
+        let changed = section_digests(&changed_blocks);
+        let moved: Vec<_> = base
+            .iter()
+            .filter(|(kind, digest)| changed.get(*kind) != Some(*digest))
+            .map(|(kind, _)| kind.clone())
+            .collect();
+        assert_eq!(
+            moved,
+            vec!["role_contract".to_string()],
+            "exactly one section's digest moves"
+        );
+        assert_ne!(
+            crate::context::tool_hash::system_prompt_digest(&crate::provider::ChatRequest {
+                messages: vec![],
+                model: "test-model".to_string(),
+                tools: None,
+                system: Some(flatten_prompt_blocks(&blocks)),
+                temperature: None,
+                top_p: None,
+                max_tokens: None,
+                response_format: None,
+                thinking_budget: None,
+                reasoning_effort: None,
+                context: crate::provider::ProviderRequestContext::default(),
+            }),
+            crate::context::tool_hash::system_prompt_digest(&crate::provider::ChatRequest {
+                messages: vec![],
+                model: "test-model".to_string(),
+                tools: None,
+                system: Some(flatten_prompt_blocks(&changed_blocks)),
+                temperature: None,
+                top_p: None,
+                max_tokens: None,
+                response_format: None,
+                thinking_budget: None,
+                reasoning_effort: None,
+                context: crate::provider::ProviderRequestContext::default(),
+            }),
+            "the dispatched system digest moves with the section"
+        );
+    }
+
+    #[test]
+    fn section_digests_group_repeated_kinds_in_compiled_order() {
+        let blocks = vec![
+            PromptBlock::optional(PromptBlockKind::CapabilityContract, "a", "alpha"),
+            PromptBlock::optional(PromptBlockKind::CapabilityContract, "b", "beta"),
+        ];
+        let forward = section_digests(&blocks);
+        assert_eq!(forward.len(), 1, "one entry per kind");
+        let mut reversed = blocks.clone();
+        reversed.reverse();
+        assert_ne!(
+            forward,
+            section_digests(&reversed),
+            "the order of same-kind sections is part of the digest"
+        );
+        assert_eq!(
+            forward.get("capability_contract"),
+            Some(&crate::context::tool_hash::section_digest(
+                "capability_contract",
+                &["alpha", "beta"]
+            ))
+        );
     }
 }

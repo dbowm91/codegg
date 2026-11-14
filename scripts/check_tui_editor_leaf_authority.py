@@ -57,6 +57,14 @@ is imported as a module — it is a plain script with a `main()` guarded by
 - **Rule 5 — a leaf table no prefix binds.** A table nothing reaches is a
   grammar that was written and never wired, which is how a leaf ends up
   "documented" and absent.
+- **Rule 6 — the `space` table's "unavailable" rows are not the recorded
+  set.** A row whose action is `EditorPendingEffect::Unavailable` states a
+  reason; a row that states one and is not recorded is either a working verb
+  that kept its apology or a new gap nobody registered, and a recorded row that
+  has stopped stating one is a capability that now works. Both directions are
+  defects because the set is a **claim about the surface**, not a list of rows:
+  M005 turned `space c` and `space C` into working toggles and the set shrank
+  by two in that same change.
 
 ## What the guard requires to still be true
 
@@ -65,6 +73,8 @@ cannot keep a deleted grammar alive:
 
 - `pub fn leaves(` — the accessor that binds a prefix to its table.
 - `pub const` leaf tables of the shape `&[PrefixLeaf]`.
+- `UNAVAILABLE_SPACE_LEAVES` — the recorded reason set rule 6 compares
+  against, with one entry per row that says why it cannot run.
 
 ## Non-vacuity
 
@@ -102,9 +112,29 @@ COMMANDS = REPO_ROOT / "src" / "tui" / "commands" / "editor.rs"
 TABLE_RE = re.compile(r"pub\s+const\s+([A-Z_][A-Z0-9_]*)\s*:\s*&\[PrefixLeaf\]\s*=\s*&\[")
 # The glyph field of one row: `glyph: 'x',`.
 GLYPH_RE = re.compile(r"glyph\s*:\s*'((?:\\.|[^'\\])*)'")
+# The reason a row gives for not running: `Unavailable("...")`, on one line or
+# broken across two. The first double-quoted string after the marker.
+UNAVAILABLE_MARKER = "EditorPendingEffect::Unavailable"
+REASON_RE = re.compile(r'"((?:\\.|[^"\\])*)"')
 # One prefix binding arm: `EditorPrefix::Space => SPACE_LEAVES,` and the
 # `|`-separated form the empty arms use.
 PREFIX_ARM_RE = re.compile(r"EditorPrefix::([A-Za-z_]\w*)")
+
+# The `space` leaves whose action is `EditorPendingEffect::Unavailable`, with
+# the sentence a reader is given. One entry per gap this build still has, and
+# the set is a claim about the **surface** rather than a list of rows:
+# `space c` and `space C` left it when M005 made them working toggles, and
+# `space j` left it when M006 turned it into the jumplist picker. Each shrink
+# is the reason the rule exists, in both directions.
+UNAVAILABLE_SPACE_LEAVES: dict[str, str] = {
+    "F": "switch to file picker: this build has one workspace root, and `space f` opens it",
+    "b": "buffer list: one document is attached at a time, so there is no list to choose from",
+    "D": (
+        "workspace diagnostics: no server capability backs a separate request; "
+        "`space d` opens the panel"
+    ),
+    "'": "last picker: this build's pickers are not fuzzy, so there is no query to recall",
+}
 
 # A Rust char literal's escapes. Only the ones a glyph can actually be.
 CHAR_ESCAPES = {
@@ -276,6 +306,85 @@ def parse_prefix_bindings(text: str) -> list[tuple[str, str | None]]:
     if not bindings:
         raise ParseError("`fn leaves(` binds no prefix")
     return bindings
+
+
+def parse_unavailable_rows(text: str) -> dict[str, str]:
+    """The `space` rows that state why they cannot run, by glyph.
+
+    One block per `PrefixLeaf {` row, so a reason is read from the row that
+    states it rather than from the nearest one. A row whose action is not
+    `Unavailable` contributes nothing, which is what lets the comparison see a
+    capability that started working.
+    """
+    lines = strip_comments(text).splitlines()
+    index = 0
+    while index < len(lines):
+        match = TABLE_RE.search(lines[index])
+        if match is None or match.group(1) != "SPACE_LEAVES":
+            index += 1
+            continue
+        body: list[str] = []
+        cursor = index + 1
+        while cursor < len(lines) and "]" not in lines[cursor]:
+            body.append(lines[cursor])
+            cursor += 1
+        if cursor >= len(lines):
+            raise ParseError("leaf table SPACE_LEAVES is not closed")
+        rows: dict[str, str] = {}
+        for row in "\n".join(body).split("PrefixLeaf {")[1:]:
+            glyph_match = GLYPH_RE.search(row)
+            if glyph_match is None:
+                raise ParseError("a SPACE_LEAVES row declares no glyph")
+            glyph = decode_char_literal(glyph_match.group(1))
+            if UNAVAILABLE_MARKER not in row:
+                continue
+            reason_match = REASON_RE.search(row.split(UNAVAILABLE_MARKER, 1)[1])
+            if reason_match is None:
+                raise ParseError(f"SPACE_LEAVES row {glyph!r} has an unreadable reason")
+            rows[glyph] = reason_match.group(1)
+        return rows
+    raise ParseError("no `SPACE_LEAVES` table found in src/tui/editor.rs")
+
+
+def compare_unavailable_rows(
+    actual: dict[str, str], expected: dict[str, str]
+) -> list[Violation]:
+    """Rule 6: the reasons the table states are the reasons the guard records.
+
+    Both directions matter, and they mean different things. An **unrecorded**
+    reason is a row nobody registered — most often a verb that now works and
+    kept its apology, which is the failure a one-way check would let through.
+    A **recorded** reason the table no longer states is a gap that closed, and
+    leaving it recorded is a claim about the surface that is no longer true.
+    """
+    violations: list[Violation] = []
+    for glyph in sorted(actual):
+        if glyph not in expected:
+            violations.append(
+                Violation(
+                    6,
+                    f"leaf table `SPACE_LEAVES` glyph {glyph!r} states a reason this guard "
+                    "does not record — a working verb that kept its apology, or a new gap",
+                )
+            )
+    for glyph in sorted(expected):
+        if glyph not in actual:
+            violations.append(
+                Violation(
+                    6,
+                    f"the recorded `Unavailable` row {glyph!r} no longer states a reason in "
+                    "`SPACE_LEAVES` — the capability works, so delete the record",
+                )
+            )
+        elif actual[glyph] != expected[glyph]:
+            violations.append(
+                Violation(
+                    6,
+                    f"leaf table `SPACE_LEAVES` glyph {glyph!r} states a different reason than "
+                    f"the record: {actual[glyph]!r}",
+                )
+            )
+    return violations
 
 
 def ascii_upper(char: str) -> str:
@@ -517,10 +626,55 @@ SELF_TEST_CASES: list[tuple[str, dict[str, list[Leaf]], list[tuple[str, str | No
 ]
 
 
+SELF_TEST_UNAVAILABLE_CASES: list[
+    tuple[str, dict[str, str], dict[str, str], Expectation]
+] = [
+    (
+        "the recorded reason set matches the table",
+        {"c": "toggle comment: gone", "j": "jumplist: none"},
+        {"c": "toggle comment: gone", "j": "jumplist: none"},
+        Expectation(violations=0),
+    ),
+    (
+        "a reason the guard does not record is a rule-6 violation",
+        {"c": "toggle comment: gone", "j": "jumplist: none"},
+        {"j": "jumplist: none"},
+        Expectation(violations=1, rules=(6,)),
+    ),
+    (
+        "a recorded row that stopped stating a reason is a rule-6 violation",
+        {"j": "jumplist: none"},
+        {"c": "toggle comment: gone", "j": "jumplist: none"},
+        Expectation(violations=1, rules=(6,)),
+    ),
+    (
+        "a reworded reason is a rule-6 violation",
+        {"j": "jumplist: rewritten"},
+        {"j": "jumplist: none"},
+        Expectation(violations=1, rules=(6,)),
+    ),
+]
+
+
 def run_self_test() -> int:
     failures = 0
     for description, tables, bindings, guard_chords, expected in SELF_TEST_CASES:
         violations = analyse(tables, bindings, guard_chords)
+        rules = tuple(sorted({violation.rule for violation in violations}))
+        if len(violations) != expected.violations or rules != expected.rules:
+            failures += 1
+            print(f"  FAIL {description}")
+            print(
+                f"         expected {expected.violations} violation(s) with rules "
+                f"{expected.rules}, got {len(violations)} with rules {rules}"
+            )
+            for violation in violations:
+                print(f"         violation: {violation.message}")
+        else:
+            print(f"  ok   {description}")
+
+    for description, actual, recorded, expected in SELF_TEST_UNAVAILABLE_CASES:
+        violations = compare_unavailable_rows(actual, recorded)
         rules = tuple(sorted({violation.rule for violation in violations}))
         if len(violations) != expected.violations or rules != expected.rules:
             failures += 1
@@ -540,7 +694,8 @@ def run_self_test() -> int:
         )
         return 2
 
-    print(f"\nself-test passed: {len(SELF_TEST_CASES)} case(s).")
+    cases = len(SELF_TEST_CASES) + len(SELF_TEST_UNAVAILABLE_CASES)
+    print(f"\nself-test passed: {cases} case(s).")
     return 0
 
 
@@ -562,6 +717,7 @@ def main(argv: list[str]) -> int:
         tables = parse_tables(strip_comments(editor_text))
         bindings = parse_prefix_bindings(editor_text)
         chords = guard_block_chords()
+        unavailable_rows = parse_unavailable_rows(editor_text)
     except (ParseError, OSError) as error:
         print(
             f"TUI editor leaf-authority guard could not resolve a shape: {error}\n"
@@ -572,6 +728,7 @@ def main(argv: list[str]) -> int:
         return 2
 
     violations = analyse(tables, bindings, chords)
+    violations.extend(compare_unavailable_rows(unavailable_rows, UNAVAILABLE_SPACE_LEAVES))
 
     if violations:
         print(
@@ -589,7 +746,9 @@ def main(argv: list[str]) -> int:
     print(
         "TUI editor leaf-authority guard passed — "
         f"{len(tables)} leaf table(s), {glyph_count} leaf glyph(s), "
-        f"{len(bindings)} prefix binding(s), no duplicate and no unreachable leaf"
+        f"{len(bindings)} prefix binding(s), "
+        f"{len(unavailable_rows)} unavailable leaf reason(s), "
+        "no duplicate and no unreachable leaf"
     )
     return 0
 

@@ -903,6 +903,16 @@ pub(crate) fn handle_workspace_view_key(app: &mut App, key: crossterm::event::Ke
     false
 }
 
+pub(crate) fn dispatch_workspaces(app: &mut App) {
+    app.messages_state
+        .toasts
+        .info("Workspace management - use /sessions to switch workspaces");
+}
+
+pub(crate) fn dispatch_workspace(app: &mut App) {
+    crate::tui::commands::workspace_dashboard::open_workspace_dashboard(app);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

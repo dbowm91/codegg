@@ -52,6 +52,26 @@ pub(super) use super::tool_inspect::{
 
 const FOLLOW_UP_CHANNEL_CAPACITY: usize = 32;
 
+fn cancellation_token_from_turn_receiver(
+    mut receiver: tokio::sync::watch::Receiver<bool>,
+) -> tokio_util::sync::CancellationToken {
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let watcher = cancellation.clone();
+    tokio::spawn(async move {
+        if *receiver.borrow() {
+            watcher.cancel();
+            return;
+        }
+        while receiver.changed().await.is_ok() {
+            if *receiver.borrow_and_update() {
+                watcher.cancel();
+                return;
+            }
+        }
+    });
+    cancellation
+}
+
 /// The most tool outcomes one run retains.
 ///
 /// A memory bound, not a transcript bound: the durable store applies its own
@@ -235,6 +255,11 @@ pub struct AgentLoop {
     /// Durable child loops retain the originating turn for provenance while
     /// their run ID remains the invocation owner scope.
     pub(super) turn_id: Option<String>,
+    /// The section digests of the prompt this loop dispatches, when its
+    /// caller compiled one. The request ledger records these instead of
+    /// rebuilding the prompt at the dispatch seam. `None` means the loop was
+    /// built without a compiled-prompt identity.
+    pub(super) prompt_section_digests: Option<std::collections::BTreeMap<String, String>>,
     /// M005 corrective C009: the actor this loop's writes run on behalf of,
     /// when the loop has no turn of its own.
     ///
@@ -282,6 +307,9 @@ pub struct AgentLoop {
     pub(super) max_tool_calls: Option<usize>,
     pub(super) goal_wall_clock: std::sync::Mutex<crate::goal::runtime::GoalWallClock>,
     pub(super) cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
+    /// Cancellation token passed into brokered tools so an ACP turn cancel
+    /// reaches an in-flight managed process or foreground scheduler wait.
+    pub(super) tool_cancellation: tokio_util::sync::CancellationToken,
     pub(super) steer_rx: Option<mpsc::Receiver<String>>,
     pub(super) pending_steer: Option<String>,
     pub(super) local_paths: (Option<String>, Option<String>),
@@ -603,6 +631,7 @@ impl AgentLoop {
             usage_session_id: session_id.clone(),
             session_id,
             turn_id: None,
+            prompt_section_digests: None,
             inherited_execution_audit: None,
             workspace_id: None,
             workspace_locks: None,
@@ -624,6 +653,7 @@ impl AgentLoop {
             reviewer_denial_counts: HashMap::new(),
             goal_wall_clock: std::sync::Mutex::new(crate::goal::runtime::GoalWallClock::default()),
             cancel_rx: None,
+            tool_cancellation: tokio_util::sync::CancellationToken::new(),
             steer_rx: None,
             local_paths,
             pending_steer: None,
@@ -704,6 +734,18 @@ impl AgentLoop {
 
     pub fn set_prompt_compiler_fingerprint(&mut self, fingerprint: String) {
         self.services.prompt_compiler_fingerprint = Some(fingerprint);
+    }
+
+    /// Retain the section digests of the compiled prompt this loop dispatches.
+    pub fn set_prompt_section_digests(
+        &mut self,
+        digests: std::collections::BTreeMap<String, String>,
+    ) {
+        self.prompt_section_digests = Some(digests);
+    }
+
+    pub fn prompt_section_digests(&self) -> Option<&std::collections::BTreeMap<String, String>> {
+        self.prompt_section_digests.as_ref()
     }
 
     pub fn runtime_asset_pin(
@@ -1216,6 +1258,7 @@ impl AgentLoop {
     }
 
     pub fn set_cancel_receiver(&mut self, rx: tokio::sync::watch::Receiver<bool>) {
+        self.tool_cancellation = cancellation_token_from_turn_receiver(rx.clone());
         self.cancel_rx = Some(rx);
     }
 
@@ -1585,8 +1628,7 @@ impl AgentLoop {
                 }
             }
 
-            self.compact_if_needed(&mut request.messages, &model_profile)
-                .await;
+            self.compact_if_needed(&mut request, &model_profile).await;
             // Phase 5: observe after compaction opportunity and immediately before provider call.
             self.observe_context_pack(
                 &request,
@@ -1822,7 +1864,7 @@ impl AgentLoop {
             let events =
                 match crate::agent::provider_turn::ProviderTurnAdapter::receive_with_retry_context(
                     self,
-                    &request,
+                    &mut request,
                     Some(turn_retry),
                 )
                 .await
@@ -2403,8 +2445,7 @@ impl AgentLoop {
             }
 
             // Compact after tool results to prevent context overflow from large outputs
-            self.compact_if_needed(&mut request.messages, &model_profile)
-                .await;
+            self.compact_if_needed(&mut request, &model_profile).await;
             // Phase 5: observe after tool results + post-tool compaction.
             self.observe_context_pack(
                 &request,
@@ -2468,7 +2509,7 @@ impl AgentLoop {
         }
 
         self.drain_follow_up(&mut request, &mut all_events, &mut processor)
-            .await;
+            .await?;
         // M003 ordinary turn-scoped WorkPlan close: only after the host
         // arbiter passes, never on budget expiry. Goal-bound plans close
         // through Goal verification, not here. Remaining state is preserved
@@ -2556,14 +2597,14 @@ impl AgentLoop {
                 }
             }
         }
-        self.publish_agent_finished(&all_events);
         self.account_goal_for_turn().await;
         // After draining queued follow-ups and accounting, decide
         // whether to autonomously continue the active goal (long-
         // horizon continuation loop). Mirrors codex's
         // `maybe_start_goal_continuation_turn`.
         self.maybe_continue_goal(&mut request, &mut all_events, &mut processor)
-            .await;
+            .await?;
+        self.publish_agent_finished(&all_events);
         // After continuation, so the stored reply is the whole turn rather
         // than its first provider pass.
         self.persist_turn_transcript(&all_events).await;
@@ -2678,6 +2719,21 @@ impl AgentLoop {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn turn_cancel_receiver_cancels_tool_execution_token() {
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        let cancellation = super::cancellation_token_from_turn_receiver(receiver);
+        assert!(!cancellation.is_cancelled());
+
+        sender
+            .send(true)
+            .expect("turn cancellation receiver remains open");
+        tokio::time::timeout(std::time::Duration::from_secs(1), cancellation.cancelled())
+            .await
+            .expect("tool cancellation token follows the turn cancel");
+        assert!(cancellation.is_cancelled());
+    }
+
     #[test]
     fn delegated_usage_attribution_preserves_private_session_identity() {
         let workspace = tempfile::tempdir().expect("temporary workspace");

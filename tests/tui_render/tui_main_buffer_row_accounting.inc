@@ -153,7 +153,7 @@ fn the_rows_the_transcript_draws_are_the_rows_the_row_count_reports() {
     let mut app = app_with_parts(vec![tool_part(), reasoning_part(), prose_part()]);
     let buffer = render(&mut app);
     let total = app.messages_state.messages.total_lines();
-    let viewport = app.viewport_area.expect("viewport area recorded");
+    let viewport = app.frame_plan.viewport;
 
     // The prose is the last part, so the row carrying its final token is the
     // last row of the transcript.

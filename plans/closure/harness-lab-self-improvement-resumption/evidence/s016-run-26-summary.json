@@ -1,0 +1,59 @@
+{
+  "active_work_span_ms": 1471293,
+  "attempt": 26,
+  "binary_sha256": "b42c3e93199d9cdc5dc71ef4381269505eda04fc3e3395df784722652515db9f",
+  "campaign_id": "s016-deepseek-raised-cap-20261102",
+  "duration_ms": 1494402,
+  "event_gap": {
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "event_gaps": [],
+    "event_observation_state": "observed_complete",
+    "tool_started_count": 430,
+    "tool_terminal_count": 430,
+    "tool_unpaired_start_count": 0
+  },
+  "finding": "Provider again rejected an oversized context request. Event pairs remained complete; no repair or exact-ID job lifecycle was recorded.",
+  "horizon_evidence": {
+    "active_work_span_ms": 1471919,
+    "continuation_confirmed": false,
+    "exact_job_running_and_terminal": false,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 32491,
+    "measurement_complete": false,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": false,
+    "repair_cycles": 0
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "measurement_incomplete",
+  "manifest_path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v8/cases.jsonl",
+  "manifest_sha256": "06296b94d6f95d773fc0708cdfbcfe3ca0ddeb4c13f136f5090f617ba0ce0613",
+  "minimum_free_disk_bytes_observed": 64552669184,
+  "model": "opencode_go/deepseek-v4.1-flash",
+  "provider_cost_source": "opencode_go_allowance_receipt",
+  "provider_cost_usd": 1.0198,
+  "provider_request_cap": 750,
+  "provider_requests": 290,
+  "receipt_path": "/private/tmp/s016-attempt26.json",
+  "receipt_sha256": "f08a597e7f1be5d4a7c466dc2dc22a9145c40dd8c3d6c9e2e88ff4ea34d84d0d",
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "schema_version": 1,
+  "source_revision": "c6aa5f1447378761cba257ca93985912e385e000",
+  "terminal": "failed",
+  "terminal_failure": {
+    "category": "provider_api",
+    "kind": "HarnessTurnFailure",
+    "usage_reason": null
+  },
+  "tool_call_count": 430,
+  "tool_calls": {
+    "bash": 213,
+    "context_read": 8,
+    "job": 11,
+    "read": 162,
+    "task": 33,
+    "write": 3
+  },
+  "verifier_contents_inspected": false
+}

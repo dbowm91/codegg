@@ -27,6 +27,7 @@ use ratatui::Frame;
 
 use codegg_document::DocumentSnapshot;
 
+use crate::tui::document_session::MAX_JUMPLIST_ENTRIES;
 use crate::tui::editor::{self, EditorMode, EditorPrefix, EditorViewport};
 use crate::tui::theme::Theme;
 
@@ -166,6 +167,14 @@ pub struct EditorWidget<'a> {
     /// holds no domain state: the disclosure belongs to the motion that
     /// produced it, and the caller already had it in hand.
     pub find_note: &'a str,
+    /// The count being typed, already rendered to text by
+    /// [`pending_count_label`](crate::tui::editor::pending_count_label), or
+    /// `""` when no count is pending.
+    ///
+    /// A pre-rendered `&str` like `find_note`, and for the same reason. It
+    /// renders immediately before the armed prefix — `3g` is one gesture, read
+    /// left to right — and never in the notice slot.
+    pub count_label: &'a str,
     /// Buffer mode.
     pub mode: EditorMode,
     /// Which region owns keyboard input.
@@ -218,6 +227,24 @@ pub struct EditorWidget<'a> {
     pub theme: Arc<Theme>,
 }
 
+/// The `space j` picker's window: rows it will draw, at most.
+///
+/// The same bound the LSP result panel uses, so a full jumplist is a window
+/// the reader scrolls rather than a box that leaves no document on screen.
+const PICKER_MAX_ROWS: usize = 12;
+
+/// Columns reserved for the picker's line number.
+const PICKER_LINE_DIGITS: usize = 5;
+
+/// Bytes read from one line to label a picker row.
+///
+/// A line beyond this renders from its prefix: a picker row is a label, not
+/// the document, and a frame must not read a whole 32 KiB line per row.
+const PICKER_ROW_BYTES: usize = 512;
+
+/// Characters of a line a picker row shows.
+const PICKER_ROW_CHARS: usize = 60;
+
 /// The editor's own keys, as the keymap box lists them.
 ///
 /// The editor's **own** verbs, not the whole application's: the box answers
@@ -226,18 +253,37 @@ pub struct EditorWidget<'a> {
 const EDITOR_KEYMAP: &[(&str, &str)] = &[
     ("e / b", "word end / start — selects the word"),
     ("w", "next word start"),
+    (
+        "3w / 5j",
+        "a count repeats the motion; 0 alone is line start",
+    ),
     ("v", "select mode — movement extends"),
-    ("x", "select the line"),
-    ("d / y", "delete / yank the selection"),
+    (
+        "x / X / Alt-x",
+        "select the line / widen to lines / narrow back",
+    ),
+    (
+        "d / Alt-d / y",
+        "delete into the unnamed register / delete without yanking / yank it and the clipboard",
+    ),
+    ("c / Alt-c", "change — delete the selection, then type"),
+    ("_", "trim the selection to whole lines"),
+    ("\" a", "select register a — then y / p / P / R"),
+    ("J / Alt-J", "join the lines covered"),
+    ("> / <", "indent / unindent the covered lines"),
+    ("space c / C", "toggle line / block comment"),
     ("u / Ctrl-r", "undo / redo"),
+    (". / Alt-.", "repeat the last insert / the last motion"),
     (":", "command line — matches as you type"),
-    ("/", "search"),
+    ("/ / ?", "regex search / the same backwards"),
+    ("*", "search for the selected text"),
     ("n / N", "next / previous match"),
     ("Ctrl-d / Ctrl-u", "half a page down / up"),
     ("PgDn / PgUp", "a full page down / up"),
     ("z c / t / b", "view: centre / top / bottom"),
     ("g g / g G", "start / end of the buffer"),
     ("g t / c / b", "top / middle / bottom of screen"),
+    ("space j", "jumplist — back to a visited position"),
     ("space ?", "this box"),
     ("Esc", "leave select mode / cancel"),
 ];
@@ -281,12 +327,19 @@ impl EditorWidget<'_> {
     }
 
     /// The editor's **keymap box** — its own catalogue of its keys, in the
-    /// bottom-right corner.
+    /// bottom-right corner — and, when it is open, the `space j`
+    /// **jumplist picker**, which is the same box holding a different list.
     ///
     /// A floating overlay: it covers the corner of the text area rather than
     /// taking rows away from the document, so opening it does not reflow the
-    /// text under the reader.
+    /// text under the reader. Two lists share it because a list on a row is a
+    /// list that has to be truncated, and a second box over the first would be
+    /// two competing overlays for one corner.
     fn render_keymap_overlay(&self, frame: &mut Frame, text_area: Rect) {
+        if self.presentation.jumplist.picker_open() {
+            self.render_jumplist_picker(frame, text_area);
+            return;
+        }
         if !self.presentation.keymap_overlay {
             return;
         }
@@ -338,6 +391,133 @@ impl EditorWidget<'_> {
             Paragraph::new(lines).style(Style::default().bg(theme.background).fg(theme.foreground)),
             inner,
         );
+    }
+
+    /// The `space j` **jumplist picker**, in the keymap box's corner.
+    ///
+    /// Newest first, one row per recorded position: its line number and the
+    /// line's own text, so two entries on one line are still tellable apart.
+    /// The title carries the count against
+    /// [`MAX_JUMPLIST_ENTRIES`](crate::tui::document_session::MAX_JUMPLIST_ENTRIES),
+    /// and at the bound it also says the oldest entry is dropped — the
+    /// disclosure the bound owes the reader, in the place the list is read and
+    /// where a short window cannot clip it.
+    ///
+    /// The text is read from the frame's snapshot and dropped with the
+    /// borrow: the picker holds offsets, never document bytes.
+    fn render_jumplist_picker(&self, frame: &mut Frame, text_area: Rect) {
+        let jumplist = &self.presentation.jumplist;
+        let theme = Arc::clone(&self.theme);
+        // Bounded by the panel the LSP results use, so a long history is a
+        // window rather than a box the height of the screen.
+        let rows_available = text_area
+            .height
+            .saturating_sub(2)
+            .min(PICKER_MAX_ROWS as u16)
+            .max(1) as usize;
+        let len = jumplist.len();
+        let visible = len.min(rows_available);
+        let start = jumplist
+            .cursor()
+            .saturating_sub(visible.saturating_sub(1))
+            .min(len.saturating_sub(visible));
+        // `(gutter, row index, line text)`: the gutter fixes the column and
+        // the row index says which entry the highlight belongs to, so a
+        // window that scrolled still marks the highlighted row.
+        let mut rows: Vec<(String, usize, String)> = Vec::with_capacity(visible);
+        for index in start..start + visible {
+            let Some(entry) = jumplist.row(index) else {
+                continue;
+            };
+            let line = crate::tui::editor::cursor_line(self.snapshot, entry.byte) + 1;
+            let gutter = format!("{line:>width$}  ", width = PICKER_LINE_DIGITS);
+            let text = self.picker_line_text(entry.byte);
+            rows.push((gutter, index, text));
+        }
+        // The bound is disclosed in the **title**, not in a footer row: a
+        // short editor window clips a row off the bottom of the box, and a
+        // disclosure nobody can see is not a disclosure. The title is part of
+        // the width calculation below, so it survives at full size.
+        let title = if jumplist.at_bound() {
+            format!(
+                " jumplist · {len}/{max} · oldest dropped at the bound ",
+                max = MAX_JUMPLIST_ENTRIES
+            )
+        } else {
+            format!(" jumplist · {len}/{max} ", max = MAX_JUMPLIST_ENTRIES)
+        };
+        let body_width = rows
+            .iter()
+            .map(|(gutter, _, text)| gutter.chars().count() + text.chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(title.chars().count());
+        let width = (body_width + 2).min(text_area.width as usize) as u16;
+        let height = (rows.len() + 2).min(text_area.height as usize) as u16;
+        if width == 0 || height == 0 {
+            return;
+        }
+        let rect = Rect {
+            x: text_area.x + text_area.width - width,
+            y: text_area.y + text_area.height - height,
+            width,
+            height,
+        };
+        let lines: Vec<Line> = rows
+            .iter()
+            .map(|(gutter, index, text)| {
+                let (gutter_style, text_style) = if *index == jumplist.cursor() {
+                    let selected = Style::default()
+                        .fg(theme.background)
+                        .bg(theme.primary)
+                        .add_modifier(Modifier::BOLD);
+                    (selected, selected)
+                } else {
+                    (
+                        Style::default().fg(theme.muted),
+                        Style::default().fg(theme.foreground),
+                    )
+                };
+                Line::from(vec![
+                    Span::styled(gutter.clone(), gutter_style),
+                    Span::styled(text.clone(), text_style),
+                ])
+            })
+            .collect();
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.primary))
+            .style(Style::default().bg(theme.background));
+        let inner = block.inner(rect);
+        frame.render_widget(Clear, rect);
+        frame.render_widget(block, rect);
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(theme.background).fg(theme.foreground)),
+            inner,
+        );
+    }
+
+    /// One picker row's text: the line the entry lands on, from its start.
+    fn picker_line_text(&self, byte: usize) -> String {
+        let line = crate::tui::editor::cursor_line(self.snapshot, byte);
+        let Some(start) = crate::tui::editor::line_start(self.snapshot, line) else {
+            return String::new();
+        };
+        let end = crate::tui::editor::line_content_end(self.snapshot, line).unwrap_or(start);
+        let bounded =
+            crate::tui::editor::clamp_offset(self.snapshot, start.saturating_add(PICKER_ROW_BYTES))
+                .min(end);
+        self.snapshot
+            .read_bytes(start, bounded)
+            .map(|text| {
+                text.chars()
+                    .take(PICKER_ROW_CHARS)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .unwrap_or_default()
     }
 
     /// The editor's single bottom row: the path on the left, the status
@@ -528,11 +708,9 @@ impl EditorWidget<'_> {
             }
         }
         // ── The transient disclosure ────────────────────────────────────
-        // It answers "what did my last keystroke do?" — the find that landed,
-        // the search that matched, the history cursor that moved. It is one
-        // group: the count of a search and its "partial" marker are one
-        // answer, and dropping half of it would say "3 matches" about a
-        // search that only found part of them.
+        // "What did my last keystroke do?" — the find, the search, the history
+        // cursor. It is one group: a count and its "partial" marker are one
+        // answer, and half of it would say "3 matches" about a partial search.
         let mut disclosure: Vec<Span<'_>> = Vec::new();
         if self.search_active || self.search_count > 0 {
             let plural = if self.search_count == 1 { "" } else { "es" };
@@ -579,6 +757,19 @@ impl EditorWidget<'_> {
                 format!("· history {position}/{length} "),
                 Style::default().fg(theme.muted),
             ));
+        } else if self.presentation.history_trimmed {
+            // The oldest undo point is being dropped to stay under the bound.
+            // Derived from the last edit, so it stops when the pruning does.
+            disclosure.push(Span::styled(
+                "· history trimmed at its bound ".to_string(),
+                Style::default().fg(theme.muted),
+            ));
+        } else if self.presentation.history_bound_cleared {
+            // The row explains the `u` that finds nothing.
+            disclosure.push(Span::styled(
+                "· history cleared at its bound ".to_string(),
+                Style::default().fg(theme.muted),
+            ));
         }
         if !disclosure.is_empty() {
             groups.push(ClusterGroup {
@@ -591,6 +782,19 @@ impl EditorWidget<'_> {
                 ClusterWeight::Notice,
                 format!("{notice} "),
                 Style::default().fg(theme.error),
+            ));
+        }
+        // The pending count, then the armed prefix. They are **one** gesture —
+        // `3gg` is a count and a prefix — so the count goes immediately before
+        // the prefix and carries the prefix's weight and style rather than the
+        // disclosure's: both answer "what is my next key about to do?".
+        if !self.count_label.is_empty() {
+            groups.push(ClusterGroup::one(
+                ClusterWeight::Prefix,
+                self.count_label.to_string(),
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
             ));
         }
         // The armed prefix is **last**: it is the one thing that must be
@@ -754,7 +958,13 @@ impl EditorWidget<'_> {
                 ));
             } else {
                 frame_remaining = frame_remaining.saturating_sub(row_bytes);
-                spans.extend(self.line_spans(line_index, viewport, text_style, &selection));
+                spans.extend(self.line_spans(
+                    line_index,
+                    viewport,
+                    text_style,
+                    &selection,
+                    cursor_line,
+                ));
             }
             lines.push(Line::from(spans));
         }
@@ -1394,6 +1604,95 @@ impl EditorWidget<'_> {
         out
     }
 
+    /// The bytes this row's spans are built from.
+    ///
+    /// The read is the **column window's** bytes, not the logical line's:
+    /// `(window end + 2) x 4` is the worst-case UTF-8 cost of everything up
+    /// to the window's last column, plus the character that may straddle it.
+    /// The window is counted from the line's start rather than from the
+    /// scroll column because every offset the row builds is line-relative —
+    /// the token columns, the search matches, the cell ranges — so a window
+    /// that did not begin at the line's start could not be resolved against
+    /// any of them.
+    ///
+    /// A window that is not settled within that — a run of zero-width marks,
+    /// whose bytes cost columns they do not advance — grows until it is, up
+    /// to the line's end, which is exactly the read this replaces. The C002
+    /// bounds are unchanged: `MAX_RENDER_LINE_BYTES` still caps one line and
+    /// `MAX_FRAME_SOURCE_BYTES` still caps the frame. What changes is that an
+    /// ordinary long line costs the columns a reader can see.
+    fn row_window(
+        &self,
+        start: usize,
+        end: usize,
+        column: usize,
+        limit: usize,
+    ) -> Option<RowWindow> {
+        let head_reach = self.head_reach(start, end);
+        // The furthest byte this row can paint, so a head cell outside the
+        // window stays readable; one character of headroom covers the cell's
+        // own character.
+        let mut budget = start
+            .saturating_add(limit.saturating_add(2).saturating_mul(4))
+            .max(start.saturating_add(head_reach.map_or(0, |reach| reach.saturating_add(4))))
+            .min(end);
+        loop {
+            // The budget is a byte count, and a byte count that lands inside
+            // a character is not a readable range: the read ends at the last
+            // character boundary at or below it. That is one character of
+            // under-read, never a lost row — a range that splits a character
+            // is `InvalidBoundary`, which would leave the row blank.
+            let read_end = self.boundary_at_or_before(start, budget);
+            let text = self.snapshot.read_bytes(start, read_end).ok()?;
+            crate::tui::render_cost::count_editor_row_read(text.len());
+            let window = visible_window(&text, column, limit);
+            if window.settled || read_end >= end {
+                return Some(RowWindow {
+                    window_bytes: text,
+                    start: window.start,
+                    end: window.end,
+                    started: window.started,
+                });
+            }
+            // Not settled within the budget: double it. The number of reads is
+            // logarithmic and the bytes examined stay linear in the window.
+            let grown = start
+                .saturating_add(budget.saturating_sub(start).saturating_mul(2))
+                .max(start.saturating_add(64));
+            budget = end.min(grown);
+        }
+    }
+
+    /// The largest character boundary at or below `budget`, never below
+    /// `start`.
+    fn boundary_at_or_before(&self, start: usize, budget: usize) -> usize {
+        let mut candidate = budget.max(start);
+        while candidate > start && !self.snapshot.is_byte_boundary(candidate) {
+            candidate -= 1;
+        }
+        candidate
+    }
+
+    /// The furthest byte a head cell can paint on this row, relative to the
+    /// line's start, or `None` when no head is on it.
+    ///
+    /// A head is the cursor or an extra selection's head. The view can be
+    /// scrolled away from both (Helix's view mode), so a head may sit outside
+    /// the column window and still be painted: its cell is built from the
+    /// byte at its offset, so the row's read has to cover it.
+    fn head_reach(&self, line_start: usize, line_end: usize) -> Option<usize> {
+        std::iter::once(self.cursor_byte)
+            .chain(
+                self.presentation
+                    .selections
+                    .iter()
+                    .map(|selection| selection.head.byte),
+            )
+            .filter(|byte| *byte >= line_start && *byte < line_end)
+            .map(|byte| byte - line_start)
+            .max()
+    }
+
     /// Build the styled spans for one row.
     ///
     /// Four layers resolve into one set of spans, in this order, each one
@@ -1419,6 +1718,7 @@ impl EditorWidget<'_> {
         viewport: EditorViewport,
         base: Style,
         selection: &[std::ops::Range<usize>],
+        cursor_line: usize,
     ) -> Vec<Span<'static>> {
         use crate::tui::editor_lsp::utf16_column_to_byte;
         let Some(start) = editor::line_start(self.snapshot, line_index) else {
@@ -1451,9 +1751,17 @@ impl EditorWidget<'_> {
             ));
             return spans;
         }
-        let Ok(line) = self.snapshot.read_bytes(start, end) else {
+        // The line's own content length. The read below is the *window's*
+        // bytes, not this whole range, so anything that asks "is this at the
+        // end of the line" has to ask this rather than the read's length.
+        let line_len = end.saturating_sub(start);
+        let limit = viewport
+            .column
+            .saturating_add(viewport.text_columns as usize);
+        let Some(window) = self.row_window(start, end, viewport.column, limit) else {
             return vec![];
         };
+        let line = window.window_bytes;
         // Is this **row** selected?
         //
         // A line-mode selection is a row-level fact, and the byte range of an
@@ -1463,31 +1771,19 @@ impl EditorWidget<'_> {
         let row_selected = self.presentation.selections.iter().any(|selection| {
             editor::line_selection_covers_line(self.snapshot, selection, line_index)
         });
-        let mut display = 0usize;
-        let mut visible_start = line.len();
-        let mut visible_end = line.len();
-        let mut started = false;
-        let limit = viewport
-            .column
-            .saturating_add(viewport.text_columns as usize);
-        for (byte, ch) in line.char_indices() {
-            let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-            let next = display.saturating_add(width);
-            if !started && next > viewport.column {
-                visible_start = byte;
-                started = true;
-            }
-            if started && display < limit {
-                visible_end = byte + ch.len_utf8();
-            }
-            display = next;
-        }
-        if !started && viewport.column == 0 {
-            visible_start = 0;
-            visible_end = line.len();
-        } else if !started {
+        if !window.started && viewport.column > 0 {
+            // Nothing on the row reaches the scrolled-to column.
             return vec![Span::styled(String::new(), base)];
         }
+        // A row whose characters are all zero-width — an empty line, or one
+        // of only combining marks — never "starts", and is drawn whole. That
+        // is the one case the walk cannot settle, and it is why the read for
+        // such a row is the line rather than the window.
+        let (visible_start, visible_end) = if window.started {
+            (window.start, window.end)
+        } else {
+            (0, line.len())
+        };
         let visible_end = visible_end.max(visible_start).min(line.len());
         let mut boundaries = vec![visible_start, visible_end];
         // Foreground sources, in priority order: an LSP semantic token
@@ -1496,12 +1792,34 @@ impl EditorWidget<'_> {
         // wherever the two agree, and the scan fills in everything the
         // server said nothing about.
         let mut syntax_ranges: Vec<(std::ops::Range<usize>, Style)> = Vec::new();
-        for token in self
-            .lsp
-            .semantic_tokens
-            .iter()
-            .filter(|token| token.line as usize == line_index)
-        {
+        // The row's tokens are one ascending run of a vector the language
+        // server sorted by `(line, character)`, so a partition point finds
+        // the run's first token in `O(log tokens)` and the walk stops at the
+        // run's end. The linear filter this replaces visited **every** token
+        // in the document for every visible row.
+        let mut token_scan_steps = 0u64;
+        let mut token_cursor = self.lsp.semantic_tokens.partition_point(|token| {
+            token_scan_steps += 1;
+            (token.line as usize) < line_index
+        });
+        // The row read a **prefix** of its line, so a token whose end lies
+        // past those bytes has no byte offset to map to. That is not a
+        // malformed token: it is a token that runs past the window, and its
+        // clipped end is the window's end either way. Distinguishing the two
+        // needs the read's length in UTF-16 units, which only a row that
+        // actually carries tokens pays for.
+        let read_units: usize = match self.lsp.semantic_tokens.get(token_cursor) {
+            Some(token) if token.line as usize == line_index => {
+                line.chars().map(char::len_utf16).sum()
+            }
+            _ => 0,
+        };
+        while let Some(token) = self.lsp.semantic_tokens.get(token_cursor) {
+            if token.line as usize != line_index {
+                break;
+            }
+            token_scan_steps += 1;
+            token_cursor += 1;
             // Well-formed unknown token types render plain (`base`) while
             // valid neighbors keep their theme styles. This is what stops
             // one legitimate `variable`/`parameter`/`property` span from
@@ -1515,8 +1833,16 @@ impl EditorWidget<'_> {
             let Some(token_start) = utf16_column_to_byte(&line, token.character) else {
                 continue;
             };
-            let Some(token_end) = utf16_column_to_byte(&line, token_end) else {
-                continue;
+            let token_end = match utf16_column_to_byte(&line, token_end) {
+                Some(end) => end,
+                // Past the read: the token continues beyond the drawn window,
+                // so the clipped range ends where the window does.
+                None if usize::try_from(token_end).is_ok_and(|column| column > read_units) => {
+                    line.len()
+                }
+                // A column inside the read that still has no byte offset is a
+                // token whose end splits a surrogate pair: dropped, as before.
+                None => continue,
             };
             let range = token_start.max(visible_start)..token_end.min(visible_end);
             if range.start < range.end {
@@ -1525,6 +1851,14 @@ impl EditorWidget<'_> {
                 syntax_ranges.push((range, style));
             }
         }
+        crate::tui::render_cost::count_editor_token_scan_steps(token_scan_steps);
+        // Where the server's run ends and the scan's begins. The two runs
+        // are separate on purpose: the server outranks the scan wherever
+        // both cover a segment, so the priority is the run's order and not
+        // the ranges' byte order. A segment that an LSP range *covers* takes
+        // the server's style even when a scan range starts earlier, which is
+        // what a pointer over a single merged, byte-sorted list would lose.
+        let lsp_ranges = syntax_ranges.len();
         // Server-free layer. A no-op when a server is supplying tokens for
         // this line, and the only colouring there is when one is not.
         for span in self.highlight.spans_for_line(
@@ -1540,30 +1874,33 @@ impl EditorWidget<'_> {
                 syntax_ranges.push((range, Style::default().fg(span.color)));
             }
         }
-        // `/` matches, clipped to this row. Match offsets ascend, so a
-        // partition point finds the first one inside the line in O(log n)
-        // rather than walking every retained match for every visible row.
+        // `/` matches, clipped to this row. Match spans ascend and do not
+        // overlap, so a partition point finds the first one inside the line
+        // in O(log n) rather than walking every retained match for every
+        // visible row. Each span carries its own extent, so a wildcard match
+        // is painted exactly as wide as the text it covered.
         let search_ranges = {
-            let needle = self.presentation.search_line.len();
-            if needle == 0 {
+            if self.presentation.search_line.is_empty() {
                 Vec::new()
             } else {
                 let absolute_start = start;
-                let absolute_end = start + line.len();
+                let absolute_end = start + line_len;
                 let first = self
                     .presentation
                     .search_matches
-                    .partition_point(|offset| *offset < absolute_start);
+                    .partition_point(|span| span.start < absolute_start);
                 self.presentation
                     .search_matches
                     .iter()
                     .skip(first)
-                    .take_while(|offset| **offset < absolute_end)
-                    .map(|offset| {
-                        let from = offset
+                    .take_while(|span| span.start < absolute_end)
+                    .map(|span| {
+                        let from = span
+                            .start
                             .saturating_sub(start)
                             .clamp(visible_start, visible_end);
-                        let to = (offset + needle)
+                        let to = span
+                            .end
                             .saturating_sub(start)
                             .clamp(visible_start, visible_end);
                         from..to
@@ -1580,7 +1917,15 @@ impl EditorWidget<'_> {
         // have to exist even when a head sits past the last character —
         // otherwise "the cursor is at the end of the line" is the one
         // position a reader cannot see.
-        let head_cells = self.head_cells(start, &line, line_index, visible_start, visible_end);
+        let head_cells = self.head_cells(
+            start,
+            &line,
+            line_len,
+            line_index,
+            visible_start,
+            visible_end,
+            cursor_line,
+        );
         for (from, to, _) in &head_cells {
             boundaries.push(*from);
             boundaries.push(*to);
@@ -1589,6 +1934,11 @@ impl EditorWidget<'_> {
         let extra_head_style = self.extra_head_style();
         boundaries.sort_unstable();
         boundaries.dedup();
+        // Both runs and the segments are ascending, so each run needs one
+        // cursor for the whole row. `find` from index 0 for every segment
+        // was `segments x ranges` on a dense line.
+        let mut lsp_cursor = 0usize;
+        let mut scan_cursor = lsp_ranges;
         let mut spans: Vec<Span<'static>> = boundaries
             .windows(2)
             .filter_map(|pair| {
@@ -1606,12 +1956,19 @@ impl EditorWidget<'_> {
                     }
                     None => return None,
                 };
-                let style = syntax_ranges
-                    .iter()
-                    .find(|(token_range, _)| {
-                        token_range.start <= range.start && token_range.end >= range.end
-                    })
-                    .map_or(base, |(_, token_style)| base.patch(*token_style));
+                let style =
+                    match covering_style(&syntax_ranges, &mut lsp_cursor, lsp_ranges, &range) {
+                        Some(token_style) => base.patch(token_style),
+                        None => match covering_style(
+                            &syntax_ranges,
+                            &mut scan_cursor,
+                            syntax_ranges.len(),
+                            &range,
+                        ) {
+                            Some(token_style) => base.patch(token_style),
+                            None => base,
+                        },
+                    };
                 // Absolute offsets back to line-relative, then clipped to the
                 // segment so a selection boundary can only colour part of it.
                 // Membership is over the whole **set**: a byte inside any
@@ -1708,15 +2065,16 @@ impl EditorWidget<'_> {
         byte: usize,
         line_start: usize,
         line: &str,
+        line_len: usize,
         visible_start: usize,
         visible_end: usize,
     ) -> Option<(usize, usize)> {
-        let at = byte.saturating_sub(line_start).min(line.len());
+        let at = byte.saturating_sub(line_start).min(line_len);
         // Past the last character on an otherwise fully visible row: the
         // virtual cell. Anywhere else it means the position is simply scrolled
         // out of the window, and inventing a cell there would paint a ghost
         // marker somewhere the viewport has already decided not to show.
-        if at == visible_end && visible_end < line.len() {
+        if at == visible_end && visible_end < line_len {
             return None;
         }
         if at < visible_start {
@@ -1744,9 +2102,11 @@ impl EditorWidget<'_> {
         &self,
         line_start: usize,
         line: &str,
+        line_len: usize,
         line_index: usize,
         visible_start: usize,
         visible_end: usize,
+        cursor_line: usize,
     ) -> Vec<(usize, usize, bool)> {
         let mut cells: Vec<(usize, usize, bool)> = self
             .presentation
@@ -1763,6 +2123,7 @@ impl EditorWidget<'_> {
                     selection.head.byte,
                     line_start,
                     line,
+                    line_len,
                     visible_start,
                     visible_end,
                 )
@@ -1772,9 +2133,15 @@ impl EditorWidget<'_> {
         // The cursor's own cell joins the same partition as the heads, so it
         // is folded in here rather than handled by a separate code path — two
         // code paths for "which cell is marked" is how they drift apart.
-        if let Some((from, to)) =
-            self.cursor_cell(line_start, line, line_index, visible_start, visible_end)
-        {
+        if let Some((from, to)) = self.cursor_cell(
+            line_start,
+            line,
+            line_len,
+            line_index,
+            visible_start,
+            visible_end,
+            cursor_line,
+        ) {
             cells.push((from, to, true));
         }
         cells
@@ -1787,17 +2154,20 @@ impl EditorWidget<'_> {
         &self,
         line_start: usize,
         line: &str,
+        line_len: usize,
         line_index: usize,
         visible_start: usize,
         visible_end: usize,
+        cursor_line: usize,
     ) -> Option<(usize, usize)> {
-        if line_index != editor::cursor_line(self.snapshot, self.cursor_byte) {
+        if line_index != cursor_line {
             return None;
         }
         self.cell_for_offset(
             self.cursor_byte,
             line_start,
             line,
+            line_len,
             visible_start,
             visible_end,
         )
@@ -1887,6 +2257,111 @@ fn display_width_str(text: &str) -> usize {
     UnicodeWidthStr::width(text)
 }
 
+/// Where the horizontal window falls within a row's bytes.
+#[derive(Debug, Clone, Copy)]
+struct VisibleWindow {
+    /// The first byte whose character ends past the scroll column.
+    start: usize,
+    /// The exclusive end of the last byte whose character begins before the
+    /// window's end.
+    end: usize,
+    /// Whether the walk found a first visible character at all.
+    started: bool,
+    /// Whether the walk stopped at the window's end rather than at the end of
+    /// the bytes it was given.
+    settled: bool,
+}
+
+/// The visible window of `text` for a scroll at `column` ending at `limit`
+/// columns.
+///
+/// The rule is the draw's, unchanged: a character is the **start** of the
+/// window when it ends past `column`, so a wide character that straddles the
+/// left edge is kept whole, and the window's **end** is the last character
+/// that begins before `limit`, so a character that straddles the right edge
+/// is kept whole too. The only addition is the early return: once the window
+/// has started and the walk has reached `limit`, nothing later can extend
+/// it — every later character begins at or after this column — so the rest
+/// of the row is not decoded at all.
+fn visible_window(text: &str, column: usize, limit: usize) -> VisibleWindow {
+    let mut display = 0usize;
+    let mut visible_start = text.len();
+    let mut visible_end = text.len();
+    let mut started = false;
+    for (byte, ch) in text.char_indices() {
+        let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        let next = display.saturating_add(width);
+        if !started && next > column {
+            visible_start = byte;
+            started = true;
+        }
+        if started && display < limit {
+            visible_end = byte + ch.len_utf8();
+        }
+        display = next;
+        if started && display >= limit {
+            return VisibleWindow {
+                start: visible_start,
+                end: visible_end,
+                started,
+                settled: true,
+            };
+        }
+    }
+    VisibleWindow {
+        start: visible_start,
+        end: visible_end,
+        started,
+        settled: false,
+    }
+}
+
+/// The bytes one row needs, and where the visible window falls inside them.
+///
+/// A value, not state: it is built by [`EditorWidget::row_window`] and dropped
+/// with the spans that were drawn from it, so it never outlives the row that
+/// asked. Its `window_bytes` is that row's read — bounded by
+/// `MAX_RENDER_LINE_BYTES` and, on an ordinary line, by the drawn columns —
+/// and it is the same `String` the row builder used to hold anonymously.
+struct RowWindow {
+    /// The line's bytes from its start. Ends at the window's end, or further
+    /// when the row paints a head cell past the window.
+    window_bytes: String,
+    /// The visible window, relative to the line's start.
+    start: usize,
+    /// The visible window's exclusive end, relative to the line's start.
+    end: usize,
+    /// Whether the walk found a first visible character.
+    started: bool,
+}
+
+/// The style of the first range in `ranges[*cursor..end]` that covers
+/// `segment`, advancing `cursor` past the ranges that end before it.
+///
+/// The ranges of one run ascend and the row's segments ascend, so one cursor
+/// per run finds every segment's covering range in a single sweep: a range
+/// that ends at or before this segment's start cannot cover a later segment
+/// either, which is what makes discarding it safe. The call is the `find` it
+/// replaces, without the rescan from index 0.
+fn covering_style(
+    ranges: &[(std::ops::Range<usize>, Style)],
+    cursor: &mut usize,
+    end: usize,
+    segment: &std::ops::Range<usize>,
+) -> Option<Style> {
+    while *cursor < end {
+        if ranges[*cursor].0.end > segment.start {
+            break;
+        }
+        *cursor += 1;
+    }
+    if *cursor >= end {
+        return None;
+    }
+    let (range, style) = &ranges[*cursor];
+    (range.start <= segment.start && range.end >= segment.end).then_some(*style)
+}
+
 /// What the panel says will happen to the change.
 ///
 /// A preview that carries a candidate is **ready to apply**: the review is
@@ -1920,6 +2395,7 @@ mod tests {
         status: &'a str,
         notice: Option<&'a str>,
         find_note: &'a str,
+        count_label: &'a str,
         mode: EditorMode,
         buffer_focused: bool,
         pending_prefix: EditorPrefix,
@@ -1933,11 +2409,12 @@ mod tests {
         /// The held selection **set**, for tests that need the renderer's
         /// third background layer — or its extra head markers — painted.
         selections: Vec<crate::tui::helix_selection::Selection<editor::EditorPoint>>,
-        /// Retained `/` match offsets, for the search highlight layer.
-        search_matches: Vec<usize>,
-        /// The history cursor's position and the history's length, as
-        /// `(position, length)`.
+        /// Retained `/` match spans, for the search highlight layer.
+        search_matches: Vec<std::ops::Range<usize>>,
+        /// The history position `(applied, retained)`, and whether the last
+        /// prune cleared it.
         history: (usize, usize),
+        history_cleared: bool,
         writable: bool,
         busy: bool,
         scope: codegg_protocol::document::DocumentScope,
@@ -1947,6 +2424,11 @@ mod tests {
         /// read results the widget draws — without reaching into the
         /// widget's own fields.
         lsp: crate::tui::editor_lsp::EditorLspState,
+        /// The jumplist the widget renders, with its picker state.
+        ///
+        /// Owned for the same reason `lsp` is: a test seeds the store through
+        /// its real API rather than hand-setting a private field.
+        jumplist: crate::tui::document_session::Jumplist,
     }
 
     fn defaults<'a>() -> Options<'a> {
@@ -1954,6 +2436,7 @@ mod tests {
             status: "synced",
             notice: None,
             find_note: "",
+            count_label: "",
             mode: EditorMode::Normal,
             buffer_focused: true,
             pending_prefix: EditorPrefix::Idle,
@@ -1967,10 +2450,12 @@ mod tests {
             selections: Vec::new(),
             search_matches: Vec::new(),
             history: (0, 0),
+            history_cleared: false,
             writable: true,
             busy: false,
             scope: codegg_protocol::document::DocumentScope::Workspace,
             lsp: crate::tui::editor_lsp::EditorLspState::default(),
+            jumplist: crate::tui::document_session::Jumplist::default(),
         }
     }
 
@@ -2013,6 +2498,8 @@ mod tests {
             selections: options.selections,
             search_line: options.search_line.to_string(),
             search_matches: options.search_matches.clone(),
+            jumplist: options.jumplist,
+            history_bound_cleared: options.history_cleared,
             ..TuiDocumentPresentation::default()
         };
         seed_history(&mut presentation, options.history);
@@ -2027,6 +2514,7 @@ mod tests {
                     status: options.status,
                     notice: options.notice,
                     find_note: options.find_note,
+                    count_label: options.count_label,
                     mode: options.mode,
                     buffer_focused: options.buffer_focused,
                     pending_prefix: options.pending_prefix,
@@ -2095,6 +2583,8 @@ mod tests {
             selections: options.selections,
             search_line: options.search_line.to_string(),
             search_matches: options.search_matches.clone(),
+            jumplist: options.jumplist,
+            history_bound_cleared: options.history_cleared,
             ..TuiDocumentPresentation::default()
         };
         seed_history(&mut presentation, options.history);
@@ -2109,6 +2599,7 @@ mod tests {
                     status: options.status,
                     notice: options.notice,
                     find_note: options.find_note,
+                    count_label: options.count_label,
                     mode: options.mode,
                     buffer_focused: options.buffer_focused,
                     pending_prefix: options.pending_prefix,
@@ -3041,6 +3532,8 @@ mod tests {
             selections: options.selections,
             search_line: options.search_line.to_string(),
             search_matches: options.search_matches.clone(),
+            jumplist: options.jumplist,
+            history_bound_cleared: options.history_cleared,
             ..TuiDocumentPresentation::default()
         };
         seed_history(&mut presentation, options.history);
@@ -3054,6 +3547,7 @@ mod tests {
                     status: options.status,
                     notice: options.notice,
                     find_note: options.find_note,
+                    count_label: options.count_label,
                     mode: options.mode,
                     buffer_focused: options.buffer_focused,
                     pending_prefix: options.pending_prefix,
@@ -3172,6 +3666,7 @@ mod tests {
             status: "synced",
             notice: None,
             find_note: "",
+            count_label: "",
             mode: EditorMode::Normal,
             buffer_focused: true,
             pending_prefix: EditorPrefix::Idle,
@@ -3185,10 +3680,12 @@ mod tests {
             selections: Vec::new(),
             search_matches: Vec::new(),
             history: (0, 0),
+            history_cleared: false,
             scope: codegg_protocol::document::DocumentScope::Workspace,
             writable: true,
             busy: false,
             lsp: crate::tui::editor_lsp::EditorLspState::default(),
+            jumplist: crate::tui::document_session::Jumplist::default(),
         };
         let mut highlight = crate::tui::editor_highlight::EditorHighlight::default();
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -3199,6 +3696,7 @@ mod tests {
                     status: options.status,
                     notice: options.notice,
                     find_note: options.find_note,
+                    count_label: options.count_label,
                     mode: options.mode,
                     buffer_focused: options.buffer_focused,
                     pending_prefix: options.pending_prefix,
@@ -3478,6 +3976,7 @@ mod tests {
             status: "synced",
             notice: None,
             find_note: "",
+            count_label: "",
             mode: EditorMode::Normal,
             buffer_focused: true,
             pending_prefix: EditorPrefix::Idle,
@@ -3499,7 +3998,7 @@ mod tests {
             presentation: &mut presentation,
             theme,
         };
-        let spans = widget.line_spans(0, viewport, Style::default(), &[]);
+        let spans = widget.line_spans(0, viewport, Style::default(), &[], 0);
         let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(joined.contains("let"), "{joined}");
         assert!(joined.contains("value"), "{joined}");
@@ -3577,6 +4076,342 @@ mod tests {
         assert!(
             joined.contains("!"),
             "{joined} diagnostic marker must survive"
+        );
+    }
+
+    // ── M005: the row's window ──────────────────────────────────────────
+
+    /// One row's spans, built by the real `line_spans` for one viewport.
+    ///
+    /// `cursor_line` is passed explicitly so a test can exercise the row
+    /// builder's contract ("the frame resolved the cursor's line once") rather
+    /// than having the helper re-derive it.
+    fn row_spans(
+        text: &str,
+        cursor_byte: usize,
+        cursor_line: usize,
+        column: usize,
+        text_columns: u16,
+        lsp: crate::tui::editor_lsp::EditorLspState,
+    ) -> Vec<Span<'static>> {
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let mut presentation = TuiDocumentPresentation {
+            cursor_byte,
+            ..TuiDocumentPresentation::default()
+        };
+        let completion = crate::tui::editor_completion::EditorCompletionState::default();
+        let mut highlight = crate::tui::editor_highlight::EditorHighlight::default();
+        let viewport = EditorViewport {
+            first_line: 0,
+            column,
+            gutter: 3,
+            text_columns,
+            visible_lines: 4,
+        };
+        let mut widget = EditorWidget {
+            path: "src/lib.rs",
+            status: "synced",
+            notice: None,
+            find_note: "",
+            count_label: "",
+            mode: EditorMode::Normal,
+            buffer_focused: true,
+            pending_prefix: EditorPrefix::Idle,
+            command_active: false,
+            command_line: "",
+            command_selection: 0,
+            search_active: false,
+            search_line: "",
+            search_count: 0,
+            search_partial: false,
+            scope: codegg_protocol::document::DocumentScope::Workspace,
+            cursor_byte,
+            writable: true,
+            busy: false,
+            snapshot: &snapshot,
+            lsp: &lsp,
+            completion: &completion,
+            highlight: &mut highlight,
+            presentation: &mut presentation,
+            theme: Arc::new(Theme::default()),
+        };
+        widget.line_spans(0, viewport, Style::default(), &[], cursor_line)
+    }
+
+    /// The text one row's spans draw, joined.
+    fn joined(spans: &[Span<'static>]) -> String {
+        spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    /// A row of a line far longer than the window reads and walks only the
+    /// window.
+    ///
+    /// The drawn text is the window's, and the row's read is the window's
+    /// bytes rather than the line's — the counter is the only way to tell a
+    /// bounded read from a whole one, because both draw the same 40 columns.
+    #[test]
+    fn a_row_reads_and_walks_only_as_far_as_its_window() {
+        let text = format!("{}\n", "abcdefghij".repeat(400));
+        let before = crate::tui::render_cost::snapshot();
+        let spans = row_spans(&text, 0, 0, 0, 40, Default::default());
+        let cost = crate::tui::render_cost::snapshot().since(&before);
+
+        assert_eq!(
+            joined(&spans),
+            "abcdefghij".repeat(4),
+            "the row draws the 40 columns it was given"
+        );
+        assert!(
+            cost.editor_row_bytes <= 42 * 4,
+            "a {}-byte row must be read as far as its 40 columns: {} bytes",
+            text.len(),
+            cost.editor_row_bytes
+        );
+        assert_eq!(cost.editor_row_reads, 1, "one row, one read");
+    }
+
+    /// A row of multi-byte characters draws its window whole.
+    ///
+    /// The window's byte budget is a count, not an offset, and a count that
+    /// lands inside a character is not a readable range at all. Reading it
+    /// anyway is refused — so a row of three-byte characters, whose 122-column
+    /// budget lands mid-character, would draw nothing rather than its columns.
+    #[test]
+    fn a_multi_byte_row_draws_its_whole_window() {
+        let text = format!("{}\n", "漢字テキスト".repeat(30));
+        let spans = row_spans(&text, 0, 0, 0, 120, Default::default());
+        // Every character here is two columns wide, so 120 columns is ten
+        // repeats.
+        assert_eq!(
+            joined(&spans),
+            "漢字テキスト".repeat(10),
+            "a row of three-byte characters must draw its 120 columns"
+        );
+        assert_eq!(
+            spans.iter().map(|span| span.width()).sum::<usize>(),
+            120,
+            "the drawn window is exactly the columns it was given"
+        );
+    }
+
+    /// A character that straddles the window's **end** is kept whole.
+    ///
+    /// Every character here is two columns wide, so a 5-column window ends in
+    /// the middle of the third character. Dropping it would lose a character
+    /// the reader can see most of; truncating it is not possible at all.
+    #[test]
+    fn the_clip_keeps_a_character_that_straddles_its_end() {
+        let text = "漢漢漢漢漢\n";
+        let spans = row_spans(text, 0, 0, 0, 5, Default::default());
+        assert_eq!(
+            joined(&spans),
+            "漢漢漢",
+            "the character that begins before the window's end is drawn whole"
+        );
+    }
+
+    /// A character that straddles the **scroll column** is kept whole.
+    #[test]
+    fn the_clip_keeps_a_character_that_straddles_its_start() {
+        let text = "漢漢漢漢漢\n";
+        // Column 3 falls inside the second character (columns 2..4).
+        let spans = row_spans(text, 0, 0, 3, 4, Default::default());
+        assert_eq!(
+            joined(&spans),
+            "漢漢漢",
+            "the character that ends past the scroll column starts the window"
+        );
+    }
+
+    /// The unstarted arms are unchanged.
+    ///
+    /// A row scrolled past its last character draws one empty span rather
+    /// than a ghost of the row's text, and an empty line with the cursor on
+    /// it draws exactly the cursor's cell — the one position a reader reaches
+    /// most often must not be invisible, which is why it is a single space
+    /// and not nothing.
+    #[test]
+    fn the_unstarted_rows_draw_what_they_always_drew() {
+        let scrolled = row_spans("abc\n", 0, 0, 9, 10, Default::default());
+        assert_eq!(scrolled.len(), 1, "a scrolled-past row draws one cell");
+        assert_eq!(joined(&scrolled), "", "and it is empty");
+
+        let empty = row_spans("\n", 0, 0, 0, 10, Default::default());
+        assert_eq!(empty.len(), 1, "the cursor's own cell on an empty line");
+        assert_eq!(joined(&empty), " ", "drawn as one space, not nothing");
+    }
+
+    /// The row's cursor cell is decided by the line the frame resolved.
+    ///
+    /// `cursor_cell` is handed the frame's one `cursor_line` rather than
+    /// re-deriving it with a rope lookup per row; a cell that recomputed it
+    /// would answer for a cursor the frame had already decided was elsewhere.
+    #[test]
+    fn the_cursor_cell_uses_the_row_the_frame_resolved() {
+        let snapshot = DocumentBuffer::new("abc\ndef\n").snapshot();
+        let mut presentation = TuiDocumentPresentation::default();
+        let lsp = crate::tui::editor_lsp::EditorLspState::default();
+        let completion = crate::tui::editor_completion::EditorCompletionState::default();
+        let mut highlight = crate::tui::editor_highlight::EditorHighlight::default();
+        let widget = EditorWidget {
+            path: "src/lib.rs",
+            status: "synced",
+            notice: None,
+            find_note: "",
+            count_label: "",
+            mode: EditorMode::Normal,
+            buffer_focused: true,
+            pending_prefix: EditorPrefix::Idle,
+            command_active: false,
+            command_line: "",
+            command_selection: 0,
+            search_active: false,
+            search_line: "",
+            search_count: 0,
+            search_partial: false,
+            scope: codegg_protocol::document::DocumentScope::Workspace,
+            cursor_byte: 1,
+            writable: true,
+            busy: false,
+            snapshot: &snapshot,
+            lsp: &lsp,
+            completion: &completion,
+            highlight: &mut highlight,
+            presentation: &mut presentation,
+            theme: Arc::new(Theme::default()),
+        };
+        assert_eq!(
+            widget.cursor_cell(0, "abc", 3, 0, 0, 3, 0),
+            Some((1, 2)),
+            "on the row the frame resolved, the cursor owns its cell"
+        );
+        assert_eq!(
+            widget.cursor_cell(4, "def", 3, 1, 4, 7, 0),
+            None,
+            "a row the frame did not resolve the cursor to has no cursor cell"
+        );
+        assert_eq!(
+            widget
+                .head_cells(4, "def", 3, 1, 4, 7, 0)
+                .iter()
+                .filter(|(_, _, primary)| *primary)
+                .count(),
+            0,
+            "the cursor's head is not folded into a row it is not on"
+        );
+    }
+
+    /// The style sweep keeps the scan's colour under a token that covers only
+    /// part of it, and the token's colour where it covers.
+    ///
+    /// This is the priority the two runs encode: a server token outranks the
+    /// scan **where it covers**, and the scan keeps everything it covers
+    /// elsewhere. A sweep that advanced a single cursor over the merged list
+    /// would drop the string's colour on the segment before the token, and
+    /// one that sorted the ranges by byte order would give the token's
+    /// segment the scan's colour instead.
+    #[test]
+    fn the_style_sweep_keeps_the_scan_beside_a_partial_token() {
+        let theme = Theme::default();
+        let text = "let value = \"abcdef\";\n";
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let validated = crate::tui::editor_lsp::validate_semantic_tokens(
+            &snapshot,
+            // `cde`, inside the string literal — `"` is column 12 — so the
+            // scan covers the whole literal and the token only its middle.
+            vec![styled_token(0, 15, 3, "keyword")],
+        );
+        assert_eq!(
+            validated.accepted.len(),
+            1,
+            "the fixture's token must survive validation"
+        );
+        let lsp = crate::tui::editor_lsp::EditorLspState {
+            semantic_tokens: validated.accepted,
+            semantic_revision: Some(1),
+            ..crate::tui::editor_lsp::EditorLspState::default()
+        };
+        let plain = row_spans(text, 0, 0, 0, 40, Default::default());
+        let spans = row_spans(text, 0, 0, 0, 40, lsp);
+
+        // Compare the colours **per character**, so the assertion does not
+        // depend on where either layer happens to split its runs.
+        let colours = |spans: &[Span<'static>]| -> Vec<Option<ratatui::style::Color>> {
+            spans
+                .iter()
+                .flat_map(|span| {
+                    span.content
+                        .chars()
+                        .map(|_| span.style.fg)
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        };
+        let plain = colours(&plain);
+        let tinted = colours(&spans);
+        // The row is the line's content, without its terminator.
+        let content = text.trim_end_matches('\n').len();
+        assert_eq!(plain.len(), content, "the fixture row is plain ASCII");
+        assert_eq!(tinted.len(), plain.len(), "the token changed no characters");
+        for byte in 0..content {
+            if (15..18).contains(&byte) {
+                assert_eq!(
+                    tinted[byte],
+                    Some(theme.primary),
+                    "the token's own bytes take the token's colour: {spans:?}"
+                );
+            } else {
+                assert_eq!(
+                    tinted[byte], plain[byte],
+                    "byte {byte} keeps the scan's colour where the token does not cover: {spans:?}"
+                );
+            }
+        }
+        assert_ne!(
+            plain[16],
+            Some(theme.primary),
+            "the fixture's token must be distinguishable from the scan"
+        );
+    }
+
+    /// A token that runs past the window colours the part of it the reader
+    /// can see.
+    ///
+    /// The row reads a **prefix** of its line, so a token whose end lies past
+    /// those bytes has no byte offset in the read to map to. Dropping it — the
+    /// obvious reading of "the column is not there" — would remove the colour
+    /// from the whole of a token that starts on screen, which is the one part
+    /// of it the reader is looking at.
+    #[test]
+    fn a_token_running_past_the_window_colours_what_is_on_screen() {
+        let theme = Theme::default();
+        // One 3,000-byte line: the window reads ~488 of it, and the token
+        // covers the first 500 columns.
+        let text = format!("{}\n", "x".repeat(3_000));
+        let snapshot = DocumentBuffer::new(&text).snapshot();
+        let validated = crate::tui::editor_lsp::validate_semantic_tokens(
+            &snapshot,
+            vec![styled_token(0, 0, 500, "keyword")],
+        );
+        assert_eq!(
+            validated.accepted.len(),
+            1,
+            "the fixture's token must survive validation"
+        );
+        let lsp = crate::tui::editor_lsp::EditorLspState {
+            semantic_tokens: validated.accepted,
+            semantic_revision: Some(1),
+            ..crate::tui::editor_lsp::EditorLspState::default()
+        };
+        let spans = row_spans(&text, 0, 0, 0, 40, lsp);
+
+        assert_eq!(joined(&spans), "x".repeat(40), "the row draws its window");
+        assert!(
+            spans
+                .iter()
+                .all(|span| span.style.fg == Some(theme.primary)),
+            "every drawn byte is inside the token, so every drawn byte is the \
+             token's colour: {spans:?}"
         );
     }
 
@@ -3782,7 +4617,7 @@ mod tests {
                 buffer_focused: false,
                 search_line: "aaa",
                 search_count: 2,
-                search_matches: vec![0, 8],
+                search_matches: vec![0..3, 8..11],
                 ..defaults()
             },
         );
@@ -3804,6 +4639,11 @@ mod tests {
         let snapshot = DocumentBuffer::new("aaa bbb").snapshot();
         // Every layer stacked on the same cell: the cursor is on the match
         // start, which is also inside the selection.
+        // One match, because the search line matches once. `vec![0..3]` here
+        // is a set of ranges, not a mistaken range-to-vec conversion — the
+        // lint cannot tell the two apart, so the reason is stated instead.
+        #[allow(clippy::single_range_in_vec_init)]
+        let matches = vec![0..3];
         let buffer = render_buffer(
             "aaa bbb",
             30,
@@ -3814,7 +4654,7 @@ mod tests {
                 selections: vec![selection_over(&snapshot, 0..3)],
                 search_line: "aaa",
                 search_count: 1,
-                search_matches: vec![0],
+                search_matches: matches,
                 ..defaults()
             },
         );
@@ -3883,6 +4723,94 @@ mod tests {
         assert!(!plain_readout.contains("partial"), "{plain_readout:?}");
     }
 
+    // ── The jumplist picker ─────────────────────────────────────────────
+
+    /// The picker is a list of visited positions, newest first, with the
+    /// count against the bound in its title.
+    #[test]
+    fn the_jumplist_picker_lists_positions_newest_first() {
+        use crate::tui::document_session::{Jumplist, JumplistEntry, JumplistIdentity};
+        let mut jumplist = Jumplist::default();
+        for byte in [0, 11] {
+            jumplist.push(JumplistEntry {
+                identity: JumplistIdentity::default(),
+                byte,
+            });
+        }
+        jumplist.open_picker();
+        let painted = render(
+            "alpha\nbeta\ngamma\n",
+            60,
+            12,
+            11,
+            Options {
+                jumplist,
+                ..defaults()
+            },
+        )
+        .join("\n");
+
+        assert!(
+            painted.contains("jumplist · 2/32"),
+            "the title carries the count against the named bound, got:\n{painted}"
+        );
+        // The document paints those words too, so the rows are matched by
+        // their own gutter rather than by the text alone.
+        let newest = painted
+            .find("    3  gamma")
+            .expect("the newest entry's row");
+        let oldest = painted
+            .find("    1  alpha")
+            .expect("the oldest entry's row");
+        assert!(
+            newest < oldest,
+            "newest first, so the most recent jump is the first row, got:\n{painted}"
+        );
+        assert!(
+            !painted.contains("oldest dropped"),
+            "below the bound nothing is dropped, so nothing claims it is:\n{painted}"
+        );
+    }
+
+    /// At the bound the picker states what the bound costs, so a history that
+    /// pruned is disclosed where the list is read rather than silently shorter.
+    #[test]
+    fn the_jumplist_picker_discloses_the_bound_it_holds_at() {
+        use crate::tui::document_session::{
+            Jumplist, JumplistEntry, JumplistIdentity, MAX_JUMPLIST_ENTRIES,
+        };
+        let mut jumplist = Jumplist::default();
+        for byte in 0..MAX_JUMPLIST_ENTRIES {
+            jumplist.push(JumplistEntry {
+                identity: JumplistIdentity::default(),
+                byte,
+            });
+        }
+        jumplist.open_picker();
+        let painted = render(
+            "alpha\nbeta\ngamma\n",
+            60,
+            12,
+            0,
+            Options {
+                jumplist,
+                ..defaults()
+            },
+        )
+        .join("\n");
+
+        assert!(
+            painted.contains(&format!(
+                "jumplist · {MAX_JUMPLIST_ENTRIES}/{MAX_JUMPLIST_ENTRIES}"
+            )),
+            "the count reaches the bound, got:\n{painted}"
+        );
+        assert!(
+            painted.contains("oldest dropped at the bound"),
+            "at the bound the picker says what a further push costs, got:\n{painted}"
+        );
+    }
+
     // ── The history cursor's position ───────────────────────────────────
 
     /// A time cursor nobody can see is a rename.
@@ -3919,6 +4847,27 @@ mod tests {
         assert!(
             banner.contains("history 1/3"),
             "the position belongs on the banner row: {banner:?}"
+        );
+    }
+
+    /// A clear at the bound explains itself instead of leaving `u` broken.
+    #[test]
+    fn the_banner_names_a_history_cleared_at_its_bound() {
+        let height = 8;
+        let cleared = render(
+            "alpha",
+            100,
+            height,
+            0,
+            Options {
+                history_cleared: true,
+                ..defaults()
+            },
+        );
+        let banner = &cleared[banner_row(height) as usize];
+        assert!(
+            banner.contains("history cleared at its bound"),
+            "the fallback is disclosed rather than silent: {banner:?}"
         );
     }
 

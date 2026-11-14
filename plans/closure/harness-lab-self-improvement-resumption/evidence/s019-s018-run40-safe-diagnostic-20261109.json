@@ -1,0 +1,535 @@
+{
+  "historical_receipt_unchanged": true,
+  "historical_verifier_input": "truncated_output_tail_only",
+  "reviewer_diagnostic": {
+    "completed_review_result_observed": false,
+    "exact_identity_matched_call_count": 49,
+    "final_failure_class": null,
+    "final_status": "failed",
+    "get_after_terminal_status_count": 0,
+    "get_count": 41,
+    "get_nonterminal_count": 41,
+    "get_run_status_counts": {
+      "running": 41
+    },
+    "ordered_events": [
+      {
+        "action": "spawn",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1612219,
+        "index": 221,
+        "run_status": "queued",
+        "started_elapsed_ms": 1612180
+      },
+      {
+        "action": "status",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1641668,
+        "index": 224,
+        "run_status": "running",
+        "started_elapsed_ms": 1641643
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1651892,
+        "index": 225,
+        "run_status": "running",
+        "started_elapsed_ms": 1651864
+      },
+      {
+        "action": "status",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1670326,
+        "index": 227,
+        "run_status": "running",
+        "started_elapsed_ms": 1670278
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1675827,
+        "index": 228,
+        "run_status": "running",
+        "started_elapsed_ms": 1675804
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1692301,
+        "index": 231,
+        "run_status": "running",
+        "started_elapsed_ms": 1692290
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1694545,
+        "index": 233,
+        "run_status": "running",
+        "started_elapsed_ms": 1694541
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1733921,
+        "index": 236,
+        "run_status": "running",
+        "started_elapsed_ms": 1733898
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1742027,
+        "index": 238,
+        "run_status": "running",
+        "started_elapsed_ms": 1742015
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1753250,
+        "index": 242,
+        "run_status": "running",
+        "started_elapsed_ms": 1753245
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1783038,
+        "index": 249,
+        "run_status": "running",
+        "started_elapsed_ms": 1783010
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1821021,
+        "index": 254,
+        "run_status": "running",
+        "started_elapsed_ms": 1821003
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1865215,
+        "index": 265,
+        "run_status": "running",
+        "started_elapsed_ms": 1865197
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1877278,
+        "index": 269,
+        "run_status": "running",
+        "started_elapsed_ms": 1877275
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1889407,
+        "index": 271,
+        "run_status": "running",
+        "started_elapsed_ms": 1889391
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1912848,
+        "index": 274,
+        "run_status": "running",
+        "started_elapsed_ms": 1912843
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1922513,
+        "index": 276,
+        "run_status": "running",
+        "started_elapsed_ms": 1922502
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1924723,
+        "index": 277,
+        "run_status": "running",
+        "started_elapsed_ms": 1924706
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1944852,
+        "index": 280,
+        "run_status": "running",
+        "started_elapsed_ms": 1944843
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1946676,
+        "index": 281,
+        "run_status": "running",
+        "started_elapsed_ms": 1946656
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1948575,
+        "index": 282,
+        "run_status": "running",
+        "started_elapsed_ms": 1948540
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1958283,
+        "index": 284,
+        "run_status": "running",
+        "started_elapsed_ms": 1958226
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1962434,
+        "index": 286,
+        "run_status": "running",
+        "started_elapsed_ms": 1962396
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1964046,
+        "index": 287,
+        "run_status": "running",
+        "started_elapsed_ms": 1964036
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1966028,
+        "index": 288,
+        "run_status": "running",
+        "started_elapsed_ms": 1966022
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1976449,
+        "index": 290,
+        "run_status": "running",
+        "started_elapsed_ms": 1976442
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1978092,
+        "index": 291,
+        "run_status": "running",
+        "started_elapsed_ms": 1978081
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1979319,
+        "index": 292,
+        "run_status": "running",
+        "started_elapsed_ms": 1979307
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1980705,
+        "index": 293,
+        "run_status": "running",
+        "started_elapsed_ms": 1980700
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1982618,
+        "index": 294,
+        "run_status": "running",
+        "started_elapsed_ms": 1982608
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2003288,
+        "index": 299,
+        "run_status": "running",
+        "started_elapsed_ms": 2003251
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2006138,
+        "index": 300,
+        "run_status": "running",
+        "started_elapsed_ms": 2006110
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2007628,
+        "index": 301,
+        "run_status": "running",
+        "started_elapsed_ms": 2007615
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2010638,
+        "index": 302,
+        "run_status": "running",
+        "started_elapsed_ms": 2010628
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2016309,
+        "index": 304,
+        "run_status": "running",
+        "started_elapsed_ms": 2016303
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2018115,
+        "index": 305,
+        "run_status": "running",
+        "started_elapsed_ms": 2018096
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2019976,
+        "index": 306,
+        "run_status": "running",
+        "started_elapsed_ms": 2019954
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2021553,
+        "index": 307,
+        "run_status": "running",
+        "started_elapsed_ms": 2021539
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2036032,
+        "index": 310,
+        "run_status": "running",
+        "started_elapsed_ms": 2036021
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2038437,
+        "index": 311,
+        "run_status": "running",
+        "started_elapsed_ms": 2038407
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2040662,
+        "index": 312,
+        "run_status": "running",
+        "started_elapsed_ms": 2040648
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2055288,
+        "index": 314,
+        "run_status": "running",
+        "started_elapsed_ms": 2055273
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2057525,
+        "index": 315,
+        "run_status": "running",
+        "started_elapsed_ms": 2057515
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2063467,
+        "index": 317,
+        "run_status": "running",
+        "started_elapsed_ms": 2063455
+      },
+      {
+        "action": "status",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2074448,
+        "index": 321,
+        "run_status": "running",
+        "started_elapsed_ms": 2074425
+      },
+      {
+        "action": "status",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2643213,
+        "index": 382,
+        "run_status": "running",
+        "started_elapsed_ms": 2643206
+      },
+      {
+        "action": "status",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2665454,
+        "index": 390,
+        "run_status": "running",
+        "started_elapsed_ms": 2665443
+      },
+      {
+        "action": "status",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2673893,
+        "index": 394,
+        "run_status": "running",
+        "started_elapsed_ms": 2673846
+      },
+      {
+        "action": "status",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 3170288,
+        "index": 473,
+        "run_status": "failed",
+        "started_elapsed_ms": 3170282
+      }
+    ],
+    "raw_task_arguments_retained": false,
+    "reviewer_event_count": 49,
+    "reviewer_events_truncated": false,
+    "reviewer_run_id_sha256": "ecdc1f6e07cf04de98011c625bc8ad9ccc648bcd78c6180e6be4a4276ee26bd8",
+    "reviewer_spawn_count": 1,
+    "reviewer_task_id_sha256": "82c9035914679dec2230fc0e7b51202ac30e4c071a4d0e30d86c16703cff0c09",
+    "schema": "h007_reviewer_lifecycle_diagnostic_v1",
+    "status_sequence": [
+      {
+        "failure_class": null,
+        "index": 224,
+        "run_status": "running"
+      },
+      {
+        "failure_class": null,
+        "index": 227,
+        "run_status": "running"
+      },
+      {
+        "failure_class": null,
+        "index": 321,
+        "run_status": "running"
+      },
+      {
+        "failure_class": null,
+        "index": 382,
+        "run_status": "running"
+      },
+      {
+        "failure_class": null,
+        "index": 390,
+        "run_status": "running"
+      },
+      {
+        "failure_class": null,
+        "index": 394,
+        "run_status": "running"
+      },
+      {
+        "failure_class": null,
+        "index": 473,
+        "run_status": "failed"
+      }
+    ],
+    "task_action_counts": {
+      "get": 41,
+      "spawn": 1,
+      "status": 7
+    },
+    "task_result_body_retained": false,
+    "task_transcript_retained": false
+  },
+  "schema_version": 1,
+  "source_attempt": "S018 attempt 40",
+  "source_receipt_sha256": "6e279572e4a14e2d3ec5170ae8774600f5b88f1a60c2ccb73aec8af0301fc383",
+  "verifier_diagnostic": {
+    "assertion_text_retained": false,
+    "diagnostic_detail_complete": false,
+    "exit_code": 1,
+    "failed_tests": [],
+    "failure_counts": {
+      "errors": 1,
+      "failures": 1
+    },
+    "input_truncated": true,
+    "passed_count": 0,
+    "raw_output_retained": false,
+    "runner_error_class": null,
+    "schema": "h007_verifier_diagnostic_v1",
+    "setup_exception_class": null,
+    "skipped_count": 0,
+    "state": "mixed_test_failures",
+    "tests_run": 5,
+    "timed_out": false,
+    "traceback_retained": false,
+    "verbose_tests_observed": 0
+  }
+}

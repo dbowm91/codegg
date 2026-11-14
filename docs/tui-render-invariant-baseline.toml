@@ -1,0 +1,197 @@
+# docs/tui-render-invariant-baseline.toml
+#
+# The recorded failures of the three render invariants that cannot pass yet.
+# `plans/subsystems/tui-modularity-and-render-invariants-roadmap.md` §2 names
+# six presentation invariants; I1, I2 and I3a assert and pass as tests in
+# `tests/tui_render/invariants/`, and the three below are measured there and
+# recorded here:
+#
+#   I4  every advertised key is handled                     (opened by M001;
+#       the advertised-keys corrective drove it to its residue, see below)
+#   I5  every rendered foreground clears the contrast bar    (closed by M007)
+#   I6  a hint line never loses its exit key                 (closed by M005)
+#
+# ## This file is a ratchet, not a snapshot
+#
+# Every entry is a failure that exists at the recorded baseline. The set may
+# SHRINK freely; it may not GROW. Adding an entry is a reviewed edit in the
+# same diff as the code that caused it, exactly as `docs/comment-budget.toml`
+# requires — and an entry that no longer reproduces is an error rather than a
+# harmless leftover, because an unbanked reduction is the same drift with the
+# sign flipped.
+#
+# Two layers enforce that, and they are not interchangeable:
+#
+#   * the harness — `cargo test --test tui_render -- invariants` — recomputes
+#     all three sets and requires them to equal this file, entry for entry, in
+#     both directions. That is the layer that can tell that a recorded failure
+#     still reproduces, because it renders the frame.
+#   * the guard — `scripts/check_tui_render_invariant_baseline.py`, run by
+#     `scripts/verify.sh quick` and by CI — validates this file's shape, the
+#     banked totals, that every named surface still exists in the source, and
+#     that every recorded contrast pair still fails the bar it was recorded
+#     against.
+#
+# ## Surface names
+#
+# `[advertised_keys]` and `[contrast]` name a surface in one of three forms,
+# so a renamed or removed surface is a guard failure instead of a stale row:
+#
+#   `ShellShow`          a `DialogType` variant
+#   `panel:ShellShow`    a `SidePanelId` variant
+#   `app:100x32`         a whole `App` frame at that size
+#
+# `[hint_truncation]` names a hint producer instead, because the failure is a
+# budget on one row rather than a property of a surface.
+
+# ## How the set was measured
+#
+# * `[advertised_keys]` — every dialog fixture rendered at 100×30, its
+#   `keymap_hint()` and rendered footer read, and each announced key pressed
+#   against **its own fresh mount** through `FocusManager` (production's modal
+#   dispatch). A key is handled when the press returns a `TuiMsg` or repaints
+#   the frame. I4 reads its own content-bearing fixture table
+#   (`tests/tui_render/invariants/fixtures.rs::dialogs_with_content`), so a
+#   list has rows; an up-direction is measured with the cursor one row in,
+#   because a cursor at the top cannot move up and a cursor at the bottom
+#   cannot move down. `[contrast]` still reads the empty table.
+#   `cargo test --test tui_render -- the_i4_per_key_report --nocapture` prints
+#   one line per surface, key and verdict.
+# * `[contrast]` — every dialog at 80×24, every panel at 40×16 (unfocused,
+#   the shipped column state) and one whole `App` frame at 100×32, over all
+#   bundled themes. A pair is recorded once per surface, theme and colour
+#   pair, not once per painted cell.
+# * `[hint_truncation]` — `App::composer_hint_text_bounded` at the budgets in
+#   `HINT_BUDGETS`, in Insert mode.
+#
+# Re-banking: `cargo test --test tui_render -- invariants` prints the measured
+# section, ready to paste, in the failure of each of the three recorded tests.
+# Do not hand-edit a count; paste the measurement and read the diff.
+#
+# ## The recorded I4 set: the residue of a decision, and nothing else
+#
+# Four rows and two reasons, neither of which this milestone can decide.
+#
+# **`Model` and `WorkspaceDashboard` advertise `Tab`.** `FocusManager` owns
+# `Tab` for every dialog: `handle_tab`
+# (`src/tui/components/component/focus.rs`) intercepts the key before the top
+# component sees it and rotates a focus index, and `set_focused`'s default is a
+# no-op — so the dialogs' own `Tab` arms (`model.rs`, `workspace_dashboard.rs`)
+# are unreachable through production dispatch and the frame does not change.
+# Reaching zero requires an ADR-0042 amendment (letting one dialog pre-empt
+# `Tab`) or de-advertising both verbs.
+#
+# **`SecurityReview` advertises `h` and `H`.** Both acts on the *hunk* of the
+# selected item, and arming a hunk would also arm `H`'s
+# `copy_to_clipboard` call. A render measurement must not write the operator's
+# clipboard — it is a side effect on the host, and it is not a frame the
+# invariant can read — so the I4 receipt carries findings without hunk
+# context, where both keys are correct no-ops. Making them measurable is a
+# decision about whether an invariant may perform that write.
+#
+# Every other row this section used to hold was one of five things, and each
+# was repaired rather than re-banked:
+#
+#   * **the probe could not exercise the key.** It mounted an empty fixture and
+#     pressed one sorted sequence against one mount, so a list had no rows, a
+#     cursor had nowhere to move, and an earlier press changed the state a later
+#     key was measured on. The measurement now seeds content
+#     (`fixtures::dialogs_with_content`) and mounts a fresh fixture per key
+#     (`baseline::measure_advertised_keys`), with a declared up-direction
+#     position for surfaces whose only position is a cursor or a scroll offset.
+#   * **`Diff` and `SecurityReview` advertised `^d/^u page`.** Neither handler
+#     had a `CONTROL` arm and both footers already named `PgUp`/`PgDn`; the
+#     hints now name the keys that exist.
+#   * **`PanelManager` advertised `⇧K`**, an edge `PanelPlacement` does not
+#     have. The footer now names `⇧H/J/L`.
+#   * **`Connect`'s `Enter` stored an error the `SelectProvider` branch never
+#     painted.** It paints it now, so the key's effect is visible.
+#   * **`Tree`'s `e` had only leaves to expand, `ProjectChat`'s `r`/`e` were
+#     gated on a snapshot status the fixture never set, `Goto`'s `Enter` had no
+#     target to go to, and `Queue` had no rows.** All four are fixture defects,
+#     not surface defects, and all four are content the fixture now carries.
+#
+# Two measurement defects were fixed on the way, and they are why the old count
+# could not be derived from the source. A bordered box glues its edge to the
+# first advertised part, so `│↑/↓ navigate` tokenised as `│↑` and the up arrow
+# was absent from every numbered surface's announced set while `↓` survived;
+# `baseline::advertised_parts` now trims the decoration before tokenising. A
+# rendered content row could also pose as an advertisement — a review row
+# `M  src/x.rs  +1 -0` was read as `M advertising a verb` — so
+# `baseline::footer_parts` requires a part separator on a rendered row.
+#
+# Re-banking the advertised set: `cargo test --test tui_render --
+# the_i4_per_key_report --nocapture` prints one line per surface, key and
+# verdict (`claimed`, `repainted` or `INERT`). The `INERT` lines are the rows
+# below, and every one of them carries a reason.
+
+# ## The banked growth: the unfocused hosted title (M002)
+#
+# `theme.muted` is now the unfocused title colour on every hosted panel. M002
+# introduced one `PanelChrome` primitive and adopted it on all six panel
+# surfaces, which standardises what those titles paint. Chat and Terminal
+# already painted `muted`, and they are this milestone's byte-identity
+# control, so matching them is the acceptance criterion rather than a side
+# effect of the refactor. It lowers the title's contrast below the bar on 13
+# hosted surfaces across 6 themes — the 78 `[contrast]` rows below, added in
+# this same diff with none removed. M007, the contrast ratchet to zero, owns
+# driving them to zero.
+
+# ## The banked reduction: the dialog frame (M003)
+#
+# Every modal now draws its outer frame through `Section`, and a modal is the
+# focused surface, so its edge and title are `theme.primary` instead of
+# `theme.border` and the inherited foreground. The edge pairs that failed the
+# bar on 24 dialog surfaces across 22 themes stop existing: the 528
+# `[contrast]` rows removed in this same diff, and none was added. The primary
+# title clears the bar on every bundled theme. The one place that would have
+# added pairs is a border hint: `Section` paints a hint in the title style,
+# which is `muted` on an unfocused section, and `Confirm` and `Plan` paint no
+# other muted text — so those two keep their keymaps inside the box at the
+# colour they had, rather than banking twelve new `muted`-on-background rows.
+
+[totals]
+# The banked entry counts. A count here that disagrees with the number of
+# entries below is an error, in either direction.
+advertised_keys = 4
+contrast = 0
+hint_truncation = 0
+
+# [[advertised_keys]]: a key a surface advertises and does not act on
+#
+# Every row carries `reason`: the measurement can report that a key is inert,
+# but only a reader can say why it cannot become real. The guard rejects a row
+# without one.
+
+[[advertised_keys]]
+surface = "Model"
+key = "Tab"
+reason = "FocusManager owns Tab for every dialog (ADR-0042); the dialog's own arm is unreachable through production dispatch"
+
+[[advertised_keys]]
+surface = "WorkspaceDashboard"
+key = "Tab"
+reason = "FocusManager owns Tab for every dialog (ADR-0042); the dialog's own arm is unreachable through production dispatch"
+
+[[advertised_keys]]
+surface = "SecurityReview"
+key = "H"
+reason = "H copies the selected hunk to the system clipboard, which a render measurement must not do; with no hunk context in the fixture there is nothing to copy and no frame to change"
+
+[[advertised_keys]]
+surface = "SecurityReview"
+key = "h"
+reason = "h jumps the detail pane to the selected item's hunk; arming a hunk would also arm H's clipboard write, so the fixture carries no hunk context and h is a correct no-op"
+
+# # [[hint_truncation]]: a budget that drops the exit key
+#
+# Empty at this bank. `composer_insert` used to list `type` before `Esc normal`,
+# so a tight budget truncated the exit key away; the exit key is now first, so a
+# budget that shows any part shows it and a budget too small for it renders an
+# empty row. The detector is still proven by
+# `invariants::baseline::the_i6_measurement_detects_a_lost_exit_key`.
+#
+# This section measures the composer row only. A zero here is not "no row
+# truncates anywhere": the per-surface rows are measured at the surface's own
+# geometry, e.g. `/security-review`'s footer at 60x15 in
+# `security_review::tests::the_row_is_clipped_at_an_item_boundary_not_mid_item`.

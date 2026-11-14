@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
+use super::super::section::Section;
 use crate::tui::app::TuiMsg;
 use crate::tui::command::{Command, CommandRegistry};
 use crossterm::event::KeyEvent;
@@ -113,17 +114,9 @@ impl CommandPalette {
                 height: compl_h,
             };
             frame.render_widget(ratatui::widgets::Clear, compl_area);
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.border))
-                .style(Style::default().bg(theme.background));
+            let inner = Section::plain(theme).draw(compl_area, frame.buffer_mut());
             let hint = Span::styled(" No results ", Style::default().fg(theme.muted));
-            frame.render_widget(
-                Paragraph::new(hint)
-                    .block(block)
-                    .alignment(Alignment::Center),
-                compl_area,
-            );
+            frame.render_widget(Paragraph::new(hint).alignment(Alignment::Center), inner);
             return;
         }
 
@@ -262,12 +255,8 @@ impl CommandPalette {
             })
             .collect();
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
-            .style(Style::default().bg(theme.background));
-        let list = List::new(items).block(block);
-        frame.render_widget(list, list_area);
+        let inner = Section::plain(theme).draw(list_area, frame.buffer_mut());
+        frame.render_widget(List::new(items), inner);
 
         let hint_style = Style::default().fg(theme.muted);
         let hint_text = Line::from(vec![

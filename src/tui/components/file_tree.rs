@@ -14,11 +14,18 @@
 //!
 //! ## Bounded work
 //!
-//! Only the rows that fit the pane are materialized, so per-frame cost is a
-//! function of the viewport rather than of the workspace. That same viewport
-//! is returned to the caller rather than written into the state from here: a
-//! widget borrows the state it is handed, and `FileTreeState::viewport_rows`
-//! is layout published by the renderer, not navigation decided in a draw.
+//! The whole row vocabulary — the flatten of the listing and the panel's
+//! filter over it — is built by the authority once per revision, not per
+//! frame: this widget **borrows** the slice
+//! ([`FileTreeState::rows`]) and materializes a `Line` only for the rows that
+//! fit the pane. Per-frame cost is therefore a function of the viewport
+//! rather than of the workspace, and a frame where nothing changed performs
+//! no row build at all.
+//!
+//! That same viewport is returned to the caller rather than written into the
+//! state from here: a widget borrows the state it is handed, and
+//! `FileTreeState::viewport_rows` is layout published by the renderer, not
+//! navigation decided in a draw.
 
 use std::sync::Arc;
 
@@ -118,6 +125,8 @@ impl<'a> FileTreeView<'a> {
             return PaneLayout { viewport_rows: 0 };
         }
 
+        // The authority's cached slice: one borrow, no flatten and no filter
+        // on this frame. Everything below reads it.
         let rows = self.state.rows();
         // One row is reserved for the truncation notice when there is one, so
         // the listing is never silently cropped by the pane height.
@@ -149,7 +158,7 @@ impl<'a> FileTreeView<'a> {
             )));
         }
         for (offset, row) in rows[scroll..end].iter().enumerate() {
-            lines.push(self.row_line(row, &rows, scroll + offset, inner.width));
+            lines.push(self.row_line(row, rows, scroll + offset, inner.width));
         }
         // The listing is drawn in the rows **above** the filter field, so the
         // field does not push the notice row out of the pane.
@@ -463,11 +472,14 @@ mod tests {
         assert!(collapsed.contains("src"), "the directory row stays");
         assert!(!collapsed.contains("lib.rs"), "a collapsed child is hidden");
 
-        state.expanded.insert("src".to_string());
+        // Through the verb, not the field: the authority's row cache is
+        // rebuilt by its mutation, and a direct write would draw the
+        // previous expansion.
+        state.expand_and_select("src");
         let expanded = render_to_lines(&state, true, 40, 20);
         assert!(expanded.contains("lib.rs"), "expanding reveals the child");
 
-        state.expanded.remove("src");
+        state.collapse("src");
         let recollapsed = render_to_lines(&state, true, 40, 20);
         assert!(
             recollapsed.contains("src"),

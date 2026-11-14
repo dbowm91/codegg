@@ -4,10 +4,12 @@
 
 use crate::protocol::core::{CoreRequest, CoreResponse};
 use crate::tui::app::App;
+use crate::tui::app::Dialog;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
 use crate::tui::components::dialogs::import::ImportSource;
 use crate::tui::task_lifecycle::TuiTaskKind;
+use std::sync::Arc;
 
 #[allow(dead_code)]
 #[cfg(test)]
@@ -467,4 +469,11 @@ pub(crate) fn apply_import_confirmed(
     if let (Some(ref mut import), Some(session)) = (&mut app.dialog_state.import_dialog, session) {
         import.set_done(session);
     }
+}
+
+pub(crate) fn dispatch_import(app: &mut App) {
+    app.dialog_state.import_dialog = Some(
+        crate::tui::components::dialogs::import::ImportDialog::new(Arc::clone(&app.ui_state.theme)),
+    );
+    app.open_dialog(Dialog::Import);
 }

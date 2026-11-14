@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "campaign_id": "s015-provider-stream-stall-diagnostics-20261031",
+  "run_index": 2,
+  "run_status": "cancelled_disk_reserve",
+  "started_at_utc": "2026-10-31T16:04:03Z",
+  "terminal_observed_at_utc": "2026-10-31T16:14:26Z",
+  "elapsed_seconds_observed": 623,
+  "source_commit": "543042070407ec5d2a93642e583f89fb0333ab56",
+  "binary_sha256": "7288ef309c724e6b950ea9fe363a84a7bfad174f6a73942e719bd601b78b17d8",
+  "binary_architecture": "arm64",
+  "route": "opencode_go/muse-spark-1.3-contributor",
+  "provider_requests": 45,
+  "per_run_request_cap": 60,
+  "usd_cost": "unknown_unavailable_after_operator_cancellation",
+  "provider_stream_lifecycle": {
+    "setup_started": 45,
+    "transport_started": 45,
+    "response_headers": 45,
+    "setup_completed": 45,
+    "body_stream_started": 45,
+    "sampled_body_progress_events": 105,
+    "decoded_events": 280,
+    "turn_events_received": 280,
+    "body_eof": 43,
+    "decoded_eof": 43,
+    "turn_eof": 43,
+    "idle_timeouts": 1,
+    "setup_timeouts": 0,
+    "transport_failures": 0,
+    "body_failures": 0,
+    "decode_failures": 0
+  },
+  "reproduced_timeout": {
+    "request_span_hash": "e13118256b",
+    "setup_completed_at_utc": "2026-10-31T16:12:45.910Z",
+    "first_body_chunk_ms_after_setup": 6,
+    "first_body_chunk_bytes": 10233,
+    "later_body_chunk_ms_after_setup": [
+      29999,
+      60001
+    ],
+    "later_body_chunk_sizes": [
+      48,
+      48
+    ],
+    "decoded_event_count_at_timeout": 0,
+    "idle_wait_ms": 90009,
+    "timed_out_at_utc": "2026-10-31T16:14:15.922Z",
+    "same_span_decoded_event_before_timeout": false
+  },
+  "disk": {
+    "free_space_minimum_displayed_gib": 12,
+    "stop_floor_gib": 10,
+    "floor_triggered": false,
+    "stopped_proactively": true
+  },
+  "task_outcome": "unknown_cancelled_before_receipt_and_verifier",
+  "private_artifacts": {
+    "lane_root": "/private/tmp/s015-live02/case00",
+    "diagnostic_log_path": "/private/tmp/s015-live02/case00/case/codegg_debug.log",
+    "diagnostic_log_sha256": "6cddf86c56df31cc540b5c4184cc958c313f3e01212e6dc7a9821ab786fa772d",
+    "provider_admission_receipt_path": "/private/tmp/s015-live02/case00/artifacts/provider-request-admissions.jsonl",
+    "provider_admission_receipt_sha256": "bf2c193a6a56eaa4b29019e18ba724702f72b3b013e4888612bf70cca6f8c5d1"
+  },
+  "interpretation": "The reproduced timeout is at the agent decoded-ChatEvent idle guard, not setup or HTTP transport: the same response had 200 headers and ongoing response-body chunks (including 48-byte chunks 30 seconds apart), while the SSE adapter produced zero ChatEvents for 90.009 seconds. Other attempts in the run continued and decoded normally. The run was cancelled proactively at about 12 GiB free, above the authorized 10 GiB stop floor."
+}

@@ -52,6 +52,9 @@ pub mod nested_runtime_command_dispatch;
 #[path = "presence_m002_collaborators.inc"]
 pub mod presence_m002_collaborators;
 
+#[path = "present_deliverable.inc"]
+pub mod present_deliverable;
+
 #[path = "theme_selection_tokens.inc"]
 pub mod theme_selection_tokens;
 
@@ -96,6 +99,24 @@ pub mod transcript_follow;
 
 #[path = "tui_formatted_json_detail_view.inc"]
 pub mod tui_formatted_json_detail_view;
+
+#[path = "tui_frame_cost.inc"]
+pub mod tui_frame_cost;
+
+#[path = "tui_file_tree_cost.inc"]
+pub mod tui_file_tree_cost;
+
+#[path = "tui_chat_cost.inc"]
+pub mod tui_chat_cost;
+
+#[path = "tui_transcript_cost.inc"]
+pub mod tui_transcript_cost;
+
+#[path = "tui_editor_cost.inc"]
+pub mod tui_editor_cost;
+
+#[path = "tui_wrap_cost.inc"]
+pub mod tui_wrap_cost;
 
 #[path = "tui_info_dialog_panel_chrome.inc"]
 pub mod tui_info_dialog_panel_chrome;
@@ -177,3 +198,6 @@ pub mod workspace_m005_selected_project_chat;
 
 #[path = "workspace_postclosure_m002_task_cancellation.inc"]
 pub mod workspace_postclosure_m002_task_cancellation;
+
+#[path = "invariants/mod.rs"]
+pub mod invariants;

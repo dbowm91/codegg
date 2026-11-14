@@ -8,7 +8,7 @@ pub fn classify_tool_risk(tool_name: &str, input: &serde_json::Value) -> ToolRis
     match tool_name {
         "read" | "grep" | "glob" | "list" | "codesearch" | "repo_search" | "repo_fetch"
         | "repo_map" | "research" | "research_search" | "batch_fetch" | "security_search"
-        | "evidence_bundle" | "webfetch" | "websearch" => ToolRisk::Read,
+        | "evidence_bundle" | "webfetch" | "websearch" | "present" => ToolRisk::Read,
         "write" | "edit" | "replace" | "formatter" | "apply_patch" => ToolRisk::Write,
         "git" | "commit" => ToolRisk::GitMutation,
         "bash" | "terminal" => classify_bash_risk(input),

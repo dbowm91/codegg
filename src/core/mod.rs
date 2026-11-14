@@ -174,6 +174,12 @@ impl InprocCoreClient {
         Ok(())
     }
 
+    pub async fn shutdown_jobs(&self) {
+        if let Some(daemon) = &self.daemon {
+            daemon.shutdown_jobs().await;
+        }
+    }
+
     /// Legacy constructor for backward compatibility. Prefer `with_deps`.
     pub fn new(
         subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,

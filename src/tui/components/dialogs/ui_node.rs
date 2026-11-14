@@ -3,15 +3,30 @@ use std::sync::Arc;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::Frame;
 
 use codegg_protocol::ui::UiNode;
 
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
+use crate::tui::components::hint_line::HintLine;
+use crate::tui::components::section::Section;
 use crate::tui::components::ui_node_renderer::UiNodeRenderer;
 use crate::tui::theme::Theme;
+
+/// The keys this box dispatches, and the row position the footer reports.
+fn footer_hint(indicator: &str) -> HintLine {
+    let mut hint = HintLine::new();
+    if !indicator.is_empty() {
+        hint.push(indicator, "");
+    }
+    hint.push("j/k", "scroll")
+        .push("PageUp/PageDown", "page")
+        .push("Home/End", "jump")
+        .push("Esc/Enter", "close");
+    hint
+}
 
 #[derive(Clone)]
 pub struct UiNodeDialog {
@@ -107,10 +122,9 @@ impl Component for UiNodeDialog {
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
         let lines = self.lines();
 
-        let title_block = Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" {} ", self.title))
-            .border_style(Style::default().fg(theme.border));
+        // The node's title is caller-supplied data, not a label, so the
+        // primitive pads it without re-casing it.
+        let title_section = Section::verbatim(&self.title, theme).focused(true);
 
         let visible_lines = (area.height as usize).saturating_sub(6);
         let total_lines = lines.len();
@@ -129,13 +143,7 @@ impl Component for UiNodeDialog {
             })
             .collect();
 
-        let content_para = Paragraph::new(display_lines)
-            .wrap(Wrap { trim: false })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.border)),
-            );
+        let content_para = Paragraph::new(display_lines).wrap(Wrap { trim: false });
 
         let scroll_indicator = if total_lines > visible_lines {
             format!(" {}-{} of {} ", start_idx + 1, end_idx, total_lines)
@@ -143,24 +151,12 @@ impl Component for UiNodeDialog {
             String::new()
         };
 
-        let footer_text = if scroll_indicator.is_empty() {
-            " j/k scroll | PageUp/PageDown page | Home/End jump | Esc/Enter close ".to_string()
-        } else {
-            format!(
-                "{} | j/k scroll | PageUp/PageDown page | Home/End jump | Esc/Enter close ",
-                scroll_indicator.trim()
-            )
-        };
+        let footer_text = format!(" {} ", footer_hint(scroll_indicator.trim()).render(0));
 
-        let footer_block = Paragraph::new(Line::from(Span::styled(
+        let footer_para = Paragraph::new(Line::from(Span::styled(
             footer_text,
             Style::default().fg(theme.secondary),
-        )))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.border)),
-        );
+        )));
 
         let chunks = Layout::vertical([
             Constraint::Length(3),
@@ -169,9 +165,11 @@ impl Component for UiNodeDialog {
         ])
         .split(area);
 
-        frame.render_widget(title_block, chunks[0]);
-        frame.render_widget(content_para, chunks[1]);
-        frame.render_widget(footer_block, chunks[2]);
+        title_section.draw(chunks[0], frame.buffer_mut());
+        let body = Section::plain(theme).draw(chunks[1], frame.buffer_mut());
+        content_para.render(body, frame.buffer_mut());
+        let footer = Section::plain(theme).draw(chunks[2], frame.buffer_mut());
+        footer_para.render(footer, frame.buffer_mut());
     }
 }
 

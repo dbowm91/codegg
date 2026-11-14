@@ -38,7 +38,7 @@ on:
       - 'src/bin/codegg-sandbox-helper.rs'
       - 'tests/shared_checkout_c006.rs'
       - 'tests/macos_native_shared_checkout_containment.rs'
-      - 'tests/sandbox_containment.rs'
+      - 'tests/security_permission/**'
   pull_request:
     paths:
       - '.github/workflows/shared-checkout-macos-qualification.yml'
@@ -52,7 +52,7 @@ on:
       - 'src/bin/codegg-sandbox-helper.rs'
       - 'tests/shared_checkout_c006.rs'
       - 'tests/macos_native_shared_checkout_containment.rs'
-      - 'tests/sandbox_containment.rs'
+      - 'tests/security_permission/**'
   workflow_dispatch:
 
 permissions:
@@ -118,13 +118,34 @@ jobs:
       #
       # `sandbox_containment` is a member of the `security_permission` family
       # (M004 consolidated the root integration tests into families), so the
-      # target is the family and the member name is the filter. The filter
-      # keeps the lane's scope to the one member it names.
+      # target is the family and the member name is the filter.
+      #
+      # C005: `CODEGG_SANDBOX_QUALIFICATION=required` is C004's strict-mode
+      # marker. Unset — or set to `optional` — keeps the skip that lets a
+      # developer on a host without a containment backend run the suite; any
+      # other value makes the member fail with the platform's own reason. A
+      # lane whose entire purpose is the native backend must not go green
+      # from a skip, so it sets the marker: a macOS release that removed
+      # `sandbox-exec` now fails here instead of reporting a green skip.
       - name: Sandbox containment suite
+        env:
+          CODEGG_SANDBOX_QUALIFICATION: required
         run: |
           set -o pipefail
           cargo test --locked -p codegg --test security_permission sandbox_containment -- --nocapture --test-threads=1 \
             | tee "$RUNNER_TEMP/shared-checkout-macos/sandbox_containment.log"
+
+      # C005: the lane ran only `sandbox_containment`, so the members that
+      # assert the resolved sandbox profile is threaded into the registry and
+      # that the host admission manifest is honoured never ran on hosted
+      # macOS. Same family, same filter form.
+      - name: Sandbox policy wiring and host admission suites
+        run: |
+          set -o pipefail
+          cargo test --locked -p codegg --test security_permission sandbox_policy_wiring -- --nocapture --test-threads=1 \
+            | tee "$RUNNER_TEMP/shared-checkout-macos/sandbox_policy_wiring.log"
+          cargo test --locked -p codegg --test security_permission host_admission_manifest -- --nocapture --test-threads=1 \
+            | tee "$RUNNER_TEMP/shared-checkout-macos/host_admission_manifest.log"
 
       - name: Record the qualification summary
         if: always()
@@ -145,6 +166,17 @@ jobs:
             echo "### macOS native containment fixture"
             echo '```text'
             cat "$RUNNER_TEMP/shared-checkout-macos/macos_native_shared_checkout_containment.log" 2>/dev/null || echo "(not run)"
+            echo '```'
+            echo
+            echo "### Sandbox containment suite (strict mode)"
+            echo '```text'
+            cat "$RUNNER_TEMP/shared-checkout-macos/sandbox_containment.log" 2>/dev/null || echo "(not run)"
+            echo '```'
+            echo
+            echo "### Sandbox policy wiring and host admission suites"
+            echo '```text'
+            cat "$RUNNER_TEMP/shared-checkout-macos/sandbox_policy_wiring.log" 2>/dev/null || echo "(not run)"
+            cat "$RUNNER_TEMP/shared-checkout-macos/host_admission_manifest.log" 2>/dev/null || echo "(not run)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

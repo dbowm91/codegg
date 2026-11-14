@@ -206,12 +206,12 @@ impl AgentLoop {
         request: &mut ChatRequest,
         all_events: &mut Vec<ChatEvent>,
         processor: &mut EventProcessor,
-    ) {
+    ) -> Result<(), crate::error::AppError> {
         let Some(goal_store) = self.services.goal_store.clone() else {
-            return;
+            return Ok(());
         };
         if self.session_id.is_empty() {
-            return;
+            return Ok(());
         }
 
         // Bounded safety: don't run the continuation loop forever even
@@ -223,10 +223,10 @@ impl AgentLoop {
         let initial_goal_id: Option<String> =
             match goal_store.active_for_session(&self.session_id).await {
                 Ok(Some(goal)) => Some(goal.id.clone()),
-                Ok(None) => return,
+                Ok(None) => return Ok(()),
                 Err(e) => {
                     tracing::warn!("goal continuation initial load failed: {e}");
-                    return;
+                    return Ok(());
                 }
             };
         let mut previous_evidence: Option<codegg_core::goal::progress::GoalContinuationEvidence> =
@@ -243,15 +243,15 @@ impl AgentLoop {
                     session_id = %self.session_id,
                     "goal continuation interrupted by user; stopping"
                 );
-                return;
+                return Ok(());
             }
 
             let goal = match goal_store.active_for_session(&self.session_id).await {
                 Ok(Some(goal)) => goal,
-                Ok(None) => return,
+                Ok(None) => return Ok(()),
                 Err(e) => {
                     tracing::warn!("goal runtime decision failed: {e}");
-                    return;
+                    return Ok(());
                 }
             };
             // Replacement aborts the stale continuation decision.
@@ -261,7 +261,7 @@ impl AgentLoop {
                         session_id = %self.session_id,
                         "goal replaced during continuation; aborting stale path"
                     );
-                    return;
+                    return Ok(());
                 }
             }
             // Budget/terminal gate remains authoritative. Progress policy never
@@ -273,7 +273,7 @@ impl AgentLoop {
                     if let Err(error) = self.follow_up_tx.try_send(prompt) {
                         tracing::warn!(?error, "goal wrap-up prompt dropped");
                     }
-                    self.drain_follow_up(request, all_events, processor).await;
+                    self.drain_follow_up(request, all_events, processor).await?;
                 } else {
                     tracing::info!(
                         session_id = %self.session_id,
@@ -282,7 +282,7 @@ impl AgentLoop {
                         "goal continuation stopped (terminal status)"
                     );
                 }
-                return;
+                return Ok(());
             }
 
             // Assemble host-owned evidence without holding the todo lock
@@ -334,7 +334,7 @@ impl AgentLoop {
                     if let Err(error) = self.follow_up_tx.try_send(prompt) {
                         tracing::warn!(?error, "goal continuation prompt dropped");
                     }
-                    self.drain_follow_up(request, all_events, processor).await;
+                    self.drain_follow_up(request, all_events, processor).await?;
                     self.account_goal_for_turn().await;
                 }
                 codegg_core::goal::progress::GoalProgressDisposition::VerifiedWait {
@@ -366,7 +366,7 @@ impl AgentLoop {
                     if let Err(error) = self.follow_up_tx.try_send(prompt) {
                         tracing::warn!(?error, "goal wait prompt dropped");
                     }
-                    self.drain_follow_up(request, all_events, processor).await;
+                    self.drain_follow_up(request, all_events, processor).await?;
                     self.account_goal_for_turn().await;
                 }
                 codegg_core::goal::progress::GoalProgressDisposition::NoProgress {
@@ -405,7 +405,7 @@ impl AgentLoop {
                             if let Err(error) = self.follow_up_tx.try_send(prompt) {
                                 tracing::warn!(?error, "goal nudge prompt dropped");
                             }
-                            self.drain_follow_up(request, all_events, processor).await;
+                            self.drain_follow_up(request, all_events, processor).await?;
                             self.account_goal_for_turn().await;
                         }
                         codegg_core::goal::progress::GoalStagnationStep::ContinueWithReplan => {
@@ -417,7 +417,7 @@ impl AgentLoop {
                             if let Err(error) = self.follow_up_tx.try_send(prompt) {
                                 tracing::warn!(?error, "goal replan prompt dropped");
                             }
-                            self.drain_follow_up(request, all_events, processor).await;
+                            self.drain_follow_up(request, all_events, processor).await?;
                             self.account_goal_for_turn().await;
                         }
                         codegg_core::goal::progress::GoalStagnationStep::EscalateToAwaitingUser => {
@@ -468,13 +468,14 @@ impl AgentLoop {
                                     );
                                 }
                             }
-                            return;
+                            return Ok(());
                         }
                     }
                 }
             }
         }
         tracing::warn!("goal continuation hit MAX_CONTINUATIONS={MAX_CONTINUATIONS}, halting");
+        Ok(())
     }
 
     pub(super) fn check_limits(&self) -> Option<String> {

@@ -129,19 +129,20 @@ impl<'a> ChangeReviewView<'a> {
             return;
         };
 
-        // Reuse the existing viewer: construct it, then replace its public
-        // hunks with the parsed patch. The viewer's own rendering, scrolling,
-        // and side-by-side toggle are used unchanged.
-        let mut viewer = DiffViewer::new(
+        // Reuse the existing viewer for its scroll, mode and title, but hand
+        // it the hunks the state already parsed **by reference**. It used to
+        // be constructed empty and then filled with `patch.hunks.clone()`,
+        // which copied the whole parsed patch — bounded only by
+        // `MAX_REVIEW_PATCH_BYTES` — on every frame the review was open.
+        // The theme is passed rather than stored: `ChangeReview` already holds
+        // the live one, and caching it on the viewer meant a review opened
+        // before a theme change kept drawing the old palette.
+        let viewer = DiffViewer::new(
             String::new().into_boxed_str(),
             String::new().into_boxed_str(),
             patch.path.clone().into_boxed_str(),
         );
-        viewer.hunks = patch.hunks.clone();
-        // The theme is passed rather than stored: `ChangeReview` already holds
-        // the live one, and caching it on the viewer meant a review opened
-        // before a theme change kept drawing the old palette.
-        viewer.render_in(body, frame.buffer_mut(), &theme);
+        viewer.render_hunks_in(&patch.hunks, body, frame.buffer_mut(), &theme);
     }
 
     fn header_lines(&self) -> Vec<Line<'static>> {

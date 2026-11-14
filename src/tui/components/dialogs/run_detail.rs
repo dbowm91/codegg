@@ -5,11 +5,12 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::Widget;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Tabs, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Tabs, Wrap};
 use ratatui::Frame;
 
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
+use crate::tui::components::section::Section;
 use crate::tui::theme::Theme;
 use codegg_core::run_store::RunDetailView;
 
@@ -171,11 +172,11 @@ impl RunDetailDialog {
             Span::styled(ctx_label, Style::default().fg(ctx_color)),
         ]));
 
-        let paragraph = Paragraph::new(lines)
+        let inner = Section::new("Summary", theme).draw(area, buf);
+        Paragraph::new(lines)
             .scroll(self.paragraph_scroll())
-            .block(Block::default().borders(Borders::ALL).title("Summary"))
-            .wrap(Wrap { trim: false });
-        paragraph.render(area, buf);
+            .wrap(Wrap { trim: false })
+            .render(inner, buf);
     }
 
     fn render_invocation(&self, area: Rect, buf: &mut ratatui::buffer::Buffer, theme: &Theme) {
@@ -224,20 +225,20 @@ impl RunDetailDialog {
             ]));
         }
 
-        let paragraph = Paragraph::new(lines)
+        let inner = Section::new("Invocation", theme).draw(area, buf);
+        Paragraph::new(lines)
             .scroll(self.paragraph_scroll())
-            .block(Block::default().borders(Borders::ALL).title("Invocation"))
-            .wrap(Wrap { trim: false });
-        paragraph.render(area, buf);
+            .wrap(Wrap { trim: false })
+            .render(inner, buf);
     }
 
     fn render_artifacts(&self, area: Rect, buf: &mut ratatui::buffer::Buffer, theme: &Theme) {
         let artifacts = &self.detail.artifacts;
         if artifacts.is_empty() {
-            let paragraph = Paragraph::new("No artifacts.")
+            let inner = Section::new("Artifacts", theme).draw(area, buf);
+            Paragraph::new("No artifacts.")
                 .scroll(self.paragraph_scroll())
-                .block(Block::default().borders(Borders::ALL).title("Artifacts"));
-            paragraph.render(area, buf);
+                .render(inner, buf);
             return;
         }
 
@@ -276,20 +277,20 @@ impl RunDetailDialog {
             }
         }
 
-        let paragraph = Paragraph::new(lines)
+        let inner = Section::new("Artifacts", theme).draw(area, buf);
+        Paragraph::new(lines)
             .scroll(self.paragraph_scroll())
-            .block(Block::default().borders(Borders::ALL).title("Artifacts"))
-            .wrap(Wrap { trim: false });
-        paragraph.render(area, buf);
+            .wrap(Wrap { trim: false })
+            .render(inner, buf);
     }
 
     fn render_changes(&self, area: Rect, buf: &mut ratatui::buffer::Buffer, theme: &Theme) {
         let changes = &self.detail.changes;
         if changes.is_empty() {
-            let paragraph = Paragraph::new("No changed files.")
+            let inner = Section::new("Changes", theme).draw(area, buf);
+            Paragraph::new("No changed files.")
                 .scroll(self.paragraph_scroll())
-                .block(Block::default().borders(Borders::ALL).title("Changes"));
-            paragraph.render(area, buf);
+                .render(inner, buf);
             return;
         }
 
@@ -303,11 +304,11 @@ impl RunDetailDialog {
             })
             .collect();
 
-        let paragraph = Paragraph::new(lines)
+        let inner = Section::new("Changes", theme).draw(area, buf);
+        Paragraph::new(lines)
             .scroll(self.paragraph_scroll())
-            .block(Block::default().borders(Borders::ALL).title("Changes"))
-            .wrap(Wrap { trim: false });
-        paragraph.render(area, buf);
+            .wrap(Wrap { trim: false })
+            .render(inner, buf);
     }
 
     fn render_policy(&self, area: Rect, buf: &mut ratatui::buffer::Buffer, theme: &Theme) {
@@ -368,11 +369,11 @@ impl RunDetailDialog {
             }
         }
 
-        let paragraph = Paragraph::new(lines)
+        let inner = Section::new("Policy", theme).draw(area, buf);
+        Paragraph::new(lines)
             .scroll(self.paragraph_scroll())
-            .block(Block::default().borders(Borders::ALL).title("Policy"))
-            .wrap(Wrap { trim: false });
-        paragraph.render(area, buf);
+            .wrap(Wrap { trim: false })
+            .render(inner, buf);
     }
 
     fn render_context(&self, area: Rect, buf: &mut ratatui::buffer::Buffer, theme: &Theme) {
@@ -437,11 +438,11 @@ impl RunDetailDialog {
             }
         }
 
-        let paragraph = Paragraph::new(lines)
+        let inner = Section::new("Context", theme).draw(area, buf);
+        Paragraph::new(lines)
             .scroll(self.paragraph_scroll())
-            .block(Block::default().borders(Borders::ALL).title("Context"))
-            .wrap(Wrap { trim: false });
-        paragraph.render(area, buf);
+            .wrap(Wrap { trim: false })
+            .render(inner, buf);
     }
 
     fn render_output(&self, area: Rect, buf: &mut ratatui::buffer::Buffer, theme: &Theme) {
@@ -508,11 +509,11 @@ impl RunDetailDialog {
             Style::default().fg(theme.muted),
         )));
 
-        let paragraph = Paragraph::new(lines)
+        let inner = Section::new("Output", theme).draw(area, buf);
+        Paragraph::new(lines)
             .scroll(self.paragraph_scroll())
-            .block(Block::default().borders(Borders::ALL).title("Output"))
-            .wrap(Wrap { trim: false });
-        paragraph.render(area, buf);
+            .wrap(Wrap { trim: false })
+            .render(inner, buf);
     }
 
     fn status_style(status: &codegg_core::run_store::RunStatus) -> Style {
@@ -600,12 +601,18 @@ impl Component for RunDetailDialog {
         let area = crate::tui::components::component::centered_rect(80, 80, area);
         frame.render_widget(Clear, area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title("Run Detail")
-            .padding(Padding::new(1, 1, 0, 0));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        // The dialog frame, title and body inset all come from `Section`.
+        // `Run Detail`'s body used a horizontal `Padding`; the same one-cell
+        // inset is taken from the rect the section answers, so the content
+        // lands exactly where it did.
+        let frame_inner = Section::new("Run Detail", theme)
+            .focused(true)
+            .draw(area, frame.buffer_mut());
+        let inner = Rect {
+            x: frame_inner.x.saturating_add(1),
+            width: frame_inner.width.saturating_sub(2),
+            ..frame_inner
+        };
 
         let tab_titles: Vec<Line> = RunDetailTab::all()
             .iter()

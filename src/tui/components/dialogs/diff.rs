@@ -1,29 +1,18 @@
 use std::sync::Arc;
 
 use crossterm::event::KeyEvent;
-use ratatui::layout::{Constraint, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::Widget;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders};
 use ratatui::Frame;
 
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
+use super::super::section::{Section, SectionFrame};
 use crate::tui::app::TuiMsg;
-use crate::tui::components::diff::{DiffMode, DiffViewer};
-
-/// Who owns this render's chrome.
-///
-/// The two paths differ only in that. [`Chrome::Owned`] is the modal box, which
-/// draws its own border, title and keymap footer; [`Chrome::Hosted`] is a
-/// column in a side panel, where the host has already painted all three into
-/// the same rect.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Chrome {
-    Owned,
-    Hosted,
-}
+use crate::tui::components::diff::{lines_from, DiffMode, DiffViewer};
+use crate::tui::components::hint_line::HintLine;
 
 /// The verbs this box implements, for the panel host to reuse verbatim.
 ///
@@ -35,9 +24,43 @@ enum Chrome {
 /// in the modal box and something else in a column. `Enter` is absent for a
 /// second reason — it returns `TuiMsg::CloseDialog`, and docking popped this
 /// box off the modal stack before the panel adopted it, so that close has an
-/// empty stack to run against and does nothing. `Home`, `End` and `^d`/`^u`
-/// survive: none of them is a panel direction.
-const HINT: &str = "j/k scroll · ^d/^u page · s side-by-side · Home/End jump";
+/// empty stack to run against and does nothing. `Home`, `End` and
+/// `PgUp`/`PgDn` survive: none of them is a panel direction.
+///
+/// The page verb is spelled with the keys `handle_key` answers. It used to be
+/// spelled `^d/^u`, which no arm of `handle_key` has ever seen — `CONTROL` is
+/// not matched at all — while the footer a few rows below this hint already
+/// named `PgUp/PgDn`. Two advertisements on one surface disagreeing about one
+/// verb is the defect this spelling removes. Adding `CONTROL` arms instead
+/// would have been a new binding on a box whose footer already named the keys
+/// that work.
+/// The modal footer for the current mode.
+///
+/// `s` is the mode toggle, so its item names the mode the press lands in rather
+/// than carrying a sentence in the item slot. The exit leads because the footer
+/// is clipped by the box's width.
+fn diff_footer(mode: &DiffMode) -> String {
+    let target = match mode {
+        DiffMode::Inline => "side-by-side",
+        DiffMode::SideBySide => "inline",
+    };
+    HintLine::from_items(&[
+        ("Esc", "close"),
+        ("j/k/↑/↓", "scroll"),
+        ("PgUp/PgDn", "page"),
+        ("s", target),
+    ])
+    .render(0)
+}
+
+fn hint() -> HintLine {
+    let mut hint = HintLine::new();
+    hint.push("j/k", "scroll")
+        .push("PgUp/PgDn", "page")
+        .push("s", "side-by-side")
+        .push("Home/End", "jump");
+    hint
+}
 
 #[derive(Clone)]
 pub struct DiffDialog {
@@ -103,13 +126,9 @@ impl DiffDialog {
             return;
         }
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
-            .title(" Diff Viewer ");
-
-        let inner = block.inner(area);
-        block.render(area, frame.buffer_mut());
+        let inner = Section::new("Diff Viewer", theme)
+            .focused(true)
+            .draw(area, frame.buffer_mut());
 
         let content_height = inner.height.saturating_sub(2);
         if content_height == 0 {
@@ -139,62 +158,43 @@ impl DiffDialog {
         frame.render_widget(header, chunks[0]);
 
         let visible_lines = content_height as usize;
-        let scroll_offset = self.viewer.scroll.get();
-        let mut y = 0u16;
 
-        for hunk in &self.viewer.hunks {
-            for line in hunk.lines.iter().skip(scroll_offset) {
-                if y as usize >= visible_lines {
-                    break;
-                }
+        for (y, line) in lines_from(&self.viewer.hunks, self.viewer.scroll.get())
+            .take(visible_lines)
+            .enumerate()
+        {
+            let fg_color = match line.tag {
+                similar::ChangeTag::Delete => theme.error,
+                similar::ChangeTag::Insert => theme.success,
+                similar::ChangeTag::Equal => theme.foreground,
+            };
 
-                let fg_color = match line.tag {
-                    similar::ChangeTag::Delete => theme.error,
-                    similar::ChangeTag::Insert => theme.success,
-                    similar::ChangeTag::Equal => theme.foreground,
-                };
+            let old_num = line
+                .line_number_old
+                .map(|n| format!("{:4}", n))
+                .unwrap_or_else(|| "    ".to_string());
+            let new_num = line
+                .line_number_new
+                .map(|n| format!("{:4}", n))
+                .unwrap_or_else(|| "    ".to_string());
 
-                let old_num = line
-                    .line_number_old
-                    .map(|n| format!("{:4}", n))
-                    .unwrap_or_else(|| "    ".to_string());
-                let new_num = line
-                    .line_number_new
-                    .map(|n| format!("{:4}", n))
-                    .unwrap_or_else(|| "    ".to_string());
+            let prefix = match line.tag {
+                similar::ChangeTag::Delete => "-",
+                similar::ChangeTag::Insert => "+",
+                similar::ChangeTag::Equal => " ",
+            };
 
-                let prefix = match line.tag {
-                    similar::ChangeTag::Delete => "-",
-                    similar::ChangeTag::Insert => "+",
-                    similar::ChangeTag::Equal => " ",
-                };
+            let content = format!("{}{} │ {}", old_num, new_num, line.content);
+            let full_line = format!("{}{}", prefix, &content[1..]);
 
-                let content = format!("{}{} │ {}", old_num, new_num, line.content);
-                let full_line = format!("{}{}", prefix, &content[1..]);
+            let styled_line =
+                Line::from(vec![Span::styled(full_line, Style::default().fg(fg_color))]);
 
-                let styled_line =
-                    Line::from(vec![Span::styled(full_line, Style::default().fg(fg_color))]);
-
-                let line_area = Rect::new(chunks[1].x, chunks[1].y + y, chunks[1].width, 1);
-                frame.render_widget(styled_line, line_area);
-
-                y += 1;
-            }
-
-            if y as usize >= visible_lines {
-                break;
-            }
+            let line_area = Rect::new(chunks[1].x, chunks[1].y + y as u16, chunks[1].width, 1);
+            frame.render_widget(styled_line, line_area);
         }
 
-        let mode_toggle = match self.viewer.mode {
-            DiffMode::Inline => "Press 's' for Side-by-Side",
-            DiffMode::SideBySide => "Press 's' for Inline",
-        };
-
-        let info = format!(
-            "j/k/↑/↓ scroll  |  PgUp/PgDn  |  {}  |  Esc close",
-            mode_toggle
-        );
+        let info = diff_footer(&self.viewer.mode);
 
         let footer = ratatui::widgets::Paragraph::new(Line::from(Span::styled(
             info,
@@ -218,26 +218,20 @@ impl DiffDialog {
     /// names the panel, not the file or the mode, so a hosted column that
     /// dropped it would say neither which file it is nor which way it is laid
     /// out.
-    fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Theme, chrome: Chrome) {
+    fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Theme, chrome: SectionFrame) {
         if area.height < 7 {
             return;
         }
 
         let inner = match chrome {
-            Chrome::Owned => {
-                let block = Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.border))
-                    .title(" Diff Viewer ");
-                let inner = block.inner(area);
-                block.render(area, frame.buffer_mut());
-                inner
-            }
+            SectionFrame::Owned => Section::new("Diff Viewer", theme)
+                .focused(true)
+                .draw(area, frame.buffer_mut()),
             // The host owns the border, the title and the `●` in this rect
             // already, and `render_in_panel` is handed the full rect rather
             // than the interior, so a second block would overwrite all three
             // instead of stacking on them.
-            Chrome::Hosted => area,
+            SectionFrame::Hosted => area,
         };
 
         // The footer is a keymap, and this box's modal keymap is a lie in a
@@ -247,8 +241,8 @@ impl DiffDialog {
         // `keymap_hint` instead, where the host reads them once for the whole
         // panel rather than burning one row of a narrow column per box.
         let footer_rows = match chrome {
-            Chrome::Owned => 1,
-            Chrome::Hosted => 0,
+            SectionFrame::Owned => 1,
+            SectionFrame::Hosted => 0,
         };
         let content_height = inner.height.saturating_sub(footer_rows + 1);
         if content_height == 0 {
@@ -256,13 +250,13 @@ impl DiffDialog {
         }
 
         let chunks = match chrome {
-            Chrome::Owned => Layout::vertical([
+            SectionFrame::Owned => Layout::vertical([
                 Constraint::Length(1),
                 Constraint::Min(content_height),
                 Constraint::Length(1),
             ])
             .split(inner),
-            Chrome::Hosted => {
+            SectionFrame::Hosted => {
                 Layout::vertical([Constraint::Length(1), Constraint::Min(content_height)])
                     .split(inner)
             }
@@ -284,63 +278,44 @@ impl DiffDialog {
         frame.render_widget(header, chunks[0]);
 
         let visible_lines = content_height as usize;
-        let scroll_offset = self.viewer.scroll.get();
-        let mut y = 0u16;
 
-        for hunk in &self.viewer.hunks {
-            for line in hunk.lines.iter().skip(scroll_offset) {
-                if y as usize >= visible_lines {
-                    break;
-                }
-
-                let fg_color = match line.tag {
-                    similar::ChangeTag::Delete => theme.error,
-                    similar::ChangeTag::Insert => theme.success,
-                    similar::ChangeTag::Equal => theme.foreground,
-                };
-
-                let old_num = line
-                    .line_number_old
-                    .map(|n| format!("{:4}", n))
-                    .unwrap_or_else(|| "    ".to_string());
-                let new_num = line
-                    .line_number_new
-                    .map(|n| format!("{:4}", n))
-                    .unwrap_or_else(|| "    ".to_string());
-
-                let prefix = match line.tag {
-                    similar::ChangeTag::Delete => "-",
-                    similar::ChangeTag::Insert => "+",
-                    similar::ChangeTag::Equal => " ",
-                };
-
-                let content = format!("{}{} │ {}", old_num, new_num, line.content);
-                let full_line = format!("{}{}", prefix, &content[1..]);
-
-                let styled_line =
-                    Line::from(vec![Span::styled(full_line, Style::default().fg(fg_color))]);
-
-                let line_area = Rect::new(chunks[1].x, chunks[1].y + y, chunks[1].width, 1);
-                frame.render_widget(styled_line, line_area);
-
-                y += 1;
-            }
-
-            if y as usize >= visible_lines {
-                break;
-            }
-        }
-
-        if chrome == Chrome::Owned {
-            let mode_toggle = match self.viewer.mode {
-                DiffMode::Inline => "Press 's' for Side-by-Side",
-                DiffMode::SideBySide => "Press 's' for Inline",
+        for (y, line) in lines_from(&self.viewer.hunks, self.viewer.scroll.get())
+            .take(visible_lines)
+            .enumerate()
+        {
+            let fg_color = match line.tag {
+                similar::ChangeTag::Delete => theme.error,
+                similar::ChangeTag::Insert => theme.success,
+                similar::ChangeTag::Equal => theme.foreground,
             };
 
-            let info = format!(
-                "j/k/↑/↓ scroll  |  PgUp/PgDn  |  {}  |  Esc close",
-                mode_toggle
-            );
+            let old_num = line
+                .line_number_old
+                .map(|n| format!("{:4}", n))
+                .unwrap_or_else(|| "    ".to_string());
+            let new_num = line
+                .line_number_new
+                .map(|n| format!("{:4}", n))
+                .unwrap_or_else(|| "    ".to_string());
+
+            let prefix = match line.tag {
+                similar::ChangeTag::Delete => "-",
+                similar::ChangeTag::Insert => "+",
+                similar::ChangeTag::Equal => " ",
+            };
+
+            let content = format!("{}{} │ {}", old_num, new_num, line.content);
+            let full_line = format!("{}{}", prefix, &content[1..]);
+
+            let styled_line =
+                Line::from(vec![Span::styled(full_line, Style::default().fg(fg_color))]);
+
+            let line_area = Rect::new(chunks[1].x, chunks[1].y + y as u16, chunks[1].width, 1);
+            frame.render_widget(styled_line, line_area);
+        }
+
+        if chrome == SectionFrame::Owned {
+            let info = diff_footer(&self.viewer.mode);
 
             let footer = ratatui::widgets::Paragraph::new(Line::from(Span::styled(
                 info,
@@ -361,13 +336,9 @@ impl DiffDialog {
 /// it is given a parameter rather than removed.
 impl DiffDialog {
     pub fn render_legacy(&self, area: Rect, buf: &mut ratatui::prelude::Buffer, theme: &Theme) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
-            .title(" Diff Viewer ");
-
-        let inner = block.inner(area);
-        block.render(area, buf);
+        let inner = Section::new("Diff Viewer", theme)
+            .focused(true)
+            .draw(area, buf);
 
         let content_height = inner.height.saturating_sub(2);
         if content_height == 0 {
@@ -397,62 +368,43 @@ impl DiffDialog {
         header.render(chunks[0], buf);
 
         let visible_lines = content_height as usize;
-        let scroll_offset = self.viewer.scroll.get();
-        let mut y = 0u16;
 
-        for hunk in &self.viewer.hunks {
-            for line in hunk.lines.iter().skip(scroll_offset) {
-                if y as usize >= visible_lines {
-                    break;
-                }
+        for (y, line) in lines_from(&self.viewer.hunks, self.viewer.scroll.get())
+            .take(visible_lines)
+            .enumerate()
+        {
+            let fg_color = match line.tag {
+                similar::ChangeTag::Delete => theme.error,
+                similar::ChangeTag::Insert => theme.success,
+                similar::ChangeTag::Equal => theme.foreground,
+            };
 
-                let fg_color = match line.tag {
-                    similar::ChangeTag::Delete => theme.error,
-                    similar::ChangeTag::Insert => theme.success,
-                    similar::ChangeTag::Equal => theme.foreground,
-                };
+            let old_num = line
+                .line_number_old
+                .map(|n| format!("{:4}", n))
+                .unwrap_or_else(|| "    ".to_string());
+            let new_num = line
+                .line_number_new
+                .map(|n| format!("{:4}", n))
+                .unwrap_or_else(|| "    ".to_string());
 
-                let old_num = line
-                    .line_number_old
-                    .map(|n| format!("{:4}", n))
-                    .unwrap_or_else(|| "    ".to_string());
-                let new_num = line
-                    .line_number_new
-                    .map(|n| format!("{:4}", n))
-                    .unwrap_or_else(|| "    ".to_string());
+            let prefix = match line.tag {
+                similar::ChangeTag::Delete => "-",
+                similar::ChangeTag::Insert => "+",
+                similar::ChangeTag::Equal => " ",
+            };
 
-                let prefix = match line.tag {
-                    similar::ChangeTag::Delete => "-",
-                    similar::ChangeTag::Insert => "+",
-                    similar::ChangeTag::Equal => " ",
-                };
+            let content = format!("{}{} │ {}", old_num, new_num, line.content);
+            let full_line = format!("{}{}", prefix, &content[1..]);
 
-                let content = format!("{}{} │ {}", old_num, new_num, line.content);
-                let full_line = format!("{}{}", prefix, &content[1..]);
+            let styled_line =
+                Line::from(vec![Span::styled(full_line, Style::default().fg(fg_color))]);
 
-                let styled_line =
-                    Line::from(vec![Span::styled(full_line, Style::default().fg(fg_color))]);
-
-                let line_area = Rect::new(chunks[1].x, chunks[1].y + y, chunks[1].width, 1);
-                styled_line.render(line_area, buf);
-
-                y += 1;
-            }
-
-            if y as usize >= visible_lines {
-                break;
-            }
+            let line_area = Rect::new(chunks[1].x, chunks[1].y + y as u16, chunks[1].width, 1);
+            styled_line.render(line_area, buf);
         }
 
-        let mode_toggle = match self.viewer.mode {
-            DiffMode::Inline => "Press 's' for Side-by-Side",
-            DiffMode::SideBySide => "Press 's' for Inline",
-        };
-
-        let info = format!(
-            "j/k/↑/↓ scroll  |  PgUp/PgDn  |  {}  |  Esc close",
-            mode_toggle
-        );
+        let info = diff_footer(&self.viewer.mode);
 
         let footer = ratatui::widgets::Paragraph::new(Line::from(Span::styled(
             info,
@@ -517,8 +469,8 @@ impl Component for DiffDialog {
     }
 
     /// The verbs this box owns, spelled the way this box spells them.
-    fn keymap_hint(&self) -> Option<String> {
-        Some(HINT.to_string())
+    fn keymap_hint_line(&self) -> Option<HintLine> {
+        Some(hint())
     }
 
     /// The hunks alone: no border, no title, no footer.
@@ -532,17 +484,19 @@ impl Component for DiffDialog {
     /// the mode, which the host's title does not. `area` is the host's full
     /// rect, so inset by its border first.
     fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        let inner = area.inner(Margin::new(1, 1));
+        let inner = Section::plain(theme)
+            .frame(SectionFrame::Hosted)
+            .draw(area, frame.buffer_mut());
         if inner.height == 0 || inner.width == 0 {
             return;
         }
-        self.render_body(frame, inner, theme, Chrome::Hosted);
+        self.render_body(frame, inner, theme, SectionFrame::Hosted);
     }
 
     /// The modal box: border, title and footer, all of which are correct here
     /// and only here.
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        self.render_body(frame, area, theme, Chrome::Owned);
+        self.render_body(frame, area, theme, SectionFrame::Owned);
     }
 
     fn dialog_type(&self) -> DialogType {
@@ -554,6 +508,7 @@ impl Component for DiffDialog {
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+    use ratatui::widgets::{Block, Borders};
     use ratatui::Terminal;
 
     fn dialog() -> DiffDialog {
@@ -705,6 +660,47 @@ mod tests {
         for dead in ["esc", "Esc", "↑", "↓", "←", "→", "enter", "Enter"] {
             assert!(!hint.contains(dead), "the hint teaches {dead:?}: {hint:?}");
         }
-        assert_eq!(d.keymap_hint().as_deref(), Some(HINT));
+        // The page verb is spelled with the keys `handle_key` answers. The
+        // footer already named them, so a `^d`/`^u` hint contradicted the same
+        // surface's other advertisement.
+        for dead in ["^d", "^u"] {
+            assert!(
+                !hint.contains(dead),
+                "the hint teaches {dead:?}, which no arm answers: {hint:?}"
+            );
+        }
+        assert_eq!(
+            d.keymap_hint().as_deref(),
+            Some("j/k scroll · PgUp/PgDn page · s side-by-side · Home/End jump")
+        );
+    }
+
+    /// `End` reaches the paint through the modal path: `total_lines() - 1` only
+    /// means "the last line" if the offset is consumed once across the hunks.
+    #[test]
+    fn end_paints_the_tail_of_a_two_hunk_diff_in_the_modal() {
+        let mut d = DiffDialog::new(
+            "one\ntwo\nthree\nfour\nfive\n".into(),
+            "one\nTWO\nthree\nfour\nFIVE\n".into(),
+            "src/main.rs".into(),
+        );
+        assert_eq!(d.viewer.hunks.len(), 2, "the fixture must have two hunks");
+
+        assert_eq!(
+            Component::handle_key(&mut d, KeyEvent::from(crossterm::event::KeyCode::End)),
+            None,
+            "End scrolls rather than closing the box"
+        );
+        assert_eq!(
+            d.viewer.scroll.get(),
+            d.viewer.total_lines() - 1,
+            "End means the last line"
+        );
+
+        let rows = modal_rows(&mut d, 80, 24).join("\n");
+        assert!(
+            rows.contains("FIVE"),
+            "End blanked a two-hunk diff instead of painting its tail: {rows:?}"
+        );
     }
 }

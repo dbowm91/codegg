@@ -66,6 +66,8 @@ use crate::tui::app::state::chat::ChatStatus;
 use crate::tui::app::TuiMsg;
 use crate::tui::chat_browser::{self, ChatBrowser, ChatComposeSeed, ChatKeyAction, ChatView};
 use crate::tui::components::component::{Component, DialogType};
+use crate::tui::components::hint_line::HintLine;
+use crate::tui::components::section::Section;
 use crate::tui::theme::Theme;
 
 /// Maximum messages held in the window snapshot. Matches the reducer's
@@ -117,6 +119,14 @@ pub struct ChatDialog {
     theme: Arc<Theme>,
     project_id: String,
     snapshot: ChatSnapshot,
+    /// M003: bumped every time a snapshot is applied.
+    ///
+    /// The window is handed a bounded snapshot rather than reading the
+    /// reducer, so this stands in for `ProjectChat::sequence`: it is the
+    /// content-changed signal the row cache keys on. It moves when a snapshot
+    /// is *applied*, never on a draw, which is what makes an unchanged frame
+    /// a cache hit.
+    snapshot_revision: u64,
     /// Shared navigation/selection state — the same implementation the side
     /// panel uses, so the two cannot disagree about where the cursor is or
     /// what `r` means.
@@ -141,6 +151,7 @@ impl ChatDialog {
             theme,
             project_id,
             snapshot: ChatSnapshot::default(),
+            snapshot_revision: 0,
             browser: ChatBrowser::default(),
             mode: ChatMode::Normal,
             buffer: String::new(),
@@ -186,6 +197,11 @@ impl ChatDialog {
             self.caret = char_len(&self.buffer);
         }
         self.snapshot = snapshot;
+        // A snapshot is the reducer's content-changed signal, so it is also
+        // this window's row-cache invalidation: a redaction or an edit that
+        // arrives here must be drawn on the next frame, never served from the
+        // rows the previous snapshot produced.
+        self.snapshot_revision = self.snapshot_revision.wrapping_add(1);
         // Reconcile the shared browser with the new window. On the first
         // push this is what puts the cursor on the newest message rather
         // than index 0, so opening `/chat` on a busy channel shows the
@@ -352,9 +368,17 @@ impl ChatDialog {
     }
 
     /// The body shown in the viewport, including status branches.
-    fn body_lines(&self, height: usize, width: usize, theme: &Arc<Theme>) -> Vec<Line<'static>> {
+    ///
+    /// The returned lines **borrow** the row model's cached text: the window
+    /// lists a contiguous range, so a draw materializes the visible rows once
+    /// rather than re-wrapping the channel and cloning every row's strings.
+    fn body_lines<'b>(
+        &'b mut self,
+        height: usize,
+        width: usize,
+        theme: &Arc<Theme>,
+    ) -> Vec<Line<'b>> {
         let dim = Style::default().fg(theme.muted);
-        let view = Self::view_of(&self.snapshot);
         match self.snapshot.status {
             ChatStatus::Unavailable => vec![
                 Line::from(Span::styled("Chat is unavailable for this project.", dim)),
@@ -387,25 +411,27 @@ impl ChatDialog {
                 // count still fits the viewport.
                 let header_rows = usize::from(self.snapshot.history_truncated);
                 let visible = height.max(1).saturating_sub(header_rows).max(1);
-                let rows = chat_browser::rows(
-                    &view,
-                    self.browser.cursor(),
-                    u16::try_from(width).unwrap_or(u16::MAX),
+                let request = chat_browser::ChatRowsRequest {
+                    sequence: self.snapshot_revision,
+                    width: u16::try_from(width).unwrap_or(u16::MAX),
                     theme,
-                );
-                let mut lines: Vec<Line<'static>> = Vec::new();
+                };
+                // The view borrows the snapshot; the browser mutates only its
+                // own row cache, so the two borrows are disjoint fields.
+                let view = Self::view_of(&self.snapshot);
+                let model = self.browser.rows(&view, request);
+                let mut lines: Vec<Line<'b>> = Vec::new();
                 if self.snapshot.history_truncated {
                     lines.push(Line::from(Span::styled(
                         "… older history retained daemon-side (u loads more)",
                         dim,
                     )));
                 }
-                if rows.is_empty() {
+                if model.rows.is_empty() {
                     return lines;
                 }
-                let selected_end = chat_browser::selected_row_end(&rows, self.browser.cursor());
-                let range = chat_browser::window(rows.len(), selected_end, visible);
-                lines.extend(range.map(|index| rows[index].line.clone()));
+                let range = chat_browser::window(model.rows.len(), model.selected_end, visible);
+                lines.extend(chat_browser::window_lines(model.rows, range));
                 lines
             }
         }
@@ -415,11 +441,13 @@ impl ChatDialog {
     fn footer(&self, theme: &Arc<Theme>) -> Line<'static> {
         let dim = Style::default().fg(theme.muted);
         let hints = match self.mode {
-            ChatMode::Normal => format!(
-                "{} · Esc close",
-                chat_browser::normal_hints(self.browser.show_help())
-            ),
-            _ => chat_browser::input_hints(&self.seed()),
+            ChatMode::Normal => {
+                let mut hint = HintLine::new();
+                let normal = chat_browser::normal_hints(self.browser.show_help());
+                hint.push_required("Esc", "close").push_line(&normal);
+                hint.render(0)
+            }
+            _ => chat_browser::input_hints(&self.seed()).render(0),
         };
         Line::from(Span::styled(hints, dim))
     }
@@ -554,13 +582,12 @@ impl Component for ChatDialog {
             return;
         }
         frame.render_widget(Clear, area);
-        let title = format!(" Project Chat — {} ", self.project_id);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
-            .title(title);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        // The project id makes this title data, so the primitive pads it and
+        // leaves its spelling alone.
+        let title = format!("Project Chat — {}", self.project_id);
+        let inner = Section::verbatim(&title, theme)
+            .focused(true)
+            .draw(area, frame.buffer_mut());
 
         // Channel bar is present only when the project actually has more
         // than one channel to switch between.
@@ -987,7 +1014,7 @@ mod tests {
 
     #[test]
     fn selected_author_is_rendered_legibly() {
-        let d = dialog();
+        let mut d = dialog();
         let theme = Arc::new(Theme::dark());
         let lines = d.body_lines(20, 40, &theme);
         let rendered: Vec<&Line> = lines.iter().collect();
@@ -1005,7 +1032,7 @@ mod tests {
 
     #[test]
     fn the_window_renders_the_newest_message_first_frame() {
-        let d = dialog();
+        let mut d = dialog();
         let theme = Arc::new(Theme::dark());
         let lines = d.body_lines(6, 40, &theme);
         let text: String = lines

@@ -65,6 +65,7 @@ pub struct CoreDaemon {
     pub workspace_services: Arc<WorkspaceServiceRegistry>,
     /// M003: durable managed worktree ownership and lease service.
     pub worktree_service: Arc<codegg_core::worktree_service::WorktreeService>,
+    pub(crate) scheduler_run_handle: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Bounded startup reconciliation against Git's actual worktree list.
     pub(crate) _worktree_reconcile_handle: Option<tokio::task::JoinHandle<()>>,
     /// M005 corrective C002: the startup reconciliation of checkout writer

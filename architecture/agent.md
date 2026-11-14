@@ -151,6 +151,14 @@ No coordinator field reconstructs context-token policy, subprocess lifecycle,
 Git safety/provenance, provider transport, tool authorization, scheduler
 admission, or durable completion authority.
 
+The turn's watch-based cancel channel is mirrored to a `CancellationToken`
+threaded through `ToolExecutionContext` and the broker. On cancellation, the
+broker gives the active tool a bounded cleanup window instead of dropping its
+future immediately. Managed process owners then terminate and reap the child;
+foreground scheduler-backed test calls request cancellation for their exact
+job and wait for its terminal state. Explicit background jobs keep their
+durable lifetime beyond the submitting turn.
+
 ### Provider-turn attempt safety (execution-reliability M001)
 
 Each logical turn runs at most 3 attempts under one UUID-scoped attempt
@@ -175,6 +183,25 @@ chain. Every attempt publishes `ProviderAttemptStarted`; failures publish
 - No `CoreEvent`/protocol change was needed: the new bus events map to
   `None` in `map_app_event_to_core_event` (diagnostic-only, older clients
   unaffected).
+
+### Request ledger at the attempt seam (harness-practice-adoption M002)
+
+- The seam records the request's identity **before** the provider stream is
+  consumed, so an attempt that fails at setup still has a row.
+- A ledger store failure is logged and the request proceeds. The record
+  serves the request, never the other way round.
+- `outcome = streaming` is the row a process that died mid-attempt leaves
+  behind; `ok`, `failed` and `cancelled` are written when the attempt
+  settles.
+- The section digests are threaded from the compile site
+  (`AgentLoop::set_prompt_section_digests`, set beside the compiler
+  fingerprint), never rebuilt here. The system, tool and message digests are
+  computed from the `ChatRequest` that reaches `provider.stream`.
+- The ledger only reads the request: no field, ordering, retry count or
+  provider selection changes.
+
+The table, the single writer, the 256-row retention bound, and the
+digest-versus-body rule are in [session.md](session.md).
 
 ### Agent Resolution (5-layer priority)
 
@@ -453,11 +480,14 @@ adopt yield-and-resume rather than a wall-clock cut-off.
 
 `codegg_core::agent_run_control` owns the ordered, bounded mailbox and the
 stable-boundary journal. `src/agent/run_control.rs` is the daemon bridge: it
-authorizes the exact originating turn for a top-level run or the direct parent
-run for a child, persists a control, then feeds a live
-run's existing follow-up, steering, and cancellation channels. Live channels
-are an optimization; queued/delivered records are replayed when a run
-reattaches after disconnect or restart.
+authorizes the exact originating turn for mutating controls on a top-level run
+or the direct parent run for a child, persists a control, then feeds a live
+run's existing follow-up, steering, and cancellation channels. Read-only
+`status`, bounded `wait`, and journal observation use the durable originating
+session for a top-level run, so an owner can observe its child after the
+spawning turn ends; nested observers still need the direct parent run handle.
+Live channels are an optimization; queued/delivered records are replayed when
+a run reattaches after disconnect or restart.
 
 The same bridge keeps a bounded live-turn map keyed by the exact
 (session_id, turn_id) supplied by TurnRunInput. A top-level child completion
@@ -548,21 +578,25 @@ pub enum AgentRuntimeKind {
 
 ### AgentLoop (`src/agent/loop.rs:90`)
 
-The loop has 42 direct fields. Service and policy handles are grouped in
+The loop has 50 direct fields. Service and policy handles are grouped in
 `AgentLoopServices` so the coordinator cannot accidentally initialize one
 canonical concern independently of the others.
 
 Full field list: `services`, `lifecycle`, `state`, `limits`, `steering`,
 `follow_up_tx`, `follow_up_rx`, `question_tx`, `question_rx`, `plugin_service`,
-`session_id`, `turn_id`, `workspace_id`, `workspace_locks`,
+`session_id`, `usage_session_id`, `turn_id`, `prompt_section_digests`,
+`inherited_execution_audit`, `workspace_id`, `workspace_locks`,
 `workspace_service_lease`, `workspace_path_policy`, `checkpoint_batch_seq`,
 `recent_findings`, `reviewer_denial_counts`, `original_user_prompt`,
-`current_user_prompt`, `subagent_pool`, `submission`, `workspace_root`,
-`max_tool_calls`, `goal_wall_clock`, `cancel_rx`, `steer_rx`, `pending_steer`,
-`local_paths`, `context_ledger`, `run_id`, `scratch_scope`,
-`peer_observation_rx`, `peer_observation_session_id`, `peer_group_members`,
-`peer_claim_targets`, `peer_observation_seen`, `peer_observation_gap`,
-`habit_project_namespace`, `habit_actions`, `habit_had_failure`.
+`current_user_prompt`, `incoming_prefix_identities`,
+`peer_observations_present_this_turn`, `frontend_user_controls_possible`,
+`compaction_chain_base`, `subagent_pool`, `submission`, `workspace_root`,
+`working_directory`, `max_tool_calls`, `goal_wall_clock`, `cancel_rx`,
+`steer_rx`, `pending_steer`, `local_paths`, `context_ledger`, `run_id`,
+`scratch_scope`, `peer_observation_rx`, `peer_observation_session_id`,
+`peer_group_members`, `peer_claim_targets`, `peer_observation_seen`,
+`peer_observation_gap`, `habit_project_namespace`, `habit_actions`,
+`habit_had_failure`.
 
 - **Coordinator state**: `state`, `limits`, `lifecycle`, `pending_steer`, and live control channels
 - **Identity**: `session_id`, `turn_id`, `run_id`, and immutable `workspace_root`
@@ -642,6 +676,15 @@ matches. Completion, cancellation, submission failure, and startup
 recovery use first-terminal-wins semantics; scheduler-owned cancellation and
 generation recovery reconcile the durable run rather than relying only on a
 live `CancellationToken`.
+
+Each delegated attempt carries `AgentRunBudget.max_wall_clock_secs` through
+the scheduler into its worker. The worker applies the smaller of that budget
+and `subagent.wall_clock_timeout_secs`; an unset or zero config value uses the
+600-second default. When the deadline expires, the worker signals the child's
+existing cancellation channel, allows up to five seconds for tool and process
+cleanup, then records a typed timeout as `deadline_exceeded`. This bound is
+per delegated attempt; it does not impose a total deadline on a foreground
+agent turn.
 
 Mutation-capable durable children are automatically allocated a
 `WorktreeLease` during `Preparing`, before the child loop is built. The

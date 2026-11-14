@@ -21,7 +21,7 @@ through the scheduler.
 | `mod.rs` | Re-exports |
 | `types.rs` | Core types: enums, structs, `TestEventSink` trait, lifecycle snapshots |
 | `resolve.rs` | Command resolver: maps `TestScope` → `ResolvedTestCommand` |
-| `custom.rs` | Shared custom command allowlist (12 entries, argv-prefix bounded) |
+| `custom.rs` | Shared custom command allowlist (13 entries, argv-prefix bounded) |
 | `parse.rs` | Line-by-line output parser with ANSI escape stripping |
 | `report.rs` | Text formatter: `format_test_report()` |
 | `runner.rs` | Streaming runner over a managed child (timeout, stall, redaction, RunStore) |
@@ -34,9 +34,11 @@ through the scheduler.
 1. **Resolution**: `resolve_test_command()` maps `TestScope` to a concrete argv + cwd.
    Auto scope detects Rust (Cargo.toml) or Python (pyproject.toml / pytest.ini / tests/*.py).
    `Changed` scope is currently a fallback to `Auto` with a prefixed label.
-2. **Custom validation**: `validate_custom_command()` enforces the 12-entry allowlist
-   via argv-token-bounded prefix matching. Shell metacharacters, command substitution,
-   quoting, and bidi Unicode control characters are all rejected.
+2. **Custom validation**: `validate_custom_command()` enforces the 13-entry allowlist
+   via argv-token-bounded prefix matching. It includes `cargo clippy` for supervised
+   quality checks and rejects Clippy's source-mutating `--fix` option. Shell
+   metacharacters, command substitution, quoting, and bidi Unicode control characters
+   are all rejected.
 3. **Defense-in-depth**: The resolver re-runs the strict validator before producing
    `ResolvedTestCommand.argv` — even if a presentation-boundary caller forgets to
    validate, the runner still rejects injection attempts.
@@ -466,7 +468,7 @@ runner 8, index 17, projection 21, resolve 15); the BashDispatch submitter is
 `src/tool/bash/process.rs`, not `src/tool/bash.rs`. Verified accurate: 10
 files, 13 `FailureClass` variants, the four enums at `types.rs:5/22/29/38`,
 `ResolvedTestCommand` 4 fields, `TestFailure` 5, `TestTimeout` 3, `TestReport`
-14, `TestParseState` 8, `TestScope` 8 variants, 12-entry allowlist, runner
+14, `TestParseState` 8, `TestScope` 8 variants, 13-entry allowlist, runner
 constants (`runner.rs:24-28`), formatter constants, index constant values,
 `TestJobExecutor` (`src/scheduler/executors.rs:68`/`83`).
 
@@ -512,8 +514,13 @@ Verified accurate: 10 files; 13 `FailureClass` variants with `Display`,
 `BashDispatch` bypass; the four scalar enums; the `TestRunRequest` (9 fields),
 `ResolvedTestCommand` (4), `TestFailure` (5), `TestTimeout` (3), `TestReport`
 (14), and `TestParseState` (8) field lists; the `TestEventSink` trait shape;
-the 12-entry allowlist and its argv-token-bounded matching; the formatter and
+the 13-entry allowlist and its argv-token-bounded matching; the formatter and
 index constant values; the language-detection rules (including the
 `tests/`-must-contain-`.py` refinement that keeps Rust workspaces out of
 `AmbiguousEcosystem`); the `Resolve` → `Reject` backends; the record-ownership
 contract; and the legacy-index status.
+
+Verified 2026-11-08: custom command validation adds the `cargo clippy` argv
+prefix for managed test-job execution and rejects `--fix` for both PATH and
+absolute Cargo executables. Tool schema, TUI request validation, and architecture
+documentation identify Clippy as a supervised quality check.
