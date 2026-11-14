@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement Resumption S063 — Final Muse Requalification
 
-Status: **active; one final authorized attempt 84**
+Status: **closed unqualified; attempt 84 completed but did not pass H007**
 
 Repository baseline: `4af27640c6661768685fa3e4315d3bd7009d97d4`
 
@@ -45,3 +45,7 @@ Stop before provider admission if any preflight condition fails, if the route or
 ## 5. Closure evidence
 
 Record source/build identity, all focused checks already passed for S062, fresh preflight and safe run evidence hashes, live and reconciled request counts, duration and active-work span, event and job-ID correlation, exact repair/lifecycle results, continuation ordering and terminal state, verifier result, disk minimum/end, stop reason, authorization counters, and unknown USD when unreported. Never include private receipt/log/transcript/tool data or credentials.
+
+## 6. Execution result
+
+Attempt 84 completed on the unchanged v97 task, verifier, manifest, route, and S062 ARM64 pair. It reached 2,510.419 seconds of active work and ended normally, but the independent verifier failed its `continuation_boundary` and `transcript_job_lifecycle` domains. The named release-overlap predicate was false, leaving the continuation invalid despite complete phase, stage, gate, and pointer-order projections. One failed `test.submit` call had no returned job ID and was counted as an unbound job-tool call; its safe error class was `tool_execution_failed`, while all 87 applicable request/result ID correlations matched. This does not establish the underlying submission error's cause. The final start exhausted the current 40-start grant. Closure evidence is in `plans/closure/harness-lab-self-improvement-resumption/063-status.md`.
