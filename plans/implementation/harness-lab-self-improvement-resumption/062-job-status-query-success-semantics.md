@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement Resumption S062 — Job-Status Query Success Semantics
 
-Status: **active**
+Status: **closed at job-status query semantics; attempt 83 completed unqualified**
 
 Repository baseline: `2e2b5701eaf79f4f38a2c6d5312f9a14058aeb36`
 
@@ -19,7 +19,7 @@ Primary class: infrastructure
 
 Correct one model-facing job-tool result semantic identified by S061 and attempt 82: a successful `job.status` lookup must be a successful tool call even when the stored job state is `failed`, `cancelled`, or `timed_out`. Preserve the terminal job state in the structured value and bounded output. A missing, unauthorized, or unreadable job lookup remains a failed call.
 
-Then use the existing S019 authorization for at most one exact-head attempt 83 with the frozen v97 task, verifier, manifest, Muse/OpenCode Go route, and established resource caps. Stop on qualification, run failure requiring a new corrective diagnosis, a failed preflight, or exhausted authorization. Do not start an additional run under this plan.
+Attempt 83 used the existing S019 authorization with the frozen v97 task, verifier, manifest, Muse/OpenCode Go route, and established resource caps. The status-query correction was exercised. H007 remains unqualified because the continuation record was invalid and the agent timed out; S063 owns one final unchanged attempt under the remaining grant start.
 
 ## 2. Evidence and diagnosis
 
@@ -58,7 +58,7 @@ Run attempt 83 only after the standard side-effect-free campaign preflight passe
 
 The offline corrective passes when the regression demonstrates successful failed-state observation, actual missing-job failure, and the existing no-scheduler failure. S062 may close at implementation scope only if those checks and exact ARM64 build pass. Attempt 83 qualifies H007 only if every original gate passes, including at least 30 minutes active dependent Rust work, exact-ID job lifecycle, productive overlap, two required repair cycles, continuation, and independent verifier success.
 
-If attempt 83 is unqualified, record the exact safe outcome and leave H007 unqualified. Open a successor corrective only when evidence identifies a specific reproducible owner. Do not spend the remaining grant start without that evidence and a separately revised bounded plan.
+Attempt 83 is unqualified and leaves H007 unqualified. Its safe evidence identifies no additional runtime defect: every incomplete public check is in continuation layout or the timeout terminal record. S063 is a bounded unchanged requalification, not a new runtime correction. Do not change task, prompt, verifier, event architecture, scheduler, daemon, ACP, or qualification predicates.
 
 ## 6. Stop conditions
 
