@@ -741,6 +741,13 @@ impl AgentRunGroupService {
         self.groups.list_by_member(member_run_id).await
     }
 
+    /// Wait for a group to turn terminal, up to `timeout`.
+    ///
+    /// The shape matches `RunControl::wait`: a timeout returns the *current*
+    /// summary with `timed_out: true` — the same snapshot `status` would
+    /// return, never a bare timeout. The legacy `WaitTimedOut` error is kept
+    /// for compatibility but is no longer constructed on this path; callers
+    /// branch on `summary.timed_out` instead of the error variant.
     pub async fn wait(
         &self,
         actor: &GroupActor,
@@ -760,7 +767,10 @@ impl AgentRunGroupService {
                 _ = notified => {},
                 _ = tokio::time::sleep_until(deadline) => {
                     let current = self.refresh(&group.group_id).await?;
-                    return Err(AgentRunGroupError::WaitTimedOut(Box::new(current)));
+                    return Ok(AgentRunGroupSummary {
+                        timed_out: true,
+                        ..current
+                    });
                 }
             }
         }

@@ -43,8 +43,12 @@ pub enum TodoStateError {
     ModeDisabled,
     #[error("Model profile does not allow todo writes")]
     WriteNotAllowed,
-    #[error("Todo list exceeds maximum of {max} items (got {got})")]
-    TooManyItems { max: usize, got: usize },
+    #[error("Todo list exceeds maximum of {max} items (got {got}); item {dropped} beyond the cap was dropped and the previous list was NOT written")]
+    TooManyItems {
+        max: usize,
+        got: usize,
+        dropped: String,
+    },
     #[error("Multiple items marked as in_progress (require_single_in_progress is enabled)")]
     MultipleInProgress,
     #[error("Blocked item missing blocker reason (require_blocker_reason is enabled)")]
@@ -182,9 +186,17 @@ impl TodoState {
             return Err(TodoStateError::WriteNotAllowed);
         }
         if items.len() > policy.max_total_items {
+            let dropped = items
+                .get(policy.max_total_items)
+                .map(|item| {
+                    let preview: String = item.content.chars().take(80).collect();
+                    format!("'{}' (id {})", preview, item.id)
+                })
+                .unwrap_or_else(|| "unknown".to_string());
             return Err(TodoStateError::TooManyItems {
                 max: policy.max_total_items,
                 got: items.len(),
+                dropped,
             });
         }
         if policy.require_single_in_progress {
@@ -528,6 +540,19 @@ mod tests {
         ];
         let err = state.replace_from_model(items, &policy).unwrap_err();
         assert!(matches!(err, TodoStateError::TooManyItems { .. }));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("NOT written"),
+            "cap error must state the previous list was not written, got: {msg}"
+        );
+        assert!(
+            msg.contains('C') || msg.contains('3'),
+            "cap error must name the dropped item, got: {msg}"
+        );
+        assert!(
+            state.items.is_empty(),
+            "rejected write must leave the previous list untouched"
+        );
     }
 
     #[test]

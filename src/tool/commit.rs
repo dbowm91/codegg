@@ -9,6 +9,7 @@ use crate::error::ToolError;
 use crate::git_mutation_projector::project_mutation;
 use crate::git_mutations::{CommitSelection, GitEnvPolicy, GitMutationError, GitMutationExecutor};
 use crate::git_mutations_ops::{commit_with_selection, stage_all, stage_paths};
+use crate::git_service::GitExecutionService;
 use crate::provider::{
     register_builtin_with_config, ChatEvent, ChatRequest, ContentPart, Message, Provider,
     ProviderRegistry, ProviderRequestContext,
@@ -348,6 +349,10 @@ impl Tool for CommitTool {
                 "allow_empty": {
                     "type": "boolean",
                     "description": "Allow creating a commit with no staged changes (default: false)"
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Preview only: report the staged diff/message without staging or committing (default: false)"
                 }
             },
             "required": []
@@ -389,6 +394,7 @@ impl CommitTool {
         let allow_amend = input["allow_amend"].as_bool().unwrap_or(false);
         let co_authored = input["co_authored"].as_bool().unwrap_or(false);
         let allow_empty = input["allow_empty"].as_bool().unwrap_or(false);
+        let dry_run = input["dry_run"].as_bool().unwrap_or(false);
         let manual_message = input["message"].as_str();
         let selection_kind = match input["selection"].as_str() {
             Some("stage-paths") => SelectionKind::StagePaths,
@@ -453,12 +459,16 @@ impl CommitTool {
                 amend,
                 co_authored,
                 allow_empty,
+                dry_run,
                 provider_context,
                 &mut effect_possible,
             )
             .await;
 
+        // F10: a dry_run preview mutates nothing, so it settles `NoEffect`
+        // even on success; only a real commit settles `Settled`.
         let fence_outcome = match &result {
+            Ok(_) if dry_run => WriterFenceOutcome::NoEffect,
             Ok(_) => WriterFenceOutcome::Settled,
             Err(_) if effect_possible => WriterFenceOutcome::Unproven(
                 "the commit failed after staging may have begun; the checkout index may be dirty"
@@ -485,9 +495,27 @@ impl CommitTool {
         amend: bool,
         co_authored: bool,
         allow_empty: bool,
+        dry_run: bool,
         provider_context: ProviderRequestContext,
         effect_possible: &mut bool,
     ) -> Result<String, ToolError> {
+        // F10: dry_run previews without staging or committing, so the fence
+        // stays `NoEffect` (`effect_possible` untouched). The preview still
+        // resolves the message (manual, amend-reuse, or LLM generation over
+        // the current staged diff) and reports untracked files when the
+        // staged diff is empty.
+        if dry_run {
+            return self
+                .dry_run_preview(
+                    selection_kind,
+                    manual_message,
+                    amend,
+                    co_authored,
+                    allow_empty,
+                    provider_context,
+                )
+                .await;
+        }
         let message = if let Some(msg) = manual_message {
             msg.to_string()
         } else if amend {
@@ -520,7 +548,13 @@ impl CommitTool {
             }
             let diff = self.get_staged_diff().await?;
             if diff.is_empty() {
-                return Err(ToolError::Execution("no changes to commit".to_string()));
+                // F10: an empty staged diff names untracked files (same
+                // `?? ` status pattern as `review`) so the model sees what
+                // staging would need — `untracked_present` plus names.
+                let untracked = untracked_files_for_workdir(&self.workdir).await;
+                let mut msg = "no changes to commit".to_string();
+                msg.push_str(&format_untracked_suffix(&untracked));
+                return Err(ToolError::Execution(msg));
             }
             self.generate_commit_message(&diff, provider_context)
                 .await?
@@ -575,6 +609,101 @@ impl CommitTool {
             response.push_str("\nempty: true");
         }
         Ok(response)
+    }
+}
+
+impl CommitTool {
+    /// F10 dry-run preview: resolve the message exactly like the real path
+    /// (manual, amend-reuse, or LLM over the current staged diff) but never
+    /// stage or commit. `effect_possible` is untouched so the caller settles
+    /// `NoEffect`.
+    async fn dry_run_preview(
+        &self,
+        selection_kind: SelectionKind,
+        manual_message: Option<&str>,
+        amend: bool,
+        co_authored: bool,
+        allow_empty: bool,
+        provider_context: ProviderRequestContext,
+    ) -> Result<String, ToolError> {
+        let message = if let Some(msg) = manual_message {
+            msg.to_string()
+        } else if amend {
+            fetch_head_message(&self.workdir).await?
+        } else {
+            let diff = self.get_staged_diff().await?;
+            if diff.is_empty() {
+                if allow_empty {
+                    "(empty commit preview)".to_string()
+                } else {
+                    let untracked = untracked_files_for_workdir(&self.workdir).await;
+                    let mut preview = "dry_run: no changes to commit \
+                        (staged diff empty; no mutation made)"
+                        .to_string();
+                    preview.push_str(&format_untracked_suffix(&untracked));
+                    return Ok(preview);
+                }
+            } else {
+                self.generate_commit_message(&diff, provider_context)
+                    .await?
+            }
+        };
+        let final_message = if co_authored {
+            format!("{}\n\nCo-Authored-By: Codegg AI <codegg@ai>", message)
+        } else {
+            message
+        };
+        let untracked = untracked_files_for_workdir(&self.workdir).await;
+        let mut preview = format!(
+            "dry_run: commit preview — selection {}, amend: {amend}, \
+            message {final_message:?} (no mutation made)",
+            selection_kind.label(),
+        );
+        // Surface untracked context even on a non-empty preview: staging
+        // `stage-all` would include them, `already-staged` would not.
+        if !untracked.is_empty() {
+            preview.push_str(&format_untracked_suffix(&untracked));
+        }
+        Ok(preview)
+    }
+}
+
+/// F10: best-effort untracked listing, same `?? ` status pattern as
+/// `review::untracked_files_for_root`. Never fails the preview/error: a
+/// status failure yields an empty list.
+async fn untracked_files_for_workdir(root: &std::path::Path) -> Vec<String> {
+    let svc = GitExecutionService::new();
+    let result = svc
+        .execute(&codegg_git::GitOperation::Status { short: true }, root)
+        .await;
+    match result {
+        Ok(execution) => execution
+            .stdout
+            .lines()
+            .filter_map(|line| line.strip_prefix("?? ").map(|p| p.trim().to_string()))
+            .filter(|p| !p.is_empty())
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// F10: `untracked_present` plus up-to-20 names, appended to both the empty
+/// preview and the empty error so the shape is stable.
+fn format_untracked_suffix(untracked: &[String]) -> String {
+    if untracked.is_empty() {
+        "\nuntracked_present: false".to_string()
+    } else {
+        let shown: Vec<&str> = untracked.iter().take(20).map(String::as_str).collect();
+        let suffix = if untracked.len() > shown.len() {
+            format!(", +{} more", untracked.len() - shown.len())
+        } else {
+            String::new()
+        };
+        format!(
+            "\nuntracked_present: true\nuntracked: {}{}",
+            shown.join(", "),
+            suffix
+        )
     }
 }
 
@@ -724,5 +853,75 @@ mod tests {
             msg.contains("/connect") && msg.contains("codegg doctor"),
             "missing provider must carry connect+doctor guidance, got: {msg}"
         );
+    }
+
+    /// F10: `dry_run` is a preview boolean — present in the schema so the
+    /// model can request it.
+    #[test]
+    fn commit_parameters_include_dry_run_preview() {
+        let params = CommitTool::new().parameters();
+        assert_eq!(
+            params["properties"]["dry_run"]["type"],
+            serde_json::json!("boolean"),
+            "dry_run must be a boolean param"
+        );
+    }
+
+    /// F10: untracked suffix shape is stable for both preview and error.
+    #[test]
+    fn untracked_suffix_names_presence_and_files() {
+        let empty = format_untracked_suffix(&[]);
+        assert!(
+            empty.contains("untracked_present: false"),
+            "empty must be explicit false, got: {empty}"
+        );
+        let some = format_untracked_suffix(&["a.txt".to_string(), "b.txt".to_string()]);
+        assert!(
+            some.contains("untracked_present: true") && some.contains("a.txt"),
+            "present must name files, got: {some}"
+        );
+    }
+
+    /// F10: dry_run previews without mutating — no commit is created and the
+    /// preview names untracked files.
+    #[tokio::test]
+    async fn dry_run_preview_reports_untracked_without_committing() {
+        let dir = tempfile::tempdir().expect("commit fixture");
+        let run_git = |args: &[&str]| {
+            // execution-ownership: test_only
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .status()
+                .expect("git installed");
+            assert!(status.success(), "git {args:?} failed");
+        };
+        run_git(&["init", "-q"]);
+        run_git(&["config", "user.email", "t@t.t"]);
+        run_git(&["config", "user.name", "t"]);
+        std::fs::write(dir.path().join("note.txt"), "hello\n").expect("untracked");
+        let tool = CommitTool::new().with_workdir(dir.path().to_path_buf());
+        let out = tool
+            .execute_with_context(
+                serde_json::json!({"message": "test", "dry_run": true}),
+                None,
+            )
+            .await
+            .expect("dry_run preview must succeed on empty index");
+        assert!(
+            out.contains("dry_run:"),
+            "preview must be labelled dry_run, got: {out}"
+        );
+        assert!(
+            out.contains("untracked_present: true") && out.contains("note.txt"),
+            "preview must name untracked files, got: {out}"
+        );
+        // execution-ownership: test_only
+        let log = std::process::Command::new("git")
+            .args(["log", "--oneline"])
+            .current_dir(dir.path())
+            .output()
+            .expect("git log");
+        assert!(!log.status.success(), "dry_run must not create a commit");
     }
 }

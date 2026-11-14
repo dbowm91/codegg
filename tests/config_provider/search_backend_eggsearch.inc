@@ -43,12 +43,7 @@ mod agent_loop_filtering_tests {
         let raw_prefix = format!("mcp__{}__", server_name);
         tools
             .into_iter()
-            .filter(|t| {
-                if !expose_raw && t.name.starts_with(&raw_prefix) {
-                    return false;
-                }
-                true
-            })
+            .filter(|t| expose_raw || !t.name.starts_with(&raw_prefix))
             .collect()
     }
 

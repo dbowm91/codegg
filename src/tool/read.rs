@@ -28,7 +28,11 @@ fn path_for_display(path: &Path, root: &Path) -> String {
         .unwrap_or_else(|_| path.display().to_string())
 }
 
-fn missing_path_hint(requested: &Path, allowed_root: &Path, unrestricted: bool) -> Option<String> {
+pub(crate) fn missing_path_hint(
+    requested: &Path,
+    allowed_root: &Path,
+    unrestricted: bool,
+) -> Option<String> {
     let root = allowed_root.canonicalize().ok()?;
     let candidate = if requested.is_absolute() {
         requested.to_path_buf()
@@ -69,10 +73,13 @@ fn missing_path_hint(requested: &Path, allowed_root: &Path, unrestricted: bool) 
 
     let mut message = format!("read failed: file not found: {}", candidate.display());
     if parent_canonical.is_dir() {
-        message.push_str(&format!(
-            "\nParent directory exists: {}",
-            path_for_display(&parent_canonical, &root)
-        ));
+        let parent_display = path_for_display(&parent_canonical, &root);
+        let parent_display = if parent_display.is_empty() {
+            ".".to_string()
+        } else {
+            parent_display
+        };
+        message.push_str(&format!("\nParent directory exists: {parent_display}"));
     }
     if !suggestions.is_empty() {
         message.push_str("\nDid you mean one of these paths?\n");
@@ -336,10 +343,14 @@ impl Tool for ReadTool {
             .as_f64()
             .map(|v| v.max(1.0) as usize)
             .unwrap_or(1);
+        // A1: default limit fits the ~8 KiB transport budget (~48 B/line
+        // → ~160 lines). 2000 lines never survived transport, so the
+        // tool's own `truncated` was never set while the transport cut at
+        // 167 lines.
         let limit = input["limit"]
             .as_f64()
             .map(|v| v.max(1.0) as usize)
-            .unwrap_or(2000);
+            .unwrap_or(300);
 
         let allowed_root = self.allowed_root.clone();
         let unrestricted = self.unrestricted;
@@ -437,11 +448,70 @@ impl Tool for ReadTool {
 
             let mut result = String::new();
             for (i, line) in selected.iter().enumerate() {
-                result.push_str(&format!("{:>6}: {}\n", start + i + 1, line));
+                // A3: neuter ESC/OSC in third-party file bytes before they
+                // reach the transcript; CodeGG-generated SGR survives.
+                let clean = crate::tool::util::sanitize_tool_output(line);
+                result.push_str(&format!("{:>6}: {}\n", start + i + 1, clean));
             }
 
-            if lines.len() > end {
-                result.push_str(&format!("\n... [{} more lines] ...\n", lines.len() - end));
+            // A1/A17: honest truncation — line continuation always names
+            // the resume offset; byte-budget cuts carry total_bytes so the
+            // inline total (not transport recount) is authoritative.
+            let total_lines = lines.len();
+            let total_bytes = content.len();
+            if total_lines > end {
+                result.push_str(&format!(
+                    "\n... [{} more lines of {} total; truncated: true, total_bytes: {}; use offset={} to continue] ...\n",
+                    total_lines - end,
+                    total_lines,
+                    total_bytes,
+                    end + 1
+                ));
+            }
+            // Coherent byte cap before transport: head+tail with elision,
+            // never a mid-line cut that shifts totals.
+            const INLINE_BYTE_BUDGET: usize = 7500;
+            if result.len() > INLINE_BYTE_BUDGET {
+                let head_len = INLINE_BYTE_BUDGET / 2;
+                let mut head_end = head_len.min(result.len());
+                while head_end > 0 && !result.is_char_boundary(head_end) {
+                    head_end -= 1;
+                }
+                let tail_len = INLINE_BYTE_BUDGET - head_end;
+                let mut tail_start = result.len().saturating_sub(tail_len);
+                while tail_start < result.len() && !result.is_char_boundary(tail_start) {
+                    tail_start += 1;
+                }
+                let omitted = result.len().saturating_sub(head_end + (result.len() - tail_start));
+                // A7: a single-line file cannot page by line (`offset` has no
+                // next line), so a byte-cap cut must carry a byte-anchored
+                // resume hint alongside the line hint. Line paging stays the
+                // only mechanism; this hint names the byte offset to keep.
+                let single_line_hint = if total_lines == 1 {
+                    format!(
+                        " single-line file: resume with byte_offset={head_end} \
+                        (offset_bytes path; line offset cannot advance)"
+                    )
+                } else {
+                    String::new()
+                };
+                result = format!(
+                    "{}... [omitted {} bytes of {} total; truncated: true; use offset={} to continue;{single_line_hint}] ...{}",
+                    &result[..head_end],
+                    omitted,
+                    total_bytes,
+                    end + 1,
+                    &result[tail_start..]
+                );
+            } else if total_lines == 1 && total_bytes > INLINE_BYTE_BUDGET {
+                // Defensive: a single rendered line that somehow fit the
+                // result budget but exceeds the file budget still names its
+                // byte anchor so the caller does not loop on `offset=2`.
+                result.push_str(&format!(
+                    "\n... [single-line file, {} total bytes; truncated: true; resume with byte_offset={} (offset_bytes path)] ...\n",
+                    total_bytes,
+                    INLINE_BYTE_BUDGET.min(result.len()),
+                ));
             }
 
             Ok(result)
@@ -488,6 +558,66 @@ impl Tool for ReadTool {
         } else {
             self.execute(input).await?
         };
-        Ok(crate::tool::StructuredToolResult::legacy("read", output))
+        // A1: `truncated` was never set — transport cut at 8 KiB while the
+        // schema promised the field. Detect our own markers.
+        let truncated = output.contains("truncated: true") || output.contains("more lines of");
+        if truncated {
+            let mut provenance = crate::tool::backend::ToolProvenance::legacy("read");
+            provenance.truncated = true;
+            Ok(crate::tool::StructuredToolResult::with_provenance(
+                output, true, provenance,
+            ))
+        } else {
+            Ok(crate::tool::StructuredToolResult::legacy("read", output))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_file_at_root_names_dot_instead_of_blank_parent() {
+        let root = tempfile::tempdir().expect("workspace fixture");
+        let hint = missing_path_hint(Path::new("does_not_exist_12345.txt"), root.path(), false)
+            .expect("missing file under an existing root must hint");
+        assert!(
+            hint.contains("file not found"),
+            "hint must name the missing file, got: {hint}"
+        );
+        assert!(
+            !hint.contains("Parent directory exists: \n")
+                && !hint.trim_end().ends_with("Parent directory exists:"),
+            "parent display must not be blank, got: {hint}"
+        );
+        assert!(
+            hint.contains("Parent directory exists: ."),
+            "root-level parent must render as '.', got: {hint}"
+        );
+    }
+
+    /// A7: a single-line file over the byte budget carries a byte-anchored
+    /// resume hint (`byte_offset` / `offset_bytes` path); line paging alone
+    /// cannot advance (`offset=2` is past end-of-file).
+    #[tokio::test]
+    async fn single_line_over_budget_carries_byte_anchored_hint() {
+        let dir = tempfile::tempdir().expect("read fixture");
+        std::fs::write(dir.path().join("long.txt"), "x".repeat(9000)).expect("single long line");
+        let tool = ReadTool::new().with_allowed_root(dir.path().to_path_buf());
+        let out = tool
+            .execute(serde_json::json!({"path": "long.txt"}))
+            .await
+            .expect("read must succeed");
+        assert!(
+            out.contains("single-line"),
+            "single-line case must be labelled, got: {}",
+            &out[..out.len().min(400)]
+        );
+        assert!(
+            out.contains("byte_offset"),
+            "single-line cut must name a byte offset, got: {}",
+            &out[..out.len().min(600)]
+        );
     }
 }

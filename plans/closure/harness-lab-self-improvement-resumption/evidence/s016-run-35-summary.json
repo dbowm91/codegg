@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "attempt": 35,
+  "campaign_id": "s016-deepseek-raised-cap-20261102",
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "source_revision": "65a268415b6eeff71c79ef5d4563c62cc37cdd34",
+  "binary_sha256": "25cdef11543d434d0e9f0fc20c154ee72f8ec16ad078af956da616cb4e329f10",
+  "manifest_path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v11/cases.jsonl",
+  "manifest_sha256": "ecee8c4c5f677544b8451a2fd7b2a34e89e778311902c7efdac502930bdb052e",
+  "run_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "receipt_path": "/private/tmp/s016-attempt35.json",
+  "receipt_sha256": "cc9880aca692e1617dc731ab55083927b0fd20876d6162dbd1e981e5b7ed8c3d",
+  "provider_request_cap": 750,
+  "provider_requests": 88,
+  "provider_cost_usd": 0.042805,
+  "duration_ms": 603686,
+  "active_work_span_ms": 598481,
+  "terminal": "completed",
+  "stop_reason": "end_turn",
+  "task_outcome": "failed",
+  "solved": false,
+  "event_gap": {
+    "state": "observed_complete",
+    "tool_started_count": 79,
+    "tool_terminal_count": 79,
+    "unpaired_count": 0,
+    "event_gap_count": 0
+  },
+  "horizon_evidence": {
+    "active_work_span_ms": 598481,
+    "maximum_activity_gap_ms": 95619,
+    "minimum_active_duration_ms": 1800000,
+    "repair_cycles": 3,
+    "continuation_confirmed": true,
+    "exact_job_running_and_terminal": false,
+    "productive_work_during_job": false
+  },
+  "subagent_observation": {
+    "task_id": "e38f7af1-92fa-43a0-8732-f3903ff0aca4",
+    "run_id": "a7e7e8fd-2c01-4e8d-8431-c2a22f334ef4",
+    "last_model_observed_status": "running",
+    "durable_status_after_parent_terminal": "running",
+    "terminal_observed": false
+  },
+  "disk_floor": {
+    "minimum_free_bytes": 10737418240,
+    "lowest_observed_free_bytes": 226242260992,
+    "triggered": false
+  },
+  "verification": {
+    "exit_code": 1,
+    "tests_run": 0,
+    "contents_inspected": false
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "job_lifecycle_missing",
+  "finding": "Attempt 35 ended normally after 10.1 minutes with 88 requests, complete ACP event pairing, zero gaps, and ample disk. The continuation note still listed no completed implementation phases and the next phase as durable import; the exact priority job was not reached. The task tool last showed its child run as running, and the durable lane DB still recorded it running after parent terminal/daemon teardown. No provider, request-cap, stream, event-loss, or disk failure was observed. This is model/task incompletion under the v11 instruction load; child completion was not awaited."
+}

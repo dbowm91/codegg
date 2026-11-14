@@ -39,6 +39,35 @@ pub enum ProviderError {
     CircuitOpen(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProviderErrorClass {
+    Auth,
+    ModelNotFound,
+    ModelNotSupported,
+    ContextLength,
+    RateLimit,
+    InvalidRequest,
+    Transport,
+    Protocol,
+    Upstream,
+}
+
+impl ProviderErrorClass {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auth => "auth",
+            Self::ModelNotFound => "model_not_found",
+            Self::ModelNotSupported => "model_not_supported",
+            Self::ContextLength => "context_length",
+            Self::RateLimit => "rate_limit",
+            Self::InvalidRequest => "invalid_request",
+            Self::Transport => "transport",
+            Self::Protocol => "protocol",
+            Self::Upstream => "upstream",
+        }
+    }
+}
+
 /// Retry disposition for a provider failure.
 ///
 /// - `Permanent` failures must not be retried for the unchanged request
@@ -140,6 +169,81 @@ impl ProviderError {
             Self::Transport { kind } => Self::transport_class(kind),
             Self::Api { code, message, .. } => Self::api_class(code, message),
         }
+    }
+
+    pub fn class(&self) -> ProviderErrorClass {
+        match self {
+            Self::Auth(_) => ProviderErrorClass::Auth,
+            Self::ModelNotFound(_) => ProviderErrorClass::ModelNotFound,
+            Self::NotFound(_) | Self::CircuitOpen(_) => ProviderErrorClass::Upstream,
+            Self::RateLimit | Self::RateLimited { .. } => ProviderErrorClass::RateLimit,
+            Self::Timeout(_) => ProviderErrorClass::Transport,
+            Self::Stream(_) => ProviderErrorClass::Protocol,
+            Self::Transport { kind } => match kind.as_str() {
+                "protocol" | "body" => ProviderErrorClass::Protocol,
+                _ => ProviderErrorClass::Transport,
+            },
+            Self::Api { code, message, .. } => Self::typed_api_class(code, message),
+        }
+    }
+
+    fn typed_api_class(code: &str, message: &str) -> ProviderErrorClass {
+        if let Ok(status) = code.parse::<u16>() {
+            return match status {
+                401 | 403 => ProviderErrorClass::Auth,
+                404 => ProviderErrorClass::ModelNotFound,
+                408 | 425 | 429 => ProviderErrorClass::RateLimit,
+                400 | 422 => {
+                    Self::typed_message_class(message).unwrap_or(ProviderErrorClass::InvalidRequest)
+                }
+                500..=599 => ProviderErrorClass::Upstream,
+                400..=499 => ProviderErrorClass::InvalidRequest,
+                _ => ProviderErrorClass::Upstream,
+            };
+        }
+        Self::typed_message_class(message).unwrap_or_else(|| {
+            if code == "protocol" {
+                ProviderErrorClass::Protocol
+            } else {
+                ProviderErrorClass::Upstream
+            }
+        })
+    }
+
+    fn typed_message_class(message: &str) -> Option<ProviderErrorClass> {
+        let lowered = message.to_lowercase();
+        if lowered.contains("context_length")
+            || lowered.contains("context length")
+            || lowered.contains("maximum context")
+            || lowered.contains("context window")
+            || lowered.contains("too many tokens")
+        {
+            return Some(ProviderErrorClass::ContextLength);
+        }
+        if lowered.contains("model_not_supported")
+            || lowered.contains("unsupported model")
+            || lowered.contains("does not support model")
+            || lowered.contains("model not supported")
+        {
+            return Some(ProviderErrorClass::ModelNotSupported);
+        }
+        if lowered.contains("model_not_found") || lowered.contains("model not found") {
+            return Some(ProviderErrorClass::ModelNotFound);
+        }
+        if lowered.contains("unauthorized")
+            || lowered.contains("forbidden")
+            || lowered.contains("invalid api key")
+            || lowered.contains("invalid_api_key")
+        {
+            return Some(ProviderErrorClass::Auth);
+        }
+        if lowered.contains("rate limit") || lowered.contains("too many requests") {
+            return Some(ProviderErrorClass::RateLimit);
+        }
+        if lowered.contains("protocol") {
+            return Some(ProviderErrorClass::Protocol);
+        }
+        None
     }
 
     /// Internal disposition mapping. Public `is_retryable()` is the
@@ -514,6 +618,45 @@ mod tests {
     fn non_numeric_overload_wording_is_transient() {
         let err = ProviderError::api("overloaded_error", "The model is currently overloaded");
         assert_eq!(err.retry_disposition(), RetryDisposition::Transient);
+    }
+
+    #[test]
+    fn typed_error_class_matrix() {
+        assert_eq!(
+            ProviderError::from_http_status(401, "unauthorized").class(),
+            ProviderErrorClass::Auth
+        );
+        assert_eq!(
+            ProviderError::from_http_status(404, "model not found").class(),
+            ProviderErrorClass::ModelNotFound
+        );
+        assert_eq!(
+            ProviderError::from_http_status(400, "context_length_exceeded").class(),
+            ProviderErrorClass::ContextLength
+        );
+        assert_eq!(
+            ProviderError::from_http_status(429, "too many requests").class(),
+            ProviderErrorClass::RateLimit
+        );
+        let connect: ProviderError = eggfetch_core::Error::Connect("refused".to_string()).into();
+        assert_eq!(connect.class(), ProviderErrorClass::Transport);
+        assert_eq!(connect.class().as_str(), "transport");
+        assert_eq!(
+            ProviderError::api("model_not_supported", "unsupported model").class(),
+            ProviderErrorClass::ModelNotSupported
+        );
+        assert_eq!(
+            ProviderError::Stream("interrupted".to_string()).class(),
+            ProviderErrorClass::Protocol
+        );
+        assert_eq!(
+            ProviderError::api("503", "unavailable").class(),
+            ProviderErrorClass::Upstream
+        );
+        assert_eq!(
+            ProviderError::api("422", "invalid request").class(),
+            ProviderErrorClass::InvalidRequest
+        );
     }
 
     #[test]

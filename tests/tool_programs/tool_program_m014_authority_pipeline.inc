@@ -294,7 +294,7 @@ async fn c10_empty_contract_snapshot_rejected() {
     let err = codegg::tool::tool_program_context::resolve_contract_snapshot(&broker, &empty)
         .expect_err("empty tool list must be rejected");
     assert!(
-        err.contains("at least one frozen runtime contract"),
+        err.contains("non-empty `tools` list"),
         "unexpected error: {err}"
     );
 }

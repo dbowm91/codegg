@@ -319,10 +319,7 @@ fn has_host_progress(
     {
         return true;
     }
-    if executions_changed(&previous.executions, &current.executions) {
-        return true;
-    }
-    false
+    executions_changed(&previous.executions, &current.executions)
 }
 
 fn executions_changed(

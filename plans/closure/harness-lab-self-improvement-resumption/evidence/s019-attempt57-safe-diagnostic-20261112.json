@@ -1,0 +1,68 @@
+{
+  "attempt": 57,
+  "authorization_grant_id": "s019-supplemental-20261111-04",
+  "billed_usd_treatment": "unknown if unreported",
+  "binary_sha256": "7c87918b4721b798e43798dda33cf4d3958f595bd5268bdc465733a8884b35cf",
+  "campaign_preview": {
+    "attempt": 57,
+    "combined_starts_consumed": 57,
+    "combined_starts_remaining": 143,
+    "grant_starts_consumed": 13,
+    "grant_starts_remaining": 27,
+    "provider_requests_observed": 1,
+    "start_number": 57,
+    "status": "in_progress",
+    "unrepresented_counted_starts": 1
+  },
+  "credential_value_retained": false,
+  "current_goal_authorized_starts": 120,
+  "current_goal_starts_consumed_after": 28,
+  "current_goal_starts_consumed_before": 27,
+  "current_goal_starts_remaining_after": 92,
+  "external_billed_usd": null,
+  "manifest_sha256": "e87faea3f5da93ae300f2ae21ec46e6ff1f899cff0fdf6c1b9e860c97ffe57ee",
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "preflight_evidence_path": "/Users/davidbowman/.codex/worktrees/b3b2/codegg/plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt57-preflight-20261112.json",
+  "provider_requests_observed": 171,
+  "raw_prompt_transcript_tool_arguments_tool_outputs_and_verifier_output_inspected": false,
+  "route": "opencode_go",
+  "safe_run_fields": {
+    "active_work_span_ms": 2374841,
+    "agent_terminal": "completed",
+    "attempt": 57,
+    "authorization_grant_id": "s019-supplemental-20261111-04",
+    "binary_sha256": "7c87918b4721b798e43798dda33cf4d3958f595bd5268bdc465733a8884b35cf",
+    "duration_ms": 2388925,
+    "duration_qualified": true,
+    "event_measurement_complete": true,
+    "h007_completion_diagnostic": {
+      "assertion_text_retained": false,
+      "continuation": {
+        "state": "unavailable"
+      },
+      "raw_job_ids_retained": false,
+      "raw_note_retained": false,
+      "raw_output_retained": false,
+      "schema": "campaign_h007_completion_v1",
+      "state": "unavailable",
+      "task_completion": {
+        "state": "unavailable"
+      },
+      "transcript_retained": false,
+      "verifier_public_reconciliation": {
+        "state": "unavailable"
+      }
+    },
+    "horizon_outcome": "not_qualified",
+    "horizon_reason": "task_not_passed",
+    "manifest_sha256": "e87faea3f5da93ae300f2ae21ec46e6ff1f899cff0fdf6c1b9e860c97ffe57ee",
+    "model": "opencode_go/muse-spark-1.3-contributor",
+    "route": "opencode_go",
+    "start_number": 57,
+    "stop_reason": "end_turn",
+    "task_outcome": "failed"
+  },
+  "schema": "s019_campaign_run_diagnostic_v1",
+  "start_number": 57,
+  "status": "completed_unqualified"
+}

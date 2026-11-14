@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "campaign_id": "s016-deepseek-long-run-corrective-loop-20261031",
+  "run_index": 9,
+  "run_kind": "diagnostic",
+  "run_status": "exact_id_test_job_observed_failed_no_continuation_evidence",
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "source_binary_commit": "94fc8d41ff61e5963adf5779475fd9ee08569493",
+  "controller_commit": "e129d0e3230ab0e2174935fb8cd29a2e6e7b1b16",
+  "binary_architecture": "arm64",
+  "binary_sha256": "16481cc8bf0d8866db352c3aab90c35950bde37e5799be1458a43012d594fe2a",
+  "sandbox_helper_sha256": "37ee6c8cd876d1e05bbd650c7a26520753fe55534ac821a52d9089712d751d43",
+  "fixture_manifest": "dev/harness_lab/fixtures/agent_autonomy_s016_job_diagnostic_v2/cases.jsonl",
+  "fixture_manifest_sha256": "4a30fdf0b3974c572057ff58272d0814f749e6577c604adac323ce1971821748",
+  "qualification_fixture_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "started_at_utc": "2026-10-31T22:07:14Z",
+  "terminal_observed_at_utc": "2026-10-31T22:08:21Z",
+  "elapsed_seconds": 58.479,
+  "case_duration_ms": 54292,
+  "active_work_span_ms": 34127,
+  "provider_requests": 17,
+  "request_cap": 20,
+  "provider_idle_timeout_count": 0,
+  "provider_stream_lifecycle": {
+    "body_eof": 17,
+    "idle_timeouts": 0,
+    "setup_failures": 0,
+    "raw_sse_retained": false
+  },
+  "usd_cost": 0.00959,
+  "task": {
+    "agent_terminal": "completed",
+    "task_outcome": "failed",
+    "tool_calls": 11,
+    "tool_counts": {
+      "bash": 1,
+      "read": 1,
+      "task": 3,
+      "test": 1,
+      "write": 1,
+      "job": 4
+    },
+    "subagent_run_statuses": ["queued", "completed"],
+    "test_job_id": "1162a582-fb1a-45ee-a89e-1f0a7449af9b",
+    "test_job_status_observations": ["failed", "failed", "failed", "failed"],
+    "continuation_write_tool_call_observed": true,
+    "continuation_confirmed_by_horizon_verifier": false,
+    "repair_cycles": 0,
+    "exact_job_running_and_terminal": false,
+    "productive_work_during_job": false
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "job_lifecycle_missing",
+  "event_observation": {
+    "event_count": 30,
+    "event_gaps": 0,
+    "unpaired_tool_events": 0
+  },
+  "disk": {
+    "floor_bytes": 10737418240,
+    "floor_triggered": false,
+    "free_bytes_at_start": 27914944512,
+    "minimum_free_bytes": 27092557824,
+    "free_bytes_at_end": 27869663232
+  },
+  "interpretation": "This diagnostic shows healthy provider and ACP transport, a completed read-only subagent through the task surface, and exact-ID polling of a real test job. The test job reached terminal failed on the first poll and remained failed through three status calls and one output call; no running interval or productive overlap was observed. A continuation write tool call occurred, but the horizon verifier did not accept continuation evidence. This does not reproduce a harness transport or job-ID-routing defect. The long prompt should keep task/subagent status separate from background test-job status and direct immediate source work around the exact returned test-job ID. The diagnostic did not pass the independent H007 verifier or qualify the horizon.",
+  "private_artifacts": {
+    "receipt_path": "/private/tmp/s016-attempt09.json",
+    "receipt_sha256": "f61d284b06ba072ea2ec5c9dd710c8c867f947eed7a0d13ff3ea69612f7a8b34",
+    "diagnostic_log_path": "/private/tmp/s016-live09/case00/case/codegg_debug.log",
+    "diagnostic_log_sha256": "4407c56a41c9965a3bf81e7b7e8c1aac5e422941a704a7dd918a7825fe6dfcbe",
+    "provider_admission_receipt_path": "/private/tmp/s016-live09/case00/artifacts/provider-request-admissions.jsonl",
+    "provider_admission_receipt_sha256": "8b6a0bf4d638202615b8c09a578d1d707cac4f393d1e33e17fa8fdf7417ae429",
+    "causal_trace_path": "/private/tmp/s016-live09/case00/private/causal-trace.jsonl",
+    "causal_trace_sha256": "5ccd0534c3fcedcd815d91a32b441a13f9513fb77bae890da5a0b09583242a6d"
+  }
+}

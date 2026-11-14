@@ -130,6 +130,7 @@ fn accepted_context(
         parent_job_id: None,
         parent_attempt_id: None,
         provider_name: None,
+        session_model: None,
         backend_policy: Some("native_only".into()),
         cancellation: None,
         deadline: None,

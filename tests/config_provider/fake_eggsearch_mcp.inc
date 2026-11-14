@@ -1282,6 +1282,12 @@ async fn structured_wrappers_preserve_upstream_value_and_bound_display() {
         "unknown_future_field": {"must_survive": true},
         "payload": "large evidence payload"
     });
+    // A8: upstream backend names (`web_fetch`) are canonicalized to
+    // executable registry names (`webfetch`) before reaching the model.
+    // Force `detail=full`: compact-first tools (`repo_search`,
+    // `research_search`, `repo_map`) default to summary, and the summary
+    // None-fallback strips `next_actions` — this case owns full-envelope
+    // preservation, not that strip.
     let response = fixture.to_string();
     let mut svc = McpService::new();
     let tools = [
@@ -1323,39 +1329,42 @@ async fn structured_wrappers_preserve_upstream_value_and_bound_display() {
     let cases: Vec<(Box<dyn Tool>, serde_json::Value)> = vec![
         (
             Box::new(WebSearchTool::with_search_runtime(ctx.clone())),
-            serde_json::json!({"query": "x"}),
+            serde_json::json!({"query": "x", "detail": "full"}),
         ),
         (
             Box::new(WebFetchTool::default().with_search_runtime(ctx.clone())),
-            serde_json::json!({"url": "https://example.com"}),
+            serde_json::json!({"url": "https://example.com", "detail": "full"}),
         ),
         (
             Box::new(RepoSearchTool::with_search_runtime(ctx.clone())),
-            serde_json::json!({"query": "x"}),
+            serde_json::json!({"query": "x", "detail": "full"}),
         ),
         (
             Box::new(RepoFetchTool::with_search_runtime(ctx.clone())),
-            serde_json::json!({"repo": "owner/repo", "path": "src/lib.rs"}),
+            serde_json::json!({"repo": "owner/repo", "path": "src/lib.rs", "detail": "full"}),
         ),
         (
             Box::new(RepoMapTool::with_search_runtime(ctx.clone())),
-            serde_json::json!({"repo": "owner/repo"}),
+            serde_json::json!({"repo": "owner/repo", "detail": "full"}),
         ),
         (
             Box::new(SecuritySearchTool::with_search_runtime(ctx.clone())),
-            serde_json::json!({"query": "CVE-1"}),
+            serde_json::json!({"query": "CVE-1", "detail": "full"}),
         ),
         (
             Box::new(ResearchSearchTool::with_search_runtime(ctx.clone())),
-            serde_json::json!({"query": "x"}),
+            serde_json::json!({"query": "x", "detail": "full"}),
         ),
         (
             Box::new(BatchFetchTool::with_search_runtime(ctx.clone())),
-            serde_json::json!({"urls": ["https://example.com"]}),
+            serde_json::json!({"urls": ["https://example.com"], "detail": "full"}),
         ),
         (
             Box::new(EvidenceBundleTool::with_search_runtime(ctx.clone())),
-            serde_json::json!({"sources": [{"id": "src-1", "url": "https://example.com"}]}),
+            serde_json::json!({
+                "sources": [{"id": "src-1", "url": "https://example.com"}],
+                "detail": "full"
+            }),
         ),
     ];
 
@@ -1371,7 +1380,7 @@ async fn structured_wrappers_preserve_upstream_value_and_bound_display() {
         assert_eq!(value["routing_decision"]["degraded"], true);
         assert_eq!(value["providers_failed"][0], "exa");
         assert_eq!(value["retrieval_state"]["complete"], false);
-        assert_eq!(value["next_actions"][0]["tool"], "web_fetch");
+        assert_eq!(value["next_actions"][0]["tool"], "webfetch");
         assert_eq!(value["unknown_future_field"]["must_survive"], true);
         assert!(result.output.contains("trust=external_untrusted"));
         assert!(result

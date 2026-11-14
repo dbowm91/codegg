@@ -172,10 +172,7 @@ impl RolloverSourceRevisions {
         if self.work_plan_id != current.work_plan_id {
             return true;
         }
-        if self.work_plan_revision != current.work_plan_revision {
-            return true;
-        }
-        false
+        self.work_plan_revision != current.work_plan_revision
     }
 
     pub fn stale_reason(&self, current: &Self) -> Option<&'static str> {

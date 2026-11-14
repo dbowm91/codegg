@@ -123,9 +123,74 @@ impl ContextArtifactStore for InMemoryArtifactStore {
     }
 }
 
+/// A13: bounded retention for `.codegg/context_artifacts` (was unbounded —
+/// 33 MB / 4650 files measured). Age/size policy mirrors scratch sweep:
+/// 7-day age cap, 100 MB total cap, plus a `--gc` path. Small inline results
+/// are not the growth source here (broker only persists over-display); the
+/// loop persists every tool output for `context_read`, so the bound lives
+/// here where the files do.
+pub const MAX_ARTIFACT_AGE_DAYS: i64 = 7;
+pub const MAX_ARTIFACT_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
+
+/// Reclaim aged/over-quota artifacts under `base_dir`. Oldest-first; returns
+/// reclaimed file count. Never fails the caller — I/O errors stop the sweep.
+pub fn gc_context_artifacts_dir(base_dir: &Path, now_ms: i64) -> usize {
+    let Ok(entries) = std::fs::read_dir(base_dir) else {
+        return 0;
+    };
+    let mut files: Vec<(PathBuf, i64, u64)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(meta) = path.metadata() else {
+            continue;
+        };
+        let age_ms = now_ms.saturating_sub(
+            meta.modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(now_ms),
+        );
+        // created_at_ms lives inside the JSON; mtime is a cheap proxy for age.
+        // Prefer the inner timestamp when readable.
+        let created_ms = std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<ContextArtifact>(&b).ok())
+            .map(|a| a.created_at_ms)
+            .unwrap_or(now_ms - age_ms);
+        files.push((path, created_ms, meta.len()));
+    }
+    files.sort_by_key(|(_, created, _)| *created);
+    let cutoff = now_ms - MAX_ARTIFACT_AGE_DAYS * 24 * 60 * 60 * 1000;
+    let mut reclaimed = 0;
+    let mut total: u64 = files.iter().map(|(_, _, len)| *len).sum();
+    for (path, created, len) in files {
+        let aged = created < cutoff;
+        let over_quota = total > MAX_ARTIFACT_TOTAL_BYTES;
+        if !aged && !over_quota {
+            continue;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            reclaimed += 1;
+            total = total.saturating_sub(len);
+        }
+    }
+    reclaimed
+}
+
 /// Workspace-local artifact store used by production sessions. Artifacts are
 /// written as bounded JSON records under `.codegg/context_artifacts`, so a
 /// broker handle remains resolvable after the daemon restarts.
+///
+/// F20: the `write` tool's large-overwrite sidecar (`<path>.bak`) is a
+/// filesystem recovery path, not an artifact-store version: the artifact
+/// store keeps bounded *projections* of tool output (capped JSON records),
+/// never full file bodies, so it cannot reconstruct an overwritten document.
+/// A caller that needs a restorable version must keep its own copy (the
+/// `.bak` sidecar) rather than reading it back through a handle.
 pub struct FileArtifactStore {
     base_dir: PathBuf,
 }
@@ -755,5 +820,30 @@ mod tests {
         assert!(is_evidence_handle("ctx://evidence/s1/ckpt-1/ev-1"));
         assert!(!is_evidence_handle("ctx://tool/s1/0/c1"));
         assert!(!is_evidence_handle("other"));
+    }
+
+    #[test]
+    fn gc_reclaims_aged_artifacts() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let old_path = dir.path().join("old.json");
+        let stale = serde_json::json!({
+            "handle": "ctx://tool/s/0/old",
+            "session_id": "s",
+            "turn_index": 0,
+            "tool_call_id": "old",
+            "tool_name": "read",
+            "kind": "tool_result",
+            "created_at_ms": 1,
+            "content_hash": "x",
+            "redacted_content": "x",
+            "raw_bytes_len": 1,
+            "estimated_tokens": 1
+        });
+        let bytes = serde_json::to_vec(&stale).unwrap();
+        std::fs::write(&old_path, &bytes).expect("write old");
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let reclaimed = super::gc_context_artifacts_dir(dir.path(), now_ms);
+        assert_eq!(reclaimed, 1, "aged file must be reclaimed");
+        assert!(!old_path.exists());
     }
 }

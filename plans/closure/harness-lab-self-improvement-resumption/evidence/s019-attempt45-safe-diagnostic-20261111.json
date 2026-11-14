@@ -1,0 +1,382 @@
+{
+  "attempt_number": 45,
+  "attribution": {
+    "agent_task_complete": false,
+    "codegg_event_loss_observed": false,
+    "established_harness_event": "none_observed",
+    "stop_reason_projection_mismatch": false,
+    "unresolved_provider_attempt_count": 0,
+    "upstream_transport_root_cause": "not_indicated",
+    "verifier_passed": false
+  },
+  "authorization": {
+    "combined_starts_consumed": 46,
+    "combined_starts_remaining": 154,
+    "grant_id": "s019-supplemental-20261111-04",
+    "supplemental_starts_consumed": 2,
+    "supplemental_starts_remaining": 38
+  },
+  "continuation_public_gates": {
+    "exact_job_running_and_terminal": true,
+    "phase_order_matches": true,
+    "productive_work_during_job": true,
+    "release_overlap_confirmed": true,
+    "required_artifacts_present": true,
+    "required_review_observed": true,
+    "reviewer_completed_get_result_observed": 1,
+    "reviewer_durable_run_status": "completed",
+    "reviewer_durable_task_status": "completed",
+    "reviewer_exact_identity_matched_calls": 4,
+    "reviewer_spawn_count": 1,
+    "stage_order_matches": true
+  },
+  "disk": {
+    "disk_floor_triggered": false,
+    "external_hard_stop": false,
+    "free_disk_bytes_at_completion": 39235039232,
+    "free_disk_bytes_before": 44721876992,
+    "free_disk_bytes_minimum": 31930093568,
+    "preflight_reserve_bytes": 32212254720,
+    "runner_sampled_minimum_bytes": 31934939136,
+    "runtime_floor_bytes": 10737418240
+  },
+  "event_measurement": {
+    "causal_event_count": 561,
+    "causal_trace_sha256": "f15be0dfd3b27565d91fe73095305bfd2af2d180e81e3feaa04b748abd1f9dc3",
+    "complete": true,
+    "correlated_repair_cycles": 4,
+    "dropped_events": 0,
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 162075,
+    "tool_started_count": 254,
+    "tool_terminal_count": 254,
+    "tool_unpaired_start_count": 0,
+    "trace_complete": true
+  },
+  "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "horizon": {
+    "active_work_span_ms": 3230530,
+    "continuation_confirmed": true,
+    "duration_ms": 3255137,
+    "duration_qualified": true,
+    "event_measurement_complete": true,
+    "exact_job_running_and_terminal": true,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 162075,
+    "minimum_active_duration_ms": 1800000,
+    "outcome": "not_qualified",
+    "productive_work_during_job": true,
+    "reason": "task_not_passed",
+    "release_overlap_confirmed": true,
+    "repair_cycle_count_matches": true,
+    "repair_cycles": 4,
+    "tool_call_count": 254,
+    "tool_call_limit": 1600
+  },
+  "last_provider_failure": {
+    "attempts_left": 2,
+    "error_class": "stream_interrupted",
+    "retry_outcome": "retry_scheduled"
+  },
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "ordered_tool_activity": {
+    "job_tool_call_count": 45,
+    "productive_overlap_interval_count": 11,
+    "raw_job_ids_retained": false,
+    "tool_arguments_retained": false,
+    "tool_call_count": 254,
+    "tool_outputs_retained": false,
+    "zero_productive_overlap_interval_count": 7
+  },
+  "outcome": {
+    "active_work_span_ms": 3230404,
+    "activity_stall": {
+      "stall_limit_seconds": 300,
+      "triggered": false
+    },
+    "agent_terminal": "completed",
+    "cancellation_source": null,
+    "continuation_stop_reason": "continuation_complete",
+    "duration_ms": 3255137,
+    "duration_qualified": true,
+    "maximum_activity_gap_ms": null,
+    "reported_stop_reason": "end_turn",
+    "stop_reason_projection_mismatch": false,
+    "task": "failed",
+    "task_completion_reasons": [
+      "independent_verifier_failures"
+    ],
+    "task_completion_state": "verification_failed",
+    "terminal": "completed",
+    "verifier_exit_code": 1,
+    "verifier_outcome": "assertion_failures",
+    "verifier_tests_observed": true,
+    "verifier_tests_run": 5
+  },
+  "privacy": {
+    "prompt_text_retained": false,
+    "raw_job_arguments_retained": false,
+    "raw_job_ids_retained": false,
+    "raw_provider_text_retained": false,
+    "raw_tool_arguments_retained": false,
+    "raw_tool_outputs_retained": false,
+    "raw_verifier_text_retained": false
+  },
+  "private_receipt_sha256": "67f778bdd799085a7701e402e73f239d079de7ed1f9732b5ae5146543c3703e1",
+  "prompt_boundary_timeline": {
+    "count": 5,
+    "entries": [
+      {
+        "active_work_span_end_ms": 526916,
+        "active_work_span_start_ms": 0,
+        "continuation_decision": "continue",
+        "request_elapsed_ms": 565087,
+        "request_index": 1,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": false,
+        "started_elapsed_ms": 142,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 88,
+        "tool_call_count_start": 0
+      },
+      {
+        "active_work_span_end_ms": 1198688,
+        "active_work_span_start_ms": 526916,
+        "continuation_decision": "continue",
+        "request_elapsed_ms": 641885,
+        "request_index": 2,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": false,
+        "started_elapsed_ms": 565338,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 134,
+        "tool_call_count_start": 88
+      },
+      {
+        "active_work_span_end_ms": 1922699,
+        "active_work_span_start_ms": 1198688,
+        "continuation_decision": "continue",
+        "request_elapsed_ms": 723908,
+        "request_index": 3,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": true,
+        "started_elapsed_ms": 1207315,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 160,
+        "tool_call_count_start": 134
+      },
+      {
+        "active_work_span_end_ms": 2860085,
+        "active_work_span_start_ms": 1922699,
+        "continuation_decision": "continue",
+        "request_elapsed_ms": 944346,
+        "request_index": 4,
+        "reviewer_due_marker_received": true,
+        "reviewer_due_marker_sent_next": false,
+        "started_elapsed_ms": 1931284,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 228,
+        "tool_call_count_start": 160
+      },
+      {
+        "active_work_span_end_ms": 3230404,
+        "active_work_span_start_ms": 2860085,
+        "continuation_decision": "continuation_complete",
+        "request_elapsed_ms": 379067,
+        "request_index": 5,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": null,
+        "started_elapsed_ms": 2875729,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 254,
+        "tool_call_count_start": 228
+      }
+    ],
+    "prompt_text_retained": false,
+    "provider_text_retained": false,
+    "raw_tool_arguments_retained": false
+  },
+  "provider": {
+    "external_billed_usd": "unknown",
+    "model": "opencode_go/muse-spark-1.3-contributor",
+    "provider_allowance_usd": 0.033622,
+    "provider_request_count_source": "codegg_provider_boundary_receipt",
+    "provider_request_limit": 1200,
+    "provider_requests": 219,
+    "route": "opencode_go",
+    "unreported_usd_treatment": "unknown"
+  },
+  "provider_attempt_diagnostic": {
+    "attempt_accounting_consistent": true,
+    "attempt_ids_retained": false,
+    "first_response_event_timeout_count": 0,
+    "later_stream_timeout_count": 0,
+    "provider_attempts_failed": 1,
+    "provider_attempts_started": 219,
+    "provider_attempts_succeeded": 218,
+    "raw_log_in_receipt": false,
+    "raw_provider_text_in_receipt": false,
+    "retry_chain_deadline_count": 0,
+    "retry_scheduled_count": 1,
+    "setup_timeout_count": 0,
+    "state": "observed",
+    "stream_idle_timeout_count": 0,
+    "unresolved_provider_attempt_count": 0
+  },
+  "repair_diagnostic": {
+    "event_count_matches": true,
+    "observed_repair_cycle_count": 4,
+    "persisted_correlated_repair_events": 4,
+    "raw_job_ids_retained": false,
+    "required_pair_count": null,
+    "trace_complete": true
+  },
+  "route": "opencode_go",
+  "runner": {
+    "elapsed_seconds": 3278.973,
+    "external_hard_stop": false,
+    "finished_at_utc": "2026-11-11T07:20:27+00:00",
+    "receipt_present": true,
+    "runner_exit_code": 2,
+    "trigger": null
+  },
+  "schema": "s019_attempt_safe_diagnostic_v1",
+  "source_revision": "ac584c886f03847ff6b829f8509667637e42a052",
+  "start_number": 46,
+  "task_completion": {
+    "raw_job_ids_retained": false,
+    "raw_note_retained": false,
+    "reasons": [
+      "independent_verifier_failures"
+    ],
+    "state": "verification_failed"
+  },
+  "verifier_failure_diagnostic": {
+    "assertion_operation_counts": {
+      "equality": 1,
+      "pattern": 1
+    },
+    "assertion_text_retained": false,
+    "failed_tests": [
+      {
+        "exception_class": "AssertionError",
+        "failure_kind": "assertion_failure",
+        "message_kind": "comparison_mismatch",
+        "pattern_signature": {},
+        "redacted_shape": [
+          "<number>",
+          "!",
+          "=",
+          "<number>"
+        ],
+        "safe_terms": [],
+        "test_id": "test_end_to_end_import_recovery_lineage_diff_and_deterministic_export (test_catalog_contract.CatalogContract.test_end_to_end_import_recovery_lineage_diff_and_deterministic_export)"
+      },
+      {
+        "exception_class": "AssertionError",
+        "failure_kind": "assertion_failure",
+        "message_kind": "assertion_message",
+        "pattern_signature": {
+          "expected_length": 56,
+          "expected_marker_groups": [
+            "job_lifecycle"
+          ],
+          "expected_text_retained": false,
+          "matcher_kind": "regex_not_found",
+          "observed_length": 2674,
+          "observed_marker_groups": [
+            "continuation_boundary",
+            "job_lifecycle",
+            "repair_sequence",
+            "reviewer_lifecycle",
+            "workspace_qualification"
+          ],
+          "observed_text_retained": false,
+          "state": "classified"
+        },
+        "redacted_shape": [
+          "<word>",
+          "<word>",
+          "'",
+          "<word>",
+          "<word>",
+          ":",
+          "'",
+          "<word>",
+          ":",
+          "<number>",
+          "<word>",
+          "<number>",
+          "<word>",
+          "<number>",
+          "a",
+          "<number>",
+          "<symbol>",
+          "<symbol>",
+          "-",
+          "<number>",
+          "<word>",
+          "<number>",
+          "<symbol>",
+          "<symbol>",
+          "-",
+          "<number>",
+          "a",
+          "<number>",
+          "<symbol>",
+          "<symbol>",
+          "-",
+          "<number>",
+          "<word>",
+          "<number>",
+          "<word>",
+          "<symbol>",
+          "<symbol>",
+          "-",
+          "a",
+          "<number>",
+          "<word>",
+          "<number>",
+          "<word>",
+          "<number>",
+          "<word>",
+          "(",
+          "<symbol>",
+          ":"
+        ],
+        "safe_terms": [
+          "before",
+          "completed",
+          "failed",
+          "index",
+          "job",
+          "none",
+          "not",
+          "observed",
+          "repair",
+          "running",
+          "test",
+          "workspace"
+        ],
+        "test_id": "test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation (test_catalog_contract.CatalogContract.test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation)"
+      }
+    ],
+    "failure_counts": {
+      "errors": 0,
+      "failures": 2
+    },
+    "failure_domain_counts": {
+      "task_behavior": 1,
+      "transcript_job_lifecycle": 1
+    },
+    "passed_count": 3,
+    "raw_output_retained": false,
+    "schema": "h007_verifier_diagnostic_v4",
+    "state": "assertion_failures",
+    "tests_run": 5,
+    "traceback_retained": false
+  }
+}

@@ -81,6 +81,10 @@ impl Tool for ImageTool {
                 "n": {
                     "type": "number",
                     "description": "The number of images to generate (default: 1)"
+                },
+                "validate_only": {
+                    "type": "boolean",
+                    "description": "Keyless preview: validate params and return the request shape without POSTing (default: false)"
                 }
             },
             "required": ["prompt"]
@@ -97,14 +101,32 @@ impl Tool for ImageTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
+        let validate_only = input
+            .get("validate_only")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let prompt = input["prompt"]
+            .as_str()
+            .ok_or_else(|| ToolError::Execution("missing 'prompt' parameter".to_string()))?;
+        if prompt.len() > 4000 {
+            return Err(ToolError::Execution(
+                "prompt exceeds 4000 characters".to_string(),
+            ));
+        }
+        if validate_only {
+            return Ok(format!(
+                "validate_only: prompt ({} chars), model {}, size {}, quality {}, n {} — no POST made",
+                prompt.chars().count(),
+                input["model"].as_str().unwrap_or("dall-e-3"),
+                input["size"].as_str().unwrap_or("1024x1024"),
+                input["quality"].as_str().unwrap_or("standard"),
+                input["n"].as_u64().unwrap_or(1)
+            ));
+        }
         let api_key = self
             .api_key
             .as_ref()
             .ok_or_else(|| ToolError::Execution("OPENAI_API_KEY not set. export OPENAI_API_KEY=... (or codegg auth set-key openai); run codegg doctor; see /connect and docs/providers.md.".to_string()))?;
-
-        let prompt = input["prompt"]
-            .as_str()
-            .ok_or_else(|| ToolError::Execution("missing 'prompt' parameter".to_string()))?;
 
         let parsed_url = url::Url::parse(&self.base_url)
             .map_err(|e| ToolError::Execution(format!("invalid base_url: {}", e)))?;
@@ -178,5 +200,24 @@ impl Tool for ImageTool {
         }
 
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn validate_only_needs_no_key() {
+        let tool = ImageTool::new();
+        let out = tool
+            .execute(serde_json::json!({
+                "prompt": "a red square",
+                "validate_only": true
+            }))
+            .await
+            .expect("validate_only must not require a key");
+        assert!(out.contains("validate_only"), "got: {out}");
+        assert!(out.contains("no POST"), "got: {out}");
     }
 }

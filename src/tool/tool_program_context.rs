@@ -248,7 +248,9 @@ pub fn resolve_contract_snapshot(
     allowed_tools: &[String],
 ) -> Result<Vec<ContractEntry>, String> {
     if allowed_tools.is_empty() {
-        return Err("Tool Programs require at least one frozen runtime contract".into());
+        return Err(
+            "tool_program needs a non-empty `tools` list (at least one readable tool)".into(),
+        );
     }
     let mut entries = Vec::new();
     for tool_name in allowed_tools {

@@ -1,0 +1,57 @@
+{
+  "active_shortfall_ms": 233300,
+  "active_work_span_ms": 1566700,
+  "activity_stall_triggered": false,
+  "attempt": 1,
+  "autonomous_followup_count": 8,
+  "binary_sha256": "9982e2d4dd10221854c727285da43fd07d6df83a71fa29d1082e094551f14a14",
+  "campaign_id": "s018-muse-continuation-20261106",
+  "continuation_confirmed": false,
+  "continuation_stop_reason": "followup_limit",
+  "disk_floor": {
+    "lowest_observed_free_bytes": 115795906560,
+    "minimum_free_bytes": 10737418240,
+    "triggered": false
+  },
+  "duration_ms": 1582314,
+  "duration_qualified": false,
+  "event_trace": {
+    "dropped_events": 0,
+    "event_count": 537,
+    "event_gap_count": 0,
+    "sha256": "4b815f8b97670080ae8aa357f9b99cd7517bb005c3bb424ada2ffb5b8c42054d",
+    "state": "complete",
+    "tool_started_count": 241,
+    "tool_terminal_count": 241
+  },
+  "exact_job_running_and_terminal": true,
+  "maximum_activity_gap_limit_ms": 300000,
+  "maximum_activity_gap_ms": 231552,
+  "minimum_active_duration_ms": 1800000,
+  "model_route": "opencode_go/muse-spark-1.3-contributor",
+  "productive_work_during_job": true,
+  "provider_request_cap": 750,
+  "provider_requests": 194,
+  "public_completed_phase_count": 5,
+  "receipt_path": "/private/tmp/s018-muse-runs/attempt01.json",
+  "repair_cycles": 2,
+  "requested_manifest_sha256": "3fffe1cf65e3c7f3c5d377dfe39cbc2f43960fc78cad5fc2b26f447725926c7c",
+  "required_phase_count": 15,
+  "schema_version": 1,
+  "status": "completed_unqualified",
+  "stop_reason": "end_turn",
+  "terminal": "completed",
+  "tool_calls": 241,
+  "usd": {
+    "billing_cost_separately_reported": false,
+    "provider_allowance_usd": 0.009662,
+    "source": "opencode_go_allowance"
+  },
+  "verification": {
+    "duration_ms": 9188,
+    "exit_code": 1,
+    "failure_summary": "(failures=1)",
+    "tests_run": 5,
+    "timed_out": false
+  }
+}

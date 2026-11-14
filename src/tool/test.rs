@@ -12,10 +12,10 @@ use crate::tool::backend::{
 };
 use crate::tool::{Tool, ToolCategory};
 
-/// Run project tests through codegg's supervised test runner. Prefer this
-/// over bash for cargo test, cargo nextest, pytest, uv run pytest, go test,
-/// make test, and similar test commands. The tool streams full stdout/stderr
-/// to logs, classifies timeouts/failures, and returns a compact report
+/// Run project tests and bounded quality checks through codegg's supervised
+/// runner. Prefer this over bash for cargo test, cargo clippy, cargo nextest,
+/// pytest, uv run pytest, go test, make test, and similar commands. The tool
+/// streams full stdout/stderr to logs, classifies timeouts/failures, and returns a compact report
 /// instead of dumping full output into context.
 pub struct TestTool {
     #[allow(dead_code)]
@@ -122,7 +122,7 @@ impl Tool for TestTool {
     }
 
     fn description(&self) -> &str {
-        "Routing: use test for test runners only, not for non-test shell (prefer bash for general shell; terminal is compat-only). Run project tests through codegg's supervised test runner. Prefer this over bash for cargo test, cargo nextest, pytest, uv run pytest, go test, make test, and similar test commands. The tool streams full stdout/stderr to logs, classifies timeouts/failures, and returns a compact report instead of dumping full output into context. Set execution_mode=background to receive a stable JobHandle immediately and a terminal notification on completion without blocking; foreground (default) preserves the current synchronous report."
+        "Routing: use test for test runners and bounded quality checks, not for general shell (prefer bash for general shell; terminal is compat-only). Run project checks through codegg's supervised runner. Prefer this over bash for cargo test, cargo clippy, cargo nextest, pytest, uv run pytest, go test, make test, and similar commands. The tool streams full stdout/stderr to logs, classifies timeouts/failures, and returns a compact report instead of dumping full output into context. Set execution_mode=background to receive a stable JobHandle immediately and a terminal notification on completion without blocking; foreground (default) preserves the current synchronous report."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -144,7 +144,7 @@ impl Tool for TestTool {
                 },
                 "command": {
                     "type": "string",
-                    "description": "Custom test command (required when scope is custom, ignored otherwise). Must pass test command safety checks. Example: {\"scope\":\"custom\",\"command\":\"cargo test -p mycrate\"}."
+                    "description": "Custom supervised test or quality command (required when scope is custom, ignored otherwise). Must pass command safety checks. Allowed prefixes include cargo test, cargo clippy, cargo nextest, pytest, go test, and make check. Example: {\"scope\":\"custom\",\"command\":\"cargo test -p mycrate\"}."
                 },
                 "workdir": {
                     "type": "string",
@@ -424,8 +424,13 @@ impl TestTool {
         let input = self.apply_default_workdir(input);
         let mut request = parse_test_request_in(&input, self.workspace_root.as_deref())?;
         request.session_id = Some(session_id.clone());
-        let resolved = crate::test_runner::resolve_test_command(&request)
+        let mut resolved = crate::test_runner::resolve_test_command(&request)
             .map_err(|e| ToolError::Execution(format!("test command resolution failed: {e}")))?;
+        // A10: a `test`-tool run must never carry the bare `bash-dispatch`
+        // label — that scope belongs to `bash`-owned dispatches.
+        if resolved.scope_label == "bash-dispatch" {
+            resolved.scope_label = "test:bash-dispatch".to_string();
+        }
         let workspace_id = submission
             .workspace_id_for_root(&request.workdir)
             .await
@@ -521,8 +526,11 @@ impl TestTool {
                 "test execution requires the daemon scheduler; standalone callers must provide a harness scheduler".into(),
             ));
         };
-        let resolved = crate::test_runner::resolve_test_command(&request)
+        let mut resolved = crate::test_runner::resolve_test_command(&request)
             .map_err(|e| ToolError::Execution(format!("test command resolution failed: {e}")))?;
+        if resolved.scope_label == "bash-dispatch" {
+            resolved.scope_label = "test:bash-dispatch".to_string();
+        }
         let workspace_id = submission
             .workspace_id_for_root(&request.workdir)
             .await
@@ -581,18 +589,14 @@ impl TestTool {
             .map_err(|e| ToolError::Execution(e.to_string()))?;
         let status = completion.status;
         let summary = completion.summary;
-        let completion_status = match completion.status {
-            crate::scheduler::ExecutorStatus::Completed => "passed",
-            crate::scheduler::ExecutorStatus::Failed => "failed",
-            crate::scheduler::ExecutorStatus::Cancelled => "cancelled",
-            crate::scheduler::ExecutorStatus::TimedOut => "timed_out",
-            crate::scheduler::ExecutorStatus::Interrupted => "unknown",
-        };
+        let completion_status = test_completion_status(completion.status, &summary);
+        let is_no_tests = completion_status == "no_tests";
         let marker = serde_json::json!({
             "job_id": job.job_id.as_str(),
             "kind": "test",
             "status": completion_status,
             "summary": summary,
+            "no_tests": is_no_tests,
         });
         Ok((
             format!(
@@ -643,6 +647,25 @@ fn truncate_report_text(text: &str, cap: usize) -> String {
         end -= 1;
     }
     format!("{}\n[report truncated]", &text[..end])
+}
+
+/// A3: map a scheduler completion to the marker status string, threading the
+/// vacuous-run flag from `TestParseState` (via `DelegatedTestRun` →
+/// formatted summary `no_tests:` prefix): a `Completed` run that selected
+/// zero tests emits `no_tests`, never `passed`.
+pub(crate) fn test_completion_status(
+    status: crate::scheduler::ExecutorStatus,
+    summary: &str,
+) -> &'static str {
+    let is_no_tests = summary.contains("no_tests:");
+    match status {
+        crate::scheduler::ExecutorStatus::Completed if is_no_tests => "no_tests",
+        crate::scheduler::ExecutorStatus::Completed => "passed",
+        crate::scheduler::ExecutorStatus::Failed => "failed",
+        crate::scheduler::ExecutorStatus::Cancelled => "cancelled",
+        crate::scheduler::ExecutorStatus::TimedOut => "timed_out",
+        crate::scheduler::ExecutorStatus::Interrupted => "unknown",
+    }
 }
 
 /// Parse JSON input into a `TestRunRequest` with a synthetic workspace root.
@@ -703,7 +726,7 @@ fn parse_test_request_in(
             if validate_custom_command(cmd).is_err() {
                 return Err(ToolError::Execution(format!(
                     "custom command rejected by safety validator: '{cmd}'. \
-                     Allowed argv prefixes: cargo test, cargo nextest, pytest, \
+                     Allowed argv prefixes: cargo test, cargo clippy, cargo nextest, pytest, \
                      uv run pytest, go test, zig build test, make test, make check, \
                      npm test, pnpm test, yarn test, bun test. \
                      Shell metacharacters, redirection, pipes, command substitution, \
@@ -737,7 +760,7 @@ fn parse_test_request_in(
     };
 
     let timeout_secs = parse_positive_seconds(input.get("timeout"), "timeout")?;
-    let stall_timeout_secs = parse_positive_seconds(input.get("stall_timeout"), "stall_timeout")?;
+    let stall_timeout_secs = parse_stall_timeout_seconds(input.get("stall_timeout"))?;
 
     // F1: whole-valued floats coerce (20000.0 -> 20000) via the shared
     // tolerant parser, matching `timeout` above; fractional or negative
@@ -793,6 +816,33 @@ fn parse_positive_seconds(
         return Err(ToolError::Execution(format!(
             "{field} must be a positive integer number of seconds"
         )));
+    }
+    Ok(Some(n as u64))
+}
+
+/// Parse the `stall_timeout` watchdog value.
+///
+/// Identical to [`parse_positive_seconds`] except `0` is accepted and means
+/// "disabled" (`Some(0)`), matching the schema text ("set 0 to disable") and
+/// the runner, which skips the stall check when the bound is `0`. Negative,
+/// fractional, NaN, and non-numeric values still fail.
+fn parse_stall_timeout_seconds(
+    value: Option<&serde_json::Value>,
+) -> Result<Option<u64>, ToolError> {
+    let Some(v) = value else {
+        return Ok(None);
+    };
+    let n = v.as_f64().ok_or_else(|| {
+        ToolError::Execution(
+            "stall_timeout must be a positive integer number of seconds (0 disables the watchdog)"
+                .to_string(),
+        )
+    })?;
+    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
+        return Err(ToolError::Execution(
+            "stall_timeout must be a positive integer number of seconds (0 disables the watchdog)"
+                .to_string(),
+        ));
     }
     Ok(Some(n as u64))
 }
@@ -1060,6 +1110,26 @@ mod tests {
     fn test_tool_category_is_shell_exec() {
         let tool = TestTool::default();
         assert_eq!(tool.category(), ToolCategory::ShellExec);
+    }
+
+    /// A3: a completed run whose summary carries the vacuous prefix maps to
+    /// `no_tests`, never `passed`.
+    #[test]
+    fn completed_vacuous_summary_maps_to_no_tests_status() {
+        use crate::scheduler::ExecutorStatus;
+        assert_eq!(
+            test_completion_status(ExecutorStatus::Completed, "no_tests: 0 selected"),
+            "no_tests"
+        );
+        assert_eq!(
+            test_completion_status(ExecutorStatus::Completed, "12 passed"),
+            "passed"
+        );
+        assert_eq!(
+            test_completion_status(ExecutorStatus::Failed, "no_tests: x"),
+            "failed",
+            "only Completed maps to no_tests"
+        );
     }
 
     #[test]
@@ -1373,6 +1443,18 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_request_accepts_zero_stall_timeout_as_disabled() {
+        // Schema documents `stall_timeout: 0` as "disable the watchdog";
+        // the runner already skips the check when the bound is 0.
+        let input = json!({"scope": "auto", "stall_timeout": 0});
+        let req = parse_test_request(&input).expect("stall_timeout 0 must parse");
+        assert_eq!(req.stall_timeout_secs, Some(0));
+        let whole_float = json!({"scope": "auto", "stall_timeout": 0.0});
+        let req = parse_test_request(&whole_float).expect("stall_timeout 0.0 must coerce");
+        assert_eq!(req.stall_timeout_secs, Some(0));
+    }
+
+    #[test]
     fn test_tool_exposes_in_definitions() {
         let tool = TestTool::default();
         assert!(tool.expose_in_definitions());
@@ -1417,6 +1499,17 @@ mod tests {
         assert!(cmd.is_ok(), "normal cargo test args should be accepted");
         let cmd = validate_custom_command_for_tool("cargo test -p codegg-core");
         assert!(cmd.is_ok(), "package flag should be accepted");
+    }
+
+    #[test]
+    fn test_tool_custom_accepts_cargo_clippy_args() {
+        let cmd = validate_custom_command_for_tool(
+            "cargo clippy --offline --locked --workspace --all-targets -- -D warnings",
+        );
+        assert!(
+            cmd.is_ok(),
+            "bounded cargo clippy command should be accepted"
+        );
     }
 
     /// Helper that runs the strict custom-command validator the same

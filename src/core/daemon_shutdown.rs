@@ -1,26 +1,10 @@
-//! M003: `CoreDaemon` shutdown and join ownership.
+//! M003: daemon shutdown and join ownership.
 //!
-//! `CoreDaemon` remains the single daemon composition/lifecycle authority.
-//! This module owns shutdown/join only: aborting the two daemon-owned
-//! background tasks (projection-replay maintenance and managed-worktree
-//! reconciliation) when the daemon drops. It introduces no new supervisor,
-//! process manager, or DI container, and preserves the exact
-//! cancellation-before-join sequence.
-//!
+//! Stop and join scheduler jobs before runtime teardown, then abort remaining
+//! background tasks and release singleton metadata in `main.rs`.
 //! ```text
-//! Shutdown order (preserved verbatim):
-//!   1. shutdown cancellation precedes joins (socket serve loop observes
-//!      CancellationToken; see `src/main.rs` daemon serve path)
-//!   2. `CoreDaemon::abort_background_handles` aborts, in order:
-//!        a. projection-maintenance task (5-minute retention/checkpoint loop)
-//!        b. worktree-reconcile task (bounded startup reconciliation)
-//!   3. socket/pid/metadata cleanup while holding the singleton lock
-//!      (main.rs; lock release is authoritative, metadata is diagnostic)
-//!
-//! The scheduler loop handle is intentionally detached (`let _handle =` in
-//! construction): the scheduler owns its own shutdown via permits and
-//! cancellation, not via a daemon-held join. Do not add a second bootstrap
-//! or supervisor here.
+//! socket cancellation -> shutdown_jobs (cancel, reap, join) -> daemon drop
+//! (abort remaining handles) -> socket/pid/metadata cleanup under singleton lock
 //! ```
 
 use super::daemon::CoreDaemon;
@@ -33,11 +17,27 @@ impl Drop for CoreDaemon {
 }
 
 impl CoreDaemon {
+    /// Cancel scheduler work and join its loop before runtime teardown.
+    pub async fn shutdown_jobs(&self) {
+        let mut run_handle = self.scheduler_run_handle.lock().await;
+        if let Some(scheduler) = self.deps.scheduler.as_ref() {
+            scheduler
+                .shutdown(crate::scheduler::SchedulerShutdownMode::ImmediateInterrupt)
+                .await;
+        }
+
+        if let Some(handle) = run_handle.take() {
+            if let Err(error) = handle.await {
+                tracing::warn!(%error, "scheduler loop failed while joining during daemon shutdown");
+            }
+        }
+    }
+
     /// Abort daemon-owned background tasks in shutdown order.
     ///
-    /// Cancellation precedes joins and process cleanup as today. Taking each
-    /// `Option<JoinHandle>` before aborting guarantees at-most-once abort
-    /// even if `drop` runs twice during unwinding.
+    /// Scheduler cancellation and joins happen in `shutdown_jobs` while the
+    /// runtime is live. Taking each `Option<JoinHandle>` here guarantees
+    /// at-most-once abort even if `drop` runs twice during unwinding.
     pub(crate) fn abort_background_handles(&mut self) {
         if let Some(handle) = self._projection_maintenance_handle.take() {
             handle.abort();
@@ -76,9 +76,10 @@ impl CoreDaemon {
     ///
     /// Pinned by `shutdown_phases_match_documented_order`.
     #[cfg(test)]
-    pub(crate) fn shutdown_phase_names() -> [&'static str; 3] {
+    pub(crate) fn shutdown_phase_names() -> [&'static str; 4] {
         [
             "cancel",
+            "shutdown_jobs",
             "abort_background_handles",
             "release_singleton_lock",
         ]
@@ -95,6 +96,7 @@ mod tests {
             CoreDaemon::shutdown_phase_names(),
             [
                 "cancel",
+                "shutdown_jobs",
                 "abort_background_handles",
                 "release_singleton_lock",
             ]
@@ -138,6 +140,31 @@ mod tests {
         // `daemon` drops here; abort must not panic. Explicit scope to pin
         // the drop point for the lifecycle diagram.
         drop(daemon);
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_scheduler_and_joins_its_loop() {
+        let mut daemon = CoreDaemon::new(None, None, None);
+        // Retire any scheduler selected by the host's config before replacing
+        // it with the controlled scheduler used by this lifecycle test.
+        daemon.shutdown_jobs().await;
+
+        let mut config = crate::scheduler::config::ResolvedSchedulerConfig::default();
+        config.enabled = true;
+        let scheduler = crate::scheduler::JobScheduler::new(
+            daemon.deps.job_store.clone(),
+            daemon.workspace_services.clone(),
+            config,
+            daemon.deps.daemon_generation.clone(),
+        );
+        let run_handle = scheduler.spawn_run();
+        daemon.deps.scheduler = Some(scheduler.clone());
+        *daemon.scheduler_run_handle.lock().await = Some(run_handle);
+
+        daemon.shutdown_jobs().await;
+
+        assert!(daemon.scheduler_run_handle.lock().await.is_none());
+        assert_eq!(scheduler.clone().admit_and_dispatch_batch().await, 0);
     }
 
     #[test]

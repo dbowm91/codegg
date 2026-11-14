@@ -118,6 +118,9 @@ pub struct SubAgentRequest {
     pub description: String,
     pub depth: usize,
     pub max_tool_calls: Option<usize>,
+    /// Durable per-attempt wall-clock budget. The configured child ceiling
+    /// still wins when it is smaller.
+    pub max_wall_clock_secs: Option<u64>,
     pub parent_model: Option<String>,
     pub workspace_root: Option<PathBuf>,
     /// Relative directory captured from the parent turn. It is resolved
@@ -166,6 +169,101 @@ pub struct SubAgentRequest {
     /// daemon — and the child's write then stays unattributed, which the
     /// shared-checkout fence refuses on a daemon with a team policy.
     pub execution_audit: Option<codegg_core::audit_instrumentation::TrustedExecutionAuditContext>,
+}
+
+fn resolve_subagent_wall_clock_timeout_secs(
+    run_budget_secs: Option<u64>,
+    configured_ceiling_secs: u64,
+) -> u64 {
+    let configured = if configured_ceiling_secs == 0 {
+        crate::config::schema::DEFAULT_SUBAGENT_WALL_CLOCK_TIMEOUT_SECS
+    } else {
+        configured_ceiling_secs
+    };
+    run_budget_secs
+        .filter(|seconds| *seconds > 0)
+        .map(|seconds| seconds.min(configured))
+        .unwrap_or(configured)
+}
+
+const SUBAGENT_TIMEOUT_CANCELLATION_GRACE: tokio::time::Duration =
+    tokio::time::Duration::from_secs(5);
+
+async fn run_with_subagent_wall_clock_timeout<T, F>(
+    timeout: tokio::time::Duration,
+    cancellation: &tokio::sync::watch::Sender<bool>,
+    execution: F,
+) -> Result<T, Box<dyn std::error::Error + Send + Sync>>
+where
+    F: std::future::Future<Output = Result<T, Box<dyn std::error::Error + Send + Sync>>>,
+{
+    tokio::pin!(execution);
+    match tokio::time::timeout(timeout, &mut execution).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(error),
+        Err(_) => {
+            // Ask the child loop to stop its current provider/tool work before
+            // dropping its future. Tool execution receives the same watch
+            // signal, so scheduler-backed work can observe cancellation too.
+            let _ = cancellation.send(true);
+            let _ = tokio::time::timeout(SUBAGENT_TIMEOUT_CANCELLATION_GRACE, &mut execution).await;
+            Err(Box::new(codegg_core::error::AppError::Tool(
+                codegg_core::error::ToolError::Timeout(
+                    "subagent wall-clock timeout exceeded".into(),
+                ),
+            )))
+        }
+    }
+}
+
+#[cfg(test)]
+mod subagent_wall_clock_tests {
+    use super::*;
+
+    #[test]
+    fn durable_budget_is_clamped_to_configured_ceiling() {
+        assert_eq!(
+            resolve_subagent_wall_clock_timeout_secs(Some(900), 600),
+            600
+        );
+        assert_eq!(
+            resolve_subagent_wall_clock_timeout_secs(Some(300), 600),
+            300
+        );
+        assert_eq!(resolve_subagent_wall_clock_timeout_secs(Some(0), 600), 600);
+        assert_eq!(
+            resolve_subagent_wall_clock_timeout_secs(None, 0),
+            crate::config::schema::DEFAULT_SUBAGENT_WALL_CLOCK_TIMEOUT_SECS
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_signals_cancellation_and_returns_a_typed_timeout() {
+        let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+        let execution = async move {
+            let _ = cancel_rx.changed().await;
+            Err::<(), Box<dyn std::error::Error + Send + Sync>>(Box::new(std::io::Error::other(
+                "child observed cancellation",
+            )))
+        };
+
+        let error = run_with_subagent_wall_clock_timeout(
+            tokio::time::Duration::from_millis(1),
+            &cancel_tx,
+            execution,
+        )
+        .await
+        .expect_err("the child must remain a timeout failure after cancellation");
+
+        assert!(error
+            .to_string()
+            .contains("subagent wall-clock timeout exceeded"));
+        assert!(*cancel_tx.borrow(), "timeout must signal the child loop");
+        assert_eq!(
+            classify_delegated_failure(error.as_ref()),
+            Some("deadline_exceeded")
+        );
+    }
 }
 
 /// Stable, typed compatibility lineage for the pre-durable AgentRun path.
@@ -1239,6 +1337,13 @@ pub fn classify_delegated_failure(
     error: &(dyn std::error::Error + 'static),
 ) -> Option<&'static str> {
     use codegg_core::error::{AppError, ToolError};
+    // The wall-clock timeout is a plain string error from the worker's own
+    // `tokio::time::timeout`, not an `AppError`, so it never reaches the
+    // taxonomy below. Name it here so the durable record carries
+    // `deadline_exceeded` instead of falling back to `"executor"`.
+    if error.to_string().contains("wall-clock timeout") {
+        return Some("deadline_exceeded");
+    }
     match error.downcast_ref::<AppError>()? {
         AppError::Provider(provider) => Some(match provider.error_class() {
             "auth" => "provider_authentication",
@@ -1250,8 +1355,37 @@ pub fn classify_delegated_failure(
         AppError::Cancelled => Some("cancelled"),
         AppError::Permission(_) => Some("tool_permission_denied"),
         AppError::Tool(ToolError::Permission(_)) => Some("tool_permission_denied"),
+        AppError::Tool(ToolError::Timeout(_)) => Some("deadline_exceeded"),
         _ => None,
     }
+}
+
+/// The terminal text of a delegated run's provider events.
+///
+/// The boundary is the last tool interaction: everything after the final
+/// `ToolCall`/`ToolResult` is the terminal turn. Text before that boundary
+/// is pre-tool narration the transcript already records as its own context,
+/// so carrying it into the recorded result would append the stream onto the
+/// terminal message instead of replacing it. A run with no tool interaction
+/// has no boundary and keeps the whole stream.
+fn terminal_text(events: &[crate::provider::ChatEvent]) -> String {
+    let mut boundary: Option<usize> = None;
+    for (index, event) in events.iter().enumerate() {
+        if matches!(
+            event,
+            crate::provider::ChatEvent::ToolCall(_) | crate::provider::ChatEvent::ToolResult { .. }
+        ) {
+            boundary = Some(index);
+        }
+    }
+    let start = boundary.map(|index| index + 1).unwrap_or(0);
+    let mut output = String::new();
+    for event in &events[start..] {
+        if let crate::provider::ChatEvent::TextDelta(text) = event {
+            output.push_str(text);
+        }
+    }
+    output
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -1378,6 +1512,7 @@ async fn run_subagent_task_with_cancel(
             SubAgentResult::failure(task_id, "Task cancelled".to_string())
         }
         result = async {
+            let (child_cancel_tx, child_cancel_rx) = tokio::sync::watch::channel(false);
             let execution = execute_agent_task(
                 &request,
                 &session_id,
@@ -1387,19 +1522,24 @@ async fn run_subagent_task_with_cancel(
                 session_store,
                 pool,
                 subagent_pool,
+                child_cancel_tx.clone(),
+                child_cancel_rx,
             );
-            if let Some(seconds) = config
+            let configured_timeout = config
                 .subagent
                 .as_ref()
-                .and_then(|settings| settings.wall_clock_timeout_secs)
-            {
-                match tokio::time::timeout(tokio::time::Duration::from_secs(seconds), execution).await {
-                    Ok(result) => result,
-                    Err(_) => Err("subagent wall-clock timeout exceeded".into()),
-                }
-            } else {
-                execution.await
-            }
+                .map(crate::config::schema::SubagentConfig::effective_wall_clock_timeout_secs)
+                .unwrap_or(crate::config::schema::DEFAULT_SUBAGENT_WALL_CLOCK_TIMEOUT_SECS);
+            let timeout_secs = resolve_subagent_wall_clock_timeout_secs(
+                request.max_wall_clock_secs,
+                configured_timeout,
+            );
+            run_with_subagent_wall_clock_timeout(
+                tokio::time::Duration::from_secs(timeout_secs),
+                &child_cancel_tx,
+                execution,
+            )
+            .await
         } => {
             match result {
                 Ok((output, report, validation, artifacts)) => {
@@ -1469,6 +1609,8 @@ async fn execute_agent_task(
     _session_store: Arc<SessionStore>,
     pool: Option<SqlitePool>,
     subagent_pool: Arc<SubAgentPool>,
+    child_cancel_tx: tokio::sync::watch::Sender<bool>,
+    child_cancel_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<
     (
         String,
@@ -2032,9 +2174,8 @@ async fn execute_agent_task(
     // registration happens only after the loop owns the receivers, so a
     // persisted control can never race provider transcript mutation.
     let live_registration = if let Some(run_id) = request.run_id.clone() {
-        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
         let (steer_tx, steer_rx) = tokio::sync::mpsc::channel(32);
-        agent_loop.set_cancel_receiver(cancel_rx);
+        agent_loop.set_cancel_receiver(child_cancel_rx.clone());
         agent_loop.set_steer_receiver(steer_rx);
         let control = subagent_pool.durable_run_control.lock().await.clone();
         if let Some(control) = control {
@@ -2072,7 +2213,7 @@ async fn execute_agent_task(
                     crate::agent::run_control::LiveRunHandle {
                         follow_up_tx: agent_loop.follow_up_sender(),
                         steer_tx,
-                        cancel_tx,
+                        cancel_tx: child_cancel_tx.clone(),
                         interrupt_flag: agent_loop.interrupt_flag(),
                     },
                 )
@@ -2267,12 +2408,13 @@ async fn execute_agent_task(
     // never depends on an event stream the failed run did not produce.
     let events = events?;
 
-    let mut output = String::new();
-    for event in &events {
-        if let crate::provider::ChatEvent::TextDelta(text) = event {
-            output.push_str(text);
-        }
-    }
+    // A14: the recorded result is the terminal message, not the accumulated
+    // stream. Text before the last tool interaction is pre-tool narration
+    // (e.g. "I'll read the file..."), and appending it to the final answer
+    // repeats content the transcript already holds as its own rows. Only a
+    // run that never touched a tool has no boundary, and then the whole
+    // stream is the terminal message.
+    let mut output = terminal_text(&events);
 
     if output.is_empty() {
         output = format!(
@@ -2332,6 +2474,10 @@ fn extract_validation_evidence(
                 "failed" => codegg_core::run_result::ValidationStatus::Failed,
                 "cancelled" => codegg_core::run_result::ValidationStatus::Cancelled,
                 "timed_out" => codegg_core::run_result::ValidationStatus::TimedOut,
+                // A3: a vacuous run selected zero tests — not evidence of a
+                // pass and not a failure. Map to `Unknown` so it never reads
+                // green downstream.
+                "no_tests" => codegg_core::run_result::ValidationStatus::Unknown,
                 _ => codegg_core::run_result::ValidationStatus::Unknown,
             };
             validation.push(codegg_core::run_result::ValidationEvidence {
@@ -2487,6 +2633,7 @@ mod admission_tests {
             description: format!("task-{task_id}"),
             depth: 0,
             max_tool_calls: None,
+            max_wall_clock_secs: None,
             parent_model: None,
             workspace_root: None,
             default_working_directory: None,
@@ -2580,6 +2727,30 @@ mod admission_tests {
         );
         assert_eq!(validation[0].summary, "12 tests passed");
         assert_eq!(artifacts[0].reference.as_deref(), Some("job:job-1"));
+    }
+
+    /// A3: a `no_tests` marker is vacuous evidence — it maps to `Unknown`,
+    /// never `Passed`, so a zero-test run cannot read green downstream.
+    #[test]
+    fn no_tests_marker_maps_to_unknown_not_passed() {
+        let outcomes = crate::agent::r#loop::ExecutedToolOutcomes {
+            entries: vec![crate::agent::r#loop::ExecutedToolOutcome {
+                tool_call_id: "test-call".into(),
+                tool_name: "test".into(),
+                output: "no_tests: 0 tests selected (not a pass)\nCODEGG_VALIDATION_RESULT:{\"job_id\":\"job-9\",\"kind\":\"test\",\"status\":\"no_tests\",\"summary\":\"no_tests: 0 tests selected\"}"
+                    .into(),
+                success: true,
+                output_truncated: false,
+            }],
+            truncated: false,
+        };
+        let (validation, _) = extract_validation_evidence(&outcomes);
+        assert_eq!(validation.len(), 1);
+        assert_eq!(
+            validation[0].status,
+            codegg_core::run_result::ValidationStatus::Unknown,
+            "no_tests must not map to Passed"
+        );
     }
 
     /// The delegated transcript capture reads the child's events; it never
@@ -2728,6 +2899,52 @@ mod admission_tests {
         assert!(has_explicit_git_write(&agent));
     }
 
+    /// A14: the recorded result is the terminal message, not the stream.
+    ///
+    /// Text before the last tool interaction is pre-tool narration the
+    /// transcript already holds; the terminal turn replaces it. A two-turn
+    /// run that calls a tool and then emits two paragraphs must record each
+    /// paragraph exactly once.
+    #[test]
+    fn terminal_text_replaces_pre_tool_narration() {
+        use crate::provider::{ChatEvent, ToolCall};
+        let events = vec![
+            ChatEvent::TextDelta("I'll read the file first.".to_string().into()),
+            ChatEvent::ToolCall(ToolCall {
+                id: "call-1".to_string().into(),
+                name: "read".to_string().into(),
+                arguments: serde_json::json!({ "path": "notes.txt" }),
+            }),
+            ChatEvent::ToolResult {
+                tool_call_id: "call-1".to_string().into(),
+                content: "contents".to_string().into(),
+            },
+            ChatEvent::TextDelta("First paragraph. ".to_string().into()),
+            ChatEvent::TextDelta("Second paragraph.".to_string().into()),
+        ];
+        assert_eq!(terminal_text(&events), "First paragraph. Second paragraph.");
+    }
+
+    #[test]
+    fn terminal_text_without_tools_keeps_the_whole_stream() {
+        use crate::provider::ChatEvent;
+        let events = vec![
+            ChatEvent::TextDelta("First paragraph. ".to_string().into()),
+            ChatEvent::TextDelta("Second paragraph.".to_string().into()),
+        ];
+        assert_eq!(terminal_text(&events), "First paragraph. Second paragraph.");
+    }
+
+    #[test]
+    fn wall_clock_timeout_classifies_as_deadline_exceeded() {
+        let error: Box<dyn std::error::Error + Send + Sync> =
+            "subagent wall-clock timeout exceeded".into();
+        assert_eq!(
+            classify_delegated_failure(error.as_ref()),
+            Some("deadline_exceeded")
+        );
+    }
+
     /// `SessionStore` needs a pool; these assertions are about agent
     /// classification and never touch it.
     async fn test_pool() -> SqlitePool {
@@ -2851,6 +3068,7 @@ mod writer_fence_tests {
             description: "task-1".into(),
             depth: 0,
             max_tool_calls: None,
+            max_wall_clock_secs: None,
             parent_model: None,
             workspace_root: None,
             default_working_directory: None,

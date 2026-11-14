@@ -263,6 +263,11 @@ pub fn session_scratch_dir(session_id: &str) -> Result<PathBuf, ScratchError> {
     let session_root = sessions_root.join(name);
     ensure_private_directory(&session_root, expected_uid)?;
     ensure_owner_record(&session_root, &digest)?;
+    // P1: `$CODEGG_SCRATCH_DIR` steered agents at a nonexistent path. Create
+    // the env-pointed dir eagerly at session start when it is set.
+    if let Some(env_dir) = std::env::var_os("CODEGG_SCRATCH_DIR").map(PathBuf::from) {
+        let _ = std::fs::create_dir_all(&env_dir);
+    }
     std::fs::canonicalize(session_root).map_err(ScratchError::Io)
 }
 

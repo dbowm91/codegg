@@ -406,6 +406,7 @@ pub struct TaskTool {
     workspace_id: Option<WorkspaceId>,
     orchestration_owner: Option<AgentOrchestrationOwner>,
     max_depth: u32,
+    max_wall_clock_secs: Option<u64>,
     convergence_store: Option<Arc<dyn ConvergenceStore>>,
     orchestration_config: crate::config::schema::OrchestrationConfig,
     /// M005 corrective C009: the parent's checkout writer fence.
@@ -476,15 +477,15 @@ fn age_secs(since_ms: i64) -> Option<u64> {
 
 /// Q5/S1/S2/R7: normalize a pasted run/task ref.
 ///
-/// Trims whitespace, strips ONE `agent-run-result:` prefix, then the caller
+/// Trims whitespace, strips every `agent-run-result:` prefix, then the caller
 /// parses. Keeps `IdentityParseError` for the remainder: a stripped value
 /// that still fails to parse returns the underlying parse error unchanged.
 fn normalize_id_ref(raw: &str) -> String {
-    let trimmed = raw.trim();
-    trimmed
-        .strip_prefix("agent-run-result:")
-        .map(str::to_string)
-        .unwrap_or_else(|| trimmed.to_string())
+    let mut value = raw.trim().to_string();
+    while let Some(rest) = value.strip_prefix("agent-run-result:") {
+        value = rest.to_string();
+    }
+    value
 }
 
 /// Q5: whole-float-tolerant timeout coercion for `timeout_ms`.
@@ -555,28 +556,92 @@ fn format_control_outcome(outcome: ControlOutcome) -> String {
             }
         }
         ControlOutcome::Terminal(status) => format!("Run is terminal: {}", status.as_str()),
-        ControlOutcome::Status(run) => append_run_failure(
-            format!(
-                "Run: {}\nStatus: {}\nTask: {}\nResult: {}",
-                run.run_id,
-                run.status.as_str(),
-                run.task_id,
-                run.result_ref.clone().unwrap_or_default()
+        ControlOutcome::Status(run) => append_terminal_recovery_guidance(
+            append_run_failure(
+                format!(
+                    "Run: {}\nStatus: {}\nTask: {}\nResult: {}",
+                    run.run_id,
+                    run.status.as_str(),
+                    run.task_id,
+                    run.result_ref.clone().unwrap_or_default()
+                ),
+                &run,
             ),
             &run,
+            false,
         ),
-        ControlOutcome::Wait { run, timed_out } => append_run_failure(
-            format!(
-                "Run: {}\nStatus: {}\nTask: {}\nTimed out: {}\nResult: {}",
-                run.run_id,
-                run.status.as_str(),
-                run.task_id,
-                timed_out,
-                run.result_ref.clone().unwrap_or_default()
+        ControlOutcome::Wait { run, timed_out } => append_terminal_recovery_guidance(
+            append_run_failure(
+                format!(
+                    "Run: {}\nStatus: {}\nTask: {}\nTimed out: {}\nResult: {}",
+                    run.run_id,
+                    run.status.as_str(),
+                    run.task_id,
+                    timed_out,
+                    run.result_ref.clone().unwrap_or_default()
+                ),
+                &run,
             ),
             &run,
+            false,
         ),
     }
+}
+
+fn append_terminal_recovery_guidance(
+    mut output: String,
+    run: &codegg_core::agent_run::AgentRunRecord,
+    result_retrieved: bool,
+) -> String {
+    let Some(guidance) =
+        terminal_recovery_guidance(run.status, run.failure_class.as_deref(), result_retrieved)
+    else {
+        return output;
+    };
+    output.push_str(guidance);
+    output
+}
+
+fn terminal_recovery_guidance(
+    status: codegg_core::agent_run::AgentRunStatus,
+    failure_class: Option<&str>,
+    result_retrieved: bool,
+) -> Option<&'static str> {
+    if !status.is_terminal() {
+        return None;
+    }
+
+    let guidance = match status {
+        codegg_core::agent_run::AgentRunStatus::Failed => {
+            let class =
+                codegg_core::agent_run_attempt::DelegatedFailureClass::classify(failure_class);
+            if class.is_continuable() {
+                if result_retrieved {
+                    "\nTerminal recovery: do not call status or wait again. If this work is still wanted, use action=continue once for this recognized transient failure."
+                } else {
+                    "\nTerminal recovery: status and wait will not advance this run. Retrieve its recorded result once with action=get; if this work is still wanted and the failure class is transient, use action=continue once."
+                }
+            } else if result_retrieved {
+                "\nTerminal recovery: do not call status or wait again. This failure class is not eligible for continuation."
+            } else {
+                "\nTerminal recovery: status and wait will not advance this run. Retrieve its recorded result once with action=get. This failure class is not eligible for continuation."
+            }
+        }
+        codegg_core::agent_run::AgentRunStatus::Cancelled => {
+            if result_retrieved {
+                "\nTerminal recovery: this run was cancelled; do not call status or wait again, and do not continue a cancellation."
+            } else {
+                "\nTerminal recovery: this run was cancelled; status and wait will not advance it. Retrieve its result once with action=get if needed; cancellation cannot be continued."
+            }
+        }
+        _ if result_retrieved => {
+            "\nTerminal run: do not call status or wait again; its recorded result is already retrieved."
+        }
+        _ => {
+            "\nTerminal run: status and wait will not advance it. Retrieve its recorded result once with action=get."
+        }
+    };
+    Some(guidance)
 }
 
 fn append_run_failure(mut output: String, run: &codegg_core::agent_run::AgentRunRecord) -> String {
@@ -1111,6 +1176,9 @@ impl TaskTool {
             workspace_id: None,
             orchestration_owner: None,
             max_depth: 3,
+            max_wall_clock_secs: Some(
+                crate::config::schema::DEFAULT_SUBAGENT_WALL_CLOCK_TIMEOUT_SECS,
+            ),
             convergence_store: None,
             orchestration_config: Default::default(),
             writer_fence: None,
@@ -1147,6 +1215,9 @@ impl TaskTool {
             workspace_id: None,
             orchestration_owner: None,
             max_depth: 3,
+            max_wall_clock_secs: Some(
+                crate::config::schema::DEFAULT_SUBAGENT_WALL_CLOCK_TIMEOUT_SECS,
+            ),
             convergence_store: None,
             orchestration_config: Default::default(),
             writer_fence: None,
@@ -1239,6 +1310,15 @@ impl TaskTool {
 
     pub fn with_max_depth(mut self, max_depth: u32) -> Self {
         self.max_depth = max_depth.max(1);
+        self
+    }
+
+    pub fn with_max_wall_clock_secs(mut self, max_wall_clock_secs: u64) -> Self {
+        self.max_wall_clock_secs = Some(if max_wall_clock_secs > 0 {
+            max_wall_clock_secs
+        } else {
+            crate::config::schema::DEFAULT_SUBAGENT_WALL_CLOCK_TIMEOUT_SECS
+        });
         self
     }
 
@@ -1475,6 +1555,7 @@ impl TaskTool {
             run.status.as_str(),
         ));
         text = append_run_failure(text, run);
+        text = append_terminal_recovery_guidance(text, run, true);
         // Parent-visible liveness: whether a live run loop is attached right
         // now. A non-terminal run with no live loop is queued or between
         // attempts, not executing. Absent without a control service.
@@ -1835,7 +1916,14 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> &str {
-        "Spawn a subagent to handle a task independently. Use spawn_many for a bounded group of independent children, then wait_group/status_group/cancel_group; prefer wait or push notifications over polling get/status. Retrieve flow: spawn returns both Task and Run ids together (durable path: `Task: <task_id> Run: <run_id>`), then poll status|wait with run_id and fetch the recorded result with get using task_id; either id is accepted as an alias in both paths (status/wait resolve task_id to their run, get resolves run_id to its task). Example: spawn -> `Task: agt-abc Run: agr-def` -> wait {\"run_id\": \"agr-def\"} -> get {\"task_id\": \"agt-abc\"} returns recorded_result (bounded to 4096 bytes, see recorded_result_* fields) plus a transcript tail of the last 20 lines / 2000 chars. On the durable delegated path (a daemon-scheduled subagent) the child's completion is pushed as a durable terminal notice at the next turn boundary, so that promise holds there; the legacy in-process path has no such push. Mutating durable runs receive a managed isolated worktree before model execution; read-only runs inherit the parent workspace. Child completion never merges into the parent automatically—inspect the structured result and request explicit typed integration. A durable child that failed with a transient failure (provider rate limit or transient upstream error, deadline or budget exhaustion, or a tool permission refusal) can be continued with action=continue: it starts one new attempt of the same run, seeded with the child's recorded transcript, under the same tools, paths, sandbox, worktree and model as the first attempt. The bound is one continuation per terminal failure, only the parent that spawned the child may continue it, and a continuation cannot widen the child's authority. Use it when the failure was transient and the work is still wanted; an authentication failure or a cancellation is never continued, and a child that has already been continued is not continued again. Waits hold no batch execution slot: never batch a wait with work — issue waits solo or they head-of-line-block their siblings. The wait timeout is clamped to 30s."
+        concat!(
+            "Never batch a wait with other work: a mixed batch rejects it, so issue it alone. A solo wait holds no batch execution slot but is bounded by timeout_ms (clamped to 30s). ",
+            "For background shell jobs use job. Spawn a subagent to handle a task independently. Use spawn_many for a bounded group of independent children, then wait_group/status_group/cancel_group. ",
+            "For nonterminal runs, prefer wait or push notifications over polling status/get. A terminal run will not advance under more status/wait calls: retrieve its result once with get. Terminal status/wait/get results repeat this next-step guidance; if a terminal durable child failed with a recognized transient class and the work is still wanted, use the single permitted action=continue. ",
+            "Spawn returns both Task and Run ids (durable path: `Task: <task_id> Run: <run_id>`); status/wait use run_id and get uses task_id, with aliases accepted on the durable path. Example: spawn -> `Task: agt-abc Run: agr-def` -> wait {\"run_id\": \"agr-def\"} -> get {\"task_id\": \"agt-abc\"} returns recorded_result (bounded to 4096 bytes, see recorded_result_* fields) plus a transcript tail of the last 20 lines / 2000 chars. ",
+            "On the durable delegated path (a daemon-scheduled subagent), completion is pushed as a durable terminal notice at the next turn boundary; the legacy in-process path has no such push. Mutating durable runs receive a managed isolated worktree before model execution; read-only runs inherit the parent workspace. Child completion never merges automatically: inspect the structured result and request explicit typed integration. ",
+            "Continue only a failed durable child with a recognized transient class (provider rate limit or transient upstream error, deadline or budget exhaustion, or tool permission refusal). It starts one new attempt of the same run, seeded with the recorded transcript, under the same tools, paths, sandbox, worktree and model. Only the spawning parent may continue it, at most once per terminal failure, and continuation cannot widen authority. Authentication failure, cancellation, and unclassified failure cannot be continued."
+        )
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -2710,14 +2798,20 @@ impl TaskTool {
             };
             return match result {
                 Ok(summary) => {
+                    // Unified with `RunControl::wait`: a timeout is the
+                    // current summary with `timed_out: true`, not an error.
+                    let timed_out = summary.timed_out;
                     if let Ok(claim_actor) = self.workstream_actor(ctx) {
                         self.publish_workstream_board_projection(&summary, &claim_actor)
                             .await;
                     } else {
                         self.publish_group_projection(&summary);
                     }
-                    Ok(format_group_summary(&summary, false, &[]))
+                    Ok(format_group_summary(&summary, timed_out, &[]))
                 }
+                // Legacy path: `wait` used to return `WaitTimedOut(summary)`.
+                // No production caller constructs it anymore, but the shape
+                // is handled so an older summary still renders as timed out.
                 Err(codegg_core::agent_run_group::AgentRunGroupError::WaitTimedOut(summary)) => {
                     if let Ok(claim_actor) = self.workstream_actor(ctx) {
                         self.publish_workstream_board_projection(&summary, &claim_actor)
@@ -2831,9 +2925,38 @@ impl TaskTool {
             // result. A pasted ref in `task_id` is also accepted as a run
             // alias so the `Result ref: agent-run-result:<run>` line the
             // tool emits pastes back into either field and the loop closes.
+            //
+            // Both id kinds share one lexical contract, so a bare run UUID
+            // also parses as a task id. A `task_id` that names no task must
+            // therefore fall through to the run lookup below instead of
+            // returning "not found" here.
             let resolved_task_id = if let Some(raw_task) = input["task_id"].as_str() {
+                let had_prefix = raw_task.trim().starts_with("agent-run-result:");
                 let normalized = normalize_id_ref(raw_task);
-                if AgentTaskId::parse(&normalized).is_ok() {
+                if had_prefix {
+                    // Pasted `Result: agent-run-result:<run>` — resolve as a
+                    // run first so the alias holds even though the UUID also
+                    // parses as a task id.
+                    if let Ok(run_id) = AgentRunId::parse(&normalized) {
+                        let agent_runs = self.agent_runs.clone().ok_or_else(|| {
+                            ToolError::Execution("missing 'task_id' parameter".to_string())
+                        })?;
+                        let run = agent_runs
+                            .get_run(&run_id)
+                            .await
+                            .map_err(|e| ToolError::Execution(e.to_string()))?
+                            .ok_or_else(|| {
+                                ToolError::Execution(format!("Run {run_id} not found"))
+                            })?;
+                        Some(run.task_id.to_string())
+                    } else {
+                        // Leave the normalized value for the parse below so
+                        // the remainder keeps its `IdentityParseError`.
+                        Some(normalized)
+                    }
+                } else if AgentTaskId::parse(&normalized).is_ok() {
+                    // Defer to the task fetch below, which falls back to a
+                    // run lookup when no task bears this id.
                     Some(normalized)
                 } else if let Ok(run_id) = AgentRunId::parse(&normalized) {
                     let agent_runs = self.agent_runs.clone().ok_or_else(|| {
@@ -2884,6 +3007,44 @@ impl TaskTool {
                     .await
                     .map_err(|e| ToolError::Execution(e.to_string()))?;
                 let Some(task) = task else {
+                    // No task bears this id, but both id kinds share one
+                    // lexical contract: a bare run UUID also parses as a task
+                    // id. Fall back to the run lookup so `get(task_id=<run>)`
+                    // resolves as documented instead of reporting "not found"
+                    // for an id the caller legitimately holds.
+                    if let Ok(run_id) = AgentRunId::parse(&normalize_id_ref(raw_id)) {
+                        if let Ok(Some(run)) = agent_runs.get_run(&run_id).await {
+                            let aliased = agent_runs
+                                .get_task(&run.task_id)
+                                .await
+                                .map_err(|e| ToolError::Execution(e.to_string()))?;
+                            if let Some(aliased) = aliased {
+                                if self.parent_session_id.as_deref().is_some_and(|session| {
+                                    aliased.originating_session_id != session
+                                }) {
+                                    return Ok(format!("Task {} not found", task_id));
+                                }
+                                let run_for_task = agent_runs
+                                    .get_run_for_task(&aliased.task_id)
+                                    .await
+                                    .map_err(|e| ToolError::Execution(e.to_string()))?;
+                                if let Some(run_for_task) = run_for_task {
+                                    let recorded = agent_runs
+                                        .get_result(&run_for_task.run_id)
+                                        .await
+                                        .map_err(|e| ToolError::Execution(e.to_string()))?;
+                                    return Ok(self
+                                        .format_durable_task_get(&aliased, &run_for_task, recorded)
+                                        .await);
+                                }
+                                return Ok(format!(
+                                    "Task: {}\nStatus: {}",
+                                    aliased.task_id,
+                                    aliased.status.as_str()
+                                ));
+                            }
+                        }
+                    }
                     return Ok(format!("Task {} not found", task_id));
                 };
                 if self
@@ -3071,6 +3232,7 @@ impl TaskTool {
                                 authority_digest,
                                 budget: AgentRunBudget {
                                     max_depth: Some(self.max_depth),
+                                    max_wall_clock_secs: self.max_wall_clock_secs,
                                     ..Default::default()
                                 },
                                 shared_scratch: shared_scratch.clone(),
@@ -3353,6 +3515,7 @@ impl TaskTool {
                     allowed_paths,
                     depth: self.depth + 1,
                     max_tool_calls: None,
+                    max_wall_clock_secs: self.max_wall_clock_secs,
                     parent_model: child_model,
                     workspace_root: self.workspace_root.clone(),
                     default_working_directory: self
@@ -4304,6 +4467,43 @@ mod tests {
     }
 
     #[test]
+    fn terminal_run_guidance_stops_polling_and_bounds_continuation() {
+        use codegg_core::agent_run::AgentRunStatus;
+
+        let failed =
+            terminal_recovery_guidance(AgentRunStatus::Failed, Some("deadline_exceeded"), false)
+                .expect("terminal failure guidance");
+        assert!(failed.contains("status and wait will not advance"));
+        assert!(failed.contains("action=get"));
+        assert!(failed.contains("action=continue once"));
+
+        let retrieved =
+            terminal_recovery_guidance(AgentRunStatus::Failed, Some("provider_transient"), true)
+                .expect("retrieved terminal failure guidance");
+        assert!(retrieved.contains("do not call status or wait again"));
+        assert!(retrieved.contains("action=continue once"));
+
+        for class in ["provider_authentication", "unclassified"] {
+            let guidance = terminal_recovery_guidance(AgentRunStatus::Failed, Some(class), false)
+                .expect("non-continuable terminal guidance");
+            assert!(guidance.contains("not eligible for continuation"));
+            assert!(!guidance.contains("action=continue once"));
+        }
+
+        let cancelled =
+            terminal_recovery_guidance(AgentRunStatus::Cancelled, Some("cancelled"), false)
+                .expect("cancelled terminal guidance");
+        assert!(cancelled.contains("cancellation cannot be continued"));
+        assert!(terminal_recovery_guidance(AgentRunStatus::Running, None, false).is_none());
+
+        let task_tool = TaskTool::default();
+        let description = task_tool.description();
+        assert!(
+            description.contains("A terminal run will not advance under more status/wait calls")
+        );
+    }
+
+    #[test]
     fn transcript_tool_name_parses_the_captured_shape() {
         assert_eq!(
             transcript_tool_name("tool_call_id=call-1 tool=read arguments={\"path\":\"x\"}"),
@@ -4527,5 +4727,16 @@ mod tests {
             snapshot.contains("PROBE_OK"),
             "the timeout snapshot carries the recorded result, got: {snapshot}"
         );
+    }
+
+    #[test]
+    fn normalize_id_ref_strips_every_pasted_prefix() {
+        // `Result: agent-run-result:<id>` must paste directly into `get`.
+        assert_eq!(normalize_id_ref("  agent-run-result:abc-123  "), "abc-123");
+        assert_eq!(
+            normalize_id_ref("agent-run-result:agent-run-result:abc-123"),
+            "abc-123"
+        );
+        assert_eq!(normalize_id_ref("abc-123"), "abc-123");
     }
 }

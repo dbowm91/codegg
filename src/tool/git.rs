@@ -158,7 +158,7 @@ impl Tool for GitTool {
     }
 
     fn description(&self) -> &str {
-        "Execute git operations. Read-only subcommands (status, diff, log, show, blame, branch, tag, remote, worktree, stash, rev-parse, for-each-ref) return structured JSON results via egggit — but for bounded reads prefer `git_query` (status, diff, log, branches), which resolves the session workspace root and takes no workdir argument; `git` defaults to the session workspace root when workdir is absent and owns mutations and recovery (explicit workdir selects the checkout for mutations). Prefer the typed `mutation` action (stage_paths, commit, branch_create, merge, revert, push, reset_hard, clean, …) for local, network, and destructive operations — they route through a snapshot-based executor with state-delta, env hardening, and RunStore persistence. For in-progress operations (merge/rebase/cherry-pick/revert), use `operation_state` (read) and `recover` (write: continue | abort | skip) — these inspect plumbing, refuse cross-operation misuse, and return a typed `RecoveryOutcome`. Conflicts are NOT auto-resolved: edit conflict markers in the worktree, `git add <path>` to stage the resolution, then run `recover` with `continue`."
+        "Execute git operations. Split: `git` owns summaries plus typed mutations and recovery (explicit workdir selects the checkout for mutations; defaults to the session workspace root when workdir is absent). Read-only subcommands (status, diff, log, show, blame, branch, tag, remote, worktree, stash, rev-parse, for-each-ref) return structured JSON results via egggit — but for bounded reads prefer `git_query` (status, diff, log, branches), which resolves the session workspace root, takes no workdir argument, and returns porcelain display plus JSON results. Prefer the typed `mutation` action (stage_paths, commit, branch_create, merge, revert, push, reset_hard, clean, …) for local, network, and destructive operations — they route through a snapshot-based executor with state-delta, env hardening, and RunStore persistence. For in-progress operations (merge/rebase/cherry-pick/revert), use `operation_state` (read) and `recover` (write: continue | abort | skip) — these inspect plumbing, refuse cross-operation misuse, and return a typed `RecoveryOutcome`. Conflicts are NOT auto-resolved: edit conflict markers in the worktree, `git add <path>` to stage the resolution, then run `recover` with `continue`."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -306,7 +306,7 @@ impl Tool for GitTool {
                 },
                 "dry_run": {
                     "type": "boolean",
-                    "description": "Pass --dry-run (clean_preview)"
+                    "description": "Preview only: commit returns the message preview without mutating; clean_preview equivalent for clean (default: false)"
                 },
                 "ignored": {
                     "type": "boolean",
@@ -396,7 +396,7 @@ impl GitTool {
             .as_str()
             .ok_or_else(|| ToolError::Execution("missing 'subcommand' parameter".to_string()))?;
 
-        let args: Vec<String> = input["args"]
+        let mut args: Vec<String> = input["args"]
             .as_array()
             .map(|arr| {
                 arr.iter()
@@ -404,6 +404,14 @@ impl GitTool {
                     .collect()
             })
             .unwrap_or_default();
+        // A10: `git(subcommand:"log", args:["log","-5"])` repeats the
+        // subcommand inside `args` (`git log log -5`). Git then errors to
+        // stderr while the wrapper reported empty output + exit 0. Strip
+        // the duplicated leading subcommand so the read shares `git_query`
+        // resolution instead of failing opaquely.
+        if args.first().map(String::as_str) == Some(subcommand) {
+            args.remove(0);
+        }
 
         if self.read_only_only && !Self::invocation_is_read_only(subcommand, &args) {
             return Err(ToolError::Permission(format!(
@@ -535,8 +543,16 @@ impl GitTool {
         if !stderr.is_empty() {
             if !result.is_empty() {
                 result.push_str("\n--- stderr ---\n");
+            } else {
+                result.push_str("--- stderr ---\n");
             }
             result.push_str(&stderr);
+        }
+        // A10: never report a false empty success — an empty stdout+stderr
+        // body is marked explicitly so the agent does not read it as
+        // evidence.
+        if result.trim().is_empty() {
+            result.push_str("(empty git output; check stderr/exit code — a duplicated subcommand in `args` is stripped automatically)");
         }
 
         result.push_str(&format!(
@@ -749,6 +765,14 @@ impl GitTool {
                         ))
                     })?
                     .to_string();
+                if dry_run {
+                    return Ok(TypedMutationReport {
+                        output: format!(
+                            "dry_run: commit preview — message {msg:?}, selection {sel:?} (no mutation made)"
+                        ),
+                        changed: false,
+                    });
+                }
                 gm_ops::commit_with_selection(
                     &exec,
                     workdir,
@@ -762,6 +786,14 @@ impl GitTool {
             }
             "commit_amend" => {
                 let msg = message.unwrap_or("HEAD");
+                if dry_run {
+                    return Ok(TypedMutationReport {
+                        output: format!(
+                            "dry_run: commit_amend preview — message {msg:?} (no mutation made)"
+                        ),
+                        changed: false,
+                    });
+                }
                 gm_ops::commit_with_selection(
                     &exec,
                     workdir,
@@ -1687,5 +1719,22 @@ mod schema_tests {
                 "a read-only agent must not be refused `git status`: {error:?}"
             );
         }
+    }
+
+    /// F12: the `git` description documents the split (summaries plus typed
+    /// mutations/recovery live here; bounded porcelain+JSON reads live in
+    /// `git_query`) without changing any shape.
+    #[test]
+    fn git_description_documents_summary_mutation_split() {
+        let tool = GitTool::new();
+        let desc = tool.description();
+        assert!(
+            desc.contains("summaries") && desc.contains("porcelain display plus JSON"),
+            "git description must document the split, got: {desc}"
+        );
+        assert!(
+            desc.contains("git_query"),
+            "git description must point at git_query, got: {desc}"
+        );
     }
 }

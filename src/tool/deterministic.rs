@@ -122,9 +122,44 @@ impl Tool for EggsactTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
-        let mut result = self.runtime.call_json(self.eggsact_name, input)?;
+        // F3: YAML-shaped config must surface as unsupported before the
+        // JSON-first auto-detect misclassifies it as `format: json`.
+        if self.codegg_name == "config_preflight" {
+            if let Some(text) = input.get("text").and_then(|v| v.as_str()) {
+                if looks_like_yaml_config_input(text) {
+                    return Ok(config_yaml_unsupported_result().output);
+                }
+            }
+        }
+        let mut result = self.runtime.call_json(self.eggsact_name, input.clone())?;
         if self.codegg_name == "text_security_inspect" || self.codegg_name == "identifier_inspect" {
             apply_text_security_noise_filter(&mut result);
+        }
+        if self.codegg_name == "math_eval" {
+            apply_math_division_by_zero_fix(
+                &mut result,
+                input.get("expression").and_then(|v| v.as_str()),
+            );
+            apply_math_caret_xor_fix(
+                &mut result,
+                input.get("expression").and_then(|v| v.as_str()),
+            );
+        }
+        if self.codegg_name == "validate_json" {
+            apply_validate_json_invalid_fix(&mut result);
+        }
+        if self.codegg_name == "text_diff_explain" {
+            apply_diff_explain_ascii_fix(
+                &mut result,
+                input.get("a").and_then(|v| v.as_str()),
+                input.get("b").and_then(|v| v.as_str()),
+            );
+        }
+        if self.codegg_name == "path_normalize" {
+            apply_path_normalize_escape_flag(
+                &mut result,
+                input.get("path").and_then(|v| v.as_str()),
+            );
         }
         Ok(result.output)
     }
@@ -134,28 +169,367 @@ impl Tool for EggsactTool {
         input: serde_json::Value,
         _ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
-        let mut result = self.runtime.call_json(self.eggsact_name, input)?;
+        // F3: same YAML guard as `execute` — unsupported before delegation.
+        if self.codegg_name == "config_preflight" {
+            if let Some(text) = input.get("text").and_then(|v| v.as_str()) {
+                if looks_like_yaml_config_input(text) {
+                    let synthetic = config_yaml_unsupported_result();
+                    return Ok(to_structured_result(self.eggsact_name, synthetic));
+                }
+            }
+        }
+        let mut result = self.runtime.call_json(self.eggsact_name, input.clone())?;
         if self.codegg_name == "text_security_inspect" || self.codegg_name == "identifier_inspect" {
             apply_text_security_noise_filter(&mut result);
+        }
+        if self.codegg_name == "math_eval" {
+            apply_math_division_by_zero_fix(
+                &mut result,
+                input.get("expression").and_then(|v| v.as_str()),
+            );
+            apply_math_caret_xor_fix(
+                &mut result,
+                input.get("expression").and_then(|v| v.as_str()),
+            );
+        }
+        if self.codegg_name == "validate_json" {
+            apply_validate_json_invalid_fix(&mut result);
+        }
+        if self.codegg_name == "text_diff_explain" {
+            apply_diff_explain_ascii_fix(
+                &mut result,
+                input.get("a").and_then(|v| v.as_str()),
+                input.get("b").and_then(|v| v.as_str()),
+            );
+        }
+        if self.codegg_name == "path_normalize" {
+            apply_path_normalize_escape_flag(
+                &mut result,
+                input.get("path").and_then(|v| v.as_str()),
+            );
         }
         Ok(to_structured_result(self.eggsact_name, result))
     }
 }
 
-/// F5: enforce the tool's own caveat — single-character ASCII confusables on
-/// plain English are informational noise. When findings carry no
-/// mixed-script/invisible/secret/INSTRUCTION_PHRASE/non-confusable signal
-/// (same rule as the preflight filter), demote single-char ASCII confusables
-/// to info/informational so the verdict falls to allow. Applies to both
-/// `text_security_inspect` and `identifier_inspect`. Findings are deduped by
-/// (code/kind, normalized message, span) before demotion, and
-/// IDENT_COLLISION findings require word-boundary/token equality — a mere
-/// substring (e.g. `rm` inside `immediately`) must not fire.
+/// F3: YAML-ish `key: value` shape that is not JSON/TOML/dotenv.
+/// Mirrors `src/preflight/service.rs:344-383` so the tool surface and the
+/// preflight gate agree: YAML input is unsupported, never `format: json`.
+/// JSON starts with `{`/`[`/quote; TOML has `[section]`/`=`; dotenv is
+/// `KEY=value`. A bare `key: value` line is YAML per the documented contract.
+pub(crate) fn looks_like_yaml_config_input(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.starts_with('{') || trimmed.starts_with('[') || trimmed.starts_with('"') {
+        return false;
+    }
+    // TOML section or assignment wins over YAML.
+    if trimmed.contains('[') && trimmed.contains(']') {
+        return false;
+    }
+    let mut yaml_lines = 0;
+    for line in trimmed.lines().take(5) {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // `key: value` with a space after the colon; exclude `::` and URLs.
+        if let Some(colon) = line.find(':') {
+            let after = &line[colon + 1..];
+            if after.starts_with(' ') || after.starts_with('\t') || after.is_empty() {
+                let key = line[..colon].trim();
+                if !key.is_empty()
+                    && key
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.')
+                    && !key.contains('=')
+                    && !line.contains("://")
+                {
+                    yaml_lines += 1;
+                }
+            }
+        }
+    }
+    yaml_lines > 0
+}
+
+/// F3: synthetic unsupported-format result for YAML input to
+/// `config_preflight`. Verdict `unsupported_format` with machine code
+/// `CONFIG_UNSUPPORTED_YAML` plus a convert hint, so callers do not read a
+/// `format: json` / `CONFIG_PARSE_FAILED` misclassification as a JSON bug.
+pub(crate) fn config_yaml_unsupported_result() -> crate::eggsact::adapter::EggsactCallResult {
+    let output = "ok: false\nverdict: unsupported_format\nmachine_code: CONFIG_UNSUPPORTED_YAML\nformat: yaml\nmessage: config_preflight: YAML input is unsupported (format: yaml, verdict: unsupported_format); convert to JSON/TOML"
+        .to_string();
+    let result = serde_json::json!({
+        "valid": false,
+        "verdict": "unsupported_format",
+        "format": "yaml",
+        "machine_code": "CONFIG_UNSUPPORTED_YAML",
+        "message": "YAML input is unsupported; convert to JSON/TOML",
+    });
+    crate::eggsact::adapter::EggsactCallResult {
+        output,
+        success: false,
+        elapsed_ms: 0,
+        truncated: false,
+        machine_code: Some("CONFIG_UNSUPPORTED_YAML".to_string()),
+        result: Some(result),
+        findings: Some(serde_json::json!([{
+            "code": "CONFIG_UNSUPPORTED_YAML",
+            "severity": "error",
+            "message": "YAML input is unsupported; convert to JSON/TOML",
+        }])),
+        warnings: None,
+        error_type: None,
+        error: Some("YAML input is unsupported; convert to JSON/TOML".to_string()),
+    }
+}
+
+/// A2: `^` in `math_eval` is bitwise XOR, not exponentiation.
+/// Upstream parses `^` as `BitXor` (`2^3` → `1`), while `**` is power
+/// (`2**3` → `8`). A bare `^` with no warning is a silent wrong answer, so
+/// append an `agent_hint` pointing at `**`. Mirrors the
+/// `apply_math_*_fix` pattern (:193-250): preserve the numeric result, only
+/// add the missing signal.
+pub(crate) fn apply_math_caret_xor_fix(
+    result: &mut crate::eggsact::adapter::EggsactCallResult,
+    expression: Option<&str>,
+) {
+    let Some(expr) = expression else {
+        return;
+    };
+    if !expr.contains('^') {
+        return;
+    }
+    if result.output.contains("bitwise XOR") || result.output.contains("use `**`") {
+        return;
+    }
+    let hint = "`^` is bitwise XOR (2^3=1), not exponentiation; use `**` for power (2**3=8)";
+    result.output.push_str(&format!("\nagent_hint: {hint}"));
+    if let Some(res) = result.result.as_mut() {
+        if let Some(obj) = res.as_object_mut() {
+            if !obj.contains_key("agent_hint") {
+                obj.insert(
+                    "agent_hint".to_string(),
+                    serde_json::Value::String(hint.to_string()),
+                );
+            }
+        }
+    }
+}
+
+/// A12: `validate_json` invalid JSON arrives as `ok: true` with
+/// `result.valid: false`. `ok` is transport (tool ran); validity is
+/// `result.valid`/`verdict`. Emphasize `valid: false`/`verdict: invalid`
+/// first and flip the harness `success` so `success=false` agrees with the
+/// invalid payload instead of reading as a pass.
+pub(crate) fn apply_validate_json_invalid_fix(
+    result: &mut crate::eggsact::adapter::EggsactCallResult,
+) {
+    let is_invalid = result
+        .result
+        .as_ref()
+        .and_then(|v| v.get("valid"))
+        .and_then(|v| v.as_bool())
+        .is_some_and(|valid| !valid);
+    if !is_invalid {
+        return;
+    }
+    result.success = false;
+    if result.output.starts_with("ok: true") {
+        result.output = result.output.replacen("ok: true", "ok: false", 1);
+    }
+    if !result.output.contains("valid: false") {
+        result.output = format!("valid: false\nverdict: invalid\n{}", result.output);
+    } else if !result.output.contains("verdict: invalid") {
+        result.output = result
+            .output
+            .replace("valid: false", "valid: false\nverdict: invalid");
+    }
+    if result.machine_code.is_none() {
+        result.machine_code = Some("JSON_INVALID".to_string());
+    }
+}
+
+/// H11: normalize `math_eval` divide-by-zero into a precise machine code.
+///
+/// Upstream returns `ok:false, machine_code: INVALID_ARGUMENTS` with no
+/// `result`/`details` for `1/0`. Agents (and `validate_json`-style precise
+/// errors) need `DivisionByZero` + "division by zero". When upstream already
+/// reports a machine code, it is preserved and only missing detail is added;
+/// otherwise an `INVALID_ARGUMENTS` (or missing-code) failure whose message
+/// or expression indicates division by zero is mapped to `DivisionByZero`.
+pub(crate) fn apply_math_division_by_zero_fix(
+    result: &mut crate::eggsact::adapter::EggsactCallResult,
+    expression: Option<&str>,
+) {
+    if result.success {
+        return;
+    }
+    if result.machine_code.as_deref() == Some("DivisionByZero") {
+        if result.error.is_none() {
+            result.error = Some("division by zero".to_string());
+        }
+        if !result.output.contains("division by zero") {
+            result.output.push_str("\nmessage: division by zero");
+        }
+        return;
+    }
+    let haystack = [
+        result.error.as_deref().unwrap_or(""),
+        result
+            .result
+            .as_ref()
+            .and_then(|v| v.as_str())
+            .unwrap_or(""),
+        &result.output,
+        expression.unwrap_or(""),
+    ]
+    .join("\n")
+    .to_lowercase();
+    let looks_like_div_zero = haystack.contains("division by zero")
+        || haystack.contains("divide by zero")
+        || haystack.contains("division_by_zero")
+        || (haystack.contains("zero") && haystack.contains("divis"))
+        || expression.is_some_and(|expr| {
+            let compact: String = expr.chars().filter(|c| !c.is_whitespace()).collect();
+            compact.contains("/0") || compact.contains("%0") || compact.contains("//0")
+        });
+    if !looks_like_div_zero {
+        return;
+    }
+    // Only remap the generic argument error (or a missing code); a specific
+    // upstream code is preserved per contract.
+    let remappable = result.machine_code.is_none()
+        || result.machine_code.as_deref() == Some("INVALID_ARGUMENTS");
+    if !remappable {
+        return;
+    }
+    result.machine_code = Some("DivisionByZero".to_string());
+    if result.error.is_none()
+        || !result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains("division by zero")
+    {
+        result.error = Some("division by zero".to_string());
+    }
+    if !result.output.contains("DivisionByZero") {
+        result.output.push_str("\nmachine_code: DivisionByZero");
+    }
+    if !result.output.contains("division by zero") {
+        result.output.push_str("\nmessage: division by zero");
+    }
+}
+
+/// H15: `colour`/`color` are pure ASCII — never cite Unicode
+/// normalization. Only emit the normalization sentence when a normalization
+/// comparison actually differs; for ASCII diffs say so and stop.
+pub(crate) fn apply_diff_explain_ascii_fix(
+    result: &mut crate::eggsact::adapter::EggsactCallResult,
+    a: Option<&str>,
+    b: Option<&str>,
+) {
+    let (Some(a), Some(b)) = (a, b) else {
+        return;
+    };
+    if !a.is_ascii() || !b.is_ascii() {
+        return;
+    }
+    if !(result.output.contains("normalization") || result.output.contains("normalisation")) {
+        return;
+    }
+    let replacement =
+        "Both strings are ASCII; the difference is not a Unicode normalization issue.";
+    result.output = result.output.replace(
+        "differ in Unicode normalization. Choose appropriate normalization",
+        "differ as plain ASCII text. No Unicode normalization applies",
+    );
+    if !result.output.contains("Both strings are ASCII") {
+        result
+            .output
+            .push_str(&format!("\nagent_instruction: {replacement}"));
+    }
+    if let Some(res) = result.result.as_mut() {
+        if let Some(obj) = res.as_object_mut() {
+            if let Some(instr) = obj.get("agent_instruction").and_then(|v| v.as_str()) {
+                if instr.contains("normalization") || instr.contains("normalisation") {
+                    obj.insert(
+                        "agent_instruction".to_string(),
+                        serde_json::Value::String(replacement.to_string()),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// P2/P8: absolute inputs that climb above `/` (e.g.
+/// `/../../../../etc/passwd` collapsing to `/etc/passwd` with only
+/// "Collapsing dot-dot" warnings). Append an explicit `escapes_root: true`
+/// signal so policy consumers can treat it as escape, not hygiene.
+pub(crate) fn apply_path_normalize_escape_flag(
+    result: &mut crate::eggsact::adapter::EggsactCallResult,
+    input: Option<&str>,
+) {
+    let Some(input) = input else {
+        return;
+    };
+    if !input.starts_with('/') {
+        return;
+    }
+    let mut depth: i32 = 0;
+    let mut escapes = false;
+    for part in input.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                depth -= 1;
+                if depth < 0 {
+                    escapes = true;
+                }
+            }
+            _ => depth += 1,
+        }
+    }
+    if !escapes {
+        return;
+    }
+    if !result.output.contains("escapes_root") {
+        result.output.push_str("\nescapes_root: true");
+    }
+    if let Some(res) = result.result.as_mut() {
+        if let Some(obj) = res.as_object_mut() {
+            obj.insert("escapes_root".to_string(), serde_json::Value::Bool(true));
+        }
+    }
+}
+
+/// F4: enforce the tool's own caveat — single-character ASCII confusables on
+/// plain English are informational noise. Findings are always deduped by
+/// (normalized kind, normalized message, span) — confusable-kind variants
+/// (`confusable`/`confusables`/`CONFUSABLES`/`text_inspect_warning`) collapse
+/// to one bucket — and single-char ASCII confusables are always demoted to
+/// info/informational, even when an actionable signal is present (the verdict
+/// still only falls to allow when no actionable signal remains). Actionable
+/// findings sort first so `INSTRUCTION_PHRASE`/secret-exposure is never
+/// buried behind confusable noise. Applies to both `text_security_inspect`
+/// and `identifier_inspect`. IDENT_COLLISION findings require
+/// word-boundary/token equality — a mere substring (e.g. `rm` inside
+/// `immediately`) must not fire.
 pub(crate) fn apply_text_security_noise_filter(
     result: &mut crate::eggsact::adapter::EggsactCallResult,
 ) {
     dedup_deterministic_findings(result);
+    // F4: always demote single-char ASCII noise, even when actionable is
+    // present. Verdict flip below stays gated on no-actionable.
+    demote_single_char_ascii_confusables(result);
     if has_actionable_text_signal_for_deterministic(result) {
+        sort_actionable_first(result);
         return;
     }
     let has_confusable = result.output.to_lowercase().contains("confusable")
@@ -223,12 +597,22 @@ pub(crate) fn apply_text_security_noise_filter(
     if !has_confusable && !has_collision {
         return;
     }
-    // Demote single-char ASCII confusables and spurious IDENT_COLLISIONs in
-    // both structured slots.
+    // H1/H2: no actionable signal (no INSTRUCTION_PHRASE/secret/
+    // invisible/mixed-script) — a plain-English sentence must clear.
+    // Demote single-char ASCII confusables, separator variants
+    // (`user_name`/`username`), and any remaining IDENT_COLLISION to info
+    // in both structured slots; verdict falls to allow below.
     let mut demoted_any = false;
     if let Some(findings) = result.findings.as_mut().and_then(|v| v.as_array_mut()) {
         for item in findings.iter_mut() {
-            if is_single_char_ascii_confusable_finding(item) || is_spurious_ident_collision(item) {
+            if is_single_char_ascii_confusable_finding(item)
+                || is_spurious_ident_collision(item)
+                || is_separator_variant_collision(item)
+                || is_ident_collision(item)
+            {
+                if is_separator_variant_collision(item) {
+                    mark_separator_variant(item);
+                }
                 demote_to_info(item);
                 demoted_any = true;
             }
@@ -239,7 +623,12 @@ pub(crate) fn apply_text_security_noise_filter(
             for item in arr.iter_mut() {
                 if is_single_char_ascii_confusable_finding(item)
                     || is_spurious_ident_collision(item)
+                    || is_separator_variant_collision(item)
+                    || is_ident_collision(item)
                 {
+                    if is_separator_variant_collision(item) {
+                        mark_separator_variant(item);
+                    }
                     demote_to_info(item);
                     demoted_any = true;
                 }
@@ -260,6 +649,9 @@ pub(crate) fn apply_text_security_noise_filter(
                 .replace("\"verdict\":\"review\"", "\"verdict\":\"allow\"");
         }
     }
+    // F4: actionable first in both slots so triage never buries the real
+    // signal behind demoted noise.
+    sort_actionable_first(result);
 }
 
 /// Normalized message for dedup: lowercase, trimmed, inner whitespace collapsed.
@@ -270,6 +662,20 @@ fn normalize_message_for_dedup(s: &str) -> String {
         .join(" ")
 }
 
+/// F4: collapse confusable-kind variants so `confusable`, `confusables`,
+/// `CONFUSABLES`, and `text_inspect_warning` dedupe to one bucket instead of
+/// triple-counting the same `'m' (looks like 'rn')` finding.
+fn normalize_kind_for_dedup(kind: &str) -> String {
+    let lower = kind.to_lowercase();
+    if lower.contains("confusable") || lower == "text_inspect_warning" {
+        return "confusable".to_string();
+    }
+    if lower.contains("collision") {
+        return "ident_collision".to_string();
+    }
+    lower
+}
+
 fn finding_kind(item: &serde_json::Value) -> String {
     item.get("type")
         .or_else(|| item.get("kind"))
@@ -277,6 +683,130 @@ fn finding_kind(item: &serde_json::Value) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_lowercase()
+}
+
+/// F4: always demote single-char ASCII confusables, even when an actionable
+/// signal is present. The verdict flip stays gated on no-actionable; this
+/// only lowers the noise severity so triage reads `info` next to the real
+/// `INSTRUCTION_PHRASE`/secret finding.
+fn demote_single_char_ascii_confusables(result: &mut crate::eggsact::adapter::EggsactCallResult) {
+    if let Some(findings) = result.findings.as_mut().and_then(|v| v.as_array_mut()) {
+        for item in findings.iter_mut() {
+            if is_single_char_ascii_confusable_finding(item) {
+                demote_to_info(item);
+            }
+        }
+    }
+    if let Some(res) = result.result.as_mut() {
+        if let Some(arr) = res.get_mut("findings").and_then(|v| v.as_array_mut()) {
+            for item in arr.iter_mut() {
+                if is_single_char_ascii_confusable_finding(item) {
+                    demote_to_info(item);
+                }
+            }
+        }
+    }
+}
+
+/// F4: per-item actionable test for sorting — mirrors
+/// `has_actionable_text_signal_for_deterministic` without the output-string
+/// fallback. Spurious collisions never count; any non-confusable kind or an
+/// instruction/secret/mixed-script/invisible message does.
+fn is_actionable_finding(item: &serde_json::Value) -> bool {
+    if is_spurious_ident_collision(item) {
+        return false;
+    }
+    if let Some(kind) = item
+        .get("type")
+        .or_else(|| item.get("kind"))
+        .or_else(|| item.get("code"))
+        .and_then(|v| v.as_str())
+    {
+        let kind = kind.to_lowercase();
+        if kind != "confusable"
+            && kind != "confusables"
+            && kind != "text_inspect_warning"
+            && !kind.is_empty()
+        {
+            return true;
+        }
+    }
+    if let Some(msg) = item.get("message").and_then(|v| v.as_str()) {
+        let lower = msg.to_lowercase();
+        for token in [
+            "instruction_phrase",
+            "prompt_injection",
+            "secret",
+            "credential",
+            "api_key",
+            "private_key",
+            "hidden_char",
+            "invisible",
+            "zero_width",
+            "mixed_script",
+            "mixed-script",
+            "homoglyph_attack",
+        ] {
+            if lower.contains(token) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn severity_rank(item: &serde_json::Value) -> u8 {
+    match item
+        .get("severity")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_lowercase()
+        .as_str()
+    {
+        "critical" | "high" | "error" => 0,
+        "medium" | "warn" | "warning" => 1,
+        _ => {
+            let disp = item
+                .get("disposition")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if disp == "informational" || disp == "info" {
+                2
+            } else if is_actionable_finding(item) {
+                1
+            } else {
+                2
+            }
+        }
+    }
+}
+
+fn sort_findings_actionable_first(arr: &mut [serde_json::Value]) {
+    arr.sort_by(|a, b| {
+        severity_rank(a).cmp(&severity_rank(b)).then_with(|| {
+            // Same severity: actionable kinds first.
+            let aa = is_actionable_finding(a);
+            let ab = is_actionable_finding(b);
+            ab.cmp(&aa)
+        })
+    });
+}
+
+/// F4: sort actionable findings first in both structured slots.
+fn sort_actionable_first(result: &mut crate::eggsact::adapter::EggsactCallResult) {
+    if let Some(findings) = result.findings.as_mut().and_then(|v| v.as_array_mut()) {
+        let mut vec = std::mem::take(findings);
+        sort_findings_actionable_first(&mut vec);
+        *findings = vec;
+    }
+    if let Some(res) = result.result.as_mut() {
+        if let Some(arr) = res.get_mut("findings").and_then(|v| v.as_array_mut()) {
+            let mut vec = std::mem::take(arr);
+            sort_findings_actionable_first(&mut vec);
+            *arr = vec;
+        }
+    }
 }
 
 fn finding_span_key(item: &serde_json::Value) -> String {
@@ -297,7 +827,7 @@ fn dedup_array(arr: &mut Vec<serde_json::Value>) {
     use std::collections::HashSet;
     let mut seen: HashSet<String> = HashSet::new();
     arr.retain(|item| {
-        let kind = finding_kind(item);
+        let kind = normalize_kind_for_dedup(&finding_kind(item));
         let msg = item.get("message").and_then(|v| v.as_str()).unwrap_or("");
         let key = format!(
             "{}|{}|{}",
@@ -496,6 +1026,63 @@ fn demote_to_info(item: &mut serde_json::Value) {
     }
 }
 
+fn is_ident_collision(item: &serde_json::Value) -> bool {
+    finding_kind(item).contains("collision")
+}
+
+fn strip_separators(s: &str) -> String {
+    s.chars()
+        .filter(|c| *c != '_' && *c != '-' && *c != '.' && *c != ' ')
+        .collect::<String>()
+        .to_lowercase()
+}
+
+/// H2: `user_name`/`username` is a separator variant, not a homoglyph
+/// attack. Neutralize separators before comparison; equal-after-strip
+/// reports as `separator_variant (info)`, never `IDENT_COLLISION (warn)`.
+fn is_separator_variant_collision(item: &serde_json::Value) -> bool {
+    if !is_ident_collision(item) {
+        return false;
+    }
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(ids) = item.get("identifiers").and_then(|v| v.as_array()) {
+        for id in ids {
+            if let Some(s) = id.as_str() {
+                candidates.push(s.to_string());
+            }
+        }
+    }
+    if candidates.is_empty() {
+        let msg = item.get("message").and_then(|v| v.as_str()).unwrap_or("");
+        candidates = quoted_tokens(msg);
+    }
+    if candidates.len() < 2 {
+        return false;
+    }
+    for i in 0..candidates.len() {
+        for j in (i + 1)..candidates.len() {
+            let a = strip_separators(&candidates[i]);
+            let b = strip_separators(&candidates[j]);
+            if !a.is_empty()
+                && a == b
+                && candidates[i].to_lowercase() != candidates[j].to_lowercase()
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn mark_separator_variant(item: &mut serde_json::Value) {
+    if let Some(obj) = item.as_object_mut() {
+        obj.insert(
+            "variant".to_string(),
+            serde_json::Value::String("separator_variant".to_string()),
+        );
+    }
+}
+
 fn has_remaining_actionable_finding(res: &serde_json::Value) -> bool {
     if let Some(arr) = res.get("findings").and_then(|v| v.as_array()) {
         for item in arr {
@@ -676,7 +1263,7 @@ pub fn build_eggsact_tools(runtime: Arc<EggsactRuntime>) -> (Vec<EggsactTool>, V
     always_visible.push(EggsactTool::new(
         "validate_json",
         "validate_json",
-        "Validate JSON syntax and report precise parse errors or structure info. Use before writing or editing JSON files. Pass real newlines, not literal backslash-n sequences. `ok` is transport (tool ran); validity is result.valid/verdict.",
+        "Validate JSON syntax and report precise parse errors or structure info. Use before writing or editing JSON files. Pass real newlines, not literal backslash-n sequences. `ok` is transport (tool ran); validity is result.valid/verdict — check result.valid (valid:false means invalid even when ok:true); invalid JSON surfaces valid:false/verdict:invalid first with success=false. Validation bundle: validate_json/validate_toml/config_preflight; discover siblings via tool_search.",
         simple_schema(json!({
             "text": { "type": "string", "description": "JSON text to validate" },
         }), &["text"]),
@@ -689,7 +1276,7 @@ pub fn build_eggsact_tools(runtime: Arc<EggsactRuntime>) -> (Vec<EggsactTool>, V
     always_visible.push(EggsactTool::new(
         "validate_toml",
         "validate_toml",
-        "Validate TOML files (Cargo.toml, pyproject.toml, etc.) and report parse errors with line/column. Use before writing or editing TOML. Pass real newlines, not literal backslash-n sequences.",
+        "Validate TOML files (Cargo.toml, pyproject.toml, etc.) and report parse errors with line/column. Use before writing or editing TOML. Pass real newlines, not literal backslash-n sequences. Validation bundle: validate_json/validate_toml/config_preflight; discover siblings via tool_search.",
         simple_schema(json!({
             "text": { "type": "string", "description": "TOML text to validate" },
         }), &["text"]),
@@ -715,7 +1302,7 @@ pub fn build_eggsact_tools(runtime: Arc<EggsactRuntime>) -> (Vec<EggsactTool>, V
     always_visible.push(EggsactTool::new(
         "path_normalize",
         "path_normalize",
-        "Normalize a filesystem path: collapse dot segments, resolve components. Use when comparing or validating file paths.",
+        "Normalize a filesystem path: collapse dot segments, resolve components. Use when comparing or validating file paths. Absolute inputs that climb above `/` (e.g. `/../../../../etc/passwd`) carry `escapes_root: true` so policy consumers can treat it as a signal.",
         simple_schema(json!({
             "path": { "type": "string", "description": "Path to normalize" },
         }), &["path"]),
@@ -827,7 +1414,7 @@ pub fn build_eggsact_tools(runtime: Arc<EggsactRuntime>) -> (Vec<EggsactTool>, V
     deferred.push(EggsactTool::new(
         "math_eval",
         "math_eval",
-        "Evaluate arithmetic, calculator, and scientific expressions deterministically (math calc arithmetic). Handles units and constants in the expression; state-mutating and random functions are disabled. Use for math and unit tasks instead of asking the model to calculate or spawning python_script for 2+2.",
+        "Evaluate arithmetic, calculator, and scientific expressions deterministically (math calc arithmetic). `^` is bitwise XOR (2^3=1), not exponentiation; use `**` for power (2**3=8). Handles units and constants in the expression; state-mutating and random functions are disabled. Use for math and unit tasks instead of asking the model to calculate or spawning python_script for 2+2.",
         simple_schema(json!({
             "expression": { "type": "string", "description": "Math expression to evaluate (e.g. '2+2*2', 'sqrt(144)', '30m + 100ft')" },
         }), &["expression"]),
@@ -973,6 +1560,34 @@ mod tests {
             verdict, "review",
             "actionable INSTRUCTION_PHRASE must survive the noise filter"
         );
+        // F4: single-char ASCII noise is demoted even when actionable is
+        // present, but the verdict must not flip to allow.
+        let findings = result
+            .result
+            .as_ref()
+            .and_then(|r| r.get("findings"))
+            .and_then(|v| v.as_array())
+            .expect("findings present");
+        assert_eq!(
+            findings[0]
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or(""),
+            "prompt_injection",
+            "actionable finding must sort first, got: {findings:?}"
+        );
+        let confusable = findings
+            .iter()
+            .find(|f| f.get("type").and_then(|v| v.as_str()).unwrap_or("") == "confusable")
+            .expect("confusable still present");
+        assert_eq!(
+            confusable
+                .get("severity")
+                .and_then(|v| v.as_str())
+                .unwrap_or(""),
+            "info",
+            "single-char ASCII confusable must demote to info even when actionable present"
+        );
     }
 
     #[test]
@@ -1006,6 +1621,58 @@ mod tests {
         assert!(
             desc.contains("`ok` is transport"),
             "contract output schema must carry the ok-is-transport sentence, got: {desc}"
+        );
+    }
+
+    #[test]
+    fn validation_bundle_line_names_all_three_validators() {
+        // F19: the bundle pattern from `tool_search` is copied onto the
+        // member descriptions so discovery names the sibling validators.
+        let map: std::collections::HashMap<_, _> = descriptions().into_iter().collect();
+        for tool in ["validate_json", "validate_toml"] {
+            assert!(
+                map[tool]
+                    .contains("Validation bundle: validate_json/validate_toml/config_preflight"),
+                "{tool} description must carry the validation bundle line, got: {}",
+                map[tool]
+            );
+            assert!(
+                map[tool].contains("discover siblings via tool_search"),
+                "{tool} description must point at tool_search discovery, got: {}",
+                map[tool]
+            );
+        }
+    }
+
+    #[test]
+    fn config_preflight_yaml_sentence_matches_unsupported_behavior() {
+        // F19 per F3: YAML input surfaces as unsupported (F3 probe and the
+        // `looks_like_yaml_config_input` guard agree) — the sentence must
+        // promise that signal, not an invalid-JSON verdict.
+        let map: std::collections::HashMap<_, _> = descriptions().into_iter().collect();
+        assert!(
+            map["config_preflight"].contains("YAML is not supported"),
+            "config_preflight must state the YAML limit, got: {}",
+            map["config_preflight"]
+        );
+        assert!(
+            map["config_preflight"].contains("reported as unsupported"),
+            "config_preflight must promise the unsupported signal, got: {}",
+            map["config_preflight"]
+        );
+        assert!(
+            looks_like_yaml_config_input("server:\n  host: localhost"),
+            "the F3 probe shape must keep hitting the unsupported path"
+        );
+        let synthetic = config_yaml_unsupported_result();
+        assert_eq!(
+            synthetic
+                .result
+                .as_ref()
+                .and_then(|r| r.get("verdict"))
+                .and_then(|v| v.as_str()),
+            Some("unsupported_format"),
+            "YAML behavior backing the sentence must stay unsupported_format"
         );
     }
 
@@ -1113,6 +1780,315 @@ mod tests {
         assert!(
             !is_spurious_ident_collision(&item),
             "casefold-equal tokens are a real collision"
+        );
+    }
+
+    #[test]
+    fn math_divide_by_zero_maps_to_division_by_zero_code() {
+        // Upstream shape: ok:false, INVALID_ARGUMENTS, no details.
+        let mut result = crate::eggsact::adapter::EggsactCallResult {
+            output: "ok: false\nmachine_code: INVALID_ARGUMENTS".to_string(),
+            success: false,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: Some("INVALID_ARGUMENTS".to_string()),
+            result: None,
+            findings: None,
+            warnings: None,
+            error_type: Some("INVALID_ARGUMENTS".to_string()),
+            error: Some("invalid arguments for 1/0".to_string()),
+        };
+        apply_math_division_by_zero_fix(&mut result, Some("1/0"));
+        assert_eq!(result.machine_code.as_deref(), Some("DivisionByZero"));
+        assert_eq!(result.error.as_deref(), Some("division by zero"));
+        assert!(result.output.contains("DivisionByZero"));
+        assert!(result.output.contains("division by zero"));
+    }
+
+    #[test]
+    fn math_division_fix_preserves_specific_upstream_code() {
+        let mut result = crate::eggsact::adapter::EggsactCallResult {
+            output: "ok: false\nmachine_code: DivisionByZero".to_string(),
+            success: false,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: Some("DivisionByZero".to_string()),
+            result: None,
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        apply_math_division_by_zero_fix(&mut result, Some("1/0"));
+        assert_eq!(result.machine_code.as_deref(), Some("DivisionByZero"));
+        assert_eq!(result.error.as_deref(), Some("division by zero"));
+    }
+
+    #[test]
+    fn benign_english_demotes_to_allow_with_dedup() {
+        let mut result = crate::eggsact::adapter::EggsactCallResult {
+            output: "verdict: review\nCONFUSABLES\nconfusables\nIDENT_COLLISION: 'message' collides with 'normal'"
+                .to_string(),
+            success: true,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({
+                "verdict": "review",
+                "findings": [
+                    {"kind": "confusables", "message": "Text contains confusable character 'm' (looks like 'rn')"},
+                    {"kind": "CONFUSABLES", "message": "Text contains confusable character 'm' (looks like 'rn')"},
+                    {"kind": "IDENT_COLLISION", "message": "IDENT_COLLISION: 'message' collides with 'normal'"}
+                ]
+            })),
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        apply_text_security_noise_filter(&mut result);
+        let verdict = result
+            .result
+            .as_ref()
+            .and_then(|v| v.get("verdict"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert_eq!(
+            verdict, "allow",
+            "benign English must clear, got: {verdict}"
+        );
+        assert!(result.output.contains("verdict: allow"));
+    }
+
+    #[test]
+    fn separator_variant_is_info_not_collision() {
+        let item = serde_json::json!({
+            "kind": "IDENT_COLLISION",
+            "message": "confusable: 'user_name' collides with 'username'"
+        });
+        assert!(is_separator_variant_collision(&item));
+        assert!(is_ident_collision(&item));
+    }
+
+    #[test]
+    fn ascii_diff_never_cites_normalization() {
+        let mut result = crate::eggsact::adapter::EggsactCallResult {
+            output: "agent_instruction: Strings differ in Unicode normalization. Choose appropriate normalization"
+                .to_string(),
+            success: true,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({
+                "agent_instruction": "Strings differ in Unicode normalization. Choose appropriate normalization"
+            })),
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        apply_diff_explain_ascii_fix(&mut result, Some("colour"), Some("color"));
+        assert!(!result.output.contains("differ in Unicode normalization"));
+        assert!(result.output.contains("Both strings are ASCII"));
+    }
+
+    #[test]
+    fn path_escape_flag_fires_above_root() {
+        let mut result = crate::eggsact::adapter::EggsactCallResult {
+            output: "path: /etc/passwd".to_string(),
+            success: true,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({"path": "/etc/passwd"})),
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        apply_path_normalize_escape_flag(&mut result, Some("/../../../../etc/passwd"));
+        assert!(result.output.contains("escapes_root: true"));
+    }
+
+    #[test]
+    fn yaml_config_is_unsupported_not_json() {
+        assert!(looks_like_yaml_config_input("foo: bar\nbaz: 1"));
+        assert!(!looks_like_yaml_config_input("{\"a\": 1}"));
+        assert!(!looks_like_yaml_config_input("[section]\nkey=1"));
+        assert!(!looks_like_yaml_config_input("KEY=value"));
+        let synthetic = config_yaml_unsupported_result();
+        assert!(!synthetic.success);
+        assert_eq!(
+            synthetic.machine_code.as_deref(),
+            Some("CONFIG_UNSUPPORTED_YAML")
+        );
+        assert!(synthetic.output.contains("unsupported_format"));
+        assert!(synthetic.output.contains("CONFIG_UNSUPPORTED_YAML"));
+        assert!(synthetic.output.contains("convert to JSON/TOML"));
+        let verdict = synthetic
+            .result
+            .as_ref()
+            .and_then(|r| r.get("verdict"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert_eq!(verdict, "unsupported_format");
+    }
+
+    #[test]
+    fn math_caret_is_xor() {
+        // `^` is bitwise XOR (2^3=1), not exponentiation (2**3=8).
+        let map: std::collections::HashMap<_, _> = descriptions().into_iter().collect();
+        assert!(
+            map["math_eval"].contains("bitwise XOR"),
+            "math_eval description must warn ^ is XOR, got: {}",
+            map["math_eval"]
+        );
+        assert!(
+            map["math_eval"].contains("**"),
+            "math_eval description must point at ** for power, got: {}",
+            map["math_eval"]
+        );
+        let mut result = crate::eggsact::adapter::EggsactCallResult {
+            output: "ok: true\nresult: 1".to_string(),
+            success: true,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({"value": 1})),
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        apply_math_caret_xor_fix(&mut result, Some("2^3"));
+        assert!(
+            result.output.contains("bitwise XOR"),
+            "caret expression must warn ^ is XOR, got: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("**"),
+            "caret warning must point at **, got: {}",
+            result.output
+        );
+        // No caret — no warning.
+        let mut clean = crate::eggsact::adapter::EggsactCallResult {
+            output: "ok: true\nresult: 8".to_string(),
+            success: true,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({"value": 8})),
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        apply_math_caret_xor_fix(&mut clean, Some("2**3"));
+        assert!(!clean.output.contains("bitwise XOR"));
+    }
+
+    #[test]
+    fn validate_json_invalid_flips_success_and_emphasizes_valid() {
+        let map: std::collections::HashMap<_, _> = descriptions().into_iter().collect();
+        assert!(
+            map["validate_json"].contains("result.valid"),
+            "validate_json description must tell callers to check result.valid, got: {}",
+            map["validate_json"]
+        );
+        let mut result = crate::eggsact::adapter::EggsactCallResult {
+            output: "ok: true\nmachine_code: JSON_INVALID\nresult: {\"valid\": false}".to_string(),
+            success: true,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: Some("JSON_INVALID".to_string()),
+            result: Some(serde_json::json!({"valid": false, "error": "trailing comma"})),
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        apply_validate_json_invalid_fix(&mut result);
+        assert!(
+            !result.success,
+            "invalid JSON (valid:false) must flip success to false"
+        );
+        assert!(
+            result.output.contains("valid: false"),
+            "envelope must emphasize valid:false first, got: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("verdict: invalid") || result.output.contains("valid: false"),
+            "envelope must surface invalid verdict, got: {}",
+            result.output
+        );
+        // Valid JSON stays untouched.
+        let mut ok_result = crate::eggsact::adapter::EggsactCallResult {
+            output: "ok: true\nresult: {\"valid\": true}".to_string(),
+            success: true,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({"valid": true})),
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        apply_validate_json_invalid_fix(&mut ok_result);
+        assert!(ok_result.success);
+        assert!(ok_result.output.starts_with("ok: true"));
+    }
+
+    #[test]
+    fn noise_filter_normalizes_confusable_kinds_and_sorts_actionable_first() {
+        // `confusables` vs `CONFUSABLES` with the same message must dedupe.
+        let mut result = crate::eggsact::adapter::EggsactCallResult {
+            output: "verdict: review\nconfusables\nCONFUSABLES\nINSTRUCTION_PHRASE".to_string(),
+            success: true,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({
+                "verdict": "review",
+                "findings": [
+                    {"kind": "CONFUSABLES", "severity": "medium", "message": "Text contains confusable character 'm' (looks like 'rn')"},
+                    {"kind": "confusables", "severity": "medium", "message": "Text contains confusable character 'm' (looks like 'rn')"},
+                    {"kind": "prompt_injection", "severity": "high", "message": "INSTRUCTION_PHRASE: ignore previous"}
+                ]
+            })),
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        apply_text_security_noise_filter(&mut result);
+        let findings = result
+            .result
+            .as_ref()
+            .and_then(|r| r.get("findings"))
+            .and_then(|v| v.as_array())
+            .expect("findings present");
+        // Normalized confusable kinds dedupe 2 -> 1, plus 1 actionable = 2 total.
+        assert_eq!(
+            findings.len(),
+            2,
+            "normalized confusable kinds must dedupe, got {findings:?}"
+        );
+        assert!(
+            is_actionable_finding(&findings[0]),
+            "actionable finding must sort first, got: {findings:?}"
+        );
+        let verdict = result
+            .result
+            .as_ref()
+            .and_then(|r| r.get("verdict"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert_eq!(
+            verdict, "review",
+            "actionable present must not flip verdict to allow"
         );
     }
 }

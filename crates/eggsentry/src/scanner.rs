@@ -14,6 +14,18 @@ static GITHUB_TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("valid GitHub token regex")
 });
 
+// F18: lenient short-PAT rule (8-81 chars, Medium) alongside the strict
+// 82+-char Critical above. Choice: add the lenient Medium rule rather than
+// documenting exact shapes only, so truncated/test-like `github_pat_...`
+// probes surface as Medium instead of a silent 0 that invites over-trust.
+// The trailing `\b` keeps the ranges disjoint (the 82-char Critical token
+// has no word boundary after 8-81 chars, so it fires Critical once, never
+// Critical+Medium). Real 82-char PATs stay Critical; short synthetic
+// tokens (like `github_pat_1234567890`) surface as Medium for triage.
+static GITHUB_PAT_SHORT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"github_pat_[A-Za-z0-9_]{8,81}\b").expect("valid short GitHub PAT regex")
+});
+
 static SLACK_TOKEN_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"xox[baprs]-[A-Za-z0-9-]{10,}").expect("valid Slack token regex"));
 
@@ -103,6 +115,14 @@ static SECRET_RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
             severity: Severity::Critical,
             confidence: Confidence::High,
             recommendation: "Remove GitHub token and revoke it in GitHub settings".into(),
+        },
+        Rule {
+            re: GITHUB_PAT_SHORT_RE.clone(),
+            category: SecurityCategory::SecretExposure,
+            severity: Severity::Medium,
+            confidence: Confidence::Medium,
+            recommendation: "Possible truncated GitHub PAT (short github_pat_ token); verify and revoke if real, remove test placeholder if synthetic"
+                .into(),
         },
         Rule {
             re: SLACK_TOKEN_RE.clone(),
@@ -232,10 +252,7 @@ fn is_dependency_file(path: &Path) -> bool {
         return true;
     }
     // Check .github/workflows/*.yml
-    if path.to_string_lossy().starts_with(GITHUB_WORKFLOWS_PREFIX) {
-        return true;
-    }
-    false
+    path.to_string_lossy().starts_with(GITHUB_WORKFLOWS_PREFIX)
 }
 
 fn make_finding(path: Option<&Path>, line: usize, rule: &Rule, evidence: &str) -> SecurityFinding {
@@ -506,6 +523,51 @@ fn main() {
             .collect();
         assert!(!secret_findings.is_empty());
         assert!(secret_findings[0].evidence.contains("github_pat_"));
+        // F18: full 82-char PAT stays Critical (not demoted to Medium).
+        assert!(
+            secret_findings
+                .iter()
+                .any(|f| f.severity == Severity::Critical),
+            "82-char PAT must stay Critical, got: {:?}",
+            secret_findings
+                .iter()
+                .map(|f| &f.severity)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn short_github_pat_is_medium_not_missed() {
+        // F18: lenient 8-81 rule — a truncated/test-like PAT surfaces as
+        // Medium instead of a silent 0. `github_pat_1234567890...` (short)
+        // must fire Medium; the 82-char Critical above stays Critical.
+        let token = format!("github_pat_{}", "A".repeat(20));
+        let text = format!("here is a fake secret: {token}");
+        let findings = inspect_text(None, &text);
+        let secret_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.category == SecurityCategory::SecretExposure)
+            .collect();
+        assert!(
+            !secret_findings.is_empty(),
+            "short github_pat_ token must not be a silent 0"
+        );
+        assert!(
+            secret_findings
+                .iter()
+                .any(|f| f.severity == Severity::Medium),
+            "short PAT must be Medium, got: {:?}",
+            secret_findings
+                .iter()
+                .map(|f| &f.severity)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !secret_findings
+                .iter()
+                .any(|f| f.severity == Severity::Critical),
+            "short PAT must not claim Critical"
+        );
     }
 
     #[test]
@@ -882,6 +944,7 @@ MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHA..."#;
         // not production (see M1).
         std::sync::LazyLock::force(&super::AWS_KEY_RE);
         std::sync::LazyLock::force(&super::GITHUB_TOKEN_RE);
+        std::sync::LazyLock::force(&super::GITHUB_PAT_SHORT_RE);
         std::sync::LazyLock::force(&super::SLACK_TOKEN_RE);
         std::sync::LazyLock::force(&super::NPM_TOKEN_RE);
         std::sync::LazyLock::force(&super::PYPI_TOKEN_RE);

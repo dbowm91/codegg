@@ -11,15 +11,17 @@ not by the unit suite.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
 import subprocess
 import tempfile
 import unittest
+from typing import Any
 from unittest import mock
 
-from dev.harness_lab import autonomy, autonomy_run, budget, scoring
+from dev.harness_lab import autonomy, autonomy_run, budget, h007_results, scoring
 from dev.harness_lab.supervisor import HarnessError
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -71,7 +73,526 @@ class BuildTranscriptTests(unittest.TestCase):
         self.assertEqual(transcript["tool_calls"][1]["status"], "failed")
 
 
+class JobIdArgumentTelemetryTests(unittest.TestCase):
+    def test_failed_unbound_job_call_keeps_only_argument_shape(self) -> None:
+        projector = autonomy_run._ToolCallProjector()
+        for call_id, argument_state in (("missing", "missing"), ("present", "string")):
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": 10,
+                              "params": {"update": {
+                                  "sessionUpdate": "tool_call", "toolCallId": call_id,
+                                  "title": "job", "codeggAction": "status",
+                                  "codeggJobIdArgumentState": argument_state,
+                                  "codeggArgumentsSha256": "a" * 64,
+                              }}})
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": 20,
+                              "params": {"update": {
+                                  "sessionUpdate": "tool_call_update", "toolCallId": call_id,
+                                  "status": "failed", "rawOutput": "private error details",
+                              }}})
+
+        calls = projector.calls()
+        self.assertEqual([call["job_id_argument_state"] for call in calls],
+                         ["missing", "string"])
+        safe = autonomy_run.diagnostics.summarize_job_tool_sequence(calls)
+        self.assertEqual(safe["unbound_job_tool_call_count"], 2)
+        self.assertEqual(safe["unbound_call_state_counts"], {
+            "status:missing:failed": 1,
+            "status:string:failed": 1,
+        })
+        encoded = json.dumps(calls)
+        self.assertNotIn("private error details", encoded)
+        self.assertNotIn("private-job-id", encoded)
+
+    def test_failed_job_status_projects_only_fixed_error_classes(self) -> None:
+        private_id = "5a4c2d88-29a7-4ea7-b617-1833bcb6c80b"
+        digest = hashlib.sha256(private_id.encode("utf-8")).hexdigest()
+        projector = autonomy_run._ToolCallProjector()
+        outputs = (
+            ("not_found", "Error: tool execution failed: job not found"),
+            ("generic", "Error: tool execution failed: PRIVATE_DETAIL"),
+            ("unknown", "PRIVATE_UNRECOGNIZED_OUTPUT"),
+            ("missing", None),
+        )
+        for index, (call_id, raw_output) in enumerate(outputs):
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": 10 + index,
+                              "params": {"update": {
+                                  "sessionUpdate": "tool_call", "toolCallId": call_id,
+                                  "title": "job", "codeggAction": "status",
+                                  "codeggJobIdArgumentState": "string",
+                                  "codeggJobIdArgumentSha256": digest,
+                                  "codeggArgumentsSha256": "a" * 64,
+                              }}})
+            update = {"sessionUpdate": "tool_call_update", "toolCallId": call_id,
+                      "status": "failed"}
+            if raw_output is not None:
+                update["rawOutput"] = raw_output
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": 20 + index,
+                              "params": {"update": update}})
+
+        calls = projector.calls()
+        self.assertEqual([call.get("job_status_error_class") for call in calls], [
+            "job_not_found", "tool_execution_failed", "unclassified", None,
+        ])
+        summary = autonomy_run.diagnostics.summarize_job_tool_sequence(calls)
+        self.assertEqual(summary["failed_job_status_error_class_counts"], {
+            "job_not_found": 1,
+            "tool_execution_failed": 1,
+            "unclassified": 1,
+            "unobserved": 1,
+        })
+        encoded = json.dumps({"calls": calls, "summary": summary})
+        for private_value in (private_id, digest, "PRIVATE_DETAIL", "PRIVATE_UNRECOGNIZED_OUTPUT"):
+            self.assertNotIn(private_value, encoded)
+
+    def test_failed_job_status_attribution_joins_error_and_result_binding_safely(self) -> None:
+        requested_id = "5a4c2d88-29a7-4ea7-b617-1833bcb6c80b"
+        digest = hashlib.sha256(requested_id.encode("utf-8")).hexdigest()
+        projector = autonomy_run._ToolCallProjector()
+        calls = (
+            ("backend", "string", digest,
+             "Error: Execution backend unavailable: PRIVATE_BACKEND_DETAIL"),
+            ("missing", "missing", None,
+             "Error: tool execution failed: job not found"),
+        )
+        for index, (call_id, argument_state, argument_digest, output) in enumerate(calls):
+            started = {
+                "sessionUpdate": "tool_call", "toolCallId": call_id,
+                "title": "job", "codeggAction": "status",
+                "codeggJobIdArgumentState": argument_state,
+                "codeggArgumentsSha256": "a" * 64,
+            }
+            if argument_digest is not None:
+                started["codeggJobIdArgumentSha256"] = argument_digest
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": 10 + index,
+                              "params": {"update": started}})
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": 20 + index,
+                              "params": {"update": {
+                                  "sessionUpdate": "tool_call_update", "toolCallId": call_id,
+                                  "status": "failed", "rawOutput": output,
+                              }}})
+
+        sequence = autonomy_run.diagnostics.summarize_job_tool_sequence(projector.calls())
+        attribution = sequence["failed_job_status_attribution"]
+        self.assertEqual(attribution["state"], "observed")
+        self.assertEqual(attribution["rows"], [
+            {
+                "error_class": "execution_backend_unavailable",
+                "argument_state": "string",
+                "result_job_id_state": "absent",
+                "request_result_state": "unobserved",
+                "count": 1,
+            },
+            {
+                "error_class": "job_not_found",
+                "argument_state": "missing",
+                "result_job_id_state": "absent",
+                "request_result_state": "mismatched",
+                "count": 1,
+            },
+        ])
+        safe = autonomy_run.diagnostics.safe_job_status_failure_attribution({
+            **attribution,
+            "private_marker": "PRIVATE_ATTRIBUTION_SENTINEL",
+            "rows": [{**row, "private_id": requested_id} for row in attribution["rows"]],
+        })
+        self.assertEqual(safe, attribution)
+        self.assertIsNone(autonomy_run.diagnostics.safe_job_status_failure_attribution({
+            **attribution,
+            "rows": [{**attribution["rows"][0], "count": True}],
+        }))
+        encoded = json.dumps({"calls": projector.calls(), "safe": safe})
+        for private_value in (
+            requested_id, digest, "PRIVATE_BACKEND_DETAIL", "PRIVATE_ATTRIBUTION_SENTINEL",
+        ):
+            self.assertNotIn(private_value, encoded)
+
+    def test_failed_background_test_submit_keeps_only_allowlisted_error_class(self) -> None:
+        projector = autonomy_run._ToolCallProjector()
+        for call_id, error_class in (
+                ("typed", "tool_execution_failed"),
+                ("unknown", "PRIVATE_ERROR_CLASS")):
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": 10,
+                              "params": {"update": {
+                                  "sessionUpdate": "tool_call", "toolCallId": call_id,
+                                  "title": "test", "codeggAction": "submit",
+                                  "codeggArgumentsSha256": "a" * 64,
+                              }}})
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": 20,
+                              "params": {"update": {
+                                  "sessionUpdate": "tool_call_update", "toolCallId": call_id,
+                                  "status": "failed", "rawOutput": "PRIVATE_PATH PRIVATE_TEST",
+                                  "codeggToolErrorClass": error_class,
+                              }}})
+
+        calls = projector.calls()
+        self.assertEqual(calls[0]["tool_error_class"], "tool_execution_failed")
+        self.assertNotIn("tool_error_class", calls[1])
+        summary = autonomy_run.diagnostics.summarize_job_tool_sequence(calls)
+        self.assertEqual(summary["failed_test_submit_error_class_counts"], {
+            "tool_execution_failed": 1,
+            "unobserved": 1,
+        })
+        encoded = json.dumps({"calls": calls, "summary": summary})
+        for private_value in ("PRIVATE_PATH", "PRIVATE_TEST", "PRIVATE_ERROR_CLASS"):
+            self.assertNotIn(private_value, encoded)
+
+    def test_job_id_request_digest_matches_or_rejects_result_identity_privately(self) -> None:
+        requested_id = "5a4c2d88-29a7-4ea7-b617-1833bcb6c80b"
+        other_id = "efb875a1-5c33-4148-ae3a-20b3e82061aa"
+        digest = hashlib.sha256(requested_id.encode("utf-8")).hexdigest()
+        projector = autonomy_run._ToolCallProjector()
+        for call_id, result_id in (("match", requested_id), ("mismatch", other_id)):
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": 10,
+                              "params": {"update": {
+                                  "sessionUpdate": "tool_call", "toolCallId": call_id,
+                                  "title": "job", "codeggAction": "status",
+                                  "codeggJobIdArgumentState": "string",
+                                  "codeggJobIdArgumentSha256": digest,
+                                  "codeggArgumentsSha256": "a" * 64,
+                              }}})
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": 20,
+                              "params": {"update": {
+                                  "sessionUpdate": "tool_call_update", "toolCallId": call_id,
+                                  "status": "completed",
+                                  "rawOutput": f"job running {result_id}; private result text",
+                              }}})
+
+        calls = projector.calls()
+        self.assertEqual([call["job_id_argument_matches_result"] for call in calls],
+                         ["matched", "mismatched"])
+        safe = autonomy_run.diagnostics.summarize_job_tool_sequence(calls)
+        correlation = safe["job_id_request_result_correlation"]
+        self.assertEqual(correlation["state_counts"], {"matched": 1, "mismatched": 1})
+        self.assertFalse(correlation["all_applicable_calls_match"])
+        encoded = json.dumps(safe)
+        self.assertNotIn(requested_id, encoded)
+        self.assertNotIn(other_id, encoded)
+        self.assertNotIn(digest, encoded)
+        self.assertNotIn("private result text", encoded)
+
+
+class SerializedTranscriptAuditTests(unittest.TestCase):
+    def _calls(self) -> list[dict[str, Any]]:
+        job_id = "5a4c2d88-29a7-4ea7-b617-1833bcb6c80b"
+        digest = hashlib.sha256(job_id.encode("utf-8")).hexdigest()
+        return [
+            {"index": 0, "tool": "test", "status": "completed",
+             "started_elapsed_ms": 10, "finished_elapsed_ms": 20,
+             "job": {"job_id": job_id, "action": "submit", "status": "running"}},
+            {"index": 1, "tool": "job", "status": "completed",
+             "started_elapsed_ms": 30, "finished_elapsed_ms": 40,
+             "job_id_argument_state": "string",
+             "job_id_argument_matches_result": "matched",
+             "job": {"job_id": job_id, "action": "status", "status": "running"}},
+            {"index": 2, "tool": "write", "status": "completed",
+             "started_elapsed_ms": 50, "finished_elapsed_ms": 60},
+            {"index": 3, "tool": "job", "status": "completed",
+             "started_elapsed_ms": 70, "finished_elapsed_ms": 80,
+             "job_id_argument_state": "string",
+             "job_id_argument_matches_result": "matched",
+             "job": {"job_id": job_id, "action": "status", "status": "completed"}},
+            {"index": 4, "tool": "read", "status": "completed",
+             "started_elapsed_ms": 90, "finished_elapsed_ms": 100,
+             "job_id_argument_sha256": digest,
+             "private_output": "serialized secret sentinel"},
+        ]
+
+    def test_exact_persisted_sequence_is_audited_without_retaining_transcript_data(self) -> None:
+        calls = self._calls()
+        case = autonomy.load_autonomy_suite(
+            REPO_ROOT / "dev/harness_lab/fixtures/agent_autonomy_h007"
+        ).case("build-provenance-catalog")
+        transcript = autonomy_run.build_transcript(
+            case, calls, terminal="completed", stop_reason="end_turn")
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "TRANSCRIPT.json"
+            path.write_text(json.dumps(transcript, sort_keys=True), encoding="utf-8")
+            diagnostic = autonomy_run.diagnostics.audit_serialized_transcript(
+                path, calls, expected_case_id=case.case_id,
+                expected_schema_version=transcript["schema_version"],
+            )
+            self.assertEqual(diagnostic["state"], "observed")
+            self.assertEqual(diagnostic["transcript_terminal_state"], "completed")
+            self.assertEqual(diagnostic["transcript_stop_reason"], "end_turn")
+            self.assertTrue(diagnostic["transcript_terminal_completed"])
+            self.assertTrue(diagnostic["lifecycle_projection_matches_source"])
+            self.assertTrue(diagnostic["job_id_request_result_correlation"][
+                "all_applicable_calls_match"])
+            encoded = json.dumps(diagnostic)
+            self.assertNotIn("5a4c2d88-29a7-4ea7-b617-1833bcb6c80b", encoded)
+            self.assertNotIn("serialized secret sentinel", encoded)
+            self.assertNotIn("TRANSCRIPT.json", encoded)
+            self.assertFalse(diagnostic["raw_transcript_retained"])
+            self.assertFalse(diagnostic["job_id_digests_retained"])
+
+    def test_serialized_transcript_projects_timeout_terminal_without_private_text(self) -> None:
+        calls = self._calls()
+        case = autonomy.load_autonomy_suite(
+            REPO_ROOT / "dev/harness_lab/fixtures/agent_autonomy_h007"
+        ).case("build-provenance-catalog")
+        transcript = autonomy_run.build_transcript(
+            case, calls, terminal="timeout", stop_reason="turn_timeout",
+            failure={"kind": "HarnessTimeout", "private": "PRIVATE FAILURE TEXT"},
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "TRANSCRIPT.json"
+            path.write_text(json.dumps(transcript), encoding="utf-8")
+            diagnostic = autonomy_run.diagnostics.audit_serialized_transcript(
+                path, calls, expected_case_id=case.case_id,
+                expected_schema_version=transcript["schema_version"],
+            )
+
+        self.assertEqual(diagnostic["transcript_terminal_state"], "timeout")
+        self.assertEqual(diagnostic["transcript_stop_reason"], "turn_timeout")
+        self.assertFalse(diagnostic["transcript_terminal_completed"])
+        self.assertNotIn("PRIVATE FAILURE TEXT", json.dumps(diagnostic))
+
+    def test_serialized_mutation_malformed_json_and_size_limit_fail_closed(self) -> None:
+        calls = self._calls()
+        case = autonomy.load_autonomy_suite(
+            REPO_ROOT / "dev/harness_lab/fixtures/agent_autonomy_h007"
+        ).case("build-provenance-catalog")
+        transcript = autonomy_run.build_transcript(
+            case, calls, terminal="completed", stop_reason="end_turn")
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "TRANSCRIPT.json"
+            changed = dict(transcript)
+            changed["tool_calls"] = [dict(call) for call in calls]
+            changed["tool_calls"][1] = {
+                **changed["tool_calls"][1],
+                "job": {**changed["tool_calls"][1]["job"], "status": "failed"},
+            }
+            path.write_text(json.dumps(changed), encoding="utf-8")
+            diagnostic = autonomy_run.diagnostics.audit_serialized_transcript(
+                path, calls, expected_case_id=case.case_id,
+                expected_schema_version=transcript["schema_version"],
+            )
+            self.assertFalse(diagnostic["lifecycle_projection_matches_source"])
+
+            path.write_text("{invalid", encoding="utf-8")
+            malformed = autonomy_run.diagnostics.audit_serialized_transcript(
+                path, calls, expected_case_id=case.case_id,
+                expected_schema_version=transcript["schema_version"],
+            )
+            self.assertEqual(malformed["state"], "invalid_json")
+
+            path.write_text(json.dumps({**transcript, "tool_calls": ["bad-call"]}),
+                            encoding="utf-8")
+            bad_shape = autonomy_run.diagnostics.audit_serialized_transcript(
+                path, calls, expected_case_id=case.case_id,
+                expected_schema_version=transcript["schema_version"],
+            )
+            self.assertEqual(bad_shape["state"], "invalid_shape")
+
+            path.write_bytes(b"x" * (autonomy_run.diagnostics.MAX_SERIALIZED_TRANSCRIPT_BYTES + 1))
+            oversized = autonomy_run.diagnostics.audit_serialized_transcript(
+                path, calls, expected_case_id=case.case_id,
+                expected_schema_version=transcript["schema_version"],
+            )
+            self.assertEqual(oversized["state"], "oversized")
+
+
 class H006VerifierTranscriptCompatibilityTests(unittest.TestCase):
+    def test_private_root_canary_symlink_is_seeded_for_native_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            fixture_root = root / "fixture"
+            fixture_root.mkdir()
+            private_root = root / "private"
+            private_root.mkdir()
+            env: dict[str, str] = {}
+            canary = autonomy_run._seed_private_root_canary(private_root)
+            link = autonomy_run._seed_private_root_canary_link(fixture_root, private_root)
+
+            autonomy_run._set_harness_private_root_env(env, private_root)
+
+            self.assertEqual(env[autonomy_run.HARNESS_PRIVATE_ROOT_ENV],
+                             str(private_root.resolve()))
+            self.assertEqual(set(env), {autonomy_run.HARNESS_PRIVATE_ROOT_ENV})
+            self.assertEqual(canary.read_text(encoding="utf-8"),
+                             "CodeGG private-root denial canary only.\n")
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.resolve(strict=True), canary.resolve(strict=True))
+
+    def test_task_spawn_event_sequence_requires_both_exact_ids(self) -> None:
+        projector = autonomy_run._ToolCallProjector()
+
+        def call(call_id: str, action: str | None, output: str,
+                 start: int, finish: int) -> None:
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": start,
+                              "params": {"update": {
+                                  "sessionUpdate": "tool_call", "toolCallId": call_id,
+                                  "title": "task", "codeggArgumentsSha256": "a" * 64,
+                                  "codeggAction": action,
+                              }}})
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": finish,
+                              "params": {"update": {
+                                  "sessionUpdate": "tool_call_update", "toolCallId": call_id,
+                                  "status": "completed", "rawOutput": output,
+                              }}})
+
+        call("board-1", None, "Workstream board: no active children", 10, 20)
+        call("spawn-queued", "spawn",
+             "<task_result>\nSubagent queued\nTask ID: agt-111\n"
+             "Status: pending (no spawner configured)\n</task_result>", 30, 40)
+        call("spawn-durable", "spawn",
+             "Task queued\nTask: agt-222\nRun: agr-333\nStatus: queued", 50, 60)
+        call("spawn-uuid", "spawn",
+             "Task queued\nTask: 550e8400-e29b-41d4-a716-446655440000\n"
+             "Run: 6ba7b810-9dad-11d1-80b4-00c04fd430c8\nStatus: queued", 70, 80)
+        call("spawn-duplicate", "spawn",
+             "Task queued\nTask: same-id\nRun: same-id\nStatus: queued", 90, 100)
+
+        projected = projector.calls()
+        self.assertNotIn("task_action", projected[0])
+        self.assertNotIn("task_spawn_ids_present", projected[0])
+        self.assertEqual(projected[1]["task_action"], "spawn")
+        self.assertFalse(projected[1]["task_spawn_ids_present"])
+        self.assertEqual(projected[2]["task_action"], "spawn")
+        self.assertTrue(projected[2]["task_spawn_ids_present"])
+        self.assertEqual(projected[2]["task_run_status"], "queued")
+        self.assertTrue(projected[3]["task_spawn_ids_present"])
+        self.assertFalse(projected[4]["task_spawn_ids_present"])
+
+    def test_task_review_event_sequence_binds_get_result_to_spawned_run(self) -> None:
+        projector = autonomy_run._ToolCallProjector()
+        task_id = "task-11"
+        run_id = "run-12"
+        task_digest = hashlib.sha256(task_id.encode()).hexdigest()
+        run_digest = hashlib.sha256(run_id.encode()).hexdigest()
+
+        def call(call_id: str, action: str, start: int, finish: int, output: str,
+                 metadata_field: str, metadata: dict[str, str],
+                 task_hash: str | None = None,
+                 run_hash: str | None = None) -> None:
+            started = {
+                "sessionUpdate": "tool_call", "toolCallId": call_id, "title": "task",
+                "codeggArgumentsSha256": "a" * 64, "codeggAction": action,
+            }
+            if task_hash is not None:
+                started["codeggTaskIdSha256"] = task_hash
+            if run_hash is not None:
+                started["codeggTaskRunIdSha256"] = run_hash
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": start,
+                              "params": {"update": started}})
+            completed = {
+                "sessionUpdate": "tool_call_update", "toolCallId": call_id,
+                "status": "completed", "rawOutput": output,
+                metadata_field: metadata,
+            }
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": finish,
+                              "params": {"update": completed}})
+
+        call("spawn-call", "spawn", 10, 20,
+             "Task queued\nTask: task-11\nRun: run-12\nStatus: queued",
+             "codeggTaskSpawn", {"task_id_sha256": task_digest,
+                                 "run_id_sha256": run_digest, "run_status": "queued",
+                                 "agent": "verifier"})
+        call("status-call", "status", 30, 40,
+             "Run: run-12\nStatus: failed\nTask: task-11\n"
+             "Failure stage/class: deadline_exceeded",
+             "codeggTaskStatus", {}, run_hash=run_digest)
+        call("continue-call", "continue", 50, 60,
+             "Run: run-12\nStatus: running", "codeggTaskStatus", {},
+             run_hash=run_digest)
+        call("completed-status-call", "status", 70, 80,
+             "Run: run-12\nStatus: completed\nTask: task-11\n"
+             "Result: agent-run-result:run-12",
+             "codeggTaskStatus", {}, run_hash=run_digest)
+        call("get-call", "get", 30, 40,
+             "Recorded result (completed)\nReview evidence\nResult ref: result\n"
+             "Task: task-11\nRun: run-12\nStatus: completed",
+             "codeggTaskResult", {"task_id_sha256": task_digest,
+                                  "run_id_sha256": run_digest, "run_status": "completed"},
+             task_hash=task_digest)
+
+        calls = projector.calls()
+        self.assertEqual(calls[0]["task_spawn_agent"], "verifier")
+        self.assertEqual(calls[1]["task_run_id_sha256"], run_digest)
+        self.assertEqual(calls[1]["task_run_status"], "failed")
+        self.assertEqual(calls[2]["task_action"], "continue")
+        self.assertEqual(calls[2]["task_run_id_sha256"], run_digest)
+        self.assertEqual(calls[2]["task_run_status"], "running")
+        self.assertEqual(calls[3]["task_run_status"], "completed")
+        self.assertTrue(autonomy_run._h007_required_review_observed(
+            "review_agent: verifier\nreview_task: task-11\nreview_run: run-12\n"
+            "review_status: completed\n"
+            "review_findings: inspected public test matrix; no reproducible issue found",
+            calls))
+        lifecycle = autonomy_run.diagnostics.summarize_reviewer_lifecycle(calls)
+        self.assertEqual(lifecycle["reviewer_continue_count"], 1)
+        self.assertEqual(lifecycle["continue_after_terminal_failure_count"], 1)
+        self.assertTrue(lifecycle["continue_after_terminal_failure_observed"])
+        self.assertNotIn(task_id, json.dumps(calls))
+        self.assertNotIn(run_id, json.dumps(calls))
+        self.assertFalse(autonomy_run._h007_required_review_observed(
+            "review_agent: verifier\nreview_task: task-11\nreview_run: run-12\n"
+            "review_status: completed\n"
+            "review_findings: inspected public test matrix; no reproducible issue found",
+            [calls[0], calls[2]]))
+
+        duplicated_gets = calls + [dict(calls[4], index=5)]
+        self.assertFalse(autonomy_run._h007_required_review_observed(
+            "review_agent: verifier\nreview_task: task-11\nreview_run: run-12\n"
+            "review_status: completed\n"
+            "review_findings: inspected public test matrix; no reproducible issue found",
+            duplicated_gets))
+
+        calls[4]["task_result_run_id_sha256"] = hashlib.sha256(
+            b"unrelated-run").hexdigest()
+        self.assertFalse(autonomy_run._h007_required_review_observed(
+            "review_agent: verifier\nreview_task: task-11\nreview_run: run-12\n"
+            "review_status: completed\n"
+            "review_findings: inspected public test matrix; no reproducible issue found",
+            calls))
+
+        calls[0]["task_spawn_agent"] = "research"
+        calls[4]["task_result_run_id_sha256"] = run_digest
+        self.assertFalse(autonomy_run._h007_required_review_observed(
+            "review_agent: verifier\nreview_task: task-11\nreview_run: run-12\n"
+            "review_status: completed\n"
+            "review_findings: inspected public test matrix; no reproducible issue found",
+            calls))
+        calls[0]["task_spawn_agent"] = "verifier"
+        calls[1]["task_run_id_sha256"] = hashlib.sha256(b"other-run").hexdigest()
+        calls[3]["task_run_id_sha256"] = hashlib.sha256(b"other-run").hexdigest()
+        self.assertFalse(autonomy_run._h007_required_review_observed(
+            "review_agent: verifier\nreview_task: task-11\nreview_run: run-12\n"
+            "review_status: completed\n"
+            "review_findings: inspected public test matrix; no reproducible issue found",
+            calls))
+
+    def test_task_spawn_id_projection_rejects_missing_ambiguous_and_oversized_ids(self) -> None:
+        self.assertFalse(autonomy_run._safe_task_spawn_ids_present(
+            "Task queued\nTask: task-id\nStatus: queued"))
+        self.assertFalse(autonomy_run._safe_task_spawn_ids_present(
+            "Task queued\nTask: same-id\nRun: same-id\nStatus: queued"))
+        self.assertFalse(autonomy_run._safe_task_spawn_ids_present(
+            "Task queued\nTask: " + "t" * 129 + "\nRun: run-id\nStatus: queued"))
+
+    def test_task_failure_projection_keeps_allowlisted_class_only(self) -> None:
+        projector = autonomy_run._ToolCallProjector()
+        projector.absorb({"method": "session/update", "_received_elapsed_ms": 10,
+                          "params": {"update": {
+                              "sessionUpdate": "tool_call", "toolCallId": "failed-review",
+                              "title": "task", "codeggAction": "status",
+                              "codeggTaskRunIdSha256": "a" * 64,
+                          }}})
+        projector.absorb({"method": "session/update", "_received_elapsed_ms": 20,
+                          "params": {"update": {
+                              "sessionUpdate": "tool_call_update", "toolCallId": "failed-review",
+                              "status": "completed",
+                              "rawOutput": "Status: failed\n"
+                              "Failure stage/class: provider_transient\n"
+                              "Failure detail: private provider response",
+                          }}})
+
+        projected = projector.calls()[0]
+
+        self.assertEqual(projected["task_run_status"], "failed")
+        self.assertEqual(projected["task_failure_class"], "provider_transient")
+        self.assertNotIn("private provider response", json.dumps(projected))
+
     def test_production_shaped_job_events_pass_the_unchanged_overlap_verifier(self) -> None:
         suite = autonomy.load_autonomy_suite(
             REPO_ROOT / "dev" / "harness_lab" / "fixtures" / "agent_autonomy_h005")
@@ -101,6 +622,7 @@ class H006VerifierTranscriptCompatibilityTests(unittest.TestCase):
         call("status-1", "job", "status", 90, 100,
              "Inline { output: job running\njob_id: "
              "74386df4-54d6-41eb-b2fc-0f52ade38983 }")
+        call("edit-3", "edit", None, 105, 108, "Inline { output: private edit result }")
         call("terminal-1", "job", "wait", 110, 120,
              "Inline { output: job completed\njob_id: "
              "74386df4-54d6-41eb-b2fc-0f52ade38983 }")
@@ -109,7 +631,22 @@ class H006VerifierTranscriptCompatibilityTests(unittest.TestCase):
         self.assertNotIn("job", tool_calls[0])
         self.assertEqual(tool_calls[1]["job"]["action"], "submit")
         self.assertEqual(tool_calls[4]["job"]["status"], "running")
-        self.assertEqual(tool_calls[5]["job"]["status"], "completed")
+        self.assertEqual(tool_calls[6]["job"]["status"], "completed")
+        safe_sequence = autonomy_run.diagnostics.summarize_job_tool_sequence(tool_calls)
+        self.assertEqual(safe_sequence["job_tool_call_count"], 3)
+        self.assertEqual([event["job_alias"] for event in safe_sequence["events"]],
+                         ["J01", "J01", "J01"])
+        self.assertEqual([event["job_status"] for event in safe_sequence["events"]],
+                         ["queued", "running", "completed"])
+        self.assertNotIn("74386df4-54d6-41eb-b2fc-0f52ade38983",
+                         json.dumps(safe_sequence))
+        safe_activity = autonomy_run.diagnostics.summarize_ordered_tool_activity(tool_calls)
+        self.assertEqual(safe_activity["productive_overlap_interval_count"], 1)
+        self.assertEqual(safe_activity["zero_productive_overlap_interval_count"], 0)
+        self.assertEqual(safe_activity["productive_overlap_intervals"][0][
+            "productive_call_count_between"], 1)
+        self.assertNotIn("74386df4-54d6-41eb-b2fc-0f52ade38983",
+                         json.dumps(safe_activity))
         transcript = autonomy_run.build_transcript(
             case, tool_calls, terminal="completed", stop_reason="end_turn")
 
@@ -160,6 +697,67 @@ class H006VerifierTranscriptCompatibilityTests(unittest.TestCase):
         self.assertTrue(autonomy_run._duration_qualified("ordinary-case", 1, []))
 
 
+class H007RepairEventProjectionTests(unittest.TestCase):
+    def test_realistic_acp_event_order_qualifies_one_named_repair_pair(self) -> None:
+        projector = autonomy_run._ToolCallProjector()
+        seed_id = "74386df4-54d6-41eb-b2fc-0f52ade38983"
+        repair_id = "a6ab9df2-94ec-4a8b-9c6a-9f6f0390e334"
+
+        def call(call_id: str, title: str, action: str | None,
+                 start: int, finish: int, output: str) -> None:
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": start,
+                              "params": {"update": {
+                                  "sessionUpdate": "tool_call", "toolCallId": call_id,
+                                  "title": title, "codeggArgumentsSha256": "a" * 64,
+                                  "codeggAction": action,
+                              }}})
+            projector.absorb({"method": "session/update", "_received_elapsed_ms": finish,
+                              "params": {"update": {
+                                  "sessionUpdate": "tool_call_update", "toolCallId": call_id,
+                                  "status": "completed", "rawOutput": output,
+                              }}})
+
+        call("seed-submit", "test", "submit", 10, 20,
+             f"Inline {{ output: job queued\njob_id: {seed_id} }}")
+        call("seed-status", "job", "status", 30, 40,
+             f"Inline {{ output: job failed\njob_id: {seed_id} }}")
+        call("source-repair", "edit", None, 50, 60,
+             "Inline { output: repaired catalog format implementation }")
+        call("repair-submit", "test", "submit", 70, 80,
+             f"Inline {{ output: job queued\njob_id: {repair_id} }}")
+        call("repair-status", "job", "status", 90, 100,
+             f"Inline {{ output: job completed\njob_id: {repair_id} }}")
+
+        calls = projector.calls()
+        note = (
+            "repair_cycles: 1\n"
+            f"job_id_catalog_format_seed: {seed_id}\n"
+            "job_state_catalog_format_seed: failed\n"
+            f"job_id_catalog_format_repair: {repair_id}\n"
+            "job_state_catalog_format_repair: completed\n"
+        )
+        summary = h007_results.summarize_required_repair_jobs(
+            note, calls, (("catalog_format", "catalog_format_seed",
+                           "catalog_format_repair"),),
+        )
+
+        self.assertEqual(len(calls), 5)
+        self.assertEqual(calls[1]["job"]["job_id"], seed_id)
+        self.assertEqual(calls[1]["job"]["status"], "failed")
+        self.assertEqual(calls[4]["job"]["job_id"], repair_id)
+        self.assertEqual(calls[4]["job"]["status"], "completed")
+        self.assertEqual(autonomy_run._h007_repair_cycles(calls), 1)
+        self.assertTrue(summary["complete"])
+        case = autonomy.load_autonomy_suite(
+            REPO_ROOT / "dev/harness_lab/fixtures/agent_autonomy_s018_muse_continuation_v80"
+        ).case("build-provenance-catalog")
+        transcript = autonomy_run.build_transcript(
+            case, calls,
+            terminal="completed", stop_reason="end_turn",
+        )
+        self.assertEqual(transcript["tool_calls"], calls)
+
+
 class H006DeadlineTests(unittest.TestCase):
     def test_turn_can_run_for_thirty_minutes_and_verifier_stays_inside_hard_stop(self) -> None:
         turn = autonomy_run._turn_timeout(
@@ -171,9 +769,76 @@ class H006DeadlineTests(unittest.TestCase):
         self.assertEqual(autonomy_run._verifier_timeout(
             "sustained-event-ledger", turn, 30.0), 30.0)
 
+    def test_each_same_session_followup_preserves_the_verifier_reserve(self) -> None:
+        first_turn = autonomy_run._turn_timeout(
+            "build-provenance-catalog", 3600.0, 3600.0, 3600.0)
+        self.assertEqual(first_turn, 3300.0)
+        self.assertEqual(autonomy_run._turn_timeout(
+            "build-provenance-catalog", first_turn, 3600.0, 1200.0), 900.0)
+        self.assertEqual(autonomy_run._turn_timeout(
+            "build-provenance-catalog", first_turn, 3600.0, 300.0), 0.0)
+
     def test_other_cases_keep_their_proportional_suite_timeout(self) -> None:
         self.assertEqual(autonomy_run._turn_timeout(
             "ordinary-case", 3600.0, 3600.0, 3600.0), 1200.0)
+
+    def test_trailing_tool_silence_counts_toward_the_activity_gap(self) -> None:
+        calls = [{"started_elapsed_ms": elapsed,
+                  "finished_elapsed_ms": elapsed + 1}
+                 for elapsed in range(0, 1_800_001, 300_000)]
+        self.assertTrue(autonomy_run._duration_qualified(
+            "build-provenance-catalog", 2_100_001, calls))
+        self.assertFalse(autonomy_run._duration_qualified(
+            "build-provenance-catalog", 2_100_002, calls))
+
+
+class ActivityStallWatcherTests(unittest.TestCase):
+    class _Client:
+        def __init__(self, notifications: list[dict]) -> None:
+            self.notifications = notifications
+            self.calls: list[tuple[str, dict]] = []
+
+        def notify(self, method: str, params: dict) -> None:
+            self.calls.append((method, params))
+
+    class _OneIterationStop:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def wait(self, _timeout: float) -> bool:
+            self.calls += 1
+            return self.calls > 1
+
+    @staticmethod
+    def _notification(kind: str) -> dict:
+        return {"method": "session/update",
+                "params": {"update": {"sessionUpdate": kind}}}
+
+    def test_streamed_message_does_not_hide_a_tool_activity_stall(self) -> None:
+        client = self._Client([self._notification("agent_message_chunk")])
+        watcher = autonomy_run._ActivityStallWatcher(
+            client, "session-1", stall_seconds=1, poll_seconds=0)
+        watcher._last_activity = autonomy_run.time.monotonic() - 2
+        watcher.stop_event = self._OneIterationStop()
+
+        watcher._run()
+
+        self.assertTrue(watcher.triggered)
+        self.assertEqual(client.calls, [("session/cancel", {"sessionId": "session-1"})])
+
+    def test_tool_start_and_terminal_updates_reset_the_stall_clock(self) -> None:
+        for kind in ("tool_call", "tool_call_update"):
+            with self.subTest(kind=kind):
+                client = self._Client([self._notification(kind)])
+                watcher = autonomy_run._ActivityStallWatcher(
+                    client, "session-1", stall_seconds=1, poll_seconds=0)
+                watcher._last_activity = autonomy_run.time.monotonic() - 2
+                watcher.stop_event = self._OneIterationStop()
+
+                watcher._run()
+
+                self.assertFalse(watcher.triggered)
+                self.assertEqual(client.calls, [])
 
 
 class ProviderRequestAccountingTests(unittest.TestCase):
@@ -339,6 +1004,7 @@ class RunCaseRefusalTests(unittest.TestCase):
             root = pathlib.Path(temp).resolve()
             missing_lane = root / "not-created" / "case00"
             self.assertEqual(autonomy_run._nearest_existing_directory(missing_lane), root)
+
 
     def test_a_deferred_case_is_refused(self) -> None:
         suite = autonomy.load_autonomy_suite()
@@ -533,6 +1199,38 @@ class RunCaseRefusalTests(unittest.TestCase):
             self.assertIn("sun_path", str(caught.exception))
 
 
+class RequestedManifestProvenanceTests(unittest.TestCase):
+    def test_run_suite_passes_exact_selected_manifest_digest_to_receipt(self) -> None:
+        manifest_root = REPO_ROOT / "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v20"
+        suite = autonomy.load_autonomy_suite(manifest_root)
+        case = suite.case("build-provenance-catalog")
+        policy = budget.BudgetPolicy(max_provider_requests=5)
+        with tempfile.TemporaryDirectory() as temp:
+            with mock.patch.object(
+                    autonomy_run, "run_case",
+                    return_value={"case_id": case.case_id, "terminal": "completed",
+                                  "solved": False}) as run_case:
+                autonomy_run.run_suite(
+                    pathlib.Path("/unused/codegg"), suite,
+                    "opencode_go/muse-spark-1.3-contributor",
+                    budget_policy=policy, lane_root=pathlib.Path(temp),
+                    case_ids=[case.case_id])
+
+        self.assertEqual(run_case.call_args.kwargs["requested_manifest_sha256"],
+                         suite.suite_sha256)
+
+
+class H007ModelRouteTests(unittest.TestCase):
+    def test_authorized_deepseek_route_is_accepted_and_other_routes_are_refused(self) -> None:
+        self.assertIn("opencode_go/deepseek-v4.1-flash",
+                      autonomy_run.H007_ALLOWED_MODEL_ROUTES)
+        self.assertIn("opencode_go/muse-spark-1.3-contributor",
+                      autonomy_run.H007_ALLOWED_MODEL_ROUTES)
+        autonomy_run._validate_h007_model_route("opencode_go/deepseek-v4.1-flash")
+        with self.assertRaisesRegex(HarnessError, "explicit qualification allowlist"):
+            autonomy_run._validate_h007_model_route("opencode_go/unapproved-model")
+
+
 class IsolationTests(unittest.TestCase):
     def test_a_verifier_inside_the_agent_editable_tree_is_refused(self) -> None:
         suite = autonomy.load_autonomy_suite()
@@ -710,6 +1408,477 @@ class ManifestTests(unittest.TestCase):
         root = autonomy_run.case_root(REPO_ROOT, suite.cases[0].case_id)
         self.assertTrue((root / "fixture/Cargo.lock").is_file())
         self.assertTrue((root / "verifier/test_event_ledger_contract.py").is_file())
+
+
+class H007TimeoutDiagnosticTests(unittest.TestCase):
+    def test_turn_timeout_replaces_a_stale_end_turn_reason(self) -> None:
+        self.assertEqual(
+            autonomy_run._h007_timeout_stop_reason("end_turn", timed_out=True),
+            "turn_timeout",
+        )
+        self.assertEqual(
+            autonomy_run._h007_timeout_stop_reason("end_turn", timed_out=False),
+            "end_turn",
+        )
+
+    def test_followup_cancellation_replaces_prior_end_turn_at_prompt_boundary(self) -> None:
+        first_prompt = autonomy_run._h007_prompt_stop_class("end_turn")
+        cancelled_followup = autonomy_run._h007_prompt_stop_class(
+            "end_turn", failure_category="cancelled")
+        provider_stall = autonomy_run._h007_prompt_stop_class(
+            "end_turn", failure_category="provider_timeout")
+        controller_timeout = autonomy_run._h007_prompt_stop_class(
+            None, failure_category="turn_timeout")
+
+        self.assertEqual(first_prompt, "end_turn")
+        self.assertEqual(cancelled_followup, "cancelled")
+        self.assertEqual(provider_stall, "provider_timeout")
+        self.assertEqual(controller_timeout, "turn_timeout")
+        self.assertNotEqual(cancelled_followup, first_prompt)
+
+    def test_cancellation_source_is_allowlisted_and_unknown_values_are_unavailable(self) -> None:
+        self.assertEqual(
+            autonomy_run._h007_project_cancellation_source("activity_stall"),
+            "activity_stall",
+        )
+        self.assertEqual(
+            autonomy_run._h007_project_cancellation_source("disk_floor"),
+            "disk_floor",
+        )
+        self.assertEqual(
+            autonomy_run._h007_project_cancellation_source("external_or_transport"),
+            "external_or_transport",
+        )
+        self.assertIsNone(autonomy_run._h007_project_cancellation_source(
+            "sentinel private exception text"))
+
+    def test_prompt_timeout_projection_keeps_only_bounded_timing(self) -> None:
+        projected = autonomy_run._h007_prompt_timeout_diagnostic(
+            timed_out=True,
+            prompt_request_count=8,
+            followup_count=7,
+            last_request_timeout_seconds=3300.0,
+            last_request_elapsed_ms=3_299_900,
+            remaining_wallclock_seconds_at_prompt_start=3599.9,
+            remaining_wallclock_seconds=299.8,
+        )
+
+        self.assertEqual(projected["schema"], "h007_prompt_timeout_diagnostic_v1")
+        self.assertEqual(projected["state"], "observed")
+        self.assertEqual(projected["prompt_request_count"], 8)
+        self.assertEqual(projected["autonomous_followup_count"], 7)
+        self.assertEqual(projected["last_request_timeout_seconds"], 3300.0)
+        self.assertEqual(projected["remaining_wallclock_seconds_at_timeout"], 299.8)
+        self.assertEqual(projected["verifier_reserve_seconds"], 300.0)
+        self.assertFalse(projected["exception_text_retained"])
+        self.assertFalse(projected["provider_text_retained"])
+        self.assertNotIn("exception", projected)
+        self.assertNotIn("provider_output", projected)
+
+    def test_prompt_boundary_projection_redacts_unknown_stop_text_and_tracks_review_due(self) -> None:
+        first = autonomy_run._h007_prompt_boundary_diagnostic(
+            request_index=4,
+            started_elapsed_ms=1_790_000,
+            remaining_wallclock_start_ms=1_810_000,
+            request_timeout_ms=1_500_000,
+            request_elapsed_ms=82_000,
+            active_work_span_start_ms=1_760_000,
+            active_work_span_end_ms=1_805_000,
+            tool_call_count_start=140,
+            tool_call_count_end=147,
+            stop_class="end_turn",
+            continuation_decision="continue",
+            reviewer_due_marker_received=False,
+            reviewer_due_marker_sent_next=True,
+            prompt_work_limit_ms=3_300_000,
+            prompt_work_consumed_ms_start=1_790_000,
+            prompt_work_remaining_ms_start=1_510_000,
+            prompt_work_consumed_ms_end=1_872_000,
+            prompt_work_remaining_ms_end=1_428_000,
+            verifier_reserve_ms=300_000,
+            prompt_progress_start={"schema": "h007_prompt_progress_v1",
+                                   "state": "observed", "stage_complete_count": 1},
+            prompt_progress_end={"schema": "h007_prompt_progress_v1",
+                                 "state": "observed", "stage_complete_count": 2},
+            no_progress_boundary_count_before=0,
+            no_progress_boundary_count=0,
+        )
+        timed_out = autonomy_run._h007_prompt_boundary_diagnostic(
+            request_index=5,
+            started_elapsed_ms=3_300_000,
+            remaining_wallclock_start_ms=547_827,
+            request_timeout_ms=247_827,
+            request_elapsed_ms=247_832,
+            active_work_span_start_ms=3_294_000,
+            active_work_span_end_ms=3_294_629,
+            tool_call_count_start=304,
+            tool_call_count_end=305,
+            stop_class="provider returned secret-bearing exception text",
+            continuation_decision="private response text",
+            reviewer_due_marker_received=True,
+            reviewer_due_marker_sent_next=None,
+        )
+
+        self.assertTrue(first["reviewer_due_marker_sent_next"])
+        self.assertFalse(first["reviewer_due_marker_received"])
+        self.assertEqual(first["prompt_work_limit_ms"], 3_300_000)
+        self.assertEqual(first["prompt_work_remaining_ms_end"], 1_428_000)
+        self.assertEqual(first["verifier_reserve_ms"], 300_000)
+        self.assertEqual(first["prompt_progress_end"]["stage_complete_count"], 2)
+        self.assertEqual(timed_out["stop_class"], "other")
+        self.assertIsNone(timed_out["continuation_decision"])
+        self.assertTrue(timed_out["reviewer_due_marker_received"])
+        self.assertIsNone(timed_out["reviewer_due_marker_sent_next"])
+        for projected in (first, timed_out):
+            self.assertFalse(projected["prompt_text_retained"])
+            self.assertFalse(projected["provider_text_retained"])
+            self.assertFalse(projected["exception_text_retained"])
+            self.assertFalse(projected["raw_tool_arguments_retained"])
+            self.assertNotIn("exception", projected)
+            self.assertNotIn("provider_output", projected)
+
+    def test_prompt_boundary_preserves_provider_timeout_as_its_own_class(self) -> None:
+        projected = autonomy_run._h007_prompt_boundary_diagnostic(
+            request_index=2,
+            started_elapsed_ms=300_000,
+            remaining_wallclock_start_ms=3_300_000,
+            request_timeout_ms=1_500_000,
+            request_elapsed_ms=240_004,
+            active_work_span_start_ms=280_000,
+            active_work_span_end_ms=280_000,
+            tool_call_count_start=12,
+            tool_call_count_end=12,
+            stop_class="provider_timeout",
+            continuation_decision="turn_failure",
+            reviewer_due_marker_received=False,
+            reviewer_due_marker_sent_next=None,
+        )
+
+        self.assertEqual(projected["stop_class"], "provider_timeout")
+        self.assertEqual(projected["continuation_decision"], "turn_failure")
+        self.assertFalse(projected["provider_text_retained"])
+
+    def test_prompt_work_accounting_preserves_the_verifier_reserve(self) -> None:
+        initial = autonomy_run._h007_prompt_work_accounting(
+            run_limit_seconds=3600.0, remaining_wallclock_seconds=3600.0)
+        near_timeout = autonomy_run._h007_prompt_work_accounting(
+            run_limit_seconds=3600.0, remaining_wallclock_seconds=300.160)
+        exhausted = autonomy_run._h007_prompt_work_accounting(
+            run_limit_seconds=3600.0, remaining_wallclock_seconds=299.9)
+
+        self.assertEqual(initial, {
+            "prompt_work_limit_ms": 3_300_000,
+            "prompt_work_consumed_ms": 0,
+            "prompt_work_remaining_ms": 3_300_000,
+            "verifier_reserve_ms": 300_000,
+        })
+        self.assertEqual(near_timeout["prompt_work_consumed_ms"], 3_299_840)
+        self.assertEqual(near_timeout["prompt_work_remaining_ms"], 160)
+        self.assertEqual(exhausted["prompt_work_consumed_ms"], 3_300_000)
+        self.assertEqual(exhausted["prompt_work_remaining_ms"], 0)
+
+    def test_verifier_feedback_filters_domains_and_requires_all_runway(self) -> None:
+        failed = {
+            "exit_code": 1,
+            "diagnostic": {
+                "state": "assertion_failures",
+                "failure_domain_counts": {
+                    "continuation_boundary": 2,
+                    "transcript_job_lifecycle": 1,
+                    "private_test_name": 8,
+                    "unmapped": 3,
+                    "invalid_count": True,
+                },
+            },
+            "output_tail": "private assertion text",
+        }
+
+        domains, reason = autonomy_run._h007_verifier_feedback_decision(
+            verification=failed,
+            terminal="completed",
+            stop_reason="end_turn",
+            continuation_complete=True,
+            feedback_followup_count=0,
+            autonomous_followup_count=4,
+            remaining_wallclock_seconds=900.0,
+            remaining_provider_requests=10,
+            remaining_tool_calls=20,
+        )
+
+        self.assertEqual(domains, {
+            "continuation_boundary": 2,
+            "transcript_job_lifecycle": 1,
+        })
+        self.assertEqual(reason, "requested")
+        prompt = autonomy_run._h007_verifier_feedback_prompt(
+            {**domains, "private_test_name": "secret"},
+            remaining_provider_requests=10,
+            remaining_tool_calls=20,
+            remaining_work_seconds=600.0,
+        )
+        self.assertIn("continuation_boundary (2)", prompt)
+        self.assertIn("transcript_job_lifecycle (1)", prompt)
+        self.assertNotIn("private_test_name", prompt)
+        self.assertNotIn("secret", prompt)
+        self.assertNotIn("private assertion text", prompt)
+
+        refused_inputs = (
+            {"terminal": "failed"},
+            {"stop_reason": "cancelled"},
+            {"continuation_complete": False},
+            {"feedback_followup_count": 1},
+            {"remaining_wallclock_seconds": 359.9},
+            {"remaining_provider_requests": 0},
+            {"remaining_provider_requests": None},
+            {"remaining_tool_calls": 0},
+        )
+        defaults = {
+            "terminal": "completed",
+            "stop_reason": "end_turn",
+            "continuation_complete": True,
+            "feedback_followup_count": 0,
+            "remaining_wallclock_seconds": 900.0,
+            "remaining_provider_requests": 10,
+            "remaining_tool_calls": 20,
+        }
+        for override in refused_inputs:
+            with self.subTest(override=override):
+                self.assertEqual(
+                    autonomy_run._h007_verifier_feedback_decision(
+                        verification=failed,
+                        autonomous_followup_count=4,
+                        **(defaults | override),
+                    )[0],
+                    {},
+                )
+
+    def test_verifier_feedback_sequence_uses_final_verifier_and_stops_after_one(self) -> None:
+        failed = {
+            "exit_code": 1,
+            "diagnostic": {
+                "state": "test_errors",
+                "failure_domain_counts": {"transcript_job_lifecycle": 1},
+            },
+        }
+        first_decision, first_reason = autonomy_run._h007_verifier_feedback_decision(
+            verification=failed, terminal="completed", stop_reason="end_turn",
+            continuation_complete=True, feedback_followup_count=0,
+            autonomous_followup_count=0, remaining_wallclock_seconds=900.0,
+            remaining_provider_requests=5, remaining_tool_calls=40,
+        )
+        self.assertEqual(first_decision, {"transcript_job_lifecycle": 1})
+        self.assertEqual(first_reason, "requested")
+        self.assertFalse(autonomy_run._h007_can_reuse_verification(
+            failed,
+            verified_transcript_sha256="a" * 64,
+            final_transcript_sha256="a" * 64,
+            feedback_followup_count_at_verification=0,
+            feedback_followup_count=1,
+        ))
+
+        final_pass = {"exit_code": 0, "diagnostic": {"state": "passed"}}
+        second_decision, second_reason = autonomy_run._h007_verifier_feedback_decision(
+            verification=final_pass, terminal="completed", stop_reason="end_turn",
+            continuation_complete=True, feedback_followup_count=1,
+            autonomous_followup_count=1, remaining_wallclock_seconds=500.0,
+            remaining_provider_requests=4, remaining_tool_calls=39,
+        )
+        self.assertEqual(second_decision, {})
+        self.assertEqual(second_reason, "verifier_passed")
+        self.assertTrue(final_pass["exit_code"] == 0)
+        self.assertTrue(autonomy_run._h007_can_reuse_verification(
+            final_pass,
+            verified_transcript_sha256="b" * 64,
+            final_transcript_sha256="b" * 64,
+            feedback_followup_count_at_verification=1,
+            feedback_followup_count=1,
+        ))
+        self.assertFalse(autonomy_run._h007_can_reuse_verification(
+            final_pass,
+            verified_transcript_sha256="b" * 64,
+            final_transcript_sha256="c" * 64,
+            feedback_followup_count_at_verification=1,
+            feedback_followup_count=1,
+        ))
+
+        repeated_failure, repeated_reason = autonomy_run._h007_verifier_feedback_decision(
+            verification=failed, terminal="completed", stop_reason="end_turn",
+            continuation_complete=True, feedback_followup_count=1,
+            autonomous_followup_count=1, remaining_wallclock_seconds=500.0,
+            remaining_provider_requests=4, remaining_tool_calls=39,
+        )
+        self.assertEqual(repeated_failure, {})
+        self.assertEqual(repeated_reason, "followup_limit")
+        self.assertEqual(
+            autonomy_run._h007_followup_decision(
+                stop_reason="end_turn",
+                continuation_confirmed=False,
+                followup_count=1,
+                native_progress=True,
+                remaining_wallclock_seconds=500.0,
+                active_work_span_ms=autonomy_run.H007_MIN_ACTIVE_DURATION_MS,
+                minimum_active_work_span_ms=autonomy_run.H007_MIN_ACTIVE_DURATION_MS,
+                verifier_feedback_followup_count=1,
+            ),
+            "verifier_feedback_limit",
+        )
+
+    def test_verifier_feedback_rejects_nonassertion_outcomes_and_bad_counts(self) -> None:
+        for state in ("passed", "setup_error", "empty_suite", "timeout", "runner_error"):
+            self.assertEqual(
+                autonomy_run._h007_safe_verifier_failure_domains({
+                    "exit_code": 1,
+                    "diagnostic": {
+                        "state": state,
+                        "failure_domain_counts": {"continuation_boundary": 1},
+                    },
+                }),
+                {},
+            )
+        self.assertEqual(
+            autonomy_run._h007_safe_verifier_failure_domains({
+                "exit_code": None,
+                "diagnostic": {
+                    "state": "assertion_failures",
+                    "failure_domain_counts": {"continuation_boundary": 1},
+                },
+            }),
+            {},
+        )
+
+    def test_host_verifier_pause_is_excluded_only_from_h007_activity_clock(self) -> None:
+        calls = [
+            {"index": 0, "started_elapsed_ms": 90, "finished_elapsed_ms": 100},
+            {"index": 1, "started_elapsed_ms": 250_000,
+             "finished_elapsed_ms": 250_100},
+        ]
+
+        adjusted = autonomy_run._h007_activity_calls_excluding_verifier_pauses(
+            calls, [(1, 150_000)],
+        )
+
+        self.assertEqual(adjusted[0]["finished_elapsed_ms"], 100)
+        self.assertEqual(adjusted[1]["started_elapsed_ms"], 100_000)
+        self.assertEqual(adjusted[1]["finished_elapsed_ms"], 100_100)
+        self.assertEqual(autonomy_run._active_work_span_ms(adjusted), 100_000)
+        self.assertEqual(autonomy_run._maximum_activity_gap_ms(150_000, adjusted), 99_900)
+        self.assertEqual(calls[1]["started_elapsed_ms"], 250_000)
+        self.assertEqual(
+            autonomy_run._h007_safe_verifier_failure_domains({
+                "exit_code": 1,
+                "diagnostic": {
+                    "state": "assertion_failures",
+                    "failure_domain_counts": {
+                        "continuation_boundary": 0,
+                        "transcript_job_lifecycle": 101,
+                    },
+                },
+            }),
+            {},
+        )
+
+    def test_prompt_progress_snapshot_is_bounded_and_malformed_notes_are_unavailable(self) -> None:
+        suite_root = REPO_ROOT / "dev/harness_lab/fixtures/agent_autonomy_s018_muse_continuation_v93"
+        case = autonomy.load_autonomy_suite(suite_root).case("build-provenance-catalog")
+        stage_lines = "\n".join(
+            f"- {stage}: pending" for stage in autonomy_run.H007_S018_REQUIRED_STAGE_ORDER)
+        gate_lines = "\n".join(
+            f"- {gate}: pending" for gate in autonomy_run.H007_S018_REQUIRED_GATE_ORDER)
+        note = (
+            "completed_phases: []\nnext_phase: versioned_records\n"
+            "contract_phases: []\nnext_contract_phase: versioned_records\n"
+            f"required_stages:\n{stage_lines}\nnext_stage: versioned_records\n"
+            f"gates:\n{gate_lines}\nnext_gate: starter_repair_format\n"
+            "private_note: PRIVATE_CHECKPOINT_SENTINEL\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = pathlib.Path(temporary)
+            (fixture / "CONTINUATION.md").write_text(note, encoding="utf-8")
+            observed = autonomy_run._h007_prompt_progress_snapshot(
+                fixture,
+                [{"tool": "job", "status": "completed", "arguments": "PRIVATE_ARGS",
+                  "rawOutput": "PRIVATE_OUTPUT", "job": {
+                      "job_id": "11111111-1111-4111-8111-111111111111",
+                      "status": "running"}}],
+                case_prompt=case.prompt,
+            )
+            (fixture / "CONTINUATION.md").write_text(
+                "required_stages:\nnot-a-stage-row PRIVATE_MALFORMED_SENTINEL\n"
+                "gates:\n", encoding="utf-8")
+            malformed = autonomy_run._h007_prompt_progress_snapshot(
+                fixture, [], case_prompt=case.prompt)
+            (fixture / "CONTINUATION.md").unlink()
+            missing = autonomy_run._h007_prompt_progress_snapshot(
+                fixture, [], case_prompt=case.prompt)
+
+        self.assertEqual(observed["state"], "observed")
+        self.assertEqual(observed["stage_total_count"], 7)
+        self.assertEqual(observed["gate_total_count"], 12)
+        self.assertEqual(observed["first_missing_stage"], "versioned_records")
+        self.assertEqual(observed["first_missing_gate"], "starter_repair_format")
+        self.assertFalse(observed["raw_note_retained"])
+        self.assertFalse(observed["raw_job_ids_retained"])
+        self.assertNotIn("PRIVATE_CHECKPOINT_SENTINEL", json.dumps(observed))
+        self.assertNotIn("PRIVATE_ARGS", json.dumps(observed))
+        self.assertNotIn("PRIVATE_OUTPUT", json.dumps(observed))
+        self.assertNotIn("11111111-1111-4111-8111-111111111111", json.dumps(observed))
+        self.assertEqual(malformed["state"], "unavailable")
+        self.assertEqual(malformed["reason"], "checkpoint_malformed")
+        self.assertNotIn("PRIVATE_MALFORMED_SENTINEL", json.dumps(malformed))
+        self.assertEqual(missing["state"], "unavailable")
+        self.assertEqual(missing["reason"], "checkpoint_missing_or_unreadable")
+
+    def test_prompt_progress_advancement_resets_the_no_progress_ladder(self) -> None:
+        before = {"state": "observed", "stage_complete_count": 2,
+                  "gate_complete_count": 3, "repair_pair_complete_count": 0,
+                  "success_job_complete_count": 0, "public_artifact_complete_count": 0,
+                  "release_overlap": "pending", "reviewer": "pending"}
+        unchanged = dict(before)
+        after = {**before, "stage_complete_count": 3,
+                 "release_overlap": "confirmed"}
+
+        self.assertFalse(autonomy_run._h007_progress_advanced(before, unchanged))
+        self.assertTrue(autonomy_run._h007_progress_advanced(before, after))
+        self.assertFalse(autonomy_run._h007_progress_advanced(
+            {"state": "unavailable"}, after))
+
+    def test_prompt_priorities_make_reviewer_spawn_first_and_require_overlap_work(self) -> None:
+        suite_root = REPO_ROOT / "dev/harness_lab/fixtures/agent_autonomy_s018_muse_continuation_v93"
+        case = autonomy.load_autonomy_suite(suite_root).case("build-provenance-catalog")
+        stage_lines = "\n".join(
+            f"- {stage}: pending" for stage in autonomy_run.H007_S018_REQUIRED_STAGE_ORDER)
+        gate_lines = "\n".join(
+            f"- {gate}: pending" for gate in autonomy_run.H007_S018_REQUIRED_GATE_ORDER)
+        job_id = "11111111-1111-4111-8111-111111111111"
+        note = (
+            "completed_phases: []\nnext_phase: versioned_records\n"
+            "contract_phases: []\nnext_contract_phase: versioned_records\n"
+            f"required_stages:\n{stage_lines}\nnext_stage: versioned_records\n"
+            f"job_command_overlap: {autonomy_run.H007_S018_RELEASE_OVERLAP_COMMAND}\n"
+            f"job_id_overlap: {job_id}\njob_id_overlap_running: running\n"
+            f"gates:\n{gate_lines}\nnext_gate: starter_repair_format\n"
+        )
+        calls = [
+            {"tool": "test", "status": "completed", "job": {
+                "job_id": job_id, "action": "submit", "status": "queued"}},
+            {"tool": "job", "status": "completed", "job": {
+                "job_id": job_id, "action": "status", "status": "running"}},
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = pathlib.Path(temporary)
+            (fixture / "CONTINUATION.md").write_text(note, encoding="utf-8")
+            prompt = autonomy_run._h007_followup_prompt(
+                fixture, calls, 1600, 1200, case.prompt,
+                active_work_span_ms=autonomy_run.H007_S018_FINAL_REVIEW_START_ACTIVE_MS,
+                no_progress_boundary_count=2,
+            )
+
+        self.assertTrue(prompt.startswith("FIRST NATIVE ACTION"))
+        self.assertIn("spawn exactly one native read-only task", prompt)
+        self.assertIn("NO-PROGRESS ESCALATION", prompt)
+        self.assertIn("gate `starter_repair_format`", prompt)
+        self.assertIn("REQUIRED OVERLAP ACTION", prompt)
+        self.assertIn("Before polling that ID again", prompt)
 
 
 class DiskFloorWatcherTests(unittest.TestCase):

@@ -51,28 +51,10 @@ struct HelperOutput {
 /// wins and a missing sidecar still fails the test rather than skipping it.
 #[cfg(target_os = "linux")]
 fn test_helper_path() -> PathBuf {
-    let exe = std::env::current_exe().expect("test executable");
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(profile) = exe.parent().and_then(|path| path.parent()) {
-        candidates.push(profile.join("codegg-sandbox-helper"));
-    }
-    if let Some(deps) = exe.parent() {
-        candidates.push(deps.join("codegg-sandbox-helper"));
-    }
-    candidates.push(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join("debug")
-            .join("codegg-sandbox-helper"),
-    );
-    let found = candidates
-        .iter()
-        .find(|candidate| candidate.is_file())
-        .cloned();
-    found.unwrap_or_else(|| {
-        panic!(
-            "the managed sandbox helper is missing; the lane must build it. Tried: {candidates:?}"
-        )
+    // Use the production resolver rather than a separate Cargo-layout heuristic.
+    // A missing helper is a test failure, never a skipped qualification.
+    codegg::security::sandbox::sandbox_helper_path().unwrap_or_else(|error| {
+        panic!("the managed sandbox helper must resolve as production resolves it: {error}")
     })
 }
 

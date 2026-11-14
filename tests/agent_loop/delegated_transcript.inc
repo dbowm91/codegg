@@ -265,6 +265,7 @@ fn request(run_id: AgentRunId, prompt: &str) -> SubAgentRequest {
         description: "a delegated task".to_string(),
         depth: 0,
         max_tool_calls: None,
+        max_wall_clock_secs: None,
         parent_model: None,
         workspace_root: Some(std::env::current_dir().expect("workspace root")),
         default_working_directory: None,
@@ -659,10 +660,39 @@ async fn a_delegated_run_records_the_tool_result_its_child_executed() {
 #[tokio::test]
 async fn a_delegated_run_records_a_bounded_tool_result_with_truncation_marked() {
     let pool = crate::common::pool::isolated_pool().await;
-    let oversized = "t".repeat(MAX_TRANSCRIPT_ROW_BYTES * 3);
+    // `read` now caps inline output below the loop retention / transcript
+    // row bounds (INLINE_BYTE_BUDGET). Use `grep` against a many-line file
+    // so the tool can still emit more than those bounds and this test keeps
+    // covering the layered truncation markers it owns.
+    let oversized = "match-line\n".repeat(MAX_TRANSCRIPT_ROW_BYTES);
     let workspace = ChildWorkspace::new("big.txt", &oversized);
     let mut registry = ProviderRegistry::new();
-    registry.register(reading_provider("big.txt"));
+    registry.register(ScriptedProvider::new(
+        "test",
+        vec![
+            vec![
+                ChatEvent::ToolCall(codegg::provider::ToolCall {
+                    id: "call-1".to_string().into(),
+                    name: "grep".to_string().into(),
+                    arguments: serde_json::json!({
+                        "pattern": "match-line",
+                        "path": "big.txt"
+                    }),
+                }),
+                ChatEvent::Finish {
+                    stop_reason: "tool_calls".to_string().into(),
+                    usage: TokenUsage::default(),
+                },
+            ],
+            vec![
+                ChatEvent::TextDelta("the child's final answer".to_string().into()),
+                ChatEvent::Finish {
+                    stop_reason: "stop".to_string().into(),
+                    usage: TokenUsage::default(),
+                },
+            ],
+        ],
+    ));
     let subagent_pool = durable_pool(
         pool.clone(),
         create_test_agent("transcript-agent", "test/model"),
@@ -673,7 +703,7 @@ async fn a_delegated_run_records_a_bounded_tool_result_with_truncation_marked() 
     let run_id = create_durable_run(&pool).await;
     run_delegated(
         &subagent_pool,
-        request_in(run_id.clone(), "read the big file", &workspace),
+        request_in(run_id.clone(), "grep the big file", &workspace),
     )
     .await;
 
@@ -1293,6 +1323,119 @@ async fn the_transcript_records_a_call_and_its_result_in_ordinal_order_with_one_
             row.redacted_body.contains("tool_call_id=call-ordered"),
             "the call and its result must name the same call id, got: {:?}",
             row.redacted_body
+        );
+    }
+}
+
+/// A14: a multi-turn child (tool call, then two paragraphs) records each
+/// final paragraph exactly once.
+///
+/// The recorded result is the terminal message, not the accumulated stream:
+/// pre-tool narration is already a durable `ModelMessage` row of its own, so
+/// carrying it into the final answer would append the stream onto the
+/// terminal turn. Six rows: system, prompt, pre-tool narration, call,
+/// result, final message.
+#[tokio::test]
+async fn a_multiturn_tool_call_records_each_final_paragraph_once() {
+    let pool = crate::common::pool::isolated_pool().await;
+    let workspace = ChildWorkspace::new("notes.txt", "the delegated child read this line\n");
+    let provider = ScriptedProvider::new(
+        "test",
+        vec![
+            vec![
+                ChatEvent::TextDelta("Reading the notes. ".to_string().into()),
+                ChatEvent::ToolCall(codegg::provider::ToolCall {
+                    id: "call-1".to_string().into(),
+                    name: "read".to_string().into(),
+                    arguments: serde_json::json!({ "path": "notes.txt" }),
+                }),
+                ChatEvent::Finish {
+                    stop_reason: "tool_calls".to_string().into(),
+                    usage: TokenUsage::default(),
+                },
+            ],
+            vec![
+                ChatEvent::TextDelta("First paragraph. ".to_string().into()),
+                ChatEvent::TextDelta("Second paragraph.".to_string().into()),
+                ChatEvent::Finish {
+                    stop_reason: "stop".to_string().into(),
+                    usage: TokenUsage::default(),
+                },
+            ],
+        ],
+    );
+    let mut registry = ProviderRegistry::new();
+    registry.register(provider);
+    let subagent_pool = durable_pool(
+        pool.clone(),
+        create_test_agent("transcript-agent", "test/model"),
+        registry,
+    )
+    .await;
+
+    let run_id = create_durable_run(&pool).await;
+    run_delegated(
+        &subagent_pool,
+        request_in(run_id.clone(), "read the notes", &workspace),
+    )
+    .await;
+
+    let entries = transcript_entries(&pool, &run_id).await;
+    assert_eq!(
+        entries.len(),
+        6,
+        "pre-tool narration plus a tool call and final answer is six transcript rows, got: {entries:?}"
+    );
+    let narration_row = entries
+        .iter()
+        .find(|entry| {
+            entry.kind == TranscriptKind::ModelMessage
+                && entry.redacted_body == "Reading the notes. "
+        })
+        .expect("pre-tool narration must be its own ModelMessage row");
+    let call_row = entries
+        .iter()
+        .find(|entry| entry.kind == TranscriptKind::ToolCall)
+        .expect("the tool call row");
+    assert!(
+        narration_row.ordinal < call_row.ordinal,
+        "pre-tool narration must be committed before the tool call"
+    );
+    let final_row = entries.last().expect("the final transcript row");
+    assert_eq!(final_row.kind, TranscriptKind::ModelMessage);
+    assert_eq!(final_row.role, TranscriptRole::Orchestrator);
+    assert_eq!(
+        final_row.redacted_body, "First paragraph. Second paragraph.",
+        "the terminal message replaces the accumulated stream, got: {:?}",
+        final_row.redacted_body
+    );
+    for paragraph in ["First paragraph.", "Second paragraph."] {
+        assert_eq!(
+            final_row.redacted_body.matches(paragraph).count(),
+            1,
+            "each final paragraph must appear exactly once, got: {:?}",
+            final_row.redacted_body
+        );
+    }
+    assert!(
+        !final_row.redacted_body.contains("Reading the notes."),
+        "pre-tool narration must not be appended to the terminal message, got: {:?}",
+        final_row.redacted_body
+    );
+
+    let task_store = subagent_pool.task_store();
+    let task = task_store
+        .lock()
+        .await
+        .get_task(1)
+        .await
+        .expect("the delegated task");
+    let result = task.result.as_deref().unwrap_or_default();
+    for paragraph in ["First paragraph.", "Second paragraph."] {
+        assert_eq!(
+            result.matches(paragraph).count(),
+            1,
+            "the recorded result must hold each paragraph once, got: {result:?}"
         );
     }
 }

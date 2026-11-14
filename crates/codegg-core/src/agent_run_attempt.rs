@@ -75,6 +75,15 @@ pub enum DelegatedFailureClass {
     /// **Continuable.** The parent's own tool policy is carried through
     /// unchanged, so the continuation is the parent's chance to re-dispatch.
     ToolPermissionDenied,
+    /// A run that was alive but making no progress.
+    ///
+    /// **Not continuable.** No producer emits this class yet: there is no
+    /// stall detector that can distinguish "alive but stuck" from "still
+    /// working" without a false-positive budget. The variant exists so the
+    /// taxonomy names the gap explicitly instead of forcing a stall into
+    /// `Unclassified`; widening it to continuable requires a detector, not
+    /// a one-line flag change.
+    NoProgress,
     /// The run was cancelled.
     ///
     /// **Never continuable.** A cancellation is a decision, not a failure.
@@ -96,6 +105,7 @@ impl DelegatedFailureClass {
             Self::DeadlineExceeded => "deadline_exceeded",
             Self::BudgetExhausted => "budget_exhausted",
             Self::ToolPermissionDenied => "tool_permission_denied",
+            Self::NoProgress => "no_progress",
             Self::Cancelled => "cancelled",
             Self::Unclassified => "unclassified",
         }
@@ -113,6 +123,7 @@ impl DelegatedFailureClass {
             "deadline_exceeded" => Self::DeadlineExceeded,
             "budget_exhausted" => Self::BudgetExhausted,
             "tool_permission_denied" => Self::ToolPermissionDenied,
+            "no_progress" => Self::NoProgress,
             "cancelled" => Self::Cancelled,
             _ => Self::Unclassified,
         }

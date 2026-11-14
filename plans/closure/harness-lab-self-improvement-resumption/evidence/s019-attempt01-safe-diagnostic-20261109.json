@@ -1,0 +1,116 @@
+{
+  "active_work_span_ms": 1955344,
+  "agent_terminal": "completed",
+  "attempt": 1,
+  "budget_exhausted_cap": null,
+  "case_id": "build-provenance-catalog",
+  "continuation_confirmed": true,
+  "continuation_stop_reason": "continuation_complete",
+  "cost_source": "opencode_go_allowance_receipt",
+  "cost_usd": 0.041998,
+  "disk_floor_bytes": 10737418240,
+  "disk_floor_triggered": false,
+  "duration_ms": 1964302,
+  "event_gap": {
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "event_observation_state": "observed_complete",
+    "tool_started_count": 571,
+    "tool_terminal_count": 571,
+    "tool_unpaired_start_count": 0
+  },
+  "exact_job_running_and_terminal": true,
+  "exact_overlap_job_trace_check": {
+    "completed_output_retrieved": true,
+    "matched": true,
+    "observation_count": 4,
+    "same_run_scoped_job_correlation": true,
+    "status_sequence": [
+      "running",
+      "completed"
+    ]
+  },
+  "failure_classification": "task_implementation_failure; sustained horizon and harness observations qualified, but independent verifier found one assertion failure and one test error",
+  "free_disk_last_bytes": 50301513728,
+  "free_disk_lowest_bytes": 50297274368,
+  "horizon_outcome": "qualified",
+  "maximum_activity_gap_limit_ms": 300000,
+  "maximum_activity_gap_ms": 100329,
+  "minimum_active_duration_ms": 1800000,
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "private_receipt_path": "/private/tmp/s019-muse-runs/attempt01.json",
+  "productive_work_during_job": true,
+  "provider_request_count": 486,
+  "provider_request_limit": 1200,
+  "receipt_sha256": "e7d0f8f518514545da9ddcedcf15b6bc6bd8478d9ad52df0b56a3a83f69d6893",
+  "repair_cycles": 10,
+  "reviewer": {
+    "completed_review_result_observed": true,
+    "exact_identity_matched_call_count": 3,
+    "final_failure_class": null,
+    "final_status": "completed",
+    "get_after_terminal_status_count": 1,
+    "get_count": 1,
+    "get_nonterminal_count": 0,
+    "get_run_status_counts": {
+      "completed": 1
+    },
+    "reviewer_event_count": 3,
+    "reviewer_events_truncated": false,
+    "reviewer_spawn_count": 1,
+    "task_action_counts": {
+      "get": 1,
+      "spawn": 1,
+      "status": 1
+    }
+  },
+  "route": "opencode_go/muse-spark-1.3-contributor",
+  "schema": "s019_h007_run_diagnostic_v1",
+  "solved": false,
+  "stop_reason": "end_turn",
+  "task_outcome": "failed",
+  "tool_call_cap_exceeded": false,
+  "tool_call_count": 571,
+  "tool_call_limit": 1600,
+  "verifier": {
+    "diagnostic": {
+      "assertion_text_retained": false,
+      "diagnostic_detail_complete": true,
+      "exit_code": 1,
+      "failed_tests": [
+        {
+          "exception_class": "ValueError",
+          "failure_kind": "test_error",
+          "outcome": "error",
+          "test_id": "test_durable_continuation_records_completed_phases_and_next_boundary (test_catalog_contract.CatalogContract.test_durable_continuation_records_completed_phases_and_next_boundary)"
+        },
+        {
+          "exception_class": "AssertionError",
+          "failure_kind": "assertion_failure",
+          "outcome": "fail",
+          "test_id": "test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation (test_catalog_contract.CatalogContract.test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation)"
+        }
+      ],
+      "failure_counts": {
+        "errors": 1,
+        "failures": 1
+      },
+      "input_truncated": false,
+      "passed_count": 3,
+      "raw_output_retained": false,
+      "runner_error_class": null,
+      "schema": "h007_verifier_diagnostic_v1",
+      "setup_exception_class": null,
+      "skipped_count": 0,
+      "state": "mixed_test_failures",
+      "tests_run": 5,
+      "timed_out": false,
+      "traceback_retained": false,
+      "verbose_tests_observed": 5
+    },
+    "duration_ms": 48166,
+    "exit_code": 1,
+    "tests_run": 5,
+    "timed_out": false
+  }
+}

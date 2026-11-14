@@ -62,7 +62,7 @@ impl Tool for SecuritySearchTool {
                 "version": { "type": "string", "description": "Package version" },
                 "max_results": {
                     "type": "number",
-                    "description": "Maximum results to return (default: 10, max: 20)"
+                    "description": "Maximum results to return (default: 5, max: 20)"
                 },
                 "compact": {
                     "type": "boolean",

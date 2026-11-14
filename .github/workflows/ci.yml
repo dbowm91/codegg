@@ -660,6 +660,9 @@ jobs:
       - name: Build trusted sandbox helper for integration tests
         run: |
           cargo build --locked --bin codegg-sandbox-helper
+          # A restored or pruned cache can leave the binary without the `deps`
+          # directory the integration tests load it from.
+          mkdir -p target/debug/deps
           cp target/debug/codegg-sandbox-helper target/debug/deps/codegg-sandbox-helper
 
       - name: Workspace tests

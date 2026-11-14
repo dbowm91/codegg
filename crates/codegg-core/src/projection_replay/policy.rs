@@ -228,10 +228,7 @@ impl ProjectionAccessPolicy for DefaultAccessPolicy {
             ArtifactReadKind::ToolOutput => ProjectionCapability::ReadToolOutput,
             ArtifactReadKind::DiffOrLog => ProjectionCapability::ReadDiffOrLog,
         };
-        if !ctx.has(cap) {
-            return false;
-        }
-        true
+        ctx.has(cap)
     }
 }
 

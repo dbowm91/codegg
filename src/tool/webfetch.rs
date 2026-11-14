@@ -43,7 +43,11 @@ impl Tool for WebFetchTool {
                 "url": { "type": "string", "description": "URL to fetch" },
                 "max_length": {
                     "type": "number",
-                    "description": "Maximum characters to return (default: 10000)"
+                    "description": "Maximum characters to return (default: 10000). Honoured as a window with `offset`, not just a prefix cap"
+                },
+                "offset": {
+                    "type": "number",
+                    "description": "Character offset into the fetched document (default: 0). Use with max_length to page: offset=max_length windows, not the same 2000-char prefix"
                 },
                 "extract_mode": {
                     "type": "string",

@@ -400,10 +400,7 @@ impl ToolCausalContract {
         {
             return false;
         }
-        if !self.forbids.is_disjoint(facts) {
-            return false;
-        }
-        true
+        self.forbids.is_disjoint(facts)
     }
 
     /// `requires_any` groups in canonical order (each group is already
@@ -6179,22 +6176,69 @@ mod tests {
         // scope. Both are post-M003 changes, so reconstruct the M003-era
         // schemas here and keep the immutable receipt matching — assert the
         // live values first, so the override cannot silently stop working.
+        // Later agentfindings batches also added mode=overwrite, reworded
+        // mode/path descriptions, and clarified relative-path resolution;
+        // restore those to the M003-era shapes the same way.
         let mut historical_apply_patch_schema = registry
             .get("apply_patch")
             .expect("apply_patch tool remains registered")
             .parameters();
-        let apply_patch_content = historical_apply_patch_schema["properties"]["patch"]
+        let apply_patch_properties = historical_apply_patch_schema["properties"]
             .as_object_mut()
-            .expect("apply_patch patch schema property");
+            .expect("apply_patch input schema properties");
         assert_eq!(
-            apply_patch_content.insert(
-                "description".to_string(),
-                serde_json::json!("Unified diff patch content"),
-            ),
+            apply_patch_properties["path"]
+                .as_object_mut()
+                .expect("apply_patch path schema property")
+                .insert(
+                    "description".to_string(),
+                    serde_json::json!("Path to the file to patch"),
+                ),
             Some(serde_json::json!(
-                "File contents for mode=create; unified diff with @@ -<start>[,<count>] +<start>[,<count>] @@ hunk headers for mode=update (e.g. \"@@ -1,3 +1,3 @@\"); bare hunks only, no \"*** Begin Patch ***\" wrapper; empty string for mode=delete; \"rename from <old>\" plus \"rename to <new>\" (or \"--- a/<old>\" plus \"+++ b/<new>\") for mode=move"
+                "Path to the file to patch; relative paths resolve against the session workspace root like all file-op modes. mode=delete and mode=update require an existing file at path."
+            )),
+            "unexpected post-M003 apply_patch.path description"
+        );
+        assert_eq!(
+            apply_patch_properties["patch"]
+                .as_object_mut()
+                .expect("apply_patch patch schema property")
+                .insert(
+                    "description".to_string(),
+                    serde_json::json!("Unified diff patch content"),
+                ),
+            Some(serde_json::json!(
+                "File contents for mode=create or mode=overwrite; unified diff with @@ -<start>[,<count>] +<start>[,<count>] @@ hunk headers for mode=update (e.g. \"@@ -1,3 +1,3 @@\"); bare hunks only, no \"*** Begin Patch ***\" wrapper; empty string for mode=delete; \"rename from <old>\" plus \"rename to <new>\" (or \"--- a/<old>\" plus \"+++ b/<new>\") for mode=move"
             )),
             "unexpected post-M003 apply_patch.content description"
+        );
+        let apply_patch_mode = apply_patch_properties["mode"]
+            .as_object_mut()
+            .expect("apply_patch mode schema property");
+        assert_eq!(
+            apply_patch_mode.get("enum"),
+            Some(&serde_json::json!([
+                "update",
+                "create",
+                "overwrite",
+                "delete",
+                "move"
+            ])),
+            "unexpected post-M003 apply_patch.mode enum"
+        );
+        apply_patch_mode.insert(
+            "enum".to_string(),
+            serde_json::json!(["update", "create", "delete", "move"]),
+        );
+        assert_eq!(
+            apply_patch_mode.insert(
+                "description".to_string(),
+                serde_json::json!("Operation mode (default: update)"),
+            ),
+            Some(serde_json::json!(
+                "Operation mode (default: update). mode=create refuses when the file exists; use mode=overwrite to replace with a diff."
+            )),
+            "unexpected post-M003 apply_patch.mode description"
         );
         // 3.5 made `patch` optional so `mode: delete` takes path only
         // (delete ignores the body; callers may pass an empty string for
@@ -6340,6 +6384,30 @@ mod tests {
                         props.remove("detail").is_some(),
                         "expected post-M003 webfetch.detail"
                     );
+                    // Agentfindings paging added `offset` and reworded
+                    // `max_length` after M003; restore the frozen shape.
+                    assert_eq!(
+                        props.remove("offset"),
+                        Some(serde_json::json!({
+                            "type": "number",
+                            "description": "Character offset into the fetched document (default: 0). Use with max_length to page: offset=max_length windows, not the same 2000-char prefix"
+                        })),
+                        "unexpected post-M003 webfetch.offset"
+                    );
+                    let max_length = props
+                        .get_mut("max_length")
+                        .and_then(|v| v.as_object_mut())
+                        .expect("webfetch.max_length remains declared");
+                    assert_eq!(
+                        max_length.insert(
+                            "description".to_string(),
+                            serde_json::json!("Maximum characters to return (default: 10000)"),
+                        ),
+                        Some(serde_json::json!(
+                            "Maximum characters to return (default: 10000). Honoured as a window with `offset`, not just a prefix cap"
+                        )),
+                        "unexpected post-M003 webfetch.max_length description"
+                    );
                 }
                 _ => unreachable!(),
             }
@@ -6452,6 +6520,12 @@ mod tests {
                 "workdir",
                 "Working directory for git command (default: session workspace root; explicit workdir selects the checkout for mutations)",
                 "Working directory for git command (default: current directory)",
+            ),
+            (
+                "git",
+                "dry_run",
+                "Preview only: commit returns the message preview without mutating; clean_preview equivalent for clean (default: false)",
+                "Pass --dry-run (clean_preview)",
             ),
             (
                 "research",
@@ -6588,6 +6662,71 @@ mod tests {
                 "unexpected post-M003 {tool}.include_ignored property"
             );
             historical_schemas.insert(tool.to_string(), schema);
+        }
+
+        // Agentfindings operability added write modes / large-overwrite
+        // confirmation and commit dry-run after M003. Strip those live
+        // fields and restore the frozen content description so the receipt
+        // fingerprint stays immutable.
+        {
+            let mut write_schema = registry
+                .get("write")
+                .expect("write tool remains registered")
+                .parameters();
+            let write_props = write_schema["properties"]
+                .as_object_mut()
+                .expect("write input schema properties");
+            assert_eq!(
+                write_props
+                    .get_mut("content")
+                    .and_then(|v| v.as_object_mut())
+                    .expect("write.content remains declared")
+                    .insert(
+                        "description".to_string(),
+                        serde_json::json!("Content to write to the file"),
+                    ),
+                Some(serde_json::json!(
+                    "Content to write to the file (appended after existing content in append mode)"
+                )),
+                "unexpected post-M003 write.content description"
+            );
+            assert_eq!(
+                write_props.remove("mode"),
+                Some(serde_json::json!({
+                    "type": "string",
+                    "description": "Write mode: overwrite (default), append, or create_only (fail when the file exists)",
+                    "enum": ["overwrite", "append", "create_only"],
+                    "default": "overwrite"
+                })),
+                "unexpected post-M003 write.mode"
+            );
+            assert_eq!(
+                write_props.remove("overwrite"),
+                Some(serde_json::json!({
+                    "type": "boolean",
+                    "description": "Explicit confirmation required to overwrite a large existing file (over the large-file threshold); ignored in append/create_only modes",
+                    "default": false
+                })),
+                "unexpected post-M003 write.overwrite"
+            );
+            historical_schemas.insert("write".to_string(), write_schema);
+
+            let mut commit_schema = registry
+                .get("commit")
+                .expect("commit tool remains registered")
+                .parameters();
+            let commit_props = commit_schema["properties"]
+                .as_object_mut()
+                .expect("commit input schema properties");
+            assert_eq!(
+                commit_props.remove("dry_run"),
+                Some(serde_json::json!({
+                    "type": "boolean",
+                    "description": "Preview only: report the staged diff/message without staging or committing (default: false)"
+                })),
+                "unexpected post-M003 commit.dry_run"
+            );
+            historical_schemas.insert("commit".to_string(), commit_schema);
         }
 
         let historical_effect_fingerprint =

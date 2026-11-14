@@ -64,7 +64,9 @@ impl Tool for ExtensionInstallRequestTool {
             .await
             .into_iter()
             .find(|entry| entry.id == id && entry.version == version)
-            .ok_or_else(|| ToolError::NotFound(format!("catalog entry {id}@{version}")))?;
+            .ok_or_else(|| {
+                ToolError::NotFound(format!("Extension not found in catalog: {id}@{version}"))
+            })?;
         let value = json!({
             "status": "pending_host_action",
             "id": entry.id,
@@ -190,5 +192,25 @@ mod tests {
         assert_eq!(value["configured"], true);
         assert_eq!(value["count"], 0);
         assert!(value["extensions"].as_array().is_some());
+    }
+
+    #[tokio::test]
+    async fn extension_install_miss_names_extension_not_tool() {
+        let tool = crate::tool::extension::ExtensionInstallRequestTool::new(std::sync::Arc::new(
+            crate::plugin::marketplace::MarketplaceService::new(),
+        ));
+        let err = tool
+            .execute(serde_json::json!({"id": "no-such-extension-xyz", "version": "9.9.9"}))
+            .await
+            .expect_err("unknown extension must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Extension not found in catalog: no-such-extension-xyz@9.9.9"),
+            "miss must name the extension, got: {msg}"
+        );
+        assert!(
+            !msg.starts_with("Tool not found"),
+            "extension miss must not render as a tool miss, got: {msg}"
+        );
     }
 }

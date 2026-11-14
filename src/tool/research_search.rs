@@ -73,7 +73,7 @@ impl Tool for ResearchSearchTool {
                 "providers": { "type": "array", "items": { "type": "string" }, "description": "Explicit provider IDs" },
                 "max_results": {
                     "type": "number",
-                    "description": "Maximum results to return (default: 10, max: 15)"
+                    "description": "Maximum results to return (default: 5, max: 15)"
                 },
                 "compact": {
                     "type": "boolean",

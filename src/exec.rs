@@ -3,6 +3,7 @@ use crate::agent::{self, processor::EventProcessor, EMERGENCY_DEFAULT_MODEL};
 use crate::config::schema::Config;
 use crate::error::{AppError, ProviderError, ToolError};
 use crate::permission::PermissionChecker;
+use crate::provider::inline::{register_inline_provider, InlineProviderDescriptor};
 use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message, ProviderRequestContext};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -67,6 +68,7 @@ pub struct ExecMode {
     /// workspace execution); `Some` selects the same daemon
     /// `ApprovalMode`/`SandboxProfile` contract the TUI selector uses.
     policy: Option<crate::policy_surface::CliPolicyOverride>,
+    provider_descriptor: Option<InlineProviderDescriptor>,
 }
 
 impl ExecMode {
@@ -76,7 +78,13 @@ impl ExecMode {
             json_output,
             session_id,
             policy: None,
+            provider_descriptor: None,
         }
+    }
+
+    pub fn with_provider_descriptor(mut self, descriptor: InlineProviderDescriptor) -> Self {
+        self.provider_descriptor = Some(descriptor);
+        self
     }
 
     /// Select an explicit approval/sandbox contract instead of the legacy
@@ -93,27 +101,70 @@ impl ExecMode {
             eprintln!("Starting exec mode...");
         }
 
-        let config = Config::load().map_err(|e| AppError::Config(e.into()))?;
+        let mut config = match Config::load() {
+            Ok(config) => config,
+            Err(error) => {
+                if self.provider_descriptor.is_none() {
+                    return Err(AppError::Config(error.into()));
+                }
+                tracing::warn!(
+                    error = %error,
+                    "provider descriptor session continues without a config file"
+                );
+                Config::default()
+            }
+        };
         let mut registry = crate::provider::ProviderRegistry::new();
-        // A resolved provider connection is the authority for its own provider,
-        // here as in a turn. Without this the registry falls back to counting
-        // credential-store records, and any provider whose rotation left an
-        // orphan behind has two — so the provider simply vanishes with
-        // `Provider not found` even though a healthy connection holds its key.
-        let locators = crate::core::session_selection::user_connection_credential_locators().await;
-        crate::provider::register_builtin_with_config_connections(
-            &mut registry,
-            &config,
-            &locators,
-            None,
-        );
+        if let Some(descriptor) = &self.provider_descriptor {
+            register_inline_provider(&mut registry, descriptor).map_err(|error| {
+                AppError::Other(anyhow::anyhow!("Invalid provider descriptor: {error}"))
+            })?;
+        } else {
+            // A resolved provider connection is the authority for its own provider,
+            // here as in a turn. Without this the registry falls back to counting
+            // credential-store records, and any provider whose rotation left an
+            // orphan behind has two — so the provider simply vanishes with
+            // `Provider not found` even though a healthy connection holds its key.
+            let locators =
+                crate::core::session_selection::user_connection_credential_locators().await;
+            crate::provider::register_builtin_with_config_connections(
+                &mut registry,
+                &config,
+                &locators,
+                None,
+            );
+        }
 
         let default_model = config
             .model
             .clone()
             .unwrap_or_else(|| EMERGENCY_DEFAULT_MODEL.to_string());
-        let model = input.model.unwrap_or(default_model);
-        let (provider_id, model_name) = Self::parse_model(&model);
+        let model = match (input.model, &self.provider_descriptor) {
+            (Some(model), _) => model,
+            (None, Some(descriptor)) => descriptor
+                .models
+                .first()
+                .map(|declared| format!("{}/{}", descriptor.id, declared.id))
+                .unwrap_or(default_model),
+            (None, None) => default_model,
+        };
+        let (provider_id, model_name) = match &self.provider_descriptor {
+            Some(descriptor) => match model.find('/') {
+                Some(position) => (descriptor.id.clone(), model[position + 1..].to_string()),
+                None => (descriptor.id.clone(), model.clone()),
+            },
+            None => Self::parse_model(&model),
+        };
+        if let Some(descriptor) = &self.provider_descriptor {
+            if let Some(declared) = descriptor
+                .models
+                .iter()
+                .find(|declared| declared.id == model_name)
+            {
+                crate::model_profile::InlineModelProfile::from_inline_model(declared)
+                    .apply_to_config(&mut config);
+            }
+        }
 
         let provider = registry.get(&provider_id).ok_or_else(|| {
             AppError::Other(anyhow::anyhow!("Provider not found: {}", provider_id))

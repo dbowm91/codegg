@@ -887,9 +887,11 @@ impl CoreDaemon {
                 }
             }
         }
-        if should_spawn_scheduler {
-            let _handle = scheduler.spawn_run();
-        }
+        let scheduler_run_handle = if should_spawn_scheduler {
+            Some(scheduler.spawn_run())
+        } else {
+            None
+        };
 
         let worktree_reconcile_handle = if deps.pool.is_some() {
             tokio::runtime::Handle::try_current().ok().map(|handle| {
@@ -1001,6 +1003,7 @@ impl CoreDaemon {
             context_resolver,
             workspace_services,
             worktree_service,
+            scheduler_run_handle: tokio::sync::Mutex::new(scheduler_run_handle),
             checkout_mediator,
             process_admission: process_admission.clone(),
             _worktree_reconcile_handle: worktree_reconcile_handle,
