@@ -241,6 +241,116 @@ class JobIdArgumentTelemetryTests(unittest.TestCase):
         ):
             self.assertNotIn(private_value, encoded)
 
+    def test_job_tool_sequence_event_trace_keeps_aliases_and_drops_private_fields(self) -> None:
+        requested_id = "5a4c2d88-29a7-4ea7-b617-1833bcb6c80b"
+        source = {
+            "schema": "h007_job_tool_sequence_v1",
+            "state": "observed",
+            "sequence_truncated": False,
+            "raw_job_ids_retained": False,
+            "tool_arguments_retained": False,
+            "tool_outputs_retained": False,
+            "events": [
+                {
+                    "index": 10,
+                    "tool": "test",
+                    "job_alias": "J01",
+                    "job_id_present": True,
+                    "job_id_argument_state": "unobserved",
+                    "job_id_argument_matches_result": "not_applicable",
+                    "action": "submit",
+                    "job_status": "running",
+                    "call_status": "completed",
+                    "tool_error_class": None,
+                    "job_status_error_class": None,
+                    "started_elapsed_ms": 100,
+                    "finished_elapsed_ms": 110,
+                    "job_id": requested_id,
+                    "private_arguments": "PRIVATE_ARGUMENTS",
+                },
+                {
+                    "index": 11,
+                    "tool": "job",
+                    "job_alias": "J01",
+                    "job_id_present": True,
+                    "job_id_argument_state": "string",
+                    "job_id_argument_matches_result": "matched",
+                    "action": "status",
+                    "job_status": "unknown",
+                    "call_status": "failed",
+                    "tool_error_class": None,
+                    "job_status_error_class": "tool_execution_failed",
+                    "started_elapsed_ms": 120,
+                    "finished_elapsed_ms": 130,
+                    "job_id": requested_id,
+                    "private_output": "PRIVATE_OUTPUT",
+                },
+            ],
+        }
+        safe = autonomy_run.diagnostics.safe_job_tool_sequence_event_trace(source)
+        self.assertEqual(safe["state"], "observed")
+        self.assertEqual(safe["event_count"], 2)
+        self.assertEqual(safe["events"][1]["job_alias"], "J01")
+        self.assertEqual(safe["events"][1]["job_status_error_class"], "tool_execution_failed")
+        encoded = json.dumps(safe)
+        for private_value in (requested_id, "PRIVATE_ARGUMENTS", "PRIVATE_OUTPUT"):
+            self.assertNotIn(private_value, encoded)
+
+    def test_job_tool_sequence_event_trace_fails_closed_on_invalid_or_truncated_input(self) -> None:
+        source = {
+            "schema": "h007_job_tool_sequence_v1",
+            "state": "observed",
+            "sequence_truncated": False,
+            "raw_job_ids_retained": False,
+            "tool_arguments_retained": False,
+            "tool_outputs_retained": False,
+            "events": [{
+                "index": 1,
+                "tool": "job",
+                "job_alias": "J01",
+                "job_id_present": True,
+                "job_id_argument_state": "string",
+                "job_id_argument_matches_result": "matched",
+                "action": "status",
+                "job_status": "unknown",
+                "call_status": "failed",
+                "tool_error_class": None,
+                "job_status_error_class": "PRIVATE_ERROR_CLASS",
+                "started_elapsed_ms": None,
+                "finished_elapsed_ms": None,
+            }],
+        }
+        invalid = autonomy_run.diagnostics.safe_job_tool_sequence_event_trace(source)
+        self.assertEqual(invalid["state"], "unavailable")
+        self.assertEqual(invalid["events"], [])
+        source["state"] = []
+        invalid_state = autonomy_run.diagnostics.safe_job_tool_sequence_event_trace(source)
+        self.assertEqual(invalid_state["state"], "unavailable")
+        source["state"] = "observed"
+        valid_event = {
+            "index": 1,
+            "tool": "job",
+            "job_alias": "J01",
+            "job_id_present": True,
+            "job_id_argument_state": "string",
+            "job_id_argument_matches_result": "matched",
+            "action": "status",
+            "job_status": "unknown",
+            "call_status": "failed",
+            "tool_error_class": None,
+            "job_status_error_class": "tool_execution_failed",
+            "started_elapsed_ms": None,
+            "finished_elapsed_ms": None,
+        }
+        source["events"] = [
+            valid_event
+            for _ in range(autonomy_run.diagnostics.MAX_JOB_SEQUENCE_EVENTS + 1)
+        ]
+        truncated = autonomy_run.diagnostics.safe_job_tool_sequence_event_trace(source)
+        self.assertEqual(truncated["state"], "truncated")
+        self.assertTrue(truncated["sequence_truncated"])
+        self.assertEqual(truncated["event_count"], 0)
+
     def test_failed_background_test_submit_keeps_only_allowlisted_error_class(self) -> None:
         projector = autonomy_run._ToolCallProjector()
         for call_id, error_class in (

@@ -456,6 +456,47 @@ class CampaignAuthorizationTests(unittest.TestCase):
             invalid["h007_completion_diagnostic"]["verifier_public_reconciliation"],
         )
 
+    def test_safe_campaign_projects_bounded_job_event_trace_without_raw_ids(self) -> None:
+        job_id = "5a4c2d88-29a7-4ea7-b617-1833bcb6c80b"
+        receipt = {
+            "job_tool_sequence_diagnostic": {
+                "schema": "h007_job_tool_sequence_v1",
+                "state": "observed",
+                "sequence_truncated": False,
+                "raw_job_ids_retained": False,
+                "tool_arguments_retained": False,
+                "tool_outputs_retained": False,
+                "events": [{
+                    "index": 41,
+                    "tool": "job",
+                    "job_alias": "J02",
+                    "job_id_present": True,
+                    "job_id_argument_state": "string",
+                    "job_id_argument_matches_result": "matched",
+                    "action": "status",
+                    "job_status": "unknown",
+                    "call_status": "failed",
+                    "tool_error_class": None,
+                    "job_status_error_class": "tool_execution_failed",
+                    "started_elapsed_ms": 1_000,
+                    "finished_elapsed_ms": 1_010,
+                    "job_id": job_id,
+                    "private_payload": "PRIVATE_PAYLOAD",
+                }],
+            },
+        }
+        projected = safe_campaign_run_fields(
+            _run(), canonical_identity=_run(), case_receipt=receipt)
+        trace = projected["job_tool_sequence_event_trace"]
+        self.assertEqual(trace["schema"], "campaign_h007_job_tool_sequence_event_trace_v1")
+        self.assertEqual(trace["state"], "observed")
+        self.assertEqual(trace["events"][0]["job_alias"], "J02")
+        self.assertEqual(trace["events"][0]["index"], 41)
+        self.assertEqual(trace["events"][0]["job_status_error_class"], "tool_execution_failed")
+        encoded = json.dumps(projected)
+        self.assertNotIn(job_id, encoded)
+        self.assertNotIn("PRIVATE_PAYLOAD", encoded)
+
     def test_event_measurement_projection_rejects_malformed_and_raw_fields(self) -> None:
         malformed = _safe_event_measurement_diagnostic({
             "schema": "h007_event_measurement_v1",

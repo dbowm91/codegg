@@ -1,8 +1,8 @@
 # Harness Lab Self-Improvement Resumption S060 — Controlled Muse Sequence Requalification
 
-Status: **active**
+Status: **implemented**
 
-Repository baseline: `1761f8689bdaa36f29ba3b9dd2545929a1e0c9b8`
+Repository baseline: `88d064dec604146ec657ee6cf706083bee7b6ae4`
 
 Source roadmap:
 
@@ -117,9 +117,9 @@ Run preflight checks before any live invocation. Do not claim the `--help` comma
 
 ## 12. Documentation updates
 
-- Record attempt 80 in S019 closure/roadmap and close S059 at its technical scope.
-- Register S060 and record attempt 81 evidence/counters when available.
-- Keep the overall S019/H007 status unqualified unless all gates pass.
+- Attempt 81 was recorded in S019 evidence and the subsystem roadmap.
+- S060 is conditionally closed at the controlled sequence requalification scope; H007 remains unqualified.
+- S061 is registered to add bounded, ID-free job-status event attribution before another unchanged-task attempt.
 
 ## 13. Acceptance criteria
 
@@ -138,4 +138,4 @@ Record attempt-81 preflight, safe diagnostic and monitor hashes; exact source/pa
 
 ## 16. Handoff notes
 
-Attempt 80 is historical failed evidence and remains immutable. Its provider count was 385 and it consumed one start. After that start, S019 had 80/200 combined starts, 36/40 starts in grant `s019-supplemental-20261111-04`, and 51/120 task starts; four grant starts and 69 task starts remain. Attempt 81 is authorized within that grant. If it fails, distinguish a repeated model sequencing failure from a reproducible CodeGG runtime issue before selecting S061. USD cost remains unknown if unreported.
+Attempt 80 is historical failed evidence and remains immutable. Attempt 81 also used the unchanged v97 task and verifier; it completed all stages and final jobs but timed out at the 3,300-second prompt-work boundary with only one of two named repair pairs qualified. Its failed-status telemetry contains 123 `tool_execution_failed` calls but does not identify the run-local aliases or call positions. S061 adds that bounded attribution without changing task text, verifier logic, or qualification gates. After attempt 81, counters are 81/200 combined starts, 37/40 starts in grant `s019-supplemental-20261111-04`, and 52/120 task starts; three grant starts and 68 task starts remain. USD cost remains unknown if unreported.

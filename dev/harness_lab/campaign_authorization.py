@@ -17,6 +17,7 @@ from .diagnostics import (
     SAFE_TEST_SUBMIT_ERROR_CLASSES,
     SAFE_VERIFIER_SETUP_FAILURE_REASONS,
     safe_job_status_failure_attribution,
+    safe_job_tool_sequence_event_trace,
 )
 
 
@@ -925,6 +926,9 @@ def safe_campaign_run_fields(
         safe.update(identity)
     if case_receipt is not None:
         safe["h007_completion_diagnostic"] = _safe_h007_completion_projection(case_receipt)
+        safe["job_tool_sequence_event_trace"] = safe_job_tool_sequence_event_trace(
+            case_receipt.get("job_tool_sequence_diagnostic")
+        )
     return safe
 
 

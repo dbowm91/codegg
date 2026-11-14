@@ -21,6 +21,8 @@ VERIFIER_SCHEMA = "h007_verifier_diagnostic_v4"
 REVIEWER_SCHEMA = "h007_reviewer_lifecycle_diagnostic_v2"
 PROVIDER_ATTEMPT_SCHEMA = "h007_provider_attempt_diagnostic_v1"
 JOB_STATUS_ATTRIBUTION_SCHEMA = "h007_failed_job_status_attribution_v1"
+JOB_TOOL_SEQUENCE_SCHEMA = "h007_job_tool_sequence_v1"
+JOB_TOOL_SEQUENCE_EVENT_TRACE_SCHEMA = "campaign_h007_job_tool_sequence_event_trace_v1"
 MAX_DIAGNOSTIC_TESTS = 100
 MAX_TEST_ID_CHARS = 240
 MAX_REVIEW_EVENTS = 200
@@ -485,6 +487,121 @@ def safe_job_status_failure_attribution(value: Any) -> dict[str, Any] | None:
         row["request_result_state"],
     ))
     return {"schema": JOB_STATUS_ATTRIBUTION_SCHEMA, "state": "observed", "rows": result_rows}
+
+
+def safe_job_tool_sequence_event_trace(value: Any) -> dict[str, Any]:
+    """Project bounded job/test calls using only run-local aliases and fixed fields."""
+    unavailable = {
+        "schema": JOB_TOOL_SEQUENCE_EVENT_TRACE_SCHEMA,
+        "state": "unavailable",
+        "event_count": 0,
+        "events": [],
+        "sequence_truncated": False,
+        "raw_job_ids_retained": False,
+        "tool_arguments_retained": False,
+        "tool_outputs_retained": False,
+    }
+    if not isinstance(value, Mapping):
+        return unavailable
+    source_state = value.get("state")
+    if (value.get("schema") != JOB_TOOL_SEQUENCE_SCHEMA
+            or not isinstance(source_state, str)
+            or source_state not in {"observed", "no_job_calls"}
+            or not isinstance(value.get("sequence_truncated"), bool)
+            or value.get("raw_job_ids_retained") is not False
+            or value.get("tool_arguments_retained") is not False
+            or value.get("tool_outputs_retained") is not False):
+        return unavailable
+    events = value.get("events")
+    if not isinstance(events, list):
+        return unavailable
+    if source_state == "no_job_calls" and events:
+        return unavailable
+    if (value.get("sequence_truncated") is True
+            or len(events) > MAX_JOB_SEQUENCE_EVENTS):
+        return {
+            **unavailable,
+            "state": "truncated",
+            "sequence_truncated": True,
+        }
+
+    safe_events: list[dict[str, Any]] = []
+    for event in events:
+        if not isinstance(event, Mapping):
+            return unavailable
+        index = event.get("index")
+        if (index is not None
+                and (not isinstance(index, int) or isinstance(index, bool)
+                     or not 0 <= index <= 1_000_000)):
+            return unavailable
+        tool = event.get("tool")
+        action = event.get("action")
+        call_status = event.get("call_status")
+        job_status = event.get("job_status")
+        if (not isinstance(tool, str) or tool not in {"job", "test"}
+                or not isinstance(action, str) or action not in _JOB_ACTIONS
+                or not isinstance(call_status, str) or call_status not in _TOOL_STATUSES
+                or not isinstance(job_status, str) or job_status not in _JOB_STATUSES):
+            return unavailable
+        alias = event.get("job_alias")
+        job_id_present = event.get("job_id_present")
+        if (alias is not None
+                and (not isinstance(alias, str) or not re.fullmatch(r"J[0-9]{2,4}", alias))):
+            return unavailable
+        if (not isinstance(job_id_present, bool)
+                or (alias is None) == job_id_present):
+            return unavailable
+        argument_state = event.get("job_id_argument_state")
+        if (not isinstance(argument_state, str)
+                or argument_state not in SAFE_JOB_ID_ARGUMENT_STATES):
+            return unavailable
+        correlation_state = event.get("job_id_argument_matches_result")
+        if (not isinstance(correlation_state, str)
+                or correlation_state not in SAFE_JOB_ID_CORRELATION_STATES):
+            return unavailable
+        tool_error_class = event.get("tool_error_class")
+        if (tool_error_class is not None
+                and (not isinstance(tool_error_class, str)
+                     or tool_error_class not in SAFE_TEST_SUBMIT_ERROR_CLASSES)):
+            return unavailable
+        status_error_class = event.get("job_status_error_class")
+        if (status_error_class is not None
+                and (not isinstance(status_error_class, str)
+                     or status_error_class not in SAFE_JOB_STATUS_ERROR_CLASSES)):
+            return unavailable
+
+        safe_event: dict[str, Any] = {
+            "index": index,
+            "tool": tool,
+            "job_alias": alias,
+            "job_id_present": job_id_present,
+            "job_id_argument_state": argument_state,
+            "job_id_argument_matches_result": correlation_state,
+            "action": action,
+            "job_status": job_status,
+            "call_status": call_status,
+            "tool_error_class": tool_error_class,
+            "job_status_error_class": status_error_class,
+        }
+        for field in ("started_elapsed_ms", "finished_elapsed_ms"):
+            elapsed = event.get(field)
+            if (elapsed is not None
+                    and (not isinstance(elapsed, int) or isinstance(elapsed, bool)
+                         or not 0 <= elapsed <= MAX_JOB_ELAPSED_MS)):
+                return unavailable
+            safe_event[field] = elapsed
+        safe_events.append(safe_event)
+
+    safe_events.sort(key=lambda event: (
+        event["index"] is None, event["index"] if event["index"] is not None else 0,
+        event["tool"], event["action"], event["job_alias"] or "",
+    ))
+    return {
+        **unavailable,
+        "state": "observed",
+        "event_count": len(safe_events),
+        "events": safe_events,
+    }
 
 
 def audit_serialized_transcript(
