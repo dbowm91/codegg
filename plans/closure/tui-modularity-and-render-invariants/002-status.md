@@ -296,13 +296,20 @@ applies to the theme collision only.
 byte-identity control are complete and verified against the production panel
 path. Conditions:
 
-- **Condition 1 — evidence.** Two of the plan's §15 items are not satisfied as
-  written: there is no per-panel corpus diff note (and its pre-change frame no
-  longer exists), and Help's 20×6 readability is not asserted (§10). The
-  substitute for the control case is mechanical and stronger; the substitute for
-  the other 23 panels is weaker than the plan asked for. Accepting that
-  substitute is an **open owner question** (§10), not a resolution this record
-  can take.
+- **Condition 1 — evidence: half answered, half red.** The per-panel corpus diff
+  note cannot exist (its pre-change frame is gone), and **decision 4 accepts the
+  substitute in writing** — see the owner decision below. The other half is no
+  longer an open question but a **measured defect**: Help's 20×6 readability is
+  now asserted, and it **fails**. `HelpDialog::render_into` lays out
+  `Length(3) + Length(3) + Min(1) + Length(3)`, so the box needs ten interior
+  rows before a single content row paints; at a 20×6 host rect the interior is
+  18×4 and the layout collapses to borders.
+  `the_minimum_hosted_size_keeps_a_readable_content_row` in `help.rs` renders the
+  hosted path (`PanelChrome` + `render_into`) and asserts at least one interior
+  row carries three or more letters. It paints none. **This record therefore
+  stays `conditionally closed` on that one condition**, and the fix is a
+  degradation policy for the fixed three-row chrome at small heights — a design
+  choice, not a mechanical repair.
 - **Condition 2 — gates: met 2026-11-13.** `scripts/verify.sh full` passed on
   this tree (17,377 workspace tests, 8,441 feature-pass tests, 0 failures;
   `cargo fmt --all --check` clean; clippy `-D warnings` clean), and the comment
@@ -349,6 +356,27 @@ dependency the plan fixed here.
   and the eight control digests, and that the replacement is weaker for the 18
   hosted panels.
 
+## Owner decision (2026-11-14)
+
+**Decision 4 of the seven, taken as A — and C's assertion turned the other half
+red.**
+
+- **A: the corpus diff-note substitute is accepted in writing.** The pre-adoption
+  frames no longer exist, so the per-panel note cannot be produced; the family
+  run plus `dialog_dispatch_coverage` plus a hosted content-row assertion is what
+  replaces it. That acceptance is recorded here and in
+  `tui-modularity/003`.
+- **C: the hosted content-row assertion now exists** —
+  `the_minimum_hosted_size_keeps_a_readable_content_row` — and it **fails**. The
+  substitute was accepted on the understanding that the panel reads at its
+  minimum size; the assertion says it does not. `render_into` reserves
+  `3 + 3 + Min(1) + 3` rows, so at an 18×4 interior nothing but borders paints.
+
+This is the substitute doing its job: the note it replaced would have recorded
+which cells moved, and the assertion instead found a surface that paints nothing
+at the size the panel system permits. The record does **not** close on a
+substitute whose third leg is red.
+
 ## Correction log (2026-11-13)
 
 - **§1, "One defect was found … deliberately not fixed".** The `dock` borrow-pair defect is fixed: `dock` now chooses the pair by index (`src/tui/panels/mod.rs:1370-1381`) and `a_move_to_an_earlier_edge_moves_the_panel_the_gesture_named` (`:2170`) asserts Bottom→Right and Left→Right. The test passes in the 2026-11-13 `full`.
@@ -361,3 +389,4 @@ dependency the plan fixed here.
 - **§11 Conditions 2–4 and Risk.** The gate condition is met; M007 has since driven `[contrast]` to 0 via the M011 mapping with `assets/` byte-identical to `HEAD`, so Condition 3's owed growth is retired; the risk bullet no longer carries the docking defect.
 
 **No promotion.** The status stays `conditionally closed`: the §14 theme collision is still a reported, M007-owned defect, Help's 20×6 readability is still unasserted, and the corpus-diff-note substitute is an undecided owner question. No condition was deleted without naming what met it.
+- **Owner decision, 2026-11-14** — the corpus diff-note substitute accepted in writing (decision 4, A); its content-row assertion added and **failing** for Help at 20×6, which is now this record's only remaining condition.

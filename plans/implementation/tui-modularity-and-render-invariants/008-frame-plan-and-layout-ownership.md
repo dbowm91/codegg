@@ -280,7 +280,11 @@ scripts/verify.sh quick
 1. `plan_frame` is pure, and its signature carries every input.
 2. The characterisation matrix passes before and after, unchanged.
 3. The corpus is byte-identical.
-4. The ten `Option<Rect>` fields are gone and hit-testing reads the plan.
+4. **Eight of the ten** `Option<Rect>` fields are gone and hit-testing reads the
+   plan. **Amended by owner decision, 2026-11-14**: `dialog_area` and
+   `sidebar_area` survive, both are *read* and never written by the command
+   family, and they are named as a follow-up milestone rather than a condition
+   here. The original wording said "the ten".
 5. The ordering and yield tests exist and are proved to detect a reordering.
 6. `scripts/check_tui_render_cost.py` passes unmodified.
 7. `scripts/verify.sh quick` is green.

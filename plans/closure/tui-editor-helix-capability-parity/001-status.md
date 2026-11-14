@@ -1,6 +1,6 @@
 # TUI Editor Helix Capability Parity Milestone 001 — Closure Status
 
-Status: conditionally closed
+Status: closed
 
 Source implementation plan:
 
@@ -272,7 +272,7 @@ into unbounded work.
 
 ## 11. Roadmap disposition
 
-**Milestone conditionally closed.** The capability, its tests, its guards, its
+**Milestone closed (owner decision, 2026-11-14).** The capability, its tests, its guards, its
 documentation and its two recorded decisions are complete and verified. The
 conditions were:
 
@@ -314,6 +314,25 @@ condensed aid and `docs/tui.md` is the complete document, or the two added
 - Record in the roadmap that the guard's expected Normal-mode count is 89 at
   this tree state and that later milestones must move it, not rediscover it.
 
+## Owner decision (2026-11-14)
+
+**Decision 5 of the seven, taken as B: the box now names the two keys.**
+
+The `space ?` box (`EDITOR_KEYMAP`, `src/tui/components/editor.rs:253`) read
+`d / y` and carried no `_` row, while `docs/tui.md` documents `Alt-d` and `_`.
+The omission was current, not historical: a reader who learns the verbs from the
+in-editor box never discovered trim or the no-yank delete.
+
+It now reads `d / Alt-d / y` — "delete into the unnamed register / delete without
+yanking / yank it and the clipboard" — and carries `_ · trim the selection to
+whole lines`. The list is scrollable, so no row was displaced. `cargo test -p
+codegg --lib -- tui::editor tui::components::editor` is 392 passed.
+
+The two remaining low findings are unaffected and stay recorded: `_` is
+classified `grows_selection` and refused on a read-only attachment (deliberate,
+one predictable answer for the shape family), and the per-milestone chord figure
+cannot be re-derived.
+
 ## Correction log (2026-11-13)
 
 - **§1, the status paragraph** — "`scripts/verify.sh quick` and `cargo fmt
@@ -350,3 +369,4 @@ condensed aid and `docs/tui.md` is the complete document, or the two added
   "1217/1217" and 292/259 filtered tests from the runs recorded in §4. They are
   unchanged historical measurements, not conditions: the guard now reports 92
   chords and the render family 1,237 tests.
+- **Owner decision, 2026-11-14** — `Alt-d` and `_` added to the `space ?` box; the record is `closed`.

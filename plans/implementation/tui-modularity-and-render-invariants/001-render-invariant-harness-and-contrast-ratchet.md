@@ -358,7 +358,14 @@ Externally observable, in the sense that a reviewer can run them:
    `quick` red.
 4. I1, I2 and I3a assert and pass across every dialog and panel surface.
 5. `scripts/check_tui_render_cost.py` passes without modification.
-6. `git diff` shows no change under `src/tui/**` or `src/theme/**`.
+6. **No production rendering file changed as a consequence of this milestone.**
+   **Amended by owner decision, 2026-11-14.** The original wording —
+   "`git diff` shows no change under `src/tui/**` or `src/theme/**`" — could not
+   be read: the milestone shared a worktree with M002, M003 and four other lines,
+   so no M001-only diff ever existed, and the tree is now one commit. The
+   property it protected is that the harness is additive, and that is what the
+   structural reading measures: no M001 artifact is a production file, and the
+   harness is wired into both lanes.
 7. No wall-clock assertion and no timing output exist in the change.
 
 ## 14. Stop conditions

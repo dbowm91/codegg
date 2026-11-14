@@ -1,6 +1,6 @@
 # TUI Modularity and Render Invariants Milestone 008 — Closure Status
 
-Status: conditionally closed
+Status: closed
 
 Source implementation plan:
 
@@ -271,8 +271,8 @@ by the oversized-claim test, and the arithmetic saturates rather than wrapping.
 
 ## 11. Roadmap disposition
 
-**Milestone conditionally closed with named operational evidence outstanding**,
-plus one bounded corrective item on acceptance criterion 4.
+**Milestone closed (owner decision, 2026-11-14).** The gate half was met on
+2026-11-13; the two questions this record could not answer are answered below.
 
 The conditional element: the `quick`/`fmt --check` half is **met** —
 `scripts/verify.sh full` passed on this tree at 2026-11-13 — and what remains is
@@ -309,6 +309,26 @@ in `carve_top`.
   header: `Status: blocked` → `Status: conditionally closed`. **This record's
   author made this header edit**, following plans 001–003 in this line.
 
+## Owner decision (2026-11-14)
+
+**Decision 2 of the seven, taken as A.**
+
+- **A — 8 of 10 is the accepted end state for criterion 4.** `dialog_area` and
+  `sidebar_area` survive, and the attribution to `src/tui/commands/**` is
+  **correct** — `commands/panels.rs` reads `App::sidebar_area` at ten production
+  sites. Criterion 4 and the roadmap's §11 item 6 are amended to say eight. Both
+  fields are *read*, never written, by the command family, so the two owners of
+  frame geometry are not a correctness risk today.
+  **The two fields are named as a follow-up milestone**, not a condition here:
+  `dialog_area` is already a single derivation at `dialog_rect` and is the cheap
+  half; `sidebar_area` moves four readers.
+- **The characterisation matrix's before/after claim is accepted structurally**,
+  on the same ground as decision 1: no tree artifact records the matrix's state
+  before the extraction and it cannot be reconstructed retrospectively. The tests
+  are assertions against a pure function, and the reordering test can only be
+  written by someone who knows both orders — which is what the claim was
+  protecting.
+
 ## Correction log (2026-11-13)
 
 - **§1, the briefing-attribution paragraph.** The record's "neither `dialog_area` nor `sidebar_area` is referenced anywhere under `src/tui/commands/` (grep returns nothing)" does **not hold on the current tree**: `src/tui/commands/panels.rs` reads `App::sidebar_area` in production (`:256`, `:267`, `:830`, `:841`, `:1252`, `:1263`, `:1304`, `:1317`, `:1338`, `:1356`) and `src/tui/commands/interactive_terminal.rs:3262` reads `App::dialog_area` from a test helper. The paragraph now records both measurements — the original and the current — and says the attribution is **not** false here. Note: the plan's §3 truth column states the opposite ("nothing under that path references …; the attribution is false"); that claim did not survive verification against this tree and was not used.
@@ -323,3 +343,4 @@ in `carve_top`.
 - **§11, the disposition.** The gate half of the conditional element is recorded as met; the remaining conditional element is the characterisation matrix's before/after claim, and criterion 4 is an open owner question.
 
 **No promotion.** The status stays `conditionally closed`: criterion 4 is 8 of 10 and undecided, the characterisation matrix's before/after claim is not evidenced, and the tree is uncommitted. No condition was deleted without naming what met it.
+- **Owner decision, 2026-11-14** — criterion 4 accepted at 8 of 10 and amended, the two fields named as a follow-up milestone, and the matrix's before/after claim accepted structurally; the record is `closed`.

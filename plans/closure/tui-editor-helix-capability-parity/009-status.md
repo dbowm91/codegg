@@ -1,6 +1,6 @@
 # TUI Editor Helix Capability Parity Milestone 009 — Closure Status
 
-Status: conditionally closed
+Status: closed
 
 Source implementation plan:
 
@@ -357,7 +357,7 @@ authority was added.
 
 ## 11. Roadmap disposition
 
-**Milestone conditionally closed.** The capability is complete and each of the
+**Milestone closed (owner decision, 2026-11-14).** The capability is complete and each of the
 plan's acceptance criteria has evidence: the linear-equivalence gate, the sibling
 branch, the last-visited-child redo, the creation-order axis across a fork, the
 parent-chain-preserving prune, the banner position, the two guards and the
@@ -417,6 +417,28 @@ conditions.
 - Do **not** mark M009 closed on the strength of this record: conditions 1 and 3
   in §11 stand between conditional closure and closure.
 
+## Owner decision (2026-11-14)
+
+**Decision 7 of the seven, taken as A + C.**
+
+- **A — the single-chain pruning rule is ratified as implemented.** Pruning an
+  unbranched chain drops the **oldest node** and re-parents its one child
+  (`prune_victim` at `editor.rs:7136`, `drop_node` at `:7164`). The plan's work
+  package D said "an interior node is never dropped while a child survives"; that
+  wording predates the `len == MAX_EDITOR_UNDO_DEPTH` linear-equivalence gate, and
+  the implemented rule is the only one that keeps both the gate and a 257-edit
+  history. The structural consequence is stated rather than hidden: the oldest
+  surviving undo point is re-parented, so the structure above it survives and its
+  identity does not.
+- **C — the prune is disclosed.** The row now paints
+  `· history trimmed at its bound` while the last edit pruned. It is **derived**,
+  not latched: the prune sets `history_trimmed`, an edit that does not prune
+  clears it, and `clear_history` clears it with the fallback flag. A latch was
+  the failure mode the implementing lane rejected — a notice that keeps reporting
+  a prune after the history stopped pruning — and silence was the other: a reader
+  losing an undo point without being told. `a_prune_is_disclosed_while_it_happens_and_not_after`
+  pins both directions.
+
 ## Correction log (2026-11-13)
 
 - **§2, the `full`-only rows** — "`cargo fmt --check`, `clippy -D warnings`, the
@@ -445,3 +467,4 @@ conditions.
   (`commands/editor.rs`) and
   `alt_u_crosses_the_fork_to_the_branch_the_edit_abandoned`
   (`commands/editor.rs`). Both exist in the tree. Nothing was changed for it.
+- **Owner decision, 2026-11-14** — the single-chain prune ratified and the prune disclosed (`history_trimmed`, derived rather than latched); the record is `closed`.

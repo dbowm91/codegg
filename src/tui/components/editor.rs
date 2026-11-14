@@ -263,10 +263,11 @@ const EDITOR_KEYMAP: &[(&str, &str)] = &[
         "select the line / widen to lines / narrow back",
     ),
     (
-        "d / y",
-        "delete into the unnamed register / yank it and the clipboard",
+        "d / Alt-d / y",
+        "delete into the unnamed register / delete without yanking / yank it and the clipboard",
     ),
     ("c / Alt-c", "change — delete the selection, then type"),
+    ("_", "trim the selection to whole lines"),
     ("\" a", "select register a — then y / p / P / R"),
     ("J / Alt-J", "join the lines covered"),
     ("> / <", "indent / unindent the covered lines"),
@@ -754,6 +755,13 @@ impl EditorWidget<'_> {
             // the newest change.
             disclosure.push(Span::styled(
                 format!("· history {position}/{length} "),
+                Style::default().fg(theme.muted),
+            ));
+        } else if self.presentation.history_trimmed {
+            // The oldest undo point is being dropped to stay under the bound.
+            // Derived from the last edit, so it stops when the pruning does.
+            disclosure.push(Span::styled(
+                "· history trimmed at its bound ".to_string(),
                 Style::default().fg(theme.muted),
             ));
         } else if self.presentation.history_bound_cleared {

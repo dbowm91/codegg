@@ -1,6 +1,6 @@
 # TUI Modularity and Render Invariants Milestone 003 — Closure Status
 
-Status: conditionally closed
+Status: closed
 
 Source implementation plan:
 
@@ -353,10 +353,11 @@ assertion and its non-vacuity twin check cell by cell.
 
 ## 11. Roadmap disposition
 
-**Milestone conditionally closed.** The primitive, its adoption across 39 of the
-40 dialog surfaces, the `AgentDialog` repair, the docked-chrome harness and the
-banked contrast reduction are implemented and verified on this tree. The
-conditions are:
+**Milestone closed (owner decision, 2026-11-14).** The primitive, its adoption
+across 39 of the 40 dialog surfaces, the `AgentDialog` repair, the docked-chrome
+harness and the banked contrast reduction are implemented and verified on this
+tree. Conditions 1 and 2 were met on 2026-11-13; conditions 2 and 3 were
+questions this record could not answer, and both are answered below.
 
 - **Condition.** Before M004 (content-sized modals) is cited as depending on a
   closed M003, three things must be true on the merged tree:
@@ -401,6 +402,36 @@ line, or the roadmap's status table. Those are owned by a separate sweep; this
 record's author was scoped to `plans/closure/**` only, and every status claim
 above is a recommendation for that sweep rather than a change it made.
 
+## Owner decision (2026-11-14)
+
+**Decisions 3 and 4 of the seven, taken as A + A.**
+
+- **Decision 3 — A: acceptance criterion 1 is amended** to "every dialog surface
+  whose title row needs no adjunct". `permission.rs` keeps its hand-built frame
+  because its title row carries a second, right-aligned, risk-coloured badge that
+  `Section` cannot express; folding it into the title loses the alignment and the
+  only `ToolRisk`-coloured paint in the TUI, and moving it into the body adds a
+  content row to every prompt. Losing that paint to satisfy a mechanical
+  criterion is the wrong trade.
+  **A `Section` title adjunct — a second, independently styled title span — is
+  scoped as a follow-up**, not a condition here: the primitive gap is real and a
+  second caller will hit it, but it belongs in the primitive's backlog.
+- **Decision 4 — A: the corpus diff-note substitute is accepted in writing.** The
+  pre-adoption frames no longer exist, so the note cannot be produced. The
+  substitute is the whole `tui_render` family green, `dialog_dispatch_coverage`
+  unmodified and green, and a hosted content-row assertion. The third leg is now
+  mechanical rather than prose: `the_minimum_hosted_size_keeps_a_readable_content_row`
+  in `help.rs`. It measures a **different** surface than this milestone's 39 (it
+  is the `002` panel's assertion) and it fails there — see
+  `tui-modularity/002`'s record. For **this** record the substitute is what
+  replaces the note, and it is accepted.
+
+**The long-title finding (§10, low) is dispositioned, not dropped.** No dialog
+carries a 60-character title, `Section` trims and pads but does not truncate,
+ratatui clips a title to its block, and I1's containment assertion catches a
+paint outside `area`. The fixture is therefore redundant rather than missing, and
+that is recorded here as the reason.
+
 ## Correction log (2026-11-13)
 
 - **§1, the three-reasons sentence.** Was "`scripts/verify.sh quick` and `cargo fmt --check` were not run". Met by: `scripts/verify.sh full`, 2026-11-13 — 17,377 workspace tests and 8,441 feature-pass tests, 0 failures; `run_full()` → `run_quick()` → `run_guards()`, where `cargo fmt --check` lives. The comment corpus is banked at 139,245 lines. The sentence now names two remaining reasons, both owner questions.
@@ -410,3 +441,4 @@ above is a recommendation for that sweep rather than a change it made.
 - **§11, conditions 1–3 and the future-evidence bullet.** Condition 1 is recorded as met by the 2026-11-13 `full`; conditions 2 and 3 are recorded as open owner questions rather than as unmet work; the future evidence is the `full` transcript plus the owner's answers.
 
 **No promotion.** The status stays `conditionally closed`: the corpus-diff-note substitute and the `permission.rs` criterion are undecided owner questions, so the record's conditions are not all met by a green gate alone. No condition was deleted without naming what met it or what must decide it.
+- **Owner decisions, 2026-11-14** — criterion 1 amended for the `permission.rs` title-row exception (with a `Section` title adjunct scoped as a follow-up), and the corpus diff-note substitute accepted in writing; the long-title fixture recorded as redundant; the record is `closed`.

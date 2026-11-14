@@ -1,6 +1,6 @@
 # TUI Editor Helix Capability Parity Milestone 002 — Closure Status
 
-Status: conditionally closed
+Status: closed
 
 Source implementation plan:
 
@@ -257,7 +257,7 @@ authority was added.
 
 ## 11. Roadmap disposition
 
-**Milestone conditionally closed.** The capability, its ordering guarantee, its
+**Milestone closed (owner decision, 2026-11-14).** The capability, its ordering guarantee, its
 tests, its guards and its recorded decisions are complete and verified. The
 conditions were:
 
@@ -301,6 +301,19 @@ recorded in §7 above and in the plan's §9.
   `d`/`c` and `Alt-d`/`Alt-c` diverge.
 - Do not mark M003 or M007 ready on the strength of this record alone.
 
+## Owner decision (2026-11-14)
+
+**Decision 6 of the seven, taken as B: the box now names `Alt-d`.**
+
+The same box read `d / y` while `docs/tui.md` documents the `d`/`Alt-d` split —
+`d` yanks into the unnamed register, `Alt-d` yanks nothing, and neither touches
+the clipboard. It now reads `d / Alt-d / y`, so the no-yank delete is
+discoverable where the user looks rather than only in the document.
+
+`d` and `Alt-d` remain indistinguishable until M007 (intended by D1, recorded
+here and in `docs/tui.md`); that is a register-semantics fact, not a gap in this
+milestone.
+
 ## Correction log (2026-11-13)
 
 - **§1, the status paragraph** — "`cargo fmt --check` and `scripts/verify.sh
@@ -334,3 +347,4 @@ recorded in §7 above and in the plan's §9.
   "1217/1217" and 292/259 filtered tests from the runs recorded in §4. They are
   unchanged historical measurements, not conditions: the guard now reports 92
   chords and the render family 1,237 tests.
+- **Owner decision, 2026-11-14** — `Alt-d` added to the `space ?` box; the record is `closed`.

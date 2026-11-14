@@ -13,8 +13,8 @@ max_block_lines = 50
 unlisted_max_comment_lines = 20
 
 [global]
-max_comment_lines = 139335
-max_comment_words = 1242518
+max_comment_lines = 139367
+max_comment_words = 1242869
 max_ratio = 0.1364
 
 # Per-file ceilings. A file may shrink; it may not grow past what is
@@ -685,7 +685,7 @@ max_ratio = 0.1364
 # from three paint paths.
 "src/tui/components/dialogs/diff.rs" = { max_comment_lines = 109, max_ratio = 0.2093 }
 "src/tui/components/dialogs/files.rs" = { max_comment_lines = 228, max_ratio = 0.1985 }
-"src/tui/components/dialogs/help.rs" = { max_comment_lines = 215, max_ratio = 0.2768 }
+"src/tui/components/dialogs/help.rs" = { max_comment_lines = 226, max_ratio = 0.2768 }
 "src/tui/components/dialogs/info.rs" = { max_comment_lines = 172, max_ratio = 0.3007 }
 # The dead `impl Widget for &KeybindDialog` — 131 lines with no production
 # caller — was deleted on 2026-11-13. Deleting code without deleting comments
@@ -715,7 +715,7 @@ max_ratio = 0.1364
 # ratio rises because the five per-hunk `.skip()` loops became one counted walk
 # (`take().enumerate()`), which is shorter than the double loop it replaced.
 "src/tui/components/diff.rs" = { max_comment_lines = 52, max_ratio = 0.1233 }
-"src/tui/components/editor.rs" = { max_comment_lines = 902, max_ratio = 0.2211 }
+"src/tui/components/editor.rs" = { max_comment_lines = 904, max_ratio = 0.2212 }
 "src/tui/components/file_tree.rs" = { max_comment_lines = 76, max_ratio = 0.1756 }
 "src/tui/components/hint_line.rs" = { max_comment_lines = 51, max_ratio = 0.2319 }
 "src/tui/components/messages.rs" = { max_comment_lines = 1129, max_ratio = 0.1976 }
@@ -730,8 +730,8 @@ max_ratio = 0.1364
 "src/tui/composer_claims.rs" = { max_comment_lines = 332, max_ratio = 0.6472 }
 "src/tui/composer_geometry.rs" = { max_comment_lines = 173, max_ratio = 0.3932 }
 "src/tui/composer_text.rs" = { max_comment_lines = 445, max_ratio = 0.4317 }
-"src/tui/document_session.rs" = { max_comment_lines = 717, max_ratio = 0.5956 }
-"src/tui/editor.rs" = { max_comment_lines = 3693, max_ratio = 0.3924 }
+"src/tui/document_session.rs" = { max_comment_lines = 725, max_ratio = 0.6017 }
+"src/tui/editor.rs" = { max_comment_lines = 3704, max_ratio = 0.3924 }
 "src/tui/editor_completion.rs" = { max_comment_lines = 130, max_ratio = 0.2022 }
 "src/tui/editor_effect.rs" = { max_comment_lines = 104, max_ratio = 2.7369 }
 "src/tui/editor_highlight.rs" = { max_comment_lines = 313, max_ratio = 0.4853 }

@@ -24,9 +24,12 @@ gated it on the commit rather than attempting it on the authoring host.
 The status sweep corrected **28 records**: 26 were `conditionally closed` with
 stale conditions, and two were stale in the restrictive direction
 (`tui-modularity/006` said `corrective pass required`, `007` said `blocked`).
-The five lines now read **27 `conditionally closed` and 7 `closed`** — helix
-**004** was promoted on two verified checks, and every other record keeps its
-residue named in its own words.
+With the seven owner decisions taken on 2026-11-14 the five lines read
+**13 `closed` and 21 `conditionally closed`**: helix **004** was promoted on two
+verified checks, decisions 1, 2, 3, 5, 6 and 7 closed six more records
+(`tui-modularity/001`, `/003`, `/008` and `helix/001`, `/002`, `/009`), and the
+21 that remain conditional each keep a residue named in its own words —
+`tui-modularity/002` now on a **measured** defect rather than a prose one.
 
 Three defects were fixed in code: keybind's dead 131-line `Widget` impl is
 deleted with its comment ceiling moved deliberately, `Diff`'s `End` no longer
@@ -40,9 +43,9 @@ mutation-proven. `scripts/verify.sh full` is green on the final tree:
 | # | Acceptance criterion | Verdict | Evidence |
 |---|---|---|---|
 | 1 | No conditional record asserts a gate the 2026-11-13 `full` discharged; every corrected sentence names its discharge | **met** | 28 records, each ending in a `## Correction log (2026-11-13)` naming the discharge per sentence |
-| 2 | Helix **004** `closed`; helix **001**/**002** either `closed` with the low item accepted in writing, or still conditional with the reason | **met** | 004 promoted (§3); 001 and 002 stay conditional with the owner question stated — no acceptance was invented |
-| 3 | `tui-modularity/007`'s record status matches its plan and roadmap | **met** | `blocked` → `conditionally closed`; `006` flipped too, a contradiction the plan did not list (§10) |
-| 4 | Four owner decisions listed as questions, each with the record that needs them | **met** | §9, plus three more the work surfaced |
+| 2 | Helix **004** `closed`; helix **001**/**002** either `closed` with the low item accepted in writing, or still conditional with the reason | **met** | 004 promoted (§3); **001 and 002 are now `closed`** by decision 5/6 — the box names `Alt-d` and `_` (B), so nothing was accepted in writing that the code could fix |
+| 3 | `tui-modularity/007`'s record status matches its plan and roadmap | **met** | `blocked` → `conditionally closed`; `006` flipped too, a contradiction the plan did not list (§10). `001`, `003` and `008` were promoted to `closed` by decisions 1–3 |
+| 4 | Four owner decisions listed as questions, each with the record that needs them | **met, then answered** | §9 lists all seven and the answer each one took on 2026-11-14 |
 | 5 | The Linux job fails rather than skips when no backend is present | **met** | `CODEGG_SANDBOX_QUALIFICATION=1` on the sweep in `ci.yml`, and the grant lane's skip arms assert instead of skipping. Run `43532152355` |
 | 6 | The ABI-6 precondition is asserted or pinned | **met** | `the_qualification_lane_obtains_landlock_abi_six` passed on the hosted runner (run `43532152355`), and the marker's own spelling is asserted on every host |
 | 7 | `/proc/<other-pid>/environ` denied on Linux, by a fixture **and** a positive control | **met** | `the_default_grant_set_denies_another_processes_proc_entry` passed hosted: the entry is denied, the command's own `/proc/self` reads, and the same entry reads once the `/proc` tree is restored. Run `43532152355` |
@@ -203,30 +206,30 @@ pre-6.12 kernel fails the ABI-6 probe.
 No security surface was widened by this pass. WP D removed code; WP F changed a
 paint loop; WP E added a test.
 
-## 9. Owner decisions — open, and listed as open
+## 9. Owner decisions — taken 2026-11-14
 
-The four the plan named, plus three the work surfaced. None is resolved here.
+All seven were answered by applying the recommendation each one carried. Each
+answer is recorded in the record that needed it, with its reasoning, and the
+memo `002-owner-decisions.md` carries the options that were weighed.
 
-1. **`tui-modularity/001` — M001's acceptance criterion 6 structural reading.**
-   No M001-only diff exists to read it against. Is "the harness exists and is
-   wired into both lanes" the reading?
-2. **`tui-modularity/008` — criterion 4 at 8 of 10.** `dialog_area` and
-   `sidebar_area` remain, and the attribution to `src/tui/commands/**` is
-   **correct** (ten production reads in `commands/panels.rs`). Is 8 of 10 the
-   accepted end state?
-3. **`tui-modularity/003` — the `permission.rs` title-badge exception.** 39 of 40
-   dialog surfaces adopt `Section`. Amend criterion 1, or scope a `Section`
-   title-adjunct for a follow-up milestone?
-4. **`tui-modularity/002` and `/003` — the corpus diff-note substitute.** Is the
-   mechanical substitute acceptable in writing: the whole `tui_render` family
-   green, `dialog_dispatch_coverage` unmodified and green, and a hosted
-   content-row assertion?
-5. **`helix/001` — the `space ?` keymap box omits `_` (trim) and `Alt-d`.** An
-   owner statement that the box is a condensed aid and `docs/tui.md` is
-   complete, or the two `EDITOR_KEYMAP` rows?
-6. **`helix/002` — the same box omits `Alt-d`.** Same settlement.
-7. **`helix/009` — the single-chain pruning rule is unratified.** The record
-   states it as an open question, not a decision.
+| # | Decision | Taken | Effect |
+|---|---|---|---|
+| 1 | `tui-modularity/001` — criterion 6's structural reading | **A + C**: accepted structurally, criterion amended to "no production rendering file changed as a consequence of M001" | `001` → **closed** |
+| 2 | `tui-modularity/008` — criterion 4 at 8 of 10 | **A**: eight is the end state, criterion and roadmap amended; the two fields named as a follow-up milestone. The characterisation matrix's before/after claim accepted on the same structural ground | `008` → **closed** |
+| 3 | `tui-modularity/003` — the `permission.rs` title-badge exception | **A**: criterion 1 amended to "every surface whose title row needs no adjunct"; a `Section` title adjunct scoped as a follow-up | `003` → **closed** |
+| 4 | `tui-modularity/002` + `/003` — the corpus diff-note substitute | **A**: accepted in writing, **and C was implemented** — a hosted content-row assertion now exists. For `003` that closes the condition. For `002` it turned the other half **red** | `003` → **closed**; `002` stays conditional |
+| 5 | `helix/001` — the `space ?` box omits `_` and `Alt-d` | **B**: the box now reads `d / Alt-d / y` and carries `_ · trim the selection to whole lines` | `001` → **closed** |
+| 6 | `helix/002` — the same box omits `Alt-d` | **B**: covered by the same edit | `002` → **closed** |
+| 7 | `helix/009` — the single-chain pruning rule | **A + C**: ratified as implemented, and the prune is disclosed as `· history trimmed at its bound`, derived from the last edit rather than latched | `009` → **closed** |
+
+**One decision did not survive its own evidence.** Decision 4's third leg — "a
+hosted content-row assertion" — was accepted as satisfied in prose. Implementing
+it showed that `HelpDialog::render_into` reserves `3 + 3 + Min(1) + 3` rows, so
+at the 20×6 host rect the panel paints **no content row at all**. The substitute
+is therefore accepted and its assertion is red, which is why
+`tui-modularity/002` stays `conditionally closed` on exactly that condition. The
+alternative — accepting a substitute whose measured leg fails — would have been
+the silent pass this corrective exists to prevent.
 
 ## 10. Unresolved findings
 
@@ -244,7 +247,9 @@ The four the plan named, plus three the work surfaced. None is resolved here.
 
 ## 11. Roadmap disposition
 
-- **TUI modularity and render invariants** — 10 records `conditionally closed`;
+- **TUI modularity and render invariants** — 3 `closed` (001, 003, 008) and
+  7 `conditionally closed` (002 on the Help 20×6 defect, plus 004, 005, 006,
+  007, 009, 010);
   its roadmap now points at this corrective for the `full`-and-a-commit blocker
   and for the two items dropped by research (`/security-review`'s geometry, the
   I4 parser widening).
@@ -257,8 +262,8 @@ The four the plan named, plus three the work surfaced. None is resolved here.
 - **Sandbox containment audit corrective** — 4 conditional, 2 closed. Its
   roadmap note now says the `/proc` narrowing is a live control gap, not
   outstanding evidence.
-- **TUI editor Helix capability parity** — 8 conditional, 1 closed (004
-  promoted).
+- **TUI editor Helix capability parity** — 4 closed (001, 002, 004, 009) and 5
+  conditional (003, 005, 006, 007, 008).
 
 **Unblock audit: this closure unblocks nothing.** No registered plan names WP A,
 D, E, F or G as a dependency, and the two items that would unblock the Linux
@@ -278,6 +283,16 @@ is recorded rather than left implicit.
   WP B and WP C blocked on WP 0`, with this record linked in its header.
 - The two roadmap notes that said "registered `ready`" now say
   `conditionally closed` and point at this record.
+- **Six records were promoted to `closed` on 2026-11-14** by the owner
+  decisions: `tui-modularity/001`, `/003`, `/008` and `helix/001`, `/002`,
+  `/009`. Their registry rows, both roadmaps' §12 tables and the subsystem
+  summaries now say `closed`.
+- **Three follow-ups were registered** in the registry's *Deferred unregistered
+  product work*: `App`'s last two frame-geometry fields, a `Section` title
+  adjunct, and Help's degradation at small hosted sizes.
+- **Two acceptance criteria were amended in their plans**, not only in the
+  records: `tui-modularity/001` criterion 6 and `008` criterion 4 (with the
+  roadmap's completion criterion 6).
 - No record in the five lines was moved between the registry's *Blocked work*
   and *Recently closed or conditionally closed work* sections by this pass: all
   28 were already in the latter, and none changes section.

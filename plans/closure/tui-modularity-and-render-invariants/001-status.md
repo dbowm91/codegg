@@ -1,6 +1,6 @@
 # TUI Modularity and Render Invariants Milestone 001 — Closure Status
 
-Status: conditionally closed
+Status: closed
 
 Source implementation plan:
 
@@ -295,9 +295,11 @@ No medium, high or critical finding.
 
 ## 11. Roadmap disposition
 
-**Milestone conditionally closed.** The harness, the baseline, the guard and the
-wiring are complete and verified, and the harness is green (24/24) with the
-manifest equal to its own measurement in both directions. Conditions:
+**Milestone closed (owner decision, 2026-11-14).** The harness, the baseline, the
+guard and the wiring are complete and verified, and the harness is green (24/24)
+with the manifest equal to its own measurement in both directions. The gate
+conditions were met on 2026-11-13; the one decision this record could not take
+is taken below.
 
 - **Condition — gate class met 2026-11-13.** `scripts/verify.sh quick`,
   `cargo fmt --check` and `check_comment_budget.py` were the condition, and all
@@ -326,6 +328,24 @@ rather than silently accepted.
 - Record the plan's §11 command defect: the selector is `invariants`, not
   `tui_render_invariants`.
 
+## Owner decision (2026-11-14)
+
+**Decision 1 of the seven, taken as A + C.**
+
+- **A — the structural reading is accepted.** Acceptance criterion 6 ("`git diff`
+  shows no change under `src/tui/**` or `src/theme/**`") is satisfied
+  structurally: **no M001 artifact is a production file**, the harness lives
+  under `tests/tui_render/` and `scripts/`, and it is wired into both lanes.
+  There is no M001-only diff to read because the milestone shared a worktree with
+  M002, M003 and four other lines, and the tree is now one commit — so option B
+  was not merely expensive, it was no longer available.
+- **C — the criterion is amended to what it protects:** "no production rendering
+  file changed as a consequence of M001". That is the property the original
+  wording was reaching for, and it is now the wording a reader is held to.
+
+The inherited-baseline history (§10, low) stays recorded as reported rather than
+verified; it is not a condition and never was.
+
 ## Correction log (2026-11-13)
 
 - **§1, the three-reasons sentence.** Was "`scripts/verify.sh quick` and `cargo fmt --check` were not run". Met by: `scripts/verify.sh full` on this tree, 2026-11-13 — 17,377 workspace tests and 8,441 feature-pass tests, 0 failures; `run_full()` calls `run_quick()`, which calls `run_guards()`, where `cargo fmt --check` lives. The two remaining reasons (criterion 6's missing M001-only diff; the unverifiable inherited-baseline history) are now the only two, and both are named.
@@ -336,3 +356,4 @@ rather than silently accepted.
 - **§11, the Condition bullet.** Was "`quick` cannot be green today: `check_comment_budget.py` reports 20 violations". Met by the 2026-11-13 `full`, and the comment bank at 139,245. The bullet now says so and names only the open criterion-6 question.
 
 **No promotion.** The status stays `conditionally closed`, because criterion 6's structural reading is an undecided owner question and the inherited-baseline history remains unverifiable. No condition was deleted; each was replaced by what met it.
+- **Owner decision, 2026-11-14** — criterion 6 accepted structurally and the criterion amended to "no production rendering file changed as a consequence of M001"; the record is `closed`.

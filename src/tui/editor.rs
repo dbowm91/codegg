@@ -6788,6 +6788,9 @@ pub fn push_undo(
     });
     presentation.history_bytes = presentation.history_bytes.saturating_add(bytes);
     presentation.history_cursor = created;
+    // One-shot: the disclosure belongs to the edit that pruned, so the next
+    // edit clears it before this one can set it again.
+    presentation.history_trimmed = false;
     presentation.history_bound_cleared = trim_history(presentation);
 }
 
@@ -7129,6 +7132,7 @@ fn trim_history(presentation: &mut TuiDocumentPresentation) -> bool {
             return true;
         };
         drop_node(presentation, victim);
+        presentation.history_trimmed = true;
     }
     false
 }
@@ -7200,6 +7204,7 @@ fn clear_history_nodes(presentation: &mut TuiDocumentPresentation) {
     presentation.history_cursor = 0;
     presentation.history_next = 0;
     presentation.history_bound_cleared = false;
+    presentation.history_trimmed = false;
 }
 
 /// Drop all undo and redo history.
@@ -11251,6 +11256,47 @@ mod tests {
             Some(tip - 1),
             "and the reader's own branch is untouched"
         );
+    }
+
+    /// A prune is disclosed, and the disclosure is **derived** from the last
+    /// edit rather than latched.
+    ///
+    /// The alternative the implementing lane chose — silence — is how a reader
+    /// loses the oldest undo point without being told. A latch is the other
+    /// failure: it keeps reporting a prune after the history stopped pruning.
+    #[test]
+    fn a_prune_is_disclosed_while_it_happens_and_not_after() {
+        let mut presentation = presentation_at(0);
+        assert!(!presentation.history_trimmed);
+        for _ in 0..=MAX_EDITOR_UNDO_DEPTH {
+            push_undo(
+                &mut presentation,
+                TextTransaction::new(vec![TextEdit::new(0..0, "x")]),
+                TextTransaction::new(vec![TextEdit::new(0..1, "")]),
+                1,
+                0,
+                Vec::new(),
+            );
+        }
+        assert_eq!(
+            presentation.history.len(),
+            MAX_EDITOR_UNDO_DEPTH,
+            "the bound holds"
+        );
+        assert!(
+            presentation.history_trimmed,
+            "the edit that pruned must disclose it"
+        );
+
+        // A history that is no longer at its bound stops reporting the prune.
+        // `clear_history` is the state transition that ends it, and it is the
+        // same transition that clears the fallback disclosure beside it.
+        clear_history(&mut presentation);
+        assert!(
+            !presentation.history_trimmed,
+            "the disclosure is derived from the last edit, not latched"
+        );
+        assert!(!presentation.history_bound_cleared);
     }
 
     /// A history that cannot be pruned below its cap is cleared, and says so.

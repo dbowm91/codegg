@@ -649,6 +649,62 @@ mod tests {
         HelpDialog::new_with_mode(Arc::new(Theme::dark()), false, InputMode::Normal)
     }
 
+    /// The box's cells, one string per row, through the **hosted** path.
+    ///
+    /// `render_in_panel` is handed the host's full rect and must not paint a
+    /// second border into it, so the host's chrome is drawn first exactly as
+    /// `render_hosted` does.
+    fn hosted_rows(dialog: &mut HelpDialog, width: u16, height: u16) -> Vec<String> {
+        use ratatui::backend::TestBackend;
+        use ratatui::widgets::{Block, Borders};
+        use ratatui::Terminal;
+
+        let theme = Arc::new(Theme::dark());
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    Block::default().borders(Borders::ALL).title(" Help "),
+                    frame.area(),
+                );
+                dialog.render_in_panel(frame, frame.area(), &theme);
+            })
+            .expect("draw");
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol().to_string())
+            .collect::<Vec<_>>()
+            .chunks(width as usize)
+            .map(|row| row.concat())
+            .collect()
+    }
+
+    /// 20×6 is the smallest docked column the box must survive.
+    ///
+    /// The host's chrome takes two of the six rows, so at least one of the four
+    /// interior rows must paint **content** — letters rather than border. This
+    /// is the hosted content-row assertion the corpus diff note's substitute
+    /// names: without it, "the panel still reads" was asserted in prose.
+    #[test]
+    #[ignore = "Help paints no content row at 20x6: render_into reserves 3+3+Min(1)+3 rows. \
+                The fix is a degradation policy for the fixed chrome; the condition is \
+                tui-modularity/002's, and this test is its measurement."]
+    fn the_minimum_hosted_size_keeps_a_readable_content_row() {
+        let mut d = dialog();
+        let rows = hosted_rows(&mut d, 20, 6);
+        assert_eq!(rows.len(), 6, "the host rect must be fully painted");
+        let interior = &rows[1..5];
+        assert!(
+            interior
+                .iter()
+                .any(|row| row.chars().filter(|c| c.is_alphabetic()).count() >= 3),
+            "no content row painted at 20x6: {rows:#?}"
+        );
+    }
+
     #[test]
     fn the_starting_mode_is_the_callers_choice() {
         // The box and the panel open in different modes on purpose: the box is

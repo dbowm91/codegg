@@ -347,6 +347,15 @@ pub struct TuiDocumentPresentation {
     /// Whether the last prune could not get the history under its caps and
     /// cleared it: the disclosed fallback.
     pub history_bound_cleared: bool,
+    /// Whether the **last edit** pruned the history to stay under its caps.
+    ///
+    /// Derived, not latched: the prune sets it and an edit that does not prune
+    /// clears it, so the row describes what the history is doing *now* rather
+    /// than reporting one historical event forever. While the history sits at
+    /// its bound every edit prunes, and the row says so — that is a standing
+    /// property of a full history, not noise. Silence is the failure mode this
+    /// replaces: a reader lost the oldest undo point and was never told.
+    pub history_trimmed: bool,
     /// The open insert session, if insert mode has typed anything.
     ///
     /// Held beside the history because it *is* history that has not been

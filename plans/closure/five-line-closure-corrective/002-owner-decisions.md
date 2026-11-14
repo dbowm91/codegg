@@ -1,17 +1,39 @@
 # Five-Line Closure Corrective — Owner Decisions
 
-Status: open — seven decisions, none taken
+Status: **decided 2026-11-14** — all seven answered; the options below are kept
+as the record of what was weighed
 
 Source: `plans/closure/five-line-closure-corrective/001-status.md` §9, which
 lists these as questions. This memo gives each one its options, what each costs,
 and a recommendation. Nothing here is a decision; a decision is an owner
 sentence recorded against the record named in each heading.
 
-Why they are here rather than resolved: every one of them is a **scope**
-question — is this condition met, or is the work not done — and none can be
+Why they were here rather than resolved: every one of them was a **scope**
+question — is this condition met, or is the work not done — and none could be
 settled by a run. The gate class they used to sit beside is discharged: `full`
 is green on the tree, and the sandbox narrowing's evidence is the hosted run
 recorded in the closure record, not a local claim.
+
+---
+
+## Decisions taken, 2026-11-14
+
+| # | Decision | Taken | Record |
+|---|---|---|---|
+| 1 | M001 criterion 6 structural reading | **A + C** — accepted structurally; criterion amended to "no production rendering file changed as a consequence of M001" | `tui-modularity/001` → closed |
+| 2 | M008 criterion 4 at 8 of 10 | **A** — eight is the end state; the two fields named as a follow-up milestone; the matrix's before/after claim accepted structurally | `tui-modularity/008` → closed |
+| 3 | `permission.rs` title-badge exception | **A** — criterion amended; a `Section` title adjunct scoped as a follow-up | `tui-modularity/003` → closed |
+| 4 | The corpus diff-note substitute | **A + C** — accepted in writing, and the hosted content-row assertion implemented. It **fails** for Help at 20×6, so `002` keeps that one condition | `003` → closed; `002` stays conditional |
+| 5 | `space ?` omits `_` and `Alt-d` | **B** — `d / Alt-d / y` plus a `_` row | `helix/001` → closed |
+| 6 | `space ?` omits `Alt-d` | **B** — the same edit | `helix/002` → closed |
+| 7 | Single-chain pruning rule | **A + C** — ratified, and the prune disclosed (`history_trimmed`, derived from the last edit) | `helix/009` → closed |
+
+**Decision 4 is the one that changed under its own evidence.** The substitute's
+third leg was accepted as satisfied in prose; implementing it showed that
+`HelpDialog::render_into` reserves `3 + 3 + Min(1) + 3` rows and paints no
+content at an 18×4 interior. Accepting a substitute whose measured leg is red
+would have been the silent pass this corrective exists to prevent, so `002`
+stays conditional and the defect is named.
 
 ---
 
