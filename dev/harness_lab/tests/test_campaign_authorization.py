@@ -362,6 +362,7 @@ class CampaignAuthorizationTests(unittest.TestCase):
                 "raw_job_ids_retained": False,
                 "verifier_public_reconciliation": {
                     "schema": "h007_verifier_public_reconciliation_v1",
+                    "verifier_setup_failure_reason": "workspace_build_failure",
                     "failure_domain_counts": {"transcript_job_lifecycle": 1},
                     "public_domain_states": {"transcript_job_lifecycle": "incomplete"},
                     "classification": {
@@ -417,6 +418,11 @@ class CampaignAuthorizationTests(unittest.TestCase):
         self.assertEqual(continuation["contract_phase_statuses"], {"cli_export": "not_started"})
         attribution = diagnostic["verifier_public_reconciliation"][
             "failed_job_status_attribution"]
+        self.assertEqual(
+            diagnostic["verifier_public_reconciliation"][
+                "verifier_setup_failure_reason"],
+            "workspace_build_failure",
+        )
         self.assertEqual(attribution["rows"], [{
             "error_class": "execution_backend_unavailable",
             "argument_state": "string",
@@ -428,6 +434,16 @@ class CampaignAuthorizationTests(unittest.TestCase):
         for private_marker in ("PRIVATE_ATTRIBUTION", "PRIVATE_JOB_ID", "private_phase",
                                "private_contract_phase"):
             self.assertNotIn(private_marker, encoded)
+
+        hostile_receipt = copy.deepcopy(case_receipt)
+        hostile_receipt["task_completion_diagnostic"]["verifier_public_reconciliation"][
+            "verifier_setup_failure_reason"] = "PRIVATE_PATH /tmp/secret"
+        hostile_projection = safe_campaign_run_fields(
+            _run(), canonical_identity=_run(), case_receipt=hostile_receipt)
+        self.assertNotIn(
+            "verifier_setup_failure_reason",
+            hostile_projection["h007_completion_diagnostic"]["verifier_public_reconciliation"],
+        )
 
         invalid_receipt = copy.deepcopy(case_receipt)
         invalid_receipt["task_completion_diagnostic"][

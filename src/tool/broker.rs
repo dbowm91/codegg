@@ -1070,22 +1070,7 @@ impl ToolBroker {
                     // Legacy single-attempt path: map directly, no chain
                     // accounting, identical to the pre-M002 behavior.
                     let Some(chain_ref) = chain.as_mut() else {
-                        let value = match &e {
-                            ToolError::NotFound(name) => {
-                                ToolValue::infrastructure_error(format!("Tool not found: {name}"))
-                            }
-                            ToolError::Timeout(message) => self.timeout_value(message),
-                            ToolError::Permission(msg) => ToolValue::denied(msg.clone()),
-                            ToolError::Disabled(msg) => {
-                                ToolValue::infrastructure_error(format!("Tool is disabled: {msg}"))
-                            }
-                            ToolError::BackendUnavailable(msg) => ToolValue::infrastructure_error(
-                                format!("Execution backend unavailable: {msg}"),
-                            ),
-                            other => {
-                                ToolValue::infrastructure_error(format!("Tool error: {other}"))
-                            }
-                        };
+                        let value = self.terminal_error_value(&e);
                         return Ok(BrokerResult {
                             value,
                             contract: contract.clone(),
@@ -1169,24 +1154,7 @@ impl ToolBroker {
                                 reason = %reason,
                                 "tool attempt failed terminally; not retried"
                             );
-                            let value = match &e {
-                                ToolError::NotFound(name) => ToolValue::infrastructure_error(
-                                    format!("Tool not found: {name}"),
-                                ),
-                                ToolError::Timeout(message) => self.timeout_value(message),
-                                ToolError::Permission(msg) => ToolValue::denied(msg.clone()),
-                                ToolError::Disabled(msg) => ToolValue::infrastructure_error(
-                                    format!("Tool is disabled: {msg}"),
-                                ),
-                                ToolError::BackendUnavailable(msg) => {
-                                    ToolValue::infrastructure_error(format!(
-                                        "Execution backend unavailable: {msg}"
-                                    ))
-                                }
-                                other => {
-                                    ToolValue::infrastructure_error(format!("Tool error: {other}"))
-                                }
-                            };
+                            let value = self.terminal_error_value(&e);
                             return Ok(BrokerResult {
                                 value,
                                 contract: contract.clone(),
@@ -1339,6 +1307,24 @@ impl ToolBroker {
             format!("{}{}", &message[..boundary], suffix)
         };
         ToolValue::timed_out_with_details(display)
+    }
+
+    fn terminal_error_value(&self, error: &ToolError) -> ToolValue {
+        match error {
+            ToolError::NotFound(name) => {
+                ToolValue::infrastructure_error(format!("Tool not found: {name}"))
+            }
+            ToolError::Timeout(message) => self.timeout_value(message),
+            ToolError::Permission(message) => ToolValue::denied(message.clone()),
+            ToolError::Disabled(message) => {
+                ToolValue::infrastructure_error(format!("Tool is disabled: {message}"))
+            }
+            ToolError::BackendUnavailable(message) => {
+                ToolValue::infrastructure_error(format!("Execution backend unavailable: {message}"))
+            }
+            ToolError::Execution(_) => ToolValue::execution_error(format!("Tool error: {error}")),
+            other => ToolValue::infrastructure_error(format!("Tool error: {other}")),
+        }
     }
 
     // ── Step 9: Artifact registration ─────────────────────────
@@ -1753,6 +1739,30 @@ mod tests {
             audit_emitter: None,
             execution_authorization: None,
         }
+    }
+
+    #[test]
+    fn terminal_error_mapping_preserves_execution_and_backend_classes() {
+        let registry = make_registry_with_test_tool();
+        let broker = ToolBroker::with_config(&registry, ToolBrokerConfig::default());
+
+        let execution = broker.terminal_error_value(&ToolError::Execution("bad input".into()));
+        assert_eq!(execution.terminal_status, ToolTerminalStatus::Error);
+        assert!(execution.display.contains("bad input"));
+
+        let backend = broker
+            .terminal_error_value(&ToolError::BackendUnavailable("sandbox unavailable".into()));
+        assert_eq!(
+            backend.terminal_status,
+            ToolTerminalStatus::InfrastructureError
+        );
+        assert!(backend.display.contains("Execution backend unavailable"));
+
+        let timeout = broker.terminal_error_value(&ToolError::Timeout("deadline".into()));
+        assert_eq!(timeout.terminal_status, ToolTerminalStatus::TimedOut);
+
+        let denied = broker.terminal_error_value(&ToolError::Permission("denied".into()));
+        assert_eq!(denied.terminal_status, ToolTerminalStatus::Denied);
     }
 
     #[tokio::test]

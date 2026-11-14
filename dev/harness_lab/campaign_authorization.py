@@ -15,6 +15,7 @@ from typing import Any
 from .diagnostics import (
     SAFE_JOB_STATUS_ERROR_CLASSES,
     SAFE_TEST_SUBMIT_ERROR_CLASSES,
+    SAFE_VERIFIER_SETUP_FAILURE_REASONS,
     safe_job_status_failure_attribution,
 )
 
@@ -807,6 +808,10 @@ def _safe_h007_completion_projection(case_receipt: Mapping[str, Any] | None) -> 
                 reconciliation.get("failed_test_submit_error_class_counts"),
                 SAFE_TEST_SUBMIT_ERROR_CLASSES, maximum=1_600),
         }
+        setup_reason = reconciliation.get("verifier_setup_failure_reason")
+        if (isinstance(setup_reason, str)
+                and setup_reason in SAFE_VERIFIER_SETUP_FAILURE_REASONS):
+            verifier_projection["verifier_setup_failure_reason"] = setup_reason
         failed_job_status_attribution = safe_job_status_failure_attribution(
             reconciliation.get("failed_job_status_attribution")
         )

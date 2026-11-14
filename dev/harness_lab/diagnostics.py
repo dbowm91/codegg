@@ -90,6 +90,10 @@ SAFE_TEST_SUBMIT_ERROR_CLASSES = frozenset({
     "shared_process_denied", "execution_backend_unavailable", "io_error",
     "network_error", "unclassified",
 })
+SAFE_VERIFIER_SETUP_FAILURE_REASONS = frozenset({
+    "build_lock_wait", "disk_full", "missing_path", "python_import_failure",
+    "workspace_build_failure", "setup_command_timeout", "unclassified_setup_failure",
+})
 SAFE_JOB_STATUS_ERROR_CLASSES = SAFE_TEST_SUBMIT_ERROR_CLASSES | frozenset({
     "job_not_found", "unobserved",
 })

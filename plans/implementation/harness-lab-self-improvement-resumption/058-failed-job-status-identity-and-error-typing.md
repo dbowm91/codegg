@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement Resumption S058 — Failed Job-Status Identity and Error Typing
 
-Status: **active**
+Status: **closed at failed job-status identity and error-typing scope; H007 remains unqualified**
 
 Repository baseline: `36f081a5b08917f78879848e1bfceb0196a85e82`
 
