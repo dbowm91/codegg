@@ -932,6 +932,26 @@ def _active_work_span_ms(tool_calls: list[dict[str, Any]]) -> int:
     return max(activity_times) - min(activity_times) if activity_times else 0
 
 
+def _h007_activity_calls_excluding_verifier_pauses(
+    tool_calls: list[dict[str, Any]],
+    verifier_pause_points: list[tuple[int, int]],
+) -> list[dict[str, Any]]:
+    """Remove host verifier pauses from the agent activity clock, not raw events."""
+    adjusted: list[dict[str, Any]] = []
+    for ordinal, call in enumerate(tool_calls):
+        row = dict(call)
+        offset_ms = sum(
+            pause_ms for first_affected_call, pause_ms in verifier_pause_points
+            if ordinal >= first_affected_call
+        )
+        for key in ("started_elapsed_ms", "finished_elapsed_ms"):
+            elapsed_ms = row.get(key)
+            if isinstance(elapsed_ms, int) and not isinstance(elapsed_ms, bool):
+                row[key] = max(0, elapsed_ms - offset_ms)
+        adjusted.append(row)
+    return adjusted
+
+
 def _h007_repair_cycles(tool_calls: list[dict[str, Any]], *,
                         preferred_job_pairs: tuple[tuple[str, str], ...] = ()) -> int:
     """Count one-to-one failed-test → productive-repair → completed-test pairs."""
@@ -1465,8 +1485,16 @@ _H007_PROMPT_STOP_CLASSES = frozenset({
 _H007_CONTINUATION_DECISIONS = frozenset({
     "continue", "continuation_complete", "agent_terminal", "no_native_progress",
     "followup_limit", "wallclock_cap", "verifier_reserve", "turn_timeout",
-    "turn_failure",
+    "turn_failure", "verifier_feedback", "verifier_feedback_limit",
 })
+_H007_VERIFIER_FEEDBACK_DOMAINS = frozenset({
+    "continuation_boundary", "transcript_job_lifecycle",
+})
+_H007_VERIFIER_FEEDBACK_OUTCOMES = frozenset({
+    "assertion_failures", "test_errors", "mixed_test_failures",
+})
+_H007_MAX_VERIFIER_FEEDBACK_FOLLOWUPS = 1
+_H007_MIN_VERIFIER_FEEDBACK_SECONDS = 60.0
 _H007_PROGRESS_STATUSES = frozenset({
     "complete", "completed", "pending", "failed", "in_progress", "not_started",
     "other",
@@ -2631,7 +2659,8 @@ def _h007_followup_decision(*, stop_reason: Optional[str], continuation_confirme
                             native_progress: bool,
                             remaining_wallclock_seconds: Optional[float],
                             active_work_span_ms: Optional[int] = None,
-                            minimum_active_work_span_ms: Optional[int] = None) -> str:
+                            minimum_active_work_span_ms: Optional[int] = None,
+                            verifier_feedback_followup_count: int = 0) -> str:
     """Decide whether an incomplete normal end may continue in the same run."""
     if stop_reason != "end_turn":
         return "agent_terminal"
@@ -2650,7 +2679,121 @@ def _h007_followup_decision(*, stop_reason: Optional[str], continuation_confirme
     if (remaining_wallclock_seconds is not None
             and remaining_wallclock_seconds <= H006_H007_VERIFIER_RESERVE_SECONDS):
         return "verifier_reserve"
+    if verifier_feedback_followup_count > 0:
+        return "verifier_feedback_limit"
     return "continue"
+
+
+def _h007_safe_verifier_failure_domains(
+    verification: Mapping[str, Any] | None,
+) -> dict[str, int]:
+    """Keep only bounded H007 verifier failure-domain counts."""
+    exit_code = verification.get("exit_code") if isinstance(verification, Mapping) else None
+    if not isinstance(exit_code, int) or isinstance(exit_code, bool) or exit_code == 0:
+        return {}
+    diagnostic = verification.get("diagnostic")
+    if not isinstance(diagnostic, Mapping) \
+            or diagnostic.get("state") not in _H007_VERIFIER_FEEDBACK_OUTCOMES:
+        return {}
+    raw_counts = diagnostic.get("failure_domain_counts")
+    if not isinstance(raw_counts, Mapping):
+        return {}
+    return {
+        domain: count for domain in sorted(_H007_VERIFIER_FEEDBACK_DOMAINS)
+        if isinstance((count := raw_counts.get(domain)), int)
+        and not isinstance(count, bool) and 0 < count <= 100
+    }
+
+
+def _h007_verifier_feedback_decision(
+    *, verification: Mapping[str, Any] | None,
+    terminal: str,
+    stop_reason: Optional[str],
+    continuation_complete: bool,
+    feedback_followup_count: int,
+    autonomous_followup_count: int,
+    remaining_wallclock_seconds: Optional[float],
+    remaining_provider_requests: Optional[int],
+    remaining_tool_calls: Optional[int],
+) -> tuple[dict[str, int], str]:
+    """Return safe failure domains and a bounded reason for the decision."""
+    if terminal != "completed" or stop_reason != "end_turn" or not continuation_complete:
+        return {}, "session_not_complete"
+    domains = _h007_safe_verifier_failure_domains(verification)
+    if not domains:
+        if isinstance(verification, Mapping) and verification.get("exit_code") == 0:
+            return {}, "verifier_passed"
+        diagnostic = verification.get("diagnostic") if isinstance(verification, Mapping) else None
+        if (not isinstance(diagnostic, Mapping)
+                or diagnostic.get("state") not in _H007_VERIFIER_FEEDBACK_OUTCOMES):
+            return {}, "verifier_outcome_ineligible"
+        return {}, "no_recognized_domain"
+    if feedback_followup_count >= _H007_MAX_VERIFIER_FEEDBACK_FOLLOWUPS \
+            or autonomous_followup_count >= H007_MAX_AUTONOMOUS_FOLLOWUP_TURNS:
+        return {}, "followup_limit"
+    if (remaining_wallclock_seconds is None
+            or remaining_wallclock_seconds <= (
+                H006_H007_VERIFIER_RESERVE_SECONDS
+                + _H007_MIN_VERIFIER_FEEDBACK_SECONDS
+            )):
+        return {}, "wallclock_reserve"
+    if remaining_provider_requests is None or remaining_provider_requests <= 0:
+        return {}, "provider_request_reserve"
+    if remaining_tool_calls is None or remaining_tool_calls <= 0:
+        return {}, "native_call_reserve"
+    return domains, "requested"
+
+
+def _h007_verifier_feedback_prompt(
+    domain_counts: Mapping[str, Any],
+    *,
+    remaining_provider_requests: int,
+    remaining_tool_calls: int,
+    remaining_work_seconds: float,
+) -> str:
+    """Build same-session repair guidance from fixed public failure labels only."""
+    safe_counts = {
+        domain: count for domain in sorted(_H007_VERIFIER_FEEDBACK_DOMAINS)
+        if isinstance((count := domain_counts.get(domain)), int)
+        and not isinstance(count, bool) and 0 < count <= 100
+    }
+    if not safe_counts:
+        raise ValueError("verifier feedback requires a recognized safe failure domain")
+    domains = ", ".join(f"{domain} ({count})" for domain, count in safe_counts.items())
+    remaining_minutes = max(0, int(remaining_work_seconds // 60))
+    return (
+        "The independent verifier found remaining failures in these fixed public categories: "
+        + domains + ". The verifier's test names, assertions, messages, source, raw output, and "
+        "private transcript remain hidden. Use only your own task files, CONTINUATION.md, and "
+        "the exact native job observations already available in this same CodeGG session. "
+        "Inspect the relevant completion record and lifecycle evidence, make a correctness-"
+        "bearing repair only where the evidence supports one, and update the record from "
+        "observed facts. Do not edit or attempt to read the verifier. Do not repeat unchanged "
+        "checks or substitute job IDs. Then stop so the unchanged independent verifier can "
+        "check the final workspace and transcript. This is the single verifier-directed "
+        "follow-up; do not continue after the next normal end. Preserve the original task, "
+        "fixture, independent-verifier boundary, and cancellation rules. Keep every original "
+        "acceptance requirement binding, and preserve or re-establish its evidence in this "
+        "turn. Remaining budgets: "
+        f"{remaining_provider_requests} provider requests, {remaining_tool_calls} native calls, "
+        f"and about {remaining_minutes} minutes before the final verifier reserve."
+    )
+
+
+def _h007_can_reuse_verification(
+    verification: Mapping[str, Any] | None,
+    *,
+    verified_transcript_sha256: Optional[str],
+    final_transcript_sha256: str,
+    feedback_followup_count_at_verification: int,
+    feedback_followup_count: int,
+) -> bool:
+    """Reuse a verifier result only for the exact final transcript and feedback state."""
+    return bool(
+        isinstance(verification, Mapping)
+        and verified_transcript_sha256 == final_transcript_sha256
+        and feedback_followup_count_at_verification == feedback_followup_count
+    )
 
 
 def _provider_request_admissions(stderr_path: Path) -> Optional[int]:
@@ -2994,6 +3137,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     env.pop("CODEGG_HARNESS_DISABLE_PLACEMENT_ADVISOR", None)
     if disable_placement_advisor:
         env["CODEGG_HARNESS_DISABLE_PLACEMENT_ADVISOR"] = "1"
+    run_provider_request_cap: Optional[int] = None
     if guard.policy.max_provider_requests is not None:
         remaining_requests = min(
             guard.policy.max_provider_requests - max(0, guard.provider_requests - 1),
@@ -3001,6 +3145,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         )
         if remaining_requests <= 0:
             raise HarnessError("provider request budget is exhausted before the case starts")
+        run_provider_request_cap = remaining_requests
         env["CODEGG_HARNESS_MAX_PROVIDER_REQUESTS"] = str(remaining_requests)
         env["CODEGG_HARNESS_PROVIDER_REQUEST_RECEIPT"] = str(
             spec.root / "artifacts" / "provider-request-admissions.jsonl")
@@ -3102,6 +3247,19 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     no_progress_boundary_count = 0
     prompt_boundary_rows: list[dict[str, Any]] = []
     current_prompt_boundary: Optional[dict[str, Any]] = None
+    verifier_feedback_followup_count = 0
+    verifier_feedback_domains: dict[str, int] = {}
+    verifier_feedback_decision_reason = "not_evaluated"
+    verification_attempt_count = 0
+    verification: Optional[dict[str, Any]] = None
+    verification_transcript_sha256: Optional[str] = None
+    verification_feedback_followup_count = 0
+    verifier_pause_points: list[tuple[int, int]] = []
+    verifier_pause_total_ms = 0
+    transcript_path = private_root / "TRANSCRIPT.json"
+    verifier_env = dict(os.environ)
+    verifier_env[CASE_ROOT_ENV] = str(agent_root)
+    verifier_env[TRANSCRIPT_ENV] = str(transcript_path)
     try:
         client.request("initialize", {"protocolVersion": ACP_PROTOCOL_VERSION,
                                       "clientInfo": {"name": "codegg-harness-lab", "version": "1"}})
@@ -3259,6 +3417,12 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
             except (HarnessError, OSError, subprocess.SubprocessError):
                 pass
             observed_calls = _observed_tool_calls(client)
+            qualification_tool_calls = _h007_activity_calls_excluding_verifier_pauses(
+                observed_calls, verifier_pause_points,
+            )
+            qualification_elapsed_ms = max(
+                0, int((time.monotonic() - started) * 1000) - verifier_pause_total_ms,
+            )
             if prompt_boundary_rows:
                 latest_boundary = prompt_boundary_rows[-1]
                 progress_end = _h007_prompt_progress_snapshot(
@@ -3286,13 +3450,145 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
                 followup_count=autonomous_followup_count,
                 native_progress=len(observed_calls) > last_prompt_tool_call_count,
                 remaining_wallclock_seconds=guard.remaining_wallclock_seconds(),
-                active_work_span_ms=_active_work_span_ms(observed_calls),
+                active_work_span_ms=_active_work_span_ms(qualification_tool_calls),
                 minimum_active_work_span_ms=H007_MIN_ACTIVE_DURATION_MS,
+                verifier_feedback_followup_count=verifier_feedback_followup_count,
             )
             if prompt_boundary_rows:
                 prompt_boundary_rows[-1]["continuation_decision"] = (
                     continuation_stop_reason
                 )
+            if (continuation_stop_reason == "continuation_complete"
+                    and case.fault is None
+                    and _duration_qualified(
+                        H007_CASE_ID,
+                        qualification_elapsed_ms,
+                        qualification_tool_calls,
+                    )):
+                # Keep the ACP session available while the independent
+                # verifier checks the completed public task. A first failed
+                # result may earn one bounded same-session repair, while the
+                # host verifier itself never consumes the final 300-second
+                # reserve or the minimum 60-second feedback window.
+                remaining_before_verifier = guard.remaining_wallclock_seconds()
+                if (remaining_before_verifier is not None
+                        and remaining_before_verifier >
+                        H006_H007_VERIFIER_RESERVE_SECONDS):
+                    live_transcript = build_transcript(
+                        case, observed_calls, terminal=terminal, stop_reason=stop_reason,
+                    )
+                    transcript_path.write_text(
+                        json.dumps(live_transcript, indent=2, sort_keys=True),
+                        encoding="utf-8",
+                    )
+                    verification_transcript_sha256 = hashlib.sha256(
+                        transcript_path.read_bytes()
+                    ).hexdigest()
+                    verifier_timeout = _verifier_timeout(
+                        case.case_id, timeout, remaining_before_verifier,
+                    )
+                    feedback_window = (
+                        _H007_MIN_VERIFIER_FEEDBACK_SECONDS
+                        if verifier_feedback_followup_count == 0 else 0.0
+                    )
+                    verifier_timeout = min(
+                        verifier_timeout,
+                        max(1.0, remaining_before_verifier
+                            - H006_H007_VERIFIER_RESERVE_SECONDS - feedback_window),
+                    )
+                    if stall_watcher is not None:
+                        stall_watcher.stop()
+                        stall_watcher = None
+                    verifier_pause_call_boundary = len(observed_calls)
+                    verifier_started_at = time.monotonic()
+                    trace_recorder.record(
+                        "verifier_started",
+                        elapsed_ms=max(0, int((verifier_started_at - started) * 1000)),
+                    )
+                    verification = _run_verifier(
+                        list(case.verifier["command"]), private_root, verifier_env,
+                        verifier_timeout, diagnostics_only=True,
+                    )
+                    verifier_pause_ms = max(
+                        0, int((time.monotonic() - verifier_started_at) * 1000),
+                    )
+                    verifier_pause_points.append((
+                        verifier_pause_call_boundary, verifier_pause_ms,
+                    ))
+                    verifier_pause_total_ms += verifier_pause_ms
+                    verification_attempt_count += 1
+                    verification_feedback_followup_count = (
+                        verifier_feedback_followup_count
+                    )
+                    trace_recorder.record(
+                        "verifier_terminal",
+                        elapsed_ms=max(0, int((time.monotonic() - started) * 1000)),
+                        detail=("passed" if verification.get("exit_code") == 0 else
+                                "failed" if isinstance(verification.get("exit_code"), int)
+                                else "unknown"),
+                    )
+                    feedback_remaining = guard.remaining_wallclock_seconds()
+                    request_receipt = spec.root / "artifacts" / \
+                        "provider-request-admissions.jsonl"
+                    observed_provider_requests = _provider_request_admissions(request_receipt)
+                    if observed_provider_requests is None:
+                        observed_provider_requests = _provider_request_admissions(
+                            client.stderr_path
+                        )
+                    provider_requests_left = (
+                        run_provider_request_cap - observed_provider_requests
+                        if isinstance(run_provider_request_cap, int)
+                        and isinstance(observed_provider_requests, int) else None
+                    )
+                    native_call_cap = case.budget.get("max_tool_calls")
+                    native_calls_left = (
+                        native_call_cap - len(observed_calls)
+                        if isinstance(native_call_cap, int) else None
+                    )
+                    feedback_domains, verifier_feedback_decision_reason = (
+                        _h007_verifier_feedback_decision(
+                            verification=verification,
+                            terminal=terminal,
+                            stop_reason=stop_reason,
+                            continuation_complete=continuation_complete,
+                            feedback_followup_count=verifier_feedback_followup_count,
+                            autonomous_followup_count=autonomous_followup_count,
+                            remaining_wallclock_seconds=feedback_remaining,
+                            remaining_provider_requests=provider_requests_left,
+                            remaining_tool_calls=native_calls_left,
+                        )
+                    )
+                    if (feedback_domains
+                            and disk_watcher is not None
+                            and (disk_watcher.triggered or disk_watcher.error is not None)):
+                        feedback_domains = {}
+                        verifier_feedback_decision_reason = "disk_floor"
+                    if feedback_domains:
+                        verifier_feedback_domains = feedback_domains
+                        verifier_feedback_followup_count += 1
+                        autonomous_followup_count += 1
+                        last_prompt_tool_call_count = len(observed_calls)
+                        continuation_stop_reason = "verifier_feedback"
+                        if prompt_boundary_rows:
+                            prompt_boundary_rows[-1]["continuation_decision"] = (
+                                continuation_stop_reason
+                            )
+                        stall_watcher = _ActivityStallWatcher(
+                            client, session_id, int(case.abort["stall_seconds"]),
+                        )
+                        stall_watcher.start()
+                        prompt_text = _h007_verifier_feedback_prompt(
+                            feedback_domains,
+                            remaining_provider_requests=provider_requests_left,
+                            remaining_tool_calls=native_calls_left,
+                            remaining_work_seconds=max(
+                                0.0, (feedback_remaining or 0.0)
+                                - H006_H007_VERIFIER_RESERVE_SECONDS,
+                            ),
+                        )
+                        continue
+                else:
+                    verifier_feedback_decision_reason = "wallclock_reserve"
             if continuation_stop_reason != "continue":
                 break
             autonomous_followup_count += 1
@@ -3306,7 +3602,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
                 case.budget.get("max_tool_calls"),
                 case.budget.get("max_provider_requests"),
                 case_prompt=case.prompt,
-                active_work_span_ms=_active_work_span_ms(observed_calls),
+                active_work_span_ms=_active_work_span_ms(qualification_tool_calls),
                 continuation_complete=continuation_complete,
                 remaining_work_seconds=remaining_work_seconds,
                 no_progress_boundary_count=no_progress_boundary_count,
@@ -3395,6 +3691,11 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
             process_resources = resource_sampler.finish()
 
     duration_ms = int((time.monotonic() - started) * 1000)
+    qualification_duration_ms = max(0, duration_ms - verifier_pause_total_ms)
+    qualification_tool_calls = (
+        _h007_activity_calls_excluding_verifier_pauses(tool_calls, verifier_pause_points)
+        if case.case_id == H007_CASE_ID else tool_calls
+    )
     provider_attempt_diagnostic = (
         diagnostics.summarize_provider_attempt_log(
             agent_root / "codegg_debug.log", run_id=trace_recorder.run_id
@@ -3461,8 +3762,8 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     transcript = build_transcript(case, tool_calls, terminal=terminal,
                                   stop_reason=stop_reason, failure=failure,
                                   fault=fault_receipt)
-    transcript_path = private_root / "TRANSCRIPT.json"
     transcript_path.write_text(json.dumps(transcript, indent=2, sort_keys=True), encoding="utf-8")
+    final_transcript_sha256 = hashlib.sha256(transcript_path.read_bytes()).hexdigest()
     serialized_transcript_diagnostic = None
     if case.case_id == H007_CASE_ID:
         serialized_transcript_diagnostic = diagnostics.audit_serialized_transcript(
@@ -3480,18 +3781,31 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     # rustup shim with an overridden HOME resolves no default toolchain and
     # every Rust case would fail for a reason that has nothing to do with the
     # agent. The verifier still only ever sees the case's own tree.
-    verifier_env = dict(os.environ)
-    verifier_env[CASE_ROOT_ENV] = str(agent_root)
-    verifier_env[TRANSCRIPT_ENV] = str(transcript_path)
-    verifier_timeout = _verifier_timeout(
-        case.case_id, timeout, guard.remaining_wallclock_seconds())
-    trace_recorder.record("verifier_started", elapsed_ms=duration_ms)
-    verification = _run_verifier(list(case.verifier["command"]), private_root,
-                                 verifier_env, verifier_timeout,
-                                 diagnostics_only=case.case_id == H007_CASE_ID)
-    trace_recorder.record("verifier_terminal", elapsed_ms=verification.get("duration_ms"),
-                          detail=("passed" if verification.get("exit_code") == 0 else
-                                  "failed" if isinstance(verification.get("exit_code"), int) else "unknown"))
+    if not _h007_can_reuse_verification(
+            verification,
+            verified_transcript_sha256=verification_transcript_sha256,
+            final_transcript_sha256=final_transcript_sha256,
+            feedback_followup_count_at_verification=(
+                verification_feedback_followup_count
+            ),
+            feedback_followup_count=verifier_feedback_followup_count,
+    ):
+        verifier_timeout = _verifier_timeout(
+            case.case_id, timeout, guard.remaining_wallclock_seconds())
+        trace_recorder.record("verifier_started", elapsed_ms=duration_ms)
+        verification = _run_verifier(
+            list(case.verifier["command"]), private_root, verifier_env, verifier_timeout,
+            diagnostics_only=case.case_id == H007_CASE_ID,
+        )
+        verification_attempt_count += 1
+        verification_transcript_sha256 = final_transcript_sha256
+        verification_feedback_followup_count = verifier_feedback_followup_count
+        trace_recorder.record(
+            "verifier_terminal", elapsed_ms=verification.get("duration_ms"),
+            detail=("passed" if verification.get("exit_code") == 0 else
+                    "failed" if isinstance(verification.get("exit_code"), int) else
+                    "unknown"),
+        )
     trace_receipt = trace_recorder.finish()
 
     raw_usage = result.get("codeggUsage") if isinstance(result, dict) else None
@@ -3536,14 +3850,18 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     # construction, so "solved" would only ever mean "the harness credited an
     # impossible task" — and the control must never count toward a score.
     activity_times = [
-        call.get("finished_elapsed_ms") for call in tool_calls
+        call.get("finished_elapsed_ms") for call in qualification_tool_calls
         if isinstance(call.get("finished_elapsed_ms"), int)
     ]
     first_activity_elapsed_ms = min(activity_times) if activity_times else None
     last_activity_elapsed_ms = max(activity_times) if activity_times else None
-    active_work_span_ms = _active_work_span_ms(tool_calls)
-    maximum_activity_gap_ms = _maximum_activity_gap_ms(duration_ms, tool_calls)
-    duration_qualified = _duration_qualified(case.case_id, duration_ms, tool_calls)
+    active_work_span_ms = _active_work_span_ms(qualification_tool_calls)
+    maximum_activity_gap_ms = _maximum_activity_gap_ms(
+        qualification_duration_ms, qualification_tool_calls,
+    )
+    duration_qualified = _duration_qualified(
+        case.case_id, qualification_duration_ms, qualification_tool_calls,
+    )
     solved = bool(verifier_confirmed and terminal == "completed" and not case.protected
                   and (case.case_id == H007_CASE_ID or duration_qualified))
 
@@ -3564,8 +3882,8 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
             verifier_exit_code=verification.get("exit_code"),
             verifier_state=(verification.get("diagnostic", {}).get("state")
                             if isinstance(verification.get("diagnostic"), dict) else None),
-            duration_ms=duration_ms,
-            tool_calls=tool_calls,
+            duration_ms=qualification_duration_ms,
+            tool_calls=qualification_tool_calls,
             measurement_complete=(
                 event_measurement_diagnostic["measurement_complete"] is True
             ),
@@ -3579,7 +3897,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
 
     receipt: dict[str, Any] = {
         "schema_version": (3 if case.case_id == H006_CASE_ID else
-                           7 if case.case_id == H007_CASE_ID else 1),
+                           8 if case.case_id == H007_CASE_ID else 1),
         "case_id": case.case_id,
         "family": case.family,
         "group_id": case.group_id,
@@ -3597,6 +3915,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         "stop_reason": stop_reason,
         "cancellation_source": cancellation_source,
         "duration_ms": duration_ms,
+        "qualification_duration_ms": qualification_duration_ms,
         "duration_qualified": duration_qualified,
         "first_activity_elapsed_ms": first_activity_elapsed_ms,
         "last_activity_elapsed_ms": last_activity_elapsed_ms,
@@ -3733,6 +4052,37 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
             job_sequence_diagnostic=job_sequence_diagnostic,
             serialized_transcript_diagnostic=serialized_transcript_diagnostic,
         )
+        verification_diagnostic = verification.get("diagnostic")
+        verifier_state = (
+            verification_diagnostic.get("state")
+            if isinstance(verification_diagnostic, Mapping) else None
+        )
+        receipt["verifier_feedback_diagnostic"] = {
+            "schema": "h007_verifier_feedback_diagnostic_v1",
+            "verifier_attempt_count": verification_attempt_count,
+            "feedback_followup_count": verifier_feedback_followup_count,
+            "same_acp_session_reused": verifier_feedback_followup_count == 1,
+            "feedback_domain_counts": dict(verifier_feedback_domains),
+            "feedback_decision_reason": verifier_feedback_decision_reason,
+            "final_verifier_state": (
+                verifier_state if verifier_state in {
+                    "passed", "setup_error", "empty_suite", "assertion_failures",
+                    "test_errors", "mixed_test_failures", "timeout", "runner_error",
+                    "unclassified_failure", "not_run",
+                } else "unavailable"
+            ),
+            "final_verifier_exit_class": (
+                "success" if verification.get("exit_code") == 0 else
+                "failure" if isinstance(verification.get("exit_code"), int) else
+                "unknown"
+            ),
+            "final_transcript_verified": (
+                verification_transcript_sha256 == final_transcript_sha256
+            ),
+            "host_verifier_pause_count": len(verifier_pause_points),
+            "host_verifier_pause_ms": verifier_pause_total_ms,
+            "raw_verifier_material_retained": False,
+        }
         receipt["serialized_transcript_diagnostic"] = serialized_transcript_diagnostic
         reviewer_diagnostic = diagnostics.summarize_reviewer_lifecycle(tool_calls)
         receipt["reviewer_diagnostic"] = reviewer_diagnostic

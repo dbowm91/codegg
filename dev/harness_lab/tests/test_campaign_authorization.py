@@ -181,12 +181,59 @@ class CampaignAuthorizationTests(unittest.TestCase):
         projected = safe_campaign_run_fields({
             "attempt": 2,
             "provider_requests_observed": 3,
+            "qualification_duration_ms": 2_400_000,
             "credential": "secret-value",
             "prompt": "private task text",
             "error": "raw provider message",
         })
 
-        self.assertEqual(projected, {"attempt": 2, "provider_requests_observed": 3})
+        self.assertEqual(projected, {
+            "attempt": 2,
+            "provider_requests_observed": 3,
+            "qualification_duration_ms": 2_400_000,
+        })
+
+    def test_safe_campaign_projects_bounded_verifier_feedback(self) -> None:
+        projected = safe_campaign_run_fields({}, case_receipt={
+            "verifier_feedback_diagnostic": {
+                "schema": "h007_verifier_feedback_diagnostic_v1",
+                "verifier_attempt_count": 2,
+                "feedback_followup_count": 1,
+                "same_acp_session_reused": True,
+                "feedback_domain_counts": {
+                    "continuation_boundary": 2,
+                    "transcript_job_lifecycle": 1,
+                    "private_test_name": 9,
+                },
+                "final_verifier_state": "assertion_failures",
+                "final_verifier_exit_class": "failure",
+                "final_transcript_verified": True,
+                "feedback_decision_reason": "requested",
+                "host_verifier_pause_count": 1,
+                "host_verifier_pause_ms": 1_234,
+                "raw_verifier_material_retained": False,
+                "assertion_text": "private assertion text",
+            },
+        })
+
+        feedback = projected["h007_completion_diagnostic"]["verifier_feedback"]
+        self.assertEqual(feedback, {
+            "state": "observed",
+            "verifier_attempt_count": 2,
+            "feedback_followup_count": 1,
+            "same_acp_session_reused": True,
+            "feedback_domain_counts": {
+                "continuation_boundary": 2,
+                "transcript_job_lifecycle": 1,
+            },
+            "final_verifier_state": "assertion_failures",
+            "final_verifier_exit_class": "failure",
+            "final_transcript_verified": True,
+            "feedback_decision_reason": "requested",
+            "host_verifier_pause_count": 1,
+            "host_verifier_pause_ms": 1_234,
+            "raw_verifier_material_retained": False,
+        })
 
     def test_safe_campaign_projects_phase_statuses_and_job_failure_binding(self) -> None:
         case_receipt = {
