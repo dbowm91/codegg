@@ -13,8 +13,8 @@ max_block_lines = 50
 unlisted_max_comment_lines = 20
 
 [global]
-max_comment_lines = 139560
-max_comment_words = 1244513
+max_comment_lines = 139566
+max_comment_words = 1244585
 max_ratio = 0.1356
 
 # Per-file ceilings. A file may shrink; it may not grow past what is
@@ -348,7 +348,7 @@ max_ratio = 0.1356
 "src/core/daemon_refresh.rs" = { max_comment_lines = 170, max_ratio = 0.0984 }
 "src/core/daemon_scratch.rs" = { max_comment_lines = 71, max_ratio = 0.291 }
 "src/core/daemon_sessions.rs" = { max_comment_lines = 67, max_ratio = 0.0457 }
-"src/core/daemon_shutdown.rs" = { max_comment_lines = 38, max_ratio = 0.3016 }
+"src/core/daemon_shutdown.rs" = { max_comment_lines = 38, max_ratio = 0.2969 }
 "src/core/daemon_skills.rs" = { max_comment_lines = 96, max_ratio = 0.13 }
 "src/core/daemon_team.rs" = { max_comment_lines = 56, max_ratio = 0.0833 }
 "src/core/daemon_turns.rs" = { max_comment_lines = 715, max_ratio = 0.1935 }
@@ -402,7 +402,7 @@ max_ratio = 0.1356
 "src/goal_continuation.rs" = { max_comment_lines = 26, max_ratio = 0.1453 }
 "src/headless.rs" = { max_comment_lines = 21, max_ratio = 0.0597 }
 "src/http_client.rs" = { max_comment_lines = 37, max_ratio = 0.2484 }
-"src/install.rs" = { max_comment_lines = 75, max_ratio = 0.155 }
+"src/install.rs" = { max_comment_lines = 78, max_ratio = 0.1564 }
 "src/interactive_process.rs" = { max_comment_lines = 239, max_ratio = 0.1305 }
 "src/interactive_process_attach.rs" = { max_comment_lines = 179, max_ratio = 0.1766 }
 "src/live_execution_audit.rs" = { max_comment_lines = 72, max_ratio = 0.2087 }
@@ -412,7 +412,7 @@ max_ratio = 0.1356
 "src/lsp/mutation.rs" = { max_comment_lines = 128, max_ratio = 0.1141 }
 "src/lsp/semantic_context.rs" = { max_comment_lines = 60, max_ratio = 0.0486 }
 "src/main.rs" = { max_comment_lines = 595, max_ratio = 0.1167 }
-"src/managed_process.rs" = { max_comment_lines = 372, max_ratio = 0.0783 }
+"src/managed_process.rs" = { max_comment_lines = 375, max_ratio = 0.079 }
 "src/managed_process/windows.rs" = { max_comment_lines = 43, max_ratio = 0.0204 }
 "src/managed_process/windows_acl_lease.rs" = { max_comment_lines = 24, max_ratio = 0.0263 }
 "src/mcp/auth.rs" = { max_comment_lines = 31, max_ratio = 0.0249 }

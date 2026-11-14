@@ -114,24 +114,42 @@ pub fn installation_dir() -> Result<PathBuf, String> {
 /// indirection outside the directory).
 pub fn validate_installation_sibling(install_root: &Path, name: &str) -> Result<PathBuf, String> {
     let candidate = install_root.join(name);
-    let resolved = candidate
-        .canonicalize()
-        .map_err(|e| format!("installation-owned {name} could not be resolved: {e}"))?;
+    // Every arm names the candidate path. A refusal that says only "could not
+    // be resolved" cannot be told apart from a wrong installation directory,
+    // and the difference decides whether the build or the launch is at fault.
+    let resolved = candidate.canonicalize().map_err(|e| {
+        format!(
+            "installation-owned {name} could not be resolved: {e} (looked for {})",
+            candidate.display()
+        )
+    })?;
     if resolved.parent() != Some(install_root) {
         return Err(format!(
-            "installation-owned {name} escaped the installation directory"
+            "installation-owned {name} escaped the installation directory: {} is not inside {}",
+            resolved.display(),
+            install_root.display()
         ));
     }
-    let metadata = std::fs::metadata(&resolved)
-        .map_err(|e| format!("installation-owned {name} metadata unavailable: {e}"))?;
+    let metadata = std::fs::metadata(&resolved).map_err(|e| {
+        format!(
+            "installation-owned {name} metadata unavailable: {e} ({})",
+            resolved.display()
+        )
+    })?;
     if !metadata.file_type().is_file() {
-        return Err(format!("installation-owned {name} is not a regular file"));
+        return Err(format!(
+            "installation-owned {name} is not a regular file: {}",
+            resolved.display()
+        ));
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         if metadata.permissions().mode() & 0o111 == 0 {
-            return Err(format!("installation-owned {name} is not executable"));
+            return Err(format!(
+                "installation-owned {name} is not executable: {}",
+                resolved.display()
+            ));
         }
     }
     Ok(resolved)

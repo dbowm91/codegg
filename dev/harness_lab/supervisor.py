@@ -792,10 +792,35 @@ def _drain_tool_notifications(client: "AcpClient", provider: Any, timeout: float
         client.drain(timeout=min(0.25, remaining))
 
 
+# A failed job's executor summary can carry command output, so the projection
+# never keeps its text. What an observation-only assertion cannot do without
+# is *which kind* of failure it was: "no running samples" is the same evidence
+# for a refusal, an unresolvable helper, and a launch that failed, and those
+# three have different owners. The classification below is a closed set, so
+# nothing from the summary reaches the projection except one of these labels.
+_JOB_FAILURE_CLASSES = (
+    ("process-class job refused", "process_admission"),
+    ("could not be resolved", "helper_unresolved"),
+    ("sandbox failed", "sandbox_launch"),
+    ("execution authorization", "authorization"),
+)
+
+
+def _job_failure_class(summary: Any) -> str:
+    if not isinstance(summary, str):
+        return "unclassified"
+    for marker, label in _JOB_FAILURE_CLASSES:
+        if marker in summary:
+            return label
+    return "unclassified"
+
+
 def _project_job_observation(tool: str, action: Any, raw_output: Any) -> dict[str, Any] | None:
     """Project only bounded identity and lifecycle fields from native job output."""
     if tool not in {"test", "job"} or not isinstance(raw_output, str):
         return None
+    machine_code = None
+    failure_class = None
     if tool == "test":
         action = "submit"
         job_id_match = re.search(r"background test submitted as job ([A-Za-z0-9_-]+)", raw_output)
@@ -804,6 +829,7 @@ def _project_job_observation(tool: str, action: Any, raw_output: Any) -> dict[st
     else:
         job_id = None
         status = None
+        machine_code = None
         try:
             payload = json.loads(raw_output)
         except (TypeError, json.JSONDecodeError):
@@ -815,6 +841,14 @@ def _project_job_observation(tool: str, action: Any, raw_output: Any) -> dict[st
             candidate_status = payload.get("status")
             if isinstance(candidate_status, str):
                 status = candidate_status.lower()
+            # The typed terminal envelope is a closed vocabulary, so it is
+            # lifecycle rather than free text. The executor's summary is not:
+            # it can carry command output, so it stays out of the projection.
+            candidate_code = payload.get("machine_code")
+            if isinstance(candidate_code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", candidate_code):
+                machine_code = candidate_code
+            if status == "failed":
+                failure_class = _job_failure_class(payload.get("summary"))
         # The provider adapter can render structured tool results as text.
         # Accept its bounded JSON-like fields, but never preserve the raw text.
         if job_id is None:
@@ -835,11 +869,16 @@ def _project_job_observation(tool: str, action: Any, raw_output: Any) -> dict[st
         "queued", "running", "completed", "failed", "cancelled", "canceled",
         "timed_out", "expired", "blocked",
     }
-    return {
+    observation = {
         "action": action if action in {"submit", "status", "wait", "output", "cancel"} else "unknown",
         "job_id": job_id,
         "status": status if status in allowed_statuses else None,
     }
+    if machine_code is not None:
+        observation["machine_code"] = machine_code
+    if failure_class is not None:
+        observation["failure_class"] = failure_class
+    return observation
 
 
 def _bounded_managed_test_log_tail(tool_updates: list[dict[str, Any]], workspace: Path) -> str:

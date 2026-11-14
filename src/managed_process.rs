@@ -4571,12 +4571,11 @@ mod tests {
         request.timeout = Some(Duration::from_secs(15));
         request.sandbox = SandboxRequest::Required(spec.clone());
 
-        let test_exe = std::env::current_exe().expect("unit test executable");
-        let helper = test_exe
-            .parent()
-            .and_then(Path::parent)
-            .expect("Cargo target directory")
-            .join(crate::install::sandbox_helper_name());
+        // The precondition must be the one production applies. Re-deriving it
+        // from `current_exe()` assumes the test binary sits in the profile
+        // directory, which is not guaranteed for a test harness.
+        let helper = crate::security::sandbox::sandbox_helper_path()
+            .expect("the built sandbox helper must resolve as production resolves it");
         assert!(
             helper.is_file(),
             "built sandbox helper missing: {}",
