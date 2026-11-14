@@ -45,6 +45,34 @@ _SAFE_RUNNER_FAILURE_SITE_MODULE = re.compile(
     r"dev\.harness_lab(?:\.[A-Za-z_][A-Za-z0-9_]*)+\Z"
 )
 _SAFE_RUNNER_FAILURE_SITE_FUNCTION = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_SAFE_RUNNER_BUILTIN_EXCEPTION_TYPES = frozenset({
+    "AssertionError", "AttributeError", "BlockingIOError", "BrokenPipeError",
+    "ChildProcessError", "ConnectionAbortedError", "ConnectionError",
+    "ConnectionRefusedError", "ConnectionResetError", "EOFError", "ExceptionGroup",
+    "FileNotFoundError", "ImportError", "IndexError", "InterruptedError", "IsADirectoryError",
+    "KeyError", "LookupError", "MemoryError", "ModuleNotFoundError", "NameError",
+    "NotADirectoryError", "NotImplementedError", "OSError", "OverflowError", "PermissionError",
+    "ProcessLookupError", "RuntimeError", "StopIteration", "SyntaxError", "SystemError",
+    "TimeoutError", "TypeError", "UnicodeDecodeError", "UnicodeEncodeError", "UnicodeError",
+    "UnicodeTranslateError", "ValueError", "ZeroDivisionError",
+})
+_SAFE_RUNNER_EXCEPTION_TYPE_ALIASES = ("HarnessError", "HarnessTimeout", "HarnessTurnFailure")
+_SAFE_RUNNER_EXCEPTION_LINE_MAX = 1_000_000
+
+
+def _safe_runner_exception_type(error: Exception) -> str:
+    """Return a fixed exception type label without retaining provider text."""
+    for alias in _SAFE_RUNNER_EXCEPTION_TYPE_ALIASES:
+        known_type = globals().get(alias)
+        if isinstance(known_type, type) and isinstance(error, known_type):
+            return alias
+    for error_type in type(error).__mro__:
+        module = getattr(error_type, "__module__", None)
+        name = getattr(error_type, "__name__", None)
+        if (module == "builtins" and isinstance(name, str)
+                and name in _SAFE_RUNNER_BUILTIN_EXCEPTION_TYPES):
+            return name
+    return "non_builtin_exception"
 
 
 def _safe_runner_failure_sites(error: Exception) -> dict[str, object]:
@@ -64,6 +92,32 @@ def _safe_runner_failure_sites(error: Exception) -> dict[str, object]:
         traceback = traceback.tb_next
     sites = sites[-8:]
     return {"state": "observed" if sites else "unavailable", "sites": sites}
+
+
+def _safe_runner_failure_context(error: Exception) -> dict[str, object]:
+    """Project allowlisted exception types and in-repository call-site lines."""
+    locations: list[dict[str, object]] = []
+    traceback = error.__traceback__
+    while traceback is not None:
+        frame = traceback.tb_frame
+        module = frame.f_globals.get("__name__")
+        function = frame.f_code.co_name
+        line = traceback.tb_lineno
+        if (isinstance(module, str) and ".tests." not in module
+                and _SAFE_RUNNER_FAILURE_SITE_MODULE.fullmatch(module)
+                and _SAFE_RUNNER_FAILURE_SITE_FUNCTION.fullmatch(function)
+                and isinstance(line, int) and not isinstance(line, bool)
+                and 1 <= line <= _SAFE_RUNNER_EXCEPTION_LINE_MAX):
+            location = {"site": f"{module}:{function}", "line": line}
+            if location not in locations:
+                locations.append(location)
+        traceback = traceback.tb_next
+    locations = locations[-8:]
+    return {
+        "state": "observed" if locations else "unavailable",
+        "exception_type": _safe_runner_exception_type(error),
+        "locations": locations,
+    }
 
 
 def _sustained_plans(trials: int) -> list:
@@ -615,6 +669,7 @@ def main(argv: list[str] | None = None) -> int:
                         "runner_exit_code": 1,
                         "runner_failure_class": runner_exception_class,
                         "runner_failure_sites": _safe_runner_failure_sites(error),
+                        "runner_failure_context": _safe_runner_failure_context(error),
                         "safe_completion_projection_available": False,
                         "runner_failure_text_retained": False,
                     }

@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement Resumption S055 — Safe Runner Exception-Site Telemetry
 
-Status: **implemented and offline-verified; attempt 74 pending exact-head live evaluation**
+Status: **closed at safe function-site telemetry scope; attempt 74 unqualified**
 
 Repository baseline: `a4b37130708ac20ffde5242053b453b1854bdff3`
 
@@ -88,7 +88,9 @@ Required changes: Run focused Harness Lab tests, test-quality guards, Python com
 
 Acceptance evidence: Offline checks pass; a fresh preflight admits only the configured Muse route; attempt 74 records either a safe exception-site path or a normal safe completion projection. The run qualifies only if every pre-existing H007 gate passes.
 
-Offline verification on 2026-11-14: the focused CLI, campaign authorization, and autonomy-run modules passed 114 tests. The new regression confirms that the safe site projection identifies `dev.harness_lab.autonomy_run:run_suite` without retaining the exception message or path. Python compilation, both test-quality guards, and `git diff --check` passed. Attempt 74 remains pending a pushed exact-head commit, a newly built ARM64 binary/helper pair, and fresh preflight.
+Offline verification on 2026-11-14: the focused CLI, campaign authorization, and autonomy-run modules passed 114 tests. The regression confirms that the safe site projection identifies `dev.harness_lab.autonomy_run:run_suite` without retaining the exception message or path. Python compilation, both test-quality guards, and `git diff --check` passed.
+
+Attempt 74 evaluated the pushed exact-head implementation (`e94435fb1ad82c92e6bebd1bd2adcfee178f0e4b`) with the unchanged v97 manifest, Muse route, and ARM64 pair. It ran for 3,302.492 seconds and admitted 233 provider requests. The runner exited with `unexpected_exception`; safe frames named `dev.harness_lab.autonomy_run:run_suite` and `run_case`. The disk floor and hard stop did not fire. Task and verifier projections remain unavailable, so the attempt is unqualified. This satisfies S055's function-site telemetry acceptance criteria, but does not identify the failing operation or cause; S056 owns those next diagnostics.
 
 ## 8. Failure, cancellation, restart, and contention semantics
 
@@ -96,7 +98,7 @@ Attempt counting remains idempotent by preflight identity. A positive provider a
 
 ## 9. Authorization and resource limits
 
-Use only `opencode_go/muse-spark-1.3-contributor`. Existing authorization covers up to eleven further starts in the current 40-start supplemental grant, until H007 qualifies or the grant is exhausted. Keep the per-run limits unchanged: 1,200 provider requests, 1,600 native calls, 3,300 seconds prompt work, 3,600 seconds hard wall time, 100 follow-ups, 300-second inactivity cancellation, 10-GiB runtime floor, 30-GiB preflight reserve. External billed USD remains `unknown` when unreported. Do not start after grant exhaustion, failed exact-head identity checks, unresolved request accounting, or a preflight reserve below 30 GiB.
+Use only `opencode_go/muse-spark-1.3-contributor`. After attempt 74, ten starts remain in the current 40-start supplemental grant. Keep the per-run limits unchanged: 1,200 provider requests, 1,600 native calls, 3,300 seconds prompt work, 3,600 seconds hard wall time, 100 follow-ups, 300-second inactivity cancellation, 10-GiB runtime floor, 30-GiB preflight reserve. External billed USD remains `unknown` when unreported. Do not start after grant exhaustion, failed exact-head identity checks, unresolved request accounting, or a preflight reserve below 30 GiB.
 
 ## 10. Acceptance criteria
 
@@ -113,4 +115,4 @@ Stop before live admission if the safe ledger is inconsistent, an unresolved adm
 
 ## 12. Handoff
 
-Attempt 73 consumed start 73: 73/200 combined, 29/40 in grant `s019-supplemental-20261111-04`, and 44/120 task-authorized starts. Eleven starts remain in the current grant. Attempt 74 must use the same Muse route, task, verifier, and controls after this correction is verified and a new exact-head ARM64 pair and preflight are available. H007 remains unqualified.
+Attempt 74 consumed start 74: 74/200 combined, 30/40 in grant `s019-supplemental-20261111-04`, and 45/120 task-authorized starts. Ten starts remain in the current grant. S055's function-site telemetry was observed on its exact head. H007 remains unqualified; S056 owns the remaining exception-source detail.

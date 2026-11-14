@@ -1,0 +1,37 @@
+{
+  "attempt": 74,
+  "campaign_row_matches_admission_count": true,
+  "campaign_row_provider_requests_observed": 233,
+  "campaign_row_status": "completed_unqualified",
+  "elapsed_seconds": 3302.492,
+  "ended_at_utc": "2026-11-14T08:11:25+00:00",
+  "external_stop_reason": null,
+  "free_disk_bytes_at_end": 52544303104,
+  "free_disk_bytes_at_start": 57352450048,
+  "minimum_free_disk_bytes": 52544303104,
+  "preflight_reserve_bytes": 32212254720,
+  "private_receipt_contents_inspected": false,
+  "private_runner_output_inspected": false,
+  "provider_admission_count_after_exit": 233,
+  "provider_admission_mode": "provider_boundary_safe_aggregate_after_exit",
+  "provider_requests_sampled_live": null,
+  "qualification": "unqualified; runtime horizon alone does not establish task completion or verifier pass",
+  "raw_prompt_transcript_tool_arguments_tool_outputs_and_verifier_output_inspected": false,
+  "runner_exit_code": 2,
+  "runner_failure_class": "unexpected_exception",
+  "runner_failure_sites": {
+    "sites": [
+      "dev.harness_lab.autonomy_run:run_suite",
+      "dev.harness_lab.autonomy_run:run_case"
+    ],
+    "state": "observed"
+  },
+  "runtime_disk_floor_bytes": 10737418240,
+  "safe_completion_projection_available": false,
+  "sample_count": 661,
+  "sample_interval_seconds": 5.0,
+  "schema": "s019_live_monitor_summary_v1",
+  "source_head": "e94435fb1ad82c92e6bebd1bd2adcfee178f0e4b",
+  "started_at_utc": "2026-11-14T07:16:22+00:00",
+  "usd_cost_when_unreported": "unknown"
+}

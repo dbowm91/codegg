@@ -144,6 +144,19 @@ _SAFE_RUNNER_FAILURE_CLASSES = frozenset({
 _SAFE_RUNNER_FAILURE_SITE = re.compile(
     r"dev\.harness_lab(?:\.[A-Za-z_][A-Za-z0-9_]*)+:[A-Za-z_][A-Za-z0-9_]*\Z"
 )
+_SAFE_RUNNER_EXCEPTION_TYPES = frozenset({
+    "AssertionError", "AttributeError", "BlockingIOError", "BrokenPipeError",
+    "ChildProcessError", "ConnectionAbortedError", "ConnectionError",
+    "ConnectionRefusedError", "ConnectionResetError", "EOFError", "ExceptionGroup",
+    "FileNotFoundError", "HarnessError", "HarnessTimeout", "HarnessTurnFailure",
+    "ImportError", "IndexError", "InterruptedError", "IsADirectoryError", "KeyError",
+    "LookupError", "MemoryError", "ModuleNotFoundError", "NameError", "NotADirectoryError",
+    "NotImplementedError", "OSError", "OverflowError", "PermissionError",
+    "ProcessLookupError", "RuntimeError", "StopIteration", "SyntaxError", "SystemError",
+    "TimeoutError", "TypeError", "UnicodeDecodeError", "UnicodeEncodeError", "UnicodeError",
+    "UnicodeTranslateError", "ValueError", "ZeroDivisionError", "non_builtin_exception",
+})
+_SAFE_RUNNER_EXCEPTION_LINE_MAX = 1_000_000
 
 
 def _unresolved_provider_admission_markers(
@@ -863,6 +876,34 @@ def safe_campaign_run_fields(
         safe["runner_failure_sites"] = {
             "state": "observed" if sites else "unavailable",
             "sites": sites,
+        }
+    failure_context = run.get("runner_failure_context")
+    if isinstance(failure_context, Mapping):
+        raw_type = failure_context.get("exception_type")
+        exception_type = (
+            raw_type if isinstance(raw_type, str)
+            and raw_type in _SAFE_RUNNER_EXCEPTION_TYPES else "non_builtin_exception"
+        )
+        raw_locations = failure_context.get("locations")
+        locations: list[dict[str, object]] = []
+        if isinstance(raw_locations, list):
+            for item in raw_locations[:8]:
+                if not isinstance(item, Mapping) or set(item) != {"site", "line"}:
+                    continue
+                site = item.get("site")
+                line = item.get("line")
+                if (isinstance(site, str) and len(site) <= 192
+                        and ".tests." not in site
+                        and _SAFE_RUNNER_FAILURE_SITE.fullmatch(site)
+                        and isinstance(line, int) and not isinstance(line, bool)
+                        and 1 <= line <= _SAFE_RUNNER_EXCEPTION_LINE_MAX):
+                    location = {"site": site, "line": line}
+                    if location not in locations:
+                        locations.append(location)
+        safe["runner_failure_context"] = {
+            "state": "observed" if locations else "unavailable",
+            "exception_type": exception_type,
+            "locations": locations,
         }
     if canonical_identity is not None:
         identity = {key: canonical_identity.get(key) for key in _IDENTITY_FIELDS}

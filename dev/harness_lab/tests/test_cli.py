@@ -65,12 +65,31 @@ class AutonomyCampaignCliTests(unittest.TestCase):
                     case_ids=["unused-case"])
         except harness_cli.HarnessError as error:
             projected = harness_cli._safe_runner_failure_sites(error)
+            context = harness_cli._safe_runner_failure_context(error)
         else:
             self.fail("run_suite should refuse the mocked budget admission")
         self.assertEqual(projected["state"], "observed")
         self.assertIn("dev.harness_lab.autonomy_run:run_suite", projected["sites"])
         self.assertNotIn("/", json.dumps(projected))
         self.assertNotIn("refused", json.dumps(projected))
+        self.assertEqual(context["state"], "observed")
+        self.assertEqual(context["exception_type"], "HarnessError")
+        self.assertTrue(any(
+            location["site"] == "dev.harness_lab.autonomy_run:run_suite"
+            and isinstance(location["line"], int)
+            and location["line"] > 0
+            for location in context["locations"]
+        ))
+        self.assertNotIn("/", json.dumps(context))
+
+    def test_safe_runner_exception_type_hides_custom_type_name_and_message(self) -> None:
+        class PrivateProviderException(Exception):
+            pass
+
+        projected = harness_cli._safe_runner_exception_type(
+            PrivateProviderException("PRIVATE provider response"))
+        self.assertEqual(projected, "non_builtin_exception")
+        self.assertNotIn("PRIVATE", projected)
 
     def _run_h007_exception(self, root: pathlib.Path, *, admission_rows: str | None,
                             expected_reconciliation_requests: int | None) -> tuple[
@@ -187,6 +206,13 @@ class AutonomyCampaignCliTests(unittest.TestCase):
             self.assertTrue(any(site.endswith(":main") for site in failure_sites["sites"]))
             self.assertNotIn("PRIVATE", json.dumps(failure_sites))
             self.assertNotIn("/private", json.dumps(failure_sites))
+            failure_context = evidence["safe_run_fields"]["runner_failure_context"]
+            self.assertEqual(failure_context["exception_type"], "RuntimeError")
+            self.assertTrue(failure_context["locations"])
+            self.assertTrue(all(isinstance(location["line"], int)
+                                for location in failure_context["locations"]))
+            self.assertNotIn("PRIVATE", json.dumps(failure_context))
+            self.assertNotIn("/private", json.dumps(failure_context))
             self.assertFalse(private_receipt_path.exists())
             self.assertNotIn("PRIVATE runner exception text", stdout)
             self.assertNotIn("PRIVATE runner exception text", json.dumps(evidence))

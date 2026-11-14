@@ -119,6 +119,21 @@ class CampaignAuthorizationTests(unittest.TestCase):
                     "/private/worktree/source.py:main",
                 ],
             },
+            "runner_failure_context": {
+                "state": "observed",
+                "exception_type": "TypeError",
+                "locations": [
+                    {"site": "dev.harness_lab.autonomy_run:run_case", "line": 3210},
+                    {"site": "/private/path:leak", "line": 8},
+                    {"site": "dev.harness_lab.tests.test_cli:test", "line": 9},
+                    {"site": "dev.harness_lab.autonomy_run:run_case", "line": True},
+                    {"site": "dev.harness_lab.autonomy_run:run_case", "line": 0},
+                    {"site": "dev.harness_lab.autonomy_run:run_case", "line": 3210,
+                     "message": "PRIVATE"},
+                ],
+                "path": "/private/path",
+                "exception_text": "PRIVATE provider text",
+            },
             "exception_text": "do not retain",
         })
 
@@ -127,6 +142,13 @@ class CampaignAuthorizationTests(unittest.TestCase):
             "runner_failure_sites": {
                 "state": "observed",
                 "sites": ["dev.harness_lab.autonomy_run:run_case"],
+            },
+            "runner_failure_context": {
+                "state": "observed",
+                "exception_type": "TypeError",
+                "locations": [{
+                    "site": "dev.harness_lab.autonomy_run:run_case", "line": 3210,
+                }],
             },
         })
         self.assertNotIn("PRIVATE", json.dumps(projected))
@@ -142,6 +164,25 @@ class CampaignAuthorizationTests(unittest.TestCase):
         self.assertEqual(projected["runner_failure_sites"], {
             "state": "unavailable",
             "sites": [],
+        })
+
+    def test_runner_failure_context_rejects_malformed_source_locations(self) -> None:
+        projected = safe_campaign_run_fields({
+            "runner_failure_context": {
+                "state": "observed",
+                "exception_type": "PRIVATE_exception_name",
+                "locations": [
+                    {"site": "/private/source.py:fail", "line": 42},
+                    {"site": "dev.harness_lab.autonomy_run:run_case", "line": -1},
+                    {"site": "dev.harness_lab.autonomy_run:run_case", "line": True},
+                ],
+            },
+        })
+
+        self.assertEqual(projected["runner_failure_context"], {
+            "state": "unavailable",
+            "exception_type": "non_builtin_exception",
+            "locations": [],
         })
 
     def test_required_success_job_projection_fails_closed_for_missing_or_bad_status(self) -> None:

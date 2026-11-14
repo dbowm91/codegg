@@ -468,8 +468,14 @@ Counters after attempt 73: 73/200 campaign starts, 29/40 in grant `s019-suppleme
 
 ## 49. S055 — Safe runner exception-site telemetry
 
-**Status: implementation offline-verified; attempt 74 pending exact-head live evaluation.** Plan: `plans/implementation/harness-lab-self-improvement-resumption/055-safe-runner-exception-site-telemetry.md`.
+**Status: closed at function-site telemetry scope; attempt 74 unqualified.** Plan and closure: `plans/implementation/harness-lab-self-improvement-resumption/055-safe-runner-exception-site-telemetry.md`; `plans/closure/harness-lab-self-improvement-resumption/055-status.md`.
 
 Attempt 73 proves S054's accounting correction but leaves the autonomy failure poorly localized: 396 provider requests were reconciled after an exception, while only the safe class `unexpected_exception` and unavailable task/verifier projections were retained. S055 adds at most eight de-duplicated CodeGG harness module/function labels from the exception traceback. It retains no exception message, traceback serialization, path, line, local, or private run data; test modules and malformed labels are excluded. The unchanged v97 task, verifier, Muse route, and per-run controls remain fixed. Attempt 74 follows focused verification, an exact-head ARM64 rebuild, and fresh preflight. H007 remains unqualified unless every original gate passes.
 
-Offline verification passed 114 focused Python tests, both test-quality guards, Python compilation, and `git diff --check`. A production-module frame regression records the `run_suite` function label while excluding exception text and file paths. Attempt 74 remains unstarted until the corrective is pushed, the ARM64 binary/helper pair is rebuilt for that exact commit, and fresh preflight passes.
+Offline verification passed 114 focused Python tests, both test-quality guards, Python compilation, and `git diff --check`. Attempt 74 exercised exact source head `e94435fb1ad82c92e6bebd1bd2adcfee178f0e4b`, ran 3,302.492 seconds, and admitted 233 requests. It exited with `unexpected_exception`; the safe frames named `run_suite` and `run_case`, confirming S055 telemetry. Task and verifier outcomes were unavailable, so H007 remains unqualified. Counters are 74/200 combined, 30/40 in the current grant, and 45/120 task starts; ten grant starts remain.
+
+## 50. S056 — Safe runner exception origin
+
+**Status: active; focused implementation and sanitizer added, verification and attempt 75 pending.** Plan: `plans/implementation/harness-lab-self-improvement-resumption/056-safe-runner-exception-origin.md`.
+
+Attempt 74's two function labels still cover too much code to identify the failed operation, and its safe record lacks an exception category. S056 adds an allowlisted exception type and bounded source lines for at most eight validated `dev.harness_lab` frames. It retains no file paths, exception messages, locals, arbitrary exception class names, or private run content. The source commit anchors line interpretation. Existing S055 labels, H007 task/verifier, Muse route, caps, and qualification gates remain unchanged. Attempt 75 follows offline sanitizer verification, push, exact-head ARM64 build, and fresh preflight; only a complete unchanged H007 pass qualifies.
