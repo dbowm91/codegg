@@ -1075,7 +1075,7 @@ mod tests {
     fn test_tool_name_and_description() {
         let tool = TestTool::default();
         assert_eq!(tool.name(), "test");
-        assert!(tool.description().contains("supervised test runner"));
+        assert!(tool.description().contains("supervised runner"));
     }
 
     #[test]
