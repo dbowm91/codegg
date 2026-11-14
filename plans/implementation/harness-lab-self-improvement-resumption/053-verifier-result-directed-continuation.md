@@ -1,6 +1,6 @@
 # Harness Lab Self-Improvement Resumption S053 — Verifier-Result-Directed Continuation
 
-Status: **implemented and offline-verified; attempt 71 pending fresh paired-binary build and exact-head preflight**
+Status: **implemented and offline-verified; attempt 71 consumed and unqualified after one provider request; attempt 72 requires ledger-aware live admission monitoring and fresh preflight**
 
 Repository baseline: `c59e04b687a5790bc7f4516efb954840e7984db1`
 
@@ -64,10 +64,10 @@ Keep the same `AcpClient`, session ID, lane, task inputs, and verifier command a
 1. Add a pure safe-domain projection and feedback-prompt builder; reject unknown labels, invalid counts, setup failures, timeouts, and non-H007 outcomes. **Complete.**
 2. Move H007 final verifier execution inside the same-session lifecycle and add exactly one bounded follow-up path after a recognized failed verifier result. **Complete.**
 3. Ensure the final transcript, tool-call projection, event measurement, repair/review/job diagnostics, cleanup, and task outcome include any follow-up activity exactly once. **Complete.**
-4. Add focused tests for safe-domain filtering, prompt privacy, verifier pass/fail sequencing, one-follow-up enforcement, final-verifier authority, and reserve/cancellation behavior. **Offline coverage complete; attempt 71 exercises the production path.**
+4. Add focused tests for safe-domain filtering, prompt privacy, verifier pass/fail sequencing, one-follow-up enforcement, final-verifier authority, and reserve/cancellation behavior. **Offline coverage complete; attempt 71 ended before these production-path outcomes could be assessed.**
 5. Run the focused Harness Lab tests, both test-quality guards, Python compilation, and `git diff --check`; record exact results. **Complete.**
-6. Recheck the unchanged v97 manifest/verifier hashes, paired ARM64 binaries, credential presence without reading its value, request budget, grant/task authorization balances, and free disk ≥30 GiB before the next live start. Rebuild both ARM64 binaries if the source head changed. **Required in attempt 71 preflight.**
-7. Run one new Muse attempt under the unchanged controls. Preserve its safe outcome; qualify only if the final unchanged verifier and every original H007 gate pass. **Pending.**
+6. Recheck the unchanged v97 manifest/verifier hashes, paired ARM64 binaries, credential presence without reading its value, request budget, grant/task authorization balances, and free disk ≥30 GiB before the next live start. Rebuild both ARM64 binaries if the source head changed. **Attempt 71 preflight passed at its exact source head.**
+7. Run one new Muse attempt under the unchanged controls. Preserve its safe outcome; qualify only if the final unchanged verifier and every original H007 gate pass. **Attempt 71 consumed one start and ended before qualification; attempt 72 is next.**
 
 ## 8. Failure and cancellation semantics
 
@@ -117,7 +117,11 @@ Record the implementation commit, focused test and guard results, unchanged mani
 
 ## 16. Handoff
 
-Attempt 70 is preserved as unqualified at 70/200 campaign starts, 26/40 starts in grant `s019-supplemental-20261111-04`, and 41/120 task-authorized starts. Fourteen starts remain in the grant and 79 in the task authorization. The run used 157 provider requests, 2,398.938 seconds active work, and at least 60,918,022,144 bytes free disk; external billed USD is unknown. All public gates were true, but the final verifier failed both recognized domains. Attempt 71 must follow this corrective and a fresh exact-head preflight.
+Attempt 70 is preserved as unqualified. Attempt 71 used the unchanged v97 task, verifier, route, and exact-head ARM64 pair, passed preflight, and was admitted for one provider request. It ran for 761.899 seconds and exited after an operator SIGINT before safe completion diagnostics were available. H007 remains unqualified; task completion, activity horizon, lifecycle gates, verifier outcome, and S053 feedback behavior are unavailable and must not be inferred. Minimum free disk was 48,509,607,936 bytes, no external disk or wall-clock stop fired, and external billed USD is unknown.
+
+The operator stop followed a monitoring mistake: the preflight file correctly remained `preflight_passed_not_started`, but it was treated as live admission state. Attempt 71's campaign row later showed one counted start and one provider request. The external monitor did not poll the campaign ledger, so its false `provider_start_observed_by_monitor` value was not an admission signal. The safe reconciled monitor record is `plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt71-monitor-summary-20261114.json`; the safe run diagnostic is `.../evidence/s019-attempt71-safe-diagnostic-20261114.json`. Do not classify this operator-interrupted attempt as a model, daemon, scheduler, ACP, tool, or verifier failure.
+
+Counters after attempt 71: 71/200 campaign starts, 27/40 starts in grant `s019-supplemental-20261111-04`, and 42/120 task-authorized starts; 129 campaign, 13 grant, and 78 task-authorized starts remain. Attempt 72 must retain all v97 task/verifier/route/cap controls, use a fresh exact-head preflight, and have its external monitor poll the safe campaign ledger for admission. Do not cancel based on the stale preflight status; keep the external disk and 3,600-second wall guards and let the runner's configured inactivity cancellation govern model inactivity. Qualify only if the final unchanged verifier and every original H007 gate pass.
 
 Offline verification on 2026-11-14: the three focused Harness Lab modules passed 191 tests; both test-quality guards, Python compilation, and `git diff --check` passed. ARM64 Rust 1.89 `cargo check -p codegg --lib --tests` passed. With `RUSTC`, `RUSTDOC`, and `--target aarch64-apple-darwin` explicitly selected, the focused compaction, provider-turn, context-runtime, and command-route groups passed (1, 9, 14, and 8 tests). A default x86_64 link attempt failed on native zlib, iconv, and LZMA symbols before running tests; the explicit ARM64 command avoided that host mismatch.
 
