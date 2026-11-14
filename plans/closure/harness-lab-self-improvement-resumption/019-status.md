@@ -1,10 +1,18 @@
 # S019 status — verifier and reviewer diagnostics with Muse requalification
 
-Status: **active; attempt 70 unqualified; 70/200 combined starts consumed, 130 remain; current grant 26/40 consumed, 14 remain; current task authorization 41/120 consumed, 79 remain; S044 active; S053 implementation offline-verified; H007 unqualified**
+Status: **active; attempt 71 unqualified; 71/200 combined starts consumed, 129 remain; current grant 27/40 consumed, 13 remain; current task authorization 42/120 consumed, 78 remain; S044 active; S053 implementation offline-verified; H007 unqualified**
 
-Attempts 53–70 are summarized in the current subsystem roadmap at §§37–47. Attempt 70 remains unqualified; its detailed immutable safe diagnostic, preflight, and monitor summary are linked there. S053's same-session verifier-feedback correction and safe refusal-reason projection are implemented and offline-verified. Rebase onto current `origin/main` changed production Rust inputs relative to attempt 70, so attempt 71 must rebuild and hash both ARM64 binaries from the final source head before fresh exact-head preflight; no start has been consumed for this rebuild.
+Attempts 53–71 are summarized in the current subsystem roadmap at §§37–47. Attempt 71 remains unqualified; its safe diagnostic and reconciled monitor summary are linked there. S053's same-session verifier-feedback correction and safe refusal-reason projection are implemented and offline-verified. The exact-head ARM64 pair was rebuilt and preflight passed; one provider request was admitted before an operator SIGINT ended the run without completion diagnostics.
 
 The combined authorization ceiling is 200 starts after the user's latest 40-start grant. Stop on qualification or when the authorized starts are exhausted. Use only `opencode_go/muse-spark-1.3-contributor`. The temporary replacement OpenCode Go credential is configured in the protected auth file, which remains mode `0600`; the value is not recorded.
+
+## Attempt 71
+
+Attempt 71 passed exact-head preflight and used the v97 task, verifier, Muse route, and fresh ARM64 binary/helper pair. It admitted one provider request and ran for 761.899 seconds before an operator SIGINT. The attempt is counted and unqualified: the safe completion projection is unavailable, so task completion, active-work horizon, event/lifecycle gates, S053 feedback, and verifier outcome are unknown. Do not infer a model, daemon, scheduler, ACP, tool, or verifier failure from this interruption.
+
+The stop followed an operator monitoring error. The external monitor had not polled the campaign ledger, while its `provider_start_observed_by_monitor` field remained false. The preflight file still correctly said `preflight_passed_not_started`; it was mistakenly used as live admission state. Post-run campaign reconciliation records one counted start and one provider request. The safe monitor record documents this discrepancy and records a minimum of 48,509,607,936 bytes free; the external disk and wall-clock stops did not fire. External billed USD is unknown. No private receipt, runner output, transcript, tool payload, or verifier material was inspected.
+
+Authorization after attempt 71 is 71/200 combined starts, 27/40 starts in grant `s019-supplemental-20261111-04`, and 42/120 task-authorized starts. Remaining: 129 combined, 13 grant, 78 task-authorized. Attempt 72 should poll the live campaign ledger for provider admission, use the same v97 task/verifier/route/caps, and retain the fresh exact-head ARM64 preflight and 30-GiB reserve.
 
 Per-run limits: 1,200 provider requests, 1,600 native calls, 3,600 seconds wall time, 3,300 seconds prompt work, 10-GiB free-disk floor, 300-second native-tool inactivity cancellation, and at most 100 same-session follow-ups. The request, native-call, wall-clock, disk, and inactivity limits remain the controlling run-wide caps. There is no USD ceiling; report billed USD as unknown only when unreported. Ledger: `evidence/s019-muse-diagnostic-authorization-20261109.json`.
 
