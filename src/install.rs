@@ -97,15 +97,31 @@ pub fn installation_dir_for(current: &Path) -> Result<PathBuf, String> {
         .ok_or_else(|| "CodeGG executable has no installation directory".to_string())?
         .canonicalize()
         .map_err(|e| format!("CodeGG installation directory could not be resolved: {e}"))?;
-    Ok(profile_directory(&parent).unwrap_or(parent))
+    Ok(profile_directory(&parent))
 }
 
-/// The nearest ancestor that owns a `deps` directory.
-fn profile_directory(start: &Path) -> Option<PathBuf> {
-    start
-        .ancestors()
-        .find(|candidate| candidate.join("deps").is_dir())
-        .map(Path::to_path_buf)
+/// The Cargo profile directory for a path that sits inside one.
+///
+/// Two shapes are known and both are matched structurally, because a probe
+/// cannot see the third: a test binary can itself live in a build-script
+/// output, and no ancestor of it owns a `deps` directory.
+///
+/// - `<profile>/build/<pkg>/<hash>/out/<exe>` -- a build-script output.
+/// - `<profile>/deps/<exe>` and `<profile>/<exe>` -- the ordinary shapes.
+fn profile_directory(start: &Path) -> PathBuf {
+    let components: Vec<&std::ffi::OsStr> = start.iter().collect();
+    for (index, component) in components.iter().enumerate() {
+        if *component == "build" && components.get(index + 3).is_some_and(|c| *c == "out") {
+            return components[..index].iter().copied().collect();
+        }
+    }
+    if start.file_name().is_some_and(|name| name == "deps") {
+        return start
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| start.to_path_buf());
+    }
+    start.to_path_buf()
 }
 
 /// Resolve the installation directory of the running executable.
