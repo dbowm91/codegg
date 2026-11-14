@@ -144,6 +144,41 @@ class JobIdArgumentTelemetryTests(unittest.TestCase):
         for private_value in (private_id, digest, "PRIVATE_DETAIL", "PRIVATE_UNRECOGNIZED_OUTPUT"):
             self.assertNotIn(private_value, encoded)
 
+    def test_failed_status_with_echoed_request_id_is_bound_in_safe_acp_projection(self) -> None:
+        requested_id = "5a4c2d88-29a7-4ea7-b617-1833bcb6c80b"
+        digest = hashlib.sha256(requested_id.encode("utf-8")).hexdigest()
+        projector = autonomy_run._ToolCallProjector()
+        projector.absorb({"method": "session/update", "_received_elapsed_ms": 10,
+                          "params": {"update": {
+                              "sessionUpdate": "tool_call", "toolCallId": "failed-status",
+                              "title": "job", "codeggAction": "status",
+                              "codeggJobIdArgumentState": "string",
+                              "codeggJobIdArgumentSha256": digest,
+                              "codeggArgumentsSha256": "a" * 64,
+                          }}})
+        projector.absorb({"method": "session/update", "_received_elapsed_ms": 20,
+                          "params": {"update": {
+                              "sessionUpdate": "tool_call_update", "toolCallId": "failed-status",
+                              "status": "failed",
+                              "rawOutput": (
+                                  "Error: tool execution failed: job not found\n"
+                                  f"job_id: {requested_id}"
+                              ),
+                          }}})
+
+        calls = projector.calls()
+        self.assertEqual(calls[0]["job_id_argument_matches_result"], "matched")
+        safe = autonomy_run.diagnostics.summarize_job_tool_sequence(calls)
+        self.assertEqual(safe["unbound_job_tool_call_count"], 0)
+        self.assertEqual(safe["failed_job_status_error_class_counts"], {"job_not_found": 1})
+        attribution = safe["failed_job_status_attribution"]
+        self.assertEqual(attribution["state"], "observed")
+        self.assertEqual(attribution["rows"][0]["request_result_state"], "matched")
+        encoded = json.dumps(safe)
+        self.assertNotIn(requested_id, encoded)
+        self.assertNotIn(digest, encoded)
+        self.assertNotIn("job not found", encoded)
+
     def test_failed_job_status_attribution_joins_error_and_result_binding_safely(self) -> None:
         requested_id = "5a4c2d88-29a7-4ea7-b617-1833bcb6c80b"
         digest = hashlib.sha256(requested_id.encode("utf-8")).hexdigest()

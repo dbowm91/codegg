@@ -99,7 +99,16 @@ impl Tool for JobTool {
         input: serde_json::Value,
         ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
-        let value = self.execute_impl(input, ctx).await?;
+        let requested_status_job_id = requested_status_job_id(&input);
+        let value = match self.execute_impl(input, ctx).await {
+            Ok(value) => value,
+            Err(error) => {
+                if let Some(job_id) = requested_status_job_id.as_deref() {
+                    return failed_status_execution_result(job_id, error);
+                }
+                return Err(error);
+            }
+        };
         let status = value
             .get("status")
             .and_then(|s| s.as_str())
@@ -135,6 +144,53 @@ impl Tool for JobTool {
             }),
         })
     }
+}
+
+fn requested_status_job_id(input: &serde_json::Value) -> Option<String> {
+    let action = input.get("action")?.as_str()?;
+    if action != "status" {
+        return None;
+    }
+
+    let job_id = input.get("job_id")?.as_str()?;
+    if job_id.len() != 36 {
+        return None;
+    }
+    let parsed = uuid::Uuid::parse_str(job_id).ok()?;
+    parsed
+        .to_string()
+        .eq_ignore_ascii_case(job_id)
+        .then(|| job_id.to_string())
+}
+
+fn failed_status_execution_result(
+    job_id: &str,
+    error: ToolError,
+) -> Result<StructuredToolResult, ToolError> {
+    let ToolError::Execution(message) = error else {
+        return Err(error);
+    };
+
+    // Do not expose arbitrary store errors. Keep the stable missing-job case
+    // distinct, and collapse other ordinary execution errors to a fixed class.
+    let (detail, error_class) = if message == "job not found" {
+        ("job not found", "job_not_found")
+    } else {
+        ("job status lookup failed", "execution_failed")
+    };
+    Ok(StructuredToolResult {
+        output: format!("{detail}\njob_id: {job_id}"),
+        value: Some(json!({"job_id": job_id, "error_class": error_class})),
+        success: false,
+        provenance: Some(ToolProvenance {
+            backend: "native".to_string(),
+            implementation: "codegg/job".to_string(),
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            elapsed_ms: None,
+            truncated: false,
+            trust: ToolTrust::LocalTrusted,
+        }),
+    })
 }
 
 impl JobTool {
@@ -603,6 +659,77 @@ mod tests {
                 .unwrap_err();
             assert!(err.to_string().contains("job_id"));
         });
+    }
+
+    #[test]
+    fn failed_status_lookup_echoes_only_a_canonical_requested_uuid() {
+        let job_id = "5a4c2d88-29a7-4ea7-b617-1833bcb6c80b";
+        let tool = JobTool::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt
+            .block_on(tool.execute_structured(
+                serde_json::json!({"action": "status", "job_id": job_id}),
+                None,
+            ))
+            .unwrap();
+
+        assert!(!result.success);
+        assert_eq!(
+            result.output,
+            format!("job status lookup failed\njob_id: {job_id}")
+        );
+        let value = result.value.expect("bounded failure value");
+        assert_eq!(value["job_id"], job_id);
+        assert_eq!(value["error_class"], "execution_failed");
+        assert!(value.get("status").is_none());
+        assert!(!result.output.contains("job running"));
+        assert!(!result.output.contains("scheduler"));
+    }
+
+    #[test]
+    fn missing_job_error_keeps_its_fixed_class_and_requested_id() {
+        let job_id = "5a4c2d88-29a7-4ea7-b617-1833bcb6c80b";
+        let result =
+            failed_status_execution_result(job_id, ToolError::Execution("job not found".into()))
+                .unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.output, format!("job not found\njob_id: {job_id}"));
+        let value = result.value.expect("bounded failure value");
+        assert_eq!(value["job_id"], job_id);
+        assert_eq!(value["error_class"], "job_not_found");
+        assert!(value.get("status").is_none());
+    }
+
+    #[test]
+    fn job_status_request_id_echo_requires_status_and_canonical_uuid() {
+        let valid_id = "5a4c2d88-29a7-4ea7-b617-1833bcb6c80b";
+        for input in [
+            serde_json::json!({"action": "wait", "job_id": valid_id}),
+            serde_json::json!({"action": "status", "job_id": "not-a-uuid"}),
+            serde_json::json!({"action": "status", "job_id": "5a4c2d8829a74ea7b6171833bcb6c80b"}),
+            serde_json::json!({"action": "status", "job_id": "x".repeat(128)}),
+            serde_json::json!({"action": "status", "job_id": 7}),
+            serde_json::json!({"action": "status"}),
+        ] {
+            assert_eq!(requested_status_job_id(&input), None);
+        }
+        assert_eq!(
+            requested_status_job_id(&serde_json::json!({
+                "action": "status",
+                "job_id": valid_id,
+            })),
+            Some(valid_id.to_string())
+        );
+    }
+
+    #[test]
+    fn failed_status_execution_does_not_collapse_backend_unavailable() {
+        let error = ToolError::BackendUnavailable("private backend detail".into());
+        let returned =
+            failed_status_execution_result("5a4c2d88-29a7-4ea7-b617-1833bcb6c80b", error)
+                .unwrap_err();
+        assert!(matches!(returned, ToolError::BackendUnavailable(_)));
     }
 
     #[test]

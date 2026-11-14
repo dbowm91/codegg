@@ -1066,7 +1066,8 @@ def classify_job_status_error(output: Any) -> str | None:
         return "job_not_found"
     execution_prefix = "tool execution failed:"
     if lowered.startswith(execution_prefix):
-        detail = lowered[len(execution_prefix):].strip()
+        detail_lines = lowered[len(execution_prefix):].strip().splitlines()
+        detail = detail_lines[0].strip() if detail_lines else ""
         return "job_not_found" if detail == "job not found" else "tool_execution_failed"
     known_prefixes = (
         ("tool not found:", "tool_not_found"),
