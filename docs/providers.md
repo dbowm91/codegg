@@ -1,8 +1,7 @@
 # Providers and Credentials
 
-CodeGG ships with seventeen built-in LLM providers. Which ones are actually
-available to you depends on your own configuration and credentials, not on
-this list.
+CodeGG includes built-in LLM providers. Which ones are available to you
+depends on your configuration and resolved credentials.
 
 ## Built-in providers
 
@@ -26,34 +25,19 @@ this list.
 | `opencode_go` | OpenCode Go | `OPENCODE_GO_API_KEY` |
 | `generalcompute` | GeneralCompute | `GENERALCOMPUTE_API_KEY` |
 
-This is the registration order CodeGG uses internally. The convention is
-`{PROVIDER_UPPER}_API_KEY`, with one exception worth memorizing: `together`
-uses `TOGETHERAI_API_KEY`.
+Environment variables generally follow `{PROVIDER_UPPER}_API_KEY`. One
+exception is `together`, which uses `TOGETHERAI_API_KEY`.
 
-### OpenCode Go uses three endpoint families
+### OpenCode Go model support
 
-`opencode_go` is a single connection that can serve a model over three
-different wire endpoints, and CodeGG picks the right one per model from a
-reviewed, shared model-to-wire table:
-
-| Endpoint | Auth header | Example models |
-|---|---|---|
-| `/chat/completions` | `Authorization: Bearer …` | GLM, Kimi, DeepSeek, MiMo, LongCat |
-| `/responses` | `Authorization: Bearer …` | `gpt-6-luna`, `gpt-5.6-luna`, Grok 4.6/4.7, Muse contributor models |
-| `/messages` | `x-api-key` | MiniMax, Qwen |
-
-You do not configure this. The model you pick determines the endpoint and the
-credential header.
-
-A model that appears in the provider's `/models` list but has no reviewed
-mapping is shown as unresolved and is not selectable — CodeGG will not guess an
-endpoint from the model's name and will not silently fall back to
-`/chat/completions`. If a model you expect is missing, the shared mapping table
-needs updating; no CodeGG change is required once it does.
+CodeGG chooses OpenCode Go's endpoint from a reviewed model mapping. Models
+without a mapping are not selectable; CodeGG does not guess an endpoint from a
+model name. If an expected model is missing, the mapping needs an update. You
+do not need to configure the endpoint or authentication header.
 
 ## Checking what is actually available
 
-These commands reflect **your** resolved configuration, not a static catalog:
+These commands reflect your configured providers and stored credentials:
 
 ```bash
 codegg providers            # every provider CodeGG can currently reach
@@ -61,27 +45,14 @@ codegg models               # every model it can currently reach
 codegg models -p anthropic  # one provider's models
 ```
 
-`codegg providers` prints `id - Display name` per provider, and says so
-plainly when nothing is configured. If a provider you expect is missing, its
-credential did not resolve — the usual culprits are an unset environment
-variable, a config block that has no usable key, or a stored key that needs
-an account id you did not select.
+`codegg providers` lists providers whose credentials resolved. It does not
+verify them with a request. If a provider is missing, check its environment
+variable, config block, or selected stored account.
 
 For a read-only check of configured providers that makes no network calls:
 
 ```bash
 codegg doctor providers
-```
-
-Expect noise on a fresh machine: provider registration logs a `WARN` line for
-every built-in whose credential did not resolve, so `codegg providers` is
-usually preceded by a block of `NO KEY for provider '...'` lines. That is
-diagnostic output, not failure — the exit status is still 0, and only the
-providers listed under "Available providers" are actually usable. Silence the
-diagnostics if you want just the list:
-
-```bash
-RUST_LOG=off codegg providers
 ```
 
 To see stored account metadata without exposing secrets:
@@ -129,14 +100,10 @@ The modern shape is a typed `auth` block:
 variable and then the legacy `api_key` / `encrypted_api_key` fields.
 
 Resolution order for an `api_key` block is: the explicit `env` name, the
-conventional `{PROVIDER}_API_KEY` variable, an inline `value`, and finally an
-`encrypted_value` — which needs a master key to decrypt. One ordering caveat:
-only Anthropic, OpenAI, Google, and OpenRouter honor an explicit `env`. Every
-other built-in is registered with its conventional variable
-(`register_api_key_provider` / `register_credential_provider` in
-`crates/codegg-providers/src/provider_core.rs`), and that variable is checked
-instead of an explicit `env` — a custom `auth.env` on those providers is
-silently ignored, so set the conventional variable itself.
+conventional `{PROVIDER}_API_KEY` variable, an inline `value`, then an
+`encrypted_value` that needs a master key. Only Anthropic, OpenAI, Google, and
+OpenRouter honor a custom `env` name. Other built-in providers always check
+their conventional variable, so set that variable instead of using `auth.env`.
 
 Prefer an environment variable or the credential store over an inline
 `value`, which is plaintext in a file on disk.
@@ -170,7 +137,7 @@ Reference a stored key from config with:
 Inspect and remove entries with:
 
 ```bash
-codegg auth status                          # ids, kinds, expiry — never secrets
+codegg auth status                          # ids, kinds, expiry; never secrets
 codegg auth logout openai                   # one provider
 codegg auth logout openai --account work    # one account
 codegg auth logout openai --account '*'     # every account for that provider
@@ -191,7 +158,7 @@ The encrypted store needs a master key. CodeGG resolves it in this order:
 **You do not need to set any of these environment variables.** On a fresh
 profile, the first protected write creates the managed key automatically: 32
 CSPRNG bytes, hex-encoded, written to a `0o600` file. Reading a key never
-creates one — only a secret-store write bootstraps it.
+creates one. Only a secret-store write bootstraps it.
 
 The store file itself is `<config_dir>/codegg/credentials.json`.
 
@@ -205,20 +172,7 @@ from where the secret came from.
 The key value is never printed, logged, written into normal config, exported
 with sessions, or included in diagnostics.
 
-## Multiple providers in config do not disable the others
-
-A natural worry is that defining one provider in config might suppress
-env-var registration for the rest. It does not. Each provider is resolved
-independently — its own config block first, then its own environment
-variable. The pure env-var fallback sweep only runs when config-based
-registration produced nothing at all, which is a safety net rather than a
-switch you will encounter.
-
-If a provider you expect is absent, check `codegg providers` output before
-changing config — the usual answer is simply that no credential resolved for
-it yet.
-
-## Typed auth modes that are not complete yet
+## Supported authentication modes
 
 The `auth` schema accepts four variants beyond `api_key`. Two of them parse
 but do not resolve:
@@ -226,8 +180,8 @@ but do not resolve:
 | Variant | Status |
 |---|---|
 | `api_key` | Supported. |
-| `stored` | Supported — resolves against the credential store. |
-| `none` | Supported — explicitly no credential. |
+| `stored` | Supported. Resolves against the credential store. |
+| `none` | Supported. Explicitly uses no credential. |
 | `external_command` | Parses, but resolution returns an unsupported error. |
 | `oauth_device` | Parses, but resolution returns an unsupported error. |
 
@@ -235,73 +189,42 @@ A provider configured with an unsupported mode is logged and skipped; it does
 not prevent your other providers from loading. **API keys and stored keys
 are the working credential paths today.**
 
-There is a related capability distinction worth knowing. Providers marked
-API-key-only — `anthropic`, `openai`, `google`, `openrouter`, `opencode_zen`,
-and `minimax` — reject a stored bearer token outright, and expired stored
-records fail before any network call.
+Some providers accept API keys only: `anthropic`, `openai`, `google`,
+`openrouter`, `opencode_zen`, and `minimax`. They reject stored bearer tokens.
+Expired stored credentials also fail before a network request.
 
-## Where the model list comes from
+## Model discovery
 
-CodeGG ships **no built-in model list**. Every model you can select comes
-from your provider's `/models` endpoint, and discovery is always attempted.
+CodeGG has no universal bundled model catalog. `codegg models` asks each
+configured provider adapter for its catalog. Depending on the provider, this
+may come from a remote endpoint or a local list. Some adapters also accept
+operator-declared `models` entries, which supplement discovery.
 
-That has two consequences worth knowing:
+A provider's model list may be public or locally generated, so it does not
+always verify that your credential works. If discovery fails, check the error
+and your provider setup. Run `codegg doctor providers` to inspect configured
+providers without a network probe.
 
-- **A failed discovery leaves the model list empty** rather than falling
-  back to a bundled catalog. If the list is empty, the provider is not
-  offering models right now — check the credential and connectivity rather
-  than expecting a default to appear. Run `/doctor` for a diagnosis.
-- **Config models are additive.** A `models` block for a provider in
-  `codegg.jsonc` augments the discovered catalog; it never replaces it and
-  never disables discovery. Declare models there only for a provider whose
-  endpoint does not serve a catalog, so you can drive it manually.
-
-A model is only offered as selectable once the shared provider profile has a
-reviewed wire mapping for it. Selecting a model without one fails the request
-with `has no reviewed wire mapping`; if you hit that, the provider needs a
-profile update rather than a different setting on your side.
+Providers that use CodeGG's reviewed shared profile require a reviewed wire
+mapping for each selectable model. Generic OpenAI-compatible providers use
+their configured route and model IDs instead. If a catalog model cannot be
+selected, check whether its provider uses the reviewed profile and has a
+mapping for that model.
 
 ## Connecting from the TUI
 
-`/connect` is the onboarding surface inside the TUI. It loads a secret-free
-provider catalog, lets you pick an entry, and collects the credential through
-a masked input that is never echoed into prompt history, command text, toasts,
-or debug output. The plaintext secret travels only in the trusted local core
-request.
+`/connect` lets you choose a provider and enter a credential in a masked
+field. The secret is not echoed into prompt history, command text, toasts, or
+debug output. Use `/connections` to choose the provider connection and model
+for the current session. That command does not collect credentials.
 
-`/connections` selects which provider connection — and which model within it
-— the current session uses. It never collects secrets.
+### Catalog status and credential status
 
-In other words: use `/connect` to add a provider connection, `/connections` to
-switch the current session between the ones you already added.
-
-### What "connected" does and does not mean
-
-A successful `/connect` proves two separate things, and the confirmation toast
-tells you which of them actually happened:
-
-| Toast | Meaning |
-|---|---|
-| `credential verified` | The provider itself accepted the credential during a non-billable metadata request. |
-| `no credential required` | The provider needs no credential. |
-| `catalog loaded … credential not yet verified` | The model catalog was loaded, but nothing has authenticated the credential yet. |
-
-The third case is the common one and is not a warning. Most providers expose a
-model catalog that does not require — or even check — your API key: some
-return a fixed built-in list without touching the network at all, and some
-serve `/models` publicly. Listing models therefore cannot prove a key is
-valid. For those providers the credential is confirmed by the first real
-request, and the connection's status updates to `verified` once a request
-succeeds.
-
-If your key is actually wrong, you will see it in two ways: `/connect` fails
-immediately for providers whose catalog endpoint authenticates, and otherwise
-the first real request fails with an authentication error. Either way the
-connection is marked as having a rejected credential rather than silently
-looking healthy.
-
-`/connections` shows each connection's health (catalog reachable or not)
-alongside its credential status, so the two can be read independently.
+A successful `/connect` reports catalog reachability separately from
+credential verification. A loaded model catalog does not always prove the key
+works. Many providers return a local or public catalog; in those cases, the
+first real request verifies the credential. `/connections` shows catalog
+health and credential status independently.
 
 ## Choosing a model
 
@@ -326,64 +249,34 @@ codegg models -p anthropic
 codegg -m anthropic/<model-id>
 ```
 
-### Controlling extended thinking
-
-Some models can be asked to think harder before they answer. The `/reasoning`
-command cycles the setting, and the choice is kept by the daemon against your
-own account, so it applies to every turn that starts afterwards — a prompt you
-submit from the API, a prompt you queued for later, or a follow-up turn the
-agent starts itself. A setting you pick for one turn only still wins over the
-kept one.
-
-The label is **your provider's**, not a fixed level. `minimal`, `low`,
-`medium` and `high` are the usual names, but a provider that names its own
-depth (`xhigh`, `max`, `none`, `default`) is honoured as written — the label
-reaches the provider unchanged rather than being snapped to the nearest of the
-four.
-
-The command cycles through the choices **the selected model actually accepts**,
-not a fixed ladder. A model that always reasons is never offered an off
-switch, a model that takes a thinking budget but not a named depth is offered
-the budget instead, and a model whose provider has published no reasoning
-contract at all falls back to the familiar labels and says so.
-
-A model that does not accept the setting is **refused before the request is
-sent**, not quietly ignored: the daemon checks the chosen model's published
-reasoning capability and, if the model does not accept that dimension, it
-stops there and tells you which model refused the selection. Nothing is
-dispatched to the provider. The rule is deliberately strict — a model whose
-provider has published no reasoning contract at all is refused too, rather
-than having the setting forwarded on a guess.
-
 ## See also
 
-- `architecture/provider.md` — registry, setup catalog, credential resolution
-  order, and connection lifecycle.
-- `architecture/auth.md` — the durable authorization surface and how secrets
-  are handled end to end.
-- `docs/TROUBLESHOOTING.md` — "Model not found" and other user-facing failures.
-- `architecture/config.md` — the full configuration schema.
+- `architecture/provider.md`: registry, credential resolution, and connection lifecycle.
+- `architecture/auth.md`: credential handling and authorization.
+- `docs/TROUBLESHOOTING.md`: model discovery and other common failures.
+- `architecture/config.md`: the full configuration schema.
 
 ## Source verification
 
 Checked 2026-10-23 against the source tree.
 
-- **Seventeen** built-in providers and their registration order (Anthropic,
-  OpenAI, Google, OpenRouter, OpenCode Zen, Mistral, Groq, DeepInfra, Cerebras,
-  Cohere, Together, Perplexity, xAI, Venice, MiniMax, OpenCode Go,
-  GeneralCompute): `crates/codegg-providers/src/provider_core.rs`
-  (`builtin_registration_order`).
+Rechecked 2026-11-15 against `crates/codegg-providers/src/provider_core.rs`,
+`crates/codegg-providers/src/auth_types.rs`,
+`crates/codegg-providers/src/setup_catalog.rs`,
+`crates/codegg-providers/src/discovery.rs`,
+`crates/codegg-providers/src/openai_compatible.rs`,
+`crates/codegg-config/src/encryption.rs`, `src/main.rs`, and
+`src/tui/components/dialogs/connect.rs`. Confirmed provider listing, supported
+authentication paths, model discovery behavior, and the distinction between
+catalog status and credential verification.
+
+- Provider ids and environment-variable names:
+  `crates/codegg-providers/src/provider_core.rs` (`builtin_registration_order`).
 - The `TOGETHERAI_API_KEY` env var for `together`:
   `crates/codegg-providers/src/provider_core.rs`.
 - The API-key-only providers (Anthropic, OpenAI, Google, OpenRouter,
   OpenCode Zen, MiniMax): `crates/codegg-providers/src/setup_catalog.rs`
   (`CredentialCapability::ApiKeyOnly`).
-- The OpenCode Go endpoint families and their model examples:
-  `crates/codegg-providers/src/opencode_go.rs` and the shared profile's
-  `assets/_provider_profiles.toml` in the `eggpool-provider-profile` crate —
-  `/chat/completions` (GLM, Kimi, DeepSeek, MiMo, LongCat), `/responses`
-  (gpt-6-luna, gpt-5.6-luna, Grok 4.6/4.7, the Muse contributor models), and
-  `/messages` (MiniMax, Qwen).
 - Master key resolution order (`CODEGG_MASTER_KEY`,
   `CODEGG_ENCRYPTION_KEY`, `OPENCODE_ENCRYPTION_KEY`, then the managed file)
   and the `<config dir>/codegg/master.key` path:
@@ -392,15 +285,14 @@ Checked 2026-10-23 against the source tree.
   `crates/codegg-providers/src/provider_core.rs`.
 - The auth variants `api_key`, `stored`, `external_command`, `oauth_device`,
   `none`: `crates/codegg-providers/src/auth_types.rs` (`AuthConfig`).
-- `codegg providers` output shape and the `NO KEY for provider` warning:
-  `src/main.rs` `cmd_providers`.
 - `/connect` and `/connections` slash commands: `src/tui/command.rs`.
 
-- Corrected 2026-10-27: an explicit `auth.env` is honored only by Anthropic,
-  OpenAI, Google, and OpenRouter (`register_config_provider` with
-  `env_override: None`); the other thirteen built-ins resolve their
-  conventional variable instead (`crates/codegg-providers/src/provider_core.rs:1251-1380`,
-  `ResolverContext.env_override` at `:803`,
-  `auth_types.rs:393`). The 17-provider registration order lives in
-  `builtin_registration_order` (`provider_core.rs:714-733`), not
-  `register_builtin` (15 env-only branches).
+- Corrected: only Anthropic, OpenAI, Google, and OpenRouter honor a custom
+  `auth.env`; other built-ins use their conventional variable. Verified in
+  `crates/codegg-providers/src/provider_core.rs` and
+  `crates/codegg-providers/src/auth_types.rs`.
+- Clarified: reviewed wire mappings are required for profile-adapted providers;
+  generic OpenAI-compatible providers use their configured route. Verified in
+  `crates/codegg-providers/src/provider_profile.rs`,
+  `crates/codegg-providers/src/setup_catalog.rs`, and
+  `crates/codegg-providers/src/openai_compatible.rs`.

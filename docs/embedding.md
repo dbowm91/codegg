@@ -1,14 +1,15 @@
 # Embedding CodeGG: the host protocol
 
-`codegg host --stdio` runs one agent session in one process, driven by a
-program that is not the TUI: an editor, a desktop app, a local server delegating
-coding work, or a CI job. This document is the contract. [`plans/adrs/ADR-0061`](../plans/adrs/ADR-0061-embedding-host-wire-as-a-public-contract.md)
-makes it a public surface with the stability policy in
-[Versioning](#versioning); the line's plans are
-[`plans/subsystems/codegg-embedding-host-roadmap.md`](../plans/subsystems/codegg-embedding-host-roadmap.md).
+`codegg host --stdio` runs one agent session in one process, driven by a host
+program such as an editor, desktop app, local service, or CI job. It uses
+newline-delimited JSON-RPC 2.0 over stdin and stdout. Rust hosts can use the
+shared wire types in `crates/codegg-host-protocol` and the client in
+`crates/codegg-sdk`.
 
-The host protocol is not ACP and not the frontend protocol. It needs no daemon,
-no project, no git worktree and no configuration file.
+The host protocol is separate from ACP and the daemon frontend protocol. It
+does not need a daemon or a Git repository. Include an inline provider
+descriptor to run without a configuration file; if the descriptor is omitted,
+CodeGG loads its own configuration.
 
 ## Contents
 
@@ -42,9 +43,11 @@ host process                     codegg host --stdio
   processes. There is no multiplexing and no daemon.
 - **One active turn.** `turn/submit` while a turn is active is refused with the
   `busy` class. Turns are never queued.
-- **The workspace root is the turn's writable root.** It must be an absolute
-  path that exists and is a directory. It is canonicalized before use. CodeGG
-  does not require it to be a git repository.
+- **The workspace root is the turn's workspace.** It must be an absolute path
+  that exists and is a directory. CodeGG canonicalizes it before use and does
+  not require a Git repository. The sandbox profile controls OS-level process
+  containment: `read-only` and `workspace-write` request it, while `full-host`
+  explicitly disables CodeGG filesystem containment.
 - **stdout carries protocol frames only.** Every diagnostic goes to stderr and
   is redacted; a host may discard stderr entirely.
 - **stdin EOF ends the process.** An active turn is cancelled, the session is
@@ -57,11 +60,8 @@ host process                     codegg host --stdio
   split.
 - Requests carry an `id` (string or number, echoed back). Notifications from
   CodeGG carry no `id`. A notification *from* the host is not accepted.
-- Maximum frame size is 8 MiB in both directions. A larger inbound frame is
-  refused with `invalid_request` and the connection is dropped.
-- An unparseable line is refused with `invalid_request`; the connection is
-  dropped only when the stream cannot be resynchronized, which for NDJSON means
-  an unparseable line.
+- An inbound frame is limited to 8 MiB. A larger frame or an unparseable line
+  is refused with `invalid_request` and ends the connection.
 - Unknown fields in a request are ignored, so an older CodeGG tolerates a newer
   host's optional field. Unknown methods are refused.
 
@@ -100,7 +100,7 @@ Capabilities in v1:
 |---|---|
 | `descriptor` | `session/open` accepts an inline provider descriptor. |
 | `streaming` | `turn/text` and `turn/tool` are emitted while a turn runs. |
-| `cancellation` | `turn/cancel` is honoured within the bound. |
+| `cancellation` | `turn/cancel` requests cooperative cancellation of the active turn. |
 | `usage` | `turn/usage` and `turn/done` report provider usage. |
 
 A host that lists a capability CodeGG does not advertise is refused with
@@ -114,10 +114,10 @@ is a requirement, not a hint.
 ```json
 {"jsonrpc":"2.0","id":2,"method":"session/open","params":{
   "workspace":"/workspace",
-  "model":"openai/deepseek-v4.1-flash",
+  "model":"eggui/deepseek-v4.1-flash",
   "agent":"build",
-  "approval":"yolo",
-  "sandbox":"full-host",
+  "approval":"auto",
+  "sandbox":"workspace-write",
   "sessionId":"2f1c…",
   "provider":{ … }
 }}
@@ -126,9 +126,9 @@ is a requirement, not a hint.
 | Field | Required | Meaning |
 |---|---|---|
 | `workspace` | yes | Absolute path, must exist and be a directory. Canonicalized. |
-| `model` | yes | `provider/model` or a bare model id. Passed to the loop unchanged. |
+| `model` | yes | `provider/model` or a bare model id. An inline descriptor fixes the provider; use its `id` as any prefix. CodeGG sends the selected model id to that endpoint without built-in catalog mapping. |
 | `agent` | no | Built-in or configured agent name; defaults to `build`. Unknown → `invalid_request` naming the agent. |
-| `approval` | no | `yolo`, `ask`, or another `ApprovalMode` the build supports. Default is the loop's own default. |
+| `approval` | no | `yolo`, `ask`, `auto`, or another `ApprovalMode` the build supports. Default is the loop's own default. |
 | `sandbox` | no | `full-host`, `workspace-write`, or another `SandboxProfile` the build supports. |
 | `sessionId` | no | Stable id chosen by the host. Generated when absent. Never a credential. |
 | `provider` | no | An [inline provider descriptor](#the-provider-descriptor). Absent → CodeGG uses its own configuration. |
@@ -137,13 +137,14 @@ Result:
 
 ```json
 {"jsonrpc":"2.0","id":2,"result":{
-  "sessionId":"2f1c…","model":"openai/deepseek-v4.1-flash",
+  "sessionId":"2f1c…","model":"eggui/deepseek-v4.1-flash",
   "agent":"build","workspace":"/workspace"
 }}
 ```
 
-The descriptor is validated before anything else happens. A rejected descriptor
-names the field, never the value, and leaves no session behind.
+CodeGG validates the descriptor before building the session. Malformed shapes
+receive a generic error; field-validation errors name the invalid field without
+echoing its value. A rejected descriptor leaves no session open.
 
 ### `turn/submit`
 
@@ -177,11 +178,11 @@ notifications, in order, and the turn ends with exactly one `turn/done` or
 
 Result: `{"cancelled":true}`.
 
-Cancellation is cooperative and bounded: the request is acknowledged
-immediately, the loop stops at its next safe point, and the turn ends with
-`turn/done` carrying `stopReason: "cancelled"`. Cancelling an unknown or already
-finished turn is not an error — it returns `{"cancelled":false}`. The session
-stays usable and the next `turn/submit` is accepted.
+Cancellation is cooperative. The request is acknowledged immediately, and the
+loop stops when it next observes cancellation. The turn then ends with
+`turn/done` carrying `stopReason: "cancelled"`. Cancelling an unknown or
+finished turn returns `{"cancelled":false}`. The session remains usable for the
+next `turn/submit`.
 
 ### `session/close`
 
@@ -189,8 +190,9 @@ stays usable and the next `turn/submit` is accepted.
 {"jsonrpc":"2.0","id":5,"method":"session/close","params":{"sessionId":"2f1c…"}}
 ```
 
-Result: `{"closed":true}`. Nothing is persisted. After `session/close` the
-process exits `0`; a second call is refused with `invalid_request`.
+Result: `{"closed":true}`. Host session state is not persisted. After a
+successful `session/close`, the process exits `0` and does not process further
+requests.
 
 ## Notifications
 
@@ -236,9 +238,9 @@ concatenates them. Reasoning deltas are not part of v1.
 }}
 ```
 
-Emitted at most once per turn, before `turn/done`. When the provider reports no
-usage, `reported` is `false` and the counters are absent — never zero, because
-zero is a real value a host may budget against.
+For a successful or cancelled turn, `turn/usage` is emitted before
+`turn/done`. If the provider reports no usage, `reported` is `false` and the
+counters are absent, not zero. A failed turn reports usage in `turn/error`.
 
 ### `turn/done`
 
@@ -249,9 +251,9 @@ zero is a real value a host may budget against.
 }}
 ```
 
-`stopReason` is one of `end_turn`, `max_tokens`, `max_turns`, `cancelled`,
-`error`. `usage` repeats the `turn/usage` payload so a host that ignored
-`turn/usage` is still correct.
+`stopReason` is one of `end_turn`, `max_tokens`, `max_turns`, or `cancelled`.
+A failed turn uses `turn/error` instead. The `usage` field repeats the
+`turn/usage` payload so a host that ignored `turn/usage` is still correct.
 
 ### `turn/error`
 
@@ -264,8 +266,8 @@ zero is a real value a host may budget against.
 ```
 
 A provider or turn failure ends the **turn**, not the process: the session stays
-open, and the next `turn/submit` is accepted. `message` is redacted and is never
-the only signal — `class` is the actionable field.
+open, and the next `turn/submit` is accepted. `message` is a fixed, secret-safe
+summary; use `class` as the actionable field.
 
 ## Errors
 
@@ -299,12 +301,12 @@ Error classes in v1:
 | `model_not_supported` | The model exists but the request shape is unsupported (for example a prefill refusal). | no |
 | `context_length` | The request exceeds the model's context. | no |
 | `rate_limit` | The upstream is throttling. | yes |
-| `invalid_request` | The request or the descriptor is malformed. Names a field, never a value. | no |
+| `invalid_request` | The request or descriptor is malformed. Descriptor validation names the field and does not echo its value. | no |
 | `transport` | The upstream could not be reached, or the stream broke. | yes |
 | `protocol` | The upstream answered something this build cannot parse. | no |
 | `upstream` | Any other provider-reported failure. | no |
 | `busy` | A turn is already active. | yes |
-| `cancelled` | The turn was cancelled. Reported as `turn/done`, not an error frame. | — |
+| `cancelled` | The turn was cancelled. Reported as `turn/done`, not an error frame. | not applicable |
 | `workspace` | The workspace root is missing, not a directory, or not accessible. | no |
 | `not_initialized` | `initialize` has not succeeded. | no |
 | `unsupported_capability` | A required capability is not advertised. | no |
@@ -338,12 +340,12 @@ and never persisted.
 | `baseUrl` | yes | Absolute `http`/`https` URL. |
 | `protocol` | yes | v1 allows `chat_completions` only. |
 | `headers` | no | At most 16 `{name, value}` pairs. Valid HTTP header names, no duplicates, no CR/LF in a value, ≤ 8 KiB total. Auth, content-type and user-agent names are reserved and refused. |
-| `credential` | yes | `{"kind":"api_key","value":"…"}` or `{"kind":"env","name":"VAR"}`. The `env` form is resolved in the child's environment at registration; it is never stored. |
-| `models` | no | At most 64 entries. An entry supplies facts CodeGG would otherwise guess. An empty list is legal and falls back to CodeGG's own resolution. |
+| `credential` | yes | `{"kind":"api_key","value":"…"}` or `{"kind":"env","name":"VAR"}`. The `env` form reads that variable from CodeGG's environment at registration; the credential is never persisted. |
+| `models` | no | At most 64 entries. Optional entries supply model metadata; an empty list is legal and CodeGG tries model discovery at the endpoint. |
 | `models[].id` | yes | Any model id the endpoint accepts. It is **not** checked against a built-in list. |
 | `models[].contextWindow` | no | Tokens. |
 | `models[].maxOutputTokens` | no | Tokens reserved for the response. |
-| `models[].supportsTools` | no | Defaults to the provider's capability when absent. |
+| `models[].supportsTools` | no | Defaults to `true` when absent. |
 
 Rules that a host must not work around:
 
@@ -354,7 +356,8 @@ Rules that a host must not work around:
   into configuration and never reused by a second session.
 - **The model id is passed unchanged.** CodeGG does not remap it to a catalogue
   entry.
-- **A rejected descriptor names fields, not values.** A host may log the error
+- **Descriptor errors do not echo secret values.** Shape errors are generic;
+  field-validation errors identify the invalid field. A host may log the error
   safely.
 
 ## Worked example
@@ -366,8 +369,8 @@ a cancelled turn, and a close. Frames are shown one per line; ids are the host's
 -> {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientName":"example"}}
 <- {"jsonrpc":"2.0","id":1,"result":{"apiVersion":1,"codeggVersion":"0.1.0","capabilities":["descriptor","streaming","cancellation","usage"]}}
 
--> {"jsonrpc":"2.0","id":2,"method":"session/open","params":{"workspace":"/workspace","model":"openai/deepseek-v4.1-flash","agent":"build","approval":"yolo","sandbox":"full-host","provider":{"id":"example","baseUrl":"https://example.invalid/v1","protocol":"chat_completions","headers":[{"name":"x-tenant","value":"demo"}],"credential":{"kind":"env","name":"EXAMPLE_API_KEY"},"models":[{"id":"deepseek-v4.1-flash","contextWindow":128000,"maxOutputTokens":8192,"supportsTools":true}]}}}
-<- {"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1","model":"openai/deepseek-v4.1-flash","agent":"build","workspace":"/workspace"}}
+-> {"jsonrpc":"2.0","id":2,"method":"session/open","params":{"workspace":"/workspace","model":"example/deepseek-v4.1-flash","agent":"build","approval":"auto","sandbox":"workspace-write","provider":{"id":"example","baseUrl":"https://example.invalid/v1","protocol":"chat_completions","headers":[{"name":"x-tenant","value":"demo"}],"credential":{"kind":"env","name":"EXAMPLE_API_KEY"},"models":[{"id":"deepseek-v4.1-flash","contextWindow":128000,"maxOutputTokens":8192,"supportsTools":true}]}}}
+<- {"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1","model":"example/deepseek-v4.1-flash","agent":"build","workspace":"/workspace"}}
 
 -> {"jsonrpc":"2.0","id":3,"method":"turn/submit","params":{"sessionId":"s1","turnId":"t1","prompt":"write hello.txt containing ok"}}
 <- {"jsonrpc":"2.0","id":3,"result":{"turnId":"t1"}}
@@ -400,14 +403,16 @@ A busy refusal, from a second submit while `t1` is running:
 - **Header values are secrets.** A host may put a credential in one; CodeGG
   treats every value as secret and never logs it, echoes it in an error, or
   includes it in a frame dump.
-- **Frames are not logged by default.** A debug mode prints method names, ids and
-  durations only.
+- **Request bodies are not logged by the host request trace.** At debug level,
+  it records the method name and request id, not the frame body.
 - **stderr is redacted.** A host may capture stderr for diagnostics without
   risking a secret.
 - **The descriptor is not persisted.** No session, connection, model or header
   from a descriptor is written to disk.
-- **The workspace root is the only writable root** the turn is given; the
-  sandbox profile decides how strictly that is enforced.
+- **The workspace root scopes the turn's workspace access.** For child
+  processes, `read-only` and `workspace-write` request OS filesystem
+  containment. `full-host` explicitly disables CodeGG filesystem containment
+  and gives the process the OS user's host authority.
 
 ## Versioning
 
@@ -420,8 +425,9 @@ A busy refusal, from a second submit while `t1` is running:
 - **One definition.** The wire types live in `crates/codegg-host-protocol` and
   are used by both the host binary and `crates/codegg-sdk`. A second copy is a
   defect.
-- **Golden frames are the gate.** Every message has a serialized fixture; a
-  non-additive change fails it.
+- **Golden-frame tests protect key wire shapes.** The protocol crate checks
+  representative initialization, notification, and error frames. Update those
+  tests when changing the wire.
 - **Behaviour is not the wire.** Which tools exist, which models a built-in
   provider accepts, and how the loop plans are not part of this contract.
 
@@ -429,14 +435,35 @@ A busy refusal, from a second submit while `t1` is running:
 
 | Bound | Value |
 |---|---|
-| Frame size, both directions | 8 MiB |
+| Inbound frame size | 8 MiB |
 | Prompt length | 1 MiB |
 | Descriptor headers | 16 pairs, 8 KiB total |
 | Descriptor models | 64 |
 | Tool output in `turn/tool` | 8 KiB, then `truncated: true` |
-| Cancellation to `turn/done` | 5 s at the loop's next safe point |
+| Cancellation | Cooperative; completes when the loop observes the request |
 | Concurrent turns per session | 1 |
 | Concurrent sessions per process | 1 |
 
-A provider failure, a cancellation or a crash inside a session never takes the
-process down with it, except an unparseable inbound frame, which does.
+A provider or turn failure is reported without closing the process. End-of-file
+and malformed or oversized inbound frames end the process; operating-system or
+I/O failures can also terminate it.
+
+## Source verification
+
+Checked 2026-11-15 against `src/host/mod.rs`, `src/host/session.rs`,
+`src/host/turn.rs`, `crates/codegg-host-protocol/src/lib.rs`,
+`crates/codegg-providers/src/inline.rs`, `src/headless.rs`, and
+`crates/codegg-core/src/approval.rs`.
+
+- The host's one-session lifecycle, config selection, framing, event flow, and
+  termination behavior are implemented in `src/host/mod.rs`,
+  `src/host/session.rs`, and `src/host/turn.rs`.
+- Wire limits, request types, errors, and notifications are defined in
+  `crates/codegg-host-protocol/src/lib.rs`; the frame-size limit is enforced
+  on inbound frames.
+- Descriptor validation and secret redaction are in
+  `crates/codegg-providers/src/inline.rs`.
+- Corrected the opening to distinguish descriptor-backed sessions from
+  configuration-backed sessions, clarified that `full-host` disables
+  filesystem containment, and removed the unsupported fixed cancellation
+  deadline. The sample now uses `auto` approval with `workspace-write`.
