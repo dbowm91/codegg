@@ -1,8 +1,8 @@
 # Installing CodeGG
 
-Three installation paths are available. The prebuilt installer is the
-supported, self-contained contract. The source paths exist for development and
-do not ship the full managed runfile bundle.
+There are three ways to install CodeGG. The prebuilt installer is the supported,
+self-contained option. Source builds are intended for development and need an
+additional search sidecar.
 
 ## Requirements
 
@@ -29,8 +29,8 @@ for launching CodeGG and connecting a provider.
 > download. Until the first release exists, use one of the source paths below.
 > Once releases are published, the installer commands apply exactly as written.
 
-This was checked against the GitHub API: the releases and tags listings both
-return empty.
+Checked against GitHub's Releases and Tags API on 2026-11-15; both listings
+were empty.
 
 ## Prebuilt installer
 
@@ -52,9 +52,8 @@ CodeGG resolves the two helpers relative to its own executable rather than
 from `PATH`, so only the install directory itself needs to be on `PATH`.
 
 The script never escalates privileges, never edits shell profiles, never
-starts background services, and never installs Rust/Cargo. A checksum mismatch
-or missing asset is a hard failure — there is no automatic fallback to
-compiling from source.
+starts background services, and never installs Rust/Cargo. A checksum mismatch or missing asset is a hard failure. The installer never
+falls back to compiling from source.
 
 ### Supported hosts
 
@@ -76,12 +75,13 @@ Latest release (default destination `~/.local/bin/codegg`):
 curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh | sh
 ```
 
-Pinned version — the value must match a published release tag:
+To install a specific version, set `CODEGG_VERSION` to a published release tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh | CODEGG_VERSION=0.1.0 sh
+curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh | CODEGG_VERSION=1.2.3 sh
 ```
 
+Replace `1.2.3` with the version you want. No release is currently published.
 Custom destination:
 
 ```bash
@@ -179,7 +179,7 @@ transaction on the supported Linux and macOS targets. It downloads
 `checksums.txt` and the single target archive, verifies the archive checksum
 before extraction, rejects unexpected archive members, checks the CodeGG,
 eggsearch, and helper identities it staged, and only then commits the complete
-runfile set — rolling back and preserving the prior bundle on any failure.
+runfile set, rolling back and preserving the prior bundle on any failure.
 
 It does **not** fetch or execute `install.sh`; the fresh-install script
 remains a separate bootstrap path. Windows, unsupported targets, and
@@ -213,7 +213,7 @@ For provider credentials and model selection, see `docs/providers.md`.
 
 ## Source verification
 
-Checked 2026-10-23 against the source tree and the upstream registry.
+Checked against the source tree and upstream registry; rechecked release status on 2026-11-15.
 
 - Rust 1.89+ and edition 2021: `Cargo.toml` (`rust-version`, `edition`).
 - `cargo install --locked --path .` installs both `codegg` and
@@ -224,13 +224,13 @@ Checked 2026-10-23 against the source tree and the upstream registry.
   x86_64) and the archive layout: `install.sh` and
   `scripts/release/lib-release.sh`.
 - The eggsearch sidecar pin: version `0.4.4` at commit
-  `32f48bb57a43274d763c7f9ba919eab84d125edc` — `scripts/release/lib-release.sh`
+  `32f48bb57a43274d763c7f9ba919eab84d125edc` in `scripts/release/lib-release.sh`
   (`CODEGG_EGGSEARCH_PINNED_VERSION`, `CODEGG_EGGSEARCH_UPSTREAM_COMMIT`),
   `src/install.rs` (`PINNED_EGGSEARCH_VERSION`), `src/upgrade/managed.rs`, and
   `.opencode/skills/upgrade/SKILL.md`. `RELEASING.md` still names 0.4.3; the
   code and the release script agree on 0.4.4, so this page follows them.
-- "No published releases yet": the GitHub API releases listing for
-  `dbowm91/codegg` returned an empty array on 2026-10-23.
+- "No published releases yet": the Releases and Tags API listings for
+  `dbowm91/codegg` were empty on 2026-11-15.
 - Feature names (`server`, `plugins`, `image`, `arboard`,
   `decision-runtime-sdm`, `debug-logging`): the `[features]` table in
   `Cargo.toml`.

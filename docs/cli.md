@@ -1,12 +1,7 @@
 # CLI reference
 
-Every command and flag on this page was verified against the clap
-definitions in `src/main.rs` and by running the binary. When the binary and
-this page disagree, the binary is authoritative — check `codegg --help` and
-`codegg <command> --help`.
-
-Run `codegg --help` for the current top-level surface and
-`codegg <command> --help` for any subcommand.
+This page covers common commands and flags. For the current command list and
+all options, run `codegg --help` or `codegg <command> --help`.
 
 ## Contents
 
@@ -21,8 +16,6 @@ Run `codegg --help` for the current top-level surface and
 - [Research](#research)
 - [Shell completions](#shell-completions)
 - [Upgrade](#upgrade)
-- [Tool advisor](#tool-advisor)
-- [Hidden compatibility spellings](#hidden-compatibility-spellings)
 
 ## Running without a subcommand
 
@@ -48,35 +41,34 @@ codegg -m anthropic/claude-sonnet-4-20250514 --run "Explain this project"   # on
 
 | Flag | Meaning |
 |---|---|
-| `-c`, `--continue-session` | Resume the most recent session. Conflicts with `--session`, `--fork`, `--no-session`. |
+| `-c`, `--continue-session` | Resume the most recent session. Conflicts with `--session`, `--fork`, and `--no-session`. |
 | `-s`, `--session <SESSION>` | Open a specific session. |
 | `--fork <FORK>` | Fork the given session. |
-| `--no-session` | Ephemeral run; nothing is persisted. |
+| `--no-session` | Run without persisting a session. |
 | `-m`, `--model <MODEL>` | Override the model. |
 | `-a`, `--agent <AGENT>` | Override the agent. |
-| `-p`, `--run <PROMPT>` | Run a single prompt and exit. |
-| `-f`, `--format <text\|json>` | Output format for one-shot mode. `--output-format` is a compatibility alias. Default `text`. |
+| `-p`, `--run <PROMPT>` | Run one prompt and exit. |
+| `-f`, `--format <text\|json>` | One-shot output format. Default: `text`. `--output-format` is an alias. |
 | `-q`, `--quiet` | Hide status messages in non-interactive mode. |
-| `--cwd <DIRECTORY>` | Set the working directory before startup. Must exist, or the command fails. Equivalent to launching from that directory. |
-
-`--cwd` chooses the initial workspace. During a session, the model-facing
-`session_working_directory` tool can persist a default subdirectory within
-that workspace; it does not change project identity or the workspace security
-boundary. Use an authorized launch, fork, or session switch to change roots.
-| `-v` | Verbosity: no flag warn, `-v` info, `-vv` debug, `-vvv`+ trace. |
+| `--cwd <DIRECTORY>` | Set the initial working directory. It must already exist. |
+| `-v` | Increase verbosity: `-v` info, `-vv` debug, `-vvv` or more trace. |
 | `--approval-mode <MODE>` | `interactive`, `automatic`, or `yolo`. |
 | `--sandbox <PROFILE>` | `read-only`, `workspace-write`, or `full-host`. |
-| `--yolo` | Exact alias for `--approval-mode yolo`. |
-| `--standalone` | Run the core in-process, without the singleton daemon. |
+| `--yolo` | Alias for `--approval-mode yolo`. |
+| `--standalone` | Run the core in-process without the singleton daemon. |
 
-Approval mode and sandbox are orthogonal: an automatic approval mode never
-implies host-level filesystem access. A constrained Bash or Python command is
-refused when the host cannot apply its OS filesystem sandbox; it is not run
-without containment. Use `full-host` only when you intend to opt out of CodeGG
-filesystem containment. Constrained processes receive private temporary space;
-shared `/tmp` and global user caches are not writable grants. Filesystem
-containment does not isolate network access or every IPC channel; Seatbelt also
-allows broad reads and preserves descriptors opened before confinement. See
+`--cwd` selects the initial workspace. The `session_working_directory` tool
+can set a default subdirectory during a session, but it does not change the
+project identity or workspace security boundary.
+
+Approval mode and sandbox are independent. Automatic approval does not grant
+host-level filesystem access. CodeGG refuses constrained Bash or Python
+commands when the operating system cannot enforce the requested filesystem
+sandbox. Use `full-host` only when you intend to opt out of CodeGG filesystem
+containment. Constrained processes receive private temporary space. Shared
+`/tmp` and global user caches are not writable grants. Filesystem containment
+does not isolate network access or every IPC channel. On macOS, Seatbelt allows
+broad reads and preserves descriptors opened before confinement. See
 `architecture/security.md` for backend-specific guarantees and limits, and
 `docs/tui.md` for approval controls.
 
@@ -91,10 +83,9 @@ codegg export <session-id> -o session.json
 codegg import session.json         # import a session
 ```
 
-These commands read and write the project-local store at
-`<project>/.codegg/sessions.db`. The database is created and migrated on
-first use — by the TUI, the daemon, or any of these commands — so they work
-in a project that has never been opened.
+These commands use the project-local database at
+`<project>/.codegg/sessions.db`. CodeGG creates and migrates it on first use,
+including when the project has not been opened in the TUI.
 
 Sessions created by the TUI are persistent by default and can be resumed
 across restarts.
@@ -149,9 +140,8 @@ codegg auth logout openai
 ```
 
 `auth set-key` reads the key from stdin, so it does not appear in shell
-history. On a fresh profile the first protected write creates a CodeGG-managed
-master key automatically — no key environment variable is required. See
-`docs/providers.md` for the full resolution order.
+history. On a fresh profile, the first protected write creates a managed master
+key automatically. See `docs/providers.md` for credential resolution details.
 
 ## Configuration and diagnostics
 
@@ -181,9 +171,9 @@ The editor is resolved in this order:
 `$VISUAL` outranks `$EDITOR` per the usual Unix convention, because `$VISUAL`
 marks the full-screen editor you prefer for interactive editing while
 `$EDITOR` is often left as a line-oriented default. Both may be multi-word or
-quoted (`EDITOR="code --wait"`, `EDITOR="/opt/My Editor/hx"`). An editor named
-by `$VISUAL`/`$EDITOR` is used even if it is missing — CodeGG reports the spawn
-failure rather than silently editing the file in a different program.
+quoted (`EDITOR="code --wait"`, `EDITOR="/opt/My Editor/hx"`). If the named
+editor is missing, CodeGG reports the spawn failure instead of silently
+choosing a different program.
 
 Which file gets opened, highest precedence first: `--config <path>`, then a
 project config discovered from the working directory (`.codegg/codegg.jsonc`),
@@ -191,9 +181,8 @@ then the global config. `--project` forces the project-local file, creating it
 if no project config exists yet.
 
 After the editor exits, `edit` re-reads the file and reports whether it still
-parses. A parse or validation failure is printed to stderr but does not change
-the exit status — the edit itself succeeded, and you may still be fixing it.
-Run `codegg validate` to confirm.
+parses. Parse or validation errors go to stderr, but do not change the exit
+status because editing itself succeeded. Run `codegg validate` to confirm.
 
 `doctor` takes an optional positional subsystem:
 
@@ -209,8 +198,8 @@ Run `codegg validate` to confirm.
 | `installation` | Owned runfiles, helper/sidecar state, and the sandbox kernel probe. |
 | `session` | The turn request ledger: row count, the last attempt's identity and digests, and whether a body is present. Never prints bodies. |
 
-`doctor` exits 0 even when it reports problems — read the output rather than
-the exit code.
+`doctor` exits 0 even when it reports problems. Read the output, not only the
+exit code.
 
 `--subsystem <name>` still parses as a deprecated alias for the positional
 form. Prefer the positional spelling.
@@ -230,10 +219,9 @@ codegg daemon scratch-reclaim --tree <digest>   # dispose of one scratch tree
 ```
 
 **`codegg daemon start` runs in the foreground.** It acquires the singleton
-lock, binds the socket, and then stays in the foreground for the life of the
-daemon — it does not fork or detach. Run it in a separate terminal or
-background it. If a healthy daemon already holds the lock, the command prints
-a message and exits 0 rather than starting a second instance.
+lock, binds the socket, and stays there until stopped. It does not fork or
+detach, so run it in a separate terminal or background it. If a healthy daemon
+already holds the lock, the command prints a message and exits 0.
 
 You rarely need to do this by hand: a plain `codegg` connects to an existing
 daemon or starts one automatically. See `docs/daemon.md`.
@@ -272,8 +260,8 @@ printf '%s\n' '{"prompt":"Review this repository","model":"anthropic/claude-sonn
 ```
 
 The same payload can be passed with `--json '<payload>'` or read from a file
-with `--file <path>` instead of stdin. The object has three optional string
-fields — `prompt` (required), `model`, and `agent`.
+with `--file <path>` instead of stdin. Its fields are `prompt` (required),
+`model`, and `agent`, all strings.
 
 ```bash
 codegg exec --json '{"prompt":"List the public functions in src/lib.rs"}' -q
@@ -288,9 +276,9 @@ codegg exec --approval-mode interactive --sandbox read-only --quiet \
 ```
 
 `--json-output` / `-j` remain as compatibility aliases for `--format json`.
-Without explicit policy flags, `exec` keeps its legacy permissive behavior for
-existing CI pipelines — set `--approval-mode` and `--sandbox` explicitly if you
-want a bounded run.
+Without explicit policy flags, `exec` retains permissive behavior for
+compatibility with existing CI pipelines. Set `--approval-mode` and `--sandbox`
+explicitly when you want a bounded run.
 
 ## MCP, ACP and plugins
 
@@ -316,43 +304,23 @@ Without policy flags, ACP keeps the daemon's current policy. An unattended
 ACP trial can explicitly request one supported envelope:
 
 ```bash
-CODEGG_DAEMON_HOME=/tmp/codegg-private-lane \
+lane=$(mktemp -d "${TMPDIR:-/tmp}/codegg-acp.XXXXXX")
+CODEGG_DAEMON_HOME="$lane/daemon" \
+CODEGG_DATA_HOME="$lane/data" \
   codegg acp --approval-mode yolo --sandbox workspace-write
 ```
 
 Policy flags use the same parser as `exec`. Explicit ACP overrides require an
 explicit `CODEGG_DAEMON_HOME`, are serialized against other ACP policy trials
 for that root, and fail if the daemon reports a narrower effective policy.
-Use a private daemon root, as the developer harness does; the override is
-persisted in that daemon's principal preference store. Explicit deterministic
-denies, hard-denies, authorization, and sandbox enforcement remain active.
-Turn failures are returned as JSON-RPC errors, not ACP `cancelled` results.
-
-The developer-only multi-lane supervisor is not part of the shipped binary.
-From a CodeGG checkout, build a candidate and run:
-
-```bash
-cargo build --bin codegg
-python3 -m dev.harness_lab doctor --binary target/debug/codegg
-python3 -m dev.harness_lab smoke --binary target/debug/codegg --subjects 2
-python3 -m dev.harness_lab smoke --binary target/debug/codegg --subjects 2 --unattended-profile workspace-write
-python3 -m dev.harness_lab smoke --binary target/debug/codegg --subjects 2 --unattended-profile full-host
-python3 -m dev.harness_lab tool-trial --binary target/debug/codegg --profile workspace-write
-python3 -m dev.harness_lab tool-trial --binary target/debug/codegg --profile workspace-write --deny-bash
-python3 -m dev.harness_lab evaluate --binary target/debug/codegg --suite dev/harness_lab/fixtures/smoke.jsonl --ledger /tmp/codegg-ledger --candidate baseline
-python3 -m dev.harness_lab report --ledger /tmp/codegg-ledger
-python3 -m dev.harness_lab improve --proposer manual --max-iterations 1 --dry-run
-```
-
-It uses temporary roots outside the checkout by default. The ordinary smoke
-does not submit a model turn or call a provider; policy-profile runs verify
-the daemon's requested/effective snapshot but also do not submit a turn. The
-turn-level fixture uses a loopback OpenAI-compatible provider and the native
-broker, with explicit-deny coverage. Ledger report/replay/compare run offline.
-Candidate proposals use a separate linked worktree; OpenCode is version-pinned
-to the qualified CLI adapter and candidate acceptance still requires build,
-ACP qualification, and paired-ledger gates. See `dev/harness_lab/README.md` for
-the path inventory and platform limits.
+The approval override is persisted in the principal preference record in
+CodeGG's data catalog. Setting only `CODEGG_DAEMON_HOME` does not isolate it:
+with the normal data directory, the trial can change the policy used by
+ordinary local sessions. The example isolates both the daemon and data catalog
+under a private temporary directory. It does not isolate global config or
+credentials. Explicit deterministic denies, hard-denies, authorization, and
+sandbox enforcement remain active. Turn failures are returned as JSON-RPC
+errors, not ACP `cancelled` results.
 
 Plugins are configured through the `plugin` config key and managed from the
 TUI; there is no `codegg plugins` CLI subcommand. WASM plugin execution
@@ -370,8 +338,8 @@ codegg research "..." --depth deep --audience engineer --allow-network
 | `--mode <MODE>` | `narrow-answer` | Research mode. |
 | `--audience <AUDIENCE>` | `human` | Target audience for the write-up. |
 | `--depth <DEPTH>` | `medium` | Research depth. |
-| `--output <OUTPUTS>` | — | Output profile; repeatable. |
-| `--source <SOURCES>` | — | `local`, `file:<path>`, or `url:<https-url>`. Repeatable. |
+| `--output <OUTPUTS>` | None | Output profile; repeatable. |
+| `--source <SOURCES>` | None | `local`, `file:<path>`, or `url:<https-url>`. Repeatable. |
 | `--allow-network` | off | Permit network fetching. |
 
 Research depends on the eggsearch backend; check `codegg doctor search` first
@@ -388,9 +356,7 @@ With no `-o`/`--output`, the script is written to stdout, not to a file.
 `--output` requires the directory to already exist and names the file per shell
 (`codegg.bash`, `_codegg`, `codegg.fish`, `codegg.ps1`, `codegg.elv`).
 
-Supported shells: `bash`, `elvish`, `fish`, `powershell`, `zsh`. The command's
-own help prose lists only four — `elvish` appears solely in the `possible values`
-line, so trust the value list rather than the sentence.
+Supported shells: `bash`, `elvish`, `fish`, `powershell`, and `zsh`.
 
 ## Upgrade
 
@@ -401,30 +367,6 @@ codegg upgrade
 Updates a managed prebuilt installation as a single verified transaction. It
 does not fetch or run `install.sh`. Source installs have no managed bundle to
 upgrade; use `cargo install` again instead. See `docs/install.md`.
-
-## Tool advisor
-
-The tool-selection advisor is a diagnostic surface, not a runtime switch. It
-reports the effective discovery policy and runs the offline corpus tooling.
-
-```bash
-codegg tool-advisor status                    # effective policy and decision backend
-codegg tool-advisor status --json
-codegg tool-advisor bench                     # keyword baseline over the corpus
-codegg tool-advisor bench --bm25 --json        # BM25 variant, machine-readable
-codegg tool-advisor bench --dataset <path>    # a specific JSONL dataset
-codegg tool-advisor lint --dataset <path>     # corpus floors and split coverage
-codegg tool-advisor inspect --model <path>    # an SDM local artifact
-codegg tool-advisor data status               # captured-training-data state
-codegg tool-advisor data inspect              # captured events as JSON
-codegg tool-advisor data export --output <file>
-codegg tool-advisor data purge
-```
-
-`tool-advisor bench` defaults to the reviewed repository corpus when no
-`--dataset` is given. `tool-advisor inspect` needs the optional
-`decision-runtime-sdm` Cargo feature and is refused without it. `data export`
-requires `--output`; `data purge` removes the locally captured events.
 
 ## Remote server (feature-gated)
 
@@ -440,43 +382,26 @@ server does not proxy to the singleton daemon. `codegg attach` is the remote
 HTTP client; it takes a server URL and an optional `--token`. The local socket
 equivalent is `codegg daemon attach`, which is always available.
 
-## Hidden compatibility spellings
-
-These still parse but are hidden from `--help`. They exist so existing scripts
-and older configurations keep working; prefer the canonical spelling.
-
-| Hidden | Canonical |
-|---|---|
-| `--core-transport inproc\|stdio\|socket` | `--standalone`, `--stdio`, `codegg daemon attach` |
-| `--stdio` | (compatibility stdio core transport) |
-| `--core-endpoint <URI>` | `--endpoint` on `codegg daemon` subcommands |
-| `codegg attach-daemon` | `codegg daemon attach` |
-| `codegg core-stdio` | (internal transport) |
-| `--output-format <FMT>` | `--format` |
-| `--json-output` / `-j` | `--format json` |
-| `doctor --subsystem <NAME>` | `doctor <NAME>` |
-
-`codegg attach` is a different command entirely — it is the feature-gated
-remote HTTP client, takes a server URL, and only exists in `server` builds.
-See `docs/daemon.md` and `architecture/server.md`.
-
 ## Source verification
 
-Checked 2026-10-23 against the clap definitions in `src/main.rs` (the
-`Cli`, `Commands`, `ToolAdvisorCommand`, `ToolAdvisorDataCommand`,
-`AuthSubcommand`, `DoctorSubsystem`, `OutputFormat`, `CoreTransport`, and
-`DaemonCommand` types) and the MCP subcommand enum in `src/mcp/cli.rs`.
+Checked 2026-10-23 against the clap definitions in `src/main.rs` and the MCP
+subcommand enum in `src/mcp/cli.rs`.
+
+Rechecked 2026-11-15 against `src/main.rs` (`Cli`, `Commands`,
+`AuthSubcommand`, `DoctorSubsystem`, `DaemonCommand`) and `src/mcp/cli.rs`.
+The edits remove developer-only and hidden-compatibility detail, clarify
+`exec`'s default policy, and correct the completions shell list.
 
 - Top-level flags: `src/main.rs` `Cli` and `ExecutionPolicyArgs`
   (`-c/--continue-session`, `-s/--session`, `--fork`, `--no-session`,
   `-m/--model`, `-a/--agent`, `-p/--run`, `-f/--format` with the
   `--output-format` alias, `-q/--quiet`, `--cwd`, `-v`, `--approval-mode`,
   `--sandbox`, `--yolo`, `--standalone`).
-- Subcommands: `src/main.rs` `Commands` — `sessions`, `session`, `launch`,
+- Subcommands: `src/main.rs` `Commands` lists `sessions`, `session`, `launch`,
   `export`, `import`, `providers`, `models`, `config`, `upgrade`, `tool-advisor`,
   `doctor`, `auth`, `validate`, `edit`, `exec`, `acp`, `completions`, `mcp`,
-  `research`, `daemon`, plus the `server`/`attach` pair that is gated on the
-  `server` Cargo feature.
+  `research`, `daemon`, plus the `server`/`attach` pair behind the `server`
+  Cargo feature.
 - `daemon start` foreground behaviour and the "already running" exit:
   `src/main.rs` `run_daemon`.
 - `daemon stop` is Unix-only; `codegg server` refuses to start without
@@ -501,3 +426,7 @@ Checked 2026-10-23 against the clap definitions in `src/main.rs` (the
 - `research` flags and their defaults: `src/main.rs` `Commands::Research`.
 - There is no `codegg plugins` subcommand and no `codegg mcp servers`
   spelling: `src/main.rs` `Commands`.
+- ACP policy overrides persist in the principal preference record in the data
+  catalog; `CODEGG_DATA_HOME` selects that catalog root:
+  `src/acp.rs` (`RuntimePolicySet`), `src/core/daemon_ops.rs`, and
+  `crates/codegg-core/src/storage/paths.rs`.

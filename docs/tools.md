@@ -22,9 +22,8 @@ managed checkout, use an authorized launch, fork, or session switch.
 
 ## How a tool call is gated
 
-Every production tool call — whether it came from the agent loop or from a Tool
-Program — is dispatched through `ToolBroker`, which is the single execution
-boundary. The pipeline is ordered:
+Every production tool call, whether from the agent loop or a Tool Program, is
+dispatched through `ToolBroker`, the single execution boundary. The pipeline is ordered:
 
 1. Registry lookup and contract snapshot
 2. Caller-policy check
@@ -83,7 +82,7 @@ Three things worth internalizing:
   approval mode. No confirmation dialog overrides it.
 - **Absent is not the same as `deny`.** A tool you do not mention inherits the
   ambient configuration. Agents that need to be genuinely read-only must deny
-  explicitly — see `docs/agents-skills.md`.
+  explicitly; see `docs/agents-skills.md`.
 - **Command metadata never grants authority.** A skill's `allowed-tools`
   frontmatter, a command's declared agent, and a plugin manifest are
   descriptive. They do not widen the permission envelope.
@@ -103,17 +102,11 @@ system; see `docs/security-semantics.md`.
 | Version control | `git`, `git_query`, `git_read`, `commit` | Typed repository facts. `git_read` is program-only; `git` and `commit` are mutating operations, routed through the risk-classified mutation executor |
 | Research and evidence | `research`, `research_search`, `repo_search`, `repo_fetch`, `security_search`, `batch_fetch`, `evidence_bundle`, `websearch`, `webfetch` | Evidence-backed external lookups |
 | Planning and tasks | `task`, `job`, `todoread`, `todowrite`, `plan_enter`, `plan_exit`, `goal_get`, `goal_request_completion`, `goal_update_progress`, `work_order`, `work_plan_get`, `work_plan_update_item`, `session_working_directory` | Delegation, planning, and progress; `session_working_directory` owns the session-relative default cwd (see above) |
-| Review and quality | `review`, `security`, plus 15 `eggsact`-backed deterministic validators: `text_equal`, `text_diff_explain`, `text_replace_check`, `text_inspect`, `text_fingerprint`, `text_security_inspect`, `validate_json`, `validate_toml`, `path_normalize`, `identifier_inspect`, `structured_data_compare`, `command_preflight`, `config_preflight`, `math_eval`, `unit_convert` | Deterministic text, config, identifier, and math checking |
+| Review and quality | `review`, `security`, and `eggsact`-backed deterministic validators: `text_equal`, `text_diff_explain`, `text_replace_check`, `text_inspect`, `text_fingerprint`, `text_security_inspect`, `validate_json`, `validate_toml`, `path_normalize`, `identifier_inspect`, `structured_data_compare`, `command_preflight`, `config_preflight`, `math_eval`, `unit_convert` | Deterministic text, config, identifier, and math checking |
 | Extension and resources | `mcp_resource_read`, `mcp_resource_search`, `extension_search`, `extension_install_request`, `memory_get`, `memory_search` | MCP resources and extensions, and durable memory |
 
-The table lists all **79** distinct production tool names as measured (63 from
-a `Tool` impl whose `name()` returns a literal, plus the 16 `eggsact`
-deterministic validator names counted at their `EggsactTool::new()` call sites
-in `src/tool/deterministic.rs` — true production is 78, because the 16th
-counted name, `probe`, is a `#[cfg(test)]`-only constructor the scan still
-counts; see `architecture/overview.md` §"Verified counts" for the reconciliation).
-The `eggsact` family is split 8 always-visible / 7 deferred; the deferred third is
-discoverable through `tool_search`.
+The deterministic validator family is split between always-visible and
+deferred tools. Discover deferred tools with `tool_search`.
 
 `verify` defaults to an offline workspace check. Rust lint does not enable every
 workspace feature by default. For a bounded package run, pass `scope: "package"`
@@ -173,20 +166,9 @@ external executable is resolved, so these tools work without an install step.
 codegg doctor deterministic-tools
 ```
 
-On a default install that reports:
+Some validators are visible by default; use `tool_search` to find deferred tools:
 
-```text
-enabled: true
-backend: native
-profile: codegg_core
-expose_expert_tools: false
-max_output_chars: 12000
-model tools: 8 always-visible, 7 deferred
-```
-
-Fifteen tools are registered, split by whether the model sees them up front:
-
-| Always visible | Deferred — discover via `tool_search` |
+| Always visible | Deferred (discover with `tool_search`) |
 |----------------|---------------------------------------|
 | `text_equal` | `text_inspect` |
 | `text_diff_explain` | `config_preflight` |
@@ -196,8 +178,6 @@ Fifteen tools are registered, split by whether the model sees them up front:
 | `command_preflight` | `math_eval` |
 | `path_normalize` | `unit_convert` |
 | `text_security_inspect` | |
-
-`tool_search` is how the model finds the deferred half.
 
 Search accepts ordinary multiword task phrases and ranks matching names and
 descriptions deterministically. Use `query: ""` with `offset` and `limit` to
@@ -250,9 +230,8 @@ match the report above:
 ```
 
 Setting `backend` to `disabled` replaces the real tools in the registry with
-stubs that return a clear error, rather than silently routing calls somewhere
-else — the model sees the failure instead of getting a different answer than it
-asked for.
+stubs that return a clear error. The model sees the failure instead of a
+different answer than it asked for.
 
 ## Git
 
@@ -264,10 +243,10 @@ application, which owns its own permission and approval policy.
 
 Two read surfaces sit on top:
 
-- `git_query` — the model-facing semantic surface. Bounded read operations
-  with a fixed schema: `status`, `diff`, `log`, and `branches`.
-- `git_read` — the program-only adapter over the same canonical execution
-  service. Hidden from ordinary model turns.
+- `git_query`: the model-facing semantic surface, with bounded `status`, `diff`,
+  `log`, and `branches` operations.
+- `git_read`: a program-only adapter over the same canonical execution service.
+  It is hidden from ordinary model turns.
 
 Mutations live in `src/git_mutations.rs` behind the `git` and `commit` tools, and
 share one execution model: resolve
@@ -276,12 +255,10 @@ branch, index, worktree), validate preconditions, render argv shell-free, run
 with a timeout and noninteractive controls, snapshot post-operation state, and
 return a typed state delta.
 
-Network operations — fetch, pull, push, remote config — carry an extra policy
-layer in `src/git_network_policy.rs`: `GIT_TERMINAL_PROMPT` is pinned to `0` so
-a credential helper cannot block, credentials embedded in URLs are redacted
-before persistence or display, and transport failures are classified into DNS,
-connect, auth, ref-rejection, and timeout categories so the UI can say
-something actionable.
+Network operations such as fetch, pull, push, and remote configuration carry
+an extra policy layer in `src/git_network_policy.rs`. It disables interactive
+credential prompts, redacts credentials embedded in URLs, and classifies
+transport failures so the UI can report actionable errors.
 
 Force pushes, hard resets, and similar operations are classified by risk. See
 `architecture/git.md` and the `git` skill.
@@ -303,26 +280,19 @@ model is behind a gate that is **off by default**:
 codegg doctor lsp
 ```
 
-reports the gate, and when it is `false` the model tool is hidden — the registry
-still knows about it. This is deliberate: LSP changes what the agent can see
-about the workspace, so it is opt-in.
+reports the gate. When it is `false`, the model tool is hidden although the
+registry still knows about it. LSP changes what the agent can see about the
+workspace, so it is opt-in.
 
 Configure servers under the `[lsp]` block. `docs/LSP.md` covers server setup and
 configuration; the module contract is `architecture/lsp.md`.
 
-If a sandbox profile is requested without a workspace root, bash runs without
-OS containment and that is reported as *unavailable*, never as full host
-access — the absence of a workspace never silently widens authority.
-
-File tools are jailed to the workspace; bash is Seatbelt
-write-confined/read-broad/credential-deny (writes confined to
-workspace+scratch, reads broad, credential paths denied). An absolute path
-outside workspace/scratch in bash argv triggers an advisory path-guard
-warning, not a deny; the sandbox remains the enforcer. `cd /private/tmp` may
-succeed but writes outside workspace+scratch denied; use canonical realpath root.
-`read` sees ignored files; discovery (`glob`/`grep`/`list`) skips them unless
-`include_ignored:true`. `.codegg/test-runs/*` may be gitignored — use
-`include_ignored:true` or `read` directly.
+Bash refuses to start without a canonical workspace root; it never guesses one
+from the process's current directory. Sandbox backends and guarantees vary by
+platform and launch path. If a required sandbox cannot be applied, execution
+fails before the target starts. Structured file tools remain scoped to the
+workspace. `read` can access ignored files; `glob`, `grep`, and `list` skip them
+unless `include_ignored: true` is set.
 
 Model-owned Bash and Python processes receive a private scratch directory for
 their session. Use the `CODEGG_SCRATCH_DIR` environment variable in shell
@@ -379,18 +349,16 @@ deleted sessions after restart. Durable transcripts, run results, and Git
 worktrees live outside this disposable tree. The tree is measurable with
 `codegg daemon scratch-usage`, and the daemon sweeps it by age: a session's
 tree is reclaimed once the session has been idle past the retention window
-(`scratch.retention_days`, 14 days by default) — but not while an accepted
-turn, a non-terminal run, or a non-terminal job still owns that session. The
-sweep decides from durable timestamps and never walks a tree to decide, so it
-performs no size traversal.
+(`scratch.retention_days`, 14 days by default). Cleanup waits while an accepted
+turn, non-terminal run, or non-terminal job still owns the session. The sweep
+uses durable timestamps to determine idleness.
 
 ## Testing and the scheduler
 
 The `test` tool runs the project's suite through the daemon scheduler rather
-than spawning a process directly. That is the general rule: process-heavy work
-— test runs, managed processes, subagent dispatch, tool programs — is submitted
-to `JobSubmissionService` and admitted by `JobScheduler`, which owns global
-admission control for the single daemon.
+than spawning a process directly. Other process-heavy work, including managed
+processes, subagent dispatch, and tool programs, is also submitted to the
+scheduler, which controls admission for the daemon.
 
 Consequences:
 
@@ -472,9 +440,9 @@ and pass through the same broker, so they inherit the same permission gating.
 A disabled domain stays visible in the catalog but returns an actionable error
 if called. See `docs/MCP.md` and `docs/PLUGINS.md`.
 
-Tool Programs — reusable, reviewable bundles of tool calls — are executed
-through the broker like anything else. See `architecture/tool_programs.md` and
-the `tool-program-harness` skill.
+Tool Programs are reusable, reviewable bundles of tool calls executed through
+the same broker. See `architecture/tool_programs.md` and the
+`tool-program-harness` skill.
 
 ## Diagnosing what you have
 
@@ -525,61 +493,23 @@ Search output is capped per tool (defaults: `websearch` 12000,
 
 ## See also
 
-- `architecture/git.md` — typed Git operations and risk classification
-- `architecture/permission.md` — permission levels and the approval path
-- `architecture/security.md` — deterministic security semantics
-- `architecture/testing.md` — test taxonomy and execution strategy
-- `architecture/scheduler.md` — global admission control
-- `architecture/tool_programs.md` — reusable tool call bundles
-- `docs/security-semantics.md` — the security pipeline and its gates
-- `docs/agents-skills.md` — narrowing a tool surface with an agent
-- `docs/configuration.md` — the full config schema
+- `architecture/git.md`: typed Git operations and risk classification
+- `architecture/permission.md`: permission levels and the approval path
+- `architecture/security.md`: deterministic security semantics
+- `architecture/testing.md`: test taxonomy and execution strategy
+- `architecture/scheduler.md`: global admission control
+- `architecture/tool_programs.md`: reusable tool call bundles
+- `docs/security-semantics.md`: the security pipeline and its gates
+- `docs/agents-skills.md`: narrowing a tool surface with an agent
+- `docs/configuration.md`: the full config schema
 
 ## Source verification
 
-Checked 2026-10-23 against the source tree.
-
-- Tool names: every `fn name()` implementation under `src/tool/`, plus
-  `src/context/read_tool.rs` (`context_read`), `src/tool/tool_program.rs`,
-  `src/tool/task.rs`, `src/tool/todo.rs` (`todowrite`, `todoread`),
-  `src/tool/memory.rs` (`memory_search`, `memory_get`),
-  `src/tool/goal.rs`, `src/tool/plan.rs`, `src/tool/work_order.rs`,
-  `src/tool/work_plan.rs` (`work_plan_get`, `work_plan_update_item`), and
-  `src/tool/mcp_resource.rs`. The family table was reconciled with
-  `architecture/overview.md` §"Tools and capabilities at a glance"; the 78
-  true-production names it lists are the measured 79 minus the test-only
-  `probe` constructor.
-- Tool counts: 67 registry registrations and 79 measured distinct production tool names
-  per `architecture/overview.md`'s verified-counts table (63 literal + 16 counted
-  `eggsact` names at their `EggsactTool::new()` call sites; true production 78 —
-  the 16th counted name, `probe`, is `#[cfg(test)]`-only).
-- Deterministic tools: `src/tool/deterministic.rs` — 8 always-visible
-  (`text_equal`, `text_diff_explain`, `text_replace_check`, `validate_json`,
-  `validate_toml`, `command_preflight`, `path_normalize`,
-  `text_security_inspect`) and 7 deferred (`text_inspect`,
-  `config_preflight`, `identifier_inspect`, `structured_data_compare`,
-  `text_fingerprint`, `math_eval`, `unit_convert`), and `crates/codegg-config/src/schema.rs`
-  `DeterministicToolsConfig` defaults (`enabled`, `backend`, `profile`,
-  `model_audience`, `harness_audience`, `expose_expert_tools`,
-  `max_output_chars`).
-- `eggsact` version 1.2.5 (`Cargo.toml`), `eggsearch` 0.4.4
-  (`src/install.rs`, `src/upgrade/managed.rs`, `scripts/release/lib-release.sh`).
-- Search output caps and the 60,000 ms provider timeout: the `[search]`
-  defaults in `crates/codegg-config/src/schema.rs` and
-  `src/search_backend/bootstrap.rs`.
-- `verify` scope/package/features/all_features behaviour:
-  `src/tool/verify.rs`.
-- `tool_search` paging (default 10, maximum 50): `src/tool/tool_search.rs`.
-- `task` `run_id` / `task_id` / `group_id` split: `src/tool/task.rs`.
-- `scratch.retention_days` default 14 and the scratch sweep:
-  `crates/codegg-config/src/schema.rs`, `src/shell/`, `src/scratch.rs`.
-- `experimental.lsp_tool` gate: `crates/codegg-config/src/schema.rs`.
-- `/tool-backends` and `/tool-contracts`: `src/tui/command.rs`.
-- `search.backend` / `fallback_to_builtin` migration errors:
-  `crates/codegg-config/src/schema.rs` and `crates/codegg-config/src/paths.rs`.
-
-- Corrected 2026-10-27: `RunPlacement` values and shared-checkout mediation
-  (`crates/codegg-core/src/run_placement.rs:22-75`); per-workspace build
-  quota default 1 with opt-in per-repository scope
-  (`docs/configuration.md`, `src/scheduler/`); `task` run/task/group
-  identities (`src/tool/task.rs:1847`); LSP count 39 held (see `docs/LSP.md`).
+The corrected workspace-root and sandbox behavior was checked against
+`src/tool/bash/process.rs`, `src/security/sandbox/backend.rs`, and
+`src/security/sandbox/`. The tool-family descriptions and deterministic tools
+were checked against `src/tool/` and `src/tool/deterministic.rs`. `verify`,
+`tool_search`, task identity fields, the LSP gate, and diagnostic commands are
+implemented in `src/tool/verify.rs`, `src/tool/tool_search.rs`,
+`src/tool/task.rs`, `crates/codegg-config/src/schema.rs`, and
+`src/tui/command.rs`.

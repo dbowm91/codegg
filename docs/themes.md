@@ -1,135 +1,35 @@
 # Themes
 
-codegg's theme system has three layers:
+CodeGG includes built-in themes and can load user themes from TOML files. The default theme is `cyber-red`.
 
-1. **Frontend-neutral schema** — `crate::theme::schema::SemanticTheme`. The
-   canonical, in-memory representation. All importers (native codegg TOML,
-   Halloy TOML, future Base16) decode into this schema.
-2. **Registry** — `crate::theme::registry::ThemeRegistry`. Owns the available
-   themes, accepts user-supplied directories, applies fallback, and emits
-   diagnostics.
-3. **Projection** — `crate::theme::target` is a single flat module (not a
-   module directory); it maps the semantic schema to a frontend's style
-   catalog. `ratatui` is currently the only target. The TUI uses
-   `crate::tui::theme::Theme`; a future iced GUI would add a second target
-   beside the existing one. Halloy themes are *not* parsed into the
-   projection directly.
+## Choose a theme
 
-```
-native codegg TOML  ┐
-Halloy TOML         ├─►  SemanticTheme  ──►  ratatui::Theme
-future Base16       ┘
-```
+Open the picker with `/themes` or `/theme`. Use `j` and `k` or the arrow keys to preview themes. Press `Enter` to save the selection, or `Esc` to restore the theme that was active before previewing.
 
-## Built-in themes
+You can also use these commands:
 
-codegg ships with **50** Halloy-format built-in themes sourced from the
-upstream [Halloy themes gallery](https://themes.halloy.chat) and bundled as
-TOML files in `assets/themes/halloy/`. They are loaded with `include_str!`
-so they are always available without filesystem access, and the parser
-treats them identically to user-supplied Halloy files. **Cyber Red** is
-the default theme.
+- `/theme list` to preview available theme ids (up to 20, with a count of any remaining themes).
+- `/theme use <name>` to apply and save a theme.
+- `/theme reload` to reload theme files.
+- `/theme diagnostics` to inspect import and validation messages.
 
-The bundled files are the gallery's content, **unedited**: where a value the
-theme author wrote cannot be read as this TUI uses it, the importer derives a
-legible variant of the author's own hue instead of changing the file (see
-[The projection owns legibility](#the-projection-owns-legibility)).
+Theme lookups accept ids and display names. For slash commands, prefer the single-token id shown by `/theme list`. The picker and `/theme list` include built-in and successfully loaded user themes.
 
-The id is the kebab-case slug (e.g. `cyber-red`); the display name is the
-original case-preserved name from the Halloy gallery (e.g. `"Cyber Red"`).
-`/theme use` accepts the id, any spelling that normalizes to it
-(`"Cyber Red"`, `"CYBER-RED"`), or the display name itself
-(case-insensitive): every lookup surface goes through `ThemeRegistry::lookup`
-(`src/theme/registry.rs`), which tries exact id, normalized id, then
-display-name match, so a reference you can see on screen always resolves.
+## Load a native CodeGG theme
 
-Bundled themes (alphabetical by id):
+Add a theme directory to your config. CodeGG scans only the listed directories and only their top-level `*.toml` files.
 
-| id | name |
-|----|------|
-| `acton` | acton |
-| `bam` | bam |
-| `base16-atelier-forest-light` | base16-atelier-forest-light |
-| `berlin` | berlin |
-| `black-but-with-important-highlights` | black but with important highlights |
-| `booberry` | Booberry |
-| `broc` | broc |
-| `catppuccin-latte` | Catppuccin Latte |
-| `catppuccin-macchiato` | Catppuccin Macchiato |
-| `catppuccin-mocha` | Catppuccin Mocha |
-| `cork` | cork |
-| **`cyber-red`** | **Cyber Red** (default) |
-| `cyberpunk` | Cyberpunk |
-| `dark-green` | Dark Green |
-| `discord` | Discord |
-| `discord-80-saturation` | Discord (80% Saturation) |
-| `dracula` | Dracula |
-| `ferra` | ferra |
-| `ferra-light` | Ferra Light |
-| `flexor-dark` | Flexor Dark |
-| `forest` | forest |
-| `gruvbox` | Gruvbox |
-| `halcyon-dark` | Halcyon Dark |
-| `intellij-light` | IntelliJ Light |
-| `kanagawa` | Kanagawa |
-| `lisbon` | lisbon |
-| `macaw-dark` | Macaw Dark |
-| `macaw-light` | Macaw Light |
-| `matrix` | Matrix |
-| `midnight` | midnight |
-| `noctis-lilac` | Noctis Lilac |
-| `nord` | Nord |
-| `nostromo-terminal` | Nostromo Terminal |
-| `one-dark` | One Dark |
-| `oslo` | oslo |
-| `oxocarbon` | Oxocarbon |
-| `plum` | plum |
-| `portland` | portland |
-| `rose-pine` | Rose Pine |
-| `rose-pine-dawn` | Rose Pine Dawn |
-| `rose-pine-moon` | Rose Pine Moon |
-| `solarized-dark` | Solarized Dark |
-| `sonokai` | Sonokai |
-| `sunset` | sunset |
-| `tofino` | tofino |
-| `tokyo-night-storm` | Tokyo Night Storm |
-| `vanimo` | vanimo |
-| `vesper` | VESPER |
-| `vik` | vik |
-| `zenburn` | Zenburn |
-
-## Selecting a built-in theme
-
-The active theme is persisted in two places:
-
-1. **SQLite** (`user_preferences.theme.active`) — the authoritative
-   source, written every time you commit a new theme. Survives a
-   config-file reset.
-2. **Config file** (`[theme].name`) — mirrored for external tooling.
-
-On startup, codegg reads the SQLite value first, then the config file,
-then falls back to the default (`cyber-red`).
-
-```toml
-[theme]
-name = "catppuccin-mocha"
-fallback = "cyber-red"
+```jsonc
+{
+  "theme": {
+    "name": "everforest-dark",
+    "directories": ["~/.config/codegg/themes"],
+    "fallback": "cyber-red"
+  }
+}
 ```
 
-If `name` cannot be resolved, codegg falls back to `fallback`, then the
-default theme id (`cyber-red`).
-
-You can change the active theme at runtime through:
-
-- The theme picker dialog (`/themes` or `/theme` in the prompt) — see
-  the *Live preview* section below.
-- The `/theme use <name>` slash command.
-- Editing `name` in the config file (re-applied on the next start).
-
-## Adding a native codegg theme
-
-Native themes are TOML files that mirror the semantic schema. The simplest
-form looks like this:
+A native theme is TOML. For example:
 
 ```toml
 [meta]
@@ -142,356 +42,29 @@ foreground = "#d3c6ab"
 
 [ui]
 accent_primary = "#7dbaac"
-accent_secondary = "#b5a7a8"
-border = "#424b48"
-border_focused = "#7dbaac"
 selection = "#424b48"
-selection_dim = "#4c5552"
-panel_background = "#323937"
-input_background = "#252b29"
-title_background = "#323937"
-
-[text]
-muted = "#7e8983"
-link = "#7dbaac"
-
-[status]
-success = "#8eb777"
-warning = "#dbac50"
-error = "#e66d5b"
-info = "#7dbaac"
-debug = "#b5a7a8"
-trace = "#7e8983"
-
-[conversation]
-user = "#d3c6ab"
-assistant = "#b5a7a8"
-system = "#7e8983"
-tool_call = "#7dbaac"
-tool_result = "#8eb777"
-timestamp = "#7e8983"
-
-[code]
-foreground = "#d3c6ab"
-syntect_theme = "everforest-dark"
-
-[diff]
-added = "#8eb777"
-removed = "#e66d5b"
-modified = "#dbac50"
-
-[agents]
-planner = "#7dbaac"
-coder = "#8eb777"
-reviewer = "#dbac50"
-tester = "#7dbaac"
-security = "#e66d5b"
 ```
 
-Any color you omit is filled in from the fallback theme. The `id` is also
-optional: when absent, codegg derives the id from the file name.
+The native schema has additional sections for interface, text, status, conversation, code, diff, and agent colors. Omitted values come from the fallback theme. The `id` is optional; without it, CodeGG derives the id from the file name. Use an id that is already available for `fallback`; an unknown fallback resolves to `cyber-red`.
 
-### Selected-row text is derived, not configured
+## Import a Halloy theme
 
-A selected row is a filled surface, so the text on it needs a colour that reads
-against *that fill* — which is a different question from "what colour is this
-theme's body text". codegg derives two such colours and you never have to
-configure them:
+CodeGG reads Halloy-compatible TOML files directly. Add the file's directory to `theme.directories`, or set `theme.path` to a specific file. CodeGG detects whether each file is a Halloy or native theme from its contents, so no parser-forcing setting is needed.
 
-- `selection_text` — drawn on `ui.selection`
-- `accent_text` — drawn on `ui.accent_primary`
-
-Each is whichever of the theme's own `foreground` / `background` contrasts more
-with the fill it will sit on. If neither is legible enough, codegg falls back to
-whichever of black or white contrasts more, so a selected row is always readable
-even in a theme with a mid-grey palette.
-
-**You do not need to add anything to a Halloy theme for this to work.** Halloy
-has a `buttons.primary.foreground_selected` field, but none of the 50 bundled
-themes set it (they all set `background_selected` and `buffer.selection`), so
-sourcing from it would leave the colour empty for every real theme. Deriving
-from the colours Halloy does guarantee is what lets a fresh theme from the
-gallery drop in unchanged.
-
-If you are hand-writing a native codegg theme and want to override the
-derivation, `selection_text` and `accent_text` are accepted as optional keys in
-the `[ui]` table. Omit them unless the derived value is wrong for your palette.
-
-Point codegg at the directory containing the theme:
-
-```toml
-[theme]
-name = "everforest-dark"
-directories = ["~/.config/codegg/themes"]
-fallback = "cyber-red"
+```jsonc
+{
+  "theme": {
+    "name": "tokyo-night-storm",
+    "path": "~/.config/halloy/themes/tokyo-night-storm.toml",
+    "fallback": "cyber-red"
+  }
+}
 ```
 
-Use a real registered id for `fallback` — an unknown id silently falls
-through to the default theme.
-
-codegg loads every `*.toml` file in `directories`. Subdirectories are
-ignored in phase 1. If two files share the same id, the later-loaded entry
-overrides the earlier one and a warning diagnostic is recorded.
-
-## Importing Halloy themes
-
-codegg reads Halloy-format theme files directly — both bundled and
-user-supplied files go through the same parser. The TUI takes a
-`.halloy`-compatible TOML file (the same format Halloy itself uses)
-and applies it as-is. This makes it easy to follow the Halloy theme
-community: a fresh `.toml` from `themes.halloy.chat` drops in without
-any conversion.
-
-Three ways to load a Halloy file:
-
-### 1. List the directory in `theme.directories`
-
-There is no implicit user themes directory. codegg scans only the directories
-you list in `[theme].directories` (`theme.directories` is empty by default),
-so the directory holding the file must be listed explicitly:
-
-```toml
-[theme]
-directories = ["~/.config/codegg/themes"]
-```
-
-codegg scans each directory for `*.toml` files and detects the format
-heuristically: `looks_like_halloy` requires either `[general]` + `[buffer]`,
-or `[text]` + a `buttons.primary` key, or `[buffer]` + `[text]`. A file
-containing only one of those sections is not detected as Halloy. The id is
-derived from the file stem.
-
-### 2. Point at a specific file
-
-```toml
-[theme]
-name = "tokyo-night-storm"
-source = "halloy"
-path = "~/.config/halloy/themes/tokyo-night-storm.toml"
-fallback = "cyber-red"
-```
-
-`source = "auto"` lets codegg detect the format by file content;
-`source = "native"` forces the native codegg parser.
-
-### 3. The Halloy gallery
-
-Open [`themes.halloy.chat`](https://themes.halloy.chat), click "Download
-TOML file" on a theme, and drop the file into the directory you listed in
-`theme.directories`. The file uses Halloy's TOML schema verbatim and is loaded
-by the same parser that powers the bundled set.
-
-### Halloy field mapping
-
-The mapping is approximate and lossy. Halloy is an iced IRC client with
-GUI-specific fields that codegg has no equivalent for. We map:
-
-| Halloy key | codegg slot |
-|------------|-------------|
-| `[general].background` | `base.background` |
-| `[general].border` | `ui.border` (3rd border source; see below) |
-| `[general].horizontal_rule` | `ui.border` (4th border source) |
-| `[general].unread_indicator` | `ui.accent_primary` (1st choice; see below) |
-| `[general].highlight_indicator` | `ui.accent_primary` (2nd choice) |
-| `[text].primary` | `base.foreground`, and `conversation.user` / `.assistant` / `.system` |
-| `[text].secondary` | accent candidate only (`ui.accent_primary`, `ui.accent_secondary`) |
-| `[text].tertiary` | `text.muted` |
-| `[text].success` | `status.success`, `diff.added` |
-| `[text].warning` | `status.warning`, `diff.modified` |
-| `[text].error` | `status.error`, `diff.removed` |
-| `[text].info` | `status.info`, `conversation.tool_call`, `agents.planner` |
-| `[text].debug` | `status.debug` |
-| `[text].trace` | declared in the schema, never read (`status.trace` keeps the fallback's value) |
-| `[buffer].background` | `ui.panel_background` |
-| `[buffer].background_text_input` | `ui.input_background` |
-| `[buffer].background_title_bar` | `ui.title_background` (semantic-only; not projected) |
-| `[buffer].border` | `ui.border` (2nd border source) |
-| `[buffer].border_selected` | `ui.border` (1st border source) |
-| `[buffer].selection` | `ui.selection` |
-| `[buffer].code` | `code.foreground` |
-| `[buffer].url` | `text.link` |
-| `[buffer].timestamp` | `conversation.timestamp` |
-| `[buffer].action` | `conversation.tool_call` |
-| `[buffer].topic` | not mapped (`text.primary` drives every conversation role) |
-| `[buffer].nickname` | not mapped, same reason |
-| `[buffer].highlight` | `agents.coder` |
-| `[buffer.server_messages].default` | `status.info` |
-| `[buttons.primary].background_selected` | `ui.accent_primary` (3rd choice) |
-| `[buttons.secondary].background_selected` | `ui.accent_secondary` (contrast-checked) |
-
-`ui.accent_primary` is drawn as *foreground* text (selection labels, focused
-borders, active tabs), so it must contrast against the theme background. The
-Halloy sources are tried in this order, and each candidate is rejected if its
-WCAG contrast against `[general].background` is below **3.0**:
-
-1. `[general].unread_indicator` — the theme author's actual accent, present in
-   all 50 bundled themes.
-2. `[general].highlight_indicator`.
-3. `[buttons.primary].background_selected`.
-4. `[text].secondary`, then `[buffer].url` — the readable accent on light
-   themes, whose indicator is a warm mid-tone.
-5. `[text].primary` — last theme-faithful resort.
-
-If every candidate is rejected, the neutral fallback is used and a `warn`
-diagnostic is recorded (visible via `/theme diagnostics`). Every bundled theme
-currently resolves to a theme-faithful accent; this is enforced by
-`every_builtin_accent_is_readable_against_its_background` and
-`builtin_accents_are_distinct_from_backgrounds` in `src/theme/registry.rs`.
-
-Mapping a Halloy button *fill* straight to a foreground accent is what made
-most of the gallery unusable: every bundled theme sets
-`buttons.primary.background_selected` at or below its own background (zenburn's
-is `#383838` on a `#383838` background), which rendered as invisible text.
-
-### Border precedence and the legibility gate
-
-`ui.border` paints every *unfocused* panel and dialog edge, so it is chrome rather
-than a focus colour. The precedence is:
-
-1. `[buffer].border_selected` — the selected buffer's indicator.
-2. `[buffer].border` — an unselected buffer's edge.
-3. `[general].border` — the window frame.
-4. `[general].horizontal_rule` — a divider.
-
-An 8-digit value whose alpha byte is `00` is Halloy's "no paint" and is skipped
-rather than parsed into a `#000000` frame. The first resolved value that clears
-**3.0:1** against `[general].background` ships unchanged; otherwise
-`[general].border` is used when it clears; otherwise the value is lifted along
-its own lightness axis until it clears, and a warning names `ui.border`.
-`ui.border_focused` is set to `ui.accent_primary`, which is what the TUI paints
-for focus.
-
-### The projection owns legibility
-
-A colour read through the Halloy importer is a *translation* of another format's
-field, so the projection — not the theme file — owns its legibility. Six
-translated tokens are gated: `base.foreground` (4.5:1, body copy), `text.muted`,
-`status.success`, `status.warning`, `status.error` and `ui.border` (3.0:1 each).
-A value that already clears its bar is untouched; a failing one is moved along
-the lightness axis toward whichever of black or white reads better, keeping its
-hue, and stops at the bar. Every derivation is reported by `/theme diagnostics`.
-
-This is why the bundled files are unedited third-party content: a value that
-cannot be read is a finding about our mapping, and the repair lives in
-`src/theme/halloy.rs`. The rule and its per-token bars are recorded in
-`architecture/theme.md` under "The projection owns legibility".
-
-`ui.selection_dim` is derived by pulling the selection a quarter of the way
-back toward the background (it subtracts a quarter of the background↔selection
-delta per channel). Anything we cannot resolve falls back to a sensible
-default, never an error.
-
-### 8-digit hex (alpha)
-
-Halloy themes often use 8-digit hex (`#rrggbbaa`) for "transparent"
-borders or RGBA selection backgrounds. codegg's parser accepts both 6-
-and 8-digit hex; the alpha channel is silently discarded (the theme
-layer has no concept of alpha today), so `#73000054` → `#730000`. The
-border chain is the one place where an alpha of `00` is read as Halloy
-means it — "no paint" — and the key is skipped instead of being painted
-as `#000000`.
-
-### Halloy text style values
-
-Halloy accepts two shapes for color values:
-
-```toml
-# Direct color string
-primary = "#ffffff"
-
-# Table with optional font style
-primary = { color = "#ffffff", font_style = "bold" }
-```
-
-codegg accepts both. The font style is currently ignored when importing.
-
-### Known limitations
-
-- Halloy has fields that codegg has no equivalent for (e.g. server-message
-  per-event-type colors, channel-specific highlights). They are
-  silently ignored.
-- The mapping is approximate: a Halloy theme will not look pixel-identical
-  in codegg because the TUI has different visual regions.
-- The `code.syntect_theme` value is not derived from Halloy. The ratatui
-  projection picks a default based on background luminance, or you can
-  provide a native codegg theme file that sets it explicitly.
-
-## Slash commands
-
-| Command | Description |
-|---------|-------------|
-| `/themes` / `/theme` | Open the theme picker dialog (live preview). |
-| `/theme list` | Show the names of all available themes in a toast. |
-| `/theme use <name>` | Apply the named theme and persist the choice. |
-| `/theme reload` | Rebuild the registry from disk and re-apply the current theme. |
-| `/theme diagnostics` | Show all theme validation/import diagnostics. |
-| `/theme <name>` | Shorthand: applies the named theme and persists the choice. |
-
-The theme picker is also reachable through the keybinding for the dialog
-and through command palette completion.
-
-## Live preview
-
-The theme picker applies the highlighted theme to the whole TUI as you
-navigate:
-
-- **j / k / Up / Down** — moves the highlight. The TUI immediately recolors.
-  Nothing is persisted yet.
-- **Enter** — commits the new theme. Writes to `user_preferences` and
-  the config file. Closes the dialog.
-- **Esc** — reverts the live theme to whatever was active when the
-  dialog opened. Closes the dialog without committing.
-- **Close** (any other dismissal path) — same as Esc: reverts the live
-  theme. The previewed theme is discarded.
-
-This means you can sweep through themes to find one you like, then
-commit only when ready. The footer of the picker changes to
-*"j/k/↑/↓ preview  |  Enter commit  |  Esc revert"* once a preview is in
-progress.
-
-## Diagnostics
-
-The registry accumulates two kinds of diagnostics:
-
-- **Warnings** — e.g. low contrast between foreground and background, an
-  invalid color string in an imported theme, a duplicate id when a user
-  theme overrides a built-in. These never prevent loading.
-- **Errors** — e.g. a built-in theme that fails to parse. These are
-  recorded but the registry still starts (just without that theme).
-
-Diagnostics are written to the tracing log at startup. They are also
-available through `/theme diagnostics`, where each diagnostic produces a
-toast with the level, theme id, field, and message.
-
-## Future GUI work
-
-When codegg adds an iced GUI, do not parse Halloy themes into iced widget
-styles. Continue to parse Halloy into `SemanticTheme`, then project
-`SemanticTheme` into the GUI's style system. This keeps the TUI and GUI
-visually aligned and avoids a dependency on Halloy's IRC-specific schema.
+Halloy themes are translated into CodeGG colors, so the result may not look identical to Halloy. Some Halloy fields have no CodeGG equivalent and are ignored. Contrast-sensitive colors may be adjusted for readability; use `/theme diagnostics` to inspect warnings and adjustments.
 
 ## Source verification
 
-Checked 2026-10-23 against the source tree.
+Verified 2026-11-15 against `crates/codegg-config/src/schema.rs`, `crates/codegg-config/src/paths.rs`, `src/theme/registry.rs`, `src/theme/native.rs`, `src/theme/halloy.rs`, `src/tui/command.rs`, `src/tui/components/dialogs/theme.rs`, `src/tui/app/mod.rs`, and `src/tui/app/input.rs`. Confirmed the default theme, picker behavior, supported config keys and JSONC format, top-level directory scan, native fallback handling, Halloy format detection, diagnostics behavior, and the `/theme list` preview limit.
 
-- **50** bundled Halloy themes: `assets/themes/halloy/` (one TOML per theme);
-  the id list in the table matches the file names.
-- The default theme id `cyber-red`:
-  `src/theme/registry.rs` (`DEFAULT_THEME_ID`).
-- The theme target is a single flat module: `src/theme/target.rs`, with
-  `src/theme/registry.rs`, `native.rs`, `halloy.rs`, `color.rs`, `schema.rs`,
-  `validate.rs`, `error.rs` alongside it.
-- The selection is persisted to the SQLite `user_preferences` table:
-  `src/tui/app/mod.rs` and `crates/codegg-core/src/storage/preferences.rs`.
-- The `looks_like_halloy` heuristic and the derived `selection_text` /
-  `accent_text` colors: `src/theme/native.rs`.
-- The accent-contrast floor of 3.0:
-  `src/theme/registry.rs` (`MIN_ACCENT_CONTRAST`).
-- `/theme` accepts `list`, `use <name>`, `reload`, and `diagnostics`, and a
-  bare `<name>` is a shorthand for `use <name>`:
-  `src/tui/app/mod.rs` (`handle_theme_command`).
-
-- Corrected 2026-10-27: `/theme use` is not id-only —
-  `ThemeRegistry::lookup` tries exact id, normalized id, then a
-  case-insensitive display-name match
-  (`src/theme/registry.rs:565-590`), so `"Cyber Red"` resolves.
+Corrected 2026-11-15: the previous guide said `source = "native"` or `source = "halloy"` forces a parser. File loading calls `load_file_auto`, which selects the parser from the file contents. The instructions now use `path` or `directories` without a parser-forcing setting. The main config examples are JSONC; only the theme files are TOML.
