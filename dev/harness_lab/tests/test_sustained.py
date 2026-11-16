@@ -283,6 +283,9 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "stderr_category": "filesystem_permission",
             "compiler_error_codes": ["E0425"],
             "compiler_error_families": ["unresolved_name"],
+            "cargo_json_compiler_messages": 1,
+            "cargo_json_error_messages": 1,
+            "cargo_json_build_finished_events": 0,
         }])
         self.assertNotIn("PRIVATE_EXECUTOR_TEXT", json.dumps(diagnostic))
 
@@ -298,6 +301,9 @@ class H006FailureDiagnosticTest(unittest.TestCase):
         expected = {
             "compiler_error_codes": ["E0308", "E0425"],
             "compiler_error_families": ["unresolved_name", "type_mismatch"],
+            "cargo_json_compiler_messages": 0,
+            "cargo_json_error_messages": 0,
+            "cargo_json_build_finished_events": 0,
         }
         self.assertEqual(diagnostic, expected)
         self.assertNotIn("PRIVATE_EXECUTOR_TEXT", json.dumps(diagnostic))
@@ -313,6 +319,9 @@ class H006FailureDiagnosticTest(unittest.TestCase):
         self.assertEqual(_h006_compiler_diagnostics(cargo_event), {
             "compiler_error_codes": ["E0425"],
             "compiler_error_families": ["unresolved_name"],
+            "cargo_json_compiler_messages": 1,
+            "cargo_json_error_messages": 1,
+            "cargo_json_build_finished_events": 0,
         })
 
 
