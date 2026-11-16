@@ -1010,7 +1010,12 @@ mod tests {
         assert!(!is_host_runtime_root(Path::new("/proc/meminfo")));
 
         let cwd = tempfile::tempdir().expect("working directory");
-        let spec = launch_spec(vec![PathBuf::from("/proc/sys")], false);
+        let sysctl_root = PathBuf::from("/proc/sys");
+        let mut spec = launch_spec(vec![sysctl_root.clone()], false);
+        spec.path_identities.push(
+            super::policy::capture_path_identity(&sysctl_root)
+                .expect("capture sysctl root identity"),
+        );
         let (args, _) = compile(&spec, cwd.path(), |_| Ok(0))
             .expect("host sysctl subtree should not enter the protected view");
         assert!(
