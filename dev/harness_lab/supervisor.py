@@ -965,6 +965,34 @@ def _h006_failure_log_category(text: str) -> str:
     return "unclassified"
 
 
+_H006_COMPILER_ERROR_FAMILIES = (
+    ("unresolved_name", ("cannot find", "not found in this scope")),
+    ("unresolved_import", ("unresolved import", "unresolved module")),
+    ("type_mismatch", ("mismatched types",)),
+    ("trait_bound", ("trait bound", "is not satisfied")),
+    ("borrow_check", ("borrowed value", "cannot borrow", "does not live long enough")),
+    ("linker_failure", ("linking with", "linker command failed", "ld: ")),
+    ("syntax_error", ("unexpected token", "expected one of", "expected identifier")),
+    ("unstable_feature", ("is unstable", "unstable library feature")),
+)
+
+
+def _h006_compiler_diagnostics(text: str) -> dict[str, list[str]]:
+    bounded = text[-16 * 1024:]
+    lowered = bounded.lower()
+    error_codes = sorted({
+        code.upper() for code in re.findall(r"\berror\[(E\d{4})\]", bounded, re.IGNORECASE)
+    })[:8]
+    error_families = [
+        family for family, markers in _H006_COMPILER_ERROR_FAMILIES
+        if any(marker in lowered for marker in markers)
+    ]
+    return {
+        "compiler_error_codes": error_codes,
+        "compiler_error_families": error_families,
+    }
+
+
 def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
     root = workspace.resolve()
     report_root = root / "job-check" / ".codegg" / "test-runs"
@@ -1002,6 +1030,10 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
             and failure_class in _H006_FAILURE_CLASSES
         }) if isinstance(raw_failures, list) else []
         stderr_category = "unavailable"
+        compiler_diagnostics = {
+            "compiler_error_codes": [],
+            "compiler_error_families": [],
+        }
         raw_stderr_path = report.get("stderr_log")
         if isinstance(raw_stderr_path, str):
             try:
@@ -1012,8 +1044,9 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
                         size = log.tell()
                         log.seek(max(0, size - 16 * 1024), os.SEEK_SET)
                         tail = log.read(16 * 1024)
-                    stderr_category = _h006_failure_log_category(
-                        tail.decode("utf-8", errors="replace"))
+                    stderr_text = tail.decode("utf-8", errors="replace")
+                    stderr_category = _h006_failure_log_category(stderr_text)
+                    compiler_diagnostics = _h006_compiler_diagnostics(stderr_text)
             except (OSError, RuntimeError):
                 pass
         diagnostics.append({
@@ -1022,6 +1055,7 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
             "duration_ms": duration_ms,
             "failure_classes": failure_classes,
             "stderr_category": stderr_category,
+            **compiler_diagnostics,
         })
     return diagnostics
 
