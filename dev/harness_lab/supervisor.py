@@ -1022,6 +1022,37 @@ _H006_OS_ERROR_KINDS = {
     28: "no_space",
     30: "read_only_filesystem",
 }
+_H006_PATH_TOKEN = re.compile(
+    r"(?<![\w.-])(?:[A-Za-z]:[\\/]|/|\.{1,2}[\\/]|[\w.-]+[\\/])"
+    r"[^ \t\r\n:'\"`<>]+"
+)
+
+
+def _h006_write_error_path_role(message: str, workspace: Path) -> str | None:
+    lowered = message.lower()
+    marker = next((marker for marker in ("failed to write", "could not write")
+                   if marker in lowered), None)
+    if marker is None:
+        return None
+    marker_end = lowered.index(marker) + len(marker)
+    path_context = message[marker_end:].splitlines()[0]
+    root = workspace.resolve()
+    role_roots = (
+        ("cargo_home", root / "job-check" / ".cargo-home", "job-check/.cargo-home"),
+        ("cargo_target_or_temp", root / "job-check" / ".cargo-target",
+         "job-check/.cargo-target"),
+        ("job_check", root / "job-check", "job-check"),
+        ("workspace", root, None),
+    )
+    normalized_context = path_context.replace("\\", "/").lower()
+    for role, path, relative in role_roots:
+        candidates = [str(path).replace("\\", "/").lower()]
+        if relative is not None:
+            candidates.append(relative)
+        if any(re.search(re.escape(candidate) + r"(?=$|[/\s:'\"`,])",
+                         normalized_context) for candidate in candidates):
+            return role
+    return "unmapped_path" if _H006_PATH_TOKEN.search(path_context) else "path_not_reported"
 
 
 _H006_COMPILER_ERROR_FAMILIES = (
@@ -1045,7 +1076,9 @@ _H006_COMPILER_ERROR_FAMILIES = (
 )
 
 
-def _h006_compiler_diagnostics(text: str) -> dict[str, Any]:
+def _h006_compiler_diagnostics(
+    text: str, workspace: Path | None = None
+) -> dict[str, Any]:
     bounded = text[-16 * 1024:]
     error_codes = {
         code.upper() for code in re.findall(r"\berror\[(E\d{4})\]", bounded, re.IGNORECASE)
@@ -1058,6 +1091,7 @@ def _h006_compiler_diagnostics(text: str) -> dict[str, Any]:
     compiler_error_os_kinds: set[str] = set()
     compiler_error_origins: set[str] = set()
     compiler_error_message_kinds: set[str] = set()
+    compiler_error_path_roles: set[str] = set()
     build_finished_count = 0
     lines = bounded.splitlines()
     sampled_lines = lines if len(lines) <= 256 else lines[:128] + lines[-128:]
@@ -1113,6 +1147,10 @@ def _h006_compiler_diagnostics(text: str) -> dict[str, Any]:
             kind for kind, markers in _H006_COMPILER_MESSAGE_KINDS
             if any(marker in lowered_diagnostic_text for marker in markers)
         )
+        if workspace is not None:
+            path_role = _h006_write_error_path_role(diagnostic_text, workspace)
+            if path_role is not None:
+                compiler_error_path_roles.add(path_role)
         for raw_os_error in re.findall(r"\bos error\s+(\d{1,3})\b", diagnostic_text, re.IGNORECASE):
             os_error_kind = _H006_OS_ERROR_KINDS.get(int(raw_os_error))
             if os_error_kind:
@@ -1136,6 +1174,7 @@ def _h006_compiler_diagnostics(text: str) -> dict[str, Any]:
             kind for kind, _markers in _H006_COMPILER_MESSAGE_KINDS
             if kind in compiler_error_message_kinds
         ],
+        "cargo_json_error_path_roles": sorted(compiler_error_path_roles),
         "cargo_json_build_finished_events": min(build_finished_count, 256),
     }
 
@@ -1208,6 +1247,7 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
         cargo_json_os_error_kinds: set[str] = set()
         cargo_json_error_origins: set[str] = set()
         cargo_json_error_message_kinds: set[str] = set()
+        cargo_json_error_path_roles: set[str] = set()
         cargo_json_compiler_messages = 0
         cargo_json_error_messages = 0
         cargo_json_error_source_span_count = 0
@@ -1242,7 +1282,7 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
                     stdout_category = stream_category
                 else:
                     stderr_category = stream_category
-                stream_diagnostics = _h006_compiler_diagnostics(log_text)
+                stream_diagnostics = _h006_compiler_diagnostics(log_text, workspace=root)
                 compiler_error_codes.update(stream_diagnostics["compiler_error_codes"])
                 compiler_error_families.update(stream_diagnostics["compiler_error_families"])
                 cargo_json_compiler_messages = min(
@@ -1261,6 +1301,8 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
                 cargo_json_error_origins.update(stream_diagnostics["cargo_json_error_origins"])
                 cargo_json_error_message_kinds.update(
                     stream_diagnostics["cargo_json_error_message_kinds"])
+                cargo_json_error_path_roles.update(
+                    stream_diagnostics["cargo_json_error_path_roles"])
                 cargo_json_build_finished_events = min(
                     cargo_json_build_finished_events
                     + stream_diagnostics["cargo_json_build_finished_events"], 256)
@@ -1282,6 +1324,7 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
                 kind for kind, _markers in _H006_COMPILER_MESSAGE_KINDS
                 if kind in cargo_json_error_message_kinds
             ],
+            "cargo_json_error_path_roles": sorted(cargo_json_error_path_roles),
             "cargo_json_build_finished_events": cargo_json_build_finished_events,
         }
         diagnostics.append({
