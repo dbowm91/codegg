@@ -991,12 +991,13 @@ _H006_COMPILER_MESSAGE_KINDS = (
     ("profile_configuration", (
         "panic=abort", "panic strategy", "test profile",
     )),
-    ("filesystem_access", (
-        "permission denied", "operation not permitted", "no such file or directory",
-        "failed to open", "could not open", "failed to read", "could not read",
-        "failed to write", "could not write", "failed to create", "could not create",
-        "read-only file system", "file not found",
-    )),
+    ("filesystem_permission_denied", ("permission denied", "operation not permitted")),
+    ("filesystem_missing_path", ("no such file or directory", "file not found")),
+    ("filesystem_read_only", ("read-only file system",)),
+    ("filesystem_open_failure", ("failed to open", "could not open")),
+    ("filesystem_read_failure", ("failed to read", "could not read")),
+    ("filesystem_write_failure", ("failed to write", "could not write")),
+    ("filesystem_create_failure", ("failed to create", "could not create")),
     ("environment_configuration", (
         "environment variable", "not set", "not defined", "invalid environment",
     )),
