@@ -45,7 +45,7 @@ fn parse_mcp_resource_limit(value: Option<&serde_json::Value>) -> Result<usize, 
                     "property limit: expected JSON type integer, got {v} (whole-valued floats like 5.0 are coerced; fractional values fail)"
                 ))
             })
-            .map(|n| n.min(MAX_RESOURCE_RESULTS).max(1)),
+            .map(|n| n.clamp(1, MAX_RESOURCE_RESULTS)),
     }
 }
 
