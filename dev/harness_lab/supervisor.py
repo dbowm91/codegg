@@ -967,28 +967,54 @@ def _h006_failure_log_category(text: str) -> str:
 
 _H006_COMPILER_ERROR_FAMILIES = (
     ("unresolved_name", ("cannot find", "not found in this scope")),
-    ("unresolved_import", ("unresolved import", "unresolved module")),
+    ("unresolved_import", ("unresolved import", "unresolved module", "can't find crate")),
     ("type_mismatch", ("mismatched types",)),
     ("trait_bound", ("trait bound", "is not satisfied")),
     ("borrow_check", ("borrowed value", "cannot borrow", "does not live long enough")),
-    ("linker_failure", ("linking with", "linker command failed", "ld: ")),
-    ("syntax_error", ("unexpected token", "expected one of", "expected identifier")),
+    ("linker_failure", ("linking with", "linker", "undefined reference", "ld: ")),
+    ("build_script_failure", ("failed to run custom build command", "custom build command failed")),
+    ("dependency_resolution", ("failed to select a version", "no matching package named", "failed to download")),
+    ("manifest_error", ("failed to parse manifest", "no targets specified in the manifest")),
+    ("toolchain_failure", ("toolchain not installed", "no default toolchain", "could not execute process")),
+    ("resource_exhausted", ("no space left on device", "out of memory", "cannot allocate memory")),
+    ("syntax_error", (
+        "unexpected token", "expected one of", "expected identifier", "unclosed delimiter",
+        "unexpected end of file", "no rules expected",
+    )),
     ("unstable_feature", ("is unstable", "unstable library feature")),
 )
 
 
 def _h006_compiler_diagnostics(text: str) -> dict[str, list[str]]:
     bounded = text[-16 * 1024:]
-    lowered = bounded.lower()
-    error_codes = sorted({
+    error_codes = {
         code.upper() for code in re.findall(r"\berror\[(E\d{4})\]", bounded, re.IGNORECASE)
-    })[:8]
+    }
+    messages = []
+    for line in bounded.splitlines()[-256:]:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict) or event.get("reason") != "compiler-message":
+            continue
+        diagnostic = event.get("message")
+        if not isinstance(diagnostic, dict) or diagnostic.get("level") != "error":
+            continue
+        message = diagnostic.get("message")
+        if isinstance(message, str):
+            messages.append(message)
+        code = diagnostic.get("code")
+        code = code.get("code") if isinstance(code, dict) else None
+        if isinstance(code, str) and re.fullmatch(r"E\d{4}", code, re.IGNORECASE):
+            error_codes.add(code.upper())
+    lowered = (bounded + "\n" + "\n".join(messages)).lower()
     error_families = [
         family for family, markers in _H006_COMPILER_ERROR_FAMILIES
         if any(marker in lowered for marker in markers)
     ]
     return {
-        "compiler_error_codes": error_codes,
+        "compiler_error_codes": sorted(error_codes)[:8],
         "compiler_error_families": error_families,
     }
 
@@ -1029,31 +1055,47 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
             if isinstance(failure_class := failure.get("failure_class"), str)
             and failure_class in _H006_FAILURE_CLASSES
         }) if isinstance(raw_failures, list) else []
+        stdout_category = "unavailable"
         stderr_category = "unavailable"
-        compiler_diagnostics = {
-            "compiler_error_codes": [],
-            "compiler_error_families": [],
-        }
-        raw_stderr_path = report.get("stderr_log")
-        if isinstance(raw_stderr_path, str):
+        compiler_error_codes: set[str] = set()
+        compiler_error_families: set[str] = set()
+        for stream_name in ("stdout_log", "stderr_log"):
+            raw_log_path = report.get(stream_name)
+            if not isinstance(raw_log_path, str):
+                continue
             try:
-                stderr_path = Path(raw_stderr_path).resolve(strict=True)
-                if stderr_path.is_relative_to(root) and stderr_path.is_file():
-                    with stderr_path.open("rb") as log:
-                        log.seek(0, os.SEEK_END)
-                        size = log.tell()
-                        log.seek(max(0, size - 16 * 1024), os.SEEK_SET)
-                        tail = log.read(16 * 1024)
-                    stderr_text = tail.decode("utf-8", errors="replace")
-                    stderr_category = _h006_failure_log_category(stderr_text)
-                    compiler_diagnostics = _h006_compiler_diagnostics(stderr_text)
+                log_path = Path(raw_log_path).resolve(strict=True)
+                if not log_path.is_relative_to(root) or not log_path.is_file():
+                    continue
+                with log_path.open("rb") as log:
+                    log.seek(0, os.SEEK_END)
+                    size = log.tell()
+                    log.seek(max(0, size - 16 * 1024), os.SEEK_SET)
+                    tail = log.read(16 * 1024)
+                log_text = tail.decode("utf-8", errors="replace")
+                stream_category = _h006_failure_log_category(log_text)
+                if stream_name == "stdout_log":
+                    stdout_category = stream_category
+                else:
+                    stderr_category = stream_category
+                stream_diagnostics = _h006_compiler_diagnostics(log_text)
+                compiler_error_codes.update(stream_diagnostics["compiler_error_codes"])
+                compiler_error_families.update(stream_diagnostics["compiler_error_families"])
             except (OSError, RuntimeError):
-                pass
+                continue
+        compiler_diagnostics = {
+            "compiler_error_codes": sorted(compiler_error_codes)[:8],
+            "compiler_error_families": [
+                family for family, _markers in _H006_COMPILER_ERROR_FAMILIES
+                if family in compiler_error_families
+            ],
+        }
         diagnostics.append({
             "status": status,
             "exit_code": exit_code,
             "duration_ms": duration_ms,
             "failure_classes": failure_classes,
+            "stdout_category": stdout_category,
             "stderr_category": stderr_category,
             **compiler_diagnostics,
         })
