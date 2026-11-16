@@ -905,7 +905,7 @@ max_ratio = 0.1328
 "tests/security_permission/preflight_integration.inc" = { max_comment_lines = 54, max_ratio = 0.0493 }
 "tests/security_permission/process_denial_c005.inc" = { max_comment_lines = 54, max_ratio = 0.1103 }
 "tests/security_permission/reviewer_broker_boundary.inc" = { max_comment_lines = 44, max_ratio = 0.2515 }
-"tests/security_permission/sandbox_containment.inc" = { max_comment_lines = 109, max_ratio = 0.0844 }
+"tests/security_permission/sandbox_containment.inc" = { max_comment_lines = 109, max_ratio = 0.0845 }
 "tests/security_permission/sandbox_policy_wiring.inc" = { max_comment_lines = 44, max_ratio = 0.0972 }
 "tests/security_permission/security_review_panel.inc" = { max_comment_lines = 52, max_ratio = 0.0636 }
 "tests/security_permission/security_review_receipt.inc" = { max_comment_lines = 76, max_ratio = 0.07 }
