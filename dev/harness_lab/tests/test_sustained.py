@@ -300,6 +300,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "cargo_json_error_origins": [],
             "cargo_json_error_message_kinds": [],
             "cargo_json_error_path_roles": [],
+            "cargo_json_error_path_subroles": [],
             "cargo_json_build_finished_events": 0,
         }])
         self.assertNotIn("PRIVATE_EXECUTOR_TEXT", json.dumps(diagnostic))
@@ -324,6 +325,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "cargo_json_error_origins": [],
             "cargo_json_error_message_kinds": [],
             "cargo_json_error_path_roles": [],
+            "cargo_json_error_path_subroles": [],
             "cargo_json_build_finished_events": 0,
         }
         self.assertEqual(diagnostic, expected)
@@ -350,6 +352,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "cargo_json_error_origins": ["core:lib"],
             "cargo_json_error_message_kinds": [],
             "cargo_json_error_path_roles": [],
+            "cargo_json_error_path_subroles": [],
             "cargo_json_build_finished_events": 0,
         })
         os_error_event = json.dumps({
@@ -416,7 +419,8 @@ class H006FailureDiagnosticTest(unittest.TestCase):
     def test_write_path_diagnostic_emits_only_the_contained_path_role(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory) / "workspace"
-            target = workspace / "job-check" / ".cargo-target" / "debug" / "query-cache"
+            target = (workspace / "job-check" / ".cargo-target" / "debug"
+                      / "incremental" / "query-cache")
             event = json.dumps({
                 "reason": "compiler-message",
                 "message": {
@@ -428,6 +432,8 @@ class H006FailureDiagnosticTest(unittest.TestCase):
 
         self.assertEqual(
             diagnostic["cargo_json_error_path_roles"], ["cargo_target_or_temp"])
+        self.assertEqual(
+            diagnostic["cargo_json_error_path_subroles"], ["cargo_incremental_state"])
         self.assertNotIn(str(workspace), json.dumps(diagnostic))
 
 
