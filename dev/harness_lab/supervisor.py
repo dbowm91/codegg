@@ -941,6 +941,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                    external_verifier: Path | None = None,
                    rustc_executable: Path | None = None,
                    source_root: Path | None = None,
+                   sandbox_home_under_cargo_target: bool = False,
                    causal_trace_output: Path | None = None) -> dict[str, Any]:
     """Run one native ACP turn against a local deterministic OpenAI wire fixture."""
     from .provider_fixture import FixtureProvider
@@ -1015,7 +1016,14 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             if not rustc_path.is_file():
                 raise HarnessError("configured rustc executable is not a regular file")
             env["RUSTC"] = str(rustc_path)
-        env["CARGO_TARGET_DIR"] = str(private_dir(workspace / ".cargo-target"))
+        cargo_target_dir = private_dir(workspace / ".cargo-target")
+        env["CARGO_TARGET_DIR"] = str(cargo_target_dir)
+        if sandbox_home_under_cargo_target:
+            # The constrained Test runner drops CARGO_HOME. Keep Cargo's
+            # $HOME/.cargo fallback beneath the workspace's writable grant.
+            sandbox_home = private_dir(cargo_target_dir / "home")
+            env["HOME"] = str(sandbox_home)
+            env["USERPROFILE"] = str(sandbox_home)
         config = {
             "provider": {"openai": {
                 "api_key": "local-fixture-only",

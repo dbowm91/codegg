@@ -407,6 +407,7 @@ class LongHorizonNativeJobTest(unittest.TestCase):
             task_id="h006-real-job-observation", tool_sequence=sequence,
             expected_file="never-created", expected_text=None, expected_exists=False,
             workspace_snapshot=self.fixture, rustc_executable=Path(rustc),
+            sandbox_home_under_cargo_target=True,
             initial_files={
                 "job-check/Cargo.toml": "[workspace]\nmembers = [\"core\", \"index\", \"store\", \"cli\"]\nresolver = \"2\"\n",
                 "job-check/core/Cargo.toml": "[package]\nname = \"job-core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",

@@ -694,10 +694,11 @@ fn path_arg(path: &Path) -> Result<String, String> {
 }
 
 fn is_host_runtime_root(path: &Path) -> bool {
-    matches!(
-        path.to_str(),
-        Some("/dev" | "/proc" | "/sys" | "/run" | "/var/run" | "/etc" | "/opt")
-    )
+    path.starts_with("/proc/sys")
+        || matches!(
+            path.to_str(),
+            Some("/dev" | "/proc" | "/sys" | "/run" | "/var/run" | "/etc" | "/opt")
+        )
 }
 
 fn validate_no_nested_mounts<'a>(roots: impl Iterator<Item = &'a PathBuf>) -> Result<(), String> {
@@ -999,6 +1000,28 @@ mod tests {
             path_identities: Vec::new(),
             expected_created_git_pointers: Vec::new(),
         }
+    }
+
+    #[test]
+    fn proc_sys_subtree_is_omitted_from_protected_mount_view() {
+        assert!(is_host_runtime_root(Path::new("/proc/sys")));
+        assert!(is_host_runtime_root(Path::new("/proc/sys/fs/binfmt_misc")));
+        assert!(!is_host_runtime_root(Path::new("/proc/sysfs")));
+        assert!(!is_host_runtime_root(Path::new("/proc/meminfo")));
+
+        let cwd = tempfile::tempdir().expect("working directory");
+        let spec = launch_spec(vec![PathBuf::from("/proc/sys")], false);
+        let (args, _) = compile(&spec, cwd.path(), |_| Ok(0))
+            .expect("host sysctl subtree should not enter the protected view");
+        assert!(
+            !args.iter().any(|arg| arg == "/proc/sys"),
+            "the host sysctl tree must not be mounted: {args:?}"
+        );
+        let scope = enforcement_scope(&spec).expect("render scope");
+        assert!(
+            scope.iter().all(|entry| !entry.contains("/proc/sys")),
+            "omitted host sysctl roots must not be reported as grants: {scope:?}"
+        );
     }
 
     #[test]
