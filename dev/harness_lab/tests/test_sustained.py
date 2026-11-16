@@ -299,6 +299,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "cargo_json_os_error_kinds": [],
             "cargo_json_error_origins": [],
             "cargo_json_error_message_kinds": [],
+            "cargo_json_error_path_roles": [],
             "cargo_json_build_finished_events": 0,
         }])
         self.assertNotIn("PRIVATE_EXECUTOR_TEXT", json.dumps(diagnostic))
@@ -322,6 +323,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "cargo_json_os_error_kinds": [],
             "cargo_json_error_origins": [],
             "cargo_json_error_message_kinds": [],
+            "cargo_json_error_path_roles": [],
             "cargo_json_build_finished_events": 0,
         }
         self.assertEqual(diagnostic, expected)
@@ -347,6 +349,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "cargo_json_os_error_kinds": [],
             "cargo_json_error_origins": ["core:lib"],
             "cargo_json_error_message_kinds": [],
+            "cargo_json_error_path_roles": [],
             "cargo_json_build_finished_events": 0,
         })
         os_error_event = json.dumps({
@@ -409,6 +412,23 @@ class H006FailureDiagnosticTest(unittest.TestCase):
         self.assertEqual(
             environment_diagnostic["cargo_json_error_message_kinds"], ["environment_configuration"])
         self.assertNotIn("PRIVATE_ENV", json.dumps(environment_diagnostic))
+
+    def test_write_path_diagnostic_emits_only_the_contained_path_role(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"
+            target = workspace / "job-check" / ".cargo-target" / "debug" / "query-cache"
+            event = json.dumps({
+                "reason": "compiler-message",
+                "message": {
+                    "level": "error",
+                    "message": f"failed to write {target}: permission denied",
+                },
+            })
+            diagnostic = _h006_compiler_diagnostics(event, workspace=workspace)
+
+        self.assertEqual(
+            diagnostic["cargo_json_error_path_roles"], ["cargo_target_or_temp"])
+        self.assertNotIn(str(workspace), json.dumps(diagnostic))
 
 
 class LongHorizonNativeJobTest(unittest.TestCase):
