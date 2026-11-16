@@ -260,6 +260,8 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             stderr_path = run_dir / "stderr.log"
             stderr_path.write_text(
                 "error: permission denied; PRIVATE_EXECUTOR_TEXT\n", encoding="utf-8")
+            stdout_bytes = stdout_path.stat().st_size
+            stderr_bytes = stderr_path.stat().st_size
             (run_dir / "report.json").write_text(json.dumps({
                 "status": "Failed",
                 "exit_code": 101,
@@ -282,6 +284,8 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "exit_code": 101,
             "duration_ms": 17,
             "output_truncated": True,
+            "stdout_log_bytes": stdout_bytes,
+            "stderr_log_bytes": stderr_bytes,
             "failure_classes": ["nonzero_exit"],
             "stdout_category": "compilation_failure",
             "stderr_category": "filesystem_permission",
