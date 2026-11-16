@@ -926,6 +926,106 @@ def _bounded_managed_test_log_tail(tool_updates: list[dict[str, Any]], workspace
     return ""
 
 
+_H006_FAILURE_MARKERS = (
+    ("no matching package named", "offline_dependency_unavailable"),
+    ("failed to download", "offline_dependency_unavailable"),
+    ("could not execute process", "toolchain_launch_failure"),
+    ("no such file or directory", "missing_runtime_path"),
+    ("permission denied", "filesystem_permission"),
+    ("operation not permitted", "filesystem_permission"),
+    ("read-only file system", "filesystem_permission"),
+    ("failed to parse manifest", "manifest_invalid"),
+    ("could not find `cargo.toml`", "manifest_missing"),
+    ("could not compile", "compilation_failure"),
+    ("error[e", "compilation_failure"),
+    ("test result: failed", "test_failure"),
+)
+_H006_FAILURE_CLASSES = {
+    "Passed": "passed",
+    "RustTestFailure": "rust_test_failure",
+    "RustPanic": "rust_panic",
+    "RustCompileError": "rust_compile_error",
+    "RustDoctestFailure": "rust_doctest_failure",
+    "PytestFailure": "pytest_failure",
+    "PytestError": "pytest_error",
+    "PytestCollectionError": "pytest_collection_error",
+    "NonzeroExit": "nonzero_exit",
+    "TimeoutWallClock": "timeout_wall_clock",
+    "TimeoutNoOutput": "timeout_no_output",
+    "SpawnError": "spawn_error",
+    "UnknownFailure": "unknown_failure",
+}
+
+
+def _h006_failure_log_category(text: str) -> str:
+    bounded = text[-16 * 1024:].lower()
+    for marker, category in _H006_FAILURE_MARKERS:
+        if marker in bounded:
+            return category
+    return "unclassified"
+
+
+def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
+    root = workspace.resolve()
+    report_root = root / "job-check" / ".codegg" / "test-runs"
+    if not report_root.is_dir():
+        return []
+    diagnostics = []
+    for report_path in sorted(report_root.glob("*/report.json"))[-4:]:
+        try:
+            if not report_path.resolve(strict=True).is_relative_to(root):
+                continue
+            if report_path.stat().st_size > 256 * 1024:
+                continue
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, RuntimeError):
+            continue
+        if not isinstance(report, dict):
+            continue
+        status = report.get("status")
+        status = status.lower() if isinstance(status, str) else "unknown"
+        if status not in {"passed", "failed", "error", "timedout", "cancelled", "unknown"}:
+            status = "unknown"
+        raw_exit_code = report.get("exit_code")
+        exit_code = (raw_exit_code if isinstance(raw_exit_code, int)
+                     and not isinstance(raw_exit_code, bool)
+                     and -255 <= raw_exit_code <= 255 else None)
+        raw_duration = report.get("duration_ms")
+        duration_ms = (raw_duration if isinstance(raw_duration, int)
+                       and not isinstance(raw_duration, bool)
+                       and 0 <= raw_duration <= 300_000 else None)
+        raw_failures = report.get("failures")
+        failure_classes = sorted({
+            _H006_FAILURE_CLASSES[failure_class]
+            for failure in raw_failures if isinstance(failure, dict)
+            if isinstance(failure_class := failure.get("failure_class"), str)
+            and failure_class in _H006_FAILURE_CLASSES
+        }) if isinstance(raw_failures, list) else []
+        stderr_category = "unavailable"
+        raw_stderr_path = report.get("stderr_log")
+        if isinstance(raw_stderr_path, str):
+            try:
+                stderr_path = Path(raw_stderr_path).resolve(strict=True)
+                if stderr_path.is_relative_to(root) and stderr_path.is_file():
+                    with stderr_path.open("rb") as log:
+                        log.seek(0, os.SEEK_END)
+                        size = log.tell()
+                        log.seek(max(0, size - 16 * 1024), os.SEEK_SET)
+                        tail = log.read(16 * 1024)
+                    stderr_category = _h006_failure_log_category(
+                        tail.decode("utf-8", errors="replace"))
+            except (OSError, RuntimeError):
+                pass
+        diagnostics.append({
+            "status": status,
+            "exit_code": exit_code,
+            "duration_ms": duration_ms,
+            "failure_classes": failure_classes,
+            "stderr_category": stderr_category,
+        })
+    return diagnostics
+
+
 def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash: bool = False,
                    ledger_root: Path | None = None, candidate: str = "current",
                    task_id: str = "safe-bash-write", group_id: str = "native-tool-smoke",
@@ -1343,6 +1443,8 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                 "workspace": str(workspace),
                 "expected_file": expected_file,
             }
+            if task_id == "h006-real-job-observation":
+                result["managed_test_diagnostics"] = _h006_managed_test_diagnostics(workspace)
             if ledger_root is not None:
                 from .ledger import record
                 trace = []
