@@ -985,22 +985,33 @@ _H006_COMPILER_ERROR_FAMILIES = (
 )
 
 
-def _h006_compiler_diagnostics(text: str) -> dict[str, list[str]]:
+def _h006_compiler_diagnostics(text: str) -> dict[str, Any]:
     bounded = text[-16 * 1024:]
     error_codes = {
         code.upper() for code in re.findall(r"\berror\[(E\d{4})\]", bounded, re.IGNORECASE)
     }
     messages = []
+    compiler_message_count = 0
+    compiler_error_message_count = 0
+    build_finished_count = 0
     for line in bounded.splitlines()[-256:]:
         try:
             event = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(event, dict) or event.get("reason") != "compiler-message":
+        if not isinstance(event, dict):
             continue
+        reason = event.get("reason")
+        if reason == "build-finished":
+            build_finished_count += 1
+            continue
+        if reason != "compiler-message":
+            continue
+        compiler_message_count += 1
         diagnostic = event.get("message")
         if not isinstance(diagnostic, dict) or diagnostic.get("level") != "error":
             continue
+        compiler_error_message_count += 1
         message = diagnostic.get("message")
         if isinstance(message, str):
             messages.append(message)
@@ -1016,6 +1027,9 @@ def _h006_compiler_diagnostics(text: str) -> dict[str, list[str]]:
     return {
         "compiler_error_codes": sorted(error_codes)[:8],
         "compiler_error_families": error_families,
+        "cargo_json_compiler_messages": min(compiler_message_count, 256),
+        "cargo_json_error_messages": min(compiler_error_message_count, 256),
+        "cargo_json_build_finished_events": min(build_finished_count, 256),
     }
 
 
@@ -1059,6 +1073,9 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
         stderr_category = "unavailable"
         compiler_error_codes: set[str] = set()
         compiler_error_families: set[str] = set()
+        cargo_json_compiler_messages = 0
+        cargo_json_error_messages = 0
+        cargo_json_build_finished_events = 0
         for stream_name in ("stdout_log", "stderr_log"):
             raw_log_path = report.get(stream_name)
             if not isinstance(raw_log_path, str):
@@ -1081,6 +1098,15 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
                 stream_diagnostics = _h006_compiler_diagnostics(log_text)
                 compiler_error_codes.update(stream_diagnostics["compiler_error_codes"])
                 compiler_error_families.update(stream_diagnostics["compiler_error_families"])
+                cargo_json_compiler_messages = min(
+                    cargo_json_compiler_messages
+                    + stream_diagnostics["cargo_json_compiler_messages"], 256)
+                cargo_json_error_messages = min(
+                    cargo_json_error_messages
+                    + stream_diagnostics["cargo_json_error_messages"], 256)
+                cargo_json_build_finished_events = min(
+                    cargo_json_build_finished_events
+                    + stream_diagnostics["cargo_json_build_finished_events"], 256)
             except (OSError, RuntimeError):
                 continue
         compiler_diagnostics = {
@@ -1089,6 +1115,9 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
                 family for family, _markers in _H006_COMPILER_ERROR_FAMILIES
                 if family in compiler_error_families
             ],
+            "cargo_json_compiler_messages": cargo_json_compiler_messages,
+            "cargo_json_error_messages": cargo_json_error_messages,
+            "cargo_json_build_finished_events": cargo_json_build_finished_events,
         }
         diagnostics.append({
             "status": status,
