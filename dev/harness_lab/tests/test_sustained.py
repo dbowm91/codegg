@@ -297,6 +297,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "cargo_json_error_source_span_count": 0,
             "cargo_json_error_without_source_span_count": 1,
             "cargo_json_os_error_kinds": [],
+            "cargo_json_error_origins": [],
             "cargo_json_build_finished_events": 0,
         }])
         self.assertNotIn("PRIVATE_EXECUTOR_TEXT", json.dumps(diagnostic))
@@ -318,6 +319,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "cargo_json_error_source_span_count": 0,
             "cargo_json_error_without_source_span_count": 0,
             "cargo_json_os_error_kinds": [],
+            "cargo_json_error_origins": [],
             "cargo_json_build_finished_events": 0,
         }
         self.assertEqual(diagnostic, expected)
@@ -325,6 +327,8 @@ class H006FailureDiagnosticTest(unittest.TestCase):
 
         cargo_event = json.dumps({
             "reason": "compiler-message",
+            "package_id": "path+file:///workspace/job-check/core#job-core@0.1.0",
+            "target": {"kind": ["lib"]},
             "message": {
                 "level": "error",
                 "code": {"code": "E0425"},
@@ -339,6 +343,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "cargo_json_error_source_span_count": 0,
             "cargo_json_error_without_source_span_count": 1,
             "cargo_json_os_error_kinds": [],
+            "cargo_json_error_origins": ["core:lib"],
             "cargo_json_build_finished_events": 0,
         })
         os_error_event = json.dumps({

@@ -965,6 +965,15 @@ def _h006_failure_log_category(text: str) -> str:
     return "unclassified"
 
 
+_H006_CARGO_FIXTURE_PACKAGES = {
+    "job-core": "core",
+    "job-index": "index",
+    "job-store": "store",
+    "job-cli": "cli",
+}
+_H006_CARGO_TARGET_KINDS = {"lib", "bin", "test", "example", "bench", "custom-build"}
+
+
 _H006_OS_ERROR_KINDS = {
     1: "operation_not_permitted",
     2: "missing_path",
@@ -1009,6 +1018,7 @@ def _h006_compiler_diagnostics(text: str) -> dict[str, Any]:
     compiler_error_source_span_count = 0
     compiler_error_without_source_span_count = 0
     compiler_error_os_kinds: set[str] = set()
+    compiler_error_origins: set[str] = set()
     build_finished_count = 0
     lines = bounded.splitlines()
     sampled_lines = lines if len(lines) <= 256 else lines[:128] + lines[-128:]
@@ -1030,6 +1040,19 @@ def _h006_compiler_diagnostics(text: str) -> dict[str, Any]:
         if not isinstance(diagnostic, dict) or diagnostic.get("level") != "error":
             continue
         compiler_error_message_count += 1
+        raw_package_id = event.get("package_id")
+        package_match = (re.search(r"#([A-Za-z0-9_-]+)@", raw_package_id)
+                         if isinstance(raw_package_id, str) else None)
+        package = (_H006_CARGO_FIXTURE_PACKAGES.get(package_match.group(1), "other")
+                   if package_match else "other")
+        target = event.get("target")
+        raw_target_kinds = target.get("kind") if isinstance(target, dict) else None
+        target_kinds = (raw_target_kinds if isinstance(raw_target_kinds, list) else [])
+        target_kind = next((kind for kind in target_kinds
+                            if isinstance(kind, str) and kind in _H006_CARGO_TARGET_KINDS),
+                           "other")
+        if package_match or target_kind != "other":
+            compiler_error_origins.add(f"{package}:{target_kind}")
         message = diagnostic.get("message")
         if isinstance(message, str):
             messages.append(message)
@@ -1064,6 +1087,7 @@ def _h006_compiler_diagnostics(text: str) -> dict[str, Any]:
         "cargo_json_error_without_source_span_count": min(
             compiler_error_without_source_span_count, 256),
         "cargo_json_os_error_kinds": sorted(compiler_error_os_kinds),
+        "cargo_json_error_origins": sorted(compiler_error_origins)[:8],
         "cargo_json_build_finished_events": min(build_finished_count, 256),
     }
 
@@ -1134,6 +1158,7 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
         compiler_error_codes: set[str] = set()
         compiler_error_families: set[str] = set()
         cargo_json_os_error_kinds: set[str] = set()
+        cargo_json_error_origins: set[str] = set()
         cargo_json_compiler_messages = 0
         cargo_json_error_messages = 0
         cargo_json_error_source_span_count = 0
@@ -1184,6 +1209,7 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
                     cargo_json_error_without_source_span_count
                     + stream_diagnostics["cargo_json_error_without_source_span_count"], 256)
                 cargo_json_os_error_kinds.update(stream_diagnostics["cargo_json_os_error_kinds"])
+                cargo_json_error_origins.update(stream_diagnostics["cargo_json_error_origins"])
                 cargo_json_build_finished_events = min(
                     cargo_json_build_finished_events
                     + stream_diagnostics["cargo_json_build_finished_events"], 256)
@@ -1200,6 +1226,7 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
             "cargo_json_error_source_span_count": cargo_json_error_source_span_count,
             "cargo_json_error_without_source_span_count": cargo_json_error_without_source_span_count,
             "cargo_json_os_error_kinds": sorted(cargo_json_os_error_kinds),
+            "cargo_json_error_origins": sorted(cargo_json_error_origins)[:8],
             "cargo_json_build_finished_events": cargo_json_build_finished_events,
         }
         diagnostics.append({
