@@ -714,11 +714,15 @@ fn validate_no_nested_mounts<'a>(roots: impl Iterator<Item = &'a PathBuf>) -> Re
             .replace("\\012", "\n")
             .replace("\\134", "\\");
         let mountpoint = PathBuf::from(mountpoint);
-        if roots
+        if let Some(root) = roots
             .iter()
-            .any(|root| mountpoint != *root && mountpoint.starts_with(root))
+            .find(|root| mountpoint != **root && mountpoint.starts_with(*root))
         {
-            return Err("nested mount beneath a granted root is not supported".into());
+            return Err(format!(
+                "nested mount beneath a granted root is not supported (grant: {}; mount: {})",
+                root.display(),
+                mountpoint.display()
+            ));
         }
     }
     Ok(())

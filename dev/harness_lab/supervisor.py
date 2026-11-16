@@ -803,7 +803,13 @@ _JOB_FAILURE_CLASSES = (
     ("could not be resolved", "helper_unresolved"),
     ("sandbox failed", "sandbox_launch"),
     ("execution authorization", "authorization"),
+    ("test runner error:", "test_runner_error"),
 )
+_TEST_REPORT_FAILURE_CLASSES = frozenset({
+    "rust_test_failure", "rust_panic", "rust_compile_error", "rust_doctest_failure",
+    "pytest_failure", "pytest_error", "pytest_collection_error", "nonzero_exit",
+    "timeout_wall_clock", "timeout_no_output", "spawn_error", "unknown_failure",
+})
 
 
 def _job_failure_class(summary: Any) -> str | None:
@@ -812,6 +818,11 @@ def _job_failure_class(summary: Any) -> str | None:
     for marker, label in _JOB_FAILURE_CLASSES:
         if marker in summary:
             return label
+    # Test reports carry a closed FailureClass vocabulary. Preserve only a
+    # canonical label, never the executor summary or its command output.
+    match = re.search(r"(?m)^Failure class:[ \t]*\r?\n([a-z_]+)[ \t]*$", summary)
+    if match and match.group(1) in _TEST_REPORT_FAILURE_CLASSES:
+        return f"test_{match.group(1)}"
     return None
 
 

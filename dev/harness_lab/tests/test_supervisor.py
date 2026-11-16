@@ -431,6 +431,26 @@ class JobObservationProjectionTests(unittest.TestCase):
             "job", "status", "Error: tool execution failed: job failed\njob_id: job_abc-123")
         self.assertEqual(projected, {"action": "status", "job_id": "job_abc-123", "status": "failed"})
 
+    def test_native_failed_test_projects_only_allowlisted_report_class(self) -> None:
+        projected = _project_job_observation(
+            "job", "wait",
+            "job failed\njob_id: job_abc-123\nFailure class:\nrust_compile_error\n"
+            "Summary:\nPRIVATE_COMMAND_OUTPUT")
+        self.assertEqual(projected, {
+            "action": "wait", "job_id": "job_abc-123", "status": "failed",
+            "failure_class": "test_rust_compile_error",
+        })
+        self.assertNotIn("PRIVATE_COMMAND_OUTPUT", repr(projected))
+
+    def test_test_runner_error_projects_only_the_failure_owner(self) -> None:
+        projected = _project_job_observation(
+            "job", "wait", "job failed\njob_id: job_abc-123\ntest runner error: PRIVATE_DETAIL")
+        self.assertEqual(projected, {
+            "action": "wait", "job_id": "job_abc-123", "status": "failed",
+            "failure_class": "test_runner_error",
+        })
+        self.assertNotIn("PRIVATE_DETAIL", repr(projected))
+
     def test_native_test_submission_extracts_only_bounded_job_identity(self) -> None:
         projected = _project_job_observation(
             "test", None, "background test submitted as job job_abc-123; terminal notification follows")
