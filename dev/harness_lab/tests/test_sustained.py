@@ -246,6 +246,15 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             workspace = Path(directory)
             run_dir = workspace / "job-check" / ".codegg" / "test-runs" / "run-1"
             run_dir.mkdir(parents=True)
+            stdout_path = run_dir / "stdout.log"
+            stdout_path.write_text(json.dumps({
+                "reason": "compiler-message",
+                "message": {
+                    "level": "error",
+                    "code": {"code": "E0425"},
+                    "message": "cannot find value PRIVATE_EXECUTOR_TEXT in this scope",
+                },
+            }) + "\n", encoding="utf-8")
             stderr_path = run_dir / "stderr.log"
             stderr_path.write_text(
                 "error: permission denied; PRIVATE_EXECUTOR_TEXT\n", encoding="utf-8")
@@ -257,6 +266,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
                     "failure_class": "NonzeroExit",
                     "message": "PRIVATE_EXECUTOR_TEXT",
                 }],
+                "stdout_log": str(stdout_path),
                 "stderr_log": str(stderr_path),
                 "argv": ["cargo", "test"],
                 "cwd": str(run_dir),
@@ -269,9 +279,10 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "exit_code": 101,
             "duration_ms": 17,
             "failure_classes": ["nonzero_exit"],
+            "stdout_category": "unclassified",
             "stderr_category": "filesystem_permission",
-            "compiler_error_codes": [],
-            "compiler_error_families": [],
+            "compiler_error_codes": ["E0425"],
+            "compiler_error_families": ["unresolved_name"],
         }])
         self.assertNotIn("PRIVATE_EXECUTOR_TEXT", json.dumps(diagnostic))
 
@@ -284,11 +295,25 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "error[E0425]: cannot find value PRIVATE_EXECUTOR_TEXT in this scope\n"
             "error[E0308]: mismatched types PRIVATE_EXECUTOR_TEXT\n")
 
-        self.assertEqual(diagnostic, {
+        expected = {
             "compiler_error_codes": ["E0308", "E0425"],
             "compiler_error_families": ["unresolved_name", "type_mismatch"],
-        })
+        }
+        self.assertEqual(diagnostic, expected)
         self.assertNotIn("PRIVATE_EXECUTOR_TEXT", json.dumps(diagnostic))
+
+        cargo_event = json.dumps({
+            "reason": "compiler-message",
+            "message": {
+                "level": "error",
+                "code": {"code": "E0425"},
+                "message": "cannot find value PRIVATE_EXECUTOR_TEXT in this scope",
+            },
+        })
+        self.assertEqual(_h006_compiler_diagnostics(cargo_event), {
+            "compiler_error_codes": ["E0425"],
+            "compiler_error_families": ["unresolved_name"],
+        })
 
 
 class LongHorizonNativeJobTest(unittest.TestCase):
@@ -441,7 +466,9 @@ class LongHorizonNativeJobTest(unittest.TestCase):
         self.assertTrue(Path(rustc).is_file(), "rustup must resolve a real rustc executable")
         sequence = [
             {"name": "test", "arguments": {
-                "scope": "custom", "command": f"{shlex.quote(cargo)} test --offline --workspace",
+                "scope": "custom", "command": (
+                    f"{shlex.quote(cargo)} test --offline --workspace "
+                    "--message-format=json"),
                 "workdir": "job-check", "execution_mode": "background"}},
             # This is a bounded wait on the actual submitted job, not a fixture
             # delay. It gives the scheduler time to admit the real Cargo work
