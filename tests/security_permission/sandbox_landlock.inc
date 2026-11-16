@@ -42,12 +42,12 @@ struct HelperOutput {
 
 #[cfg(target_os = "linux")]
 fn test_helper_path() -> PathBuf {
-    std::env::current_exe()
-        .expect("test executable")
-        .parent()
-        .and_then(|path| path.parent())
-        .expect("target debug directory")
-        .join("codegg-sandbox-helper")
+    // Same rule production uses. Do not re-derive from `current_exe()`'s
+    // parent chain: some Cargo layouts put the test binary under
+    // `build/<pkg>/<hash>/out/`, which never holds the sibling helper.
+    codegg::security::sandbox::sandbox_helper_path().unwrap_or_else(|error| {
+        panic!("the managed sandbox helper must resolve as production resolves it: {error}")
+    })
 }
 
 #[cfg(target_os = "linux")]
