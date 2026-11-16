@@ -1028,14 +1028,21 @@ _H006_PATH_TOKEN = re.compile(
 )
 
 
-def _h006_write_error_path_role(message: str, workspace: Path) -> str | None:
+def _h006_write_error_context(message: str) -> str | None:
     lowered = message.lower()
     marker = next((marker for marker in ("failed to write", "could not write")
                    if marker in lowered), None)
     if marker is None:
         return None
     marker_end = lowered.index(marker) + len(marker)
-    path_context = message[marker_end:].splitlines()[0]
+    lines = message[marker_end:].splitlines()
+    return lines[0] if lines else ""
+
+
+def _h006_write_error_path_role(message: str, workspace: Path) -> str | None:
+    path_context = _h006_write_error_context(message)
+    if path_context is None:
+        return None
     root = workspace.resolve()
     role_roots = (
         ("cargo_home", root / "job-check" / ".cargo-home", "job-check/.cargo-home"),
@@ -1052,6 +1059,39 @@ def _h006_write_error_path_role(message: str, workspace: Path) -> str | None:
         if any(re.search(re.escape(candidate) + r"(?=$|[/\s:'\"`,])",
                          normalized_context) for candidate in candidates):
             return role
+    return "unmapped_path" if _H006_PATH_TOKEN.search(path_context) else "path_not_reported"
+
+
+def _h006_write_error_path_subrole(message: str, workspace: Path) -> str | None:
+    path_context = _h006_write_error_context(message)
+    if path_context is None:
+        return None
+    root = workspace.resolve()
+    normalized_context = path_context.replace("\\", "/").lower()
+    target_roots = (
+        str(root / "job-check" / ".cargo-target").replace("\\", "/").lower(),
+        "job-check/.cargo-target",
+    )
+    for target_root in target_roots:
+        match = re.search(re.escape(target_root) + r"(?=$|[/\s:'\"`,])",
+                          normalized_context)
+        if match is None:
+            continue
+        suffix = normalized_context[match.end():]
+        components = set(re.split(r"[/\\\s:'\"`,()]+", suffix))
+        if "incremental" in components:
+            return "cargo_incremental_state"
+        if ".fingerprint" in components:
+            return "cargo_fingerprint_state"
+        if "deps" in components:
+            return "cargo_dependency_artifact"
+        if "build" in components:
+            return "cargo_build_script_artifact"
+        if components.intersection({"tmp", "temp", "temporary"}):
+            return "cargo_temporary_file"
+        if components.intersection({"debug", "release"}):
+            return "cargo_target_output"
+        return "cargo_target_other"
     return "unmapped_path" if _H006_PATH_TOKEN.search(path_context) else "path_not_reported"
 
 
@@ -1092,6 +1132,7 @@ def _h006_compiler_diagnostics(
     compiler_error_origins: set[str] = set()
     compiler_error_message_kinds: set[str] = set()
     compiler_error_path_roles: set[str] = set()
+    compiler_error_path_subroles: set[str] = set()
     build_finished_count = 0
     lines = bounded.splitlines()
     sampled_lines = lines if len(lines) <= 256 else lines[:128] + lines[-128:]
@@ -1151,6 +1192,9 @@ def _h006_compiler_diagnostics(
             path_role = _h006_write_error_path_role(diagnostic_text, workspace)
             if path_role is not None:
                 compiler_error_path_roles.add(path_role)
+            path_subrole = _h006_write_error_path_subrole(diagnostic_text, workspace)
+            if path_subrole is not None:
+                compiler_error_path_subroles.add(path_subrole)
         for raw_os_error in re.findall(r"\bos error\s+(\d{1,3})\b", diagnostic_text, re.IGNORECASE):
             os_error_kind = _H006_OS_ERROR_KINDS.get(int(raw_os_error))
             if os_error_kind:
@@ -1175,6 +1219,7 @@ def _h006_compiler_diagnostics(
             if kind in compiler_error_message_kinds
         ],
         "cargo_json_error_path_roles": sorted(compiler_error_path_roles),
+        "cargo_json_error_path_subroles": sorted(compiler_error_path_subroles),
         "cargo_json_build_finished_events": min(build_finished_count, 256),
     }
 
@@ -1248,6 +1293,7 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
         cargo_json_error_origins: set[str] = set()
         cargo_json_error_message_kinds: set[str] = set()
         cargo_json_error_path_roles: set[str] = set()
+        cargo_json_error_path_subroles: set[str] = set()
         cargo_json_compiler_messages = 0
         cargo_json_error_messages = 0
         cargo_json_error_source_span_count = 0
@@ -1303,6 +1349,8 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
                     stream_diagnostics["cargo_json_error_message_kinds"])
                 cargo_json_error_path_roles.update(
                     stream_diagnostics["cargo_json_error_path_roles"])
+                cargo_json_error_path_subroles.update(
+                    stream_diagnostics["cargo_json_error_path_subroles"])
                 cargo_json_build_finished_events = min(
                     cargo_json_build_finished_events
                     + stream_diagnostics["cargo_json_build_finished_events"], 256)
@@ -1325,6 +1373,7 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
                 if kind in cargo_json_error_message_kinds
             ],
             "cargo_json_error_path_roles": sorted(cargo_json_error_path_roles),
+            "cargo_json_error_path_subroles": sorted(cargo_json_error_path_subroles),
             "cargo_json_build_finished_events": cargo_json_build_finished_events,
         }
         diagnostics.append({
