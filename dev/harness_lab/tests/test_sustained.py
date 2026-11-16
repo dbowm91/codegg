@@ -18,7 +18,12 @@ import unittest
 from pathlib import Path
 
 from dev.harness_lab import budget, long_horizon_report, recovery_controls_v2, sustained
-from dev.harness_lab.supervisor import HarnessError, run_tool_trial
+from dev.harness_lab.supervisor import (
+    HarnessError,
+    _h006_failure_log_category,
+    _h006_managed_test_diagnostics,
+    run_tool_trial,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -232,6 +237,44 @@ class TypedRecoveryControlTest(unittest.TestCase):
         self.assertTrue(trial["hard_budget_stop"])
         self.assertEqual(control["actual_stop_owner"], "agent_turn_budget")
         self.assertTrue(control["control_exercised"])
+
+
+class H006FailureDiagnosticTest(unittest.TestCase):
+    def test_report_projection_is_bounded_and_does_not_retain_raw_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            run_dir = workspace / "job-check" / ".codegg" / "test-runs" / "run-1"
+            run_dir.mkdir(parents=True)
+            stderr_path = run_dir / "stderr.log"
+            stderr_path.write_text(
+                "error: permission denied; PRIVATE_EXECUTOR_TEXT\n", encoding="utf-8")
+            (run_dir / "report.json").write_text(json.dumps({
+                "status": "Failed",
+                "exit_code": 101,
+                "duration_ms": 17,
+                "failures": [{
+                    "failure_class": "NonzeroExit",
+                    "message": "PRIVATE_EXECUTOR_TEXT",
+                }],
+                "stderr_log": str(stderr_path),
+                "argv": ["cargo", "test"],
+                "cwd": str(run_dir),
+            }), encoding="utf-8")
+
+            diagnostic = _h006_managed_test_diagnostics(workspace)
+
+        self.assertEqual(diagnostic, [{
+            "status": "failed",
+            "exit_code": 101,
+            "duration_ms": 17,
+            "failure_classes": ["nonzero_exit"],
+            "stderr_category": "filesystem_permission",
+        }])
+        self.assertNotIn("PRIVATE_EXECUTOR_TEXT", json.dumps(diagnostic))
+
+    def test_unknown_h006_output_maps_to_a_closed_category(self):
+        self.assertEqual(
+            _h006_failure_log_category("PRIVATE_EXECUTOR_TEXT"), "unclassified")
 
 
 class LongHorizonNativeJobTest(unittest.TestCase):
@@ -567,6 +610,7 @@ mod tests {
             })
         self.addCleanup(shutil.rmtree, Path(trial["workspace"]).parent, ignore_errors=True)
         calls = trial["tool_calls"]
+        test_diagnostics = trial.get("managed_test_diagnostics", [])
         receipt_path = os.environ.get("CODEGG_H006_JOB_RECEIPT")
         if receipt_path:
             # Preserve the bounded receipt before assertions so failed lifecycle
@@ -579,6 +623,7 @@ mod tests {
                 "event_gap_count": trial["event_gap_count"],
                 "provider_calls": trial["provider_calls"],
                 "wall_time_ms": trial["wall_time_ms"],
+                "managed_test_diagnostics": test_diagnostics,
                 "tool_calls": [{
                     "tool": call["tool"],
                     "status": call["status"],
@@ -598,7 +643,10 @@ mod tests {
         self.assertTrue(job_id)
         exact = [call for call in observations if call.get("job", {}).get("job_id") == job_id]
         running = [call for call in exact if call.get("job", {}).get("status") == "running"]
-        self.assertGreaterEqual(len(running), 2, calls)
+        self.assertGreaterEqual(
+            len(running), 2,
+            {"calls": calls, "managed_test_diagnostics": test_diagnostics},
+        )
         self.assertTrue(_observed_completed_job(exact, job_id), calls)
         first_running_at = running[0]["finished_elapsed_ms"]
         second_running_at = running[1]["finished_elapsed_ms"]
