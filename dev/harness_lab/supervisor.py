@@ -749,6 +749,9 @@ def _workspace_snapshot_digest(workspace: Path) -> tuple[str, dict[str, str]]:
         # source state. Cargo output can exceed the snapshot cap without
         # changing any file the trial is measuring.
         if (relative_path.parts[0] in {".codegg", ".cargo-target", "target"}
+                or relative_path.parts[:2] in {
+                    ("job-check", ".cargo-home"), ("job-check", ".cargo-target")
+                }
                 or relative_path.as_posix() == "codegg_debug.log"):
             continue
         files += 1
@@ -941,7 +944,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                    external_verifier: Path | None = None,
                    rustc_executable: Path | None = None,
                    source_root: Path | None = None,
-                   sandbox_home_under_cargo_target: bool = False,
+                   sandbox_home_under_test_workdir: bool = False,
                    causal_trace_output: Path | None = None) -> dict[str, Any]:
     """Run one native ACP turn against a local deterministic OpenAI wire fixture."""
     from .provider_fixture import FixtureProvider
@@ -1018,10 +1021,17 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             env["RUSTC"] = str(rustc_path)
         cargo_target_dir = private_dir(workspace / ".cargo-target")
         env["CARGO_TARGET_DIR"] = str(cargo_target_dir)
-        if sandbox_home_under_cargo_target:
-            # The constrained Test runner drops CARGO_HOME. Keep Cargo's
-            # $HOME/.cargo fallback beneath the workspace's writable grant.
-            sandbox_home = private_dir(cargo_target_dir / "home")
+        if sandbox_home_under_test_workdir:
+            # The constrained Test runner drops CARGO_HOME and CARGO_TARGET_DIR.
+            # Keep Cargo's HOME fallback and project-local target output beneath
+            # the requested workdir, which is the sandbox's writable grant.
+            test_workdir = workspace / "job-check"
+            if not test_workdir.is_dir():
+                raise HarnessError("test-workdir Cargo home requires the job-check fixture")
+            sandbox_home = private_dir(test_workdir / ".cargo-home")
+            cargo_target_dir = private_dir(test_workdir / ".cargo-target")
+            env["CARGO_HOME"] = str(sandbox_home)
+            env["CARGO_TARGET_DIR"] = str(cargo_target_dir)
             env["HOME"] = str(sandbox_home)
             env["USERPROFILE"] = str(sandbox_home)
         config = {

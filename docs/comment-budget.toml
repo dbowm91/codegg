@@ -412,7 +412,7 @@ max_ratio = 0.1354
 "src/lsp/mutation.rs" = { max_comment_lines = 128, max_ratio = 0.1141 }
 "src/lsp/semantic_context.rs" = { max_comment_lines = 60, max_ratio = 0.0486 }
 "src/main.rs" = { max_comment_lines = 595, max_ratio = 0.1167 }
-"src/managed_process.rs" = { max_comment_lines = 375, max_ratio = 0.079 }
+"src/managed_process.rs" = { max_comment_lines = 375, max_ratio = 0.0794 }
 "src/managed_process/windows.rs" = { max_comment_lines = 43, max_ratio = 0.0204 }
 "src/managed_process/windows_acl_lease.rs" = { max_comment_lines = 24, max_ratio = 0.0263 }
 "src/mcp/auth.rs" = { max_comment_lines = 31, max_ratio = 0.0249 }
