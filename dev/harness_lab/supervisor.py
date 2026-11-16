@@ -972,6 +972,7 @@ _H006_COMPILER_ERROR_FAMILIES = (
     ("trait_bound", ("trait bound", "is not satisfied")),
     ("borrow_check", ("borrowed value", "cannot borrow", "does not live long enough")),
     ("linker_failure", ("linking with", "linker", "undefined reference", "ld: ")),
+    ("cargo_compile_summary", ("could not compile", "failed to compile", "couldn't compile")),
     ("build_script_failure", ("failed to run custom build command", "custom build command failed")),
     ("dependency_resolution", ("failed to select a version", "no matching package named", "failed to download")),
     ("manifest_error", ("failed to parse manifest", "no targets specified in the manifest")),
@@ -994,7 +995,9 @@ def _h006_compiler_diagnostics(text: str) -> dict[str, Any]:
     compiler_message_count = 0
     compiler_error_message_count = 0
     build_finished_count = 0
-    for line in bounded.splitlines()[-256:]:
+    lines = bounded.splitlines()
+    sampled_lines = lines if len(lines) <= 256 else lines[:128] + lines[-128:]
+    for line in sampled_lines:
         try:
             event = json.loads(line)
         except ValueError:
@@ -1062,6 +1065,8 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
         duration_ms = (raw_duration if isinstance(raw_duration, int)
                        and not isinstance(raw_duration, bool)
                        and 0 <= raw_duration <= 300_000 else None)
+        raw_output_truncated = report.get("output_truncated")
+        output_truncated = raw_output_truncated if isinstance(raw_output_truncated, bool) else None
         raw_failures = report.get("failures")
         failure_classes = sorted({
             _H006_FAILURE_CLASSES[failure_class]
@@ -1087,9 +1092,15 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
                 with log_path.open("rb") as log:
                     log.seek(0, os.SEEK_END)
                     size = log.tell()
-                    log.seek(max(0, size - 16 * 1024), os.SEEK_SET)
-                    tail = log.read(16 * 1024)
-                log_text = tail.decode("utf-8", errors="replace")
+                    if size <= 16 * 1024:
+                        log.seek(0)
+                        sample = log.read(16 * 1024)
+                    else:
+                        log.seek(0)
+                        head = log.read(8 * 1024)
+                        log.seek(size - (8 * 1024 - 1), os.SEEK_SET)
+                        sample = head + b"\n" + log.read(8 * 1024 - 1)
+                log_text = sample.decode("utf-8", errors="replace")
                 stream_category = _h006_failure_log_category(log_text)
                 if stream_name == "stdout_log":
                     stdout_category = stream_category
@@ -1123,6 +1134,7 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
             "status": status,
             "exit_code": exit_code,
             "duration_ms": duration_ms,
+            "output_truncated": output_truncated,
             "failure_classes": failure_classes,
             "stdout_category": stdout_category,
             "stderr_category": stderr_category,
