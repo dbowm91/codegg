@@ -1013,7 +1013,7 @@ mod tests {
         let sysctl_root = PathBuf::from("/proc/sys");
         let mut spec = launch_spec(vec![sysctl_root.clone()], false);
         spec.path_identities.push(
-            super::policy::capture_path_identity(&sysctl_root)
+            crate::security::sandbox::policy::capture_path_identity(&sysctl_root)
                 .expect("capture sysctl root identity"),
         );
         let (args, _) = compile(&spec, cwd.path(), |_| Ok(0))

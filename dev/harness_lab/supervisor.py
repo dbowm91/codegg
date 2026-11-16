@@ -944,7 +944,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                    external_verifier: Path | None = None,
                    rustc_executable: Path | None = None,
                    source_root: Path | None = None,
-                   sandbox_home_under_test_workdir: bool = False,
+                   cargo_home_under_test_workdir: bool = False,
                    causal_trace_output: Path | None = None) -> dict[str, Any]:
     """Run one native ACP turn against a local deterministic OpenAI wire fixture."""
     from .provider_fixture import FixtureProvider
@@ -1021,19 +1021,15 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             env["RUSTC"] = str(rustc_path)
         cargo_target_dir = private_dir(workspace / ".cargo-target")
         env["CARGO_TARGET_DIR"] = str(cargo_target_dir)
-        if sandbox_home_under_test_workdir:
-            # The constrained Test runner drops CARGO_HOME and CARGO_TARGET_DIR.
-            # Keep Cargo's HOME fallback and project-local target output beneath
-            # the requested workdir, which is the sandbox's writable grant.
+        if cargo_home_under_test_workdir:
+            # Keep Cargo's writable cache inside the accepted job-check grant.
+            # HOME remains the harness-private root so the sandbox's sensitive
+            # home-path denies stay outside the workspace write root.
             test_workdir = workspace / "job-check"
             if not test_workdir.is_dir():
                 raise HarnessError("test-workdir Cargo home requires the job-check fixture")
-            sandbox_home = private_dir(test_workdir / ".cargo-home")
-            cargo_target_dir = private_dir(test_workdir / ".cargo-target")
-            env["CARGO_HOME"] = str(sandbox_home)
-            env["CARGO_TARGET_DIR"] = str(cargo_target_dir)
-            env["HOME"] = str(sandbox_home)
-            env["USERPROFILE"] = str(sandbox_home)
+            cargo_home = private_dir(test_workdir / ".cargo-home")
+            env["CARGO_HOME"] = str(cargo_home)
         config = {
             "provider": {"openai": {
                 "api_key": "local-fixture-only",
