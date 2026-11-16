@@ -6176,22 +6176,69 @@ mod tests {
         // scope. Both are post-M003 changes, so reconstruct the M003-era
         // schemas here and keep the immutable receipt matching — assert the
         // live values first, so the override cannot silently stop working.
+        // Later agentfindings batches also added mode=overwrite, reworded
+        // mode/path descriptions, and clarified relative-path resolution;
+        // restore those to the M003-era shapes the same way.
         let mut historical_apply_patch_schema = registry
             .get("apply_patch")
             .expect("apply_patch tool remains registered")
             .parameters();
-        let apply_patch_content = historical_apply_patch_schema["properties"]["patch"]
+        let apply_patch_properties = historical_apply_patch_schema["properties"]
             .as_object_mut()
-            .expect("apply_patch patch schema property");
+            .expect("apply_patch input schema properties");
         assert_eq!(
-            apply_patch_content.insert(
-                "description".to_string(),
-                serde_json::json!("Unified diff patch content"),
-            ),
+            apply_patch_properties["path"]
+                .as_object_mut()
+                .expect("apply_patch path schema property")
+                .insert(
+                    "description".to_string(),
+                    serde_json::json!("Path to the file to patch"),
+                ),
             Some(serde_json::json!(
-                "File contents for mode=create; unified diff with @@ -<start>[,<count>] +<start>[,<count>] @@ hunk headers for mode=update (e.g. \"@@ -1,3 +1,3 @@\"); bare hunks only, no \"*** Begin Patch ***\" wrapper; empty string for mode=delete; \"rename from <old>\" plus \"rename to <new>\" (or \"--- a/<old>\" plus \"+++ b/<new>\") for mode=move"
+                "Path to the file to patch; relative paths resolve against the session workspace root like all file-op modes. mode=delete and mode=update require an existing file at path."
+            )),
+            "unexpected post-M003 apply_patch.path description"
+        );
+        assert_eq!(
+            apply_patch_properties["patch"]
+                .as_object_mut()
+                .expect("apply_patch patch schema property")
+                .insert(
+                    "description".to_string(),
+                    serde_json::json!("Unified diff patch content"),
+                ),
+            Some(serde_json::json!(
+                "File contents for mode=create or mode=overwrite; unified diff with @@ -<start>[,<count>] +<start>[,<count>] @@ hunk headers for mode=update (e.g. \"@@ -1,3 +1,3 @@\"); bare hunks only, no \"*** Begin Patch ***\" wrapper; empty string for mode=delete; \"rename from <old>\" plus \"rename to <new>\" (or \"--- a/<old>\" plus \"+++ b/<new>\") for mode=move"
             )),
             "unexpected post-M003 apply_patch.content description"
+        );
+        let apply_patch_mode = apply_patch_properties["mode"]
+            .as_object_mut()
+            .expect("apply_patch mode schema property");
+        assert_eq!(
+            apply_patch_mode.get("enum"),
+            Some(&serde_json::json!([
+                "update",
+                "create",
+                "overwrite",
+                "delete",
+                "move"
+            ])),
+            "unexpected post-M003 apply_patch.mode enum"
+        );
+        apply_patch_mode.insert(
+            "enum".to_string(),
+            serde_json::json!(["update", "create", "delete", "move"]),
+        );
+        assert_eq!(
+            apply_patch_mode.insert(
+                "description".to_string(),
+                serde_json::json!("Operation mode (default: update)"),
+            ),
+            Some(serde_json::json!(
+                "Operation mode (default: update). mode=create refuses when the file exists; use mode=overwrite to replace with a diff."
+            )),
+            "unexpected post-M003 apply_patch.mode description"
         );
         // 3.5 made `patch` optional so `mode: delete` takes path only
         // (delete ignores the body; callers may pass an empty string for
