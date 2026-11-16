@@ -1375,17 +1375,19 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             if not rustc_path.is_file():
                 raise HarnessError("configured rustc executable is not a regular file")
             env["RUSTC"] = str(rustc_path)
-        cargo_target_dir = private_dir(workspace / ".cargo-target")
-        env["CARGO_TARGET_DIR"] = str(cargo_target_dir)
+        cargo_target_root = workspace
         if cargo_home_under_test_workdir:
-            # Keep Cargo's writable cache inside the accepted job-check grant.
-            # HOME remains the harness-private root so the sandbox's sensitive
-            # home-path denies stay outside the workspace write root.
+            # Keep Cargo's writable home and target artifacts inside the
+            # accepted job-check grant. HOME remains the harness-private root
+            # so sensitive home-path denies stay outside the workspace grant.
             test_workdir = workspace / "job-check"
             if not test_workdir.is_dir():
-                raise HarnessError("test-workdir Cargo home requires the job-check fixture")
+                raise HarnessError("test-workdir Cargo state requires the job-check fixture")
+            cargo_target_root = test_workdir
             cargo_home = private_dir(test_workdir / ".cargo-home")
             env["CARGO_HOME"] = str(cargo_home)
+        cargo_target_dir = private_dir(cargo_target_root / ".cargo-target")
+        env["CARGO_TARGET_DIR"] = str(cargo_target_dir)
         config = {
             "provider": {"openai": {
                 "api_key": "local-fixture-only",
