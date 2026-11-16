@@ -58,12 +58,16 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn helper_path() -> PathBuf {
-    std::env::current_exe()
-        .expect("test executable")
-        .parent()
-        .and_then(|path| path.parent())
-        .expect("target debug directory")
-        .join("codegg-sandbox-helper")
+    std::env::var_os("CODEGG_SANDBOX_TEST_HELPER")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::current_exe()
+                .expect("test executable")
+                .parent()
+                .and_then(|path| path.parent())
+                .expect("target debug directory")
+                .join("codegg-sandbox-helper")
+        })
 }
 
 /// Outcome of one helper launch.
@@ -156,7 +160,12 @@ fn launch_helper_impl(helper: PathBuf, spec: &Path, overrides: &[(&str, &str)]) 
         stdout,
         stderr,
         status: exit_status,
-    } = command.output().expect("sandbox helper process");
+    } = command.output().unwrap_or_else(|error| {
+        panic!(
+            "sandbox helper process at {}: {error}",
+            command.get_program().to_string_lossy()
+        )
+    });
     // Drop the parent's copy of the write end so the reader sees EOF. This
     // is what lets an `Enforced`-then-EOF stream decode as a clean success.
     drop(writer);
@@ -223,7 +232,12 @@ fn launch_helper_with_inherited_fd(
         stdout,
         stderr,
         status: exit_status,
-    } = command.output().expect("sandbox helper process");
+    } = command.output().unwrap_or_else(|error| {
+        panic!(
+            "sandbox helper process at {}: {error}",
+            command.get_program().to_string_lossy()
+        )
+    });
     drop(writer);
     let mut status = Vec::new();
     std::fs::File::from(reader)

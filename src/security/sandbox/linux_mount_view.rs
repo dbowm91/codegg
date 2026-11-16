@@ -47,6 +47,10 @@ pub fn compile(
 
     let mut read_roots = BTreeSet::new();
     for root in &spec.read_paths {
+        // Binding the helper's PID subtree would not grant the target's own proc view.
+        if super::policy::is_self_proc_alias(root) {
+            continue;
+        }
         let root = canonical_existing(root)?;
         if is_host_runtime_root(&root) {
             continue;
@@ -517,7 +521,11 @@ pub fn enforcement_scope(spec: &SandboxLaunchSpec) -> Result<Vec<String>, String
     let reads = spec
         .read_paths
         .iter()
-        .filter(|path| !is_host_runtime_root(path) && !writes.contains(*path))
+        .filter(|path| {
+            !is_host_runtime_root(path)
+                && !super::policy::is_self_proc_alias(path)
+                && !writes.contains(*path)
+        })
         .cloned()
         .collect::<BTreeSet<_>>();
     let mut protected = spec
@@ -941,8 +949,16 @@ fn verify_path_identities(spec: &SandboxLaunchSpec) -> Result<(), String> {
         .iter()
         .map(|identity| identity.path.as_path())
         .collect::<BTreeSet<_>>();
-    for root in spec.read_paths.iter().chain(&spec.write_paths) {
-        if root.starts_with("/dev/") || is_launch_scratch(root) {
+    for (root, is_read) in spec
+        .read_paths
+        .iter()
+        .map(|root| (root, true))
+        .chain(spec.write_paths.iter().map(|root| (root, false)))
+    {
+        if root.starts_with("/dev/")
+            || is_launch_scratch(root)
+            || (is_read && super::policy::is_self_proc_alias(root))
+        {
             continue;
         }
         let canonical = canonical_existing(root)?;
@@ -958,4 +974,64 @@ fn is_launch_scratch(path: &Path) -> bool {
         && path
             .file_name()
             .is_some_and(|name| name.to_string_lossy().starts_with("codegg-run-"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn launch_spec(read_paths: Vec<PathBuf>, process_isolation: bool) -> SandboxLaunchSpec {
+        SandboxLaunchSpec {
+            target: PathBuf::from("/bin/true"),
+            args: Vec::new(),
+            env: Vec::new(),
+            read_paths,
+            write_paths: Vec::new(),
+            deny_paths: Vec::new(),
+            linux_protected_mount_view: true,
+            linux_process_isolation: process_isolation,
+            linux_offline_network: false,
+            protected_readonly_paths: Vec::new(),
+            path_identities: Vec::new(),
+            expected_created_git_pointers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn self_proc_aliases_are_not_bound_to_the_helper_pid() {
+        let cwd = tempfile::tempdir().expect("working directory");
+        let aliases = vec![
+            PathBuf::from("/proc/self"),
+            PathBuf::from("/proc/thread-self"),
+        ];
+        let helper_proc = format!("/proc/{}", std::process::id());
+
+        for process_isolation in [false, true] {
+            let spec = launch_spec(aliases.clone(), process_isolation);
+            let (args, _) = compile(&spec, cwd.path(), |_| Ok(0)).expect("compile mount view");
+            assert!(
+                !args.iter().any(|arg| arg.starts_with(&helper_proc)),
+                "the helper's proc subtree must never be bound: {args:?}"
+            );
+            assert_eq!(
+                args.windows(2)
+                    .any(|pair| pair[0] == "--proc" && pair[1] == "/proc"),
+                process_isolation
+            );
+            let scope = enforcement_scope(&spec).expect("render scope");
+            assert!(
+                scope.iter().all(|entry| {
+                    !entry.contains("/proc/self") && !entry.contains("/proc/thread-self")
+                }),
+                "omitted proc aliases must not be reported as mount grants: {scope:?}"
+            );
+        }
+
+        let ordinary_root = cwd.path().to_path_buf();
+        let spec = launch_spec(vec![ordinary_root], true);
+        assert!(matches!(
+            verify_path_identities(&spec),
+            Err(reason) if reason == "sandbox grant has no captured path identity"
+        ));
+    }
 }

@@ -610,12 +610,7 @@ impl SandboxConfig {
             read_paths.push(resolved);
         }
         read_paths.push(target.clone());
-        // A pointer the child is expected to create is exempt from the mount
-        // view's "hide a `.git` that does not exist yet" rule. The exemption
-        // is narrow by construction: the path must be the top-level `.git`
-        // of a **granted write root**, so the child can only write the
-        // pointer of a checkout it was already given, and never a `.git`
-        // inside a nested directory it happens to control.
+        // Only a granted write root's top-level `.git` bypasses the mount-view hide rule.
         let mut expected_created_git_pointers = Vec::new();
         for raw in &self.expected_created_git_pointers {
             let candidate = Path::new(raw);

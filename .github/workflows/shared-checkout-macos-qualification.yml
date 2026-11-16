@@ -93,7 +93,9 @@ jobs:
       # The constrained launch resolves this managed sidecar from the target
       # profile directory shared with its Cargo `deps` binaries.
       - name: Build sandbox helper for the qualification
-        run: cargo build --locked --bin codegg-sandbox-helper
+        run: |
+          cargo build --locked --bin codegg-sandbox-helper
+          test -x target/debug/codegg-sandbox-helper
 
       # The mediation: the placement, the group authorization, the permit's
       # mutual exclusion, the C005 preflight, the profile narrowing and the
@@ -129,6 +131,7 @@ jobs:
       # `sandbox-exec` now fails here instead of reporting a green skip.
       - name: Sandbox containment suite
         env:
+          CODEGG_SANDBOX_TEST_HELPER: ${{ github.workspace }}/target/debug/codegg-sandbox-helper
           CODEGG_SANDBOX_QUALIFICATION: required
         run: |
           set -o pipefail

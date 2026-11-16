@@ -425,11 +425,9 @@ pub fn tool_read_allowances() -> Vec<PathBuf> {
 /// read-only sysctl view, and the resolver file a name lookup reads when a
 /// distribution places it under `/run` rather than `/etc`.
 ///
-/// A rule for `/proc/self` is resolved to **this** process's pid directory when
-/// the rule is added, and `exec` keeps the pid, so the self-scoped grant
-/// survives the exec for the command itself. A *child* of the command has its
-/// own pid and does not inherit it — a recorded residue, not an implied
-/// guarantee.
+/// Landlock resolves these aliases in the helper, whose PID survives target
+/// `exec`. Bubblewrap omits host aliases; process isolation supplies private
+/// `/proc` instead.
 #[cfg(unix)]
 fn narrow_host_reads() -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = [
@@ -463,13 +461,7 @@ fn narrow_host_reads() -> Vec<PathBuf> {
     paths
 }
 
-/// True for the per-process `/proc` aliases, which only the process that will
-/// use them can resolve.
-///
-/// `/proc/self` and `/proc/thread-self` name the *calling* process. A parent
-/// that canonicalizes one binds its own pid, so the alias has to travel
-/// unresolved to the helper, which runs at the pid `exec` preserves and is
-/// therefore the target's own.
+/// True for `/proc` aliases that would resolve to the helper, not the sandboxed target.
 pub fn is_self_proc_alias(path: &std::path::Path) -> bool {
     matches!(
         path.to_str(),

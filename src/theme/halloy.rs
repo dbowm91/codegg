@@ -332,12 +332,8 @@ pub fn parse_halloy_theme(
         ));
     }
 
-    // Secondary accent: same foreground-legibility rule as the primary. The
-    // Halloy source is a widget *fill*, and 41 of the 50 bundled themes author
-    // one that does not read as a foreground; that used to fall through to
-    // `placeholder_fallback`'s `#B48CFF`, a colour no theme file mentions.
-    // ADR-0062 §2: a rejected candidate is derived from this theme's own text
-    // colours instead, gated by the same constant as `accent_primary`.
+    // ADR-0062 §2: derive an unreadable secondary accent from this theme's text colors,
+    // using the same contrast threshold as `accent_primary`.
     let authored_secondary = file.buttons.secondary.as_ref().and_then(|b| {
         parse_color(
             &b.background_selected,
@@ -346,19 +342,8 @@ pub fn parse_halloy_theme(
             "buttons.secondary.background_selected",
         )
     });
-    // `ui.accent_secondary` is painted on **two** fills — the window background
-    // and the composer's input fill, which is lighter in most themes — so it has
-    // to read against both. Gating only against `background` is what let
-    // `kanagawa`'s authored value pass there at 3.5:1 while sitting at 2.42:1 on
-    // the input fill, which the I5 measurement then recorded as the last row in
-    // the whole contrast baseline. `worst_fill` names the fill a colour reads
-    // least well on, which is the one a derivation must clear.
-    //
-    // The input fill joins the gate only when the theme **declares** one. An
-    // unauthored `buffer.background_text_input` leaves the fallback's dark
-    // placeholder in the field, and gating a light theme against a dark
-    // placeholder rejects values that are correct on every fill the theme
-    // actually paints.
+    // Check every painted fill, but include the input fill only when authored;
+    // otherwise its fallback placeholder can reject a readable theme accent.
     let input_fill = if file.buffer.background_text_input.is_some() {
         theme.ui.input_background
     } else {

@@ -443,9 +443,7 @@ mod tests {
 
     #[test]
     fn human_wait_is_unbounded_by_default() {
-        // A permission the user has not looked at yet must never expire on
-        // its own. Previously a hardcoded 300s bound denied the tool with no
-        // dialog and no error.
+        // An unanswered interactive approval stays pending unless bounded explicitly.
         let router = ApprovalRouter::new(snapshot_for(ApprovalMode::Interactive));
         assert_eq!(
             router.approval_timeout(),
@@ -485,10 +483,7 @@ mod tests {
 
     #[tokio::test]
     async fn unbounded_wait_survives_past_the_old_deadline() {
-        // Regression: the hardcoded 300s bound is gone, so a waiter is not
-        // resolved by age. We cannot wait 300s here, so we assert the
-        // contract that matters -- the future is *still pending* well past
-        // the old registry sweep window -- then answer it normally.
+        // The wait remains pending without a configured deadline, then accepts a late answer.
         let router = ApprovalRouter::new(snapshot_for(ApprovalMode::Interactive));
         let req = request();
 
