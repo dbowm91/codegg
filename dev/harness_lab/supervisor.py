@@ -1036,6 +1036,26 @@ def _h006_compiler_diagnostics(text: str) -> dict[str, Any]:
     }
 
 
+def _h006_cwd_scope(workspace: Path, raw_cwd: Any) -> str:
+    if not isinstance(raw_cwd, str):
+        return "unavailable"
+    try:
+        root = workspace.resolve()
+        cwd = Path(raw_cwd).resolve(strict=False)
+        job_check = (root / "job-check").resolve(strict=False)
+    except (OSError, RuntimeError):
+        return "unresolved"
+    if cwd == job_check:
+        return "job_check"
+    if cwd.is_relative_to(job_check):
+        return "job_check_subpath"
+    if cwd == root:
+        return "workspace_root"
+    if cwd.is_relative_to(root):
+        return "workspace_subpath"
+    return "outside_workspace"
+
+
 def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
     root = workspace.resolve()
     report_root = root / "job-check" / ".codegg" / "test-runs"
@@ -1053,6 +1073,7 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
             continue
         if not isinstance(report, dict):
             continue
+        cwd_scope = _h006_cwd_scope(root, report.get("cwd"))
         status = report.get("status")
         status = status.lower() if isinstance(status, str) else "unknown"
         if status not in {"passed", "failed", "error", "timedout", "cancelled", "unknown"}:
@@ -1140,6 +1161,7 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
             "status": status,
             "exit_code": exit_code,
             "duration_ms": duration_ms,
+            "cwd_scope": cwd_scope,
             "output_truncated": output_truncated,
             "stdout_log_bytes": stdout_log_bytes,
             "stderr_log_bytes": stderr_log_bytes,

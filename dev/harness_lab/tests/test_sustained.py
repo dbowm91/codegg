@@ -283,6 +283,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "status": "failed",
             "exit_code": 101,
             "duration_ms": 17,
+            "cwd_scope": "job_check_subpath",
             "output_truncated": True,
             "stdout_log_bytes": stdout_bytes,
             "stderr_log_bytes": stderr_bytes,
