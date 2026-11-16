@@ -20,6 +20,7 @@ from pathlib import Path
 from dev.harness_lab import budget, long_horizon_report, recovery_controls_v2, sustained
 from dev.harness_lab.supervisor import (
     HarnessError,
+    _h006_compiler_diagnostics,
     _h006_failure_log_category,
     _h006_managed_test_diagnostics,
     run_tool_trial,
@@ -269,12 +270,25 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "duration_ms": 17,
             "failure_classes": ["nonzero_exit"],
             "stderr_category": "filesystem_permission",
+            "compiler_error_codes": [],
+            "compiler_error_families": [],
         }])
         self.assertNotIn("PRIVATE_EXECUTOR_TEXT", json.dumps(diagnostic))
 
     def test_unknown_h006_output_maps_to_a_closed_category(self):
         self.assertEqual(
             _h006_failure_log_category("PRIVATE_EXECUTOR_TEXT"), "unclassified")
+
+    def test_compiler_diagnostics_project_only_allowlisted_codes_and_families(self):
+        diagnostic = _h006_compiler_diagnostics(
+            "error[E0425]: cannot find value PRIVATE_EXECUTOR_TEXT in this scope\n"
+            "error[E0308]: mismatched types PRIVATE_EXECUTOR_TEXT\n")
+
+        self.assertEqual(diagnostic, {
+            "compiler_error_codes": ["E0308", "E0425"],
+            "compiler_error_families": ["unresolved_name", "type_mismatch"],
+        })
+        self.assertNotIn("PRIVATE_EXECUTOR_TEXT", json.dumps(diagnostic))
 
 
 class LongHorizonNativeJobTest(unittest.TestCase):
