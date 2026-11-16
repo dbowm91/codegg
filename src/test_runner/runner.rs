@@ -514,6 +514,13 @@ fn validated_workspace_cargo_directory(workspace_root: &Path, candidate: &Path) 
     Some(cargo_directory)
 }
 
+fn contained_cargo_temp_directory(
+    workspace_root: &Path,
+    cargo_target_dir: Option<&Path>,
+) -> Option<PathBuf> {
+    validated_workspace_cargo_directory(workspace_root, cargo_target_dir.unwrap_or(workspace_root))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_managed_test_process(
     request: &TestRunRequest,
@@ -576,6 +583,18 @@ async fn run_managed_test_process(
     } else {
         None
     };
+    let cargo_tmp_dir = if constrained_cargo {
+        Some(
+            contained_cargo_temp_directory(&request.workdir, cargo_target_dir.as_deref())
+                .ok_or_else(|| {
+                    TestRunError::InvalidRequest(
+                        "no contained temporary directory is available for Cargo".into(),
+                    )
+                })?,
+        )
+    } else {
+        None
+    };
     let argv: Vec<OsString> = spawn_argv_strings.iter().map(OsString::from).collect();
     let mut process = crate::managed_process::ManagedProcessRequest::new(
         argv,
@@ -593,6 +612,13 @@ async fn run_managed_test_process(
             }
             if let Some(cargo_target_dir) = cargo_target_dir.as_ref() {
                 policy = policy.with_var("CARGO_TARGET_DIR", cargo_target_dir.as_os_str());
+            }
+            if let Some(cargo_tmp_dir) = cargo_tmp_dir.as_ref() {
+                // Keep rustc's temporary writes inside Cargo's contained grant.
+                policy = policy
+                    .with_var("TMPDIR", cargo_tmp_dir.as_os_str())
+                    .with_var("TMP", cargo_tmp_dir.as_os_str())
+                    .with_var("TEMP", cargo_tmp_dir.as_os_str());
             }
             if let Some(rustup_home) = std::env::var_os("RUSTUP_HOME") {
                 policy = policy.with_var("RUSTUP_HOME", rustup_home);
@@ -1204,12 +1230,25 @@ mod tests {
             validated_workspace_cargo_directory(workspace.path(), &nested_target),
             Some(nested_target.canonicalize().unwrap())
         );
+        assert_eq!(
+            contained_cargo_temp_directory(workspace.path(), Some(&nested_target)),
+            Some(nested_target.canonicalize().unwrap())
+        );
+        assert_eq!(
+            contained_cargo_temp_directory(workspace.path(), None),
+            Some(workspace.path().canonicalize().unwrap())
+        );
 
         let outside = tempfile::tempdir().unwrap();
         assert_eq!(
             validated_workspace_cargo_directory(workspace.path(), outside.path()),
             None,
             "constrained Cargo directories outside the workspace grant must be rejected"
+        );
+        assert_eq!(
+            contained_cargo_temp_directory(workspace.path(), Some(outside.path())),
+            None,
+            "Cargo temporary paths must remain inside the accepted workdir"
         );
         assert_eq!(
             validated_workspace_cargo_directory(workspace.path(), Path::new("relative-cargo-dir")),
