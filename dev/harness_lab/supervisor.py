@@ -965,6 +965,18 @@ def _h006_failure_log_category(text: str) -> str:
     return "unclassified"
 
 
+_H006_OS_ERROR_KINDS = {
+    1: "operation_not_permitted",
+    2: "missing_path",
+    5: "io_error",
+    13: "permission_denied",
+    20: "not_directory",
+    24: "resource_exhausted",
+    28: "no_space",
+    30: "read_only_filesystem",
+}
+
+
 _H006_COMPILER_ERROR_FAMILIES = (
     ("unresolved_name", ("cannot find", "not found in this scope")),
     ("unresolved_import", ("unresolved import", "unresolved module", "can't find crate")),
@@ -994,6 +1006,9 @@ def _h006_compiler_diagnostics(text: str) -> dict[str, Any]:
     messages = []
     compiler_message_count = 0
     compiler_error_message_count = 0
+    compiler_error_source_span_count = 0
+    compiler_error_without_source_span_count = 0
+    compiler_error_os_kinds: set[str] = set()
     build_finished_count = 0
     lines = bounded.splitlines()
     sampled_lines = lines if len(lines) <= 256 else lines[:128] + lines[-128:]
@@ -1022,6 +1037,19 @@ def _h006_compiler_diagnostics(text: str) -> dict[str, Any]:
         code = code.get("code") if isinstance(code, dict) else None
         if isinstance(code, str) and re.fullmatch(r"E\d{4}", code, re.IGNORECASE):
             error_codes.add(code.upper())
+        spans = diagnostic.get("spans")
+        if isinstance(spans, list) and spans:
+            compiler_error_source_span_count += 1
+        else:
+            compiler_error_without_source_span_count += 1
+        rendered = diagnostic.get("rendered")
+        diagnostic_text = "\n".join(
+            value for value in (message, rendered) if isinstance(value, str)
+        )
+        for raw_os_error in re.findall(r"\bos error\s+(\d{1,3})\b", diagnostic_text, re.IGNORECASE):
+            os_error_kind = _H006_OS_ERROR_KINDS.get(int(raw_os_error))
+            if os_error_kind:
+                compiler_error_os_kinds.add(os_error_kind)
     lowered = (bounded + "\n" + "\n".join(messages)).lower()
     error_families = [
         family for family, markers in _H006_COMPILER_ERROR_FAMILIES
@@ -1032,6 +1060,10 @@ def _h006_compiler_diagnostics(text: str) -> dict[str, Any]:
         "compiler_error_families": error_families,
         "cargo_json_compiler_messages": min(compiler_message_count, 256),
         "cargo_json_error_messages": min(compiler_error_message_count, 256),
+        "cargo_json_error_source_span_count": min(compiler_error_source_span_count, 256),
+        "cargo_json_error_without_source_span_count": min(
+            compiler_error_without_source_span_count, 256),
+        "cargo_json_os_error_kinds": sorted(compiler_error_os_kinds),
         "cargo_json_build_finished_events": min(build_finished_count, 256),
     }
 
@@ -1101,8 +1133,11 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
         stderr_log_bytes: int | None = None
         compiler_error_codes: set[str] = set()
         compiler_error_families: set[str] = set()
+        cargo_json_os_error_kinds: set[str] = set()
         cargo_json_compiler_messages = 0
         cargo_json_error_messages = 0
+        cargo_json_error_source_span_count = 0
+        cargo_json_error_without_source_span_count = 0
         cargo_json_build_finished_events = 0
         for stream_name in ("stdout_log", "stderr_log"):
             raw_log_path = report.get(stream_name)
@@ -1142,6 +1177,13 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
                 cargo_json_error_messages = min(
                     cargo_json_error_messages
                     + stream_diagnostics["cargo_json_error_messages"], 256)
+                cargo_json_error_source_span_count = min(
+                    cargo_json_error_source_span_count
+                    + stream_diagnostics["cargo_json_error_source_span_count"], 256)
+                cargo_json_error_without_source_span_count = min(
+                    cargo_json_error_without_source_span_count
+                    + stream_diagnostics["cargo_json_error_without_source_span_count"], 256)
+                cargo_json_os_error_kinds.update(stream_diagnostics["cargo_json_os_error_kinds"])
                 cargo_json_build_finished_events = min(
                     cargo_json_build_finished_events
                     + stream_diagnostics["cargo_json_build_finished_events"], 256)
@@ -1155,6 +1197,9 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
             ],
             "cargo_json_compiler_messages": cargo_json_compiler_messages,
             "cargo_json_error_messages": cargo_json_error_messages,
+            "cargo_json_error_source_span_count": cargo_json_error_source_span_count,
+            "cargo_json_error_without_source_span_count": cargo_json_error_without_source_span_count,
+            "cargo_json_os_error_kinds": sorted(cargo_json_os_error_kinds),
             "cargo_json_build_finished_events": cargo_json_build_finished_events,
         }
         diagnostics.append({
