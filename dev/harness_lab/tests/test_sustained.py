@@ -565,24 +565,10 @@ mod tests {
             })
         self.addCleanup(shutil.rmtree, Path(trial["workspace"]).parent, ignore_errors=True)
         calls = trial["tool_calls"]
-        submissions = [call for call in calls if call.get("job", {}).get("action") == "submit"]
-        observations = [call for call in calls if call.get("tool") == "job"]
-        self.assertEqual(len(submissions), 1)
-        job_id = submissions[0]["job"]["job_id"]
-        self.assertTrue(job_id)
-        exact = [call for call in observations if call.get("job", {}).get("job_id") == job_id]
-        running = [call for call in exact if call.get("job", {}).get("status") == "running"]
-        self.assertGreaterEqual(len(running), 2, calls)
-        self.assertTrue(_observed_completed_job(exact, job_id), calls)
-        first_running_at = running[0]["finished_elapsed_ms"]
-        second_running_at = running[1]["finished_elapsed_ms"]
-        intervening = [call for call in calls
-                       if first_running_at < call.get("started_elapsed_ms", 0) < second_running_at
-                       and call.get("tool") in {"write", "edit", "apply_patch"}]
-        self.assertGreaterEqual(len(intervening), 1, calls)
-        self.assertEqual(trial["event_observation_state"], "measured_no_gap")
         receipt_path = os.environ.get("CODEGG_H006_JOB_RECEIPT")
         if receipt_path:
+            # Preserve the bounded receipt before assertions so failed lifecycle
+            # checks still leave enough sanitized evidence to diagnose the job.
             receipt = {
                 "schema_version": 1,
                 "provider": "local-openai-fixture",
@@ -602,6 +588,23 @@ mod tests {
             path = Path(receipt_path)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+
+        submissions = [call for call in calls if call.get("job", {}).get("action") == "submit"]
+        observations = [call for call in calls if call.get("tool") == "job"]
+        self.assertEqual(len(submissions), 1)
+        job_id = submissions[0]["job"]["job_id"]
+        self.assertTrue(job_id)
+        exact = [call for call in observations if call.get("job", {}).get("job_id") == job_id]
+        running = [call for call in exact if call.get("job", {}).get("status") == "running"]
+        self.assertGreaterEqual(len(running), 2, calls)
+        self.assertTrue(_observed_completed_job(exact, job_id), calls)
+        first_running_at = running[0]["finished_elapsed_ms"]
+        second_running_at = running[1]["finished_elapsed_ms"]
+        intervening = [call for call in calls
+                       if first_running_at < call.get("started_elapsed_ms", 0) < second_running_at
+                       and call.get("tool") in {"write", "edit", "apply_patch"}]
+        self.assertGreaterEqual(len(intervening), 1, calls)
+        self.assertEqual(trial["event_observation_state"], "measured_no_gap")
 
     def test_failed_background_job_cannot_satisfy_h006_completion(self):
         calls = [{"tool": "job", "job": {"job_id": "job-123", "status": "failed"}}]
