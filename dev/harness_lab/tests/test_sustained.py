@@ -298,6 +298,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "cargo_json_error_without_source_span_count": 1,
             "cargo_json_os_error_kinds": [],
             "cargo_json_error_origins": [],
+            "cargo_json_error_message_kinds": [],
             "cargo_json_build_finished_events": 0,
         }])
         self.assertNotIn("PRIVATE_EXECUTOR_TEXT", json.dumps(diagnostic))
@@ -320,6 +321,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "cargo_json_error_without_source_span_count": 0,
             "cargo_json_os_error_kinds": [],
             "cargo_json_error_origins": [],
+            "cargo_json_error_message_kinds": [],
             "cargo_json_build_finished_events": 0,
         }
         self.assertEqual(diagnostic, expected)
@@ -344,6 +346,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "cargo_json_error_without_source_span_count": 1,
             "cargo_json_os_error_kinds": [],
             "cargo_json_error_origins": ["core:lib"],
+            "cargo_json_error_message_kinds": [],
             "cargo_json_build_finished_events": 0,
         })
         os_error_event = json.dumps({
@@ -358,6 +361,23 @@ class H006FailureDiagnosticTest(unittest.TestCase):
         self.assertEqual(os_error_diagnostic["cargo_json_os_error_kinds"], ["permission_denied"])
         self.assertEqual(os_error_diagnostic["cargo_json_error_without_source_span_count"], 1)
         self.assertNotIn("PRIVATE_EXECUTOR_PATH", json.dumps(os_error_diagnostic))
+
+        driver_error_event = json.dumps({
+            "reason": "compiler-message",
+            "package_id": "path+file:///workspace/job-check/core#job-core@0.1.0",
+            "target": {"kind": ["lib"]},
+            "message": {
+                "level": "error",
+                "message": "unknown option PRIVATE_EXECUTOR_FLAG",
+            },
+        })
+        driver_error_diagnostic = _h006_compiler_diagnostics(driver_error_event)
+        self.assertEqual(
+            driver_error_diagnostic["cargo_json_error_message_kinds"],
+            ["invalid_compiler_argument"],
+        )
+        self.assertEqual(driver_error_diagnostic["cargo_json_error_origins"], ["core:lib"])
+        self.assertNotIn("PRIVATE_EXECUTOR_FLAG", json.dumps(driver_error_diagnostic))
 
 
 class LongHorizonNativeJobTest(unittest.TestCase):

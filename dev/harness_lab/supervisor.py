@@ -972,6 +972,26 @@ _H006_CARGO_FIXTURE_PACKAGES = {
     "job-cli": "cli",
 }
 _H006_CARGO_TARGET_KINDS = {"lib", "bin", "test", "example", "bench", "custom-build"}
+_H006_COMPILER_MESSAGE_KINDS = (
+    ("invalid_compiler_argument", (
+        "unknown option", "unrecognized option", "unknown codegen option",
+        "unknown print request", "multiple input filenames", "unexpected argument",
+    )),
+    ("target_configuration", (
+        "unknown target", "target specification", "unsupported target",
+        "can't find crate for `std`", "can't find crate for `core`",
+    )),
+    ("toolchain_invocation", (
+        "failed to run `rustc`", "could not execute process", "failed to spawn",
+        "failed to execute",
+    )),
+    ("compiler_internal_failure", (
+        "internal compiler error", "compiler unexpectedly panicked", "thread 'rustc' panicked",
+    )),
+    ("profile_configuration", (
+        "panic=abort", "panic strategy", "test profile",
+    )),
+)
 
 
 _H006_OS_ERROR_KINDS = {
@@ -1019,6 +1039,7 @@ def _h006_compiler_diagnostics(text: str) -> dict[str, Any]:
     compiler_error_without_source_span_count = 0
     compiler_error_os_kinds: set[str] = set()
     compiler_error_origins: set[str] = set()
+    compiler_error_message_kinds: set[str] = set()
     build_finished_count = 0
     lines = bounded.splitlines()
     sampled_lines = lines if len(lines) <= 256 else lines[:128] + lines[-128:]
@@ -1069,6 +1090,11 @@ def _h006_compiler_diagnostics(text: str) -> dict[str, Any]:
         diagnostic_text = "\n".join(
             value for value in (message, rendered) if isinstance(value, str)
         )
+        lowered_diagnostic_text = diagnostic_text.lower()
+        compiler_error_message_kinds.update(
+            kind for kind, markers in _H006_COMPILER_MESSAGE_KINDS
+            if any(marker in lowered_diagnostic_text for marker in markers)
+        )
         for raw_os_error in re.findall(r"\bos error\s+(\d{1,3})\b", diagnostic_text, re.IGNORECASE):
             os_error_kind = _H006_OS_ERROR_KINDS.get(int(raw_os_error))
             if os_error_kind:
@@ -1088,6 +1114,10 @@ def _h006_compiler_diagnostics(text: str) -> dict[str, Any]:
             compiler_error_without_source_span_count, 256),
         "cargo_json_os_error_kinds": sorted(compiler_error_os_kinds),
         "cargo_json_error_origins": sorted(compiler_error_origins)[:8],
+        "cargo_json_error_message_kinds": [
+            kind for kind, _markers in _H006_COMPILER_MESSAGE_KINDS
+            if kind in compiler_error_message_kinds
+        ],
         "cargo_json_build_finished_events": min(build_finished_count, 256),
     }
 
@@ -1159,6 +1189,7 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
         compiler_error_families: set[str] = set()
         cargo_json_os_error_kinds: set[str] = set()
         cargo_json_error_origins: set[str] = set()
+        cargo_json_error_message_kinds: set[str] = set()
         cargo_json_compiler_messages = 0
         cargo_json_error_messages = 0
         cargo_json_error_source_span_count = 0
@@ -1210,6 +1241,8 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
                     + stream_diagnostics["cargo_json_error_without_source_span_count"], 256)
                 cargo_json_os_error_kinds.update(stream_diagnostics["cargo_json_os_error_kinds"])
                 cargo_json_error_origins.update(stream_diagnostics["cargo_json_error_origins"])
+                cargo_json_error_message_kinds.update(
+                    stream_diagnostics["cargo_json_error_message_kinds"])
                 cargo_json_build_finished_events = min(
                     cargo_json_build_finished_events
                     + stream_diagnostics["cargo_json_build_finished_events"], 256)
@@ -1227,6 +1260,10 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
             "cargo_json_error_without_source_span_count": cargo_json_error_without_source_span_count,
             "cargo_json_os_error_kinds": sorted(cargo_json_os_error_kinds),
             "cargo_json_error_origins": sorted(cargo_json_error_origins)[:8],
+            "cargo_json_error_message_kinds": [
+                kind for kind, _markers in _H006_COMPILER_MESSAGE_KINDS
+                if kind in cargo_json_error_message_kinds
+            ],
             "cargo_json_build_finished_events": cargo_json_build_finished_events,
         }
         diagnostics.append({
