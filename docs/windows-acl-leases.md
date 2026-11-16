@@ -36,7 +36,8 @@ against `Cargo.toml`, `src/lib.rs`, `src/managed_process.rs`,
 - Journal records contain the root owner SID, volume and file identity, and
   original and expected DACLs. Restoration rechecks those values and preserves
   the record on drift.
-- The current test path rejects populated deny roots. The journal root is
+- The normal test path rejects populated deny roots; a separate test-only
+  forensic probe exercises disposable populated roots. The journal root is
   `sandbox/acl-leases` below the daemon root, which honors
   `CODEGG_DAEMON_HOME`.
 - This update did not re-run hosted Windows tests or requalify a production

@@ -81,7 +81,7 @@ Params, all optional:
 | Field | Type | Meaning |
 |---|---|---|
 | `clientName` | string, ≤ 64 | Host identity, for diagnostics only. |
-| `clientVersion` | string, ≤ 32 | Host version, for diagnostics only. |
+| `clientVersion` | string, ≤ 64 | Host version, for diagnostics only. |
 | `capabilities` | string[] | Capabilities the host requires of CodeGG. |
 
 Result:
@@ -301,7 +301,7 @@ Error classes in v1:
 | `model_not_supported` | The model exists but the request shape is unsupported (for example a prefill refusal). | no |
 | `context_length` | The request exceeds the model's context. | no |
 | `rate_limit` | The upstream is throttling. | yes |
-| `invalid_request` | The request or descriptor is malformed. Descriptor validation names the field and does not echo its value. | no |
+| `invalid_request` | The request or descriptor is malformed. Malformed descriptor shapes get a generic error; field validation identifies the field without echoing its value. | no |
 | `transport` | The upstream could not be reached, or the stream broke. | yes |
 | `protocol` | The upstream answered something this build cannot parse. | no |
 | `upstream` | Any other provider-reported failure. | no |
@@ -339,7 +339,7 @@ and never persisted.
 | `displayName` | no | ≤ 64 characters, diagnostics only. |
 | `baseUrl` | yes | Absolute `http`/`https` URL. |
 | `protocol` | yes | v1 allows `chat_completions` only. |
-| `headers` | no | At most 16 `{name, value}` pairs. Valid HTTP header names, no duplicates, no CR/LF in a value, ≤ 8 KiB total. Auth, content-type and user-agent names are reserved and refused. |
+| `headers` | no | At most 16 `{name, value}` pairs. Valid HTTP header names, no duplicates, no CR/LF in a value, ≤ 8 KiB total. Authorization, Proxy-Authorization, Content-Type, and User-Agent names are reserved and refused. |
 | `credential` | yes | `{"kind":"api_key","value":"…"}` or `{"kind":"env","name":"VAR"}`. The `env` form reads that variable from CodeGG's environment at registration; the credential is never persisted. |
 | `models` | no | At most 64 entries. Optional entries supply model metadata; an empty list is legal and CodeGG tries model discovery at the endpoint. |
 | `models[].id` | yes | Any model id the endpoint accepts. It is **not** checked against a built-in list. |
@@ -467,3 +467,9 @@ Checked 2026-11-15 against `src/host/mod.rs`, `src/host/session.rs`,
   configuration-backed sessions, clarified that `full-host` disables
   filesystem containment, and removed the unsupported fixed cancellation
   deadline. The sample now uses `auto` approval with `workspace-write`.
+- Corrected protocol details: `clientVersion` is limited to 64 characters;
+  malformed descriptor shapes get generic errors while field validation names
+  fields without echoing values; reserved headers include Authorization,
+  Proxy-Authorization, Content-Type, and User-Agent; inline model ids are not
+  checked against a built-in catalog; `supportsTools` defaults to true; and an
+  `env` credential is resolved from CodeGG's environment at registration.

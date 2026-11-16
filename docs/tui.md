@@ -54,12 +54,10 @@ Two consequences worth knowing:
   later turns; in-flight work keeps its captured directory. Changing projects
   or managed checkouts still uses the authorized session launch/fork/switch
   flow.
-- The sidebar is keyboard-focusable and includes an Agent Runs tree for nested
-  run inspection. The tree renders the active projection turn's bounded run
-  nodes parent-first, with status, attention, progress, and joined
-  branch/worktree/result-commit hints. It is a projection view, not a second
-  run store. Pressing Enter on a node delegates to the lazy run-detail surface
-  rather than copying transcripts into sidebar state.
+- The sidebar includes an Agent Runs tree for inspecting nested runs. It
+  shows run and group summaries, including status, progress, and branch or
+  worktree details. Press `Enter` on a run to open its detail view; transcripts
+  stay in that view rather than being copied into the sidebar.
 
 Switch tabs with `NextProjectTab` / `PreviousProjectTab` / `SelectProjectTabByIndex`
 and close one with `CloseProjectTab`. A local project picker opens a directory:
@@ -127,8 +125,8 @@ Discover commands in-app instead:
 
 - Type `/` into the prompt to open the command palette, which filters
   live as you type.
-- `/help` opens the help dialog, the full, current list of keybindings. **Type
-  to filter it**: terms are matched against the key, action, section, and
+- `/help` opens the current keybinding list. **Type to filter it**: terms
+  are matched against the key, action, section, and
   condition, so `ctrl alt` or `sidebar` narrows to what you want. Scroll with
   the arrow keys, PageUp/PageDown, Home, and End. `Esc` clears the filter, and a
   second `Esc` closes the dialog.
@@ -239,11 +237,11 @@ anywhere. Use `/panels` mid-prompt. In `INS` mode, `Shift+S` is just the letter
 `Enter` on a row is **one act**, and the panel then tells you which of three
 things it was:
 
-- the panel **fills**; it shows its content, and takes your keyboard;
-- a **load started**, the panel says it is loading, and the box arrives on its
-  own (that is where `Shift+L` docks it);
-- the panel **cannot act**; it says why, in the panel, e.g. *memory search
-  needs a query* or *no pending plan confirmation*.
+- **Panel opened:** it shows the content and takes your keyboard.
+- **Loading:** the panel says so, and the box opens when ready. Use `Shift+L`
+  to dock it.
+- **Unavailable:** the panel explains why, such as a missing memory-search
+  query or no pending plan confirmation.
 
 Every panel in the list does one of those three. A row that could only ever sit
 empty is not in the list: the Workspace dashboard is a full view of its own,
@@ -271,15 +269,15 @@ what Enter will do:
 [NOR] [build] [BUILD] [CHAT]
 ```
 
-`[NOR]`/`[INS]` is your typing mode. `[BUILD]` and `[CHAT]` are the two
-destinations, the bright one is armed. `[CHAT]` lights up only while the chat
+`[NOR]`/`[INS]` is your typing mode. `[BUILD]` and `[CHAT]` mark the two
+destinations. The bright one is armed. `[CHAT]` lights up only while the chat
 side panel has the keyboard, so it cannot be armed by accident.
 
-To reach the side panel, press `Esc` (to get to `[NOR]`) and then the
-directional that points at it, `Shift+→` or `Shift+L` on the default layout.
-The opposite direction returns you. These work in `[NOR]` mode only, while you
-are in `[INS]`, `Shift+→` moves the caret as usual. The panel you are
-controlling shows a `▸` marker and says where Enter will go.
+To enter the side panel, press `Esc` to switch to `[NOR]`, then use the
+directional that points at it (`Shift+→` or `Shift+L` in the default layout).
+The opposite direction returns you to the buffer. These bindings work only in
+`[NOR]`; in `[INS]`, `Shift+→` moves the caret. The panel you are controlling
+shows a `▸` marker and says where Enter will go.
 
 There are deliberately two indicators because they answer different
 questions: the composer badge says *where the text goes*, and the `▸` marker
@@ -292,7 +290,7 @@ A few commonly used entries:
 | `/help` | Open in-app help |
 | `/status` | Session and runtime status |
 | `/agents` | List available agents |
-| `/sessions` | Session browser scoped to the active project, the list plus **Subagents** and **Jobs** sections for live work (`j`/`k` move across all three, skipping the headings; `Enter` opens a session or a subagent's run view; job rows are read-only). Opening a session re-reads its daemon-authorized workspace binding before updating the tab root; an unavailable or stale binding leaves the current session active. The dialog labels its project scope and live-work loading or unavailable state separately from an authoritative empty result. |
+| `/sessions` | Browse the active project's sessions, subagents, and jobs. `Enter` opens a session or run; job details are read-only. Opening a session rechecks its daemon-authorized workspace binding. A stale or unavailable binding leaves the current session active. |
 | `/subagent-send` | Point the next prompt at one running subagent (`/subagent-send off` clears it); the message goes to the agent running the current turn, which decides whether to relay it |
 | `/queue` | Prompts waiting for this session's next turn (`j`/`k` move, `[`/`]` reorder, `a` add, `e` edit, `d` delete, `s` send now, `r` refresh) |
 | `/policy` | Current approval and sandbox policy detail |
@@ -302,7 +300,7 @@ A few commonly used entries:
 | `/themes` | Theme picker (`/theme` is an alias) |
 | `/connect`, `/connections` | Provider connection management |
 | `/doctor` | In-app diagnostics for the search backend, MCP servers, and providers |
-| `/nodes` | Host telemetry of the configured remote Eggwork nodes, state, freshness, and the dimensions each node actually reported |
+| `/nodes` | Inspect configured remote Eggwork nodes, their state and freshness, and the dimensions each node reported |
 | `/reload` | Refresh project runtime assets: `/reload skills`, `/reload agents` |
 | `/init` | Review a bounded root `AGENTS.md` proposal; press `a` in the preview to publish |
 | `/exit` | Quit (`quit` and `q` are aliases) |
@@ -320,8 +318,8 @@ you do not press it again the message goes away on its own and nothing
 happens. A dialog is still dismissed by the first `Ctrl+C`, so a dialog takes
 two presses to leave.
 
-Registry metadata, domain, scope, and source exist for palette and help
-presentation only. It does not bypass dispatch, observer mode, daemon
+Command metadata (domain, scope, and source) is used only to present palette
+and help information. It does not bypass dispatch, observer mode, daemon
 authorization, or permission gates.
 
 ### The composer's box grows with your text
@@ -351,9 +349,9 @@ keyboard is:
 | The composer is in `[NOR]` mode | A **solid block** at the caret |
 | Another panel has the keyboard | **No cursor at all** in the composer |
 
-The blinking cursor is your terminal's own cursor, so it blinks at whatever
-rate your terminal is configured for, some terminals show it steady, and the
-`[INS]`/`[NOR]` badge is what tells the two modes apart.
+The blinking cursor is your terminal's own cursor, so its blink rate depends
+on your terminal settings. Some terminals show it steadily. The `[INS]`/`[NOR]`
+badge distinguishes the two modes.
 
 When you select a side panel, the composer stops showing a caret entirely.
 That is deliberate: a caret sitting in a box you are not typing in is a lie
@@ -372,8 +370,7 @@ motions are the way to move it:
 | `←` / `→` | The same two moves, for people who prefer the arrows |
 | `Home` / `End` | Jump to the start or the end of the line |
 
-`h` and `l` work in **both** layouts (the default one and the vim one) so
-they are there whichever you use.
+`h` and `l` work in both the default and vim layouts.
 
 In the editor, `Alt+o` expands the selection to the next enclosing syntax
 range, and `Alt+i` contracts it to the previous range. These gestures ask the
@@ -387,18 +384,14 @@ The word motions move it by word instead of by character:
 | `w` | Move to the start of the next word |
 | `b` | Move to the start of the previous word |
 | `e` | Move to the last character of the word at the caret |
-| `j` / `k` | Move down / up a row of the box, keeping the column, only when the composer content spans more than one row |
+| `j` / `k` | Move down / up a row of the composer when the composer content spans more than one row |
 
-`j` and `k` only move the caret when the **composer content spans more than
-one row**, when there is more of it than a single row. When the composer holds
-one row, they scroll the conversation instead, which is what they have always
-done. The keys come back on their own as soon as the composer holds more than
-one row again.
+`j` and `k` move the caret only when the composer content spans more than one
+row. With one row, they scroll the conversation.
 
-`Ctrl+u` and `Ctrl+d` **page**. They page the **composer** when the composer
-content spans more than one row, and the **conversation** when it does not,
-the same two keys, and the same page size either way. The page is not
-restricted to `[NOR]`: it behaves the same in both modes.
+`Ctrl+u` and `Ctrl+d` page the composer when the composer content spans more
+than one row. Otherwise, they page the conversation, with the same page size in
+either mode.
 
 ### The composer's own keymap in `[NOR]` mode
 
@@ -490,8 +483,8 @@ Two keys put the caret somewhere new and start you typing:
 | `a` | Start typing **after** the character under the caret |
 | `o` | Open an empty line below and type in it |
 
-`a` moves the caret one character forward (never past the end of its own line
-)and `o` opens a new line below the one you are on. `o` is an edit, so `u`
+`a` moves the caret one character forward, never past the end of its own line,
+and `o` opens a new line below the one you are on. `o` is an edit, so `u`
 takes the new line back; `a` only moves the caret, so there is nothing to undo.
 
 `a` is an **insert entry**, not one of the caret motions: it places the caret
@@ -556,8 +549,8 @@ insert-after key.
 
 `i` still takes you from `[NOR]` back to typing. That was already true in the
 default layout; in the vim layout it is now the same gesture instead of the
-command palette, which moved to `Ctrl+Alt+E`. The Helix editing verbs above (
-motions, selection, delete and paste, undo and redo) are all in place.
+command palette, which moved to `Ctrl+Alt+E`. The Helix editing verbs are all
+in place: motions, selection, deletion, paste, undo, and redo.
 
 The slash command is unaffected: typing `/` at the start of the composer still
 opens the command palette, exactly as before, in both layouts.
@@ -570,6 +563,7 @@ opens is a different box: it is opened to type a search, so `y` there is a
 letter you type into the filter, and it is not listed as a verb in it. Both
 boxes list the composer's own keys, those are documentation, and a reader who
 opens `/help` is exactly the reader who needs to know what `w` does.
+
 ### Typing while the agent is already working
 
 You can keep typing during a turn, and pressing Enter does not throw the text
@@ -813,8 +807,8 @@ Four surfaces show this projection of live work:
 
 On an open subagent tab, `Ctrl+Alt+R` in either mode retries its transcript read.
 
-`Ctrl+T` works in **both** modes, the app boots in `[INS]`, and a chord that
-first needs an `Esc` is a chord most people never find.
+`Ctrl+T` works in both modes. The app starts in `[INS]`, so this chord is
+available without first pressing `Esc`.
 
 `Shift+N`, `Shift+P`, and `Shift+X` are `[NOR]`-only. In `[INS]` they are
 ordinary capital letters, so composing a word containing `N`, `P`, or `X` never
@@ -824,12 +818,12 @@ letter is `[NOR]`-only, the chord is live in both modes.
 
 ### The tasks overlay
 
-`Ctrl+T` opens a single overlay listing **todos, then subagents, then jobs**,
-each under its own heading. A group with nothing in it is left out entirely,
-there are no empty headings. `j`/`k` move, `Enter` opens a subagent as a tab,
-`Enter` opens a child run view or job detail; `i` inspects a durable child run or linked job by its stable ID. The dialog shows job attempt history, and `Esc` closes it. With nothing in any group the overlay says
-`Nothing pending` rather than opening to a blank strip, so a quiet session still
-confirms the key did something.
+`Ctrl+T` opens one overlay listing **todos, then subagents, then jobs**, each
+under its own heading. Empty groups are omitted. `j`/`k` move through the list.
+`Enter` opens a subagent tab, child-run view, or job detail, depending on the
+selected row. `i` inspects a durable child run or linked job by its stable ID.
+The dialog shows job attempt history; press `Esc` to close it. If every group is
+empty, the overlay says `Nothing pending` rather than opening to a blank view.
 
 It shows what the turn is *waiting on*, not what it has done: finished
 subagents and completed jobs are filtered out. When a job reports a state this
@@ -848,16 +842,15 @@ key. `/sessions` opens on the
 active session and clears work rows when you select a different session whose
 projection is not loaded, showing that live work is unavailable.
 
-Opening it from `[INS]` switches to `[NOR]`, because the overlay's own keys (
-`j`/`k`, `Enter`, `Esc`) are `[NOR]` gestures and must never be claimed while
-you are composing. Closing it hands `[INS]` straight back, so peeking at pending
-work never ends composition mode. You can also press `i` to go back to typing
-with the overlay left open.
+Opening it from `[INS]` switches to `[NOR]`, because the overlay's own keys
+(`j`/`k`, `Enter`, `Esc`) are `[NOR]` gestures and must not be claimed while
+you are composing. Closing it restores `[INS]`, so checking pending work does
+not end composition mode. You can also press `i` to resume typing with the
+overlay left open.
 
-Above the input, the one-line todo strip stays on screen at all times. It has no
-expanded form of its own any more: the full list is the overlay's first group,
-next to the subagents and jobs, because "what is this session waiting on" is one
-question and answering it in two places meant the two could disagree.
+When todos exist, a one-line progress summary appears above the input. The full
+list is in the `Ctrl+T` overlay with subagents and jobs; the buffer has no
+expanded todo view.
 
 ### When the agent is waiting on other work
 
@@ -866,9 +859,9 @@ running, and the live jobs the session is waiting on, in that order, so a long
 fan-out looks like a wait rather than a hang. Live jobs count here too, which
 is why a job running under a finished turn is still visible.
 
-That is the only place this state appears. The main buffer has no status row
-of its own: the line above the input carries the composer's `space help`
-chord, a latched failure, and an armed exit confirmation, nothing else.
+The overlay brings todos, subagents, and jobs together. The main buffer has no
+dedicated status row; its situational line can show the composer hint, a latched
+failure, an armed exit confirmation, or the queued-prompt count.
 
 ### Subagent tabs
 
@@ -2762,24 +2755,24 @@ rest of the information panels are all one widget, so a single panel of theirs
 says `j/k scroll` and `/init` adds `a publish`, because that is the one
 of them that has an approve key. Nothing advertises a key the box does not have.
 
-**A docked box never sees the arrow keys, `Esc`, or uppercase `H`/`J`/`K`/`L`.**
-While a panel has the keyboard, the host answers those before the box is asked:
-the arrows and bare uppercase `H`/`J`/`K`/`L` move *between panels*, and `Esc`
-returns the keyboard to the input. So a docked box's line spells its scrolling
-verbs `j/k` and never `↑/↓`, and `/tasks` does not offer `J/K reorder` in a
-column. The same `J` that reorders modally moves panels when docked, which is
-why those verbs are missing rather than forgotten.
+**A docked panel does not receive directional gestures or bare uppercase
+`H`/`J`/`K`/`L` as local keys.** The host uses those gestures to move between
+panels, so a panel's hint line lists `j`/`k` for scrolling rather than `↑`/`↓`,
+and `/tasks` does not offer `J/K reorder` while docked. The same `J` that
+reorders modally moves between panels when docked.
 
-**A docked box has no `Esc`.** `Esc` returns the keyboard to the input, and
-`Shift+←` brings the box back out of the column as a window you can close. So
-when you want the box *gone* rather than just stepped out of, press `Shift+←`
-first. The in-box window keeps `Esc`/`Enter` closing it exactly as before.
+`Esc` goes to the active panel and has panel-specific behavior. In the file
+browser it leaves filter mode, when active, without returning focus to the
+composer. Press `Shift+Q` to leave a docked panel; it stays docked. From the
+composer, use the directional gesture pointing toward its edge to focus it
+again. In a modal `/files` box, `Shift+Q` closes the box.
 
 Two boxes are worth knowing the shape of. `/diff` and `/plan` have no close key
-in a column at all. Their `Enter` key closes the window, but a docked box has no
-window left to close, so `Shift+←` is the way out. `/keybinds` in export or
-import mode is the same shape: `Esc` is the only exit from those two modes, and
-a column does not deliver it, so use `Shift+←` and come back to the list.
+in a column at all. Their `Enter` key closes the window, but a docked panel has
+no window left to close, so use `Shift+Q` or the directional gesture away from
+its edge to return focus to the composer. The `/keybinds` dialog has separate
+export and import modes: its modal footer shows the relevant `Esc` action, while
+the docked panel's hint line omits `Esc`.
 
 The in-box modal keeps its own keymap along the bottom, because a modal box owns
 its whole surface. The side column does not: a column too narrow for a keymap
@@ -2852,3 +2845,18 @@ Checked 2026-10-23 against the source tree.
 
 - Corrected 2026-10-27: the information-panel command with the `a publish`
   key is `/init`, not `/project-init` (`src/tui/command.rs:579`).
+- Corrected and rechecked 2026-11-15: removed the stale claim that `Esc`
+  returns focus from a docked panel. `Shift+Q` is the general focused-panel
+  exit in Normal mode; for the file tree, `Esc` leaves filter mode without
+  returning focus. `Shift+Q` closes the modal `/files` box
+  (`src/tui/panels/mod.rs`, `src/tui/commands/file_tree.rs`,
+  `src/tui/components/dialogs/files.rs`).
+- Corrected and rechecked 2026-11-15: earlier text incorrectly said the todo
+  summary stays visible at all times; source renders it only when todos exist.
+  The `Ctrl+T` overlay groups todos, subagents, and jobs, and the situational
+  hint can include a queued-prompt count (`src/tui/app/mod.rs`
+  (`todo_strip_height`, `situational_hints`),
+  `src/tui/app/render.rs` (`render_todo_strip`)).
+- Rechecked 2026-11-15: the Agent Runs sidebar section renders group, run
+  status, progress, and branch or worktree details
+  (`src/tui/components/sidebar.rs`).
