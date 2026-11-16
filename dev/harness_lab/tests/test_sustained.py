@@ -379,6 +379,35 @@ class H006FailureDiagnosticTest(unittest.TestCase):
         self.assertEqual(driver_error_diagnostic["cargo_json_error_origins"], ["core:lib"])
         self.assertNotIn("PRIVATE_EXECUTOR_FLAG", json.dumps(driver_error_diagnostic))
 
+        filesystem_event = json.dumps({
+            "reason": "compiler-message",
+            "package_id": "path+file:///workspace/job-check/core#job-core@0.1.0",
+            "target": {"kind": ["lib"]},
+            "message": {
+                "level": "error",
+                "message": "failed to write PRIVATE_EXECUTOR_PATH: permission denied",
+                "spans": [],
+            },
+        })
+        filesystem_diagnostic = _h006_compiler_diagnostics(filesystem_event)
+        self.assertEqual(
+            filesystem_diagnostic["cargo_json_error_message_kinds"], ["filesystem_access"])
+        self.assertEqual(filesystem_diagnostic["cargo_json_error_origins"], ["core:lib"])
+        self.assertNotIn("PRIVATE_EXECUTOR_PATH", json.dumps(filesystem_diagnostic))
+
+        environment_event = json.dumps({
+            "reason": "compiler-message",
+            "message": {
+                "level": "error",
+                "message": "environment variable PRIVATE_ENV is not set",
+                "spans": [],
+            },
+        })
+        environment_diagnostic = _h006_compiler_diagnostics(environment_event)
+        self.assertEqual(
+            environment_diagnostic["cargo_json_error_message_kinds"], ["environment_configuration"])
+        self.assertNotIn("PRIVATE_ENV", json.dumps(environment_diagnostic))
+
 
 class LongHorizonNativeJobTest(unittest.TestCase):
     fixture = REPO_ROOT / "dev" / "harness_lab" / "fixtures" / "long_horizon_rust_job"

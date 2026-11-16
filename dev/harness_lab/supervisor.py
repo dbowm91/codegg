@@ -991,6 +991,23 @@ _H006_COMPILER_MESSAGE_KINDS = (
     ("profile_configuration", (
         "panic=abort", "panic strategy", "test profile",
     )),
+    ("filesystem_access", (
+        "permission denied", "operation not permitted", "no such file or directory",
+        "failed to open", "could not open", "failed to read", "could not read",
+        "failed to write", "could not write", "failed to create", "could not create",
+        "read-only file system", "file not found",
+    )),
+    ("environment_configuration", (
+        "environment variable", "not set", "not defined", "invalid environment",
+    )),
+    ("cargo_configuration", (
+        "failed to load config", "failed to parse config", "could not find cargo.toml",
+        "failed to find a package",
+    )),
+    ("resource_exhaustion", (
+        "too many open files", "resource temporarily unavailable", "file name too long",
+        "no space left on device", "out of memory", "cannot allocate memory",
+    )),
 )
 
 
