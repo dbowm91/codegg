@@ -1076,6 +1076,8 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
         }) if isinstance(raw_failures, list) else []
         stdout_category = "unavailable"
         stderr_category = "unavailable"
+        stdout_log_bytes: int | None = None
+        stderr_log_bytes: int | None = None
         compiler_error_codes: set[str] = set()
         compiler_error_families: set[str] = set()
         cargo_json_compiler_messages = 0
@@ -1092,6 +1094,10 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
                 with log_path.open("rb") as log:
                     log.seek(0, os.SEEK_END)
                     size = log.tell()
+                    if stream_name == "stdout_log":
+                        stdout_log_bytes = min(size, 1_000_000)
+                    else:
+                        stderr_log_bytes = min(size, 1_000_000)
                     if size <= 16 * 1024:
                         log.seek(0)
                         sample = log.read(16 * 1024)
@@ -1135,6 +1141,8 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
             "exit_code": exit_code,
             "duration_ms": duration_ms,
             "output_truncated": output_truncated,
+            "stdout_log_bytes": stdout_log_bytes,
+            "stderr_log_bytes": stderr_log_bytes,
             "failure_classes": failure_classes,
             "stdout_category": stdout_category,
             "stderr_category": stderr_category,
