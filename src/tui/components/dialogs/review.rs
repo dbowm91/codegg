@@ -1,35 +1,28 @@
 use std::sync::Arc;
 
 use crossterm::event::KeyEvent;
-use ratatui::layout::{Constraint, Layout, Margin, Rect};
-use ratatui::prelude::Widget;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem};
+use ratatui::widgets::{List, ListItem};
 use ratatui::Frame;
 
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
+use super::super::section::{Section, SectionFrame};
 use crate::tui::app::TuiMsg;
-
-/// Who owns this render's chrome.
-///
-/// The two paths differ only in that. [`Chrome::Owned`] is the modal box, which
-/// draws its own border, heading and keymap footer; [`Chrome::Hosted`] is a
-/// column in a side panel, where the host has already painted all three into
-/// the same rect.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Chrome {
-    Owned,
-    Hosted,
-}
+use crate::tui::components::hint_line::HintLine;
 
 /// The verbs `ReviewMode::FileList` delivers, for the panel host to reuse.
 ///
 /// `handle_key` also answers `↑/↓` and `Esc`; neither survives docking, so
 /// neither is named. See [`HINTS_ARE_MODE_SCOPED`](ReviewMode) below for why
 /// `j/k` appear here but not in [`DIFF_VIEW_HINT`].
-const FILE_LIST_HINT: &str = "j/k move · enter diff";
+fn file_list_hint() -> HintLine {
+    let mut hint = HintLine::new();
+    hint.push("j/k", "move").push("enter", "diff");
+    hint
+}
 
 /// The verbs `ReviewMode::DiffView` delivers, for the panel host to reuse.
 ///
@@ -38,7 +31,11 @@ const FILE_LIST_HINT: &str = "j/k move · enter diff";
 /// docked diff box has exactly one live verb — and advertising both would be
 /// teaching `Esc` to close something the host has already turned into "return
 /// the keyboard to the composer".
-const DIFF_VIEW_HINT: &str = "⌫ back to list";
+fn diff_view_hint() -> HintLine {
+    let mut hint = HintLine::new();
+    hint.push("⌫", "back to list");
+    hint
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReviewMode {
@@ -191,15 +188,15 @@ impl Component for ReviewDialog {
     /// direction bug and the unread field are reported, not fixed here: this
     /// milestone changes chrome and keymaps, and a hint must describe what the
     /// box delivers rather than what it intends to.
-    fn keymap_hint(&self) -> Option<String> {
+    fn keymap_hint_line(&self) -> Option<HintLine> {
         Some(match self.mode {
-            ReviewMode::FileList => FILE_LIST_HINT.to_string(),
-            ReviewMode::DiffView => DIFF_VIEW_HINT.to_string(),
+            ReviewMode::FileList => file_list_hint(),
+            ReviewMode::DiffView => diff_view_hint(),
         })
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        self.render_body(frame, area, theme, Chrome::Owned);
+        self.render_body(frame, area, theme, SectionFrame::Owned);
     }
 
     /// The listing alone: no border, no title, no footer.
@@ -210,11 +207,13 @@ impl Component for ReviewDialog {
     /// not stack — it overwrites all three. `area` is the host's full rect, so
     /// inset by its border first.
     fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        let inner = area.inner(Margin::new(1, 1));
+        let inner = Section::plain(theme)
+            .frame(SectionFrame::Hosted)
+            .draw(area, frame.buffer_mut());
         if inner.height == 0 || inner.width == 0 {
             return;
         }
-        self.render_body(frame, inner, theme, Chrome::Hosted);
+        self.render_body(frame, inner, theme, SectionFrame::Hosted);
     }
 
     fn dialog_type(&self) -> DialogType {
@@ -241,29 +240,22 @@ impl ReviewDialog {
     /// `FileList` and `DiffView` used to be two render functions with two
     /// footers between them, which is exactly the shape where one mode gets
     /// converted and the other does not.
-    fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: Chrome) {
+    fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: SectionFrame) {
         if area.height < 5 {
             return;
         }
 
         match self.mode {
             ReviewMode::FileList => {
-                let block = match chrome {
-                    Chrome::Owned => Some(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(theme.border))
-                            .title(format!(" Changed Files ({}) ", self.items.len())),
-                    ),
-                    Chrome::Hosted => None,
+                let inner = match chrome {
+                    SectionFrame::Owned => {
+                        let title = format!("Changed Files ({})", self.items.len());
+                        Section::new(&title, theme)
+                            .focused(true)
+                            .draw(area, frame.buffer_mut())
+                    }
+                    SectionFrame::Hosted => area,
                 };
-                let inner = match &block {
-                    Some(block) => block.inner(area),
-                    None => area,
-                };
-                if let Some(block) = &block {
-                    block.render(area, frame.buffer_mut());
-                }
 
                 if self.items.is_empty() {
                     let empty = Line::from(Span::styled(
@@ -322,9 +314,14 @@ impl ReviewDialog {
                 let list = List::new(items);
 
                 match chrome {
-                    Chrome::Owned => {
+                    SectionFrame::Owned => {
                         let footer = Line::from(Span::styled(
-                            "↑/↓ navigate  |  Enter diff  |  Esc close",
+                            HintLine::from_items(&[
+                                ("Esc", "close"),
+                                ("j/k", "move"),
+                                ("Enter", "diff"),
+                            ])
+                            .render(0),
                             Style::default().fg(theme.muted),
                         ));
 
@@ -334,28 +331,18 @@ impl ReviewDialog {
                         frame.render_widget(list, chunks[0]);
                         frame.render_widget(footer, chunks[1]);
                     }
-                    Chrome::Hosted => {
+                    SectionFrame::Hosted => {
                         frame.render_widget(list, inner);
                     }
                 }
             }
             ReviewMode::DiffView => {
-                let block = match chrome {
-                    Chrome::Owned => Some(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(theme.border))
-                            .title(" Diff "),
-                    ),
-                    Chrome::Hosted => None,
+                let inner = match chrome {
+                    SectionFrame::Owned => Section::new("Diff", theme)
+                        .focused(true)
+                        .draw(area, frame.buffer_mut()),
+                    SectionFrame::Hosted => area,
                 };
-                let inner = match &block {
-                    Some(block) => block.inner(area),
-                    None => area,
-                };
-                if let Some(block) = &block {
-                    block.render(area, frame.buffer_mut());
-                }
 
                 let Some((old, new)) = &self.diff_content else {
                     let msg = Line::from(Span::styled(
@@ -402,7 +389,7 @@ impl ReviewDialog {
                     frame.render_widget(line, line_area);
                 }
 
-                if chrome == Chrome::Owned {
+                if chrome == SectionFrame::Owned {
                     let footer = Line::from(Span::styled(
                         "Esc/Backspace: back to file list",
                         Style::default().fg(theme.muted),

@@ -46,6 +46,17 @@ records the original migration contract and
 `plans/closure/linux-execution-isolation/012-status.md` records its historical
 evidence. The current canonical mapping is recorded in
 `plans/adrs/linux-command-adr-id-migration.md`.
+
+A third collision was reconciled on 2026-11-14: `main` allocated **ADR-0061** to
+the accepted embedding-host wire decision (landed by PR #228), while the sandbox
+containment line had independently published an accepted default-Linux-containment
+decision under the same number. Main wins the number, as in both earlier
+reconciliations, so the containment record moved from ADR-0061 to **ADR-0063** —
+the next free identifier after main's ADR-0061 and the bundled-palette decision
+the same branch published as ADR-0062. Its decision substance, `accepted` status,
+and 2026-11-10 acceptance date are unchanged; only the canonical identifier and
+its path references moved. The embedding-host decision keeps ADR-0061.
+
 ## Status lifecycle
 
 ```text

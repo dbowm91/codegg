@@ -275,6 +275,7 @@ async fn a_delegated_run_appears_in_no_session_enumeration_and_leaves_the_catalo
         description: "a delegated task".into(),
         depth: 0,
         max_tool_calls: None,
+        max_wall_clock_secs: None,
         parent_model: None,
         workspace_root: Some(std::env::current_dir().expect("workspace root")),
         default_working_directory: None,

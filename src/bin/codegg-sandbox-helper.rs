@@ -6,9 +6,15 @@
 //! normal process context, reports setup state through the private pipe, and
 //! then replaces itself with the target executable.
 //!
-//! This is the only place in the sandbox that uses `unsafe`, and only for
-//! two reasons: the status-pipe descriptor plumbing, and the `sandbox_init`
-//! FFI that the root library cannot make itself (`#![deny(unsafe_code)]`).
+//! This binary carries the sandbox's reviewable `unsafe` blocks: the
+//! status-pipe descriptor plumbing, the `sandbox_init` FFI that the root
+//! library cannot make itself (`#![deny(unsafe_code)]`), the Linux PTY
+//! bootstrap ioctls, and the seccomp filter descriptor. The one shared
+//! exception now lives beside its consumer:
+//! `security::sandbox::linux_mount_view::open_pinned` owns the `openat2`
+//! syscall under an `#[allow(unsafe_code)]`, because the library's Landlock
+//! rule compiler needs the same no-follow open the helper used to keep to
+//! itself.
 
 #[cfg(unix)]
 use codegg::security::sandbox::{
@@ -424,15 +430,19 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
         None
     };
 
+    // Only the process-isolation tier applies a scope, so only it has an ABI
+    // to carry; the filesystem-only tier applies none and reports none.
+    let mut process_scope_abi = None;
     if spec.linux_process_isolation {
-        if let Err(reason) = codegg::security::sandbox::landlock::apply_process_scopes() {
-            fail(
+        match codegg::security::sandbox::landlock::apply_process_scopes() {
+            Ok(abi) => process_scope_abi = Some(abi),
+            Err(reason) => fail(
                 status_fd,
                 SandboxLaunchOutcome::Unavailable {
                     reason: String::new(),
                 },
                 reason,
-            );
+            ),
         }
     }
 
@@ -514,6 +524,20 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
             Ok(())
         });
     }
+    // The last point at which the ABI can be reported: `exec` replaces this
+    // process with Bubblewrap, whose records say nothing about scope. The
+    // record lands ahead of Bubblewrap's, so the parent reads a prefix.
+    if let Some(abi) = process_scope_abi {
+        if let Err(reason) = report_process_scope_abi(status_fd, abi) {
+            fail(
+                status_fd,
+                SandboxLaunchOutcome::SetupError {
+                    reason: String::new(),
+                },
+                reason,
+            );
+        }
+    }
     let error = command.exec();
     drop(pinned_sources);
     fail(
@@ -523,6 +547,20 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
         },
         format!("exec trusted Bubblewrap: {error}"),
     )
+}
+
+/// Report the Landlock process-scope ABI this launch obtained. The descriptor
+/// is also Bubblewrap's `--json-status-fd`, so no flush and no close-on-exec
+/// mark are needed: Bubblewrap writes one line after this one.
+#[cfg(target_os = "linux")]
+fn report_process_scope_abi(fd: RawFd, abi: u32) -> Result<(), String> {
+    let record = codegg::security::sandbox::encode_process_scope_abi_record(abi);
+    let mut writer = unsafe { File::from_raw_fd(fd) };
+    writer
+        .write_all(record.as_bytes())
+        .map_err(|error| format!("write process-scope ABI record: {error}"))?;
+    std::mem::forget(writer);
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -592,62 +630,23 @@ fn seccomp_filter_file(bytes: &[u8]) -> Result<File, String> {
     Ok(file)
 }
 
+/// Pin one mount source by descriptor.
+///
+/// The no-follow open and the device/inode verification are the shared
+/// [`open_pinned`] primitive — the same one the Landlock rule compiler uses —
+/// so the mount view and the ruleset cannot disagree about what "this path"
+/// means. The identity is optional here because device nodes and launch
+/// scratch are mounted without a captured snapshot; a source that has one is
+/// verified against it.
+///
+/// [`open_pinned`]: codegg::security::sandbox::linux_mount_view::open_pinned
 #[cfg(target_os = "linux")]
 fn open_mount_source(
     path: &std::path::Path,
     identities: &[codegg::security::sandbox::SandboxPathIdentity],
 ) -> Result<File, String> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::MetadataExt;
-
-    #[repr(C)]
-    struct OpenHow {
-        flags: u64,
-        mode: u64,
-        resolve: u64,
-    }
-
-    const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
-    const RESOLVE_NO_SYMLINKS: u64 = 0x04;
-    let path_c = CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| "mount source contains a NUL byte".to_string())?;
-    let flags = if path == std::path::Path::new("/dev/null") {
-        libc::O_RDONLY | libc::O_CLOEXEC
-    } else {
-        libc::O_PATH | libc::O_CLOEXEC
-    };
-    let how = OpenHow {
-        flags: flags as u64,
-        mode: 0,
-        resolve: RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
-    };
-    let fd = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            libc::AT_FDCWD,
-            path_c.as_ptr(),
-            &how,
-            std::mem::size_of::<OpenHow>(),
-        ) as RawFd
-    };
-    if fd < 0 {
-        return Err(format!(
-            "cannot pin mount source {} without following aliases: {}",
-            path.display(),
-            std::io::Error::last_os_error()
-        ));
-    }
-    let file = unsafe { File::from_raw_fd(fd) };
-    if let Some(identity) = identities.iter().find(|identity| identity.path == path) {
-        let metadata = file
-            .metadata()
-            .map_err(|error| format!("cannot verify pinned mount source: {error}"))?;
-        if metadata.dev() != identity.device || metadata.ino() != identity.inode {
-            return Err("mount source changed after the workspace lease was captured".into());
-        }
-    }
-    Ok(file)
+    let identity = identities.iter().find(|identity| identity.path == path);
+    codegg::security::sandbox::linux_mount_view::open_pinned(path, identity)
 }
 
 #[cfg(not(unix))]
@@ -681,7 +680,7 @@ mod linux_mount_source_tests {
         let error = open_mount_source(&path, &[identity])
             .expect_err("replacement must not be accepted as the leased mount source");
         assert!(
-            error.contains("mount source changed"),
+            error.contains("changed after its identity was captured"),
             "unexpected identity failure: {error}"
         );
     }

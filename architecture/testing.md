@@ -119,6 +119,15 @@ Measured on 2026-10-21 with `scripts/rust_test_scan.py`:
 The guard's `--self-test` rejects an entry that names no satisfying
 workflow, so the list cannot rot into a list of excuses.
 
+A skip can also be promoted to a **failure** by an environment marker. The
+containment member (`tests/security_permission/sandbox_containment.inc`)
+reads `CODEGG_SANDBOX_QUALIFICATION`: unset, or set to `optional`, keeps the
+skip that lets a developer on a host without a containment backend run the
+suite; any other value makes `require_backend!` panic with the platform's
+own reason. A qualification lane that promises a backend sets it to
+`required`, so a host whose `sandbox-exec` was removed, or whose kernel has
+Landlock disabled, fails the member instead of reporting a green skip.
+
 Two of the twenty opt-ins — `CODEGG_RUN_LINUX_BWRAP_FIRST_HOP` and
 `CODEGG_RUN_LINUX_CGROUP_V2_PROBE` — are set by **no** workflow. They are
 manual probes, and their entries say so explicitly.
@@ -215,6 +224,25 @@ once via `OnceLock`. Use when tests tolerate other tests' data.
 6. Prefer deterministic fakes over subprocesses.
 7. Keep timeouts as failure bounds only.
 8. For multi-threaded tests, set explicit `worker_threads = 2`.
+
+## When a Defect Escapes
+
+A defect that reaches a merged branch uncaught is a process failure, not only a
+code failure — the fix is not complete until the gap that let it through is
+named. `docs/postmortems/` holds those records and
+`scripts/check_postmortems.py` enforces the convention.
+
+The rule: **a fix which escaped gets a postmortem in the same change that adds
+its guard.** A record names its guard and the token that guard must mention, and
+the guard verifies the token appears in the named test's own body — so a
+postmortem cannot claim protection that does not exist.
+
+Two things this deliberately is not. It is not a closure record: closure records
+answer "was this milestone delivered", while postmortems answer "why did the
+suite miss this, and what now makes the miss impossible". And it is not a blame
+log: the required section is the *mechanism*, because "the test asserted
+`matches!` instead of round-tripping the value" is actionable, and "someone was
+careless" is not.
 
 ## Resource-Class Checklist
 
@@ -1332,6 +1360,95 @@ trial comment remains in `ci.yml`, `.config/nextest.toml`,
 `scripts/verify.sh`, or `architecture/testing.md`. Per the M001
 diagnostic recipe, `cargo --timings` remains an ephemeral local
 diagnostic only.
+
+## TUI render invariants
+
+`tests/tui_render/invariants/` makes the six presentation invariants of
+`plans/subsystems/tui-modularity-and-render-invariants-roadmap.md` §2
+executable in one place. One capture helper (`capture.rs`) renders a surface
+and returns every cell with its symbol, foreground, background and modifiers —
+never a string, because a colour regression is invisible to a string and I5 is
+about colour. `paint.rs`, `focus.rs` and `baseline.rs` are the three
+measurement bodies.
+
+Run it as one family member:
+
+```bash
+cargo test --test tui_render -- invariants
+```
+
+| Invariant | What it asserts | Where |
+| --- | --- | --- |
+| I1 | nothing is painted outside the rect a widget was given (sentinel-filled buffer) | `paint.rs` |
+| I2 | no panic at 20×6 or 1×1; a non-degenerate size paints something | `paint.rs` |
+| I3a | a focused surface renders differently from an unfocused one | `focus.rs` |
+| I4 | every advertised key is handled — **recorded**, closed by M006 | `baseline.rs` |
+| I5 | every rendered foreground clears `MIN_DERIVED_TEXT_RATIO` — **recorded**, closed by M007 | `baseline.rs` |
+| I6 | a hint row never loses its exit key — **recorded**, closed by M005 | `baseline.rs` |
+
+### The baseline is a ratchet
+
+`docs/tui-render-invariant-baseline.toml` records the failures I4, I5 and I6
+already have. **The set may shrink freely and may not grow.** Growing it is a
+reviewed edit in the same diff as the code that caused it, and an entry that
+**no longer reproduces is an error**, not a harmless leftover: an unbanked
+reduction is the same drift with the sign flipped.
+
+Two layers enforce that and they are not interchangeable. The harness
+recomputes all three sets by rendering frames and requires equality with the
+manifest in both directions — only it can tell that a recorded failure still
+reproduces. `scripts/check_tui_render_invariant_baseline.py` is the cheap
+static gate: shape, banked totals, the surface inventory, and the contrast
+arithmetic recomputed from each recorded colour pair. Both run in
+`scripts/verify.sh quick` and in CI, because a baseline only one lane checks is
+a baseline the other lane can grow.
+
+Re-banking is a copy, not a rebuild: the failing test prints the measured
+section ready to paste. Do not hand-edit a count.
+
+### What the harness records rather than asserts
+
+* I2's "paints something at 20×6" has four surfaces that deliberately paint
+  nothing, each behind its own minimum-size guard (`Diff` needs seven rows;
+  the three sheet layouts need 30×8). They are named in
+  `fixtures::small_size_decliners()`; a new decliner and a stale one both fail
+  the comparison.
+* I4 measures from the modal dispatch path (`FocusManager`), not the bare
+  component, and treats a returned `TuiMsg` as handled — `None` is ambiguous
+  between "handled, nothing to report" and "not handled".
+* I5 measures dialogs at 80×24, panels at 40×16 unfocused, and one whole
+  `App` frame at 100×32, over every bundled theme.
+* `fixtures::excluded_surfaces()` names the surfaces the harness cannot build
+  without live daemon state (`RunDetail`, `TriggerSecret`, `SourcePreview`).
+  An absent surface is a recorded limitation, never a silent hole.
+
+No production render path is involved in this harness; it observes the frame
+pass through `Component` and `SidePanelHost`.
+
+## The frame plan's ordering test
+
+`TuiLayout::plan_frame` (`src/tui/layout.rs`) is the one place the frame's
+regions are computed, so the carve-order rule is **enforced** there rather than
+described in a comment. The tests live in that module's own `mod tests` and run
+as `cargo test -p codegg --lib tui::layout`:
+
+| Test | What it fails on |
+| --- | --- |
+| `a_plan_is_a_function_of_its_inputs` | a plan that depends on anything but the frame, its panels and the claims: it builds a plan twice from inputs alone, with no `App`, no terminal and no frame |
+| `the_carve_order_is_the_order_on_screen` | a strip carved in the wrong order: each must sit directly below its predecessor and the strips must tile the composer's allocation exactly |
+| `a_swapped_carve_puts_a_strip_on_the_wrong_row` | the two one-row claims (hint, todo) swapped — both still present and one row tall, so only their order distinguishes the two frames |
+| `a_claim_that_does_not_fit_yields_instead_of_taking_the_last_row` | a strip that shrinks its neighbour instead of yielding |
+| `the_tab_bar_is_charged_to_the_transcript_not_the_composer` | a bar carved off the composer, which charges one row twice |
+| `the_tab_bar_wins_the_last_row_over_the_overlay` | the shared budget handed out in the other order |
+| `claims_larger_than_the_pane_produce_a_valid_plan` | a claim set larger than the pane producing an inverted or out-of-frame rect |
+| `the_plan_tiles_the_pane_across_the_size_and_claim_matrix` | at 120×40, 80×24, 40×12 and 20×6 across five claim sets: a row lost, a row counted twice, or a strip outside its chunk |
+
+The corpus is not the guard here. `cargo test --test tui_render` (1221 tests)
+moves only when a claim changes the geometry the frame is checked against, and
+the two one-row strips can swap without moving it at all — which is why the
+ordering test exists rather than a larger golden frame. A reordering is caught
+by the first assertion in `the_carve_order_is_the_order_on_screen` that breaks,
+and that failure names the region that landed on the wrong row.
 
 ## Related Docs
 

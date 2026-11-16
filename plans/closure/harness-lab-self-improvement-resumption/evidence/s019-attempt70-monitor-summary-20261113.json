@@ -1,0 +1,16 @@
+{
+  "attempt": 70,
+  "minimum_free_disk_bytes": 60918022144,
+  "nominal_sample_interval_seconds": 20,
+  "preflight_reserve_bytes": 32212254720,
+  "private_receipt_or_runner_output_inspected": false,
+  "provider_admission_receipt_rows_final": 314,
+  "provider_admission_receipt_rows_max": 314,
+  "raw_prompt_transcript_tool_arguments_tool_outputs_and_verifier_output_inspected": false,
+  "runner_exit_code": 2,
+  "runtime_disk_floor_bytes": 10737418240,
+  "sample_count": 123,
+  "schema": "s019_live_monitor_summary_v1",
+  "stop_trigger": null,
+  "usd_cost_when_unreported": "unknown"
+}

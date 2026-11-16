@@ -47,6 +47,10 @@ pub fn compile(
 
     let mut read_roots = BTreeSet::new();
     for root in &spec.read_paths {
+        // Binding the helper's PID subtree would not grant the target's own proc view.
+        if super::policy::is_self_proc_alias(root) {
+            continue;
+        }
         let root = canonical_existing(root)?;
         if is_host_runtime_root(&root) {
             continue;
@@ -423,8 +427,90 @@ pub fn compile(
     Ok((args, fds))
 }
 
-/// Exact path scope represented by the compiled mount policy. The serialized
-/// execution result is bounded so a large policy cannot inflate audit output.
+/// Open a policy path without following an alias, then verify that the opened
+/// object is the one the policy captured.
+///
+/// `openat2` with `RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS` is the single
+/// open the containment path uses to turn a name into a rule target: the
+/// protected mount view pins its sources with it and the Landlock rule
+/// compiler pins its grants with it, so neither can drift back to a
+/// follow-by-name open. The descriptor stays pinned by identity — the object
+/// cannot be swapped underneath the caller between this call and the rule it
+/// becomes.
+///
+/// The one `unsafe` here is the `openat2` syscall and the `File::from_raw_fd`
+/// that takes ownership of its result, the same reviewed pair the helper used
+/// before this primitive moved into the library.
+#[allow(unsafe_code)]
+pub fn open_pinned(
+    path: &Path,
+    identity: Option<&super::SandboxPathIdentity>,
+) -> Result<std::fs::File, String> {
+    use std::ffi::CString;
+    use std::os::fd::{FromRawFd, RawFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    #[repr(C)]
+    struct OpenHow {
+        flags: u64,
+        mode: u64,
+        resolve: u64,
+    }
+
+    const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+    const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+    let path_c = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| "sandbox path contains a NUL byte".to_string())?;
+    let flags = if path == Path::new("/dev/null") {
+        libc::O_RDONLY | libc::O_CLOEXEC
+    } else {
+        libc::O_PATH | libc::O_CLOEXEC
+    };
+    let how = OpenHow {
+        flags: flags as u64,
+        mode: 0,
+        resolve: RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
+    };
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
+            path_c.as_ptr(),
+            &how,
+            std::mem::size_of::<OpenHow>(),
+        ) as RawFd
+    };
+    if fd < 0 {
+        let error = std::io::Error::last_os_error();
+        return Err(match error.kind() {
+            std::io::ErrorKind::NotFound => {
+                format!("required sandbox path does not exist: {}", path.display())
+            }
+            _ => format!(
+                "cannot open sandbox path {} without following aliases: {error}",
+                path.display()
+            ),
+        });
+    }
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    if let Some(identity) = identity {
+        let metadata = file
+            .metadata()
+            .map_err(|error| format!("cannot verify pinned sandbox path: {error}"))?;
+        super::policy::verify_path_identity(path, identity, &metadata)?;
+    }
+    Ok(file)
+}
+
+/// The path scope the mount policy is **built from**, rendered for the
+/// execution record.
+///
+/// Every entry is inferred from the requested `spec`, not observed in the
+/// started child: this says what the compiled mount view is configured to
+/// grant and hide, and must not be read as a receipt that any given path was
+/// mounted, hidden, or denied. The one receipt on this route is Bubblewrap's
+/// `child-pid`, which proves setup completed and is consumed elsewhere. The
+/// serialized result is bounded so a large policy cannot inflate audit output.
 pub fn enforcement_scope(spec: &SandboxLaunchSpec) -> Result<Vec<String>, String> {
     let writes = spec
         .write_paths
@@ -435,7 +521,11 @@ pub fn enforcement_scope(spec: &SandboxLaunchSpec) -> Result<Vec<String>, String
     let reads = spec
         .read_paths
         .iter()
-        .filter(|path| !is_host_runtime_root(path) && !writes.contains(*path))
+        .filter(|path| {
+            !is_host_runtime_root(path)
+                && !super::policy::is_self_proc_alias(path)
+                && !writes.contains(*path)
+        })
         .cloned()
         .collect::<BTreeSet<_>>();
     let mut protected = spec
@@ -604,10 +694,11 @@ fn path_arg(path: &Path) -> Result<String, String> {
 }
 
 fn is_host_runtime_root(path: &Path) -> bool {
-    matches!(
-        path.to_str(),
-        Some("/dev" | "/proc" | "/sys" | "/run" | "/var/run" | "/etc" | "/opt")
-    )
+    path.starts_with("/proc/sys")
+        || matches!(
+            path.to_str(),
+            Some("/dev" | "/proc" | "/sys" | "/run" | "/var/run" | "/etc" | "/opt")
+        )
 }
 
 fn validate_no_nested_mounts<'a>(roots: impl Iterator<Item = &'a PathBuf>) -> Result<(), String> {
@@ -624,11 +715,15 @@ fn validate_no_nested_mounts<'a>(roots: impl Iterator<Item = &'a PathBuf>) -> Re
             .replace("\\012", "\n")
             .replace("\\134", "\\");
         let mountpoint = PathBuf::from(mountpoint);
-        if roots
+        if let Some(root) = roots
             .iter()
-            .any(|root| mountpoint != *root && mountpoint.starts_with(root))
+            .find(|root| mountpoint != **root && mountpoint.starts_with(*root))
         {
-            return Err("nested mount beneath a granted root is not supported".into());
+            return Err(format!(
+                "nested mount beneath a granted root is not supported (grant: {}; mount: {})",
+                root.display(),
+                mountpoint.display()
+            ));
         }
     }
     Ok(())
@@ -859,8 +954,16 @@ fn verify_path_identities(spec: &SandboxLaunchSpec) -> Result<(), String> {
         .iter()
         .map(|identity| identity.path.as_path())
         .collect::<BTreeSet<_>>();
-    for root in spec.read_paths.iter().chain(&spec.write_paths) {
-        if root.starts_with("/dev/") || is_launch_scratch(root) {
+    for (root, is_read) in spec
+        .read_paths
+        .iter()
+        .map(|root| (root, true))
+        .chain(spec.write_paths.iter().map(|root| (root, false)))
+    {
+        if root.starts_with("/dev/")
+            || is_launch_scratch(root)
+            || (is_read && super::policy::is_self_proc_alias(root))
+        {
             continue;
         }
         let canonical = canonical_existing(root)?;
@@ -876,4 +979,91 @@ fn is_launch_scratch(path: &Path) -> bool {
         && path
             .file_name()
             .is_some_and(|name| name.to_string_lossy().starts_with("codegg-run-"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn launch_spec(read_paths: Vec<PathBuf>, process_isolation: bool) -> SandboxLaunchSpec {
+        SandboxLaunchSpec {
+            target: PathBuf::from("/bin/true"),
+            args: Vec::new(),
+            env: Vec::new(),
+            read_paths,
+            write_paths: Vec::new(),
+            deny_paths: Vec::new(),
+            linux_protected_mount_view: true,
+            linux_process_isolation: process_isolation,
+            linux_offline_network: false,
+            protected_readonly_paths: Vec::new(),
+            path_identities: Vec::new(),
+            expected_created_git_pointers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn proc_sys_subtree_is_omitted_from_protected_mount_view() {
+        assert!(is_host_runtime_root(Path::new("/proc/sys")));
+        assert!(is_host_runtime_root(Path::new("/proc/sys/fs/binfmt_misc")));
+        assert!(!is_host_runtime_root(Path::new("/proc/sysfs")));
+        assert!(!is_host_runtime_root(Path::new("/proc/meminfo")));
+
+        let cwd = tempfile::tempdir().expect("working directory");
+        let sysctl_root = PathBuf::from("/proc/sys");
+        let mut spec = launch_spec(vec![sysctl_root.clone()], false);
+        spec.path_identities.push(
+            crate::security::sandbox::policy::capture_path_identity(&sysctl_root)
+                .expect("capture sysctl root identity"),
+        );
+        let (args, _) = compile(&spec, cwd.path(), |_| Ok(0))
+            .expect("host sysctl subtree should not enter the protected view");
+        assert!(
+            !args.iter().any(|arg| arg == "/proc/sys"),
+            "the host sysctl tree must not be mounted: {args:?}"
+        );
+        let scope = enforcement_scope(&spec).expect("render scope");
+        assert!(
+            scope.iter().all(|entry| !entry.contains("/proc/sys")),
+            "omitted host sysctl roots must not be reported as grants: {scope:?}"
+        );
+    }
+
+    #[test]
+    fn self_proc_aliases_are_not_bound_to_the_helper_pid() {
+        let cwd = tempfile::tempdir().expect("working directory");
+        let aliases = vec![
+            PathBuf::from("/proc/self"),
+            PathBuf::from("/proc/thread-self"),
+        ];
+        let helper_proc = format!("/proc/{}", std::process::id());
+
+        for process_isolation in [false, true] {
+            let spec = launch_spec(aliases.clone(), process_isolation);
+            let (args, _) = compile(&spec, cwd.path(), |_| Ok(0)).expect("compile mount view");
+            assert!(
+                !args.iter().any(|arg| arg.starts_with(&helper_proc)),
+                "the helper's proc subtree must never be bound: {args:?}"
+            );
+            assert_eq!(
+                args.windows(2)
+                    .any(|pair| pair[0] == "--proc" && pair[1] == "/proc"),
+                process_isolation
+            );
+            let scope = enforcement_scope(&spec).expect("render scope");
+            assert!(
+                scope.iter().all(|entry| {
+                    !entry.contains("/proc/self") && !entry.contains("/proc/thread-self")
+                }),
+                "omitted proc aliases must not be reported as mount grants: {scope:?}"
+            );
+        }
+
+        let ordinary_root = cwd.path().to_path_buf();
+        let spec = launch_spec(vec![ordinary_root], true);
+        assert!(matches!(
+            verify_path_identities(&spec),
+            Err(reason) if reason == "sandbox grant has no captured path identity"
+        ));
+    }
 }

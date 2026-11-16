@@ -9,6 +9,7 @@ use std::any::Any;
 use std::sync::Arc;
 
 use crate::tui::app::TuiMsg;
+use crate::tui::components::hint_line::HintLine;
 use crate::tui::theme::Theme;
 use crate::tui::Dialog;
 
@@ -230,15 +231,38 @@ pub trait Component: Send + Any + AsAny {
     fn docks_as_viewer(&self) -> bool {
         false
     }
-    /// The verbs this widget owns, spelled the way this widget spells them.
+    /// The verbs this widget owns, as the structured row that is the authority.
+    ///
+    /// This is where a box declares its keymap: the panel host renders it
+    /// through [`Component::keymap_hint`] and the I4 invariant presses each
+    /// item's key, so the row a reader sees and the row that is measured are one
+    /// row. Override this, never [`Component::keymap_hint`] — the string form is
+    /// a rendering of these items.
+    fn keymap_hint_line(&self) -> Option<HintLine> {
+        None
+    }
+    /// The verbs this widget owns, rendered through
+    /// [`HintLine`](crate::tui::components::hint_line::HintLine).
     ///
     /// The panel host asks for this so the shared hint line above the composer
     /// can describe **this box** rather than a host-side paraphrase of it. The
     /// keymap is written next to the `handle_key` arms that implement it and
     /// read from the same place, which is what makes "the box, its panel, and
     /// the hint line cannot disagree" true rather than aspirational.
+    ///
+    /// Provided over [`Component::keymap_hint_line`]; it is the rendering, not
+    /// a second declaration.
     fn keymap_hint(&self) -> Option<String> {
-        None
+        self.keymap_hint_line().map(|line| line.render(0))
+    }
+    /// Every hint row this surface advertises, structured.
+    ///
+    /// The default is the keymap line, which is right for a box whose keymap the
+    /// host paints. A surface that advertises in a footer **instead** overrides
+    /// this, so its advertisement is still a declaration rather than a string
+    /// the measurement reads back.
+    fn advertised_hints(&self) -> Vec<HintLine> {
+        self.keymap_hint_line().into_iter().collect()
     }
     /// Render into a side-panel column.
     ///
@@ -252,6 +276,14 @@ pub trait Component: Send + Any + AsAny {
     }
     fn handle_paste(&mut self, _text: String) -> Option<TuiMsg> {
         None
+    }
+    /// The rect this dialog wants inside `available`, before the host clamps
+    /// and places it.
+    ///
+    /// The default is the legacy 60% × 50% popup, so a dialog that does not
+    /// override this is correct by construction rather than merely tolerated.
+    fn preferred_area(&self, available: Rect) -> Rect {
+        centered_rect(60, 50, available)
     }
     fn update(&mut self, msg: TuiMsg) -> Option<TuiMsg>;
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>);
@@ -282,17 +314,11 @@ pub trait Component: Send + Any + AsAny {
 
 /// A centred `Rect` of `percent_x` × `percent_y` inside `area`.
 ///
-/// The one definition of this shape. It was duplicated in
-/// `src/tui/app/mod.rs` and `src/tui/components/dialogs/run_detail.rs` — not
-/// byte-for-byte identical (one copy qualified `Direction::Vertical`, the other
-/// did not, and the third parameter was named `area` in one and `r` in the
-/// other), but semantically the same function, so a fix to one would have left
-/// the other drawing a differently-sized popup.
-///
-/// It lives here rather than in either caller because `component.rs` is the one
-/// module both `app` and the dialogs already depend on. A dialog reaching into
+/// The one definition of this shape, and the default `preferred_area`. It
+/// lives here rather than in `app` because `component.rs` is the module both
+/// `app` and the dialogs already depend on; a dialog reaching into
 /// `app::centered_rect` would invert the dependency, which is how the
-/// duplication started.
+/// duplication this replaced started.
 pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let vertical = Layout::default()
         .direction(Direction::Vertical)

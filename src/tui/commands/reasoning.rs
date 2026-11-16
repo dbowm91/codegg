@@ -347,6 +347,63 @@ pub(crate) fn apply_preference_loaded(
     app.ui_state.reasoning_mode = ReasoningMode::from(preference.reasoning_selection.clone());
 }
 
+pub(crate) fn dispatch_reasoning(app: &mut App) {
+    // The option set is the **model's**, not a static ladder:
+    // the labels the capability publishes, in its own order, a
+    // disable only when the model permits one, and a budget only
+    // when it lies inside the model's bounds. Distinct from
+    // `/thinking`, which only toggles whether reasoning text is
+    // rendered; this one changes what the model is asked to do.
+    //
+    // The daemon owns the selection, so it needs somewhere to
+    // store it. Without a daemon connection the command reports
+    // that rather than changing a local value the daemon would
+    // ignore.
+    if app.core_client.is_none() {
+        app.messages_state.toasts.error(
+            "Extended thinking unavailable: this frontend has no daemon connection, so \
+             the selection cannot be stored",
+        );
+        return;
+    }
+    let options = crate::tui::commands::reasoning::option_set(app);
+    let previous = app.ui_state.reasoning_mode.clone();
+    let next = crate::tui::commands::reasoning::next_mode(&previous, &options);
+    // The display moves immediately so the command feels
+    // responsive; the daemon's response corrects it when the two
+    // differ, and a refusal puts the daemon's last known value
+    // back.
+    app.ui_state.reasoning_mode = next.clone();
+    let detail = next.detail();
+    // Selecting an effort or budget on a provider whose adapter
+    // deletes `reasoning_effort` is silently ignored. Warn instead
+    // of letting the control look broken.
+    let strips = next.requests_reasoning() && app.selected_provider_strips_reasoning();
+    let mut message = format!("Extended thinking: {detail}");
+    if let Some(note) = crate::tui::commands::reasoning::option_note(&options) {
+        message.push_str(" — ");
+        message.push_str(&note);
+    }
+    if strips {
+        message.push_str(&format!(
+            " — {} drops this setting on the wire",
+            app.agent_state
+                .current_model
+                .split('/')
+                .next()
+                .unwrap_or("this provider")
+        ));
+        app.messages_state.toasts.warning(&message);
+    } else {
+        app.messages_state.toasts.info(&message);
+    }
+    crate::tui::commands::reasoning::start_preference_update(
+        app,
+        crate::tui::commands::reasoning::override_for(&next),
+        previous,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

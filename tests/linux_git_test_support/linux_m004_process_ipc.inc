@@ -2862,7 +2862,7 @@ async fn process_tier_hides_host_proc_and_blocks_host_signal_and_abstract_socket
                 .any(|item| item.contains("private procfs")));
             assert!(guarantees
                 .iter()
-                .any(|item| item.contains("abstract Unix socket")));
+                .any(|item| item.contains("abstract AF_UNIX socket")));
             assert!(limits
                 .iter()
                 .any(|item| item.contains("outbound networking")));

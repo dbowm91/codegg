@@ -1,0 +1,457 @@
+{
+  "active_work_span_ms": 3291350,
+  "agent": "build",
+  "agent_terminal": "timeout",
+  "attempt": 9,
+  "autonomous_followup_count": 5,
+  "billed_usd": "unknown",
+  "binary_sha256": "ffbf6e2f0c0447795f0fd3ac7f1afd847f4b42ff73af5484fef13ad34c5513bd",
+  "continuation": {
+    "all_public_artifacts_present": true,
+    "completed_phases": [
+      "versioned_records",
+      "durable_import",
+      "dependency_index",
+      "provenance_queries",
+      "cli_contract",
+      "acceptance_audit"
+    ],
+    "continuation_confirmed": false,
+    "contract_phase_order_matches": true,
+    "contract_phases": [
+      "versioned_records",
+      "durable_import",
+      "dependency_index",
+      "provenance_queries",
+      "cli_export"
+    ],
+    "gates": {
+      "acceptance_audit": "complete",
+      "bounded_probes": "complete",
+      "cli_contract": "complete",
+      "dependency_index": "complete",
+      "durable_import": "complete",
+      "independent_review": "pending",
+      "provenance_queries": "complete",
+      "release_scale_overlap": "complete",
+      "starter_repair_format": "complete",
+      "starter_repair_store": "complete",
+      "versioned_records": "complete",
+      "workspace_qualification": "pending"
+    },
+    "incomplete_gates": [
+      "workspace_qualification",
+      "independent_review"
+    ],
+    "incomplete_stages": [
+      "workspace_qualification"
+    ],
+    "missing_contract_phases": [],
+    "missing_phases": [
+      "workspace_qualification"
+    ],
+    "next_fields": {
+      "next_contract_phase": [
+        "none"
+      ],
+      "next_gate": [
+        "bounded_probes"
+      ],
+      "next_phase": [
+        "workspace_qualification"
+      ],
+      "next_stage": [
+        "workspace_qualification"
+      ]
+    },
+    "phase_order_matches": false,
+    "present": true,
+    "raw_job_ids_retained": false,
+    "raw_note_retained": false,
+    "release_overlap_confirmed": true,
+    "required_review_observed": false,
+    "sha256": "732c3acf04988873e0ffc8f86b47088729524beb362e06a5f57a90c4467309a7",
+    "stage_order_matches": true,
+    "stages": {
+      "acceptance_audit": "complete",
+      "cli_contract": "complete",
+      "dependency_index": "complete",
+      "durable_import": "complete",
+      "provenance_queries": "complete",
+      "versioned_records": "complete",
+      "workspace_qualification": "pending"
+    },
+    "test_job_lifecycle": {
+      "all_terminal_observed": true,
+      "raw_job_arguments_retained": false,
+      "raw_job_ids_retained": false,
+      "submission_count": 31,
+      "terminal_observed_count": 31,
+      "terminal_status_counts": {
+        "completed": 27,
+        "failed": 4
+      },
+      "unique_submitted_job_count": 31,
+      "unobserved_count": 0,
+      "unobserved_status_counts": {}
+    },
+    "unexpected_gate_count": 0
+  },
+  "continuation_stop_reason": "turn_timeout",
+  "diagnostic": {
+    "harness_attribution": "The prompt-work hard limit fired as configured. Provider requests, tool calls, disk, causal-event delivery, activity gaps, and test-job terminal observation stayed within bounds. No daemon, scheduler, ACP, provider, or disk defect is demonstrated by this attempt.",
+    "primary": "The 3,300-second prompt-work limit ended the run while workspace qualification and independent review were still pending. Six of seven task stages were complete; the unchanged verifier ran five tests and reported two failures.",
+    "reviewer": "One reviewer was spawned at 1,964 seconds of active work. Six later exact-identity status observations remained running; no terminal result was retrieved before timeout.",
+    "verifier": "Two allowlisted test IDs failed: durable continuation phase/boundary records and transcript continuation. The release-scale exact-ID overlap itself was confirmed. The public note leaves workspace_qualification pending and independent_review pending.",
+    "workspace": "All 31 submitted test jobs had terminal observations, but four ended failed. The public continuation marks workspace_qualification pending; no successful final workspace/Clippy qualification is claimed."
+  },
+  "disk_floor": {
+    "last_free_bytes": 37557329920,
+    "lowest_observed_free_bytes": 37557329920,
+    "measurement_error": null,
+    "minimum_free_bytes": 10737418240,
+    "triggered": false
+  },
+  "duration_ms": 3299783,
+  "event_observation": {
+    "bytes": 641441,
+    "daemon_generation": "68acc03a-3998-4051-a782-94b784af9a0e",
+    "dropped_events": 0,
+    "event_count": 1030,
+    "path": "/private/tmp/s019-muse-runs/attempt09/case00/private/causal-trace.jsonl",
+    "schema": "harness_causal_trace_v1",
+    "sha256": "e0f411a86e401be459c3c2a502f0b2bf242cf614e65491fa6a143a658d1e0a96",
+    "state": "complete"
+  },
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "horizon_evidence": {
+    "active_work_span_ms": 3291350,
+    "continuation_confirmed": false,
+    "exact_job_running_and_terminal": true,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 240171,
+    "measurement_complete": false,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": true,
+    "repair_cycles": 4,
+    "test_job_lifecycle": {
+      "all_terminal_observed": true,
+      "raw_job_arguments_retained": false,
+      "raw_job_ids_retained": false,
+      "submission_count": 31,
+      "terminal_observed_count": 31,
+      "terminal_status_counts": {
+        "completed": 27,
+        "failed": 4
+      },
+      "unique_submitted_job_count": 31,
+      "unobserved_count": 0,
+      "unobserved_status_counts": {}
+    },
+    "tool_call_cap_exceeded": false,
+    "tool_call_count": 427,
+    "tool_call_limit": 1600
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "measurement_incomplete",
+  "manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "provider_allowance_usd": null,
+  "provider_request_count": 368,
+  "provider_request_limit": null,
+  "receipt_sha256": "0d79bdd94ad12ddc0e1078aaa4e9ee1e13c88b932f4b4cd4e7c4bb30c157aa54",
+  "repair_cycles": 4,
+  "reviewer_diagnostic": {
+    "completed_review_result_observed": false,
+    "exact_identity_matched_call_count": 7,
+    "final_failure_class": null,
+    "final_status": "running",
+    "get_after_terminal_status_count": 0,
+    "get_count": 0,
+    "get_nonterminal_count": 0,
+    "get_run_status_counts": {},
+    "ordered_events": [
+      {
+        "action": "spawn",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1964157,
+        "index": 256,
+        "run_status": "queued",
+        "started_elapsed_ms": 1964120
+      },
+      {
+        "action": "status",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2180994,
+        "index": 298,
+        "run_status": "running",
+        "started_elapsed_ms": 2180976
+      },
+      {
+        "action": "status",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2197401,
+        "index": 299,
+        "run_status": "running",
+        "started_elapsed_ms": 2197386
+      },
+      {
+        "action": "status",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2321166,
+        "index": 301,
+        "run_status": "running",
+        "started_elapsed_ms": 2321162
+      },
+      {
+        "action": "status",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2335250,
+        "index": 304,
+        "run_status": "running",
+        "started_elapsed_ms": 2335234
+      },
+      {
+        "action": "status",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2489854,
+        "index": 306,
+        "run_status": "running",
+        "started_elapsed_ms": 2489826
+      },
+      {
+        "action": "status",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2495510,
+        "index": 308,
+        "run_status": "running",
+        "started_elapsed_ms": 2495503
+      }
+    ],
+    "raw_task_arguments_retained": false,
+    "reviewer_event_count": 7,
+    "reviewer_events_truncated": false,
+    "reviewer_run_id_sha256": "10f1e64473cb4c5df6013da34470e78fa3fe387d6931044466aed9084ff6ae98",
+    "reviewer_spawn_count": 1,
+    "reviewer_task_id_sha256": "40ecdcc4521158138d8dcc0de1afbe3b694798007011ae17e5cdd2589d059b4e",
+    "schema": "h007_reviewer_lifecycle_diagnostic_v1",
+    "status_sequence": [
+      {
+        "failure_class": null,
+        "index": 298,
+        "run_status": "running"
+      },
+      {
+        "failure_class": null,
+        "index": 299,
+        "run_status": "running"
+      },
+      {
+        "failure_class": null,
+        "index": 301,
+        "run_status": "running"
+      },
+      {
+        "failure_class": null,
+        "index": 304,
+        "run_status": "running"
+      },
+      {
+        "failure_class": null,
+        "index": 306,
+        "run_status": "running"
+      },
+      {
+        "failure_class": null,
+        "index": 308,
+        "run_status": "running"
+      }
+    ],
+    "task_action_counts": {
+      "spawn": 1,
+      "status": 6
+    },
+    "task_result_body_retained": false,
+    "task_transcript_retained": false
+  },
+  "reviewer_schedule_diagnostic": {
+    "due_prompt_count": 1,
+    "due_prompt_marker": "The 25-minute independent-review start threshold has been reached.",
+    "first_due_active_work_span_ms": 1950436,
+    "first_due_followup_number": 3,
+    "reviewer_spawn_count": 1,
+    "start_threshold_active_ms": 1500000,
+    "task_tool_call_count": 7,
+    "task_tool_requested_by_case": true
+  },
+  "route": "opencode_go/muse-spark-1.3-contributor",
+  "schema": "s019_safe_diagnostic_v1",
+  "solved": false,
+  "stop_reason": "end_turn",
+  "task_outcome": "inconclusive",
+  "terminal": "timeout",
+  "test_job_lifecycle": {
+    "all_terminal_observed": true,
+    "raw_job_arguments_retained": false,
+    "raw_job_ids_retained": false,
+    "submission_count": 31,
+    "terminal_observed_count": 31,
+    "terminal_status_counts": {
+      "completed": 27,
+      "failed": 4
+    },
+    "unique_submitted_job_count": 31,
+    "unobserved_count": 0,
+    "unobserved_status_counts": {}
+  },
+  "tool_call_count": 427,
+  "tool_call_limit": 1600,
+  "verification_diagnostic": {
+    "assertion_text_retained": false,
+    "diagnostic_detail_complete": true,
+    "exit_code": 1,
+    "failed_tests": [
+      {
+        "exception_class": "AssertionError",
+        "exception_message": {
+          "kind": "assertion_message",
+          "shape": [
+            "'",
+            "<word>",
+            ":",
+            "none",
+            "'",
+            "not",
+            "found",
+            "in",
+            "'",
+            "<symbol>",
+            "<word>",
+            "<word>",
+            "<word>",
+            "<symbol>",
+            "<word>",
+            "<symbol>",
+            "<word>",
+            "only",
+            "<word>",
+            "observed",
+            "in",
+            "this",
+            "<word>",
+            ".",
+            "<word>",
+            "completed",
+            "<word>",
+            "and",
+            "<word>",
+            ",",
+            "<word>",
+            "<word>",
+            "job",
+            "<word>",
+            "/",
+            "<word>",
+            ",",
+            "repair",
+            "<word>",
+            ",",
+            "workspace",
+            "<word>",
+            ",",
+            "and",
+            "<word>",
+            "<word>",
+            "in",
+            "this"
+          ],
+          "shape_truncated": true,
+          "terms": [
+            "after",
+            "all",
+            "before",
+            "completed",
+            "failed",
+            "false",
+            "format",
+            "index",
+            "job",
+            "none",
+            "not",
+            "observed",
+            "order",
+            "overlap",
+            "repair",
+            "running",
+            "state",
+            "status",
+            "test",
+            "true",
+            "workspace"
+          ]
+        },
+        "failure_kind": "assertion_failure",
+        "outcome": "fail",
+        "test_id": "test_durable_continuation_records_completed_phases_and_next_boundary (test_catalog_contract.CatalogContract.test_durable_continuation_records_completed_phases_and_next_boundary)"
+      },
+      {
+        "exception_class": "AssertionError",
+        "exception_message": {
+          "kind": "assertion_message",
+          "shape": [
+            "false",
+            "is",
+            "not",
+            "true",
+            ":",
+            "a",
+            "continuation",
+            "must",
+            "<word>",
+            "<word>",
+            "<word>",
+            "after",
+            "terminal",
+            "<word>"
+          ],
+          "shape_truncated": false,
+          "terms": [
+            "after",
+            "continuation",
+            "false",
+            "not",
+            "terminal",
+            "true"
+          ]
+        },
+        "failure_kind": "assertion_failure",
+        "outcome": "fail",
+        "test_id": "test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation (test_catalog_contract.CatalogContract.test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation)"
+      }
+    ],
+    "failure_counts": {
+      "errors": 0,
+      "failures": 2
+    },
+    "input_truncated": false,
+    "passed_count": 3,
+    "raw_output_retained": false,
+    "runner_error_class": null,
+    "schema": "h007_verifier_diagnostic_v1",
+    "setup_exception_class": null,
+    "setup_failure_reason": null,
+    "skipped_count": 0,
+    "state": "assertion_failures",
+    "tests_run": 5,
+    "timed_out": false,
+    "traceback_retained": false,
+    "verbose_tests_observed": 5
+  }
+}

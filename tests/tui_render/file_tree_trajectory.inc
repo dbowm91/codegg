@@ -95,10 +95,8 @@ async fn a_file_discovered_by_the_tree_opens_like_any_typed_path() {
     // Walk exactly as the pane does, then expand and select the way a user
     // would, rather than reaching into the node list.
     let listing = build_tree(root.path());
-    let mut state = FileTreeState {
-        visible: true,
-        ..FileTreeState::default()
-    };
+    let mut state = FileTreeState::default();
+    state.visible = true;
     let (generation, request_id) = state.begin_rebuild(root.path().to_path_buf());
     assert!(
         state.apply_listing(generation, request_id, root.path().to_path_buf(), listing),
@@ -107,9 +105,10 @@ async fn a_file_discovered_by_the_tree_opens_like_any_typed_path() {
 
     // Expand down to the nested file, selecting each directory in turn.
     let target = "src/nested/deep.rs";
+    // Expand through the verb, not the field: the row cache is rebuilt by the
+    // mutation, and a direct write would read the previous expansion's rows.
     for step in ["src", "src/nested"] {
-        state.selected = Some(step.to_string());
-        state.expanded.insert(step.to_string());
+        state.expand_and_select(step);
     }
     state.selected = Some(target.to_string());
 

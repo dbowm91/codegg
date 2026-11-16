@@ -6,9 +6,12 @@
 //! Normal-mode chord, and is read before it is typed into):
 //!
 //! * **`j`/`k`, `↑`/`↓`** — move the highlight.
-//! * **`Shift+H/J/K/L`, `Shift+←/→/↑/↓`** — put the highlighted panel on that
+//! * **`Shift+H/J/L`, `Shift+←/→/↓`** — put the highlighted panel on that
 //!   edge. This is the point of the mode: "where does it live" becomes the same
 //!   gesture it is in the main buffer, so arriving on an edge is one key.
+//!   There is no `Shift+K` — `PanelPlacement` has no top edge, so
+//!   `named_by(PanelDirection::Up)` is `None` on every press; the footer names
+//!   the edges that exist, and `handle_key` records why.
 //! * **`Enter`** — load the highlighted panel onto the bracketed edge.
 //! * **`1`-`9`, `0`** — bind the highlighted panel to that digit.
 //! * **`p`** — step the bracketed edge to the next one.
@@ -49,7 +52,7 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+use ratatui::widgets::{Paragraph, Widget};
 use ratatui::Frame;
 use std::sync::Arc;
 
@@ -57,9 +60,45 @@ use crate::tui::app::state::panel_hotkeys::PanelHotkeys;
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
 use crate::tui::components::dialogs::panel_list::PanelListState;
+use crate::tui::components::hint_line::HintLine;
+use crate::tui::components::section::Section;
 use crate::tui::input::InputMode;
 use crate::tui::panels::{PanelPlacement, SidePanelId};
 use crate::tui::theme::Theme;
+
+/// The mode-specific footer, built as one row through the vocabulary.
+///
+/// The keys that differ between modes are exactly the ones a user reaches for
+/// and then finds do nothing, so the row follows the mode rather than naming a
+/// union. `Esc` leads because the row is budgeted to the box's inner width and
+/// is cut from the end: the key that leaves is the one that must survive the
+/// cut. The box's `Esc` is the mode switch, not an exit — the wording says so.
+fn footer_line(mode: InputMode, filtering: bool) -> String {
+    let mut hint = HintLine::new();
+    match (mode, filtering) {
+        (InputMode::Insert, true) => {
+            hint.push_required("Esc", "normal")
+                .push("Enter", "load")
+                .push("Bksp", "edit");
+        }
+        (InputMode::Insert, false) => {
+            hint.push_required("Esc", "normal")
+                .push("Enter", "load")
+                .push("type", "to filter");
+        }
+        (InputMode::Normal, true) => {
+            hint.push_required("Esc", "clear")
+                .push("Enter", "load")
+                .push("⇧H/J/L", "move");
+        }
+        (InputMode::Normal, false) => {
+            hint.push("i", "filter")
+                .push("Enter", "load")
+                .push("⇧H/J/L", "move");
+        }
+    }
+    hint.render(0)
+}
 
 pub struct PanelManagerDialog {
     theme: Arc<Theme>,
@@ -217,6 +256,13 @@ impl Component for PanelManagerDialog {
         // The directional is a Normal-mode verb only. In Insert `Shift+H` is
         // the letter `H` and has to reach the filter — checked ahead of the
         // match so the printable arm below cannot shadow it with a bare `H`.
+        //
+        // `named_by` returns `None` for an upward direction because
+        // `PanelPlacement` has no top edge, so `Shift+K` and `Shift+↑` yield
+        // nothing on every press. That is why the footer names `⇧H/J/L` and
+        // not `⇧H/J/K/L`: a verb cannot be implemented without a new placement,
+        // which is a capability decision this surface does not take. The
+        // no-op is deliberate and asserted by `an_upward_directional_moves_nothing`.
         if self.list.mode() == InputMode::Normal {
             if let Some(dir) = crate::tui::panels::direction_of(key) {
                 let panel = self.selected()?;
@@ -280,17 +326,9 @@ impl Component for PanelManagerDialog {
         ])
         .split(area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Panels ")
-            .title_style(
-                Style::default()
-                    .fg(theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .border_style(Style::default().fg(theme.primary))
-            .style(Style::default().bg(theme.background));
-        Widget::render(block, chunks[0], buf);
+        let title_inner = Section::new("Panels", theme)
+            .focused(true)
+            .draw(chunks[0], buf);
 
         // The strip shares the title's inner row rather than taking a chunk
         // of its own. A dedicated 3-row block looks right at 40 rows tall and
@@ -299,9 +337,8 @@ impl Component for PanelManagerDialog {
         // entirely. One row inside a block that already exists cannot cost
         // the footer anything.
         let strip = Rect {
-            y: chunks[0].y + 1,
             height: 1,
-            ..chunks[0]
+            ..title_inner
         };
         Widget::render(
             Paragraph::new(Line::from(self.layout_spans(theme))),
@@ -310,17 +347,14 @@ impl Component for PanelManagerDialog {
         );
 
         let filtering = self.list.filtering();
+        // The filter row's edge is primary exactly while it holds the filter,
+        // which is what `focused` already means — no second colour literal.
+        let filter_inner = Section::plain(theme)
+            .focused(filtering)
+            .draw(chunks[1], buf);
         Widget::render(
-            Paragraph::new(Line::from(self.list.filter_row(theme, "panels"))).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(if filtering {
-                        theme.primary
-                    } else {
-                        theme.border
-                    })),
-            ),
-            chunks[1],
+            Paragraph::new(Line::from(self.list.filter_row(theme, "panels"))),
+            filter_inner,
             buf,
         );
 
@@ -348,15 +382,11 @@ impl Component for PanelManagerDialog {
                 Span::styled(badge, Style::default().fg(theme.warning)),
             ]));
         }
+        let list_inner = Section::plain(theme).draw(chunks[2], buf);
+        let list_box_height = chunks[2].height;
         Widget::render(
-            Paragraph::new(lines)
-                .scroll((self.list.scroll(chunks[2].height), 0))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(theme.border)),
-                ),
-            chunks[2],
+            Paragraph::new(lines).scroll((self.list.scroll(list_box_height), 0)),
+            list_inner,
             buf,
         );
 
@@ -368,23 +398,14 @@ impl Component for PanelManagerDialog {
         // this is a `Length(3)` chunk, so anything past that is silently cut
         // and the row just ends mid-key. `p` and `0`-`9` are not repeated here
         // because the strip and the list rows already say where they live.
-        let footer = match (self.list.mode(), filtering) {
-            (InputMode::Insert, true) => "Enter load  Esc normal  Bksp edit",
-            (InputMode::Insert, false) => "type to filter  Enter load  Esc normal",
-            (InputMode::Normal, true) => "⇧H/J/K/L move  Enter load  Esc clear",
-            (InputMode::Normal, false) => "⇧H/J/K/L move  Enter load  i filter",
-        };
+        let footer = footer_line(self.list.mode(), filtering);
+        let footer_inner = Section::plain(theme).draw(chunks[3], buf);
         Widget::render(
             Paragraph::new(Line::from(Span::styled(
                 footer,
                 Style::default().fg(theme.secondary),
-            )))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.border)),
-            ),
-            chunks[3],
+            ))),
+            footer_inner,
             buf,
         );
     }
@@ -428,6 +449,39 @@ mod tests {
             true,
         );
         assert_eq!(d.selected(), Some(SidePanelId::Terminal));
+    }
+
+    /// The footer is the only place the directional is written down, so it must
+    /// name the edges that exist. `Shift+K` has no top edge to move a panel to
+    /// (`PanelPlacement::named_by(Up)` is `None`), so advertising it is the
+    /// defect `an_upward_directional_moves_nothing` documents from the other
+    /// side.
+    #[test]
+    fn the_normal_footer_names_only_the_edges_that_exist() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let theme = Arc::new(Theme::default());
+        let mut d = dialog();
+        let mut terminal = Terminal::new(TestBackend::new(60, 24)).expect("test terminal");
+        terminal
+            .draw(|frame| d.render(frame, frame.area(), &theme))
+            .expect("draw the panel manager");
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            text.contains("⇧H/J/L move"),
+            "the footer stopped naming the live edges: {text}"
+        );
+        assert!(
+            !text.contains("⇧H/J/K/L"),
+            "the footer names an edge that does not exist: {text}"
+        );
     }
 
     #[test]

@@ -132,6 +132,30 @@ a raw command string.
 5. If action is `Plugin` → bounded discovery-only toast directing to
    the plugin panel
 
+#### Built-in dispatch: one arm, one family function
+
+`App::dispatch_builtin_command` (`src/tui/app/mod.rs`) normalises the
+argument once — `argument.unwrap_or_default().trim()`, so "no argument" and
+"empty argument" mean the same thing — and then dispatches with an
+exhaustive `match` over `BuiltinSlashAction`. Every arm is **one
+delegation**:
+
+- the handler lives in the command's family module under
+  `src/tui/commands/` and **the family owns the body**;
+- the handler receives the `App` and, only when the command reads it, the
+  normalised argument — nothing else, and never the typed line;
+- the handler runs the same sequence the arm always ran, in the same
+  order: a precondition still refuses *before* the effect, and the
+  command-mode teardown goes through `commands::close_command_mode`;
+- the dispatcher stays synchronous, and a handler spawns no task the arm
+  did not spawn.
+
+So a new built-in command adds **one arm** in the dispatcher and **one
+family function** in the family's module. The match deliberately stays a
+`match` rather than a `(action, handler)` table: a new
+`BuiltinSlashAction` variant must fail to compile until it has an arm,
+where a runtime lookup would turn a missing arm into a silent no-op.
+
 ## Key Types & APIs
 
 ### Core Command (`src/command/mod.rs:39`)

@@ -1,6 +1,10 @@
 //! Security review command handlers.
 
+use crate::tui::app::send_tui;
 use crate::tui::app::App;
+use crate::tui::app::Dialog;
+use crate::tui::app::TuiCommand;
+use crate::tui::task_lifecycle::TuiTaskKind;
 
 /// Legacy/back-compat security review dispatch. The slash command
 /// path (`App::execute_command`'s `/security-review` branch) already
@@ -112,4 +116,91 @@ pub(crate) fn handle_security_review_finished(
                 .error("Security review failed: no result returned");
         }
     }
+}
+
+pub(crate) fn dispatch_security_review(app: &mut App, argument: &str) {
+    app.ui_state.command_mode = false;
+    let raw_args = argument;
+    let parsed_args = crate::security::workflow::parse_security_review_args(raw_args);
+
+    let root = match app.project_execution_context() {
+        Ok(context) => context.workspace_root,
+        Err(error) => {
+            app.messages_state.toasts.error(&error);
+            return;
+        }
+    };
+
+    // Reentrancy guard: only one security review runs at a
+    // time. The flag is cleared by the handler in
+    // `src/tui/mod.rs` on both success and failure.
+    if app.security_review_running.is_some() {
+        app.messages_state
+            .toasts
+            .warning("Security review already running. Wait for it to finish or cancel it.");
+        return;
+    }
+
+    let id = crate::security::workflow::SecurityReviewRunId::new();
+    let lsp_tool = app.lsp_tool.clone();
+
+    app.messages_state
+        .toasts
+        .info("Security review started. The result will appear in the message log when complete.");
+
+    // Spawn the review in a tokio task so the renderer stays
+    // responsive. The completion path sends
+    // `TuiCommand::SecurityReviewFinished` back through
+    // `tui_cmd_tx`. The `AbortHandle` is stored on the App
+    // for the duration of the run so the user can cancel
+    // via `/security-review-cancel`.
+    let tx = app.tui_cmd_tx.clone();
+    if let Some(tx) = tx {
+        let run_id = id.0.clone();
+        let task_id =
+            app.task_registry
+                .spawn(TuiTaskKind::SecurityReview, "security-review", async move {
+                    let result = crate::security::workflow::run_security_review_background(
+                        root,
+                        parsed_args,
+                        lsp_tool,
+                    )
+                    .await;
+                    let (receipt, error) = match result {
+                        Ok(r) => (Some(Box::new(r)), None),
+                        Err(e) => (None, Some(e)),
+                    };
+                    let _ = send_tui(
+                        &tx,
+                        TuiCommand::SecurityReviewFinished {
+                            id: run_id,
+                            receipt,
+                            error,
+                        },
+                    );
+                });
+        app.security_review_running =
+            Some(crate::security::workflow::SecurityReviewTaskState { id: id.0, task_id });
+    } else {
+        // Fallback: no channel available (e.g. test fixture).
+        app.messages_state
+            .toasts
+            .error("TUI command channel unavailable; cannot run security review");
+    }
+}
+
+pub(crate) fn dispatch_security_review_show(app: &mut App) {
+    app.ui_state.command_mode = false;
+    if app.latest_security_review.is_some() {
+        app.open_dialog(Dialog::SecurityReview);
+    } else {
+        app.messages_state
+            .toasts
+            .warning("No security review result available yet. Run /security-review first.");
+    }
+}
+
+pub(crate) fn dispatch_security_review_cancel(app: &mut App) {
+    app.ui_state.command_mode = false;
+    app.cancel_security_review();
 }

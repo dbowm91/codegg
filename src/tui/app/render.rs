@@ -6,7 +6,9 @@
 
 use super::*;
 use crate::tui::app::state::subagents::SubagentRow;
-use crate::tui::app::state::tasks::{bounded as bounded_task_rows, is_live_state, TaskRow};
+use crate::tui::app::state::tasks::{is_live_state, TaskRow};
+use crate::tui::components::hint_line::HintLine;
+use crate::tui::layout::FrameClaims;
 use crate::tui::panels::{PanelPlacement, SidePanelId};
 use ratatui::style::Color;
 
@@ -163,172 +165,77 @@ impl App {
         // percentage cannot express a one-row step on its own.
         self.ui_state.layout.observe_frame(area);
         let regions = self.ui_state.layout.split(area, &occupied);
-        let main_chunks = [regions.main];
-        let main_area = main_chunks[0];
-
-        // Reserve a 1-column strip on the left of the main area for the
-        // outer left border. Reserving the strip (rather than painting
-        // the border on top of the content) keeps the line continuous —
-        // the header / viewport / prompt / footer widgets no longer
-        // overwrite the leftmost column with their own text.
-        let bordered = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(1), Constraint::Min(0)])
-            .split(main_area);
-        let main_area_inner = bordered[1];
-        self.left_border_area = Some(bordered[0]);
-
-        // Reserve the main pane's last row for the outer bottom border
-        // *before* the session layout runs. `footer_height` is 1, so
-        // anchoring the edge on the footer's own last row painted the
-        // status line over: `StatusBar` takes its border-less early path
-        // at height 1, and `finish_render` then drew a `Borders::BOTTOM`
-        // block across the only row the status line ever had. Carving the
-        // row off first gives the footer a row of its own and leaves the
-        // edge underneath it.
-        let (pane_area, border_area) = if main_area_inner.height > 0 {
-            let split = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(0), Constraint::Length(1)])
-                .split(main_area_inner);
-            let usable = main_area_inner.width > 0 && split[0].height > 0;
-            (split[0], if usable { Some(split[1]) } else { None })
-        } else {
-            (main_area_inner, None)
-        };
-        self.bottom_border_area = border_area;
+        // The pane — and the width the hint line and the composer wrap at — is
+        // settled before a single row is claimed, so it cannot be read back out
+        // of the plan those claims feed.
+        let outer = self.ui_state.layout.frame_outer(area, regions);
 
         let todo_rows = self.todo_strip_height();
-        let max_prompt_height = (area.height * 40 / 100).max(3);
-        // Reserve the strip's row *inside* the prompt allocation so the input
-        // box keeps the height it asked for and the chat viewport absorbs the
-        // difference. Carving it back out of the prompt chunk instead would
-        // silently shrink the input whenever a todo list exists.
-        let hint_rows = u16::from(self.composer_hint_text().is_some());
-        // The unified tasks overlay reserves from the prompt allocation for
-        // the same reason the todo strip does. It is added
-        // *after* the todo strip because the overlay renders directly beneath
-        // it, so their order in the allocation has to match their order on
-        // screen.
-        //
-        // The unified tasks overlay and the subagent tab bar draw from one
-        // budget of rows left over once every other claim is honoured,
-        // transcript floor included.
-        //
-        // The clamp is what makes this a budget rather than two independent
-        // wishes. Without it the overlay and the prompt box together can exceed
-        // a short pane, the carve below silently yields, and `Ctrl+T` looks
-        // like a dead key on exactly the terminals where a status overlay would
-        // be most wanted. A too-short pane shows neither rather than a wrong
-        // one.
-        //
-        // The bar is taken first because it is persistent while the overlay is
-        // on-demand, and a missing bar is worse than a shorter overlay — tabs
-        // the user opened would become invisible with no control that says so.
-        let spare_rows =
-            self.tasks_overlay_allowance(pane_area.height, todo_rows, hint_rows, max_prompt_height);
-        // The bar is one row carved off the top of the *viewport* chunk — see
-        // the carve below. It is deliberately **not** added to
-        // `prompt_height`: that sum is what reserves room for strips carved
-        // off the *prompt* chunk (working strip, hint line, todo strip, tasks
-        // overlay). Adding the bar there as well would charge the transcript
-        // twice for one row, because the bar never touches the prompt chunk at
-        // all. The input box is unaffected either way, which was the only
-        // reason to reserve it in the first place.
-        let tab_rows = self.subagent_tab_strip_height().min(spare_rows);
-        let tasks_rows = self
-            .tasks_strip_height()
-            .min(spare_rows.saturating_sub(tab_rows));
-        let prompt_height = self
-            .prompt_state
-            .prompt
-            // The pane's width, not the prompt chunk's: the chunk's width is
+        // The hint line is built **once** for the frame: `is_some()` decides
+        // whether the row is reserved and the same string is carried to the
+        // draw site below. Its chunk is a split of the composer, so its width
+        // is the pane's and the budget is already known here.
+        let hint_budget = usize::from(outer.pane.width).saturating_sub(4);
+        let composer_hint = self.composer_hint_text_bounded(hint_budget);
+        let hint_rows = u16::from(composer_hint.is_some());
+        let tab_rows = self.subagent_tab_strip_height();
+        // The overlay's rows are derived **once** for the frame: the claim
+        // below and the painter further down are two readers of one build.
+        // `tasks_strip_height` reads this cache instead of deriving again.
+        self.frame_task_rows = self.build_frame_task_rows();
+        let tasks_rows = self.tasks_strip_height();
+        // The turn-tail card is derived from the transcript every frame —
+        // there is no second store of what a turn delivered — and it renders
+        // only on the session route, where the transcript it summarises is the
+        // surface on screen.
+        let present_files = match self.ui_state.routes.current() {
+            Route::Session(_) => {
+                crate::tui::app::present_card::latest_declaration(&self.messages_state.messages)
+            }
+            _ => None,
+        };
+        let present_rows = present_files
+            .as_deref()
+            .map_or(0, crate::tui::app::present_card::card_height);
+        let claims = FrameClaims {
+            todo_rows,
+            hint_rows,
+            tab_rows,
+            tasks_rows,
+            present_rows,
+            // The pane's width, not the composer chunk's: the chunk's width is
             // what this height is asking for, so using it would be circular.
-            // The pane's width is the width the composer wraps at.
-            .needed_height(max_prompt_height, pane_area.width)
-            .saturating_add(todo_rows)
-            .saturating_add(tasks_rows)
-            .saturating_add(hint_rows);
-        let session_chunks = self
-            .ui_state
-            .layout
-            .session_layout(pane_area, Some(prompt_height));
-
-        // Carve the hint line, then the todo strip, off the top of the prompt
-        // chunk. Order matters: hints belong closer to the input than the
-        // task strip does.
-        let mut available = session_chunks[2];
-        let mut hint_chunk = None;
-        if hint_rows > 0 && available.height > hint_rows {
-            let split = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(hint_rows), Constraint::Min(1)])
-                .split(available);
-            hint_chunk = Some(split[0]);
-            available = split[1];
-        }
-        // Carve top-down in the same order the rows were added to
-        // `prompt_height`: working strip, hint line, todo strip, tasks
-        // overlay, then the prompt gets whatever is left. The overlay sits
-        // directly beneath the todo strip on screen for the same reason.
-        let (remaining, todo_chunk) = if todo_rows > 0 && available.height > todo_rows {
-            let split = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(todo_rows), Constraint::Min(1)])
-                .split(available);
-            (split[1], Some(split[0]))
-        } else {
-            (available, None)
+            prompt_rows: self
+                .prompt_state
+                .prompt
+                .needed_height(outer.max_prompt_rows(), outer.pane.width),
         };
-        let (prompt_chunk, tasks_chunk) = if tasks_rows > 0 && remaining.height > tasks_rows {
-            let split = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(tasks_rows), Constraint::Min(1)])
-                .split(remaining);
-            (split[1], Some(split[0]))
-        } else {
-            (remaining, None)
-        };
-        self.todo_area = todo_chunk;
-        self.tasks_area = tasks_chunk;
-        self.prompt_area = Some(prompt_chunk);
+        // The plan is the frame's geometry: the painters below read it, and so
+        // does the next mouse event. One value, so a click cannot resolve
+        // against a rect a painter did not use.
+        self.frame_plan = self.ui_state.layout.plan_frame(outer, claims);
+        let plan = self.frame_plan;
 
         // Outer TUI frame: paint the left border on the reserved strip
         // and the four corner cells that connect it with the header's
         // bottom border (top) and the reserved bottom edge (bottom).
         // The header supplies the top horizontal line via its own
         // `Borders::BOTTOM`; the bottom line is painted in `finish_render`
-        // on `border_area`, so the lower corners have to be anchored there
-        // too — anchoring them on the footer's last row left the bottom
-        // edge's own leftmost cell showing the `│` of the left strip and
-        // put a stray `└` up on the status line.
+        // on the plan's bottom border, so the lower corners have to be
+        // anchored there too — anchoring them on the footer's last row left
+        // the bottom edge's own leftmost cell showing the `│` of the left
+        // strip and put a stray `└` up on the status line.
         self.render_outer_borders(
             frame,
-            bordered[0],
-            pane_area,
-            session_chunks[0],
-            border_area,
+            plan.left_border,
+            plan.pane,
+            plan.header,
+            plan.bottom_border,
         );
 
-        self.render_header(frame, session_chunks[0]);
+        self.render_header(frame, plan.header);
 
-        // Carve the subagent tab bar off the top of the viewport. Guarded on
-        // the chunk actually having room: on a pane too short to give up the
-        // row, dropping the bar entirely beats eating the transcript's floor.
-        let mut viewport_chunk = session_chunks[1];
-        let mut tab_chunk = None;
-        if tab_rows > 0 && viewport_chunk.height > tab_rows {
-            let split = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(tab_rows), Constraint::Min(1)])
-                .split(viewport_chunk);
-            tab_chunk = Some(split[0]);
-            viewport_chunk = split[1];
-        }
-        // Published *after* the carve, so scroll and scrollbar hit-testing read
-        // the rect the transcript actually occupies. Setting it before the
-        // carve would hand the scrollbar a row that belongs to the tab bar.
-        self.viewport_area = Some(viewport_chunk);
+        let viewport_chunk = plan.viewport;
 
         // Viewport (messages) — highest-risk surface for render panics
         //
@@ -341,8 +248,8 @@ impl App {
         // draws one. Clear the rect before the dispatch so an owner that does
         // not paint a scrollbar cannot inherit the last frame's — a rect that
         // names a surface that is not on screen is a rect that mis-resolves a
-        // click. The session route sets it again below.
-        self.scrollbar_area = None;
+        // click. The plan is rebuilt from `None` every frame, and the session
+        // route records it again below.
         let viewport_owner = self.viewport_owner();
         let viewport_result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
@@ -365,7 +272,7 @@ impl App {
                 .record_component_render_panic("messages");
             self.render_component_fallback(frame, viewport_chunk, "Messages render error");
         }
-        if let Some(area) = tab_chunk {
+        if let Some(area) = plan.tab_bar {
             self.render_subagent_tab_strip(frame, area);
         }
 
@@ -380,11 +287,15 @@ impl App {
         // drawn and leave the view claiming a run is live.
         self.sync_subagent_rows_from_projection();
 
-        self.render_composer_hints(frame, hint_chunk);
-        self.render_todo_strip(frame, todo_chunk);
-        self.render_tasks_strip(frame, tasks_chunk);
-        self.render_prompt(frame, prompt_chunk);
-        self.render_footer(frame, session_chunks[3]);
+        self.render_composer_hints(frame, plan.hint, composer_hint.as_deref());
+        self.render_todo_strip(frame, plan.todo);
+        // Hand the painter the rows the height already derived, and clear the
+        // per-frame cache so a reader between frames cannot see a stale list.
+        let frame_task_rows = self.frame_task_rows.take();
+        self.render_tasks_strip(frame, plan.tasks, frame_task_rows.as_ref());
+        self.render_present_card(frame, plan.present, present_files.as_deref());
+        self.render_prompt(frame, plan.prompt);
+        self.render_footer(frame, plan.footer);
 
         // Panels — dynamic content can trigger panics
         //
@@ -399,6 +310,31 @@ impl App {
         // panel that is no longer painted — which is what would otherwise let
         // a click focus a column that has moved or closed.
         self.panel_areas.clear();
+        // One population for the whole frame, and only when the Session panel
+        // is actually on screen. It used to run at the top of
+        // `render_panel_at`, which meant once per occupied panel — including
+        // when the occupied panel was not the Session panel at all.
+        let session_panel_visible = regions.occupied().any(|(placement, rect)| {
+            rect.width > 0
+                && rect.height > 0
+                && self.panel_host.panel_at(placement) == SidePanelId::Session
+        });
+        if session_panel_visible {
+            // The population used to sit inside `render_panel_at`, under the
+            // per-panel `catch_unwind`. It is hoisted now, so it keeps a
+            // containment of its own: a panic in a setter is recorded like
+            // any other component panic instead of taking the frame down.
+            let population = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.populate_session_panel_if_needed();
+            }));
+            if let Err(err) = population {
+                let msg = Self::extract_panic_message(&err);
+                tracing::error!("Sidebar population panic: {msg}");
+                self.ui_state
+                    .diagnostics
+                    .record_component_render_panic("sidebar");
+            }
+        }
         for (placement, rect) in regions.occupied() {
             if rect.width == 0 || rect.height == 0 {
                 continue;
@@ -426,27 +362,15 @@ impl App {
         }
 
         // Dialog — failures close only that dialog
-        if !self.focus_manager.is_empty() {
-            // The hit-test rect must be the rect the dialog actually
-            // draws into. The project picker uses its own bounded
-            // geometry rather than the shared 60x50 popup, so deriving
-            // the stored rect from the same helper keeps mouse selection
-            // aligned with the rendered rows.
-            let popup_area = match self.focus_manager.active_dialog_type() {
-                DialogType::ProjectPicker => {
-                    crate::tui::components::dialogs::project_picker::ProjectPickerDialog::picker_area(
-                        area,
-                    )
-                }
-                _ => crate::tui::components::component::centered_rect(60, 50, area),
-            };
+        if let Some(popup_area) = self.dialog_rect(area) {
+            // The hit-test rect is the rect the dialog paints into: one path.
             self.dialog_area = Some(popup_area);
             let dialog_result =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
                     if self.render_panic_injection.dialog {
                         panic!("injected dialog render panic");
                     }
-                    self.render_dialog(frame, area);
+                    self.render_dialog(frame, popup_area);
                     Ok(())
                 }));
             if let Err(err) = dialog_result {
@@ -464,14 +388,13 @@ impl App {
 
         // Completion overlay — failures hide completions
         if self.prompt_state.show_completions {
-            self.completion_area = None;
             self.completion_visible_rows = 0;
             let compl_result =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
                     if self.render_panic_injection.completions {
                         panic!("injected completions render panic");
                     }
-                    self.render_completions(frame, session_chunks[2]);
+                    self.render_completions(frame, plan.composer);
                     Ok(())
                 }));
             if let Err(err) = compl_result {
@@ -481,11 +404,9 @@ impl App {
                     .diagnostics
                     .record_component_render_panic("completions");
                 self.prompt_state.show_completions = false;
-                self.completion_area = None;
                 self.completion_visible_rows = 0;
             }
         } else {
-            self.completion_area = None;
             self.completion_visible_rows = 0;
         }
 
@@ -527,6 +448,12 @@ impl App {
     /// Apply the live text selection over the finished frame, then retain
     /// the frame so a drag can later be resolved to real text.
     ///
+    /// The buffer is retained **only while a selection is live**. Its one
+    /// reader, [`Self::copy_selection_to_clipboard`],
+    /// returns early with no selection, so a copy made on every other frame
+    /// is work no interaction can spend — and `clear_selection` drops the
+    /// copy when the interaction ends.
+    ///
     /// This runs last, after every overlay (dialogs, completions, toasts),
     /// so a selection reads as a single continuous band over the whole
     /// window rather than being partially overpainted. Mutating the buffer
@@ -534,7 +461,7 @@ impl App {
     /// selected text byte-identical to what was already drawn.
     fn finish_render(&mut self, frame: &mut Frame) {
         // Close the bottom edge last so nothing overwrites it.
-        if let Some(area) = self.bottom_border_area {
+        if let Some(area) = self.frame_plan.bottom_border {
             let bottom_block = Block::default()
                 .borders(Borders::BOTTOM)
                 .border_style(Style::default().fg(self.ui_state.theme.border))
@@ -557,8 +484,7 @@ impl App {
                 }
             }
             self.last_frame_buffer = Some(buffer.clone());
-        } else {
-            self.last_frame_buffer = Some(frame.buffer_mut().clone());
+            crate::tui::render_cost::count_frame_buffer_clone();
         }
     }
 
@@ -1021,6 +947,12 @@ impl App {
         // allocates, so it is done once per frame here instead of per banner
         // line inside the widget.
         let find_note = presentation.find_note.label();
+        // The pending count, rendered to text here for the same reason the
+        // find note is: the widget holds no domain state, and this allocates
+        // once per frame instead of once per banner line. It is **not** the
+        // notice: a count states what is about to happen, and the notice slot
+        // states what just did.
+        let count_label = crate::tui::editor::pending_count_label(presentation.pending_count);
         let command_active = presentation.command_active;
         let command_line = presentation.command_line.clone();
         let command_selection = presentation.command_selection;
@@ -1053,6 +985,7 @@ impl App {
                 status: status.label(),
                 notice: notice.as_deref(),
                 find_note: &find_note,
+                count_label: &count_label,
                 mode,
                 buffer_focused: focus,
                 pending_prefix,
@@ -1272,7 +1205,12 @@ impl App {
             )),
             Line::from(""),
             Line::from(Span::styled(
-                "  Ctrl+N  new session    Ctrl+L  change model    ?  help",
+                HintLine::from_items(&[
+                    ("Ctrl+N", "new session"),
+                    ("Ctrl+L", "change model"),
+                    ("?", "help"),
+                ])
+                .render(0),
                 Style::default().fg(self.ui_state.theme.muted),
             )),
         ];
@@ -1293,11 +1231,7 @@ impl App {
             .messages
             .set_visible_height(content_area.height as usize);
         self.messages_state.messages.set_width(content_area.width);
-        self.scrollbar_area = if scrollbar_area.width == 0 {
-            None
-        } else {
-            Some(scrollbar_area)
-        };
+        self.frame_plan.scrollbar = (scrollbar_area.width > 0).then_some(scrollbar_area);
 
         // Render a background block first to ensure the viewport isn't transparent
         let block = Block::default().style(Style::default().bg(self.ui_state.theme.background));
@@ -1305,7 +1239,7 @@ impl App {
 
         frame.render_widget(&self.messages_state.messages, content_area);
 
-        if self.scrollbar_area.is_some() {
+        if self.frame_plan.scrollbar.is_some() {
             let mut state = self
                 .messages_state
                 .messages
@@ -1352,38 +1286,6 @@ impl App {
         frame.render_widget(Paragraph::new(lines[..shown].to_vec()), area);
     }
 
-    /// How many rows the tasks overlay may reserve on a pane of `pane_height`.
-    ///
-    /// Returns the space left after honouring every other claim on the pane:
-    /// the header and footer, the transcript's `MIN_TRANSCRIPT` floor, the
-    /// prompt box at its own maximum, and the working strip, hint line, and
-    /// todo strip above it.
-    ///
-    /// The floor is the load-bearing part. `session_layout` splits the pane
-    /// into `Min(10)` for the transcript and a fixed height for the prompt, so
-    /// an overlay that overshoots does not merely render short — it makes the
-    /// carve below yield, and `Ctrl+T` stops doing anything at all. Clamping
-    /// here makes a short pane drop the overlay instead, which is the honest
-    /// outcome: a truncated transcript is worse than no overlay.
-    fn tasks_overlay_allowance(
-        &self,
-        pane_height: u16,
-        todo_rows: u16,
-        hint_rows: u16,
-        max_prompt_height: u16,
-    ) -> u16 {
-        const MIN_TRANSCRIPT: u16 = 10;
-        let config = &self.ui_state.layout.config;
-        let claimed = config
-            .header_height
-            .saturating_add(config.footer_height)
-            .saturating_add(MIN_TRANSCRIPT)
-            .saturating_add(max_prompt_height)
-            .saturating_add(todo_rows)
-            .saturating_add(hint_rows);
-        pane_height.saturating_sub(claimed)
-    }
-
     /// Draw the unified tasks overlay (`Ctrl+T`) directly above the input.
     ///
     /// Renders three projection-backed groups — todos, in-flight subagents,
@@ -1391,19 +1293,35 @@ impl App {
     /// omitted entirely. Every line is ellipsized to the available width
     /// rather than wrapped, so a long description can never change the
     /// overlay's height and reflow the transcript underneath it.
-    fn render_tasks_strip(&mut self, frame: &mut Frame, area: Option<Rect>) {
+    fn render_tasks_strip(
+        &mut self,
+        frame: &mut Frame,
+        area: Option<Rect>,
+        frame_rows: Option<&crate::tui::app::FrameTaskRows>,
+    ) {
         let Some(area) = area else { return };
         if area.width == 0 || area.height == 0 {
             return;
         }
 
         let theme = self.ui_state.theme.clone();
-        // The rows are bounded in place: the overlay draws at most twelve of
-        // them, and deep-cloning the whole list to throw most of it away
-        // cost the whole task list twice per frame.
-        let all_rows = self.task_rows();
-        let rows = bounded_task_rows(&all_rows);
-        let selected = self.selected_task_row_index(&rows);
+        // One build of the rows serves the height and the painter. The
+        // fallback exists only for a caller outside a frame; the render path
+        // always hands in the list it already derived.
+        let fallback;
+        let built = match frame_rows {
+            Some(rows) => rows,
+            None => {
+                fallback = self.build_frame_task_rows().unwrap_or(FrameTaskRows {
+                    all: Vec::new(),
+                    bounded: Vec::new(),
+                });
+                &fallback
+            }
+        };
+        let all_rows = built.all.as_slice();
+        let rows = built.bounded.as_slice();
+        let selected = self.selected_task_row_index(rows);
 
         let mut lines: Vec<Line> = Vec::new();
         if rows.is_empty() {
@@ -1547,17 +1465,42 @@ impl App {
             }
             lines.push(Line::from(Span::styled(
                 if selected.is_some() {
-                    " Shift+N/P open · ↵ select · i inspect · Esc close "
+                    HintLine::from_items(&[
+                        ("Esc", "close"),
+                        ("Shift+N/P", "open"),
+                        ("↵", "select"),
+                        ("i", "inspect"),
+                    ])
                 } else {
-                    " Ctrl+T close "
+                    HintLine::from_items(&[("Ctrl+T", "close")])
                 }
-                .to_string(),
+                .render(0),
                 Style::default().fg(theme.muted),
             )));
         }
 
         let shown = (area.height as usize).min(lines.len());
         frame.render_widget(Paragraph::new(lines[..shown].to_vec()), area);
+    }
+
+    /// Draw the turn-tail deliverable card.
+    ///
+    /// The files come straight from the `present` tool result in the
+    /// transcript: this painter holds no list of its own, so there is exactly
+    /// one record of what a turn delivered. The rect is optional because the
+    /// card claims no rows at all when the transcript holds no verified
+    /// declaration — and a refused declaration is a failed tool call at its
+    /// own position, not a card with the reason moved into it.
+    fn render_present_card(
+        &self,
+        frame: &mut Frame,
+        area: Option<Rect>,
+        files: Option<&[crate::tool::present::PresentedFile]>,
+    ) {
+        let (Some(area), Some(files)) = (area, files) else {
+            return;
+        };
+        crate::tui::app::present_card::render(frame, area, &self.ui_state.theme, files);
     }
 
     /// Render the open subagent buffer into the viewport rect.
@@ -1578,7 +1521,11 @@ impl App {
     /// adapter hardcodes `progress: None`, so an invented "working on step
     /// 3" line would be a lie the user acts on.
     fn render_subagent_view(&mut self, frame: &mut Frame, area: Rect) {
-        let Some(tab) = self.ui_state.subagents.active_tab().cloned() else {
+        // Borrow the tab rather than cloning it. The clone this replaced
+        // copied the tab's row and both transcript windows (up to two
+        // 512-entry caches) so a view that paints roughly forty rows could
+        // read them. The borrow ends before the scroll write-back below.
+        let Some(tab) = self.ui_state.subagents.active_tab() else {
             return;
         };
         if area.width == 0 || area.height == 0 {
@@ -1696,7 +1643,7 @@ impl App {
         // the system does not know.
         let overflow_index = lines.len();
         lines.push(Line::default());
-        lines.extend(self.delegated_transcript_lines(&tab));
+        lines.extend(self.delegated_transcript_lines(tab));
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
             " Esc returns to the main buffer".to_string(),
@@ -2176,7 +2123,15 @@ impl App {
     /// its verbs once and they appear next to the input they modify. Kept out
     /// of each panel's own chrome: inside the panel they described the
     /// panel, while the keys actually operate on the shared composer.
-    fn render_composer_hints(&mut self, frame: &mut Frame, chunk: Option<Rect>) {
+    ///
+    /// `text` is the frame's **one** build of the line, made where the row's
+    /// height was decided. This function only draws it.
+    fn render_composer_hints(
+        &mut self,
+        frame: &mut Frame,
+        chunk: Option<Rect>,
+        text: Option<&str>,
+    ) {
         let Some(area) = chunk else {
             return;
         };
@@ -2184,10 +2139,7 @@ impl App {
             return;
         }
         let budget = usize::from(area.width).saturating_sub(4);
-        // The row is built to fit the budget, not merely truncated to it: the
-        // composer's own row is a list of keys, and a key cut in half names a
-        // key that does not exist.
-        let Some(text) = self.composer_hint_text_bounded(budget) else {
+        let Some(text) = text else {
             return;
         };
         let theme = &self.ui_state.theme;
@@ -2199,7 +2151,7 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                crate::tui::wrap::ellipsize_to_width(&text, budget),
+                crate::tui::wrap::ellipsize_to_width(text, budget),
                 Style::default().fg(theme.muted),
             ),
         ]);
@@ -2594,6 +2546,7 @@ impl App {
     }
 
     pub fn build_status_summary(&self) -> TuiStatusSummary {
+        crate::tui::render_cost::count_status_summary_build();
         let mut primary = String::from("idle");
         let mut activity: Vec<String> = Vec::new();
 
@@ -2782,7 +2735,6 @@ impl App {
     /// driving", which shows up as a panel that renders unfocused while the badge
     /// claims it is focused.
     fn render_panel_at(&mut self, frame: &mut Frame, placement: PanelPlacement, area: Rect) {
-        self.populate_session_panel();
         let mut ctx = crate::tui::panels::PanelCtx {
             theme: Arc::clone(&self.ui_state.theme),
             // `now_ms` is display-only (composing expiry); no I/O.
@@ -2810,11 +2762,109 @@ impl App {
             .render_at(placement, &mut ctx, frame.buffer_mut(), area);
     }
 
+    /// Populate the Session panel, once per frame and only when it moved.
+    ///
+    /// The population step is a copy of the projection and of the session's
+    /// own sidebar-visible state. It runs when **either** the projection
+    /// revision **or** one of those session-derived inputs differs from what
+    /// the sidebar already holds. A frame that changed neither does no work;
+    /// a projection that arrives is always reflected, because its
+    /// `(stream_id, event_seq)` is the first half of the test.
+    fn populate_session_panel_if_needed(&mut self) {
+        if self.sidebar_projection_is_current() && self.sidebar_inputs_are_current() {
+            return;
+        }
+        self.populate_session_panel();
+    }
+
+    /// Whether the sidebar's projection-derived rows match the live snapshot.
+    fn sidebar_projection_is_current(&self) -> bool {
+        match self.sidebar_projection_revision.as_ref() {
+            Some(SidebarProjectionRevision::NoSnapshot) => {
+                self.projection_client.active_snapshot().is_none()
+            }
+            Some(SidebarProjectionRevision::Snapshot {
+                stream_id,
+                event_seq,
+            }) => self.projection_client.active_snapshot().is_some_and(
+                |(current_stream, snapshot)| {
+                    current_stream.as_str() == stream_id.as_str()
+                        && snapshot.event_seq == *event_seq
+                },
+            ),
+            None => false,
+        }
+    }
+
+    /// Whether the session-derived inputs match the rows already copied.
+    fn sidebar_inputs_are_current(&self) -> bool {
+        use crate::tui::components::sidebar::SidebarPopulationInputs;
+
+        let project_scope = self.active_project_id();
+        let session = self.session_state.session.as_ref();
+        let current_agent = &self.agent_state.agents[self.agent_state.current_agent];
+        let provider = self
+            .agent_state
+            .current_model
+            .split('/')
+            .next()
+            .unwrap_or("");
+        let derived = &self.session_state_derived;
+        let git = session.map(|_| &self.session_state.git_sidebar);
+        let git_fallback_root = session.map(|session| session.project_id.as_str());
+        let inputs = SidebarPopulationInputs {
+            project_scope,
+            session,
+            agent: &current_agent.name,
+            provider,
+            model: &self.agent_state.current_model,
+            mcp_servers: &self.session_state.mcp_servers,
+            file_changes: &self.session_state.changed_files,
+            git,
+            git_fallback_root,
+            goal: derived.goal.as_deref(),
+            plan: derived.plan.as_ref(),
+            live_work_status: self.sidebar_live_work_status(),
+        };
+        self.sidebar.population_is_current(&inputs)
+    }
+
+    /// The sidebar's live-work badge, derived from the projection's status.
+    fn sidebar_live_work_status(
+        &self,
+    ) -> Option<crate::tui::components::sidebar::SidebarLiveWorkStatus> {
+        use crate::tui::app::state::projection_client::PrimaryProjectionStatus;
+        use crate::tui::components::sidebar::SidebarLiveWorkStatus;
+
+        match self.projection_client.primary_status() {
+            Some(PrimaryProjectionStatus::Loading) => Some(SidebarLiveWorkStatus::Loading),
+            Some(PrimaryProjectionStatus::Unavailable(_)) => {
+                Some(SidebarLiveWorkStatus::Unavailable)
+            }
+            Some(PrimaryProjectionStatus::Authoritative) | None => None,
+        }
+    }
+
+    /// Record the revision the population just read.
+    fn record_sidebar_projection_revision(&mut self) {
+        self.sidebar_projection_revision = Some(match self.projection_client.active_snapshot() {
+            Some((stream_id, snapshot)) => SidebarProjectionRevision::Snapshot {
+                stream_id: stream_id.to_string(),
+                event_seq: snapshot.event_seq,
+            },
+            None => SidebarProjectionRevision::NoSnapshot,
+        });
+    }
+
     /// Push session projection into the Session panel's widget.
     ///
     /// Split out of `render_panel_at` so the sidebar's field population is
     /// readable on its own; it performs no I/O and reads only cached state.
     fn populate_session_panel(&mut self) {
+        crate::tui::render_cost::count_sidebar_population();
+        // One focus reconciliation for the whole population, rather than one
+        // per row setter.
+        self.sidebar.begin_population();
         // The Workspace route no longer forces this panel. It selects the
         // Chat panel through the host instead (see
         // `workspace_dashboard::open_workspace`), which keeps the previous
@@ -2881,18 +2931,7 @@ impl App {
         self.sidebar.set_goal(derived.goal.clone());
         self.sidebar.set_plan(derived.plan.clone());
         self.sidebar
-            .set_live_work_status(match self.projection_client.primary_status() {
-            Some(crate::tui::app::state::projection_client::PrimaryProjectionStatus::Loading) => {
-                Some(crate::tui::components::sidebar::SidebarLiveWorkStatus::Loading)
-            }
-            Some(
-                crate::tui::app::state::projection_client::PrimaryProjectionStatus::Unavailable(_),
-            ) => Some(crate::tui::components::sidebar::SidebarLiveWorkStatus::Unavailable),
-            Some(
-                crate::tui::app::state::projection_client::PrimaryProjectionStatus::Authoritative,
-            )
-            | None => None,
-        });
+            .set_live_work_status(self.sidebar_live_work_status());
 
         // Derive the subagent rows first and let the snapshot borrow end
         // here: the sidebar writes below all need `&mut self`, so holding the
@@ -2938,20 +2977,31 @@ impl App {
                     })
                     .collect(),
             );
-            self.sidebar
-                .set_run_groups(snapshot.run_groups.iter().cloned().collect());
-            self.sidebar.set_agent_tree(
+            self.sidebar.set_run_groups(
                 snapshot
-                    .active_turn
-                    .as_ref()
-                    .map(|turn| turn.agent_tree.iter().cloned().collect())
-                    .or_else(|| {
-                        snapshot
-                            .recent_turns
-                            .front()
-                            .map(|turn| turn.agent_tree.iter().cloned().collect())
-                    })
-                    .unwrap_or_default(),
+                    .run_groups
+                    .iter()
+                    .take(crate::tui::components::sidebar::MAX_SIDEBAR_RUN_GROUPS)
+                    .cloned()
+                    .collect(),
+            );
+            let agent_tree = snapshot
+                .active_turn
+                .as_ref()
+                .map(|turn| turn.agent_tree.iter())
+                .or_else(|| {
+                    snapshot
+                        .recent_turns
+                        .front()
+                        .map(|turn| turn.agent_tree.iter())
+                });
+            self.sidebar.set_agent_tree(
+                agent_tree
+                    .into_iter()
+                    .flatten()
+                    .take(crate::tui::components::sidebar::MAX_SIDEBAR_AGENT_TREE_NODES)
+                    .cloned()
+                    .collect(),
             );
             self.sidebar.set_convergences(
                 snapshot
@@ -2978,11 +3028,20 @@ impl App {
             // overlay uses, so "jobs this session is waiting on" means one
             // thing across both surfaces rather than two rules that drift the
             // first time a producer invents a new state token.
-            self.sidebar.set_jobs(
-                snapshot
-                    .jobs
-                    .iter()
-                    .filter(|job| is_live_state(&job.state))
+            //
+            // The total is read off the filtered references *before* a row is
+            // cloned: the bound truncates what is displayed, never what the
+            // header counts.
+            let live_jobs: Vec<_> = snapshot
+                .jobs
+                .iter()
+                .filter(|job| is_live_state(&job.state))
+                .collect();
+            let job_total = live_jobs.len();
+            self.sidebar.set_jobs_with_total(
+                live_jobs
+                    .into_iter()
+                    .take(crate::tui::components::sidebar::MAX_SIDEBAR_JOB_ROWS)
                     .map(|job| SidebarJob {
                         job_id: job.job_id.clone(),
                         kind: job.kind.clone(),
@@ -2991,6 +3050,7 @@ impl App {
                         error_class: job.error_class.clone(),
                     })
                     .collect(),
+                job_total,
             );
         } else {
             self.sidebar.set_tool_programs(Vec::new());
@@ -3013,8 +3073,10 @@ impl App {
             // they are three renderings of one vector, not three independent
             // reads that could disagree. `label()` supplies the same
             // name-else-agent-type fallback the overlay uses.
-            self.sidebar.set_subagents(
+            let subagent_total = rows.len();
+            self.sidebar.set_subagents_with_total(
                 rows.iter()
+                    .take(crate::tui::components::sidebar::MAX_SIDEBAR_SUBAGENT_ROWS)
                     .map(|row| crate::tui::components::sidebar::SidebarSubagent {
                         task_id: row.task_id.clone(),
                         child_instance_id: row.child_instance_id.clone(),
@@ -3024,9 +3086,12 @@ impl App {
                         profile: row.descriptor().map(str::to_string),
                     })
                     .collect(),
+                subagent_total,
             );
             self.apply_subagent_rows(rows);
         }
+        self.sidebar.end_population();
+        self.record_sidebar_projection_revision();
     }
 
     /// Project the snapshot's agent tree into the main buffer's subagent rows.
@@ -3078,34 +3143,32 @@ impl App {
         )
     }
 
-    fn render_dialog(&mut self, frame: &mut Frame, area: Rect) {
-        if self.focus_manager.is_empty() {
-            return;
-        }
-
-        // The project picker renders directly from `App::dialog_state.project_picker`
-        // because the picker state is owned by the App, not the
-        // focus manager.
-        if self.focus_manager.active_dialog_type() == DialogType::ProjectPicker {
-            self.render_project_picker(frame, area);
-            return;
-        }
-
-        let popup_area = crate::tui::components::component::centered_rect(60, 50, area);
-        frame.render_widget(Clear, popup_area);
-
-        if !self.focus_manager.is_empty() {
-            self.focus_manager
-                .render(frame, popup_area, &self.ui_state.theme);
-        }
+    /// The one place a dialog's rect is decided: a stated preference, clamped.
+    fn dialog_rect(&self, available: Rect) -> Option<Rect> {
+        self.focus_manager.top().map(|dialog| {
+            crate::tui::components::dialog_size::clamp_area(
+                dialog.preferred_area(available),
+                available,
+            )
+        })
     }
 
-    fn render_project_picker(&mut self, frame: &mut Frame, area: Rect) {
-        use crate::tui::components::dialogs::project_picker::{
-            render_picker_body, ProjectPickerDialog,
-        };
+    fn render_dialog(&mut self, frame: &mut Frame, popup_area: Rect) {
+        frame.render_widget(Clear, popup_area);
 
-        let dialog_area = ProjectPickerDialog::picker_area(area);
+        // The picker body reads App-owned state; its rect is `dialog_rect`'s.
+        if self.focus_manager.active_dialog_type() == DialogType::ProjectPicker {
+            self.render_project_picker(frame, popup_area);
+            return;
+        }
+
+        self.focus_manager
+            .render(frame, popup_area, &self.ui_state.theme);
+    }
+
+    fn render_project_picker(&mut self, frame: &mut Frame, dialog_area: Rect) {
+        use crate::tui::components::dialogs::project_picker::render_picker_body;
+
         frame.render_widget(Clear, dialog_area);
 
         let block = Block::default()
@@ -3290,7 +3353,6 @@ impl App {
                     .alignment(ratatui::layout::Alignment::Center),
                 empty_area,
             );
-            self.completion_area = None;
             self.completion_visible_rows = 0;
             self.completion_scroll_offset = 0;
             return;
@@ -3327,7 +3389,7 @@ impl App {
         // The visible rows are the *filtered* set, which the popup sizes
         // itself from. Click hit-testing must use the same count, offset by
         // the scroll window or every click would select the wrong row.
-        self.completion_area = Some(compl_area);
+        self.frame_plan.completion = Some(compl_area);
         self.completion_visible_rows = visible;
         self.completion_scroll_offset = start;
     }
@@ -3706,5 +3768,34 @@ mod reasoning_indicator_tests {
                 "the reasoning indicator must not draw a spinner frame ({frame})"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod dialog_sizing_tests {
+    use super::*;
+    use crate::tui::components::component::centered_rect;
+    use crate::tui::components::dialogs::project_picker::ProjectPickerDialog;
+
+    #[test]
+    fn a_mounted_picker_is_sized_by_its_preference_not_by_the_legacy_popup() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.focus_manager.push(Box::new(ProjectPickerDialog::new(
+            app.ui_state.theme.clone(),
+        )));
+        let screen = Rect::new(0, 0, 80, 24);
+        let rect = app
+            .dialog_rect(screen)
+            .expect("a mounted dialog states a rect");
+        assert_eq!(
+            rect,
+            ProjectPickerDialog::picker_area(screen),
+            "the host must place the picker's own preferred area"
+        );
+        assert_ne!(
+            rect,
+            centered_rect(60, 50, screen),
+            "the picker must not fall back to the shared 60x50 popup"
+        );
     }
 }

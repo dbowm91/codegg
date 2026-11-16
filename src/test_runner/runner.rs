@@ -480,6 +480,34 @@ enum SupervisorResult {
     ChildFailed(String),
 }
 
+fn is_cargo_command(command: &str) -> bool {
+    Path::new(command)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.eq_ignore_ascii_case("cargo") || name.eq_ignore_ascii_case("cargo.exe")
+        })
+}
+
+fn validated_workspace_cargo_directory(workspace_root: &Path, candidate: &Path) -> Option<PathBuf> {
+    if !candidate.is_absolute() {
+        return None;
+    }
+    let workspace_root = workspace_root.canonicalize().ok()?;
+    let cargo_directory = candidate.canonicalize().ok()?;
+    if !cargo_directory.is_dir() || !cargo_directory.starts_with(workspace_root) {
+        return None;
+    }
+    Some(cargo_directory)
+}
+
+fn contained_cargo_temp_directory(
+    workspace_root: &Path,
+    cargo_target_dir: Option<&Path>,
+) -> Option<PathBuf> {
+    validated_workspace_cargo_directory(workspace_root, cargo_target_dir.unwrap_or(workspace_root))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_managed_test_process(
     request: &TestRunRequest,
@@ -501,36 +529,59 @@ async fn run_managed_test_process(
             "test execution requires WorkspaceWrite authority".into(),
         ));
     }
-    // Pin `cargo` before spawn: a PATH `cargo` may be a rustup shim while
-    // the real toolchain binary lives elsewhere. Resolve via
-    // `rustup which cargo` first, else the canonicalized `which cargo`
-    // result, and store the absolute path in argv[0] for spawn. The display
-    // argv (`resolved.argv`, `cargo ...`) is unchanged.
+    // Pin `cargo` before spawn because PATH may resolve a rustup shim. Prefer
+    // `rustup which cargo`, else canonicalized PATH; display argv is unchanged.
     let mut spawn_argv_strings: Vec<String> = resolved.argv.clone();
+    let is_cargo = spawn_argv_strings
+        .first()
+        .is_some_and(|first| is_cargo_command(first));
     let mut rustc_executable = None;
     let mut rustdoc_executable = None;
-    if let Some(first) = spawn_argv_strings.first() {
-        let is_cargo = first == "cargo"
-            || std::path::Path::new(first)
-                .file_name()
-                .and_then(|n| n.to_str())
-                == Some("cargo");
-        if is_cargo {
-            if let Some(pinned) = resolve_cargo_absolute() {
-                spawn_argv_strings[0] = pinned;
-            }
-            rustc_executable = spawn_argv_strings
-                .first()
-                .and_then(|cargo| std::path::Path::new(cargo).parent())
-                .map(|toolchain_bin| toolchain_bin.join("rustc"))
-                .filter(|rustc| rustc.is_file());
-            rustdoc_executable = spawn_argv_strings
-                .first()
-                .and_then(|cargo| std::path::Path::new(cargo).parent())
-                .map(|toolchain_bin| toolchain_bin.join("rustdoc"))
-                .filter(|rustdoc| rustdoc.is_file());
+    if is_cargo {
+        if let Some(pinned) = resolve_cargo_absolute() {
+            spawn_argv_strings[0] = pinned;
         }
+        rustc_executable = spawn_argv_strings
+            .first()
+            .and_then(|cargo| std::path::Path::new(cargo).parent())
+            .map(|toolchain_bin| toolchain_bin.join("rustc"))
+            .filter(|rustc| rustc.is_file());
+        rustdoc_executable = spawn_argv_strings
+            .first()
+            .and_then(|cargo| std::path::Path::new(cargo).parent())
+            .map(|toolchain_bin| toolchain_bin.join("rustdoc"))
+            .filter(|rustdoc| rustdoc.is_file());
     }
+    // Cargo's cache and build outputs are writable, so constrained runs only
+    // receive paths already contained by the accepted workspace grant.
+    let constrained_cargo = is_cargo
+        && sandbox_profile.is_some_and(|profile| profile.requires_filesystem_containment());
+    let cargo_home = if constrained_cargo {
+        std::env::var_os("CARGO_HOME")
+            .map(PathBuf::from)
+            .and_then(|path| validated_workspace_cargo_directory(&request.workdir, &path))
+    } else {
+        None
+    };
+    let cargo_target_dir = if constrained_cargo {
+        std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .and_then(|path| validated_workspace_cargo_directory(&request.workdir, &path))
+    } else {
+        None
+    };
+    let cargo_tmp_dir = if constrained_cargo {
+        Some(
+            contained_cargo_temp_directory(&request.workdir, cargo_target_dir.as_deref())
+                .ok_or_else(|| {
+                    TestRunError::InvalidRequest(
+                        "no contained temporary directory is available for Cargo".into(),
+                    )
+                })?,
+        )
+    } else {
+        None
+    };
     let argv: Vec<OsString> = spawn_argv_strings.iter().map(OsString::from).collect();
     let mut process = crate::managed_process::ManagedProcessRequest::new(
         argv,
@@ -543,6 +594,19 @@ async fn run_managed_test_process(
     process.environment_policy =
         if sandbox_profile.is_some_and(|profile| profile.requires_filesystem_containment()) {
             let mut policy = crate::managed_process::EnvironmentPolicy::sanitized();
+            if let Some(cargo_home) = cargo_home.as_ref() {
+                policy = policy.with_var("CARGO_HOME", cargo_home.as_os_str());
+            }
+            if let Some(cargo_target_dir) = cargo_target_dir.as_ref() {
+                policy = policy.with_var("CARGO_TARGET_DIR", cargo_target_dir.as_os_str());
+            }
+            if let Some(cargo_tmp_dir) = cargo_tmp_dir.as_ref() {
+                // Keep rustc's temporary writes inside Cargo's contained grant.
+                policy = policy
+                    .with_var("TMPDIR", cargo_tmp_dir.as_os_str())
+                    .with_var("TMP", cargo_tmp_dir.as_os_str())
+                    .with_var("TEMP", cargo_tmp_dir.as_os_str());
+            }
             if let Some(rustup_home) = std::env::var_os("RUSTUP_HOME") {
                 policy = policy.with_var("RUSTUP_HOME", rustup_home);
             }
@@ -1098,6 +1162,69 @@ mod tests {
             fs::write(&path, "").unwrap();
         }
         dir
+    }
+
+    #[test]
+    fn detects_cargo_executable_names() {
+        assert!(is_cargo_command("cargo"));
+        assert!(is_cargo_command("/rust/bin/cargo"));
+        assert!(is_cargo_command("cargo.exe"));
+        assert!(is_cargo_command("C:/rust/bin/CARGO.EXE"));
+        assert!(!is_cargo_command("rustc"));
+        assert!(!is_cargo_command("cargo-build"));
+    }
+
+    #[test]
+    fn constrained_cargo_directories_must_resolve_inside_workspace() {
+        let workspace = tempfile::tempdir().unwrap();
+        let nested_home = workspace.path().join("job-check/.cargo-home");
+        let nested_target = workspace.path().join("job-check/.cargo-target");
+        fs::create_dir_all(&nested_home).unwrap();
+        fs::create_dir_all(&nested_target).unwrap();
+        assert_eq!(
+            validated_workspace_cargo_directory(workspace.path(), &nested_home),
+            Some(nested_home.canonicalize().unwrap())
+        );
+        assert_eq!(
+            validated_workspace_cargo_directory(workspace.path(), &nested_target),
+            Some(nested_target.canonicalize().unwrap())
+        );
+        assert_eq!(
+            contained_cargo_temp_directory(workspace.path(), Some(&nested_target)),
+            Some(nested_target.canonicalize().unwrap())
+        );
+        assert_eq!(
+            contained_cargo_temp_directory(workspace.path(), None),
+            Some(workspace.path().canonicalize().unwrap())
+        );
+
+        let outside = tempfile::tempdir().unwrap();
+        assert_eq!(
+            validated_workspace_cargo_directory(workspace.path(), outside.path()),
+            None,
+            "constrained Cargo directories outside the workspace grant must be rejected"
+        );
+        assert_eq!(
+            contained_cargo_temp_directory(workspace.path(), Some(outside.path())),
+            None,
+            "Cargo temporary paths must remain inside the accepted workdir"
+        );
+        assert_eq!(
+            validated_workspace_cargo_directory(workspace.path(), Path::new("relative-cargo-dir")),
+            None,
+            "relative Cargo directories must not resolve against the daemon's cwd"
+        );
+
+        #[cfg(unix)]
+        {
+            let link = workspace.path().join("linked-cargo-directory");
+            std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+            assert_eq!(
+                validated_workspace_cargo_directory(workspace.path(), &link),
+                None,
+                "a symlink must not redirect Cargo writes outside the workspace grant"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

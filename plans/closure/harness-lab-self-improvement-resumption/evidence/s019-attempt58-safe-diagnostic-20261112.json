@@ -1,0 +1,120 @@
+{
+  "attempt": 58,
+  "authorization_grant_id": "s019-supplemental-20261111-04",
+  "billed_usd_treatment": "unknown if unreported",
+  "binary_sha256": "7c87918b4721b798e43798dda33cf4d3958f595bd5268bdc465733a8884b35cf",
+  "campaign_preview": {
+    "attempt": 58,
+    "combined_starts_consumed": 58,
+    "combined_starts_remaining": 142,
+    "grant_starts_consumed": 14,
+    "grant_starts_remaining": 26,
+    "provider_requests_observed": 1,
+    "start_number": 58,
+    "status": "in_progress",
+    "unrepresented_counted_starts": 1
+  },
+  "credential_value_retained": false,
+  "current_goal_authorized_starts": 120,
+  "current_goal_starts_consumed_after": 29,
+  "current_goal_starts_consumed_before": 28,
+  "current_goal_starts_remaining_after": 91,
+  "external_billed_usd": null,
+  "manifest_sha256": "e87faea3f5da93ae300f2ae21ec46e6ff1f899cff0fdf6c1b9e860c97ffe57ee",
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "preflight_evidence_path": "/Users/davidbowman/.codex/worktrees/b3b2/codegg/plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt58-preflight-20261112.json",
+  "provider_requests_observed": 175,
+  "raw_prompt_transcript_tool_arguments_tool_outputs_and_verifier_output_inspected": false,
+  "route": "opencode_go",
+  "safe_run_fields": {
+    "active_work_span_ms": 2039993,
+    "agent_terminal": "completed",
+    "attempt": 58,
+    "authorization_grant_id": "s019-supplemental-20261111-04",
+    "binary_sha256": "7c87918b4721b798e43798dda33cf4d3958f595bd5268bdc465733a8884b35cf",
+    "duration_ms": 2060705,
+    "duration_qualified": true,
+    "event_measurement_complete": true,
+    "h007_completion_diagnostic": {
+      "assertion_text_retained": false,
+      "continuation": {
+        "all_public_artifacts_present": true,
+        "document_valid": true,
+        "first_missing_gate": null,
+        "first_missing_stage": null,
+        "gate_complete_count": 12,
+        "gate_statuses": {
+          "acceptance_audit": "complete",
+          "bounded_probes": "complete",
+          "cli_contract": "complete",
+          "dependency_index": "complete",
+          "durable_import": "complete",
+          "independent_review": "complete",
+          "provenance_queries": "complete",
+          "release_scale_overlap": "complete",
+          "starter_repair_format": "complete",
+          "starter_repair_store": "complete",
+          "versioned_records": "complete",
+          "workspace_qualification": "complete"
+        },
+        "gate_total_count": 12,
+        "incomplete_gates": [],
+        "incomplete_stages": [],
+        "present": true,
+        "release_overlap_confirmed": true,
+        "required_review_observed": true,
+        "stage_complete_count": 7,
+        "stage_statuses": {
+          "acceptance_audit": "complete",
+          "cli_contract": "complete",
+          "dependency_index": "complete",
+          "durable_import": "complete",
+          "provenance_queries": "complete",
+          "versioned_records": "complete",
+          "workspace_qualification": "complete"
+        },
+        "stage_total_count": 7,
+        "state": "observed"
+      },
+      "raw_job_ids_retained": false,
+      "raw_note_retained": false,
+      "raw_output_retained": false,
+      "schema": "campaign_h007_completion_v1",
+      "state": "observed",
+      "task_completion": {
+        "reasons": [
+          "independent_verifier_failures"
+        ],
+        "state": "verification_failed",
+        "verifier_outcome": "assertion_failures"
+      },
+      "transcript_retained": false,
+      "verifier_public_reconciliation": {
+        "classification": {
+          "continuation_boundary": "public_evidence_unavailable",
+          "transcript_job_lifecycle": "verifier_public_projection_disagreement"
+        },
+        "failure_domain_counts": {
+          "continuation_boundary": 1,
+          "transcript_job_lifecycle": 1
+        },
+        "public_domain_states": {
+          "continuation_boundary": "unavailable",
+          "transcript_job_lifecycle": "complete"
+        },
+        "state": "observed"
+      }
+    },
+    "horizon_outcome": "not_qualified",
+    "horizon_reason": "task_not_passed",
+    "manifest_sha256": "e87faea3f5da93ae300f2ae21ec46e6ff1f899cff0fdf6c1b9e860c97ffe57ee",
+    "model": "opencode_go/muse-spark-1.3-contributor",
+    "route": "opencode_go",
+    "start_number": 58,
+    "stop_reason": "end_turn",
+    "task_outcome": "failed"
+  },
+  "schema": "s019_campaign_run_diagnostic_v1",
+  "start_number": 58,
+  "status": "completed_unqualified"
+}

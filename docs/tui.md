@@ -8,6 +8,16 @@ For the daemon's lifecycle and connection rules see `docs/daemon.md`. For
 provider connections see `docs/providers.md`. The authoritative module contract
 lives in `architecture/tui.md`.
 
+## Contents
+
+[Launching](#launching) · [Project tabs](#project-tabs-and-scoping) ·
+[Sessions](#sessions-from-the-cli) · [Commands and panels](#slash-commands) ·
+[Transcript](#reading-the-transcript) · [Prompt queue](#the-prompt-queue) ·
+[Tasks and subagents](#subagents-jobs-and-the-tasks-overlay) · [Themes](#themes) ·
+[Human shell](#human-shell) · [Interactive terminal](#interactive-terminal) ·
+[Approval and sandbox](#approval-and-sandbox) ·
+[Editor](#editor-language-features) · [Browsing files](#browsing-files)
+
 ## Launching
 
 ```bash
@@ -48,7 +58,7 @@ Two consequences worth knowing:
   run inspection. The tree renders the active projection turn's bounded run
   nodes parent-first, with status, attention, progress, and joined
   branch/worktree/result-commit hints. It is a projection view, not a second
-  run store — pressing Enter on a node delegates to the lazy run-detail surface
+  run store. Pressing Enter on a node delegates to the lazy run-detail surface
   rather than copying transcripts into sidebar state.
 
 Switch tabs with `NextProjectTab` / `PreviousProjectTab` / `SelectProjectTabByIndex`
@@ -109,7 +119,7 @@ uses the catalog (`<data-root>/codegg.db`), not this project-local file.
 ## Slash commands
 
 Anything typed as `/name` in the prompt is dispatched through the command
-registry in `src/tui/command.rs`. That registry is the source of truth — it is
+registry in `src/tui/command.rs`. That registry is the source of truth: it is
 large, gains entries continuously, and includes project-local and
 plugin-contributed commands, so this page deliberately does not enumerate it.
 
@@ -117,7 +127,7 @@ Discover commands in-app instead:
 
 - Type `/` into the prompt to open the command palette, which filters
   live as you type.
-- `/help` opens the help dialog — the full, current list of keybindings. **Type
+- `/help` opens the help dialog, the full, current list of keybindings. **Type
   to filter it**: terms are matched against the key, action, section, and
   condition, so `ctrl alt` or `sidebar` narrows to what you want. Scroll with
   the arrow keys, PageUp/PageDown, Home, and End. `Esc` clears the filter, and a
@@ -149,13 +159,13 @@ same gesture instead means "move this box into the panel on that side".
 **`Esc` does not leave a panel.** It is the mode switch: it leaves Insert mode
 (keeping whatever you typed) and, in Normal mode, it does nothing. A panel
 holds the keyboard and its selection until you point somewhere else with the
-gestures above. `Shift+Q` is the panel's own exit — it hands the keyboard back
+gestures above. `Shift+Q` is the panel's own exit; it hands the keyboard back
 to the composer and leaves the panel where it is, which is what `Esc` used to
 do. It is how the `/files` box closes. The line above the input says so while
 a panel holds the keyboard (`⇧Q leave · …`).
 
 **The main buffer is a stop of its own, not something you step over.** With two
-columns up — Terminal left, Chat right — one `Shift+H` from Chat lands in the
+columns up (Terminal left, Chat right) one `Shift+H` from Chat lands in the
 buffer and the second reaches Terminal. The buffer sits *between* the columns, so
 the gestures walk the whole frame rather than jumping from one end to the other.
 
@@ -166,14 +176,13 @@ the terminal across. With no box open, the same keys move the keyboard
 instead.
 
 Whichever panel is on your selected edge has its keys on the line just above
-the input, docked or not — see [Browsing files](#browsing-files) for what that
-looks like.
+the input, docked or not. See [Browsing files](#browsing-files) for an example.
 
 ### Moving a panel to the other side
 
 **Pushing a panel toward an empty side moves it there.** There is no "wrong
 side" to land on: `/chat` then `Shift+H` walks the chat panel to the left
-column, and the right column goes back to **whatever it was showing before** —
+column, and the right column goes back to **whatever it was showing before**,
 the session panel if that was up, collapsed if you had put it away with
 `Ctrl+B`. So you never lose the panel you displaced, and you never get an
 empty column where something used to be.
@@ -183,7 +192,7 @@ Concretely:
 1. `Ctrl+B` collapses everything.
 2. `/chat` then `Shift+L` puts chat on the right.
 3. `/chat` then `Shift+H` puts chat on the left, and the right goes back to
-   collapsed — because that is how you left it.
+   collapsed, because that is how you left it.
 
 CodeGG says what the vacated edge became ("Chat moved to the Left; the Right is
 now Session"), since that edge changes without you pressing anything there.
@@ -204,16 +213,16 @@ to it in one keystroke. Bindings are saved to `codegg.json` and survive a restar
 It opens in `NOR`, because it is reached with a Normal-mode chord and is read
 before it is typed into:
 
-- **`NOR`** — `j`/`k` and the arrow keys move the highlight; `Shift+H/J/K/L`
+- **`NOR`**, `j`/`k` and the arrow keys move the highlight; `Shift+H/J/K/L`
   (or `Shift+←/→/↑/↓`) **put the highlighted panel on that edge**; `Enter`
   loads it onto the edge the strip marks; `p` moves that edge; a digit binds;
   `i` takes you to the filter.
-- **`INS`** — type to filter, `Backspace` edits, `Esc` goes back to `NOR` with
+- **`INS`**, type to filter, `Backspace` edits, `Esc` goes back to `NOR` with
   your query intact. `Esc` in `NOR` clears the filter first and only closes
   once there is nothing to clear.
 
 The directional is the reason the manager needs its own mode: in `NOR` it is
-free, so it means *put this panel over there* — the same gesture the main
+free, so it means *put this panel over there*, the same gesture the main
 buffer uses. In `INS` it is just the letter, so it types into the filter like
 any other character.
 
@@ -222,29 +231,29 @@ collapsed, and the strip says so (`[Left collapsed]`) rather than popping the
 column open behind you.
 
 It has two ways in: `Shift+S` in `NOR` mode, or the `/panels` command from
-anywhere. Use `/panels` mid-prompt — in `INS` mode `Shift+S` is just the
-letter `S`, so it has to stay typeable.
+anywhere. Use `/panels` mid-prompt. In `INS` mode, `Shift+S` is just the letter
+`S`, so it has to stay typeable.
 
 #### What `Enter` does
 
 `Enter` on a row is **one act**, and the panel then tells you which of three
 things it was:
 
-- the panel **fills** — it shows its content, and takes your keyboard;
-- a **load started** — the panel says it is loading, and the box arrives on its
+- the panel **fills**; it shows its content, and takes your keyboard;
+- a **load started**, the panel says it is loading, and the box arrives on its
   own (that is where `Shift+L` docks it);
-- the panel **cannot act** — it says why, in the panel, e.g. *memory search
+- the panel **cannot act**; it says why, in the panel, e.g. *memory search
   needs a query* or *no pending plan confirmation*.
 
 Every panel in the list does one of those three. A row that could only ever sit
 empty is not in the list: the Workspace dashboard is a full view of its own,
 opened with `Ctrl+O` or `/workspace`, so it is not a panel. A panel with
-nothing loaded in it yet says so plainly and points back at `/panels` — it will
+nothing loaded in it yet says so plainly and points back at `/panels`; it will
 never tell you to go and run a command elsewhere, or to press `Shift+←`, since
 the panel is already where you asked for it.
 
-`p` inside the manager moves the panel to the next edge — right → left →
-bottom — carrying whatever panel is loaded with it, and the choice is saved too
+`p` inside the manager moves the panel to the next edge (right → left →
+bottom) carrying whatever panel is loaded with it, and the choice is saved too
 (`panel_placement` in `codegg.json`). The strip above the list always shows all
 three with the live one marked, so you can see there are three places to be
 before you press it again.
@@ -263,12 +272,12 @@ what Enter will do:
 ```
 
 `[NOR]`/`[INS]` is your typing mode. `[BUILD]` and `[CHAT]` are the two
-destinations — the bright one is armed. `[CHAT]` lights up only while the chat
+destinations, the bright one is armed. `[CHAT]` lights up only while the chat
 side panel has the keyboard, so it cannot be armed by accident.
 
 To reach the side panel, press `Esc` (to get to `[NOR]`) and then the
-directional that points at it — `Shift+→` or `Shift+L` on the default layout.
-The opposite direction returns you. These work in `[NOR]` mode only — while you
+directional that points at it, `Shift+→` or `Shift+L` on the default layout.
+The opposite direction returns you. These work in `[NOR]` mode only, while you
 are in `[INS]`, `Shift+→` moves the caret as usual. The panel you are
 controlling shows a `▸` marker and says where Enter will go.
 
@@ -283,7 +292,7 @@ A few commonly used entries:
 | `/help` | Open in-app help |
 | `/status` | Session and runtime status |
 | `/agents` | List available agents |
-| `/sessions` | Session browser scoped to the active project — the list plus **Subagents** and **Jobs** sections for live work (`j`/`k` move across all three, skipping the headings; `Enter` opens a session or a subagent's run view; job rows are read-only). Opening a session re-reads its daemon-authorized workspace binding before updating the tab root; an unavailable or stale binding leaves the current session active. The dialog labels its project scope and live-work loading or unavailable state separately from an authoritative empty result. |
+| `/sessions` | Session browser scoped to the active project, the list plus **Subagents** and **Jobs** sections for live work (`j`/`k` move across all three, skipping the headings; `Enter` opens a session or a subagent's run view; job rows are read-only). Opening a session re-reads its daemon-authorized workspace binding before updating the tab root; an unavailable or stale binding leaves the current session active. The dialog labels its project scope and live-work loading or unavailable state separately from an authoritative empty result. |
 | `/subagent-send` | Point the next prompt at one running subagent (`/subagent-send off` clears it); the message goes to the agent running the current turn, which decides whether to relay it |
 | `/queue` | Prompts waiting for this session's next turn (`j`/`k` move, `[`/`]` reorder, `a` add, `e` edit, `d` delete, `s` send now, `r` refresh) |
 | `/policy` | Current approval and sandbox policy detail |
@@ -293,21 +302,15 @@ A few commonly used entries:
 | `/themes` | Theme picker (`/theme` is an alias) |
 | `/connect`, `/connections` | Provider connection management |
 | `/doctor` | In-app diagnostics for the search backend, MCP servers, and providers |
-| `/nodes` | Host telemetry of the configured remote Eggwork nodes — state, freshness, and the dimensions each node actually reported |
-| `/reload` | Refresh project runtime assets — `/reload skills`, `/reload agents` |
+| `/nodes` | Host telemetry of the configured remote Eggwork nodes, state, freshness, and the dimensions each node actually reported |
+| `/reload` | Refresh project runtime assets: `/reload skills`, `/reload agents` |
 | `/init` | Review a bounded root `AGENTS.md` proposal; press `a` in the preview to publish |
 | `/exit` | Quit (`quit` and `q` are aliases) |
 
 To leave CodeGG: `q` in Normal mode, `/exit`, or `Ctrl+C`. **`Esc` never
-quits.** It backs out one layer at a time — close a dialog, dismiss the
+quits.** It backs out one layer at a time (close a dialog, dismiss the
 completion popup, return from Insert to Normal mode, or discard a half-written
-prompt — and then stops.
-
-`Esc` never hands a **panel's** selection back to the conversation either. It
-is the mode switch: it leaves Insert mode (keeping whatever you typed), and in
-Normal mode it does nothing. A panel keeps the keyboard and the selection
-until you move the panel selection with `Shift+H/J/K/L`; `Shift+Q` is how you
-leave it, and it is how the `/files` box closes.
+prompt) and then stops.
 
 **Leaving takes two deliberate presses.** `q` and `Ctrl+C` each need a second
 press of the same key within three seconds. The first `Ctrl+C` clears the text
@@ -317,13 +320,13 @@ you do not press it again the message goes away on its own and nothing
 happens. A dialog is still dismissed by the first `Ctrl+C`, so a dialog takes
 two presses to leave.
 
-Registry metadata — domain, scope, and source exist for palette and help
+Registry metadata, domain, scope, and source exist for palette and help
 presentation only. It does not bypass dispatch, observer mode, daemon
 authorization, or permission gates.
 
 ### The composer's box grows with your text
 
-The box at the bottom grows as your prompt gets longer — up to **ten rows**,
+The box at the bottom grows as your prompt gets longer, up to **ten rows**,
 counting the mode row at the top and the character-count and `(multiline)`
 markers at the bottom. It never takes more than its share of the screen: the
 composer is capped at **40 %** of the screen's height, so on a short terminal
@@ -349,7 +352,7 @@ keyboard is:
 | Another panel has the keyboard | **No cursor at all** in the composer |
 
 The blinking cursor is your terminal's own cursor, so it blinks at whatever
-rate your terminal is configured for — some terminals show it steady, and the
+rate your terminal is configured for, some terminals show it steady, and the
 `[INS]`/`[NOR]` badge is what tells the two modes apart.
 
 When you select a side panel, the composer stops showing a caret entirely.
@@ -369,7 +372,7 @@ motions are the way to move it:
 | `←` / `→` | The same two moves, for people who prefer the arrows |
 | `Home` / `End` | Jump to the start or the end of the line |
 
-`h` and `l` work in **both** layouts — the default one and the vim one — so
+`h` and `l` work in **both** layouts (the default one and the vim one) so
 they are there whichever you use.
 
 In the editor, `Alt+o` expands the selection to the next enclosing syntax
@@ -384,16 +387,16 @@ The word motions move it by word instead of by character:
 | `w` | Move to the start of the next word |
 | `b` | Move to the start of the previous word |
 | `e` | Move to the last character of the word at the caret |
-| `j` / `k` | Move down / up a row of the box, keeping the column — only when the composer content spans more than one row |
+| `j` / `k` | Move down / up a row of the box, keeping the column, only when the composer content spans more than one row |
 
 `j` and `k` only move the caret when the **composer content spans more than
-one row** — when there is more of it than a single row. When the composer holds
+one row**, when there is more of it than a single row. When the composer holds
 one row, they scroll the conversation instead, which is what they have always
 done. The keys come back on their own as soon as the composer holds more than
 one row again.
 
 `Ctrl+u` and `Ctrl+d` **page**. They page the **composer** when the composer
-content spans more than one row, and the **conversation** when it does not —
+content spans more than one row, and the **conversation** when it does not,
 the same two keys, and the same page size either way. The page is not
 restricted to `[NOR]`: it behaves the same in both modes.
 
@@ -408,7 +411,7 @@ three cannot disagree:
 | `w` | Move to the start of the next word, without selecting it |
 | `b` | Move to the start of the previous word, and select the word it lands on |
 | `e` | Move to the last character of the word at the caret, and select the word it lands on |
-| `j` / `k` | Move down / up a row of the box — only when the composer content spans more than one row |
+| `j` / `k` | Move down / up a row of the box, only when the composer content spans more than one row |
 | `v` | Toggle select mode; a caret motion then extends the selection |
 | `x` | Select the whole line, and grow the selection a line at a time |
 | `d` | Delete the selection |
@@ -438,7 +441,7 @@ a · b · d · e · i · j · k · o · p · u · U · v · w · x · space help
 ```
 
 - The letters are the composer's own keys, and they are the ones available
-  **right now** — `j` and `k` are absent while the composer holds a single
+  **right now**, `j` and `k` are absent while the composer holds a single
   row, because there they scroll the conversation.
 - `space help` opens the help box, where every key above is described in
   full.
@@ -446,14 +449,14 @@ a · b · d · e · i · j · k · o · p · u · U · v · w · x · space help
   box already says `[NOR]`, `[INS]`, or `[SEL]`, and a second copy of it one
   line below is the same fact said twice.
 - In `[INS]` mode the row says `type · Esc normal` instead: the composer's
-  keys are not available while you are typing — the letters are text.
+  keys are not available while you are typing, the letters are text.
 - The row is **present** in both modes, so `Esc` does not move the composer
   up or down. Only its text changes.
 
 When a **panel** has the keyboard, the row names that panel's keys instead.
 
 When the **editor** has the keyboard the row is **absent**. The editor has a
-keymap of its own — `space ?` opens it in the editor's bottom-right corner —
+keymap of its own, `space ?` opens it in the editor's bottom-right corner,
 and a row of keys in two places at once is how a keymap becomes a lie. The
 space that row would have taken is given back to the document.
 
@@ -476,7 +479,7 @@ have already sent. A command you are still typing is ordinary text, and it is
 undoable while you are typing it.
 
 A large paste is still undoable. The history is bounded so it cannot grow
-without limit, and the bound drops *older* edits — never the newest one, which
+without limit, and the bound drops *older* edits, never the newest one, which
 is the one you are most likely to want back.
 
 Two keys put the caret somewhere new and start you typing:
@@ -487,14 +490,14 @@ Two keys put the caret somewhere new and start you typing:
 | `a` | Start typing **after** the character under the caret |
 | `o` | Open an empty line below and type in it |
 
-`a` moves the caret one character forward — never past the end of its own line
-— and `o` opens a new line below the one you are on. `o` is an edit, so `u`
+`a` moves the caret one character forward (never past the end of its own line
+)and `o` opens a new line below the one you are on. `o` is an edit, so `u`
 takes the new line back; `a` only moves the caret, so there is nothing to undo.
 
 `a` is an **insert entry**, not one of the caret motions: it places the caret
 for the insertion and extends a held character selection, the way it always
-has. The **caret motions** — `w`, `b`, `e`, `h`, `l`, `j`, `k`, the arrow keys
-and `Home`/`End` — follow the mode instead: in select mode they grow the held
+has. The **caret motions** (`w`, `b`, `e`, `h`, `l`, `j`, `k`, the arrow keys
+and `Home`/`End`) follow the mode instead: in select mode they grow the held
 selection, and outside it they drop it.
 
 ### Selecting and the clipboard in `[NOR]` mode
@@ -510,7 +513,7 @@ delete and copy verbs work on:
 | `p` | Paste the clipboard's contents at the caret |
 
 While the composer is in its **select mode**, the caret motions **extend** the
-held selection — move with `w`, `b`, `e`, `h` or `l` and the selection grows with
+held selection, move with `w`, `b`, `e`, `h` or `l` and the selection grows with
 you. Outside that mode a caret motion **drops** the selection instead, and `e`
 and `b` replace it with the word they land on. The badge above the composer says
 `[SEL]` while the mode is on. A line selection does not grow with a caret
@@ -519,7 +522,7 @@ motion: `x` takes one line, and a second `x` takes the next.
 To **copy** the selection, press `Space` and then `y`. That is the whole
 gesture: `Space` opens the help menu, and `y` in that menu copies what you
 have selected to the system clipboard. The `/help` command's menu does not
-copy — it is a menu you open to type a query in, so `y` there filters the
+copy; it is a menu you open to type a query in, so `y` there filters the
 list, and so does `y` in the `Space` menu once you have switched it to
 filtering with `Enter`.
 
@@ -533,7 +536,7 @@ see in the log.
 
 In `[NOR]` mode the composer now owns a set of letters for its own Helix-style
 editing, and four app-level actions that used to live on a letter moved to a
-chord. The capabilities are unchanged — only the spelling moved:
+chord. The capabilities are unchanged, only the spelling moved:
 
 | What it does | Was | Is now |
 |---|---|---|
@@ -543,7 +546,7 @@ chord. The capabilities are unchanged — only the spelling moved:
 | Focus the sidebar | `a` (vim layout) | `Ctrl+Alt+S` |
 
 All four chords work in both layouts, so you do not have to know which one is
-active. The keys `x`, `d`, `i` and `a` still type normally in `[INS]` mode —
+active. The keys `x`, `d`, `i` and `a` still type normally in `[INS]` mode;
 they are only spoken for in `[NOR]` mode.
 
 `a` was the one that lost a spelling rather than a capability: the sidebar was
@@ -553,25 +556,25 @@ insert-after key.
 
 `i` still takes you from `[NOR]` back to typing. That was already true in the
 default layout; in the vim layout it is now the same gesture instead of the
-command palette, which moved to `Ctrl+Alt+E`. The Helix editing verbs above —
-motions, selection, delete and paste, undo and redo — are all in place.
+command palette, which moved to `Ctrl+Alt+E`. The Helix editing verbs above (
+motions, selection, delete and paste, undo and redo) are all in place.
 
 The slash command is unaffected: typing `/` at the start of the composer still
 opens the command palette, exactly as before, in both layouts.
 
 Help is unaffected too: `Space` still opens the help menu, and `?` still does
-as well. That menu is also where the copy gesture lives — `Space`, then `y`.
+as well. That menu is also where the copy gesture lives, `Space`, then `y`.
 
 The copy gesture belongs to **that** box and to no other one. The box `/help`
 opens is a different box: it is opened to type a search, so `y` there is a
 letter you type into the filter, and it is not listed as a verb in it. Both
-boxes list the composer's own keys — those are documentation, and a reader who
+boxes list the composer's own keys, those are documentation, and a reader who
 opens `/help` is exactly the reader who needs to know what `w` does.
 ### Typing while the agent is already working
 
 You can keep typing during a turn, and pressing Enter does not throw the text
 away. If the agent is still working, CodeGG says so and **puts your prompt back
-in the composer** for you to send again once the turn ends — the running turn
+in the composer** for you to send again once the turn ends, the running turn
 keeps going, and the status line above the composer keeps showing it (spinner,
 elapsed time) rather than flipping to an error.
 
@@ -587,7 +590,7 @@ busy", and it restores your prompt the same way.
 ### What is collapsed by default
 
 The conversation arrives **collapsed**. A tool call is one row until you open
-it, and a block of thinking is one row until you open it too — so a screen
+it, and a block of thinking is one row until you open it too, so a screen
 full of tool calls can be skimmed instead of scrolled. The agent's own writing
 is never collapsed: what it says to you is always there in full.
 
@@ -599,7 +602,7 @@ A collapsed row is the whole of the tool call:
 
 The icon is the call's status, the name is the tool, and the rest is what it
 was pointed at and how long it took. **`(+42 lines)`** is how much of the
-output is hidden — the count of the rows the expansion actually draws, so it
+output is hidden, the count of the rows the expansion actually draws, so it
 is what you get when you open it. (The `read` tool is the exception: it draws
 its own numbered code, so its count is the raw output's line count.) Opening
 the call takes the count away: with the output on screen, "42 hidden lines"
@@ -607,11 +610,10 @@ is just noise.
 
 Two things are worth knowing:
 
-- **A call that has not produced anything yet draws a second line.** It says
-  whether the call is queued or running, and if it is waiting on you it says
-  so and names the key: `queued — waiting on your approval · Enter to
-  review`. That line is the way back to an approval you dismissed, so it is
-  never dropped.
+- **A call that has not produced output yet draws a second line.** It says
+  whether the call is queued or running. If it needs your approval, the line
+  provides the key to review the request. A dismissed approval remains
+  accessible there.
 - **On a narrow terminal the row gives up the timing, not the name.** The
   duration and the exit code are dropped before the tool's name or the
   `expand` word, so there is always a way back into the call.
@@ -620,7 +622,7 @@ Two things are worth knowing:
 
 Click the row of the thing you want. A tool call's row opens that tool call;
 a thinking block's row opens that thinking block. Clicking the agent's own
-writing changes nothing — there is nothing hidden in it to open.
+writing changes nothing, there is nothing hidden in it to open.
 
 When the same message holds both a thinking block and a tool call, each opens
 on its own: click the thinking row for the thinking, and the tool call's row
@@ -633,8 +635,8 @@ read rather than to be copied:
 
 - The **input** is pretty-printed when it is JSON, so a long argument reads as
   a list instead of one dense line.
-- The **output** of a web-search style tool — `websearch`, `research`,
-  `webfetch` — is shown as an **outline**: an indented list of the fields and
+- The **output** of a web-search style tool (`websearch`, `research`,
+  `webfetch`) is shown as an **outline**: an indented list of the fields and
   the results, with every value in it spelled out.
 - Any **other** output is shown as pretty-printed JSON when it is JSON, and as
   the raw text when it is not.
@@ -645,8 +647,8 @@ shows the result and leaves the banner out.
 
 ### Opening everything at once
 
-`Ctrl+Alt+O` opens **every** hidden detail in the conversation — every tool
-call, every thinking block — and a second press closes them all again. A short
+`Ctrl+Alt+O` opens **every** hidden detail in the conversation (every tool
+call, every thinking block) and a second press closes them all again. A short
 message says which of the two happened: `all details expanded` or
 `all details collapsed`.
 
@@ -679,7 +681,7 @@ becomes `@·`: the time has passed and the prompt is waiting for the next turn.
 
 ### Adding and correcting
 
-`a` opens a line under the list. Type the prompt, then `Enter` — that moves to a
+`a` opens a line under the list. Type the prompt, then `Enter`; that moves to a
 second line where you say **when** it should run. Press `Enter` there to queue
 it, or `Esc` to go back to the prompt text without losing it. Leaving the delay
 empty queues the prompt for the next turn, which is what almost every prompt
@@ -693,7 +695,7 @@ or where it sits; only the words change.
 ### Setting a due time
 
 The delay line takes a number and a unit: `30s`, `5min`, `2h`, `1d`. There is no
-bare number — `5` is refused rather than guessed, because five seconds and five
+bare number, `5` is refused rather than guessed, because five seconds and five
 minutes are very different instructions to give a machine. The hint on that line
 lists the same forms, so you do not have to leave the box to learn them.
 
@@ -709,7 +711,7 @@ prompt reaches the model at any particular second.
 ### Typing safely
 
 While a line is open, every letter goes into it. Typing a prompt that contains
-`a`, `e`, `d`, `j`, `k`, or `s` is completely safe — the line's hint reads
+`a`, `e`, `d`, `j`, `k`, or `s` is completely safe, the line's hint reads
 `Enter next · Esc cancel` precisely so you can see the box has switched into
 typing mode. The delay line is guarded the same way, so typing `2d` cannot
 delete the prompt you were writing.
@@ -724,12 +726,12 @@ off.
 nothing to swap with, and the box tells you which end you are at rather than
 appearing to do nothing.
 
-A prompt whose turn has already started cannot be moved — it is mid-delivery.
+A prompt whose turn has already started cannot be moved; it is mid-delivery.
 The same is true of editing it.
 
 Reordering the queue moves the prompts that are still waiting. One whose turn is
 running holds its place while it runs, and if that turn is interrupted the prompt
-resumes **where you put it** — it does not jump to the end.
+resumes **where you put it**; it does not jump to the end.
 
 ### Sending now
 
@@ -740,14 +742,14 @@ into a live turn rather than starting a new one.
 It is a handover, not an override. The prompt goes into the running turn's stream
 of messages; the agent reads it the way it reads anything else that arrives
 mid-turn, and it may already be part-way through answering something else. What
-`s` does **not** do is interrupt, restart, or force anything — if the turn is
+`s` does **not** do is interrupt, restart, or force anything, if the turn is
 already finishing, or has no room for another message, the box says so and your
 prompt stays queued exactly where it was.
 
 When the running turn accepts the prompt, the box removes it from the list and
 records it as delivered to that turn, so it will not also arrive at the next one.
 If the queue cannot record that, the box tells you so plainly rather than
-leaving you to guess whether to send it again — check before you do.
+leaving you to guess whether to send it again, check before you do.
 
 If nothing is running, `s` tells you the prompt stays queued for the next turn.
 That is not a refusal you need to work around; it is what an idle queue is for.
@@ -756,7 +758,7 @@ That is not a refusal you need to work around; it is what an idle queue is for.
 
 - **It cannot delete, edit, reorder, or send now a prompt whose turn has already
   started as its own.** The queue refuses it and the box says the prompt is
-  being delivered — it does not tell you the prompt expired, because it has not.
+  being delivered; it does not tell you the prompt expired, because it has not.
   Close the box and the running turn keeps its text.
 - **It cannot send a prompt to a turn that has already ended**, and it cannot
   send one for another frontend's turn. Both are refused with the reason.
@@ -772,7 +774,7 @@ there cannot be made here; the box says so if you try.
 
 ## Subagents, jobs, and the tasks overlay
 
-When a turn fans out — several subagents, background jobs — CodeGG gives each
+When a turn fans out (several subagents, background jobs) CodeGG gives each
 subagent a short friendly name so you can refer to it, and shows **the same
 name** in every place it appears.
 
@@ -788,7 +790,7 @@ run/job IDs. After daemon restart, durable work is rebuilt from its stores and
 ephemeral workers are not shown as still running.
 
 **Every named agent also has a character.** The same curated pool each name
-comes from describes it — Greg is a confident generalist who changes three
+comes from describes it; Greg is a confident generalist who changes three
 unrelated files before finding the missing environment variable; Susan is blunt
 about when she is the wrong tool. That description rides along with the name
 onto the row wherever it appears, so a fan-out reads as a team rather than as a
@@ -800,30 +802,30 @@ both: the tab shows the **Task** and the **Agent** side by side. Subagents start
 before this existed have neither, so they show the task exactly as they always
 did.
 
-Five surfaces show this, and all five read one projection:
+Four surfaces show this projection of live work:
 
 | Surface | Open it with | What it shows |
 |---|---|---|
 | Tasks overlay | `Ctrl+T` in `INS` or `NOR` | Todos, subagents, and jobs together |
-| Session panel | the sidebar — `Ctrl+B` toggles it, `Shift+L` / `Shift+→` in `NOR` gives it the keyboard on the default layout | `Subagents` and `Jobs` sections under Todos |
-| Sessions dialog | `/sessions` | The session list plus its live `Subagents` and `Jobs` sections |
-| Working strip | always on, above the input box | One row per in-flight subagent |
+| Session panel | `Ctrl+B` to toggle the sidebar, then `Shift+L` / `Shift+→` in `NOR` on the default layout | `Subagents` and `Jobs` sections under Todos |
+| Sessions dialog | `/sessions` | The session list plus live `Subagents` and `Jobs` sections |
 | Buffer tabs | `Shift+N` / `Shift+P` / `Shift+X` | One subagent's run view per tab, in the main buffer |
-| Retry the delegated transcript read | `Ctrl+Alt+R` in `INS` or `NOR` | Re-reads the open tab's recorded transcript from its own cursor |
 
-`Ctrl+T` works in **both** modes — the app boots in `[INS]`, and a chord that
+On an open subagent tab, `Ctrl+Alt+R` in either mode retries its transcript read.
+
+`Ctrl+T` works in **both** modes, the app boots in `[INS]`, and a chord that
 first needs an `Esc` is a chord most people never find.
 
 `Shift+N`, `Shift+P`, and `Shift+X` are `[NOR]`-only. In `[INS]` they are
 ordinary capital letters, so composing a word containing `N`, `P`, or `X` never
-triggers them — and neither does any other capital letter. `Shift+F` (project
+triggers them, and neither does any other capital letter. `Shift+F` (project
 picker) and `Ctrl+O` (Workspace view) work the same way round: the shifted
 letter is `[NOR]`-only, the chord is live in both modes.
 
 ### The tasks overlay
 
 `Ctrl+T` opens a single overlay listing **todos, then subagents, then jobs**,
-each under its own heading. A group with nothing in it is left out entirely —
+each under its own heading. A group with nothing in it is left out entirely,
 there are no empty headings. `j`/`k` move, `Enter` opens a subagent as a tab,
 `Enter` opens a child run view or job detail; `i` inspects a durable child run or linked job by its stable ID. The dialog shows job attempt history, and `Esc` closes it. With nothing in any group the overlay says
 `Nothing pending` rather than opening to a blank strip, so a quiet session still
@@ -846,8 +848,8 @@ key. `/sessions` opens on the
 active session and clears work rows when you select a different session whose
 projection is not loaded, showing that live work is unavailable.
 
-Opening it from `[INS]` switches to `[NOR]`, because the overlay's own keys —
-`j`/`k`, `Enter`, `Esc` — are `[NOR]` gestures and must never be claimed while
+Opening it from `[INS]` switches to `[NOR]`, because the overlay's own keys (
+`j`/`k`, `Enter`, `Esc`) are `[NOR]` gestures and must never be claimed while
 you are composing. Closing it hands `[INS]` straight back, so peeking at pending
 work never ends composition mode. You can also press `i` to go back to typing
 with the overlay left open.
@@ -860,13 +862,13 @@ question and answering it in two places meant the two could disagree.
 ### When the agent is waiting on other work
 
 Press `Ctrl+T`. The overlay lists the todos, the subagents that are still
-running, and the live jobs the session is waiting on, in that order — so a long
+running, and the live jobs the session is waiting on, in that order, so a long
 fan-out looks like a wait rather than a hang. Live jobs count here too, which
 is why a job running under a finished turn is still visible.
 
 That is the only place this state appears. The main buffer has no status row
 of its own: the line above the input carries the composer's `space help`
-chord, a latched failure, and an armed exit confirmation — nothing else.
+chord, a latched failure, and an armed exit confirmation, nothing else.
 
 ### Subagent tabs
 
@@ -874,7 +876,7 @@ chord, a latched failure, and an armed exit confirmation — nothing else.
 `Shift+X` closes the active one. `Esc` also returns to the conversation. The
 cycle runs `Main` first, then the subagent tabs in the order you opened them.
 
-With no subagent tabs open the keys do nothing rather than appearing to break —
+With no subagent tabs open the keys do nothing rather than appearing to break;
 you stay on the conversation. Up to 16 subagent tabs can be open at once; at
 that point opening another is **refused** and says so, rather than closing a tab
 you were reading.
@@ -883,7 +885,7 @@ The strip is one row, and it is the identity surface for the run on screen. It
 reads `Main` for the conversation, carries a status marker per tab (`●` live,
 `○` finished, `✕` gone from the projection), and shows the **active** tab's
 persona in italics next to that tab. The persona is the subagent's own
-description of itself, carried by the projection — a tab that has left the
+description of itself, carried by the projection, a tab that has left the
 projection keeps the persona it last carried. The row also states the three
 keys that operate it, on the right: `⇧P/⇧N switch · ⇧X close`.
 
@@ -892,7 +894,7 @@ tab labels are paid for first; the persona takes what is left and is truncated
 to fit, and is dropped rather than squeezed to a stub when nothing is left. A
 row too narrow for the persona still shows every tab label it can.
 
-A subagent tab shows that subagent's **run view** — its task, the agent's own
+A subagent tab shows that subagent's **run view**, its task, the agent's own
 description of itself, its canonical ids, whether the run is still live, and
 **the conversation the delegated run actually had**. The transcript is the
 durable record the daemon kept of the child's own messages and tool calls, in
@@ -905,15 +907,15 @@ over it, so the two are never legible at the same time, and the tab's own row
 is filled rather than transparent.
 
 The transcript comes in three shapes, and the tab says which one it is
-looking at — a tab that showed an empty pane for a run with no transcript
+looking at, a tab that showed an empty pane for a run with no transcript
 would read as "the child did nothing", which is a claim the system does not
 know:
 
 | State | What the tab says |
 | --- | --- |
-| **complete** | `complete · N entries` — everything that was recorded is here |
+| **complete** | `complete · N entries`, everything that was recorded is here |
 | **truncated** | `truncated · showing N of M recorded entries`, plus the ordinal the next entry would carry, plus a note when the run's own recording stopped at the store's per-run bound |
-| **absent** | `No transcript was recorded for this run.` — nothing was captured, and the tab says why that is not the same as an empty conversation |
+| **absent** | `No transcript was recorded for this run.`, nothing was captured, and the tab says why that is not the same as an empty conversation |
 
 A transcript longer than the window is scrollable (`PageUp`/`PageDown` and the
 viewport keys scroll the tab while it is open), and the tab says how many
@@ -931,7 +933,7 @@ no timer behind it. Three things make it read, and none of them is a poll:
 - the daemon publishes a **body-free hint** when a delegated run's recording
   advances; the hint says *that* the run advanced, never *what* it recorded,
   and the rows come from the page read;
-- a **tab boundary** — opening or focusing a tab catches up from the store's
+- a **tab boundary**, opening or focusing a tab catches up from the store's
   own cursor, so a tab opened on a run that has been working for a while shows
   the rows recorded while it was closed;
 - a **terminal run** still owes its last rows, so a finished run triggers one
@@ -946,7 +948,7 @@ while the others wait.
 A catch-up **pass** reads a bounded number of pages. That bound is one pass,
 not the tab's lifetime: when the store still holds rows beyond the page that
 was last read, the tab yields and schedules the next bounded pass, so a long
-transcript is walked to its end without a new hint, a retry or a refocus —
+transcript is walked to its end without a new hint, a retry or a refocus,
 and the tab says **catching up** until the final page.
 
 The tab keeps a **bounded window** of the recorded rows. When the window has
@@ -974,7 +976,7 @@ one does **not** re-issue itself either: it waits for the retry, so a daemon
 that is refusing the read cannot turn the projection's own updates into a
 storm of reads.
 
-Closing the tab cancels nothing — the run keeps going whether or not you are
+Closing the tab cancels nothing, the run keeps going whether or not you are
 watching it. When a run drops out of the projection the tab stays open and
 stops claiming to be live, so the buffer cannot show "running" for something
 the daemon has stopped vouching for.
@@ -983,8 +985,8 @@ the daemon has stopped vouching for.
 
 A delegated run's outcome now reaches the **orchestrator**, not just the
 projection. The daemon's `task` spawn subscribes the child for a durable
-terminal notice, so when the child finishes — even after the orchestrator's
-own turn has ended — the next turn of the conversation is told which child
+terminal notice, so when the child finishes (even after the orchestrator's
+own turn has ended) the next turn of the conversation is told which child
 finished and what it produced, and the agent can read the full recorded result
 with `task action=get`.
 
@@ -1000,13 +1002,13 @@ they were; the notice is a channel to the model, not a new row for you. See
 ```
 /subagent-send            address the subagent in the tab you are looking at
 /subagent-send Sally      address the running subagent named Sally
-/subagent-send 42         address task 42 — exact, and never ambiguous
+/subagent-send 42         address task 42, exact, and never ambiguous
 /subagent-send off        clear it again
 ```
 
 While it is armed the badge beside the input reads `[TO Sally]` instead of
 `[LLM]`, and the input placeholder says what the prompt is for. The tab strip
-stays where it is — this does not take the keyboard away from the input box.
+stays where it is; this does not take the keyboard away from the input box.
 
 **What actually happens:** your message is handed to **the agent running this
 turn**, addressed to Sally by name, with the task she was given. That agent
@@ -1019,13 +1021,13 @@ Two rules worth knowing:
 
 - **A reply can only be addressed while a turn is running**, because the turn
   is what carries it. With nothing running, the prompt stays in the box and you
-  are told why — it never quietly starts a new turn instead.
+  are told why; it never quietly starts a new turn instead.
 - **A finished subagent drops the address.** If Sally finishes while you are
   typing, the badge goes back to `[LLM]`, so what you have written is treated as
   an ordinary prompt instead of being steered at work that is already done.
 
 If a reply is refused, your text comes back to the input box so you can send it
-again — nothing durable keeps it for you.
+again, nothing durable keeps it for you.
 
 ### Session panel sections
 
@@ -1043,10 +1045,10 @@ the selected row:
 
 **The walk skips rows with no action.** A todo row in the panel has nothing
 behind `Enter`, so the walk steps over the todo *rows* and stops on the
-**`Todos` heading** instead — which still folds and unfolds the section. The
+**`Todos` heading** instead, which still folds and unfolds the section. The
 heading is the part of the section you can act on, so it stays reachable.
 Hovering and clicking a todo row still works: the mouse path is a different
-map from the keyboard one. The `Ctrl+T` overlay is the deliberate opposite —
+map from the keyboard one. The `Ctrl+T` overlay is the deliberate opposite,
 there a todo row *is* actionable, so it stays selectable there.
 
 Unlike the overlay, the panel keeps rows for finished subagents and marks their
@@ -1067,8 +1069,8 @@ section with more rows than fit ends in a `… N more` line.
 ```
 
 Themes are looked up **by ID only**. The registry is keyed on each theme's `id`
-and lookup is an exact map lookup, so `/theme use "Cyber Red"` — the display
-name — fails with `Unknown theme: Cyber Red`. Use the id. `cyber-red` is the
+and lookup is an exact map lookup, so `/theme use "Cyber Red"` (the display
+name) fails with `Unknown theme: Cyber Red`. Use the id. `cyber-red` is the
 default id, used when no `[theme].name` is configured.
 
 If `/theme reload` drops a theme you were using, CodeGG falls back to the
@@ -1118,8 +1120,8 @@ staged; set it to `false` to run privately like `!`.
 
 Output storage is bounded. Each command gets a 1 MB per-command budget out of
 an 8 MB total, and at most 100 commands are retained in history. Within one
-command, the retained output is 512 KiB total — a 256 KiB head and a 256 KiB
-tail — and the byte count of everything in between is recorded as omitted
+command, the retained output is 512 KiB total (a 256 KiB head and a 256 KiB
+tail) and the byte count of everything in between is recorded as omitted
 rather than dropped silently. The default per-command timeout is 300 seconds.
 
 Commands are also screened before they run: a blocked command is refused with
@@ -1148,16 +1150,16 @@ Human output sent to model context is ANSI-stripped, redacted, and capped at
 ### Resizing a panel
 
 `Ctrl+N` arms resize mode. `h`, `j`, `k` and `l` then drag **the surface your
-keyboard is on** — each key its own border, and **outward only**:
+keyboard is on**, each key its own border, and **outward only**:
 
 | Keyboard is on | `h` | `l` | `j` / `k` |
 |---|---|---|---|
-| a panel in the **right** column | widens it | — | — |
-| a panel in the **left** column | — | widens it | — |
-| a panel in the **bottom** row | — | — | `k` makes it taller |
+| a panel in the **right** column | widens it | n/a | n/a |
+| a panel in the **left** column | n/a | widens it | n/a |
+| a panel in the **bottom** row | n/a | n/a | `k` makes it taller |
 | the **main buffer** (`LLM`) | narrows a left column | narrows a right column | `j` narrows a bottom row |
 
-A dash means that border is the frame's own edge, so there is nothing to drag —
+A dash means that border is the frame's own edge, so there is nothing to drag,
 `l` inside a right-hand column does nothing rather than shrinking it. Every
 border belongs to two surfaces, so growing one shrinks the other: `h` from
 inside the chat column widens it, and `l` from the transcript beside it narrows
@@ -1168,30 +1170,30 @@ several borders in one go. Sizes are per-edge and last for the session; the
 first time you drag the bottom row it switches from a percentage to exact rows,
 so one press is always one row.
 
-`Ctrl+N` used to start a new session. **New session is now the bare `n`** —
+`Ctrl+N` used to start a new session. **New session is now the bare `n`**,
 in Normal mode. It is still safe to type: bare letters go to the prompt in
 Insert mode.
 
 ## Interactive terminal
 
 `/terminal` opens a daemon-owned PTY. With nothing live behind it, it starts
-your login shell (`$SHELL`, falling back to `sh`) — you do not have to name a
+your login shell (`$SHELL`, falling back to `sh`); you do not have to name a
 command first. `/terminal-create <command> [args...]` is still there when you
 want to run a specific program instead.
 
 **Terminals need the local frontend.** They work when CodeGG's TUI is talking
-to your daemon — plain `codegg`, or `codegg daemon attach` over the local
+to your daemon, plain `codegg`, or `codegg daemon attach` over the local
 socket. They do not work through the remote WebSocket attach
 (`codegg attach http://<host>:<port> --token …`): that connection carries chat,
 but no interactive-process traffic, so every terminal command there answers
 with a message naming the transport rather than pretending the daemon is down.
-Everything else on that frontend — chatting, tools, permissions — is unaffected.
+Everything else on that frontend (chatting, tools, permissions) is unaffected.
 To open a shell, run `codegg` (or `codegg daemon attach`) on the machine running
 the daemon.
 
 The box opens **already taking your keys**, so you can type straight away.
 
-Once it is taking your keys, every key is your program's — including `H`, `J`,
+Once it is taking your keys, every key is your program's, including `H`, `J`,
 `K` and `L`, and `Shift`+arrows. Those are the panel-docking gesture everywhere
 else, but a terminal that owns the keyboard is not a viewer, so the gesture is
 turned off while you are typing. `i` is only a focus gesture while the surface is
@@ -1200,31 +1202,31 @@ in viewing mode (`NOR`); in the box the surface is never in `NOR` to begin with.
 Output keeps up on its own: the TUI reads the PTY on its own refresh tick while the
 terminal is on screen, so anything the command prints appears without you doing
 anything. That includes after you hand the keyboard back to the main buffer with
-`Shift`+an arrow — a docked terminal keeps producing output while it is merely
-visible. You do not need `/terminal-resume` to see live output — it is a recovery
+`Shift`+an arrow, a docked terminal keeps producing output while it is merely
+visible. You do not need `/terminal-resume` to see live output; it is a recovery
 affordance for a view whose read fell behind, not a step in the normal flow.
 
 The `[NOR]` / `[INS]` badge above the main input shows where your keystrokes are
 actually going, whichever surface has them. It reads `[INS]` while a terminal is
-taking your keys — in the box or in the docked panel — and `[NOR]` once `Esc` has
+taking your keys (in the box or in the docked panel) and `[NOR]` once `Esc` has
 handed them back, so the badge never claims you are reading a shell you are
 typing into.
 
 There are two modes, and each key means exactly one thing:
 
-- **INS** — the process owns the keyboard. Everything you type, plus `Enter`,
+- **INS**, the process owns the keyboard. Everything you type, plus `Enter`,
   `Backspace`, `Tab`, the arrow keys and `Ctrl-C`/`Ctrl-D`, goes to the
   terminal. The cursor is drawn where the shell is accepting the next
-  character, and it blinks while it is there — so a glance is enough to see
+  character, and it blinks while it is there, so a glance is enough to see
   that the terminal is live rather than frozen. Press `Esc` to stop typing and
   read.
-- **NOR** — the reader owns the keyboard. `hjkl` and the arrows move, `Ctrl+u`
+- **NOR**, the reader owns the keyboard. `hjkl` and the arrows move, `Ctrl+u`
   and `Ctrl+d` page, `e`/`b` jump by word, `v` selects by character, `x` selects
   whole lines, `d` deletes the selection, `space+y` copies it, `C` clears the
   screen, `D` folds in diagnostics. Press `i` or `Enter` to start typing again.
-  Press `Esc` to close and detach — or to drop an armed selection first.
+  Press `Esc` to close and detach, or to drop an armed selection first.
 
-While reading, the cursor sits on the last line the process actually printed —
+While reading, the cursor sits on the last line the process actually printed,
 the prompt after a short command, the last line of the output after a long one.
 `Esc` puts it there for you, so the first `k` moves from where you were working
 rather than from the bottom of an empty screen. The reader cursor does not
@@ -1242,7 +1244,7 @@ outer terminal. Resizing the TUI resizes the PTY to the usable dialog viewport.
 same way. You can also **click** a panel column to focus it, **drag** across one
 to select its text and copy it with `Ctrl+C`, and **scroll** the wheel over one
 to move that column's own content. If the process behind the panel has exited,
-`i` starts a fresh shell instead — the panel never leaves you staring at a dead
+`i` starts a fresh shell instead, the panel never leaves you staring at a dead
 one.
 
 The line of keys above the composer describes whatever is holding your keyboard,
@@ -1252,21 +1254,21 @@ from the frame, and the row they occupied goes back to the transcript. Press
 `Shift`+`←` (or whichever edge the panel is on) to take the keyboard back, and
 the line returns.
 
-A new shell shows its prompt as soon as it prints one — you do not have to press
+A new shell shows its prompt as soon as it prints one; you do not have to press
 a key to see it. `C` clears the screen by asking the shell to clear itself, so
 what comes back is a fresh prompt from *your* shell, with your `PS1`, rather than
 an empty panel; the process keeps running and so does anything it was doing.
 `/terminal-clear` does the same. A terminal whose process has already exited has
 no prompt left to print, so clearing one just empties it.
 
-The box opens with one header line — the command, the link state, and whether
+The box opens with one header line, the command, the link state, and whether
 it is taking your keys. Press `D` while viewing to fold in the full diagnostics
 dump (handle, workspace, attachment id, size and sequence cursors); that is the
 view to paste into a bug report. A resync, a degraded screen, or an exit stays
 visible either way, because those change what the rows on screen mean.
 
 Opening the box takes an async create-and-attach round trip against the daemon.
-Until it completes there is no box, so keystrokes keep going to the composer —
+Until it completes there is no box, so keystrokes keep going to the composer,
 type the command again once the box is up rather than assuming `i` was eaten.
 
 ## Reasoning control
@@ -1276,7 +1278,7 @@ different control and stays different: `/thinking` decides whether reasoning
 text is *rendered*, and `/reasoning` decides what the model is *asked to do*.
 
 The selection is kept by the daemon against your own account, so it applies to
-every turn that starts afterwards — including turns you start from another
+every turn that starts afterwards, including turns you start from another
 window, and including the next one after a restart. The status bar at the
 bottom of the screen always shows the current selection (`reasoning: high`,
 `reasoning: off`, `reasoning: default`), next to the approval and sandbox
@@ -1294,9 +1296,9 @@ The options are the ones your model actually accepts, not a fixed ladder:
 - A fixed thinking budget appears only when the model accepts one and the
   value is inside the model's accepted range.
 
-When CodeGG has no published capability for the model — which includes
+When CodeGG has no published capability for the model (which includes
 OpenAI-compatible endpoints and local servers, where whether `reasoning_effort`
-is honoured depends on the deployment rather than on the vendor — the command
+is honoured depends on the deployment rather than on the vendor) the command
 falls back to the known labels (`minimal`, `low`, `medium`, `high`) and says
 that it is a fallback. That is a convenience ladder, not a statement about
 your model, and the command never presents it as one.
@@ -1306,9 +1308,9 @@ published a reasoning contract for is *unknown*, not permissive, so the daemon
 refuses an explicit reasoning selection on it rather than forwarding it on a
 guess. The refusal names the model and the dimension, and nothing is sent to
 the provider. If you use an endpoint whose deployment does honour
-`reasoning_effort`, declare what it accepts in your config — the
+`reasoning_effort`, declare what it accepts in your config, the
 `model_profile.<model>.reasoning_capability` block in `codegg.example.jsonc`
-shows the shape — and the same command then offers that model's own options
+shows the shape, and the same command then offers that model's own options
 and accepts them.
 
 Two things can go wrong, and both are reported rather than swallowed:
@@ -1317,9 +1319,9 @@ Two things can go wrong, and both are reported rather than swallowed:
   `reasoning_effort` from the request body entirely, so the selection is
   accepted and then ignored. The confirmation is a warning for those
   providers.
-- The daemon refuses the selection. The reason is shown — a concurrent write
+- The daemon refuses the selection. The reason is shown (a concurrent write
   from somewhere else, a label this daemon does not accept, or a model that
-  does not accept that selection — and the status row goes back to the
+  does not accept that selection) and the status row goes back to the
   daemon's value.
 
 The daemon's value always wins. If the selection was changed elsewhere, or
@@ -1336,7 +1338,7 @@ the sandbox decides *how far the process can reach*. Neither implies the other.
 | Mode | Behavior |
 |------|----------|
 | `interactive` | Escalations are sent to you. This is the default. |
-| `automatic` | Escalations go to a bounded read-only reviewer that can only allow actions inside the current authority and sandbox ceiling. Explicit denies still deny. If no reviewer model is configured, `automatic` defers to you — it never silently behaves like `yolo`. |
+| `automatic` | Escalations go to a bounded read-only reviewer that can only allow actions inside the current authority and sandbox ceiling. Explicit denies still deny. If no reviewer model is configured, `automatic` defers to you; it never silently behaves like `yolo`. |
 | `yolo` | Approval prompts are skipped. Explicit denies and the configured sandbox still apply. |
 
 ### Sandbox profiles
@@ -1345,7 +1347,7 @@ the sandbox decides *how far the process can reach*. Neither implies the other.
 |---------|----------|
 | `read-only` | Filesystem writes are denied by containment. Network has no OS isolation. |
 | `workspace-write` | Writes are confined to the workspace roots on supported hosts. Network has no OS isolation. |
-| `full-host` | CodeGG filesystem containment is disabled — the agent has your OS user's host authority outside the workspace, and network access is unrestricted. |
+| `full-host` | CodeGG filesystem containment is disabled, the agent has your OS user's host authority outside the workspace, and network access is unrestricted. |
 
 ### Child network policy
 
@@ -1368,7 +1370,7 @@ force. Both answer in one keystroke:
 | Key | Action |
 |-----|--------|
 | `j` / `k`, `↓` / `↑` | Move the cursor |
-| `1` – `3` | Select that row immediately — no Enter needed |
+| `1` – `3` | Select that row immediately, no Enter needed |
 | `Enter` | Select the highlighted row |
 | `Esc` | Cancel, changing nothing |
 
@@ -1381,9 +1383,9 @@ affordance:
 | Key | Action |
 |-----|--------|
 | `y` / `1` | Allow once |
-| `p` / `2` | Always allow — arms a confirmation, never grants outright |
+| `p` / `2` | Always allow, arms a confirmation, never grants outright |
 | `n` / `3` | Deny once |
-| `4` | Always deny — also arms a confirmation |
+| `4` | Always deny, also arms a confirmation |
 | `j` / `k`, `↓` / `↑` | Move the cursor |
 | `Enter` | Select the highlighted row |
 | `Esc` | Cancel |
@@ -1410,7 +1412,7 @@ timeout by default: the dialog stays up and the turn stays parked until you
 decide, so a request can never be denied just because you had not looked at it
 yet.
 
-To bound the wait — only worth doing if CodeGG has to fail closed unattended —
+To bound the wait (only worth doing if CodeGG has to fail closed unattended)
 set a limit in your config:
 
 ```jsonc
@@ -1429,7 +1431,7 @@ so `/logs` can tell the two apart. Without this key the wait is unbounded.
 
 Your last selection is restored on startup. The daemon resolves it against any
 project or administrator ceiling, and the TUI reports when your stored
-preference was narrowed — requested and effective values can differ, and the
+preference was narrowed, requested and effective values can differ, and the
 restoration toast says so rather than silently applying the weaker policy.
 
 ### Headless equivalents
@@ -1459,14 +1461,16 @@ Opening a file puts you in `NOR`, not `INS`. It is a surface you read before
 you type into, and `i` is one keystroke away. `NOR` gives the keyboard to the
 Helix verbs: `hjkl`/arrows move, `Ctrl+d`/`Ctrl+u` page, `e`/`b` jump by word,
 `W`/`B`/`E` jump by WORD, `v` selects by character, `x` selects the whole line
-(press again for one more), `d` deletes the selection, `y` and `space y` copy
-it, and `p`/`P` paste it back — the same keys `/terminal` uses in its viewing
-mode. `m` is Helix's match mode: `m m` jumps to the mate of the bracket under
-the cursor, `m s`/`m d`/`m r` surround the selection, and `m a`/`m i` select a
-text object — see [Match mode and text objects](#match-mode-and-text-objects).
+(press again for one more), `d` deletes the selection, `c` deletes it and drops
+you into `INS`, `y` copies it into the selected register and `p`/`P` paste it
+back (see [Registers](#registers)) the same keys `/terminal` uses in its
+viewing mode. `m` is Helix's match mode: `m m`
+jumps to the mate of the bracket under the cursor, `m s`/`m d`/`m r` surround
+the selection, and `m a`/`m i` select a text object, see
+[Match mode and text objects](#match-mode-and-text-objects).
 `i`/`a`/`I`/`A`/`o`/`O` enter `INS`, where typing goes into the file and
-`Esc` returns. `u`/`U` undo and redo, the Helix pair, and `Alt+u`/`Alt+U` walk
-the same history one entry at a time — see
+`Esc` returns. `u`/`U` undo and redo along the branch you are on, and
+`Alt+u`/`Alt+U` walk the same history in creation order, see
 [History gestures](#history-gestures). In `NOR` anything the
 buffer does not claim types into the input box at the bottom, so you can talk
 to the agent without leaving the file. `Esc` never closes the editor; `:q` does.
@@ -1475,28 +1479,45 @@ Two chords work in either mode, because they are round trips rather than
 verbs: `Ctrl+S` saves and `Ctrl+R` resyncs the replica after a transport
 failure. Each chord has exactly one owner. In particular `U` is redo and
 `Ctrl+R` is resync; they are not two spellings of the same thing. Helix gives
-`Ctrl+s` and `Ctrl+r` different Insert-mode meanings — an undo checkpoint and
-a register prompt — and CodeGG declines both; see
-[Insert-mode chords](#insert-mode-chords).
+`Ctrl+s` and `Ctrl+r` different Insert-mode meanings (an undo checkpoint and
+a register prompt) and CodeGG declines both; see
+[Insert-mode chords](#insert-mode-chords). The register itself is still
+reachable from `NOR` with `"`; only the Insert-mode insertion chord is out of
+reach, and [Registers](#registers) says why.
 
 ### History gestures
 
-`u` undoes and `U` redoes. `Alt+u` and `Alt+U` are Helix's `earlier` and
-`later`: they walk the same history, one entry back and one entry forward.
+`u` undoes and `U` redoes, and they walk the **branch** you are on: back to the
+parent of the change you are standing on, forward to the branch you last walked
+from there. `Alt+u` and `Alt+U` are Helix's `earlier` and `later`, which walk
+**time** instead: the change made before or after this one, wherever in the tree
+it sits, so they cross a fork that `u`/`U` never leave. That is how you get back
+to a branch you edited away from.
 
-The difference is what happens at the edge. `u` with nothing to undo, and `U`
-with nothing to redo, do nothing and say nothing — they always have. `Alt+u`
-at the oldest change says **no earlier change**, and `Alt+U` at the newest says
-**no later change**, in the status row. A key that silently does nothing is
-the one failure this editor is built to avoid, and these are the keys where
-you are most likely to be at the edge without knowing it.
+The difference at the edge is reporting. `u` with nothing to undo, and `U` with
+nothing to redo, do nothing and say nothing; they always have. `Alt+u` at the
+oldest state says **no earlier state**, and `Alt+U` at the newest says **no
+later state**, in the status row. A key that silently does nothing is the one
+failure this editor is built to avoid, and these are the keys where you are
+most likely to be at the edge without knowing it.
 
-The history is **one** list with a cursor in it, not two stacks. An entry
-never moves to a different pile, so undo and redo are the same movement in
-opposite directions. While the cursor is not at the newest change, the status
-row says where it is — `history 1/3` — so you can see that you are standing
-in the middle of your own history. At the newest change it says nothing,
-because there is nothing to disclose.
+The history is **one** tree with a cursor on a node, not two stacks. A node
+keeps both directions, so undo and redo are the same edge travelled both ways
+and nothing moves to a different pile. An edit made after an undo becomes a
+**sibling** of the branch you did not take, so that branch is not destroyed:
+`U` returns to the branch you last walked, and `Alt+u`/`Alt+U` reach the one you
+walked away from. While the cursor is not at the only tip, the status row says
+where it is (`history 1/3`, the nodes applied and the nodes retained) so you
+can see that you are standing inside your own history. At the one tip it says
+nothing, because there is nothing to disclose.
+
+The history is bounded by a node count **and** a byte budget. When it outgrows
+either, the oldest leaf branches go first: a leaf carries no child, so cutting
+one can never strand the node above it, and a node the cursor still needs is
+never a leaf. If a single branch cannot be cut down enough (one edit larger
+than the whole byte budget) the history is cleared and the row says
+`history cleared at its bound`, because a `u` that silently finds nothing is
+the one failure this editor avoids.
 
 `Alt+u` and `Alt+U` are `NOR` gestures. In `INS` they are inert: the `INS`
 catch-all covers unmodified and `Shift`-modified keys only, so an `Alt` chord
@@ -1505,8 +1526,8 @@ reaches the input box rather than vanishing.
 ### Insert-mode chords
 
 `INS` has chords of its own, and they are the Helix ones. A chord may mean one
-thing in `NOR` and another in `INS` — `Ctrl+d` pages down in `NOR` and deletes
-one character forward in `INS` — and each still has exactly one owner.
+thing in `NOR` and another in `INS` (`Ctrl+d` pages down in `NOR` and deletes
+one character forward in `INS`) and each still has exactly one owner.
 
 | Chord | What it does in `INS` |
 |---|---|
@@ -1526,12 +1547,12 @@ end of a line does not eat the newline.
 Everything you type in one go in `INS` is **one** undo step. Leaving `INS`
 closes the burst, so a single `u` takes back the whole run rather than its
 last keystroke. A run ends early if you delete something, or move the cursor
-and type somewhere else — then the parts are separate steps, because they are
+and type somewhere else, then the parts are separate steps, because they are
 separate edits. A reload throws the burst away with the rest of the local
 draft.
 
 To reload from disk and throw the local draft away, use `:e`. It used to be `R`,
-which now means something else — see [Change verbs](#change-verbs).
+which now means something else, see [Change verbs](#change-verbs).
 
 The cursor is a block in `NOR` and a thin bar in `INS`, so you can always see
 where you are. `Ctrl+d` pages down and continues to the end of the file when a
@@ -1541,16 +1562,45 @@ half-page would land past it.
 
 | Key | What it does |
 |---|---|
-| `p` / `P` | paste after / before the cursor or selection |
-| `y` | copy the selection |
+| `"` + name | select the register the next `y`, `p`, `P` or `R` uses, see [Registers](#registers) |
+| `p` / `P` | paste after / before, from the selected register |
+| `y` | copy the selection into the selected register, and the system clipboard |
+| `d` / `Alt-d` | delete the selection, `d` yanks into the unnamed register, `Alt-d` yanks nothing, and neither touches the clipboard |
+| `c` / `Alt-c` | delete the selection, or the character under the cursor, and start typing, the same `d`/`Alt-d` split |
 | `r` + char | replace the selection, or the character under the cursor |
-| `R` | replace the selection, or the character under the cursor, with the clipboard |
+| `R` | replace the selection, or the character under the cursor, with the selected register's text |
 | `~` | flip the case of the selection, or of the character under the cursor |
 | `` ` `` / `` Alt-` `` | set that text to lower / upper case |
 
 `y` and `p` together are a complete move-text loop: select, `y`, move, `p`.
-`y` behaves exactly like `space y`, including the toast — it is the same code
-path, not a second implementation.
+`y` and `space y` resolve the same ranges and share the toast; they differ in
+where the bytes go, which is the whole subject of [Registers](#registers).
+
+`c` is Helix's change: it deletes and then hands you the keyboard where the
+text was. With a selection held it deletes the same region `d` would. With
+nothing held it takes the character under the cursor, the one case where the
+two verbs differ, because `d` with nothing held is a claimed no-op and
+re-deciding that is a separate change. At a line end the character under the
+cursor is the line break, so `c` there joins the two lines.
+
+The line the delete leaves and the word you type into it are **two** undo
+steps: `u` takes back the word, and a second `u` takes back the delete. On a
+buffer you cannot write, `c` is refused with the same notice `d` gets and you
+stay in `NOR` with the text intact, the mode never moves when the delete did
+not happen, because a dead `INS` over text that survived is the worst state
+either verb could leave behind.
+
+**The delete does not touch your clipboard.** Helix's `d` yanks into a
+register and `Alt-d` is the spelling that does not, and that is now the whole
+truth here: `d` and `c` write the **unnamed register** (so `d` then `p` moves
+the text you just cut) and `Alt-d` and `Alt-c` write nothing at all. Neither
+pair ever reaches the system clipboard, so a delete cannot overwrite what you
+copied for the edit you are making. This is M002's deferred decision
+discharged: when the only yank target was the clipboard, copying on every
+delete would have clobbered it, and the two pairs were bound ahead of time so
+the split could land without re-spelling a chord. `"_d` and `"_c` are the
+blackhole's spelling of "delete and yank nothing" for anyone reaching for
+Vim's gesture.
 
 `r`, `R` and the three case keys all act on *the selection* when one is held
 and on *the character under the cursor* when none is. On a single character
@@ -1564,12 +1614,12 @@ for how you get more than one in the first place.
 `y` over several selections copies them in reading order into the clipboard as
 one piece of text, so the order you see on screen is the order you get.
 
-A buffer you cannot write refuses to **grow** a selection: `v` and `x` report
-that they were refused instead of arming a highlight you cannot do anything
-with. It also refuses the verbs that would rewrite text — `&`, `Alt-(`, `Alt-)`,
-`o` and `O`. Moving the cursor still works, as do `v`, `x`, `C` and the merge
-keys: you can always read and select in a read-only file, you just cannot change
-it.
+A buffer you cannot write refuses to **reshape or grow** a selection: `v`, `x`,
+`X` and `_` report that they were refused instead of arming a highlight you
+cannot do anything with. It also refuses the verbs that would rewrite text,
+`&`, `Alt-(`, `Alt-)`, `J`, `Alt-J`, `>`, `<`, `c`, `Alt-c`, `o` and `O`.
+Moving the cursor still works, as do `Alt-x`, `C` and the merge keys: you can
+always read and select in a read-only file, you just cannot change it.
 
 `o` opens a line **below** the cursor's line and `O` opens one **above**, and
 both hand you the keyboard: you are typing into the line they opened, with the
@@ -1580,35 +1630,156 @@ The line `o` opens and the word you type into it are **two** undo steps: `u`
 takes back the word, and a second `u` takes back the line. The newline that
 ends the opened line sits *after* the text you type, so the two are not one
 contiguous change and cannot be one step. Everything you type in one go in
-`INS` is still **one** step — see
+`INS` is still **one** step, see
 [Insert-mode chords](#insert-mode-chords).
 
 `~` flips per character, so `~` on `abC` gives `Abc` and a second `~` gives
 back `abC`. `` ` `` and `` Alt-` `` **set** rather than flip: `` ` `` on `Abc`
 gives `abc` and pressing it again does nothing, which is what tells the two
-apart. Characters with no case — digits, punctuation, CJK — are left alone by
+apart. Characters with no case (digits, punctuation, CJK) are left alone by
 all three, and text that is already the case you asked for reports nothing
 rather than pushing an undo step for no change.
 
 `r` shows its indicator while waiting, like `f` does, because the character it
-wants is the next keystroke. A key that cannot be that character — an arrow,
-`Esc`, `:` — is passed through and does its normal job instead of being eaten.
+wants is the next keystroke. A key that cannot be that character (an arrow,
+`Esc`, `:`) is passed through and does its normal job instead of being eaten.
 
-**Paste reads the system clipboard**, and CodeGG keeps no editor-local register.
-`y` and `space y` are the same write. That means `p` pastes whatever is on the
-OS clipboard, including text you copied from another application — which is
-Helix's own behaviour, and is why `R` is "replace with the clipboard" here
-rather than "replace with a register". A clipboard the system refuses, and a
-clipboard holding nothing, are reported differently: with nothing on the
-clipboard, `p` says so rather than doing nothing in silence.
+**Paste reads the selected register**, and the unnamed register is seeded from
+the system clipboard when a document opens and kept in step by every `y`. That
+means `p` pastes what you copied in another application *and* `d` then `p`
+pastes the deletion, see [Registers](#registers) for the full model. The
+buffer never reads the clipboard itself: the seed is one App-layer read at
+open, so the paste path stays synchronous.
 
-The space menu carries the same family, so a reader looking for "the
+The space menu carries the clipboard family, so a reader looking for "the
 clipboard keys" finds them in one place: `space y` copies every selection,
 `space Y` copies **only** the main selection, and `space p`, `space P` and
-`space R` are the paste and replace verbs. `space Y` is the one that differs
-from the bare keys: with several regions held, `y` takes all of them and
-`space Y` takes just the main one. With nothing selected, `space Y` says
-"Nothing to yank" rather than putting an empty string on the clipboard.
+`space R` are the paste and replace verbs. That family always means the system
+clipboard, whatever `"` selected; it is the cross-application path, and
+redirecting it would make the gesture depend on state the reader cannot see.
+`space Y` is the one that differs from the bare keys: with several regions
+held, `y` takes all of them and `space Y` takes just the main one. With nothing
+selected, `space Y` says "Nothing to yank" rather than putting an empty string
+on the clipboard.
+
+### Registers
+
+`"` selects **where the next yank goes and where the next paste comes from**.
+It is one of the editor's one-key-deep prefixes: `"`, then a name, then the
+verb. `"ay` copies the selection into register `a`; `"ap` pastes it back. The
+pending indicator shows `"a` while the selection waits, and the selection is
+consumed by the very next keystroke: `"a` then `j` moves the cursor and drops
+the register, exactly as Vim does. There is no sticky register mode.
+
+| Register | What it is |
+|---|---|
+| `a`–`z` | a named slot; a yank writes one |
+| `"` | the unnamed register, what bare `p` reads |
+| `_` | the blackhole: writes are discarded and a read is refused |
+| `/` | the last accepted search pattern, read-only |
+
+A name outside the set is refused with the set named, and the key is consumed:
+`"D` is a rejected register, not a delete. A key that is not a character at all
+is consumed with the prefix for the same reason, a mistyped register must not
+run a command, so `"` then `Tab` does not toggle the composer and `"` then
+`Ctrl+d` does not page the buffer.
+
+**Which verbs honour a register.** `y`, `p`, `P` and `R` do, and nothing else.
+`d` and `c` are deliberately **not** register-targeted (Helix's delete yanks
+into the unnamed register whatever `"` selected) with one exception: `"_d` and
+`"_c` are the blackhole's spelling, so a delete can be made to yank nothing.
+`Alt-d` and `Alt-c` write nothing at all. The `space` family is **not**
+register-aware: `space y`, `space p`, `space P` and `space R` always mean the
+system clipboard, whatever `"` selected, because that family is the
+cross-application path and redirecting it would make the gesture depend on
+state the reader cannot see.
+
+**The bound.** A register keeps at most **16 KiB**. A larger yank stores the
+first 16 KiB (stopping on a character boundary, never inside a multi-byte
+character) and says so in the toast: a paste from a truncated register is
+still a paste, and the truncation was disclosed when it happened. The store is
+at most 27 slots, so it is bounded at 27 × 16 KiB and can never grow into a
+copy of the document.
+
+**Clearing.** Registers are per-document presentation state, and they are
+cleared by the same transitions that clear the undo history: opening a
+document, a reload, a resync, a reconnect, and closing. `"ap` after one of them
+is refused ("register `a` is empty") rather than pasting text from a document
+you are no longer looking at.
+
+**The blackhole refuses a read.** `"_p` says the blackhole holds nothing (`_`
+discards by design) rather than inserting an empty string that would look like
+a dropped keystroke. `"_y` and `"_d` discard silently, because discarding is
+what they were asked for.
+
+**The search register.** `"/p` pastes the last accepted search pattern. It is a
+projection of the `/` line, not a copy: refining the line changes what the
+register reads. Before a search has been accepted, `"/p` refuses and says so. A
+write to `/` is refused, the search register cannot be set by hand.
+
+**Bare `p` reads the unnamed register**, which is seeded from the system
+clipboard when a document opens and kept in step by every `y`. That is what
+lets `p` paste what you copied in a browser while the buffer never reads the
+clipboard itself. It also means `d` then `p` pastes the deletion, the
+behaviour Helix users expect, and the reason registers exist. For a `d` that
+leaves the unnamed register alone, spell it `"_d` or `Alt-d`.
+
+`y` still writes the system clipboard on every yank, so copying here and
+pasting in another application is unchanged; `d` and `c` never write it.
+
+**Insert-mode register insertion is not bound.** Helix gives `Ctrl+r` the
+insert-register gesture, and `Ctrl+r` here is the mode-independent **resync**
+chord. Resync is a recovery affordance that has to work from any mode, and
+every register is already reachable from `NOR` with `"` followed by its name,
+so the Insert-mode chord is the one Helix register gesture this surface does
+not reach.
+
+### Line-shape verbs
+
+These reshape what you hold, and two of them rewrite the lines it covers.
+
+| Key | What it does |
+|---|---|
+| `X` | widen every selection to the whole lines it touches |
+| `Alt-x` | narrow every selection to its lines' own bounds |
+| `_` | trim leading and trailing whitespace from every selection |
+| `J` | join the lines each selection covers with a single space |
+| `Alt-J` | the same join, leaving the inserted space selected |
+| `>` | indent every covered line by one unit |
+| `<` | unindent every covered line by one unit |
+
+`X` takes a character selection and makes it line-wise over the whole lines it
+touched, terminators included, the same shape `x` builds. Pressing it again
+changes nothing and says nothing: you already hold what you asked for. `Alt-x`
+is the way back. It narrows the selection to the line's own bounds, so the
+character selection you had before `X` comes back whenever that selection
+covered the line's content. It narrows; it does not trim. `_` is the key that
+removes whitespace.
+
+`_` strips leading and trailing whitespace from each selection and leaves the
+rest alone. A selection that is *only* whitespace collapses to an empty
+selection where it started; it stays in the set rather than disappearing, so
+the main selection still names the same region.
+
+`J` turns the lines a selection covers into one line separated by a single
+space: the line break and the next line's indentation both go. A selection that
+covers one line is already one line, so `J` there changes nothing and says
+nothing. `Alt-J` is the same join and leaves the inserted space selected, so
+you can keep working at the seam you just made. Several selections joined in
+one gesture are **one** undo step, and so are several lines indented by one.
+
+`>` and `<` add or remove one indent unit at the start of every line a
+selection covers, and make the selection line-wise in the same gesture. `<`
+never eats text: a line indented by less than one unit loses only the
+whitespace it has, and a line with no indentation loses nothing.
+
+**The indent unit is read from the document, not from configuration.** The
+editor scans a bounded prefix of the file and takes the smallest positive run
+of leading spaces; a file whose indented lines are mostly tab-led is treated as
+tab-indented; a file with no indentation at all falls back to four spaces. When
+`<` finds nothing to remove it says so, and the notice names the unit and
+whether it was detected from the file or defaulted: so you are never left
+guessing which width the editor chose.
 
 ### Selecting more than one region
 
@@ -1620,6 +1791,8 @@ are the keys that build and reshape the set.
 | `C` / `Alt-C` | add a cursor on the next / previous line |
 | `%` | select the whole file |
 | `S` | split each selection into one selection per regex match |
+| `s` | the same shape, from Helix's `select_regex` spelling |
+| `Alt-s` | split each selection into one selection per line |
 | `K` / `Alt-K` | keep / drop the selections whose text matches a regex |
 | `;` | collapse to a single cursor at the main selection's head |
 | `,` / `Alt-,` | keep only / remove the main selection |
@@ -1641,21 +1814,22 @@ between your selections, `Alt-_` only merges selections that are already
 touching.
 
 `C` adds a cursor rather than moving one, so one press gives you two, two give
-you four, and the cursor stays on the main selection — pressing it near the end
+you four, and the cursor stays on the main selection, pressing it near the end
 of a file adds only the cursors that had a line to move to, and says so.
 
 `&` measures in **display columns**, not bytes, so a tab and a CJK character
 count for what they occupy on screen. It pads after each selection, which
 equalises their widths and lines up whatever comes next. A selection wider than
 the 32 KiB measurement budget is measured over a prefix, so its padding is
-approximate — and `&` tells you that when it happens rather than leaving you to
+approximate, and `&` tells you that when it happens rather than leaving you to
 guess why one line looks wrong.
 
 ### The regex keys
 
-`S`, `K` and `Alt-K` need a pattern, so they open the `:` command line already
-filled in with `split-regex `, `keep-regex ` or `remove-regex `. Type the
-pattern, press `Enter`, and `Esc` abandons it with nothing changed.
+`S`, `s`, `K` and `Alt-K` need a pattern, so they open the `:` command line
+already filled in with `split-regex `, `select-regex `, `keep-regex ` or
+`remove-regex `. Type the pattern, press `Enter`, and `Esc` abandons it with
+nothing changed.
 
 They are commands rather than a private prompt because the `:` line already
 knows how to take text, how to show you what you are typing, and how to abort.
@@ -1663,10 +1837,25 @@ The line you get is the line you could have typed by hand, and the pattern is
 listed in the palette. A pattern that will not compile, and one that matches
 nothing, are both reported and both leave your buffer alone.
 
+`s` and `S` are one operation with two spellings: this editor's `S` has always
+kept the **matches** rather than Helix's gaps, so `select-regex` and
+`split-regex` produce the same set, and `s` exists because it is the key a
+Helix reader reaches for. A match with no bytes (`x*` matches the empty string
+)is never selected, because there is nothing to select.
+
+`Alt-s` needs no pattern and takes no `:` line: it splits each selection into
+one selection per line, with each line's **content** as the bounds. It is the
+inverse of `J`, and a line that is empty keeps a selection of its own (over
+the line break, which is the only byte that line has) rather than
+disappearing.
+
+`s` and `Alt-s` enlarge what you hold, so on a read-only buffer they are
+refused with a notice, exactly as `v` and `x` are.
+
 ### The preview keys
 
-`=` and `space r` ask the language server what it **would** change, and — when
-the whole change is known — offer it for review.
+`=` and `space r` ask the language server what it **would** change, and (when
+the whole change is known) offer it for review.
 
 | Key | What it does |
 |---|---|
@@ -1676,28 +1865,28 @@ the whole change is known — offer it for review.
 `space r` needs a new name, so it opens the `:` command line already filled
 in with `rename-preview `. Type the name, press `Enter`, and the preview
 arrives. `Esc` abandons it with nothing changed. The line is the same one you
-could have typed by hand — `:rename-preview newname` — and it is in the
+could have typed by hand (`:rename-preview newname`) and it is in the
 palette like the others. An empty name is refused before a request is sent,
 and so is one longer than the server's limit; the refusal names the limit.
 
 **A preview you can apply opens the review.** The diff in the review is the
 change that would be written, and the review is where you decide:
 
-- `[a]pply` sends the change through the daemon's checked apply path — the
+- `[a]pply` sends the change through the daemon's checked apply path, the
   same path `/lsp-preview-apply` uses, with the same revalidation of the file
   it was computed against;
 - `Esc` rejects it. Nothing is written.
 
 A preview that **cannot** be applied stays a preview and says so: a truncated
 change, a change with no edits, and a change too large to apply are all
-previews still. The daemon's own refusals — unsaved edits in the file, or a
-file that changed since the preview was built — appear verbatim in the review.
+previews still. The daemon's own refusals (unsaved edits in the file, or a
+file that changed since the preview was built) appear verbatim in the review.
 
 After a successful apply the editor reloads the file it wrote, unless your
 buffer holds edits the editor has not saved; then it keeps them and tells you
 that the file changed on disk.
 
-`space a` — the code action — asks the server what code actions it would offer
+`space a` (the code action) asks the server what code actions it would offer
 **at the cursor**, and shows each one with the diff of its own edit. It is a
 **choice**, not a single change, so the panel is the picker: `j` and `k` move
 the selection, `Enter` opens the change review on the action you selected,
@@ -1758,14 +1947,14 @@ predict. `r` is a gesture too, for the same reason: it shows `r` while it waits
 for the character to write.
 
 `m` is the one mode that takes **three** keys: `m` names a command, and the
-command may name an argument. It shows `m`, then `m s`, then `m r (` — the last
+command may name an argument. It shows `m`, then `m s`, then `m r (`, the last
 of which is the *second* half of the replace, and it has to say so, because the
 two halves are otherwise the same word on screen. See
 [Match mode and text objects](#match-mode-and-text-objects).
 
 The two gestures finish differently, on purpose. After `g`, any key belongs to
-the chord — `g j` does nothing, because `g j` is not a gesture. After `space`,
-an unmapped key is just a normal-mode key: `space j` moves down. After `m`, an
+the chord, `g j` does nothing, because `g j` is not a gesture. After `space`,
+an unmapped key is just a normal-mode key: `space l` moves right. After `m`, an
 unmapped key is a normal-mode key too: `m z` is not a gesture, so `z` is
 what you asked for. `[` and `]` are Helix's unimpaired prefixes; they show their
 indicator too, and any key after them still does what it normally does. A
@@ -1778,6 +1967,40 @@ palette, the clipboard family, and the keys that say why they cannot run. See
 [The space menu](#the-space-menu). Every key in it is either bound or states
 its reason, so there is no Helix space gesture that does nothing at all.
 
+### Counts
+
+A **count** repeats a motion: `5j` moves five lines, `3w` walks three words, and
+a count on a page key multiplies the page. A count begins with `1`–`9`. `0`
+only *extends* one (`10j` is ten lines) so `0` on its own is still
+`LineStart`, which is the one binding a count could have stolen.
+
+The count is drawn on the bottom row while you are typing it, immediately
+before the armed prefix: `3` then `g` reads `3g`, because the two are one
+gesture. It disappears the moment the gesture that owns it runs.
+
+`G` and `gg` take the count as a **line number** rather than a repeat: `3gg`
+reaches line 3 and `10G` reaches line 10, counted from one and clamped to the
+last line. That is the reading under which `<n>gg` addresses a line at all, and
+it is the same one-based rule `:50` follows.
+
+What honours a count: `h`/`j`/`k`/`l` and the arrows, `w`/`b`/`e`,
+`W`/`B`/`E`, `]p`/`[p`, `PageDown`/`PageUp`, `Ctrl+d`/`Ctrl+u`, `G`, `gg`, and
+the goto leaves that move the cursor.
+
+What deliberately does not: the repeatable verbs (`d`, `y`, `p`, `c`, `>`), a
+"three deletes" rule has to say what the second delete addresses once the first
+removed the text, and this editor does not have one; `Alt-.`, which repeats the
+last motion on its own; and the captures (`f`, `F`, `t`, `T`, `r`), where
+repeating a find is `Alt-.`'s job. A count typed before one of those is
+discarded rather than spent, so `3d` deletes once and `3fx` finds once.
+
+The count is bounded at `9999`. A digit that would pass the bound says **count
+stops at 9999** rather than wrapping, and a count larger than the document
+simply clamps at the document's last line, a motion that cannot move lands
+where it is and reports nothing. A count never survives a mode change, `Esc`,
+opening or reloading a document, leaving the editor, or a key that is not part
+of the gesture it belongs to.
+
 ### The bottom row
 
 The editor has **one** row of chrome, at the bottom. The file's path is on its
@@ -1786,20 +2009,25 @@ left; the status cluster is on its right. The cluster reads left to right:
 | Part | What it says |
 |---|---|
 | the persistent signals | whether the file has unsaved changes, which root the edit is confined to (`[project]` or `[global]`), whether the file is writable, and any caveat about the rendering itself |
-| the transient disclosure | what your last keystroke did — the find that landed, the search that matched, where the undo cursor is standing |
+| the transient disclosure | what your last keystroke did, the find that landed, the search that matched, where the undo cursor is standing |
 | the notice | an error, if one is being surfaced |
-| the armed prefix | the key you are halfway through, at the far right of the row |
+| the pending count and the armed prefix | the gesture you are halfway through (`3`, then `g`) at the far right of the row |
+
+The pending count is **not** a notice. A notice says what just happened; a count
+says what is about to, so it gets its own place on the row rather than the
+notice slot, and it goes immediately before the armed prefix because the two
+are one gesture.
 
 The armed prefix is **last** on purpose. It is the one thing that comes and
 goes on its own, so it gets the one place on the row nothing else competes
 for, and "did my `g` register?" is a question that has to be answered at a
 glance.
 
-When the row is too narrow for all of it, something has to give — and what
+When the row is too narrow for all of it, something has to give, and what
 gives is decided by how much it would cost to lose. The busy marker goes
 first, then the unsaved-changes word, then the writability marker, then the
-scope badge, and only then the disclosure. A **caveat** — "line too long",
-"highlighting truncated" — outranks all of them, because dropping a caveat is
+scope badge, and only then the disclosure. A **caveat** ("line too long",
+"highlighting truncated") outranks all of them, because dropping a caveat is
 not a smaller truth but a misleading one: a truncated line that reads as the
 whole line is worse than a missing footnote. A part that is still too wide on
 its own is cut from the **right**, so the part that answers the question
@@ -1818,7 +2046,7 @@ have typed are drawn on the row directly above.
 
 - `:50` and `:goto 50` are the same command. The bare number is the spelling
   you reach for; the named one is there when you want to be explicit.
-- The line number is one-based — `:1` is the first line. `:0` is refused
+- The line number is one-based, `:1` is the first line. `:0` is refused
   rather than quietly taken to line one.
 - As you type, the row above lists the commands that match. `Tab` or `Enter`
   takes the highlighted one.
@@ -1831,7 +2059,7 @@ have typed are drawn on the row directly above.
 The editor keeps a **five-line margin**: the page stands still while the
 cursor walks the last few rows, and moves only when the cursor would leave
 the margin. A view that scrolls the instant the cursor touches the bottom row
-is a view you cannot read — the text you are on moves out from under you
+is a view you cannot read, the text you are on moves out from under you
 mid-sentence. At the very top and the very bottom of the file the margin
 gives way, so the cursor can sit on the first and last lines.
 
@@ -1860,7 +2088,7 @@ that made it reads as "something is still selected" long after you thought it
 was gone. `v` again, or `Esc`, leaves select mode and drops the selection.
 
 `e` and `b` **select the word** they land on, so holding `e` walks the file
-with each word picked out in turn — and `d` right after deletes that word. `w`
+with each word picked out in turn, and `d` right after deletes that word. `w`
 does not select: it is a positioning motion.
 
 ### Goto mode
@@ -1885,7 +2113,7 @@ of your screen. They know where your screen ends because the editor measures
 its own pane and publishes the height, rather than guessing at it.
 
 `gj`/`gk` are Helix's *textual* line motions, against `j`/`k`'s *visual* ones.
-CodeGG wraps no lines — one screen row is one buffer line — so the two are the
+CodeGG wraps no lines (one screen row is one buffer line) so the two are the
 same move, and `gj`/`gk` exist for the muscle memory rather than for a
 difference this surface can show.
 
@@ -1893,13 +2121,13 @@ Not bound, on purpose rather than by omission:
 
 <!-- unbound: the keys below are deliberately not bound -->
 
-- `gf`, `ga`, `gm`, `gn`, `gp` — files and alternate buffers. One document is
+- `gf`, `ga`, `gm`, `gn`, `gp`, files and alternate buffers. One document is
   open at a time.
 
 A list like this is **checked**. The build compares the keys declared here
 against the editor's own tables, so a key that gets implemented without leaving
 this list is a defect the build reports. It cannot go stale in the direction
-that matters — a document that says a key does not work is worse than one that
+that matters, a document that says a key does not work is worse than one that
 omits it.
 
 The language-server jumps are bound, through the space and `g` menus:
@@ -1914,7 +2142,7 @@ The language-server jumps are bound, through the space and `g` menus:
 | `gd` | go to definition |
 | `gi` | go to implementation |
 
-`gy` — go to type definition — says why it cannot run rather than doing
+`gy` (go to type definition) says why it cannot run rather than doing
 nothing: no language server implements it here, so the editor tells you that
 instead of leaving the key dead.
 
@@ -1928,7 +2156,7 @@ can be applied. See [The preview keys](#the-preview-keys).
 `space` is a menu, and every key in it either does something or says why it
 cannot. Nothing in it is dead.
 
-`space ?` opens the editor's **keymap box** — the editor's own catalogue of
+`space ?` opens the editor's **keymap box**, the editor's own catalogue of
 its keys, in its bottom-right corner. It is a box rather than a row because
 the keys are a list, and a list on a row is a list that has to be truncated. It
 covers the corner of the text rather than taking rows away from it, so
@@ -1937,41 +2165,143 @@ opening it does not move the document under you, and `Esc` closes it.
 | Key | What it does |
 |---|---|
 | `space f` | open the workspace file browser |
-| `space ?` | open the editor's own command palette — the `:` list, filtered as you type |
-| `space r` | open the rename prompt — the `:` line, pre-filled — and preview the rename |
+| `space ?` | open the editor's own command palette, the `:` list, filtered as you type |
+| `space r` | open the rename prompt (the `:` line, pre-filled) and preview the rename |
 | `space a` | ask what code actions the server would offer at the cursor, and pick one |
 | `space y` | copy every selection |
 | `space Y` | copy **only** the main selection |
-| `space p` | paste after the selection, or after the character under the cursor |
-| `space P` | paste before the selection, or before the character under the cursor |
+| `space p` | paste from the clipboard after the selection, or after the character under the cursor |
+| `space P` | paste from the clipboard before the selection, or before the character under the cursor |
 | `space R` | replace the selection, or the character under the cursor, with the clipboard |
+| `space j` | open the jumplist picker, the positions your last jumps started from |
+| `space c` | toggle comments over the covered lines, in the buffer's own syntax |
+| `space C` | the same, forcing the block pair |
 
 `space f` opens the same browser `/files` opens, and the browser names the
-workspace root it is browsing. If the active tab has no workspace root — or
+workspace root it is browsing. If the active tab has no workspace root (or
 no canonical project/workspace binding, which is what the daemon resolves the
-listing from — the editor says so instead of opening a browser with nothing
+listing from) the editor says so instead of opening a browser with nothing
 in it. `space f` used to be a second name for `space s`; it is now the
 browser, and the two are different requests.
 
-`space ?` is the editor's own list of what it can do. Bare `?` still opens
-the general help; `space ?` is the editor's catalogue.
+`space ?` is the editor's own list of what it can do. Bare `?` in the buffer is
+the reverse search (see [Searching inside the file](#searching-inside-the-file));
+`space ?` is the editor's catalogue, and the general help stays on `Space`.
 
 `space r` and `=` show what the language server **would** change, and open the
 review when the change can be applied: the rename preview lists the files a
 rename would touch, and the format preview shows the diff.
 See [The preview keys](#the-preview-keys).
 
-These seven say why they cannot run rather than doing nothing:
+These four say why they cannot run rather than doing nothing:
 
 | Key | Why |
 |---|---|
 | `space F` | this build has one workspace root, and `space f` opens it |
 | `space b` | one document is open at a time, so there is no list to choose from |
-| `space j` | the editor keeps no visited-position history |
 | `space D` | no server capability backs a separate workspace-diagnostics request; `space d` opens the panel that exists |
-| `space c` | nothing here knows a comment syntax for the buffer you are editing |
-| `space C` | the same, for block comments |
 | `space '` | the pickers are not fuzzy, so there is no query to recall |
+
+### The jumplist
+
+`space j` opens the **jumplist picker**: the positions this document's jumps
+started from, newest first. A row is the line the jump started on and that
+line's own text, so two entries on one line are still tellable apart.
+
+A jump that moves the cursor to a **named destination** records where it
+started: an entry that recorded where the jump *landed* could not take you
+back.
+
+- **Records** `gg`, `G`, `:goto <n>`, `]d`/`[d` and `Enter` on a diagnostic,
+  and `/`, `?`, `n`, `N`.
+- **Does not record** the motions that walk the buffer: `j`, `k`, `w`, `e`,
+  `Ctrl-d`, `0`/`$`, `gs`, and `gt`/`gc`/`gb`, there the screen moves to the
+  cursor, and the destination depends on the viewport rather than on the text.
+- An LSP result that opens **another** document is a document switch, not a
+  cursor move. Only one document is attached at a time, so the new attachment
+  starts its own history and the old one goes with the document it named.
+
+| Key | What it does |
+|---|---|
+| `space j` | open the picker on the newest entry |
+| `j` / `k` (or the arrows) | move the highlight |
+| `Enter` | jump to the highlighted position |
+| `Esc` | close the picker |
+
+`space j` with nothing recorded says so, and names the gestures that fill the
+list. An empty picker would be a key that appears to do nothing.
+
+**The list is bounded at 32 positions.** A push past the bound drops the
+*oldest* entry, and the picker says so: its title carries the count as `n/32`,
+and at the bound it adds that the oldest entry is dropped. The disclosure is in
+the title rather than under the rows because a short editor window clips a row
+off the bottom of the box, and a disclosure nobody can see is not a disclosure.
+A history that truncated silently would be a picker whose rows are not the
+jumps you actually made.
+
+**An entry that cannot be honoured is refused, never approximated.** The entry
+is checked against the text attached *now*. A position past the end of the
+document (the file is shorter than it was when the jump was recorded) is
+reported as stale and the cursor does not move. Landing on a nearby line would
+be worse than saying so: a reader moved to a plausible place believes they are
+already there. An entry recorded against a different document is refused for
+the same reason, and a refusal leaves the picker open so you can pick another
+row.
+
+**The list is frontend presentation state and nothing else.** It holds byte
+offsets and a document identity, never text. It is not durable, it does not
+survive a restart or a reconnect, and it is **cleared by the same transitions
+that clear the undo history**: opening a document, reload, resync and close. A
+reload replaces the text the entries address, so keeping them would be keeping
+offsets into a document nobody is looking at any more.
+
+**`Ctrl-i` and `Ctrl-o` are not bound to this, and that is a decision rather
+than an omission.** Helix steps the jumplist with `Ctrl-i` (forward) and
+`Ctrl-o` (back). This TUI never pushes the terminal's keyboard-enhancement
+flags, so `Ctrl-i` is the byte `0x09` and always arrives as `Tab`, which is
+already `ToggleComposerMode`; `Ctrl-o` is already `OpenWorkspaceDashboard`,
+with `Shift+W` as its other spelling. An arm for either would compile and never
+fire, the class of dead binding M001 of this roadmap removed. The picker is
+the whole delivered gesture, and the stepping pair is deferred with that reason
+on the record.
+
+### Comment toggling
+
+`space c` and `space C` toggle comments over the lines the selection spans, or
+over the cursor's line when nothing is held. The cursor's **column** never
+matters: a comment belongs to a line, so a gesture that moved with the column
+would land in a different place for no reason a reader could predict.
+
+The token is the **buffer's own grammar's**, read through the same selector that
+picks the syntax-highlighting grammar, `TM_COMMENT_START`/`TM_COMMENT_END`, the
+strings the grammar itself declares. A file that colours correctly therefore
+toggles correctly, without a second table to disagree with the highlighter.
+`space c` prefers the line token (`// ` in Rust, `# ` in Python) and falls back
+to the block pair for a grammar that has no line token; `space C` forces the
+block pair.
+
+- A line token goes **after the line's existing indentation**, not at column
+  zero, and not at the cursor's column.
+- A block pair wraps the covered range: the start token before its first
+  non-whitespace byte, the end token after its last. The text between them is
+  not rewritten: no reflow, no re-indentation, no trailing whitespace.
+- Blank lines are skipped. An empty line has nothing to comment, and a token
+  written into one would be whitespace the toggle invented.
+- A range is uncommented only when **every** non-blank line in it already starts
+  with the token. A half-commented range is commented rather than
+  half-uncommented, and removal takes away exactly the token that was inserted,
+  so two presses restore the file to its exact bytes.
+- The whole gesture is **one undo step**, however many lines it covers.
+
+The block toggle does not parse the range: one whose interior already contains
+the end token produces a block the language would end early. It is a text edit,
+and the second press still restores the bytes.
+
+A grammar that declares no comment token is a **stated refusal**, not a guess
+and not a silent no-op: the notice names the extension (plain text files, or an
+extension no bundled grammar claims) and the buffer is left byte-identical.
+`Ctrl-c` is **not** a toggle: it is the exit chord, and leaving the editor takes
+two deliberate presses.
 
 The function keys do the same jobs and keep working: F2 diagnostics, F3 hover,
 F4 definition, F5 references, F6 document symbols, F7 workspace symbols.
@@ -1980,7 +2310,7 @@ F4 definition, F5 references, F6 document symbols, F7 workspace symbols.
 
 `m` is a mode, and it is the only **two-level** one: `m` names a command, and
 for most of those commands the key after it names an argument. The status row
-says which half you are in — `m`, then `m s`, then `m r (` for the two halves
+says which half you are in: `m`, then `m s`, then `m r (` for the two halves
 of the replace.
 
 | Gesture | What it does |
@@ -1994,7 +2324,7 @@ of the replace.
 | `m i (` | select the inside of the pair under the cursor |
 | `m i m` | select the inside of the innermost pair under the cursor |
 
-The objects are `w` (word), `W` (WORD — the whitespace-delimited run), `p`
+The objects are `w` (word), `W` (WORD, the whitespace-delimited run), `p`
 (paragraph), a delimiter pair such as `(`, and `m` (the innermost pair of any
 kind). `a` takes the object **with** its boundary and `i` takes it **without**:
 `m a w` is the word plus the space after it, `m i w` is the word alone. `m i (`
@@ -2006,14 +2336,14 @@ the input box rather than swallowed. `m i z` types a `z`.
 **`m m` is a delimiter match, not a syntax match.** It counts brackets over the
 bytes around the cursor, so it finds the mate of `(`, `[`, `{`, `<`, `'`, `"`
 and `` ` ``, and it does not know what your language calls a string. When it
-cannot answer it says which of the two things went wrong — **no bracket under
+cannot answer it says which of the two things went wrong, **no bracket under
 the cursor** when there is no delimiter there, and **no matching bracket** when
 the delimiter has no mate. The two are different answers and both are worth
 saying: the first means *move the cursor*, the second means *the code is
 unbalanced*.
 
 **`m r` replaces the outer pair.** On `(a(b))`, `m r ( [` gives `[a(b)]`, not
-`[a(b])` — the inner pair is left alone, so the nesting you wrote survives the
+`[a(b])`, the inner pair is left alone, so the nesting you wrote survives the
 edit. `m d` is the other way round: it removes the pair **immediately** around
 your selection, so unwrapping `b` in `(a(b))` gives `(a)`.
 
@@ -2039,7 +2369,7 @@ but spaces and tabs. So `]p` crosses the blank run and lands on the next
 paragraph's first non-blitespace byte, skipping indentation. Runs of several
 blank lines are one separator, not several.
 
-Both motions either move or say why they did not — `]p` at the last paragraph
+Both motions either move or say why they did not, `]p` at the last paragraph
 reports that rather than standing still, because a key that quietly does nothing
 is indistinguishable from a dropped keypress.
 
@@ -2052,22 +2382,22 @@ are standing in.
 `]` `Space` is Helix's `add_newline_below`, not `o`. The difference is visible:
 `o` opens the line *and* hands you the keyboard, while `]Space` inserts the line
 and leaves the cursor exactly where it was, so you keep reading from the same
-place. On a read-only buffer the two `Space` keys are refused — they are the
-only unimpaired keys here that write — while `]p` and `[p` still work.
+place. On a read-only buffer the two `Space` keys are refused (they are the
+only unimpaired keys here that write) while `]p` and `[p` still work.
 
 Not bound, because nothing in this codebase can answer them yet:
 
 <!-- unbound: the keys below are deliberately not bound -->
 
-- `[q`, `[Q`, `[F`, `[f`, `[n`, `[%`, `[i`, `[c`, `[s`, `[t`, `[b` —
+- `[q`, `[Q`, `[F`, `[f`, `[n`, `[%`, `[i`, `[c`, `[s`, `[t`, `[b`,
   unimpaired's find family: definitions, type definitions, workspace search,
   occurrences, todos, files, configuration.
-- `[a`, `[v`, `[w`, `[e` — quotes and words. A half-built `[w` would be worse
+- `[a`, `[v`, `[w`, `[e`, quotes and words. A half-built `[w` would be worse
   than none, since it would look like `[W` was simply broken.
-- `[D`, `]D` — workspace diagnostics. There is no server capability behind a
+- `[D`, `]D`, workspace diagnostics. There is no server capability behind a
   separate "all diagnostics" request, so these would only be a second name for
   the panel `space d` already opens.
-- `[g`, `[G`, `]g`, `]G` — change navigation. This has no reachable data source:
+- `[g`, `[G`, `]g`, `]G`, change navigation. This has no reachable data source:
   the VCS layer reports which files changed, not which lines.
 
 `[d` and `]d` **are** bound: they step to the previous and next diagnostic and
@@ -2090,8 +2420,45 @@ without stopping at every dot and bracket.
 `j` and `k` remember the column you started from. Move down onto a short line
 and back up and you land where you began, rather than at that short line's end.
 Any horizontal move re-seeds the column; anything that places the cursor
-somewhere else — `G`, `gg`, `w`, `e`, `$`, `gs`, a find, a page, a search jump —
+somewhere else (`G`, `gg`, `w`, `e`, `$`, `gs`, a find, a page, a search jump)
 ends the run, and the next `j` starts a new one from where the cursor is.
+
+### Repeating the last insert
+
+| Key | What it does |
+|---|---|
+| `.` | repeat the last **insert** at the cursor |
+| `Alt` + `.` | repeat the last **motion**, a different verb, see [Finding a character](#finding-a-character) |
+
+`.` repeats the insert *gesture*: the key that entered `INS` (`i`, `a`, `I`,
+`A`, `o`, `O` or `c`) plus everything typed before the `Esc`. So `o` repeated
+opens another line rather than only typing the text onto the line you are on,
+and a backspace the gesture made replays as a backspace.
+
+The boundary is the insert session, not the last thing that happened, which is
+why a `d` between two inserts changes nothing about what `.` repeats. With
+nothing recorded `.` is a no-op that reports nothing: it is claimed, so the
+period does not reach the composer, and there is no notice to read.
+
+The two dots are separated by the modifier and never by what happens to be
+recorded: `Alt` + `.` is Helix's *repeat last motion*, and `.` is the insert.
+
+A repeat is **not atomic**. It drives the same dispatch your keys drive, so it
+produces the same edits, the same notices, the same refusals and the same
+history, `u` takes back each step the gesture made, not the whole repeat in
+one. An interrupted repeat keeps the steps it already applied.
+
+The recording is **bounded** at 128 keys. An insert longer than that is refused
+at the keystroke that crosses the bound, with a notice, and the gesture is
+dropped rather than repeated short: half an insert is a different edit.
+
+It is also **document-local, on the register lifetime**. `.`'s gesture is
+cleared by the same transitions that clear the registers (opening another
+document, a reload, a resync, a reconnect) so a repeat can never apply to text
+it was not recorded against. A macro would live in a register and share that
+lifetime rather than getting a store of its own; macros are not bound here,
+because `q` is the two-press exit arm and `Q` closes a project tab, see
+[Where your input goes](#where-your-input-goes).
 
 ### Finding a character
 
@@ -2103,7 +2470,7 @@ ends the run, and the next `j` starts a new one from where the cursor is.
 | `T` + char | as `F` |
 | `Alt` + `.` | repeat the last find |
 
-These search the whole file, not just the line the cursor is on — `f` jumps
+These search the whole file, not just the line the cursor is on, `f` jumps
 across line breaks. The cursor lands on the character itself, and the scan
 starts strictly past the cursor, so `f x` while already sitting on an `x` finds
 the *next* one.
@@ -2115,7 +2482,7 @@ command line, open the search line, or do their normal job. In `INS` a
 printable is always text, never a search target.
 
 Search covers a bounded window from the cursor. If the character is not in the
-window the status row says so — `no 'z' within the 2 MiB scan bound` — rather
+window the status row says so (`no 'z' within the 2 MiB scan bound`) rather
 than reporting it as absent, which is a different fact and needs a different
 response.
 
@@ -2126,7 +2493,10 @@ composer.
 
 ### Searching inside the file
 
-`/` searches the document while the editor has focus in `NOR`. The line opens
+`/` searches the document while the editor has focus in `NOR`. **The pattern is
+a regex**, compiled by the same bounded builder the `S`/`s`/`K`/`Alt-K` keys
+use, so a pattern written for one works in the other and a pattern that will
+not compile is refused with the compiler's reason in both. The line opens
 pre-filled with the word under the cursor, and it searches as you type:
 `/host` → `/host_status` → `/host_status fn`. Matches are highlighted in the
 text and the count shows on the editor's bottom status row.
@@ -2136,12 +2506,40 @@ text and the count shows on the editor's bottom status row.
 | `Enter` | accept, keep the highlight |
 | `Esc` | abandon the search and clear the highlight |
 | `n` / `N` | next / previous match (after `Enter`) |
+| `?` | the same search, walking **backwards** |
+| `*` | search for the selected text, as literal text |
+| `Alt-*` | search for the selected text, read as a regex |
 | `Backspace` | remove a character and re-search |
 
-Search covers a bounded window of the file. If it stops short, the status row
-says `partial` rather than implying the count is the whole story.
+**The grammar changed, and it changed once.** `/foo.bar` used to look for the
+four literal characters `foo.bar`; now the `.` is a wildcard, so it matches
+`fooXbar` too. A literal dot is spelled `/foo\.bar`. This is a behaviour change
+rather than an addition, and it is documented here rather than papered over
+with a second grammar: a reader who has to know which mode they are in cannot
+predict what a pattern means.
 
-In `INS` a slash is just a slash — otherwise you could not type a URL.
+A match with **no bytes** is not a match. `x*` and `\b` can match the empty
+string, and an empty match cannot be selected or highlighted and would make `n`
+stand on one offset forever, so the scan skips them.
+
+`?` opens the line with the pattern you last accepted, so reversing a search
+never means retyping it; with no pattern accepted yet the line opens empty
+rather than the key doing nothing.
+
+`*` takes the main selection's text, escapes it and wraps it in `\b…\b`, so a
+selection containing `.` or `[` searches for exactly those characters as a
+whole word. `Alt-*` is the unescaped spelling for the times the selection *is*
+a pattern. Neither runs with nothing selected, and a selection that spans a
+line break is refused with a reason rather than quietly cut to its first line,
+`Alt-x` narrows a line selection to its line's content.
+
+Search covers a bounded window of the file (the leading 2 MiB) and keeps at
+most 2000 matches. If it stops at either bound the status row says `partial`
+and the editor's notice names **which** bound was hit, rather than implying the
+count is the whole story. `^` and `$` bind to line boundaries inside that
+window, not to the document as a whole.
+
+In `INS` a slash is just a slash, otherwise you could not type a URL.
 
 ### Syntax highlighting
 
@@ -2170,7 +2568,7 @@ updates.
 
 ### Completion
 
-Press F8 — or type `:complete` in Normal mode — to ask the language server for
+Press F8 (or type `:complete` in Normal mode) to ask the language server for
 completions at the cursor. In `INS`, `Ctrl+x` asks the same question and
 leaves you in `INS`. A popup
 lists the suggestions with their kind and detail; `↑`/`↓` (or `j`/`k` in
@@ -2186,8 +2584,8 @@ one to a popup would be a quiet way to lose a character.
 
 Only supported plain-text edits can be applied, and only after the editor
 re-checks the document identity, revision, and edit range against the
-current text. Anything else — snippets, edits needing extra changes,
-server commands, stale or out-of-range results — is shown as unavailable
+current text. Anything else (snippets, edits needing extra changes,
+server commands, stale or out-of-range results) is shown as unavailable
 and refused with a message; nothing is ever inserted on your behalf, and
 every acceptance is one ordinary edit with one undo step. An empty answer
 ("no suggestions") looks different from a warming server, a changed
@@ -2202,8 +2600,8 @@ instead of guessing the cursor.
 Semantic highlighting covers up to 1000 tokens per file (the protocol
 maximum). Ordinary files with more than 100 tokens highlight normally;
 only a response beyond 1000 is rejected as a whole. Token types the theme
-does not style — including ordinary `variable`, `parameter`, `property`,
-and `namespace` kinds — render as plain text without erasing neighboring
+does not style (including ordinary `variable`, `parameter`, `property`,
+and `namespace` kinds) render as plain text without erasing neighboring
 highlights. One malformed span drops only itself, never the whole file.
 
 When the language server reports more tokens than fit, the status row says
@@ -2218,10 +2616,10 @@ never paint against a different revision.
 
 One logical line is one screen row, and each visible line examines at most
 32 KiB per frame (256 KiB for the whole frame). A line past 32 KiB shows
-its start followed by a `…[too long]` marker, and the status row adds
-`line too long — showing prefix` when the cursor is on such a line. The
-cursor position itself stays exact, but horizontal scrolling and motion stop
-at the end of the shown prefix; normal files are unaffected.
+its start followed by a `…[too long]` marker. When the cursor is on such a
+line, the status row notes that only the prefix is shown. The cursor position
+stays exact, but horizontal scrolling and motion stop at the end of the shown
+prefix. Normal files are unaffected.
 
 The file tree (Ctrl+T pane and `/files`) shows the daemon's directory
 listing for the active workspace: the daemon walks at most 100,000
@@ -2235,7 +2633,7 @@ The complete listing response (entries plus workspace/prefix, status,
 and truncation reason) is capped at 512 KiB on the wire: oversized trees
 are trimmed from the trailing top-level entries with an explicit reason,
 down to an explicitly truncated empty listing when even one giant nested
-directory cannot fit — never a silent empty project and never an oversize
+directory cannot fit, never a silent empty project and never an oversize
 payload. At most one scan runs at a time on each side; the daemon holds
 its admission until the actual filesystem scan exits, so cancelling a
 request cannot start a second scan behind it. A refresh that arrives while
@@ -2243,7 +2641,7 @@ a request is active waits as one queued latest request and the pane says
 "waiting for prior scan…" instead of piling up workers. A refresh that is
 superseded, or a listing answered for a different workspace, never paints
 a stale or foreign listing: the pane keeps its previous state and says
-why. Listings unavailable from the daemon are explicit errors — the tree
+why. Listings unavailable from the daemon are explicit errors, the tree
 never falls back to reading the local machine's own files, so a
 same-spelled local directory can never masquerade as the workspace. A busy
 daemon asks for an explicit retry with `r`.
@@ -2274,14 +2672,14 @@ and which mode it is in.
 | `u` | undo the last local edit |
 
 `Ctrl+S` is the one chord whose meaning changes with the route: on the composer
-it stashes the prompt, and here it saves the document. `Ctrl+T` is the other —
+it stashes the prompt, and here it saves the document. `Ctrl+T` is the other;
 it toggles this route's file tree rather than opening the tasks overlay.
 
 ## Browsing files
 
 `Ctrl+T` opens a tree pane beside the editor; `/files` opens the same
 navigator as a box you can dock into the side panel with `Shift+L`. Both read
-the same navigation and the same selection — one cursor, shared — so the keys
+the same navigation and the same selection (one cursor, shared) so the keys
 below mean the same thing in both. The **filter** is the one thing they do
 not share: the Ctrl+T pane's filter lives in the app's tree state, and the
 `/files` box keeps its own, so the two can show different rows.
@@ -2293,20 +2691,20 @@ not share: the Ctrl+T pane's filter lives in the app's tree state, and the
 | `Enter` | **the same as `l`**: a directory is entered, a file is opened in the editor |
 | `l` / `→` | **peek into** that directory: it opens in place and the cursor moves into it. On a file it opens the file |
 | `h` / `←` | go up one level (at the workspace root: collapse in place, otherwise jump to the parent) |
-| `i` | type a filter into the pane — the rows narrow as you type |
+| `i` | type a filter into the pane, the rows narrow as you type |
 | `r` | **refresh**: re-list the current directory |
 | `Esc` | leave the filter mode, keeping the filter |
-| `q` | close the **box** — in the docked panel it does **nothing** |
+| `q` | close the **box**, in the docked panel it does **nothing** |
 | `Shift+Q` | close the box / **leave** the pane |
 
 `l` **peeks** rather than re-rooting. The directory opens in place and the
 cursor moves into it, so the parent and its siblings stay on screen and you
-can see where you are. `Enter` is the same motion — it used to expand a
+can see where you are. `Enter` is the same motion; it used to expand a
 directory in place and leave the cursor alone, which at the edge of the
 listing showed an "empty" directory instead of a move.
 
-Only when the listing has run out of room — three levels deep is as far as the
-daemon's listing reaches — does the scope slide, and it slides to the
+Only when the listing has run out of room (three levels deep is as far as the
+daemon's listing reaches) does the scope slide, and it slides to the
 directory's **grandparent**: the shallowest scope in which the directory's
 children fit back inside the listing, so you keep the widest context and the
 directory's parent stays visible beside its siblings. The path down to the
@@ -2321,10 +2719,10 @@ motion: `l` goes right (deeper), `h` goes left (shallower).
 The filter is **panel-local**: `i` opens it, the rows narrow as you type, and
 `Esc` leaves the filter mode while **keeping** the filter, so you can go back
 to moving through the rows you narrowed down. The mode indicator in the
-composer does not change — the filter belongs to the pane, not to the app.
+composer does not change, the filter belongs to the pane, not to the app.
 
-**Where you are, three ways.** The title is a breadcrumb — `workspace › src ›
-tui` — and every row is drawn one level further in for each component of that
+**Where you are, three ways.** The title is a breadcrumb (`workspace › src ›
+tui`) and every row is drawn one level further in for each component of that
 trail, with a `├─` / `└─` guide to the directory it belongs to. Enter a
 directory and the rows below it visibly step in, so a scoped listing no longer
 looks like the workspace root it stopped being. Guides are plain box-drawing
@@ -2337,7 +2735,7 @@ guides.
 
 ### Where the keys are
 
-**The line just above the input is where a panel's keys live — including the
+**The line just above the input is where a panel's keys live, including the
 keys of a panel you have docked but not yet entered.**
 
 When `/files` is running in the side panel, that line reads
@@ -2347,7 +2745,7 @@ When `/files` is running in the side panel, that line reads
 ```
 
 and once the panel has the keyboard the front of it flips to `Shift+← back`. The
-gesture is the one for wherever your panel is docked — see the table above — so
+gesture is the one for wherever your panel is docked (see the table above) so
 a left-column panel says `Shift+← in`. The `l/→` and `enter` you see there are
 the file browser's own keys, not a generic panel description: the box, its
 panel, and this line are written from one source, so they cannot drift apart.
@@ -2356,7 +2754,7 @@ That source is the box itself. Every box that can dock says its own keys now, no
 just the information panels: `/files` says `l/→ peek`, `/mcps` says
 `j/k move · enter actions`, `/review` says `j/k move · enter diff`, and `/diff`
 says `j/k scroll · ^d/^u page · s side-by-side`. A box whose meaning changes with
-what it is showing says the right thing in each case — `/theme` says
+what it is showing says the right thing in each case: `/theme` says
 `j/k preview · enter commit` once you have navigated and `j/k navigate · enter
 apply` before that, and `/security-review` drops its `H copy hunk` verb from the
 panel for a reason given below. `/cost`, `/usage`, `/logs`, `/doctor` and the
@@ -2369,7 +2767,7 @@ While a panel has the keyboard, the host answers those before the box is asked:
 the arrows and bare uppercase `H`/`J`/`K`/`L` move *between panels*, and `Esc`
 returns the keyboard to the input. So a docked box's line spells its scrolling
 verbs `j/k` and never `↑/↓`, and `/tasks` does not offer `J/K reorder` in a
-column — the same `J` that reorders modally moves panels when docked. This is
+column. The same `J` that reorders modally moves panels when docked, which is
 why those verbs are missing rather than forgotten.
 
 **A docked box has no `Esc`.** `Esc` returns the keyboard to the input, and
@@ -2378,31 +2776,31 @@ when you want the box *gone* rather than just stepped out of, press `Shift+←`
 first. The in-box window keeps `Esc`/`Enter` closing it exactly as before.
 
 Two boxes are worth knowing the shape of. `/diff` and `/plan` have no close key
-in a column at all — their `Enter` is wired to close the window, and a docked box
-has no window left to close, so `Shift+←` is the way out. `/keybinds` in export
-or import mode is the same shape: `Esc` is the only exit from those two modes,
-and a column does not deliver it, so use `Shift+←` and come back to the list.
+in a column at all. Their `Enter` key closes the window, but a docked box has no
+window left to close, so `Shift+←` is the way out. `/keybinds` in export or
+import mode is the same shape: `Esc` is the only exit from those two modes, and
+a column does not deliver it, so use `Shift+←` and come back to the list.
 
 The in-box modal keeps its own keymap along the bottom, because a modal box owns
 its whole surface. The side column does not: a column too narrow for a keymap
 gives its rows to the listing instead. A docked information panel keeps one
 line at the bottom instead, reading `Showing 12-40 of 214`, because its scroll
-keys do not stop at the end of the page — and so does a docked plugin box, which
+keys do not stop at the end of the page, and so does a docked plugin box, which
 keeps its `12-30/30` indicator for the same reason: that number is where you are,
 not a keymap, and it is the only thing telling you the listing ends.
 
-The columns you never go into — the session projection by default — stay quiet,
+The columns you never go into (the session projection by default) stay quiet,
 and a panel with nothing loaded in it says nothing either.
 
 ## Where to go next
 
-- `architecture/tui.md` — module map, async command pattern, focus model
-- `architecture/core.md` — core facade and transport adapters
-- `docs/cli.md` — every CLI subcommand and flag
-- `docs/agents-skills.md` — agents and skills from the UI
-- `docs/tools.md` — what the agent can actually call
-- `docs/themes.md` — theme authoring
-- `docs/TROUBLESHOOTING.md` — common failures
+- `architecture/tui.md`, module map, async command pattern, focus model
+- `architecture/core.md`, core facade and transport adapters
+- `docs/cli.md`, common CLI commands and flags; run `codegg --help` for the full list
+- `docs/agents-skills.md`, agents and skills from the UI
+- `docs/tools.md`, what the agent can actually call
+- `docs/themes.md`, theme authoring
+- `docs/TROUBLESHOOTING.md`, common failures
 
 ## Source verification
 
@@ -2413,7 +2811,7 @@ Checked 2026-10-23 against the source tree.
   (`--approval-mode`, `--sandbox`, `--yolo`): `src/main.rs` (`Cli`,
   `ExecutionPolicyArgs`).
 - Default keybindings and their descriptions: `src/tui/input.rs`
-  (`default_bindings_internal`) and the `Action` description list —
+  (`default_bindings_internal`) and the `Action` description list,
   `Ctrl+T` (tasks), `Ctrl+B` (sidebar), `Shift+N`/`Shift+P`/`Shift+X`
   (buffer tabs), `Shift+F` (project picker), `Shift+S` (panel manager),
   `Ctrl+Alt+S` (sidebar focus), `Ctrl+Alt+N`/`Ctrl+Alt+B` (project tabs),
@@ -2427,7 +2825,7 @@ Checked 2026-10-23 against the source tree.
 - `/projects`, `/workspaces`, `/workspace`, `/panels`, `/files`, `/diff`,
   `/plan`, `/keybinds`, `/theme`, `/skills`, `/reload`, `/skill-promote`,
   `/skill-proposals`, `/skill-proposal`: `src/tui/command.rs`.
-- Editor function keys — F2 diagnostics, F3 hover, F4 definition, F5
+- Editor function keys; F2 diagnostics, F3 hover, F4 definition, F5
   references, F6 document symbols, F7 workspace symbols, F8 completion, F9
   semantic-token refresh: `src/tui/commands/editor.rs`.
 - Editor bounds: 5,000-line built-in highlighting scan
@@ -2435,12 +2833,12 @@ Checked 2026-10-23 against the source tree.
   (`crates/codegg-protocol/src/lsp.rs`, `MAX_LSP_SEMANTIC_TOKENS`), 32 KiB
   render line and 256 KiB frame source (`src/tui/editor.rs`), and the 2 MiB
   editor search bound (`src/tui/editor.rs`, `MAX_EDITOR_SEARCH_BYTES`).
-- Directory listing bounds — 100,000 entries examined, 4,096 nodes kept, a
+- Directory listing bounds, 100,000 entries examined, 4,096 nodes kept, a
   three-level walk window, and the 512 KiB response cap:
   `src/directory_listing.rs` and
   `crates/codegg-protocol/src/document.rs`
   (`MAX_DIRECTORY_LISTING_RESPONSE_BYTES`).
-- Human shell caps — 1 MB per command, 8 MB total, 100 commands, 300 s
+- Human shell caps, 1 MB per command, 8 MB total, 100 commands, 300 s
   timeout (`src/shell/types.rs`), and the 256 KiB head plus 256 KiB tail
   retention (`src/shell/store.rs`).
 - Approval modes `interactive` / `automatic` / `yolo` and sandbox profiles

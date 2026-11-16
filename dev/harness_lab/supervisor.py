@@ -31,6 +31,7 @@ FAILURE_CATEGORIES = (
     "provider_rate_limit",
     "provider_timeout",
     "provider_api",
+    "provider_request_budget",
     "cancelled",
     "daemon_restarted",
     "agent_internal",
@@ -236,7 +237,9 @@ class SubjectSpec:
             "TMP": str(self.root / "scratch"),
             "TEMP": str(self.root / "scratch"),
             "RUST_LOG": (
-                "error,codegg_providers::request_budget=info"
+                "error,codegg_providers::request_budget=info,"
+                "codegg_providers::opencode_go=debug,codegg::agent::provider_turn=debug,"
+                "codegg::agent::context_runtime=debug,codegg::agent::loop=debug"
                 if has_request_limit else "error"
             ),
         })
@@ -746,6 +749,9 @@ def _workspace_snapshot_digest(workspace: Path) -> tuple[str, dict[str, str]]:
         # source state. Cargo output can exceed the snapshot cap without
         # changing any file the trial is measuring.
         if (relative_path.parts[0] in {".codegg", ".cargo-target", "target"}
+                or relative_path.parts[:2] in {
+                    ("job-check", ".cargo-home"), ("job-check", ".cargo-target")
+                }
                 or relative_path.as_posix() == "codegg_debug.log"):
             continue
         files += 1
@@ -789,10 +795,46 @@ def _drain_tool_notifications(client: "AcpClient", provider: Any, timeout: float
         client.drain(timeout=min(0.25, remaining))
 
 
+# A failed job's executor summary can carry command output, so the projection
+# never keeps its text. What an observation-only assertion cannot do without
+# is *which kind* of failure it was: "no running samples" is the same evidence
+# for a refusal, an unresolvable helper, and a launch that failed, and those
+# three have different owners. The classification below is a closed set, so
+# nothing from the summary reaches the projection except one of these labels.
+_JOB_FAILURE_CLASSES = (
+    ("process-class job refused", "process_admission"),
+    ("could not be resolved", "helper_unresolved"),
+    ("sandbox failed", "sandbox_launch"),
+    ("execution authorization", "authorization"),
+    ("test runner error:", "test_runner_error"),
+)
+_TEST_REPORT_FAILURE_CLASSES = frozenset({
+    "rust_test_failure", "rust_panic", "rust_compile_error", "rust_doctest_failure",
+    "pytest_failure", "pytest_error", "pytest_collection_error", "nonzero_exit",
+    "timeout_wall_clock", "timeout_no_output", "spawn_error", "unknown_failure",
+})
+
+
+def _job_failure_class(summary: Any) -> str | None:
+    if not isinstance(summary, str):
+        return None
+    for marker, label in _JOB_FAILURE_CLASSES:
+        if marker in summary:
+            return label
+    # Test reports carry a closed FailureClass vocabulary. Preserve only a
+    # canonical label, never the executor summary or its command output.
+    match = re.search(r"(?m)^Failure class:[ \t]*\r?\n([a-z_]+)[ \t]*$", summary)
+    if match and match.group(1) in _TEST_REPORT_FAILURE_CLASSES:
+        return f"test_{match.group(1)}"
+    return None
+
+
 def _project_job_observation(tool: str, action: Any, raw_output: Any) -> dict[str, Any] | None:
     """Project only bounded identity and lifecycle fields from native job output."""
     if tool not in {"test", "job"} or not isinstance(raw_output, str):
         return None
+    machine_code = None
+    failure_class = None
     if tool == "test":
         action = "submit"
         job_id_match = re.search(r"background test submitted as job ([A-Za-z0-9_-]+)", raw_output)
@@ -801,6 +843,7 @@ def _project_job_observation(tool: str, action: Any, raw_output: Any) -> dict[st
     else:
         job_id = None
         status = None
+        machine_code = None
         try:
             payload = json.loads(raw_output)
         except (TypeError, json.JSONDecodeError):
@@ -812,6 +855,14 @@ def _project_job_observation(tool: str, action: Any, raw_output: Any) -> dict[st
             candidate_status = payload.get("status")
             if isinstance(candidate_status, str):
                 status = candidate_status.lower()
+            # The typed terminal envelope is a closed vocabulary, so it is
+            # lifecycle rather than free text. The executor's summary is not:
+            # it can carry command output, so it stays out of the projection.
+            candidate_code = payload.get("machine_code")
+            if isinstance(candidate_code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", candidate_code):
+                machine_code = candidate_code
+            if status == "failed":
+                failure_class = _job_failure_class(payload.get("summary"))
         # The provider adapter can render structured tool results as text.
         # Accept its bounded JSON-like fields, but never preserve the raw text.
         if job_id is None:
@@ -828,15 +879,25 @@ def _project_job_observation(tool: str, action: Any, raw_output: Any) -> dict[st
                     r"\bjob\s+(queued|running|completed|failed|cancelled|canceled|timed_out|expired|blocked)\b",
                     raw_output, re.IGNORECASE)
             status = status_match.group(1).lower() if status_match else None
+    # The provider adapter can render a structured result as text, in which
+    # case the JSON path above never ran. The failure class is derived from
+    # whatever this observation actually carried, so it is set here for both.
+    if status == "failed" and failure_class is None:
+        failure_class = _job_failure_class(raw_output)
     allowed_statuses = {
         "queued", "running", "completed", "failed", "cancelled", "canceled",
         "timed_out", "expired", "blocked",
     }
-    return {
+    observation = {
         "action": action if action in {"submit", "status", "wait", "output", "cancel"} else "unknown",
         "job_id": job_id,
         "status": status if status in allowed_statuses else None,
     }
+    if machine_code is not None:
+        observation["machine_code"] = machine_code
+    if failure_class is not None:
+        observation["failure_class"] = failure_class
+    return observation
 
 
 def _bounded_managed_test_log_tail(tool_updates: list[dict[str, Any]], workspace: Path) -> str:
@@ -865,6 +926,472 @@ def _bounded_managed_test_log_tail(tool_updates: list[dict[str, Any]], workspace
     return ""
 
 
+_H006_FAILURE_MARKERS = (
+    ("no matching package named", "offline_dependency_unavailable"),
+    ("failed to download", "offline_dependency_unavailable"),
+    ("could not execute process", "toolchain_launch_failure"),
+    ("no such file or directory", "missing_runtime_path"),
+    ("permission denied", "filesystem_permission"),
+    ("operation not permitted", "filesystem_permission"),
+    ("read-only file system", "filesystem_permission"),
+    ("failed to parse manifest", "manifest_invalid"),
+    ("could not find `cargo.toml`", "manifest_missing"),
+    ("could not compile", "compilation_failure"),
+    ("error[e", "compilation_failure"),
+    ("test result: failed", "test_failure"),
+)
+_H006_FAILURE_CLASSES = {
+    "Passed": "passed",
+    "RustTestFailure": "rust_test_failure",
+    "RustPanic": "rust_panic",
+    "RustCompileError": "rust_compile_error",
+    "RustDoctestFailure": "rust_doctest_failure",
+    "PytestFailure": "pytest_failure",
+    "PytestError": "pytest_error",
+    "PytestCollectionError": "pytest_collection_error",
+    "NonzeroExit": "nonzero_exit",
+    "TimeoutWallClock": "timeout_wall_clock",
+    "TimeoutNoOutput": "timeout_no_output",
+    "SpawnError": "spawn_error",
+    "UnknownFailure": "unknown_failure",
+}
+
+
+def _h006_failure_log_category(text: str) -> str:
+    bounded = text[-16 * 1024:].lower()
+    for marker, category in _H006_FAILURE_MARKERS:
+        if marker in bounded:
+            return category
+    return "unclassified"
+
+
+_H006_CARGO_FIXTURE_PACKAGES = {
+    "job-core": "core",
+    "job-index": "index",
+    "job-store": "store",
+    "job-cli": "cli",
+}
+_H006_CARGO_TARGET_KINDS = {"lib", "bin", "test", "example", "bench", "custom-build"}
+_H006_COMPILER_MESSAGE_KINDS = (
+    ("invalid_compiler_argument", (
+        "unknown option", "unrecognized option", "unknown codegen option",
+        "unknown print request", "multiple input filenames", "unexpected argument",
+    )),
+    ("target_configuration", (
+        "unknown target", "target specification", "unsupported target",
+        "can't find crate for `std`", "can't find crate for `core`",
+    )),
+    ("toolchain_invocation", (
+        "failed to run `rustc`", "could not execute process", "failed to spawn",
+        "failed to execute",
+    )),
+    ("compiler_internal_failure", (
+        "internal compiler error", "compiler unexpectedly panicked", "thread 'rustc' panicked",
+    )),
+    ("profile_configuration", (
+        "panic=abort", "panic strategy", "test profile",
+    )),
+    ("filesystem_permission_denied", ("permission denied", "operation not permitted")),
+    ("filesystem_missing_path", ("no such file or directory", "file not found")),
+    ("filesystem_read_only", ("read-only file system",)),
+    ("filesystem_open_failure", ("failed to open", "could not open")),
+    ("filesystem_read_failure", ("failed to read", "could not read")),
+    ("filesystem_write_failure", ("failed to write", "could not write")),
+    ("filesystem_create_failure", ("failed to create", "could not create")),
+    ("environment_configuration", (
+        "environment variable", "not set", "not defined", "invalid environment",
+    )),
+    ("cargo_configuration", (
+        "failed to load config", "failed to parse config", "could not find cargo.toml",
+        "failed to find a package",
+    )),
+    ("resource_exhaustion", (
+        "too many open files", "resource temporarily unavailable", "file name too long",
+        "no space left on device", "out of memory", "cannot allocate memory",
+    )),
+)
+
+
+_H006_OS_ERROR_KINDS = {
+    1: "operation_not_permitted",
+    2: "missing_path",
+    5: "io_error",
+    13: "permission_denied",
+    20: "not_directory",
+    24: "resource_exhausted",
+    28: "no_space",
+    30: "read_only_filesystem",
+}
+_H006_PATH_TOKEN = re.compile(
+    r"(?<![\w.-])(?:[A-Za-z]:[\\/]|/|\.{1,2}[\\/]|[\w.-]+[\\/])"
+    r"[^ \t\r\n:'\"`<>]+"
+)
+
+
+def _h006_write_error_context(message: str) -> str | None:
+    lowered = message.lower()
+    marker = next((marker for marker in ("failed to write", "could not write")
+                   if marker in lowered), None)
+    if marker is None:
+        return None
+    marker_end = lowered.index(marker) + len(marker)
+    lines = message[marker_end:].splitlines()
+    return lines[0] if lines else ""
+
+
+def _h006_write_error_path_role(message: str, workspace: Path) -> str | None:
+    path_context = _h006_write_error_context(message)
+    if path_context is None:
+        return None
+    root = workspace.resolve()
+    role_roots = (
+        ("cargo_home", root / "job-check" / ".cargo-home", "job-check/.cargo-home"),
+        ("cargo_target_or_temp", root / "job-check" / ".cargo-target",
+         "job-check/.cargo-target"),
+        ("job_check", root / "job-check", "job-check"),
+        ("workspace", root, None),
+    )
+    normalized_context = path_context.replace("\\", "/").lower()
+    for role, path, relative in role_roots:
+        candidates = [str(path).replace("\\", "/").lower()]
+        if relative is not None:
+            candidates.append(relative)
+        if any(re.search(re.escape(candidate) + r"(?=$|[/\s:'\"`,])",
+                         normalized_context) for candidate in candidates):
+            return role
+    return "unmapped_path" if _H006_PATH_TOKEN.search(path_context) else "path_not_reported"
+
+
+def _h006_write_error_path_subrole(message: str, workspace: Path) -> str | None:
+    path_context = _h006_write_error_context(message)
+    if path_context is None:
+        return None
+    root = workspace.resolve()
+    normalized_context = path_context.replace("\\", "/").lower()
+    target_roots = (
+        str(root / "job-check" / ".cargo-target").replace("\\", "/").lower(),
+        "job-check/.cargo-target",
+    )
+    for target_root in target_roots:
+        match = re.search(re.escape(target_root) + r"(?=$|[/\s:'\"`,])",
+                          normalized_context)
+        if match is None:
+            continue
+        suffix = normalized_context[match.end():]
+        components = set(re.split(r"[/\\\s:'\"`,()]+", suffix))
+        if "incremental" in components:
+            return "cargo_incremental_state"
+        if ".fingerprint" in components:
+            return "cargo_fingerprint_state"
+        if "deps" in components:
+            return "cargo_dependency_artifact"
+        if "build" in components:
+            return "cargo_build_script_artifact"
+        if components.intersection({"tmp", "temp", "temporary"}):
+            return "cargo_temporary_file"
+        if components.intersection({"debug", "release"}):
+            return "cargo_target_output"
+        return "cargo_target_other"
+    return "unmapped_path" if _H006_PATH_TOKEN.search(path_context) else "path_not_reported"
+
+
+_H006_COMPILER_ERROR_FAMILIES = (
+    ("unresolved_name", ("cannot find", "not found in this scope")),
+    ("unresolved_import", ("unresolved import", "unresolved module", "can't find crate")),
+    ("type_mismatch", ("mismatched types",)),
+    ("trait_bound", ("trait bound", "is not satisfied")),
+    ("borrow_check", ("borrowed value", "cannot borrow", "does not live long enough")),
+    ("linker_failure", ("linking with", "linker", "undefined reference", "ld: ")),
+    ("cargo_compile_summary", ("could not compile", "failed to compile", "couldn't compile")),
+    ("build_script_failure", ("failed to run custom build command", "custom build command failed")),
+    ("dependency_resolution", ("failed to select a version", "no matching package named", "failed to download")),
+    ("manifest_error", ("failed to parse manifest", "no targets specified in the manifest")),
+    ("toolchain_failure", ("toolchain not installed", "no default toolchain", "could not execute process")),
+    ("resource_exhausted", ("no space left on device", "out of memory", "cannot allocate memory")),
+    ("syntax_error", (
+        "unexpected token", "expected one of", "expected identifier", "unclosed delimiter",
+        "unexpected end of file", "no rules expected",
+    )),
+    ("unstable_feature", ("is unstable", "unstable library feature")),
+)
+
+
+def _h006_compiler_diagnostics(
+    text: str, workspace: Path | None = None
+) -> dict[str, Any]:
+    bounded = text[-16 * 1024:]
+    error_codes = {
+        code.upper() for code in re.findall(r"\berror\[(E\d{4})\]", bounded, re.IGNORECASE)
+    }
+    messages = []
+    compiler_message_count = 0
+    compiler_error_message_count = 0
+    compiler_error_source_span_count = 0
+    compiler_error_without_source_span_count = 0
+    compiler_error_os_kinds: set[str] = set()
+    compiler_error_origins: set[str] = set()
+    compiler_error_message_kinds: set[str] = set()
+    compiler_error_path_roles: set[str] = set()
+    compiler_error_path_subroles: set[str] = set()
+    build_finished_count = 0
+    lines = bounded.splitlines()
+    sampled_lines = lines if len(lines) <= 256 else lines[:128] + lines[-128:]
+    for line in sampled_lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        reason = event.get("reason")
+        if reason == "build-finished":
+            build_finished_count += 1
+            continue
+        if reason != "compiler-message":
+            continue
+        compiler_message_count += 1
+        diagnostic = event.get("message")
+        if not isinstance(diagnostic, dict) or diagnostic.get("level") != "error":
+            continue
+        compiler_error_message_count += 1
+        raw_package_id = event.get("package_id")
+        package_match = (re.search(r"#([A-Za-z0-9_-]+)@", raw_package_id)
+                         if isinstance(raw_package_id, str) else None)
+        package = (_H006_CARGO_FIXTURE_PACKAGES.get(package_match.group(1), "other")
+                   if package_match else "other")
+        target = event.get("target")
+        raw_target_kinds = target.get("kind") if isinstance(target, dict) else None
+        target_kinds = (raw_target_kinds if isinstance(raw_target_kinds, list) else [])
+        target_kind = next((kind for kind in target_kinds
+                            if isinstance(kind, str) and kind in _H006_CARGO_TARGET_KINDS),
+                           "other")
+        if package_match or target_kind != "other":
+            compiler_error_origins.add(f"{package}:{target_kind}")
+        message = diagnostic.get("message")
+        if isinstance(message, str):
+            messages.append(message)
+        code = diagnostic.get("code")
+        code = code.get("code") if isinstance(code, dict) else None
+        if isinstance(code, str) and re.fullmatch(r"E\d{4}", code, re.IGNORECASE):
+            error_codes.add(code.upper())
+        spans = diagnostic.get("spans")
+        if isinstance(spans, list) and spans:
+            compiler_error_source_span_count += 1
+        else:
+            compiler_error_without_source_span_count += 1
+        rendered = diagnostic.get("rendered")
+        diagnostic_text = "\n".join(
+            value for value in (message, rendered) if isinstance(value, str)
+        )
+        lowered_diagnostic_text = diagnostic_text.lower()
+        compiler_error_message_kinds.update(
+            kind for kind, markers in _H006_COMPILER_MESSAGE_KINDS
+            if any(marker in lowered_diagnostic_text for marker in markers)
+        )
+        if workspace is not None:
+            path_role = _h006_write_error_path_role(diagnostic_text, workspace)
+            if path_role is not None:
+                compiler_error_path_roles.add(path_role)
+            path_subrole = _h006_write_error_path_subrole(diagnostic_text, workspace)
+            if path_subrole is not None:
+                compiler_error_path_subroles.add(path_subrole)
+        for raw_os_error in re.findall(r"\bos error\s+(\d{1,3})\b", diagnostic_text, re.IGNORECASE):
+            os_error_kind = _H006_OS_ERROR_KINDS.get(int(raw_os_error))
+            if os_error_kind:
+                compiler_error_os_kinds.add(os_error_kind)
+    lowered = (bounded + "\n" + "\n".join(messages)).lower()
+    error_families = [
+        family for family, markers in _H006_COMPILER_ERROR_FAMILIES
+        if any(marker in lowered for marker in markers)
+    ]
+    return {
+        "compiler_error_codes": sorted(error_codes)[:8],
+        "compiler_error_families": error_families,
+        "cargo_json_compiler_messages": min(compiler_message_count, 256),
+        "cargo_json_error_messages": min(compiler_error_message_count, 256),
+        "cargo_json_error_source_span_count": min(compiler_error_source_span_count, 256),
+        "cargo_json_error_without_source_span_count": min(
+            compiler_error_without_source_span_count, 256),
+        "cargo_json_os_error_kinds": sorted(compiler_error_os_kinds),
+        "cargo_json_error_origins": sorted(compiler_error_origins)[:8],
+        "cargo_json_error_message_kinds": [
+            kind for kind, _markers in _H006_COMPILER_MESSAGE_KINDS
+            if kind in compiler_error_message_kinds
+        ],
+        "cargo_json_error_path_roles": sorted(compiler_error_path_roles),
+        "cargo_json_error_path_subroles": sorted(compiler_error_path_subroles),
+        "cargo_json_build_finished_events": min(build_finished_count, 256),
+    }
+
+
+def _h006_cwd_scope(workspace: Path, raw_cwd: Any) -> str:
+    if not isinstance(raw_cwd, str):
+        return "unavailable"
+    try:
+        root = workspace.resolve()
+        cwd = Path(raw_cwd).resolve(strict=False)
+        job_check = (root / "job-check").resolve(strict=False)
+    except (OSError, RuntimeError):
+        return "unresolved"
+    if cwd == job_check:
+        return "job_check"
+    if cwd.is_relative_to(job_check):
+        return "job_check_subpath"
+    if cwd == root:
+        return "workspace_root"
+    if cwd.is_relative_to(root):
+        return "workspace_subpath"
+    return "outside_workspace"
+
+
+def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
+    root = workspace.resolve()
+    report_root = root / "job-check" / ".codegg" / "test-runs"
+    if not report_root.is_dir():
+        return []
+    diagnostics = []
+    for report_path in sorted(report_root.glob("*/report.json"))[-4:]:
+        try:
+            if not report_path.resolve(strict=True).is_relative_to(root):
+                continue
+            if report_path.stat().st_size > 256 * 1024:
+                continue
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, RuntimeError):
+            continue
+        if not isinstance(report, dict):
+            continue
+        cwd_scope = _h006_cwd_scope(root, report.get("cwd"))
+        status = report.get("status")
+        status = status.lower() if isinstance(status, str) else "unknown"
+        if status not in {"passed", "failed", "error", "timedout", "cancelled", "unknown"}:
+            status = "unknown"
+        raw_exit_code = report.get("exit_code")
+        exit_code = (raw_exit_code if isinstance(raw_exit_code, int)
+                     and not isinstance(raw_exit_code, bool)
+                     and -255 <= raw_exit_code <= 255 else None)
+        raw_duration = report.get("duration_ms")
+        duration_ms = (raw_duration if isinstance(raw_duration, int)
+                       and not isinstance(raw_duration, bool)
+                       and 0 <= raw_duration <= 300_000 else None)
+        raw_output_truncated = report.get("output_truncated")
+        output_truncated = raw_output_truncated if isinstance(raw_output_truncated, bool) else None
+        raw_failures = report.get("failures")
+        failure_classes = sorted({
+            _H006_FAILURE_CLASSES[failure_class]
+            for failure in raw_failures if isinstance(failure, dict)
+            if isinstance(failure_class := failure.get("failure_class"), str)
+            and failure_class in _H006_FAILURE_CLASSES
+        }) if isinstance(raw_failures, list) else []
+        stdout_category = "unavailable"
+        stderr_category = "unavailable"
+        stdout_log_bytes: int | None = None
+        stderr_log_bytes: int | None = None
+        compiler_error_codes: set[str] = set()
+        compiler_error_families: set[str] = set()
+        cargo_json_os_error_kinds: set[str] = set()
+        cargo_json_error_origins: set[str] = set()
+        cargo_json_error_message_kinds: set[str] = set()
+        cargo_json_error_path_roles: set[str] = set()
+        cargo_json_error_path_subroles: set[str] = set()
+        cargo_json_compiler_messages = 0
+        cargo_json_error_messages = 0
+        cargo_json_error_source_span_count = 0
+        cargo_json_error_without_source_span_count = 0
+        cargo_json_build_finished_events = 0
+        for stream_name in ("stdout_log", "stderr_log"):
+            raw_log_path = report.get(stream_name)
+            if not isinstance(raw_log_path, str):
+                continue
+            try:
+                log_path = Path(raw_log_path).resolve(strict=True)
+                if not log_path.is_relative_to(root) or not log_path.is_file():
+                    continue
+                with log_path.open("rb") as log:
+                    log.seek(0, os.SEEK_END)
+                    size = log.tell()
+                    if stream_name == "stdout_log":
+                        stdout_log_bytes = min(size, 1_000_000)
+                    else:
+                        stderr_log_bytes = min(size, 1_000_000)
+                    if size <= 16 * 1024:
+                        log.seek(0)
+                        sample = log.read(16 * 1024)
+                    else:
+                        log.seek(0)
+                        head = log.read(8 * 1024)
+                        log.seek(size - (8 * 1024 - 1), os.SEEK_SET)
+                        sample = head + b"\n" + log.read(8 * 1024 - 1)
+                log_text = sample.decode("utf-8", errors="replace")
+                stream_category = _h006_failure_log_category(log_text)
+                if stream_name == "stdout_log":
+                    stdout_category = stream_category
+                else:
+                    stderr_category = stream_category
+                stream_diagnostics = _h006_compiler_diagnostics(log_text, workspace=root)
+                compiler_error_codes.update(stream_diagnostics["compiler_error_codes"])
+                compiler_error_families.update(stream_diagnostics["compiler_error_families"])
+                cargo_json_compiler_messages = min(
+                    cargo_json_compiler_messages
+                    + stream_diagnostics["cargo_json_compiler_messages"], 256)
+                cargo_json_error_messages = min(
+                    cargo_json_error_messages
+                    + stream_diagnostics["cargo_json_error_messages"], 256)
+                cargo_json_error_source_span_count = min(
+                    cargo_json_error_source_span_count
+                    + stream_diagnostics["cargo_json_error_source_span_count"], 256)
+                cargo_json_error_without_source_span_count = min(
+                    cargo_json_error_without_source_span_count
+                    + stream_diagnostics["cargo_json_error_without_source_span_count"], 256)
+                cargo_json_os_error_kinds.update(stream_diagnostics["cargo_json_os_error_kinds"])
+                cargo_json_error_origins.update(stream_diagnostics["cargo_json_error_origins"])
+                cargo_json_error_message_kinds.update(
+                    stream_diagnostics["cargo_json_error_message_kinds"])
+                cargo_json_error_path_roles.update(
+                    stream_diagnostics["cargo_json_error_path_roles"])
+                cargo_json_error_path_subroles.update(
+                    stream_diagnostics["cargo_json_error_path_subroles"])
+                cargo_json_build_finished_events = min(
+                    cargo_json_build_finished_events
+                    + stream_diagnostics["cargo_json_build_finished_events"], 256)
+            except (OSError, RuntimeError):
+                continue
+        compiler_diagnostics = {
+            "compiler_error_codes": sorted(compiler_error_codes)[:8],
+            "compiler_error_families": [
+                family for family, _markers in _H006_COMPILER_ERROR_FAMILIES
+                if family in compiler_error_families
+            ],
+            "cargo_json_compiler_messages": cargo_json_compiler_messages,
+            "cargo_json_error_messages": cargo_json_error_messages,
+            "cargo_json_error_source_span_count": cargo_json_error_source_span_count,
+            "cargo_json_error_without_source_span_count": cargo_json_error_without_source_span_count,
+            "cargo_json_os_error_kinds": sorted(cargo_json_os_error_kinds),
+            "cargo_json_error_origins": sorted(cargo_json_error_origins)[:8],
+            "cargo_json_error_message_kinds": [
+                kind for kind, _markers in _H006_COMPILER_MESSAGE_KINDS
+                if kind in cargo_json_error_message_kinds
+            ],
+            "cargo_json_error_path_roles": sorted(cargo_json_error_path_roles),
+            "cargo_json_error_path_subroles": sorted(cargo_json_error_path_subroles),
+            "cargo_json_build_finished_events": cargo_json_build_finished_events,
+        }
+        diagnostics.append({
+            "status": status,
+            "exit_code": exit_code,
+            "duration_ms": duration_ms,
+            "cwd_scope": cwd_scope,
+            "output_truncated": output_truncated,
+            "stdout_log_bytes": stdout_log_bytes,
+            "stderr_log_bytes": stderr_log_bytes,
+            "failure_classes": failure_classes,
+            "stdout_category": stdout_category,
+            "stderr_category": stderr_category,
+            **compiler_diagnostics,
+        })
+    return diagnostics
+
+
 def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash: bool = False,
                    ledger_root: Path | None = None, candidate: str = "current",
                    task_id: str = "safe-bash-write", group_id: str = "native-tool-smoke",
@@ -883,6 +1410,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                    external_verifier: Path | None = None,
                    rustc_executable: Path | None = None,
                    source_root: Path | None = None,
+                   cargo_home_under_test_workdir: bool = False,
                    causal_trace_output: Path | None = None) -> dict[str, Any]:
     """Run one native ACP turn against a local deterministic OpenAI wire fixture."""
     from .provider_fixture import FixtureProvider
@@ -957,7 +1485,19 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             if not rustc_path.is_file():
                 raise HarnessError("configured rustc executable is not a regular file")
             env["RUSTC"] = str(rustc_path)
-        env["CARGO_TARGET_DIR"] = str(private_dir(workspace / ".cargo-target"))
+        cargo_target_root = workspace
+        if cargo_home_under_test_workdir:
+            # Keep Cargo's writable home and target artifacts inside the
+            # accepted job-check grant. HOME remains the harness-private root
+            # so sensitive home-path denies stay outside the workspace grant.
+            test_workdir = workspace / "job-check"
+            if not test_workdir.is_dir():
+                raise HarnessError("test-workdir Cargo state requires the job-check fixture")
+            cargo_target_root = test_workdir
+            cargo_home = private_dir(test_workdir / ".cargo-home")
+            env["CARGO_HOME"] = str(cargo_home)
+        cargo_target_dir = private_dir(cargo_target_root / ".cargo-target")
+        env["CARGO_TARGET_DIR"] = str(cargo_target_dir)
         config = {
             "provider": {"openai": {
                 "api_key": "local-fixture-only",
@@ -1271,6 +1811,8 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                 "workspace": str(workspace),
                 "expected_file": expected_file,
             }
+            if task_id == "h006-real-job-observation":
+                result["managed_test_diagnostics"] = _h006_managed_test_diagnostics(workspace)
             if ledger_root is not None:
                 from .ledger import record
                 trace = []

@@ -359,3 +359,20 @@ tests = [
   "windows_roots_use_known_folders_and_retain_credential_denies",
 ]
 security = "The Windows launch policy must refuse junction components, UNC device paths and search-path-resolved roots."
+
+# ---------------------------------------------------------------------
+# Linux sandbox grant qualification
+# ---------------------------------------------------------------------
+
+[[filter]]
+workflow = ".github/workflows/linux-sandbox-grants-native.yml"
+job = "grants"
+step = "Sandbox grant fixtures"
+command = "cargo test --locked --test security_permission sandbox_landlock -- --nocapture --test-threads=1"
+filter = "sandbox_landlock"
+tests = [
+  "the_default_grant_set_denies_another_processes_proc_entry",
+  "the_narrowed_grant_set_runs_the_toolchain_and_its_proc_entries_are_load_bearing",
+  "the_qualification_lane_obtains_landlock_abi_six",
+]
+security = "The default read grants must deny another same-uid process's /proc entry while the command keeps its own, the narrowed set must still run the toolchain, and the lane must obtain Landlock ABI 6 rather than skipping."

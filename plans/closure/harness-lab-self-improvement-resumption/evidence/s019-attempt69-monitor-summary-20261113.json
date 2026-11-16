@@ -1,0 +1,18 @@
+{
+  "schema": "s019_live_monitor_summary_v1",
+  "attempt": 69,
+  "sample_count": 107,
+  "nominal_sample_interval_seconds": 20,
+  "provider_request_monitor_field_available": true,
+  "provider_request_sample_count": 106,
+  "final_provider_requests_from_bounded_admission_parser": 181,
+  "minimum_sampled_free_disk_bytes": 64567627776,
+  "runtime_disk_floor_bytes": 10737418240,
+  "final_free_disk_bytes": 75465232384,
+  "event_measurement_complete_from_safe_campaign_diagnostic": true,
+  "final_tool_started_count": 224,
+  "final_tool_terminal_count": 224,
+  "runner_exit_code": 2,
+  "stop_trigger_observed": false,
+  "privacy": "Only bounded counters and fixed states are retained; no raw monitor rows, private receipt, runner log, transcript, prompt, tool arguments, or verifier output copied."
+}

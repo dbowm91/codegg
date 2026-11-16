@@ -59,6 +59,49 @@ impl DocumentSnapshot {
         Ok(self.text.byte_slice(start..end).to_string())
     }
 
+    /// The bytes of `start..end`, as borrowed slices of the rope.
+    ///
+    /// The allocation-free counterpart of [`read_bytes`](Self::read_bytes):
+    /// the slices are the rope's own leaves, borrowed for as long as the
+    /// snapshot is, so a caller that only has to *read* the bytes — to hash
+    /// a line, or to compare a range against a copy it already holds —
+    /// allocates nothing. The range need not fall on chunk boundaries; the
+    /// first and last slices are trimmed to it.
+    ///
+    /// The boundaries are validated exactly as [`read_bytes`] validates
+    /// them, so the two accessors answer for the same ranges.
+    pub fn byte_chunks<'a>(
+        &'a self,
+        start: usize,
+        end: usize,
+    ) -> Result<impl Iterator<Item = &'a [u8]> + 'a> {
+        if start > end {
+            return Err(DocumentError::ReversedRange);
+        }
+        if end > self.len_bytes() {
+            return Err(DocumentError::OutOfBounds);
+        }
+        if !self.is_byte_boundary(start) || !self.is_byte_boundary(end) {
+            return Err(DocumentError::InvalidBoundary);
+        }
+        Ok(self.text.byte_slice(start..end).chunks().map(str::as_bytes))
+    }
+
+    /// The byte at `offset`, or `None` past the end of the document.
+    ///
+    /// A single-byte read without the `String` [`read_bytes`](Self::read_bytes)
+    /// allocates, for callers that walk a buffer one byte at a time. It
+    /// answers for **any** in-bounds offset, including the interior of a
+    /// multi-byte character — the caller that needs a character boundary
+    /// asks [`is_byte_boundary`](Self::is_byte_boundary), which is a
+    /// different question and a cheaper one to get wrong loudly.
+    pub fn byte_at(&self, offset: usize) -> Option<u8> {
+        if offset >= self.len_bytes() {
+            return None;
+        }
+        Some(self.text.byte(offset))
+    }
+
     pub fn line_range(&self, line: usize) -> Result<std::ops::Range<usize>> {
         if line >= self.len_lines() {
             return Err(DocumentError::InvalidPosition);

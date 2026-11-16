@@ -240,6 +240,50 @@ accent_primary = "#78b4ff"
 Parses Halloy IRC client theme format. The `looks_like_halloy()`
 heuristic detects this format. All 50 bundled themes use this format.
 
+#### The projection owns legibility
+
+The Halloy import is a **translation**, and several of the fields it reads do
+not mean in Halloy what this TUI uses them for. Authority therefore follows
+whether a value is *translated*, not whether the theme file writes it down:
+
+- A colour read through `parse_halloy_theme` is a translation of another
+  format's field. The file owns the hue; the projection owns the legibility.
+- A colour written by a native `codegg` theme names *this* schema's token. The
+  file owns it, and no importer derives over it.
+
+`legible_on` (`src/theme/halloy.rs`) applies the rule: a value that already
+clears its bar is returned untouched, and a failing one is moved along the
+lightness axis toward whichever of black or white reads better on the theme's
+own `general.background` — keeping its hue — and stops *at* the bar. Each
+derivation emits a `ThemeDiagnostic::warn` naming the field, so
+`/theme diagnostics` reports it rather than shipping a colour nobody chose.
+
+| Token | Translated from | Bar | Constant |
+|---|---|---|---|
+| `base.foreground` | `text.primary` | **4.5** | `PRIMARY_TEXT_RATIO` |
+| `text.muted` | `text.tertiary` | 3.0 | `MUTED_TEXT_RATIO` |
+| `status.success` | `text.success` | 3.0 | `ACCENT_RATIO` |
+| `status.warning` | `text.warning`, else the inherited value | 3.0 | `ACCENT_RATIO` |
+| `status.error` | `text.error` | 3.0 | `ACCENT_RATIO` |
+| `ui.border` | the border chain (below) | 3.0 | `MIN_DERIVED_TEXT_RATIO` |
+
+`ui.border` is the one gated token with a source *preference* inside the gate.
+Halloy's chain — `buffer.border_selected` → `buffer.border` → `general.border`
+→ `general.horizontal_rule` — is a precedence of four different things, and
+`buffer.border_selected` is the **selected** buffer's indicator: upstream
+documents it as the sidebar focus indicator, which a theme may disable by
+authoring it transparent. A resolved value that clears ships unchanged;
+otherwise the semantically neutral `general.border` is taken when *it* clears;
+only a value that fails both is derived from its own hue. A literal whose alpha
+byte is `00` is Halloy's "no paint" and is skipped rather than parsed into a
+`#000000` frame.
+
+`ui.border_focused` is set to `ui.accent_primary`, the colour the renderer
+actually paints for focus (`src/tui/panels/chrome.rs`), so the token names what
+is drawn. It is **semantic-only**: the ratatui `Theme` has no `border_focused`
+field. `ui.title_background` (`buffer.background_title_bar`) is likewise
+resolved and never projected.
+
 ### Validation (`src/theme/validate.rs`)
 
 - **Contrast checking**: WCAG contrast ratio validation between
@@ -303,6 +347,11 @@ the last-resort placeholder.
   call it *after* `base` and `ui` resolve (so a theme overriding `selection`
   derives against its own value), and `tests/tui_render/theme_selection_tokens.inc` asserts
   the 0-of-50 measurement so the "simplification" back to a dead read fails.
+- **A bundled theme file is third-party content and is never edited.** A value
+  that cannot be read as this TUI's foreground is a finding about the *mapping*,
+  so the repair goes in `src/theme/halloy.rs` (see "The projection owns
+  legibility") — never in `assets/themes/halloy/`. A contrast failure in a
+  bundled theme is a projection finding, not a value to change.
 - **A render path reads the theme it is handed; it does not cache one.** A box
   that stores an `Arc<Theme>` and refreshes it only when opened paints the old
   palette after a theme change while the rest of the UI follows the new one.

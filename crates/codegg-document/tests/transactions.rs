@@ -101,6 +101,51 @@ fn snapshot_of(text: &str) -> codegg_document::DocumentSnapshot {
 }
 
 #[test]
+fn byte_chunks_answers_the_same_range_as_read_bytes() {
+    // A rope long enough to be split into several leaves, read across them.
+    let text = "alpha\n".repeat(400) + "omega\n";
+    let snapshot = snapshot_of(&text);
+    for (start, end) in [(0, text.len()), (3, 17), (2_400, text.len()), (7, 7)] {
+        let joined: Vec<u8> = snapshot
+            .byte_chunks(start, end)
+            .unwrap()
+            .flat_map(|chunk| chunk.iter().copied())
+            .collect();
+        assert_eq!(
+            joined,
+            snapshot.read_bytes(start, end).unwrap().into_bytes(),
+            "the chunks of {start}..{end} must be those bytes in order"
+        );
+    }
+    // The same validation as the allocating accessor: a bad range is a
+    // refusal, not a shorter answer.
+    assert_eq!(
+        snapshot.byte_chunks(10, 4).err(),
+        Some(DocumentError::ReversedRange)
+    );
+    assert_eq!(
+        snapshot.byte_chunks(0, snapshot.len_bytes() + 1).err(),
+        Some(DocumentError::OutOfBounds)
+    );
+    // Offset 2 splits 'é' in "héllo", so it is not a readable range end.
+    assert_eq!(
+        snapshot_of("héllo").byte_chunks(0, 2).err(),
+        Some(DocumentError::InvalidBoundary)
+    );
+}
+
+#[test]
+fn byte_at_answers_every_offset_and_refuses_past_the_end() {
+    let text = "aé日🐻";
+    let snapshot = snapshot_of(text);
+    for (offset, byte) in text.bytes().enumerate() {
+        assert_eq!(snapshot.byte_at(offset), Some(byte), "offset {offset}");
+    }
+    assert_eq!(snapshot.byte_at(text.len()), None, "past the end");
+    assert_eq!(snapshot.byte_at(text.len() + 1), None, "well past the end");
+}
+
+#[test]
 fn utf16_column_is_exact_for_ascii_tabs_combining_and_astral() {
     // "a\té\u{301}🌍x": a=1, tab=1, é=1, combining mark=1, astral=2, x=1.
     let text = "a\té\u{301}🌍x";

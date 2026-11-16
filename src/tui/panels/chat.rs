@@ -39,16 +39,18 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Widget},
+    widgets::{Paragraph, Widget},
 };
 
 use crate::tui::app::state::chat::ProjectChat;
 use crate::tui::app::TuiMsg;
 use crate::tui::chat_browser::{self, ChatBrowser, ChatKeyAction, ChatView};
+use crate::tui::components::hint_line::HintLine;
 use crate::tui::input::InputAction;
 use crate::tui::theme::Theme;
 use crate::tui::wrap::ellipsize_to_width;
 
+use super::chrome::PanelChrome;
 use super::{PanelCtx, PanelHints, PanelKey, SidePanel, SidePanelId};
 
 /// Read-only project-chat side panel.
@@ -267,31 +269,11 @@ impl SidePanel for ChatPanel {
 
     fn render(&mut self, ctx: &mut PanelCtx<'_>, buf: &mut Buffer, area: Rect) {
         let theme = ctx.theme.clone();
-        if area.width < 12 || area.height < 4 {
-            return;
-        }
-        let label = SidePanelId::Chat.label();
-        let title = if ctx.focused {
-            format!(" {label} ● ")
-        } else {
-            format!(" {label} ")
-        };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(if ctx.focused {
-                theme.primary
-            } else {
-                theme.border
-            }))
-            .title(title)
-            .title_style(Style::default().fg(if ctx.focused {
-                theme.primary
-            } else {
-                theme.muted
-            }))
-            .style(Style::default().bg(theme.background));
-        let inner = block.inner(area);
-        block.render(area, buf);
+        // The edge is the shared chrome's business; the guard that used to sit
+        // here is the predicate inside it, so a short column paints borderless
+        // instead of a border that would leave no content row.
+        let inner =
+            PanelChrome::new(SidePanelId::Chat.label(), ctx.focused, &theme).draw(area, buf);
         if inner.height == 0 || inner.width == 0 {
             return;
         }
@@ -336,6 +318,9 @@ impl SidePanel for ChatPanel {
         let Some(view) = self.view(ctx) else {
             return;
         };
+        // The row model is keyed on the reducer's sequence, so it has to read
+        // the projection the view borrows rather than a copy of it.
+        let sequence = self.entry(ctx).map_or(0, |entry| entry.sequence);
         Paragraph::new(self.header(&view, &theme)).render(rows[0], buf);
 
         // Reconcile the cursor with the freshly read window *before*
@@ -346,8 +331,15 @@ impl SidePanel for ChatPanel {
         self.browser.sync(&view);
 
         let body_height = usize::from(rows[1].height);
-        let lines = chat_browser::rows(&view, self.cursor(), rows[1].width, &theme);
-        if lines.is_empty() {
+        let model = self.browser.rows(
+            &view,
+            chat_browser::ChatRowsRequest {
+                sequence,
+                width: rows[1].width,
+                theme: &theme,
+            },
+        );
+        if model.rows.is_empty() {
             Paragraph::new(Line::from(Span::styled(
                 match view.status {
                     crate::tui::app::state::chat::ChatStatus::Unavailable => " chat unavailable",
@@ -359,10 +351,8 @@ impl SidePanel for ChatPanel {
             )))
             .render(rows[1], buf);
         } else {
-            let selected_end = chat_browser::selected_row_end(&lines, self.cursor());
-            let range = chat_browser::window(lines.len(), selected_end, body_height);
-            let window: Vec<Line> = range.map(|index| lines[index].line.clone()).collect();
-            Paragraph::new(window).render(rows[1], buf);
+            let range = chat_browser::window(model.rows.len(), model.selected_end, body_height);
+            Paragraph::new(chat_browser::window_lines(model.rows, range)).render(rows[1], buf);
         }
 
         Paragraph::new(self.target_line(ctx, &theme)).render(rows[2], buf);
@@ -410,7 +400,9 @@ impl SidePanel for ChatPanel {
         // which is not the same question — focusing Sessions does not retarget
         // the composer, and a line that implied it would would be a lie.
         let normal = chat_browser::normal_hints(self.browser.show_help());
-        Some(format!("CHAT · {normal} · ⇧S panel"))
+        let mut hint = HintLine::new();
+        hint.push("CHAT", "").push_line(&normal).push("⇧S", "panel");
+        Some(hint.render(0))
     }
 
     fn on_activate(&mut self, ctx: &mut PanelCtx<'_>) {

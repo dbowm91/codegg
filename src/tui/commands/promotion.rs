@@ -214,3 +214,131 @@ fn proposal_detail_lines(detail: &SkillProposalDetailDto) -> Vec<String> {
     );
     lines
 }
+
+pub(crate) fn dispatch_skill_promote(app: &mut App, argument: &str) {
+    if app.prompt_state.pending_send {
+        app.messages_state
+            .toasts
+            .warning("Still waiting for previous prompt to finish");
+        return;
+    }
+    let Some(habit_id) = crate::memory::habit::HabitId::parse(argument) else {
+        app.messages_state
+            .toasts
+            .warning("Usage: /skill-promote <ready habit id>");
+        return;
+    };
+    let Some(session_id) = app.session_state.session.as_ref().map(|s| s.id.clone()) else {
+        app.messages_state
+            .toasts
+            .warning("Start or select a session before promoting a habit");
+        return;
+    };
+    let Some(workspace_id) = app.active_workspace_id().map(str::to_owned) else {
+        app.messages_state
+            .toasts
+            .warning("Select a workspace before promoting a habit");
+        return;
+    };
+    // M007-I (work package B): the daemon owns the promotion
+    // store, so the frontend stages nothing itself. It asks the
+    // daemon, and the daemon records the request against the
+    // canonical workspace.
+    crate::tui::commands::promotion::start_skill_promotion(
+        app,
+        crate::protocol::skill::SkillPromotionRequestDto {
+            workspace_id,
+            session_id,
+            action: crate::protocol::skill::SkillPromotionActionDto::Begin,
+            habit_id: Some(habit_id.as_str().to_owned()),
+            proposal_id: None,
+            target_scope: None,
+        },
+    );
+}
+
+pub(crate) fn dispatch_skill_proposals(app: &mut App) {
+    let Some(session_id) = app.session_state.session.as_ref().map(|s| s.id.clone()) else {
+        app.messages_state
+            .toasts
+            .warning("Start or select a session before listing proposals");
+        return;
+    };
+    let Some(workspace_id) = app.active_workspace_id().map(str::to_owned) else {
+        app.messages_state
+            .toasts
+            .warning("Select a workspace before listing proposals");
+        return;
+    };
+    crate::tui::commands::promotion::start_skill_promotion(
+        app,
+        crate::protocol::skill::SkillPromotionRequestDto {
+            workspace_id,
+            session_id,
+            action: crate::protocol::skill::SkillPromotionActionDto::List,
+            habit_id: None,
+            proposal_id: None,
+            target_scope: None,
+        },
+    );
+}
+
+pub(crate) fn dispatch_skill_proposal(app: &mut App, argument: &str) {
+    let Some(session_id) = app.session_state.session.as_ref().map(|s| s.id.clone()) else {
+        app.messages_state
+            .toasts
+            .warning("Start or select a session before acting on a proposal");
+        return;
+    };
+    let Some(workspace_id) = app.active_workspace_id().map(str::to_owned) else {
+        app.messages_state
+            .toasts
+            .warning("Select a workspace before acting on a proposal");
+        return;
+    };
+    let mut action = crate::protocol::skill::SkillPromotionActionDto::Preview;
+    let mut target_scope = None;
+    let id_text = if let Some(publish_args) = argument.strip_prefix("publish") {
+        let parts = publish_args.split_whitespace().collect::<Vec<_>>();
+        if parts.len() != 2 {
+            app.messages_state
+                .toasts
+                .warning("Usage: /skill-proposal publish <id> [project|global]");
+            return;
+        }
+        target_scope = Some(match parts[1] {
+            "project" => crate::protocol::skill::SkillTargetScopeDto::Project,
+            "global" => crate::protocol::skill::SkillTargetScopeDto::Global,
+            _ => {
+                app.messages_state
+                    .toasts
+                    .warning("Publication scope must be project or global");
+                return;
+            }
+        });
+        action = crate::protocol::skill::SkillPromotionActionDto::Publish;
+        parts[0].to_string()
+    } else if let Some(reject_id) = argument.strip_prefix("reject ") {
+        action = crate::protocol::skill::SkillPromotionActionDto::Reject;
+        reject_id.trim().to_string()
+    } else {
+        argument.trim().to_string()
+    };
+    if crate::skills::promotion::SkillProposalId::parse(&id_text).is_none() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /skill-proposal <id> or /skill-proposal reject <id>");
+        return;
+    }
+    crate::tui::commands::promotion::start_skill_promotion(
+        app,
+        crate::protocol::skill::SkillPromotionRequestDto {
+            workspace_id,
+            session_id,
+            action,
+            habit_id: None,
+            proposal_id: Some(id_text),
+            target_scope,
+        },
+    );
+}

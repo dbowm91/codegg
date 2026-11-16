@@ -14,6 +14,7 @@ use crate::protocol::core::{CoreRequest, CoreResponse, PresenceSnapshotDto};
 use crate::tui::app::App;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
+use crate::tui::commands::close_command_mode;
 use crate::tui::task_lifecycle::TuiTaskKind;
 
 /// Why the presence snapshot is being re-read: the distinction is the
@@ -344,4 +345,19 @@ pub(crate) fn refresh_collaborators(app: &mut App) {
         crate::tui::components::dialogs::info::InfoType::Collaborators,
         lines,
     );
+}
+
+pub(crate) fn dispatch_collaborators(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    // Subcommand: `/collaborators refresh` forces a re-fetch.
+    // Bare `/collaborators` shows the bounded panel, fetching
+    // on demand when missing or stale. Focus/key follows the
+    // standard info-dialog convention (j/k scroll, Esc close)
+    // and never mutates sessions.
+    let arg = argument;
+    if arg.eq_ignore_ascii_case("refresh") {
+        crate::tui::commands::presence::refresh_collaborators(app);
+    } else {
+        crate::tui::commands::presence::show_collaborators(app);
+    }
 }

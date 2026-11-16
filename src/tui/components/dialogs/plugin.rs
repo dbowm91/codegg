@@ -1,25 +1,15 @@
-use ratatui::layout::{Constraint, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 use std::sync::Arc;
 
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
+use crate::tui::components::hint_line::HintLine;
+use crate::tui::components::section::{Section, SectionFrame};
 use crate::tui::theme::Theme;
-
-/// Who owns this render's chrome.
-///
-/// The two paths differ only in that. [`Chrome::Owned`] is the modal box, which
-/// draws its own title, content frame and footer; [`Chrome::Hosted`] is a
-/// column in a side panel, where the host has already painted a border, a
-/// title and the `●` focus marker into the same rect.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Chrome {
-    Owned,
-    Hosted,
-}
 
 /// The verbs this box dispatches, for the panel host to reuse verbatim.
 ///
@@ -30,7 +20,11 @@ enum Chrome {
 /// `" j/k scroll | Esc close "` footer advertised a pair a focused column
 /// cannot deliver. The verbs moved to `keymap_hint`; see
 /// [`PluginDialog::render_body`] for why the scroll indicator did not.
-const HINT: &str = "j/k scroll";
+fn hint() -> HintLine {
+    let mut hint = HintLine::new();
+    hint.push("j/k", "scroll");
+    hint
+}
 
 #[derive(Clone)]
 pub struct PluginDialog {
@@ -65,39 +59,31 @@ impl PluginDialog {
 
     /// One body routine for both render paths.
     ///
-    /// The modal footer carried two different things and they do not belong
-    /// together:
-    ///
-    /// - `j/k scroll | Esc close` is a keymap. It moved to
-    ///   [`Component::keymap_hint`], because in a column the host's hint line
-    ///   is where a docked box says what it does, and because `Esc` cannot
-    ///   reach this widget from a panel at all.
-    /// - `"12-30 of 30"` is a scroll indicator: it is content, not a verb, and
-    ///   it is the only end-of-content signal on screen. `j`/`k` here are
-    ///   deliberately unbounded against the rect — `handle_key` caps at
-    ///   `lines.len() - 1`, which has nothing to do with how many rows the
-    ///   column has — so without it a reader scrolled into the middle cannot
-    ///   tell there is more below. It is therefore drawn on a reserved bottom
-    ///   row in the hosted path too, on its own.
-    fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: Chrome) {
+    /// The footer carries two kinds of item: `Esc`/`j/k` are verbs, and
+    /// `"12-30 of 30"` is a value — the only end-of-content signal on screen.
+    /// `j`/`k` are deliberately unbounded against the rect (`handle_key` caps
+    /// at `lines.len() - 1`, which has nothing to do with how many rows the
+    /// column has), so the value is drawn on a reserved bottom row in the
+    /// hosted path too, on its own.
+    fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: SectionFrame) {
         let (content_area, status_area) = match chrome {
-            Chrome::Owned => {
+            SectionFrame::Owned => {
                 let chunks = Layout::vertical([
                     Constraint::Length(3),
                     Constraint::Min(1),
-                    Constraint::Length(1),
+                    Constraint::Length(Section::owned_height(1)),
                 ])
                 .split(area);
 
-                let title_block = Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!(" {} ", self.title))
-                    .border_style(Style::default().fg(theme.border));
-                frame.render_widget(title_block, chunks[0]);
-
-                (chunks[1], Some(chunks[2]))
+                // The caller supplies this title (a plugin's display name), so
+                // it is data and keeps its own casing.
+                Section::verbatim(&self.title, theme)
+                    .focused(true)
+                    .draw(chunks[0], frame.buffer_mut());
+                let content = Section::plain(theme).draw(chunks[1], frame.buffer_mut());
+                (content, Some(chunks[2]))
             }
-            Chrome::Hosted => {
+            SectionFrame::Hosted => {
                 // One row is held back for the scroll indicator, and only when
                 // there is room for content as well. Reserving it
                 // unconditionally would make the viewport depend on its own
@@ -119,12 +105,9 @@ impl PluginDialog {
             }
         };
 
-        // The content paragraph has its own two-row border when this widget
-        // owns the frame, so the viewport is the content chunk less those rows.
-        let visible_lines = match chrome {
-            Chrome::Owned => (content_area.height as usize).saturating_sub(2),
-            Chrome::Hosted => content_area.height as usize,
-        };
+        // The content area is already the rect inside the section's edge on
+        // both paths, so the viewport is the same measurement for each.
+        let visible_lines = content_area.height as usize;
         let total_lines = self.lines.len();
         let max_scroll = total_lines.saturating_sub(visible_lines);
 
@@ -142,14 +125,6 @@ impl PluginDialog {
             .collect();
 
         let content_para = Paragraph::new(display_lines).wrap(Wrap { trim: false });
-        let content_para = match chrome {
-            Chrome::Owned => content_para.block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.border)),
-            ),
-            Chrome::Hosted => content_para,
-        };
 
         let scroll_indicator = if total_lines > visible_lines {
             format!(" {}-{} of {} ", start_idx + 1, end_idx, total_lines)
@@ -158,30 +133,27 @@ impl PluginDialog {
         };
 
         match chrome {
-            Chrome::Owned => {
-                let footer_text = if scroll_indicator.is_empty() {
-                    " j/k scroll | Esc close ".to_string()
-                } else {
-                    format!("{} | j/k scroll | Esc close ", scroll_indicator.trim())
-                };
-
-                let footer_block = Paragraph::new(Line::from(Span::styled(
-                    footer_text,
-                    Style::default().fg(theme.secondary),
-                )))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(theme.border)),
-                );
-
+            SectionFrame::Owned => {
+                let mut hint = HintLine::new();
+                hint.push_required("Esc", "close").push("j/k", "scroll");
+                if !scroll_indicator.is_empty() {
+                    hint.push(scroll_indicator.trim(), "");
+                }
                 frame.render_widget(content_para, content_area);
-                frame.render_widget(
-                    footer_block,
+                let footer_inner = Section::plain(theme).draw(
                     status_area.expect("the modal layout always has a footer"),
+                    frame.buffer_mut(),
+                );
+                let footer_text = hint.render(usize::from(footer_inner.width));
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        footer_text,
+                        Style::default().fg(theme.secondary),
+                    ))),
+                    footer_inner,
                 );
             }
-            Chrome::Hosted => {
+            SectionFrame::Hosted => {
                 frame.render_widget(content_para, content_area);
                 // The indicator outlives the footer it used to be half-buried
                 // in, because it is content rather than a verb — and it is
@@ -235,13 +207,13 @@ impl Component for PluginDialog {
 
     /// The verbs this box owns, spelled the way this box spells them.
     ///
-    /// Deliberately shorter than the footer it replaces: see [`HINT`].
-    fn keymap_hint(&self) -> Option<String> {
-        Some(HINT.to_string())
+    /// Deliberately shorter than the footer it replaces: see [`hint`].
+    fn keymap_hint_line(&self) -> Option<HintLine> {
+        Some(hint())
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        self.render_body(frame, area, theme, Chrome::Owned);
+        self.render_body(frame, area, theme, SectionFrame::Owned);
     }
 
     /// The content alone, inside the frame the host already drew.
@@ -253,11 +225,13 @@ impl Component for PluginDialog {
     /// second implementation: see [`PluginDialog::render_body`] for why one
     /// scroll window cannot be computed twice.
     fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        let inner = area.inner(Margin::new(1, 1));
+        let inner = Section::plain(theme)
+            .frame(SectionFrame::Hosted)
+            .draw(area, frame.buffer_mut());
         if inner.height == 0 || inner.width == 0 {
             return;
         }
-        self.render_body(frame, inner, theme, Chrome::Hosted);
+        self.render_body(frame, inner, theme, SectionFrame::Hosted);
     }
 }
 
@@ -372,5 +346,71 @@ mod tests {
     fn test_dialog_type() {
         let dialog = PluginDialog::new("id".into(), "Title".into(), vec![]);
         assert_eq!(dialog.dialog_type(), DialogType::Plugin);
+    }
+
+    fn rendered_rows(dialog: &PluginDialog, width: u16, height: u16) -> Vec<String> {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let theme = Arc::new(Theme::dark());
+        let mut dialog = dialog.clone();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        terminal
+            .draw(|frame| dialog.render(frame, frame.area(), &theme))
+            .expect("draw");
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol().to_string())
+            .collect::<Vec<_>>()
+            .chunks(width as usize)
+            .map(|row| row.concat())
+            .collect()
+    }
+
+    #[test]
+    fn the_footer_row_is_painted_and_the_body_lost_two_rows() {
+        let lines: Vec<String> = (1..=60).map(|n| format!("line {n:02}")).collect();
+        let dialog = PluginDialog::new("id".into(), " Plugin ".into(), lines);
+
+        for (width, height, content_rows) in [(100u16, 30u16, 22usize), (60, 15, 7)] {
+            let rows = rendered_rows(&dialog, width, height);
+            let footer = rows
+                .iter()
+                .find(|row| row.contains("Esc close"))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "the footer is not painted at {width}x{height}:\n{}",
+                        rows.join("\n")
+                    )
+                });
+            assert!(
+                footer.contains("Esc close · j/k scroll"),
+                "the footer row must be whole at {width}x{height}, got {footer:?}"
+            );
+            assert_eq!(
+                rows.iter().filter(|row| row.contains("line ")).count(),
+                content_rows,
+                "the content box must have lost exactly two rows at {width}x{height}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_minimum_size_keeps_the_footer() {
+        let lines: Vec<String> = (1..=60).map(|n| format!("line {n:02}")).collect();
+        let dialog = PluginDialog::new("id".into(), " Plugin ".into(), lines);
+        let rows = rendered_rows(&dialog, 20, 6);
+        let painted = rows.join("\n");
+        assert!(
+            painted.contains("Esc close"),
+            "the footer must survive the minimum size:\n{painted}"
+        );
+        assert!(
+            painted.contains("Plugin"),
+            "the title must survive the minimum size:\n{painted}"
+        );
     }
 }

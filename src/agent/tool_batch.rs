@@ -597,7 +597,7 @@ impl AgentLoop {
             parent_attempt_id: None,
             provider_name: Some(self.services.provider.name().to_string()),
             backend_policy: Some("native_only".into()),
-            cancellation: None,
+            cancellation: Some(self.tool_cancellation.clone()),
             deadline: None,
             // M014-A2: Populate the real accepted decision fields.
             // These are the actual permission/path-policy decision

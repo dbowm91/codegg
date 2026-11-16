@@ -165,7 +165,7 @@ impl SubagentTabLiveness {
 /// makes "a closed tab cannot resurrect scroll" true by construction: closing
 /// removes the whole record, so reopening the same subject starts at the top
 /// instead of inheriting where the user had scrolled in a previous visit.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct SubagentTabState {
     /// Stable identity for this tab.
     pub tab_id: SubagentTabId,
@@ -211,6 +211,30 @@ pub struct SubagentTabState {
     /// the cache was dropped). `Some` names the reason the tab cannot
     /// follow at all.
     pub follow_unavailable: Option<String>,
+}
+
+impl Clone for SubagentTabState {
+    /// Copy the tab, and count the copy.
+    ///
+    /// `Clone` is written out rather than derived because a clone of this
+    /// struct is exactly the operation M001 removed from the frame: it can
+    /// copy two 512-entry transcript windows for a view that then draws
+    /// forty rows. The counter lives here so the operation cannot come back
+    /// without `render_cost::subagent_tab_clones` moving — a counter with
+    /// only a test-side producer would be a claim, not a hook.
+    fn clone(&self) -> Self {
+        crate::tui::render_cost::count_subagent_tab_clone();
+        Self {
+            tab_id: self.tab_id.clone(),
+            row: self.row.clone(),
+            liveness: self.liveness,
+            scroll: self.scroll,
+            follow_bottom: self.follow_bottom,
+            scroll_max: self.scroll_max,
+            transcript: self.transcript.clone(),
+            follow_unavailable: self.follow_unavailable.clone(),
+        }
+    }
 }
 
 impl SubagentTabState {

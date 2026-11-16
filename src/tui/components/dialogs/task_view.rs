@@ -12,10 +12,10 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
-    layout::{Margin, Rect},
+    layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::Paragraph,
     Frame,
 };
 use std::sync::Arc;
@@ -23,19 +23,9 @@ use std::sync::Arc;
 use crate::tui::app::state::{group_task_rows, TaskViewSection, TaskViewState, MAX_SECTION_ROWS};
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
+use crate::tui::components::hint_line::HintLine;
+use crate::tui::components::section::{Section, SectionFrame};
 use crate::tui::theme::Theme;
-
-/// Who owns this render's chrome.
-///
-/// The two paths differ only in that. [`Chrome::Owned`] is the modal box, which
-/// draws its own border, title and keymap footer; [`Chrome::Hosted`] is a
-/// column in a side panel, where the host has already painted all three into
-/// the same rect.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Chrome {
-    Owned,
-    Hosted,
-}
 
 /// The verbs this box implements, for the panel host to reuse verbatim.
 ///
@@ -50,7 +40,23 @@ enum Chrome {
 /// modal box and "leave the widget's mode" in a column, and a hosted hint
 /// cannot promise one of the two. `Home`/`End`/ `PageUp`/`PageDown` are *not*
 /// panel directions, which is why this hint can still promise them.
-const HINT: &str = "j/k move · ^d/^u page · Home/End end · g/G end · enter open · d detail · r refresh · x cancel · u resume · t trigger · T rotate · X revoke · e trigger refresh";
+fn hint() -> HintLine {
+    let mut hint = HintLine::new();
+    hint.push("j/k", "move")
+        .push("^d/^u", "page")
+        .push("Home/End", "end")
+        .push("g/G", "end")
+        .push("enter", "open")
+        .push("d", "detail")
+        .push("r", "refresh")
+        .push("x", "cancel")
+        .push("u", "resume")
+        .push("t", "trigger")
+        .push("T", "rotate")
+        .push("X", "revoke")
+        .push("e", "trigger refresh");
+    hint
+}
 
 /// One rendered Task-view row (bounded, secret-free).
 #[derive(Debug, Clone)]
@@ -243,8 +249,8 @@ impl Component for TaskViewDialog {
     }
 
     /// The verbs this box owns, spelled the way this box spells them.
-    fn keymap_hint(&self) -> Option<String> {
-        Some(HINT.to_string())
+    fn keymap_hint_line(&self) -> Option<HintLine> {
+        Some(hint())
     }
 
     /// The row list alone: no border, no title, no footer.
@@ -258,7 +264,9 @@ impl Component for TaskViewDialog {
     /// (the host's), and it wrapped onto extra rows in a 40-column body. `area`
     /// is the host's full rect, so inset by its border first.
     fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        let inner = area.inner(Margin::new(1, 1));
+        let inner = Section::plain(theme)
+            .frame(SectionFrame::Hosted)
+            .draw(area, frame.buffer_mut());
         if inner.height == 0 || inner.width == 0 {
             return;
         }
@@ -268,7 +276,7 @@ impl Component for TaskViewDialog {
             theme,
             &self.project_id,
             &self.snapshot,
-            Chrome::Hosted,
+            SectionFrame::Hosted,
         );
     }
 
@@ -279,7 +287,7 @@ impl Component for TaskViewDialog {
             theme,
             &self.project_id,
             &self.snapshot,
-            Chrome::Owned,
+            SectionFrame::Owned,
         );
     }
 
@@ -294,7 +302,7 @@ fn render_view(
     theme: &Arc<Theme>,
     project_id: &str,
     snapshot: &TaskViewSnapshot,
-    chrome: Chrome,
+    chrome: SectionFrame,
 ) {
     if area.height < 8 || area.width < 30 {
         return;
@@ -304,16 +312,10 @@ fn render_view(
     // and ` Project Tasks ` title in this same rect, so `block.inner` here would
     // inset a second time and the `Block` would repaint over the focus marker.
     let inner = match chrome {
-        Chrome::Owned => {
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.border))
-                .title(" Project Tasks ".to_string());
-            let inner = block.inner(area);
-            frame.render_widget(block, area);
-            inner
-        }
-        Chrome::Hosted => area,
+        SectionFrame::Owned => Section::new("Project Tasks", theme)
+            .focused(true)
+            .draw(area, frame.buffer_mut()),
+        SectionFrame::Hosted => area,
     };
     if inner.height == 0 || inner.width < 10 {
         return;
@@ -400,7 +402,7 @@ fn render_view(
     // The footer is the modal's only: a column is told the verbs through
     // `keymap_hint`, and two of the five keys it used to spell (`J/K`, `Esc`)
     // are answered by the panel host before this widget is ever consulted.
-    if chrome == Chrome::Owned {
+    if chrome == SectionFrame::Owned {
         lines.push(Line::from(Span::styled(
             "j/k move · J/K reorder · Enter open · d detail · r refresh · x cancel · u resume · t trigger setup · T rotate · X revoke · e trigger refresh · Esc close",
             Style::default().fg(theme.muted),

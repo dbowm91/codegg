@@ -1,13 +1,13 @@
 # Security Semantics
 
-Codegg includes a deterministic security signal pipeline that classifies tool calls, inspects file content, and optionally influences permission decisions.
+CodeGG has deterministic tools for security analysis and a policy pipeline that can classify tool calls and request permission review.
 
 ## Modes
 
 | Mode | Description |
 |------|-------------|
-| `off` | No security checks. All tools proceed normally. |
-| `ambient` | Classifies tool calls in real-time. High-risk commands escalate to ask. Critical commands denied. Default mode. |
+| `off` | Disables the security signal pipeline. Normal permission and sandbox controls still apply. |
+| `ambient` | Classifies tool calls in real time. High-risk commands ask for review by default; critical commands are denied only when explicitly configured. Default mode. |
 | `strict` | More aggressive. Medium-risk commands also escalate to ask. |
 | `review` | Produces findings for reviewer consumption. Critical and High risk escalate to `ask`, never `deny` (an explicit `denied_commands` match still denies). |
 
@@ -32,7 +32,7 @@ policy, in this order:
 4. Network exfiltration or secret exposure with the matching `ask_on_*` gate: escalated from Allow to Ask
 5. **High** classification with `ask_on_high_risk_command = true`: escalated from Allow to Ask
 6. **Medium** under `strict` only: escalated from Allow to Ask
-7. Otherwise: `Observe` — existing permission behavior is unchanged
+7. Otherwise: `Observe`; existing permission behavior is unchanged
 
 Built-in command and severity classifiers are advisory. The critical gate is
 omitted by default; setting it to `true` opts into a best-effort invocation text
@@ -55,74 +55,21 @@ interpreter flags, shell wrappers, and background syntax alone do not request
 review. Explicit `bash_deny_patterns` and `denied_commands` remain
 best-effort invocation filters.
 
-### Why the escalation tier is not a blocklist
+### Limits of command-text rules
 
-A regex blocklist is a boundary around an *invocation*, not around a *program*.
-`Bash(curl *)` stops `curl https://x` but not `/usr/bin/curl https://x` or
-`sh -c 'curl https://x'`; a two-step download-then-run passes regardless. The
-practical effect of hard-blocking is not prevention — it is teaching the caller
-to reword, while the underlying action proceeds unchanged.
+Built-in signals and patterns inspect invocation text, not the program's full
+effects. Wrappers, scripts, variable expansion, or alternate spellings may hide
+the same action. These rules can request review, but they do not guarantee
+prevention or grant authority. Under `full_host`, or `yolo` approval mode, a
+command not recognized by the text rules may still run. Use the permission
+policy and an available sandbox for containment. Backend guarantees vary by
+platform and launch path; required containment fails closed when setup is
+unavailable.
 
-For that reason CodeGG follows the same direction the major agents took:
-
-- **Claude Code** documents the limitation itself ("not a security boundary
-  around the program") and recommends broad-allow plus a narrow `PreToolUse`
-  hook.
-- **Gemini CLI** deprecated its blocklist outright (`tools.exclude`) in favour
-  of an allowlisting policy engine, noting that "clever users may find ways to
-  bypass simple string-based blocks."
-- **Codex** uses a sandbox plus `prefix_rule` allow/prompt/forbid decisions.
-- **OpenCode** ships allow/ask/deny rules that default to allow.
-
-Containment here is the `SandboxProfile` (`read_only` / `workspace_write` /
-`full_host`) plus Landlock, which a regex cannot emulate.
-
-### The destructive-command risk signal (operator note)
-
-The built-in destructive-command classification is **advisory**. It tells the
-truth about risk so the approval path can escalate a command for review; it
-does not guarantee that the effect cannot happen, it does not grant
-authority, and it never rejects an invocation on its own.
-
-What changed:
-
-- The signal now recognises the **effective** filesystem-root spellings, not
-  only the bare form. `rm -rf --no-preserve-root /` and
-  `rm -rf / --no-preserve-root` are the forms GNU coreutils actually executes
-  against the root; they previously read as ordinary commands and reached the
-  agent without a review prompt. `rm -rf /`, `rm -fr /`, `rm -rf /*`,
-  `rm -rf ~` and `rm -rf $HOME` are recognised as before.
-- A scoped removal is **not** a root delete. `rm -rf /tmp/build`,
-  `rm -rf ./build` and `rm -rf /home/user/project/cache` are classified as
-  ordinary scoped removals.
-- A target the text cannot resolve is reported as *not recognised*. The
-  classifier does not pretend to know what `rm -rf "$TARGET"` targets, and it
-  does not report it as proven-safe either.
-- **No configured rule changed.** Your `permission.bash_deny_patterns`,
-  `permission.bash_allow_patterns`, `permission.bash_ask_patterns`,
-  `security.denied_commands` and any saved approval are untouched, and the
-  built-in default blocked-command set remains empty.
-
-One behaviour change is operator-visible: in the human `!cmd` shell, a
-**scoped absolute path is no longer hard-blocked** as a root delete. A
-removal of the filesystem root itself is still refused there, and the refusal
-says plainly that it is a best-effort command-text rule.
-
-**Command syntax is not a security boundary.** The signal reads the text of
-one command; it cannot see a script, a wrapper, another tool, a variable that
-expands to the root, or a different spelling. Under `full_host` — and under
-`yolo`, which auto-approves escalations — nothing here stops a root removal
-that the text does not name. Containment comes from the sandbox profile and
-the workspace scope, not from these patterns.
-
-On Linux, host feature discovery for user namespaces, other namespace types,
-seccomp, proc, Bubblewrap, Landlock, cgroup v2, and active LSMs is diagnostic.
-It does not mean those dimensions were applied to a child. Network remains
-unrestricted by default. The explicit per-principal `/network offline` policy
-is being qualified through managed-process, scheduler-owned Test/Python, PTY,
-and LSP owners; it requires a constrained profile and refuses on unsupported
-host setup. Do not treat the stored preference as proof of enforcement on a
-host that has not passed M005 qualification.
+Network is unrestricted by default. Offline-network intent is carried through
+selected managed and scheduler-owned paths, but coverage remains under
+qualification. Host feature probes are diagnostic, not proof that a child is
+isolated. Do not treat the setting as a general network boundary.
 
 ### Tuning
 
@@ -163,7 +110,7 @@ also accepts an optional `path`, used only to label findings. `run_profile`
 uses the built-in default `ProfileConfig`; it does not read the user's
 `security` block.
 
-Policy: test strings without execution context are not findings in `inspect_text` (which covers secrets/unsafe-deps/CORS/supply-chain, not shell); shell enforcement happens at `classify_command` / `command_preflight` (advisory) / permission policy (deny) — `classify_command('rm -rf /')` returns critical.
+Policy: test strings without execution context are not findings in `inspect_text` (which covers secrets/unsafe-deps/CORS/supply-chain, not shell). Shell analysis uses `classify_command` and advisory `command_preflight`; permission policy may deny. For example, `classify_command('rm -rf /')` returns critical.
 
 ## Configuration
 
@@ -196,7 +143,7 @@ Policy: test strings without execution context are not findings in `inspect_text
 ```
 
 Every field above carries `#[serde(default)]`, so an existing config that
-omits any of them keeps the shown value — with one exception:
+omits any of them keeps the shown value, with one exception:
 `deny_critical_commands` is tri-state (`Option<bool>`, default unset), and an
 omitted value stays advisory rather than denying. Set it to `true` only as an
 explicit opt-in to deny critical-risk commands. `mode` is one of `off`,
@@ -223,34 +170,14 @@ The `security-review` agent can be invoked via `/agent security-review` or `@sec
 
 ## Source verification
 
-Checked 2026-10-23 against the source tree.
+The modes and security-gate defaults are defined in
+`crates/codegg-config/src/schema.rs`. Permission escalation and the critical
+command gate are implemented in `src/permission/` and `src/security/policy.rs`.
+The security tool actions are in `src/tool/security.rs`; sandbox profiles and
+backend selection are in `crates/codegg-core/src/approval.rs` and
+`src/security/sandbox/`. The `security-review` agent's permissions are defined
+in `assets/agents/security-review.toml`.
 
-- The four modes `off`, `ambient`, `strict`, `review` and the `ambient`
-  default: `crates/codegg-config/src/schema.rs` (`SecurityMode`).
-- The `security` config block and every default shown in the example
-  (`enabled`, `mode`, `prompt_hints`, `max_findings_in_prompt`, `gates`,
-  `profiles`, `sensitive_paths`, `allowed_network_domains`,
-  `denied_commands`, `auto_invoke_review_agent`), plus the gate defaults
-  (`ask_on_high_risk_command` true, `deny_critical_commands` unset,
-  `ask_on_network_exfiltration` true, `ask_on_secret_exposure` true,
-  `ask_on_dependency_risk` false, `enforce_in_exec_mode` false) and the
-  profile defaults: `crates/codegg-config/src/schema.rs`
-  (`SecurityConfig`, `SecurityGateConfig`, `SecurityProfileConfig`).
-- The `security` tool's four actions (`classify_command`, `inspect_text`,
-  `inspect_file`, `run_profile`): `src/tool/security.rs`.
-- The `SandboxProfile` names: `codegg_core::approval::SandboxProfile`
-  (`read_only`, `workspace_write`, `full_host`; the parser also accepts the
-  hyphenated spellings).
-- `permission.bash_allow_patterns`, `permission.bash_ask_patterns`,
-  `permission.bash_deny_patterns`: `crates/codegg-config/src/schema.rs`
-  (`PermissionConfig`).
-- The escalation order in "Permission Escalation":
-  `src/permission/`, `src/security/`.
-- The `security-review` agent's role, mode, and read-only permission table:
-  `assets/agents/security-review.toml`.
-
-- Corrected 2026-10-27: `deny_critical_commands` is `Option<bool>` defaulting
-  to unset (advisory), not `true`
-  (`crates/codegg-config/src/schema.rs:3660,3671`,
-  `src/security/policy.rs:84-101`); `SensitivePathConfig` also carries an
-  optional `review_level` (`schema.rs:3700-3704`).
+Correction: `deny_critical_commands` defaults to unset, so critical-command
+denial is opt-in and best-effort (`crates/codegg-config/src/schema.rs`,
+`src/security/policy.rs`).

@@ -864,30 +864,142 @@ impl AgentLoop {
 
     pub(super) async fn compact_if_needed(
         &mut self,
-        messages: &mut Vec<Message>,
+        request: &mut ChatRequest,
         model_profile: &crate::model_profile::types::ResolvedModelProfile,
     ) {
+        self.compact_if_needed_with_force(request, model_profile, false)
+            .await;
+    }
+
+    /// A provider-reported context overflow is authoritative evidence that
+    /// the configured estimate/limit did not fit the actual route. Narrow
+    /// the turn's context limit to the provider's reported maximum, then run
+    /// the normal durable compaction path unconditionally before one replay.
+    pub(super) async fn compact_after_provider_context_overflow(
+        &mut self,
+        request: &mut ChatRequest,
+        model_profile: &crate::model_profile::types::ResolvedModelProfile,
+        provider_context_limit: usize,
+    ) -> bool {
+        // Provider tokenization can exceed the local estimate. Keep headroom
+        // so the corrective request does not sit at the hard ceiling.
+        const PROVIDER_CONTEXT_HEADROOM_PERCENT: usize = 15;
+        let compaction_target =
+            provider_context_limit.saturating_mul(100 - PROVIDER_CONTEXT_HEADROOM_PERCENT) / 100;
+        if let Some(policy) = self.services.execution_policy.as_mut() {
+            // The provider's explicit rejection carries better context-size
+            // evidence than a conservative family profile (for example, an
+            // OpenCode route for an open-weight model). Keep the hard maximum
+            // for diagnostics, but use a headroom-adjusted target for this
+            // turn and future preflights.
+            policy.context_window = compaction_target;
+            self.services.context_tracker.set_limit(compaction_target);
+        } else {
+            return false;
+        }
+        tracing::warn!(
+            session_id = %self.session_id,
+            provider_context_limit,
+            compaction_target,
+            headroom_percent = PROVIDER_CONTEXT_HEADROOM_PERCENT,
+            "provider rejected context size; compacting to the observed provider limit"
+        );
+        self.compact_if_needed_with_force(request, model_profile, true)
+            .await;
+        let Some(policy) = self.services.execution_policy.as_ref() else {
+            return false;
+        };
+        let tool_definition_tokens = request
+            .tools
+            .as_ref()
+            .and_then(|tools| serde_json::to_string(tools).ok())
+            .map(|serialized| {
+                crate::context::compaction::ContextTracker::estimate_text_tokens(
+                    &serialized,
+                    Some(model_profile.model.as_str()),
+                )
+            })
+            .unwrap_or(0);
+        let estimated_tokens = crate::context::compaction::context_tokens(
+            &request.messages,
+            Some(model_profile.model.as_str()),
+        )
+        .saturating_add(tool_definition_tokens);
+        let available = compaction_target.saturating_sub(policy.reserved_output_tokens);
+        let fits = estimated_tokens <= available;
+        tracing::info!(
+            session_id = %self.session_id,
+            provider_context_limit,
+            compaction_target,
+            estimated_tokens,
+            available,
+            fits,
+            "provider context recovery compaction result"
+        );
+        fits
+    }
+
+    async fn compact_if_needed_with_force(
+        &mut self,
+        request: &mut ChatRequest,
+        model_profile: &crate::model_profile::types::ResolvedModelProfile,
+        force: bool,
+    ) {
+        let tool_definition_tokens = request
+            .tools
+            .as_ref()
+            .and_then(|tools| serde_json::to_string(tools).ok())
+            .map(|serialized| {
+                crate::context::compaction::ContextTracker::estimate_text_tokens(
+                    &serialized,
+                    Some(model_profile.model.as_str()),
+                )
+            })
+            .unwrap_or(0);
+        let messages = &mut request.messages;
         let Some(policy) = self.services.execution_policy.as_ref() else {
             return;
         };
-        let context_limit = policy.context_window;
-        let threshold = policy.compaction_threshold;
+        // Tool definitions are provider-facing input too. Reserve their
+        // estimated size before deciding whether the message history fits.
+        let context_limit = policy.context_window.saturating_sub(tool_definition_tokens);
+        // The forced path is only entered after the provider has rejected
+        // the unchanged context. A zero threshold makes the canonical
+        // compactor reduce the history even when the local tokenizer still
+        // estimates it below the reported provider maximum.
+        let threshold = if force {
+            0.0
+        } else {
+            policy.compaction_threshold
+        };
         let reserved_output_tokens = policy.reserved_output_tokens;
-        let max_tool_result_tokens = policy.max_tool_result_tokens;
+        let max_tool_result_tokens = if force {
+            // Keep tool-call history, but shorten recoverable results before
+            // framing; full output remains available through artifact reads.
+            policy.max_tool_result_tokens.min(200)
+        } else {
+            policy.max_tool_result_tokens
+        };
         let auto = self
             .services
             .config
             .compaction
             .as_ref()
             .and_then(|config| config.auto)
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || force;
         let prune = self
             .services
             .config
             .compaction
             .as_ref()
             .and_then(|config| config.prune)
-            .unwrap_or(false);
+            // Tool results are the most common unbounded source in a long
+            // run. Keep the recoverable artifact hint and trim oversized
+            // results by default once context compaction is active; users
+            // can still explicitly opt out with compaction.prune=false.
+            .unwrap_or(true)
+            || force;
 
         if self.cancel_rx.as_ref().is_some_and(|rx| *rx.borrow()) {
             tracing::info!("Skipping context compaction after cancellation");
@@ -901,15 +1013,28 @@ impl AgentLoop {
             .compaction_requested
             .as_ref()
             .is_some_and(|requested| requested.swap(false, std::sync::atomic::Ordering::AcqRel));
-        if !requested
-            && !needs_context_compaction(
-                messages,
-                context_limit,
-                threshold,
-                reserved_output_tokens,
-                Some(model_profile.model.as_str()),
-            )
-        {
+        let should_compact = force || requested;
+        let estimated_message_tokens = context_tokens(messages, Some(model_profile.model.as_str()));
+        let compaction_needed = needs_context_compaction(
+            messages,
+            context_limit,
+            threshold,
+            reserved_output_tokens,
+            Some(model_profile.model.as_str()),
+        );
+        tracing::debug!(
+            session_id = %self.session_id,
+            model = %model_profile.model,
+            estimated_message_tokens,
+            tool_definition_tokens,
+            effective_context_limit = context_limit,
+            reserved_output_tokens,
+            threshold,
+            force,
+            compaction_needed,
+            "provider context preflight"
+        );
+        if !should_compact && !compaction_needed {
             return;
         }
 
@@ -920,7 +1045,8 @@ impl AgentLoop {
                     input: serde_json::json!({
                         "messages": messages,
                         "context_limit": context_limit,
-                        "current_tokens": context_tokens(messages, Some(model_profile.model.as_str())),
+                        "current_tokens": context_tokens(messages, Some(model_profile.model.as_str()))
+                            .saturating_add(tool_definition_tokens),
                         "reserved_output_tokens": reserved_output_tokens,
                         "strategy": if auto { "auto_compact" } else { "drop_middle" },
                     }),
@@ -940,14 +1066,9 @@ impl AgentLoop {
             }
         }
 
-        // M004 transactional rollover, step A: capture authoritative source
-        // revisions/state before running the canonical engine. The baseline
-        // (M002) is assembled from host-owned Goal/todo/ledger/origin/plan
-        // plus the latest installed checkpoint for lineage; storage lookups
-        // stay in this adapter while the pure assembler takes loaded values.
-        // A checkpoint identity is allocated before evidence writes so
-        // `ctx://evidence/...` handles can be verified before the payload
-        // digest is final; the row stays `Prepared` until install commits.
+        // M004 step A captures host-owned state and the installed checkpoint
+        // before compaction; the prepared row remains non-authoritative until
+        // its evidence and payload digest are verified and installation commits.
         let previous_installed = self.load_usable_installed_checkpoint().await;
         let previous_installed_id = previous_installed.as_ref().map(|c| c.id.clone());
         let baseline_bundle = {
@@ -1057,10 +1178,8 @@ impl AgentLoop {
             captured_revisions,
             _work_plan_guard,
         ) = baseline_bundle;
-        // Allocate the candidate checkpoint identity before evidence writes
-        // (M004 §6.2 sequencing variant). The row remains `Prepared` until
-        // the atomic install commits; an abandoned candidate stays
-        // `Prepared`/`Aborted` and is never resume authority.
+        // Allocate identity before evidence writes; only committed installs
+        // can become resume authority.
         let candidate_checkpoint_id = uuid::Uuid::new_v4().to_string();
         let original_len = messages.len();
         let original_user = self.current_user_prompt.clone();
@@ -1132,10 +1251,8 @@ impl AgentLoop {
             CompactionStatus::Compacted => {}
         }
 
-        // M004 transactional rollover, steps C-I. `result.messages` is the
-        // replacement candidate; `messages` (borrowed) is still the active
-        // history and must not be mutated before durable verification.
-        // Decompose the owned result now; `result` is consumed here.
+        // M004 steps C-I: verify the owned replacement before mutating the
+        // active history.
         let crate::context::compaction::ContextCompactionResult {
             tokens_before,
             tokens_after,
@@ -1310,11 +1427,8 @@ impl AgentLoop {
                 .await;
             return;
         }
-        // Step G: revalidate authoritative source revisions needed for
-        // install. Compare the captured revisions against current state for
-        // goal/plan/todo/parent fields that would make the checkpoint
-        // misleading. One bounded rebuild is allowed; otherwise keep history
-        // with a typed stale/retry diagnostic (no livelock under steering).
+        // Step G revalidates goal/plan/todo/parent revisions. Rebuild once on
+        // staleness; otherwise retain history with a typed diagnostic.
         let current_plan_digest = {
             // Re-read the plan digest cheaply from the baseline snapshot's
             // plan digest (captured) vs current goal state below. The full
@@ -1406,10 +1520,8 @@ impl AgentLoop {
                 tracing::info!("stale rebuild skipped after cancellation");
                 return;
             }
-            // Rebuild once: reassemble baseline from fresh state and rerun
-            // the canonical engine with a new candidate identity. To bound
-            // work, reuse the already-loaded current revisions and run a
-            // single additional `compact_context` pass inline.
+            // Rebuild once from fresh state and reuse current revisions to
+            // keep retry work bounded.
             let retry_id = uuid::Uuid::new_v4().to_string();
             // Reassemble a fresh baseline quickly (goal/todo/ledger/previous).
             let fresh_previous = self.load_usable_installed_checkpoint().await;
@@ -2216,13 +2328,11 @@ mod tests {
             .observe_only
             .unwrap_or(true));
 
-        // Prepare a request whose System content contains the exact marker string that the (now removed)
-        // active-mode branch used to search for and use as replacement trigger: "Current session context:"
+        // Keep the legacy frame marker in the system prompt; packing must not replace it.
         let original_system_text = "You are a helpful assistant.
 
 Current session context: [old frame here that would have been clobbered]";
-        // Construct ChatRequest manually: the type (from codegg-providers) does not implement Default,
-        // and Message::System content is Arc<String>.
+        // ChatRequest has no Default implementation.
         let request = ChatRequest {
             model: "test-model".to_string(),
             messages: vec![Message::System {
@@ -2241,9 +2351,7 @@ Current session context: [old frame here that would have been clobbered]";
 
         let original_system_content = original_system_text.to_string();
 
-        // Run the packer path (candidate building + the call to packer::pack) exactly as the block in AgentLoop::run does.
-        // This exercises the code that the enabled block in run() executes for diagnostics (build_all, pack, result handling, omitted iteration).
-        // Budget calc and pack call are exercised here (mirroring the production site; the site inside run() is unchanged per instructions).
+        // Exercise candidate building and packing as the run loop does.
         let model_key = request.model.clone();
         let builder =
             crate::context::ContextBlockBuilder::new("test-session-for-packer-phase1", &model_key);
@@ -2285,11 +2393,7 @@ Current session context: [old frame here that would have been clobbered]";
             }
         }
 
-        // CRITICAL ASSERTION (Phase 1 acceptance):
-        // request.messages (esp. the System content) is *completely unchanged*.
-        // There must be no replacement of the system prompt.
-        // We compare length + the actual system text content (Message does not implement PartialEq
-        // because it is defined in the codegg-providers crate).
+        // Packing leaves the message list and original system text unchanged.
         assert_eq!(
             request.messages.len(),
             1,
@@ -2327,10 +2431,7 @@ Current session context: [old frame here that would have been clobbered]";
             ..Default::default()
         };
 
-        // Build a minimal AgentLoop via the test-friendly constructor path used elsewhere.
-        // We don't need a full provider; the observe path only reads self.services.config/state and request.
-        // Use the existing Phase1 test pattern but invoke the helper (which is private) via compute + direct call simulation.
-        // Since helpers are not pub, we exercise the same logic the helper uses (build + pack) and assert request unchanged.
+        // Exercise the observe inputs without constructing a provider or AgentLoop.
         let original_system_text = "System prompt here. No packer marker.";
         let request = ChatRequest {
             model: "test-model-obs".to_string(),
@@ -2348,9 +2449,7 @@ Current session context: [old frame here that would have been clobbered]";
             context: Default::default(),
         };
 
-        // Simulate what observe would do (it calls compute which calls build_packer_candidates).
-        // We cannot call private observe without making it pub(crate) for test; instead we call the pure compute entry
-        // and verify the request bytes/content are untouched (the contract the helper must obey).
+        // The pure compute entry must leave request content untouched.
         let original_len = request.messages.len();
         let original_sys = if let Message::System { content } = &request.messages[0] {
             content.as_str().to_string()
@@ -2358,9 +2457,7 @@ Current session context: [old frame here that would have been clobbered]";
             String::new()
         };
 
-        // Directly exercise the internal candidate builder logic by calling the same build_all sequence
-        // that compute_context_pack_result would (without constructing a full AgentLoop).
-        // This keeps the test minimal while proving "no mutation" for the code the helper will run.
+        // Build candidates directly and verify there is no mutation.
         let model_key = request.model.clone();
         let builder = crate::context::ContextBlockBuilder::new("obs-test-sess", &model_key);
         let _cands = builder.build_all(
@@ -2405,9 +2502,7 @@ Current session context: [old frame here that would have been clobbered]";
         assert_eq!(stats.models().len(), 2);
     }
 
-    // Phase 5 test: exercising compute_context_pack_result before/after appending a tool result shows volatile delta.
-    // We construct synthetic requests and use the public ContextBlockBuilder + pack directly (the same path the private
-    // compute helper uses) to keep the test self-contained without needing a full AgentLoop instance.
+    // Appending a tool result must not decrease the volatile estimate.
     #[test]
     fn context_packer_volatile_estimate_grows_after_tool_result() {
         use crate::provider::{ChatRequest, Message};
@@ -2484,8 +2579,7 @@ Current session context: [old frame here that would have been clobbered]";
         let r1 = crate::context::packer::pack(c1, &budget);
         let volatile1 = r1.volatile_tokens;
 
-        // After a tool result the volatile estimate should be >= the initial (more volatile content present).
-        // In practice the frame/control may contribute, but the test asserts non-decrease as a minimal "different" signal.
+        // Frame/control accounting may vary; only non-decrease is required.
         assert!(volatile1 >= volatile0, "volatile tokens should not decrease after appending tool result (initial={}, after={})", volatile0, volatile1);
     }
 

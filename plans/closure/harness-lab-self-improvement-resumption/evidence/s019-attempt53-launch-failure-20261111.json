@@ -1,0 +1,21 @@
+{
+  "attempt": 53,
+  "budget_admission_phase": "first autonomy command gate",
+  "budget_policy_file_present": false,
+  "case_lane_created": false,
+  "classification": "missing capped budget policy file; confirmed from wrapper inputs and source order",
+  "counted_as_authorization_start": false,
+  "external_billed_usd": "unknown_when_unreported",
+  "grant_consumed_before_and_after": 9,
+  "grant_id": "s019-supplemental-20261111-04",
+  "grant_remaining_before_and_after": 31,
+  "native_tool_calls_observed": 0,
+  "provider_or_model_invoked": false,
+  "provider_requests_observed": 0,
+  "raw_runner_log_inspected": false,
+  "receipt_present": false,
+  "runner_exit_code": 2,
+  "schema": "s019_preprovider_launch_failure_v1",
+  "start_number": 54,
+  "status": "launch_failed_before_provider"
+}

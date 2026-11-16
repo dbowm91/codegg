@@ -1,25 +1,9 @@
-//! M007-H (work package C) — the daemon's own git revert.
+//! Daemon-owned Git revert and diff operations.
 //!
-//! `/revert` used to be a frontend that spawned `git checkout HEAD -- <path>`
-//! itself: an unfenced subprocess, run in the TUI, with no writer permit and
-//! no record of who wrote what. The write now lives here.
-//!
-//! Four properties are kept. **Containment**: every path is validated
-//! against the checkout the daemon resolved from its own durable binding, so
-//! a caller cannot name a tree the daemon does not own. **The typed
-//! operation**: the write is `GitOperation::Checkout`, executed by the
-//! canonical `GitMutationExecutor`. **The writer fence**: the write is
-//! contained by the C003 checkout writer fence and, when the checkout is
-//! shared, serialized by that checkout's writer permit — the same fence the
-//! model's typed git tool takes; the fence's scope is the acting session's
-//! own run, resolved from durable state. **The record**: the revert is
-//! authorized as a `git.write` operation and audited as a file mutation.
-//!
-//! M007-I (work package A) adds the daemon's own **diff read** here too:
-//! `/diff` used to be a frontend that spawned `git show` and `git diff`
-//! itself, so the bytes a diff showed came from the frontend's own tree.
-//! The read now lives here, beside the write, and it is a **read** — no
-//! writer permit, no fence, no mutation.
+//! Revert validates paths against the durable checkout binding, executes typed
+//! `GitOperation::Checkout`, and uses the writer fence (plus a permit for shared
+//! checkouts). It records `git.write` authorization and the file mutation. Diff
+//! reads the daemon-bound checkout without mutation or a permit.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

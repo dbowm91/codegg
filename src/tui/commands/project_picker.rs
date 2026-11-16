@@ -1558,3 +1558,7 @@ pub(crate) fn apply_project_registered(
         Some(std::path::PathBuf::from(workspace_root)),
     );
 }
+
+pub(crate) fn dispatch_projects(app: &mut App) {
+    app.open_project_picker();
+}

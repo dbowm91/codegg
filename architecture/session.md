@@ -58,11 +58,10 @@ transaction. The `migration_version` table tracks the current version.
 On startup, `migrate()` checks the version and runs all unapplied
 migrations in order.
 
-Migrations create and evolve **96 CREATE TABLE statements** covering
-**92 tables** (93 distinct `CREATE TABLE` names, less the transient
-`origin_attribution_new` rebuild name; `migration_version`,
-`origin_attribution`, and that rebuild name each appear twice) across
-these table groups:
+Migrations create and evolve the schema catalogued in the generated
+[storage-catalog.md](storage-catalog.md) — every table, column, and index, with
+the migration that introduced it. The groups below record why each group
+exists; the catalog is the authority for its structure.
 
 **Core session tables (v1):**
 `project`, `session`, `message`, `part`, `todo`, `permission`,
@@ -438,6 +437,43 @@ released.
 `git_index_publication` (v85, C007), `writer_permit` (v86, M005 corrective
 C002 — one row per managed worktree), and `session_launch` (v87, M006 — the
 durable launch saga with a closed `stage` enum).
+
+**Durable request ledger (v95, harness-practice-adoption M002):**
+`turn_request_ledger` records one row per model request *attempt*: the turn
+and attempt ordinals, the attempt id, model and effort, the digests of the
+dispatched system prompt, tool declarations and message range, the message
+count, a per-section digest map, an outcome, and an optional body. The unique
+key is `(session_id, turn_index, attempt_index)`.
+
+- `TurnRequestLedgerStore::record_attempt` is the only writer. It writes
+  before the provider stream is consumed, so a request that fails at setup
+  still has a row.
+- The write opens `BEGIN IMMEDIATE` because it counts and prunes before it
+  inserts. Retention is bounded to `MAX_REQUEST_LEDGER_ROWS_PER_SESSION`
+  (256) rows per session; the oldest `(turn_index, attempt_index)` rows are
+  deleted inside that same transaction. `settle_attempt` only updates the
+  row the writer created — it never inserts.
+- A body is redacted at write and bounded to
+  `REQUEST_LEDGER_MAX_BODY_BYTES`; the production caller supplies one only
+  for a failed attempt.
+- The digests are over the dispatched request, never over the body, so a
+  reader cannot recompute them from a stored body. That asymmetry is
+  deliberate: a digest over redacted content would stop identifying the
+  request.
+- `section_digests` is the compiled prompt's per-section map, threaded from
+  the compile site (`PromptCompiler::compile`) rather than rebuilt at the
+  dispatch seam. A prompt with no sections stores an empty map; `NULL` means
+  the loop had no compiled-prompt identity at all. Material appended to the
+  system message at the turn boundary (security hints, steering) is covered
+  by `system_digest` but has no section entry, because it is not a prompt
+  block.
+- `outcome` starts as `streaming`. A row still `streaming` when read back
+  means the process died holding it; `ok`, `failed` and `cancelled` are
+  written when the attempt settles.
+
+Measured insert cost: 157.7 µs per attempt — the mean of 20 inserts against
+an in-memory migrated SQLite store in a debug build. It is a measurement, not
+a guarantee.
 
 ### Column additions to session table
 

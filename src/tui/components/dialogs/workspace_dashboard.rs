@@ -19,7 +19,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::Paragraph,
     Frame,
 };
 use std::sync::Arc;
@@ -29,6 +29,8 @@ use crate::tui::app::state::{
 };
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
+use crate::tui::components::hint_line::HintLine;
+use crate::tui::components::section::Section;
 use crate::tui::theme::Theme;
 
 /// One rendered dashboard row (bounded, secret-free).
@@ -213,12 +215,8 @@ fn render_dashboard(
         return;
     }
     let width = area.width as usize;
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.border))
-        .title(" Workspace ".to_string());
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let section = Section::new("Workspace", theme).focused(true);
+    let inner = section.draw(area, frame.buffer_mut());
     if inner.height == 0 || inner.width < 10 {
         return;
     }
@@ -316,8 +314,18 @@ fn render_dashboard(
             Style::default().fg(theme.warning),
         )));
     }
+    // The row already used the one separator; only the exit position was out.
     lines.push(Line::from(Span::styled(
-        "j/k move · g/G top/bottom · type to filter · Enter open · Tab tasks · Ctrl+R refresh · Esc back",
+        HintLine::from_items(&[
+            ("Esc", "back"),
+            ("j/k", "move"),
+            ("g/G", "top/bottom"),
+            ("type", "to filter"),
+            ("Enter", "open"),
+            ("Tab", "tasks"),
+            ("Ctrl+R", "refresh"),
+        ])
+        .render(0),
         Style::default().fg(theme.muted),
     )));
     let paragraph = Paragraph::new(lines).style(Style::default().fg(theme.foreground));

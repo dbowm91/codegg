@@ -1,0 +1,17 @@
+layers (lowest precedence first):
+  [ok]    global  /fixture/global.json
+  [ok]    project  /fixture/project.json
+effective keys (grouped by winning layer):
+== project ==
+  mcp.remote.env.API_TOKEN = (set)
+  mcp.remote.environment = (unset)
+  mcp.remote.headers.Authorization = (set)
+  mcp.remote.oauth = (unset)
+  provider.openai.api_key = (set)
+      shadowed: global = (set)
+  provider.openai.auth.encrypted_value = (unset)
+  provider.openai.auth.env = (unset)
+  provider.openai.auth.type = (set)
+  provider.openai.auth.value = (set)
+  provider.openai.encrypted_api_key = (set)
+  server.token = (set)

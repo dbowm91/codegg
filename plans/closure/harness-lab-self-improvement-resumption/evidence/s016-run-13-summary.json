@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "campaign_id": "s016-deepseek-long-run-corrective-loop-20261031",
+  "run_index": 13,
+  "run_kind": "diagnostic",
+  "run_status": "preflight_refused_missing_budget_file",
+  "counts_as_live_provider_run": false,
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "controller_commit": "637907010860502a11f9c161b5f990ae1f9ca933",
+  "source_binary_commit": "94fc8d41ff61e5963adf5779475fd9ee08569493",
+  "binary_architecture": "arm64",
+  "binary_sha256": "16481cc8bf0d8866db352c3aab90c35950bde37e5799be1458a43012d594fe2a",
+  "sandbox_helper_sha256": "37ee6c8cd876d1e05bbd650c7a26520753fe55534ac821a52d9089712d751d43",
+  "fixture_manifest": "dev/harness_lab/fixtures/agent_autonomy_s016_natural_overlap_diagnostic_v4/cases.jsonl",
+  "fixture_manifest_sha256": "11736931e8e6581f6dacfcc1509c180e9126f6af8466c625cb4e94bde7c79caa",
+  "started_at_utc": "2026-10-31T22:46:59Z",
+  "terminal_observed_at_utc": "2026-10-31T22:47:00Z",
+  "provider_requests": 0,
+  "provider_request_cap": 20,
+  "usd_cost": "unknown_no_provider_request",
+  "provider_stream_lifecycle": {
+    "transport_requests_started": 0,
+    "body_eof": 0,
+    "idle_timeouts": 0
+  },
+  "agent_tools_started": false,
+  "lane_created": null,
+  "preflight_error": "budget policy file was missing; provider admission never began",
+  "disk_floor_bytes": 10737418240,
+  "free_disk_bytes_at_start": 26749083648,
+  "receipt": "not_created_before_admission",
+  "diagnosis": "Budget-file preflight refusal; no provider or daemon session started."
+}

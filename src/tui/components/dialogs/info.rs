@@ -1,36 +1,29 @@
-use ratatui::layout::{Constraint, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use std::sync::Arc;
 
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
+use crate::tui::components::hint_line::HintLine;
+use crate::tui::components::section::{Section, SectionFrame};
 use crate::tui::theme::Theme;
 
-/// The verbs every `InfoType` dispatches.
-const SCROLL_VERBS: &str = "j/k scroll";
-
-/// The one verb that is conditional on the content type.
-const PUBLISH_VERB: &str = "a publish";
-
-/// Whether this widget frames its own body, or the panel host frames it.
-///
-/// Standalone — as a modal — the widget is the whole surface, so it draws its
-/// own title, content box and footer. In a side column the host has **already**
-/// painted the border, the panel's name and the `●` focus marker into the same
-/// rect, so painting a second set of chrome over them does not layer, it
-/// overwrites: all three, which is why a focused column and an unfocused one
-/// rendered identically and the one fact the title carried was the thing
-/// destroyed.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Chrome {
-    /// Modal: three stacked bordered boxes.
-    Owned,
-    /// Hosted: the host's frame, this box's body inset inside it.
-    Hosted,
+/// The verbs this box dispatches; `a` is armed only by `ProjectInit`.
+fn hint(info_type: &InfoType) -> HintLine {
+    let mut hint = HintLine::new();
+    hint.push("j/k", "scroll");
+    if *info_type == InfoType::ProjectInit {
+        hint.push("a", "publish");
+    }
+    hint
 }
+
+/// The content rows of the title box and of the footer box.
+const TITLE_ROWS: u16 = 1;
+const FOOTER_ROWS: u16 = 1;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InfoType {
@@ -61,7 +54,7 @@ pub struct InfoDialog {
     styled_lines: Option<Vec<Line<'static>>>,
     theme: Arc<Theme>,
     scroll: usize,
-    custom_footer: Option<String>,
+    custom_footer: Option<HintLine>,
 }
 
 impl InfoDialog {
@@ -172,12 +165,36 @@ impl InfoDialog {
         self.theme = Arc::clone(theme);
     }
 
-    pub fn set_custom_footer(&mut self, footer: String) {
+    pub fn set_custom_footer(&mut self, footer: HintLine) {
         self.custom_footer = Some(footer);
+    }
+
+    /// False for `/shell-show`: its caller row names five keys (`i`/`a`/`r`/`k`/`e`)
+    /// whose **verbs** no arm of `handle_key` dispatches. `k` is not an
+    /// exception to that — it reaches the scroll arm and scrolls, which is why
+    /// the row was misleading rather than merely unsupported; the other four
+    /// are app-layer intents needing a shell-detail id this widget is never
+    /// handed.
+    fn renders_caller_footer(&self) -> bool {
+        self.info_type != InfoType::ShellShow
     }
 
     pub fn content_lines(&self) -> &[String] {
         &self.lines
+    }
+
+    /// The rows this box's content asks for, before wrapping.
+    ///
+    /// A styled line is already a row and a plain line is one row, so this
+    /// under-counts a wrapping body rather than over-claiming the frame. It
+    /// deliberately does not wrap: a second measure of the content per frame
+    /// is what the render-cost contract forbids.
+    fn content_rows(&self) -> u16 {
+        let rows = match &self.styled_lines {
+            Some(lines) => lines.len(),
+            None => self.lines.len(),
+        };
+        u16::try_from(rows).unwrap_or(u16::MAX)
     }
 
     pub fn info_type(&self) -> InfoType {
@@ -199,44 +216,46 @@ impl InfoDialog {
     /// The clamp is applied to the start index, never written back to
     /// `self.scroll`: the sentinel has to outlive this call, because
     /// `set_styled_content_preserving_scroll` restores it on every refresh.
-    fn render_body(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: Chrome) {
+    fn render_body(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &Arc<Theme>,
+        chrome: SectionFrame,
+    ) {
         // `para_area` is what the paragraph is handed; `text_area` is what it
-        // paints text into. They differ by the content box's own border when
-        // this widget owns the frame, and are the same rect when it does not.
+        // paints text into. The content box's section answers exactly the rect
+        // inside its edge, so the two are always the same rect.
         let (para_area, text_area, status_area) = match chrome {
-            Chrome::Owned => {
+            SectionFrame::Owned => {
                 let chunks = Layout::vertical([
-                    Constraint::Length(3),
+                    Constraint::Length(Section::owned_height(TITLE_ROWS)),
                     Constraint::Min(1),
-                    Constraint::Length(3),
+                    Constraint::Length(Section::owned_height(FOOTER_ROWS)),
                 ])
                 .split(area);
 
-                let title_block = Block::default()
-                    .borders(Borders::ALL)
-                    .title(self.title())
-                    .border_style(Style::default().fg(theme.border));
-                frame.render_widget(title_block, chunks[0]);
+                Section::new(self.title(), theme)
+                    .focused(true)
+                    .draw(chunks[0], frame.buffer_mut());
 
-                // The two rows and two columns the content box's border
-                // occupies, subtracted per dimension so a chunk thinner than
-                // its own border degrades to zero rather than to `Rect::ZERO`'s
-                // other axis.
-                let text = Rect {
-                    x: chunks[1].x.saturating_add(1),
-                    y: chunks[1].y.saturating_add(1),
-                    width: chunks[1].width.saturating_sub(2),
-                    height: chunks[1].height.saturating_sub(2),
-                };
-                (chunks[1], text, Some(chunks[2]))
+                // The content box is a content group, so it keeps its own
+                // edge; the primitive supplies the edge and answers the exact
+                // rect inside it, which is what the paragraph is handed.
+                let text = Section::plain(theme).draw(chunks[1], frame.buffer_mut());
+                (text, text, Some(chunks[2]))
             }
-            Chrome::Hosted => {
+            SectionFrame::Hosted => {
                 // `area` is the host's **full** column rect, border cells
                 // included, so the body has to be inset by the frame before
-                // anything is drawn into it. A zero-sized interior returns
-                // without painting: the host's chrome is already on screen, so
-                // the honest result is an empty column, not a panic.
-                let inner = area.inner(Margin::new(1, 1));
+                // anything is drawn into it. The hosted arm of `Section` is
+                // that inset, and it writes no cell, so the host's edge is
+                // untouched. A zero-sized interior returns without painting:
+                // the host's chrome is already on screen, so the honest result
+                // is an empty column, not a panic.
+                let inner = Section::plain(theme)
+                    .frame(SectionFrame::Hosted)
+                    .draw(area, frame.buffer_mut());
                 if inner.width == 0 || inner.height == 0 {
                     return;
                 }
@@ -287,16 +306,7 @@ impl InfoDialog {
         let end_idx = (start_idx + visible_lines).min(total_lines);
 
         let visible: Vec<Line> = display_lines[start_idx..end_idx].to_vec();
-        let content_para = match chrome {
-            Chrome::Owned => Paragraph::new(visible)
-                .style(Style::default().fg(theme.foreground))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(theme.border)),
-                ),
-            Chrome::Hosted => Paragraph::new(visible).style(Style::default().fg(theme.foreground)),
-        };
+        let content_para = Paragraph::new(visible).style(Style::default().fg(theme.foreground));
 
         let scroll_indicator = if total_lines > visible_lines {
             Some(format!(
@@ -310,31 +320,53 @@ impl InfoDialog {
         };
 
         match chrome {
-            Chrome::Owned => {
-                let footer_text = match (&self.custom_footer, &scroll_indicator) {
-                    (Some(custom), Some(indicator)) => format!(" {}  |  {}", indicator, custom),
-                    (Some(custom), None) => custom.clone(),
-                    (None, Some(indicator)) => {
-                        format!(" {}  |  j/k scroll  |  Esc/Enter close ", indicator)
-                    }
-                    (None, None) => " j/k scroll  |  Esc/Enter close ".to_string(),
+            SectionFrame::Owned => {
+                let custom = if self.renders_caller_footer() {
+                    self.custom_footer.as_ref()
+                } else {
+                    None
                 };
-                let footer_block = Paragraph::new(Line::from(Span::styled(
-                    footer_text,
-                    Style::default().fg(theme.secondary),
-                )))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(theme.border)),
+                let footer_inner = Section::plain(theme).draw(
+                    status_area.expect("modal always has a footer"),
+                    frame.buffer_mut(),
                 );
+                // One row, one producer, and the row's **real** width is the
+                // budget: three things want the front of one line, and rendering
+                // unbounded let the frame clip mid-item instead, so the position
+                // vanished at 44 columns. `fit_parts` drops whole items from the
+                // end, so the order is the priority — the exit, then the
+                // position (the surface's documented must-show), then the verbs.
+                // The position and a caller footer are values, not verbs.
+                let budget = usize::from(footer_inner.width);
+                let mut hint = HintLine::new();
+                match (custom, &scroll_indicator) {
+                    (Some(custom), Some(indicator)) => {
+                        hint.push_line(custom).push(indicator, "");
+                    }
+                    (Some(custom), None) => {
+                        hint.push_line(custom);
+                    }
+                    (None, Some(indicator)) => {
+                        hint.push_required("Esc/Enter", "close")
+                            .push(indicator, "")
+                            .push("j/k", "scroll");
+                    }
+                    (None, None) => {
+                        hint.push_required("Esc/Enter", "close")
+                            .push("j/k", "scroll");
+                    }
+                }
+                let footer_text = hint.render(budget);
                 frame.render_widget(content_para, para_area);
                 frame.render_widget(
-                    footer_block,
-                    status_area.expect("modal always has a footer"),
+                    Paragraph::new(Line::from(Span::styled(
+                        footer_text,
+                        Style::default().fg(theme.secondary),
+                    ))),
+                    footer_inner,
                 );
             }
-            Chrome::Hosted => {
+            SectionFrame::Hosted => {
                 frame.render_widget(content_para, para_area);
                 // The indicator is a status affordance rather than a verb, and
                 // the verbs moved to `keymap_hint`. It is kept, on the row
@@ -353,6 +385,19 @@ impl InfoDialog {
 }
 
 impl Component for InfoDialog {
+    /// A viewer box states its line count, and never less than the legacy
+    /// popup: its content changes while it is open, and a box that resized on
+    /// every refresh would move under the reader's cursor.
+    fn preferred_area(&self, available: Rect) -> Rect {
+        let rows = Section::owned_height(TITLE_ROWS)
+            + Section::owned_height(self.content_rows())
+            + Section::owned_height(FOOTER_ROWS);
+        let rows = rows.max(crate::tui::components::dialog_size::legacy_height(
+            available,
+        ));
+        crate::tui::components::dialog_size::preferred_rows(available, rows)
+    }
+
     /// A plain viewer box: no composer, no live filter, no mode of its own,
     /// so the panel host may resolve `Shift+←/→/↑/↓` as the docking gesture
     /// before this dialog sees the key.
@@ -411,25 +456,19 @@ impl Component for InfoDialog {
     ///   an empty stack. `Shift+←` is the way back to a modal, and the host
     ///   already says so next to this text.
     ///
-    /// A caller-supplied footer is deliberately not reused. `/project-init`'s
-    /// `"a: publish   Esc: cancel"` and `/shell-show`'s six-verb footer
-    /// describe the **modal** box, where `Esc` really does close; replaying
-    /// them here would re-advertise exactly the dead `Esc` this hint exists to
-    /// stop describing, and `ShellShow`'s footer additionally advertises `k
-    /// kill` where this widget's `k` scrolls up.
+    /// A caller-supplied footer is deliberately not reused: `/project-init`'s
+    /// `"a: publish   Esc: cancel"` describes the **modal** box, where `Esc`
+    /// really does close. `renders_caller_footer` covers `/shell-show`.
     ///
     /// Per `InfoType` and not per `DialogType`: `ProjectInit` and `Team` share
     /// `DialogType::Team` and therefore one panel, and only the first of the
     /// two arms `a`.
-    fn keymap_hint(&self) -> Option<String> {
-        Some(match self.info_type {
-            InfoType::ProjectInit => format!("{SCROLL_VERBS} · {PUBLISH_VERB}"),
-            _ => SCROLL_VERBS.to_string(),
-        })
+    fn keymap_hint_line(&self) -> Option<HintLine> {
+        Some(hint(&self.info_type))
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        self.render_body(frame, area, theme, Chrome::Owned);
+        self.render_body(frame, area, theme, SectionFrame::Owned);
     }
 
     /// The body alone, inside the frame the host already drew.
@@ -441,7 +480,7 @@ impl Component for InfoDialog {
     /// [`InfoDialog::render_body`] for why two clamps would not be one
     /// implementation.
     fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        self.render_body(frame, area, theme, Chrome::Hosted);
+        self.render_body(frame, area, theme, SectionFrame::Hosted);
     }
 
     fn dialog_type(&self) -> DialogType {
@@ -754,5 +793,70 @@ mod tests {
         );
         // The fallback this replaced named an `i` no arm ever dispatched.
         assert!(!hint.contains("i act"), "{hint:?}");
+    }
+
+    #[test]
+    fn a_caller_footer_wider_than_the_box_paints_whole_items_exit_first() {
+        let theme = Arc::new(Theme::dark());
+        let mut dialog = InfoDialog::new(
+            Arc::clone(&theme),
+            InfoType::TerminalShow,
+            (0..60).map(|n| format!("line {n:02}")).collect(),
+        );
+        let mut footer = HintLine::new();
+        footer
+            .push_required("Esc", "close")
+            .push("j/k", "scroll")
+            .push("^-u/^-d", "page")
+            .push("e/b", "word")
+            .push("v", "select chars")
+            .push("x", "select lines")
+            .push("d", "delete")
+            .push("space+y", "copy")
+            .push("C", "clear")
+            .push("i", "focus")
+            .push("^-]", "unfocus")
+            .push("D", "diagnostics");
+        dialog.set_custom_footer(footer);
+
+        let rows = render_lines(&dialog, 60, 15);
+        let painted = rows
+            .iter()
+            .find(|row| row.contains("Esc close"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "the caller footer is not painted at all:\n{}",
+                    rows.join("\n")
+                )
+            });
+        assert!(
+            painted.contains("Esc close · j/k scroll · ^-u/^-d page · e/b word"),
+            "the row must open with the exit item and keep whole items, got {painted:?}"
+        );
+        assert!(
+            !painted.contains("v select"),
+            "the row was clipped mid-item rather than dropped whole: {painted:?}"
+        );
+    }
+
+    #[test]
+    fn a_short_caller_footer_paints_in_the_one_dialect() {
+        let theme = Arc::new(Theme::dark());
+        let mut dialog = InfoDialog::new(
+            Arc::clone(&theme),
+            InfoType::ProjectInit,
+            vec!["candidate".to_string()],
+        );
+        dialog.set_custom_footer(HintLine::from_items(&[("a", "publish"), ("Esc", "cancel")]));
+
+        let rows = render_lines(&dialog, 60, 15);
+        let painted = rows
+            .iter()
+            .find(|row| row.contains("a publish"))
+            .unwrap_or_else(|| panic!("no caller row painted:\n{}", rows.join("\n")));
+        assert!(
+            painted.contains("a publish · Esc cancel"),
+            "the row must use the one separator, got {painted:?}"
+        );
     }
 }

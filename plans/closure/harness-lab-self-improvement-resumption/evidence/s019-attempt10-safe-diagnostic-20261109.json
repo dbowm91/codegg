@@ -1,0 +1,303 @@
+{
+  "active_work_span_ms": 3225413,
+  "agent_terminal": "completed",
+  "attempt": 10,
+  "autonomous_followup_count": 40,
+  "billed_usd": "unknown",
+  "binary_sha256": "ffbf6e2f0c0447795f0fd3ac7f1afd847f4b42ff73af5484fef13ad34c5513bd",
+  "causal_trace": {
+    "bytes": 1988452,
+    "daemon_generation": "6c346ff6-c21b-4e8d-ad74-a5ffb3236c2a",
+    "dropped_events": 0,
+    "event_count": 3182,
+    "path": "/private/tmp/s019-muse-runs/attempt10/case00/private/causal-trace.jsonl",
+    "schema": "harness_causal_trace_v1",
+    "sha256": "f92beac8177c08d9c70da3acaee00ef6a9d6773bfeb6d91fcbf2e79494943842",
+    "state": "complete"
+  },
+  "continuation": {
+    "all_public_artifacts_present": true,
+    "completed_phases": [
+      "versioned_records",
+      "durable_import",
+      "dependency_index",
+      "provenance_queries",
+      "cli_contract",
+      "acceptance_audit",
+      "workspace_qualification"
+    ],
+    "contract_phase_order_matches": true,
+    "contract_phases": [
+      "versioned_records",
+      "durable_import",
+      "dependency_index",
+      "provenance_queries",
+      "cli_export"
+    ],
+    "document_valid": true,
+    "gates": {
+      "acceptance_audit": "complete",
+      "bounded_probes": "complete",
+      "cli_contract": "complete",
+      "dependency_index": "complete",
+      "durable_import": "complete",
+      "independent_review": "complete",
+      "provenance_queries": "complete",
+      "release_scale_overlap": "complete",
+      "starter_repair_format": "complete",
+      "starter_repair_store": "complete",
+      "versioned_records": "complete",
+      "workspace_qualification": "complete"
+    },
+    "incomplete_gates": [],
+    "incomplete_stages": [],
+    "missing_contract_phases": [],
+    "missing_phases": [],
+    "next_contract_phase": "none",
+    "next_gate": "none",
+    "next_phase": "none",
+    "next_stage": "none",
+    "note_sha256": "dd29f5d7b9c388d327fe3119f346c66646100ef2049c2af19921fd5cb26d1ffa",
+    "phase_order_matches": true,
+    "present": true,
+    "raw_job_arguments_retained": false,
+    "raw_job_ids_retained": false,
+    "raw_note_retained": false,
+    "release_overlap_confirmed": true,
+    "required_review_observed": false,
+    "schema": "h007_continuation_diagnostic_v1",
+    "stage_order_matches": true,
+    "stages": {
+      "acceptance_audit": "complete",
+      "cli_contract": "complete",
+      "dependency_index": "complete",
+      "durable_import": "complete",
+      "provenance_queries": "complete",
+      "versioned_records": "complete",
+      "workspace_qualification": "complete"
+    },
+    "test_job_lifecycle": {
+      "all_terminal_observed": true,
+      "raw_job_arguments_retained": false,
+      "raw_job_ids_retained": false,
+      "submission_count": 22,
+      "terminal_observed_count": 22,
+      "terminal_status_counts": {
+        "completed": 18,
+        "failed": 4
+      },
+      "unique_submitted_job_count": 22,
+      "unobserved_count": 0,
+      "unobserved_status_counts": {}
+    }
+  },
+  "continuation_stop_reason": "followup_limit",
+  "diagnostic": {
+    "harness_attribution": "No provider, event-loss, activity-stall, request-cap, or disk-floor failure occurred. The remaining qualified-result gaps are task-level reviewer protocol and verifier setup timeout; the verifier cause remains unknown.",
+    "measurement": "The run projection currently labels task_outcome=failed and measurement_complete=true whenever the verifier process has a nonzero exit code, even when its setup times out before tests run. Correct future outcomes to task_outcome=inconclusive and measurement_complete=false unless the diagnostic confirms test bodies executed.",
+    "primary": "The agent completed about 53.8 minutes of active work and recorded all seven stages, all five contract phases, all twelve gates, all public artifacts, exact release-job overlap, four repairs, and terminal observations for all 22 submitted test jobs. The attempt did not qualify: the reviewer result was not recorded through the required status-then-get sequence, and verifier setup timed out before any test ran.",
+    "reviewer": "One verifier child was spawned. Seven exact-identity task gets returned run_status=completed, but there was no task status/wait observation and the continuation note was not corroborated by the native reviewer lifecycle. The model repeated get rather than following the one-status-then-one-get instruction. No Task/Run mismatch or task tool failure is demonstrated.",
+    "verifier": "The unchanged verifier exited 1 during setUpClass with the allowlisted setup_command_timeout classification and tests_run=0. This is not an assertion failure or evidence that the task implementation failed. Hidden verifier source, raw output, and traceback were not inspected."
+  },
+  "disk_floor": {
+    "last_free_bytes": 35062931456,
+    "lowest_observed_free_bytes": 35062853632,
+    "measurement_error": null,
+    "minimum_free_bytes": 10737418240,
+    "triggered": false
+  },
+  "duration_ms": 3236061,
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "horizon_evidence": {
+    "active_work_span_ms": 3225432,
+    "continuation_confirmed": false,
+    "exact_job_running_and_terminal": true,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 19753,
+    "measurement_complete": true,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": true,
+    "repair_cycles": 4,
+    "test_job_lifecycle": {
+      "all_terminal_observed": true,
+      "raw_job_arguments_retained": false,
+      "raw_job_ids_retained": false,
+      "submission_count": 22,
+      "terminal_observed_count": 22,
+      "terminal_status_counts": {
+        "completed": 18,
+        "failed": 4
+      },
+      "unique_submitted_job_count": 22,
+      "unobserved_count": 0,
+      "unobserved_status_counts": {}
+    },
+    "tool_call_cap_exceeded": false,
+    "tool_call_count": 1293,
+    "tool_call_limit": 1600
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "continuation_missing",
+  "manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "provider_allowance_usd": null,
+  "provider_request_count": 1171,
+  "provider_request_limit": 1200,
+  "receipt_sha256": "4bc601173296253e505817cbeea179eb73678a691852675c86fce33b1f4b4880",
+  "repair_cycles": 4,
+  "resource_usage": {
+    "cpu_seconds": 1332.876,
+    "lane_disk_growth_bytes": 397443400,
+    "peak_rss_bytes": 760463360,
+    "sample_count": 5941
+  },
+  "reviewer_diagnostic": {
+    "completed_review_result_observed": false,
+    "exact_identity_matched_call_count": 8,
+    "final_failure_class": null,
+    "final_status": null,
+    "get_after_terminal_status_count": 0,
+    "get_count": 7,
+    "get_nonterminal_count": 0,
+    "get_run_status_counts": {
+      "completed": 7
+    },
+    "ordered_events": [
+      {
+        "action": "spawn",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1622101,
+        "index": 788,
+        "run_status": "queued",
+        "started_elapsed_ms": 1622091
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1869996,
+        "index": 891,
+        "run_status": "completed",
+        "started_elapsed_ms": 1869975
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2009234,
+        "index": 956,
+        "run_status": "completed",
+        "started_elapsed_ms": 2009202
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2181567,
+        "index": 1004,
+        "run_status": "completed",
+        "started_elapsed_ms": 2181539
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2740820,
+        "index": 1163,
+        "run_status": "completed",
+        "started_elapsed_ms": 2740783
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 2928165,
+        "index": 1213,
+        "run_status": "completed",
+        "started_elapsed_ms": 2928135
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 3065441,
+        "index": 1249,
+        "run_status": "completed",
+        "started_elapsed_ms": 3065377
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 3148804,
+        "index": 1271,
+        "run_status": "completed",
+        "started_elapsed_ms": 3148783
+      }
+    ],
+    "raw_task_arguments_retained": false,
+    "reviewer_event_count": 8,
+    "reviewer_events_truncated": false,
+    "reviewer_run_id_sha256": "c539266d965de4ff1e08b9d3916e42b48998295df5328045de4aa2aeb20c7e40",
+    "reviewer_spawn_count": 1,
+    "reviewer_task_id_sha256": "056a00340f9277f7f9f5164ebcd8737fb71d4f61f15325c8c187bc879334b88e",
+    "schema": "h007_reviewer_lifecycle_diagnostic_v1",
+    "status_sequence": [],
+    "task_action_counts": {
+      "get": 7,
+      "spawn": 1
+    },
+    "task_result_body_retained": false,
+    "task_transcript_retained": false
+  },
+  "reviewer_schedule_diagnostic": {
+    "due_prompt_count": 1,
+    "due_prompt_marker": "The 25-minute independent-review start threshold has been reached.",
+    "first_due_active_work_span_ms": 1609574,
+    "first_due_followup_number": 15,
+    "reviewer_spawn_count": 1,
+    "start_threshold_active_ms": 1500000,
+    "task_tool_call_count": 9,
+    "task_tool_requested_by_case": true
+  },
+  "route": "opencode_go/muse-spark-1.3-contributor",
+  "schema": "s019_safe_diagnostic_v1",
+  "solved": false,
+  "stop_reason": "end_turn",
+  "terminal": "completed",
+  "tool_call_count": 1293,
+  "tool_call_limit": 1600,
+  "verification_diagnostic": {
+    "assertion_text_retained": false,
+    "diagnostic_detail_complete": true,
+    "exit_code": 1,
+    "failed_tests": [
+      {
+        "failure_kind": "test_error",
+        "outcome": "error",
+        "test_id": "setUpClass (test_catalog_contract.CatalogContract)"
+      }
+    ],
+    "failure_counts": {
+      "errors": 1,
+      "failures": 0
+    },
+    "input_truncated": false,
+    "passed_count": 0,
+    "raw_output_retained": false,
+    "runner_error_class": null,
+    "schema": "h007_verifier_diagnostic_v1",
+    "setup_exception_class": null,
+    "setup_failure_reason": "setup_command_timeout",
+    "skipped_count": 0,
+    "state": "setup_error",
+    "tests_run": 0,
+    "timed_out": false,
+    "traceback_retained": false,
+    "verbose_tests_observed": 1
+  },
+  "verification_exit_code": 1,
+  "verification_tests_run": 0,
+  "verification_timed_out": false
+}

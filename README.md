@@ -30,7 +30,7 @@ codegg providers   # what your config can actually reach
 ```
 
 `codegg providers` and `codegg models -p anthropic` read your live
-configuration — entries appear only when their credential resolves. Full
+configuration; entries appear only when their credential resolves. Full
 credential options are in [`docs/providers.md`](docs/providers.md).
 
 ### 3. Pick a model
@@ -71,7 +71,7 @@ install. Every flag is in [`docs/cli.md`](docs/cli.md).
 
 One-shot and CI (`codegg exec` reads `{"prompt","model","agent"}` from
 `--json`, `--file`, or stdin; a finished run prints one JSON object and exits
-non-zero on failure — startup failures such as an unknown provider report a
+non-zero on failure. Startup failures such as an unknown provider report a
 plain error on stderr instead):
 
 ```bash
@@ -109,21 +109,22 @@ global, and project locations (walked upward from the working directory):
 }
 ```
 
-Several config keys are untagged enums whose wrong shape silently discards
-your whole file — see [`docs/configuration.md`](docs/configuration.md).
+Some config sections have strict or ambiguous shapes. Validate changes with
+`codegg validate` and see [`docs/configuration.md`](docs/configuration.md).
 
 ## Documentation
 
 | Guide | Covers |
 |---|---|
 | [docs/install.md](docs/install.md) | Every installation path, upgrading, requirements. |
-| [docs/cli.md](docs/cli.md) | Every command, flag, and hidden compatibility spelling. |
+| [docs/cli.md](docs/cli.md) | Common commands and flags; use `codegg --help` for the full list. |
 | [docs/configuration.md](docs/configuration.md) | File locations, schema, model routing. |
 | [docs/providers.md](docs/providers.md) | Built-in providers, credentials, `/connect`. |
 | [docs/daemon.md](docs/daemon.md) | The daemon, transports, scheduling. |
 | [docs/tui.md](docs/tui.md) | Sessions, slash commands, approval and sandbox. |
 | [docs/agents-skills.md](docs/agents-skills.md) | Writing agents and `SKILL.md` skills. |
 | [docs/repository-init.md](docs/repository-init.md) | Read-only repository evidence and `AGENTS.md` draft semantics. |
+| [docs/embedding.md](docs/embedding.md) | Embed CodeGG as a Rust library. |
 | [docs/tools.md](docs/tools.md) | Tool families, Git, deterministic tools, LSP. |
 | [docs/LSP.md](docs/LSP.md) | Language-server configuration. |
 | [docs/MCP.md](docs/MCP.md) | MCP servers, clients, transports. |

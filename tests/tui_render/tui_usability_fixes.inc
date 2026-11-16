@@ -276,7 +276,7 @@ fn drag_over_the_viewport_selects_and_copies_rendered_text() {
     // Render first so the viewport area and the frame buffer are populated.
     let buffer = render_to_buffer(&mut app, 120, 40);
     let (vx, vy, vw, vh) = {
-        let a = app.viewport_area.expect("viewport area recorded");
+        let a = app.frame_plan.viewport;
         (a.x, a.y, a.width, a.height)
     };
     assert!(vw > 4 && vh > 2, "viewport too small to select in");
@@ -349,7 +349,7 @@ fn click_and_release_on_one_cell_is_a_cancelled_selection() {
     let mut app = test_app();
     app.ui_state.sidebar_visible = true;
     let _ = render_to_buffer(&mut app, 120, 40);
-    let a = app.viewport_area.expect("viewport area recorded");
+    let a = app.frame_plan.viewport;
     let p = (a.x + 2, a.y + 2);
 
     app.on_mouse(MouseEvent {
@@ -380,7 +380,7 @@ fn ctrl_c_copies_a_live_selection_and_is_inert_otherwise() {
     // Nothing selected: the key must fall through rather than swallow input.
     assert!(!app.try_copy_selection());
 
-    let a = app.viewport_area.expect("viewport area recorded");
+    let a = app.frame_plan.viewport;
     app.selection_anchor = Some((a.x + 1, a.y + 1));
     app.selection_focus = Some((a.x + 8, a.y + 1));
     assert!(
@@ -570,7 +570,7 @@ fn selection_is_confined_to_the_viewport() {
 
     // A press in the prompt must not start a selection — the prompt keeps
     // its own click-to-focus caret behaviour.
-    let p = app.prompt_area.expect("prompt area recorded");
+    let p = app.frame_plan.prompt;
     app.on_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: p.x + 2,

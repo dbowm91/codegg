@@ -4,12 +4,14 @@ use ratatui::{
     layout::Rect,
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Widget},
+    widgets::{Paragraph, Widget},
 };
 use std::sync::Arc;
 
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
+use crate::tui::components::hint_line::HintLine;
+use crate::tui::components::section::Section;
 use crate::tui::theme::Theme;
 
 #[derive(Clone)]
@@ -20,6 +22,9 @@ pub struct GotoDialog {
     pub target_index: Option<usize>,
     pub error: Option<String>,
 }
+
+/// The rows the box shows: the input, its status line, and the help line.
+const GOTO_BODY_ROWS: u16 = 3;
 
 impl GotoDialog {
     pub fn new(total_messages: usize) -> Self {
@@ -111,13 +116,9 @@ impl ratatui::widgets::Widget for &GotoDialog {
             return;
         }
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border))
-            .title(" Go to Message ");
-
-        let inner = block.inner(area);
-        block.render(area, buf);
+        let inner = Section::new("Go to Message", &self.theme)
+            .focused(true)
+            .draw(area, buf);
 
         let input_display = if self.input.is_empty() {
             Span::raw("Enter message number...")
@@ -133,7 +134,7 @@ impl ratatui::widgets::Widget for &GotoDialog {
             Span::raw("")
         };
 
-        let help = Span::raw(" Enter go  |  Esc close");
+        let help = Span::raw(HintLine::from_items(&[("Esc", "close"), ("Enter", "go")]).render(0));
 
         let lines = vec![
             Line::from(input_display),
@@ -150,6 +151,13 @@ impl ratatui::widgets::Widget for &GotoDialog {
 }
 
 impl Component for GotoDialog {
+    fn preferred_area(&self, available: Rect) -> Rect {
+        crate::tui::components::dialog_size::preferred_rows(
+            available,
+            Section::owned_height(GOTO_BODY_ROWS),
+        )
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
         match key.code {
             crossterm::event::KeyCode::Esc => Some(TuiMsg::CloseDialog),
@@ -178,13 +186,9 @@ impl Component for GotoDialog {
             return;
         }
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
-            .title(" Go to Message ");
-
-        let inner = block.inner(area);
-        block.render(area, frame.buffer_mut());
+        let inner = Section::new("Go to Message", theme)
+            .focused(true)
+            .draw(area, frame.buffer_mut());
 
         let input_display = if self.input.is_empty() {
             Span::raw("Enter message number...")
@@ -200,7 +204,7 @@ impl Component for GotoDialog {
             Span::raw("")
         };
 
-        let help = Span::raw(" Enter go  |  Esc close");
+        let help = Span::raw(HintLine::from_items(&[("Esc", "close"), ("Enter", "go")]).render(0));
 
         let lines = vec![
             Line::from(input_display),

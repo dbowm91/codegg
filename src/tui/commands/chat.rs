@@ -29,6 +29,7 @@ use crate::tui::app::state::chat::extract_mentions;
 use crate::tui::app::App;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
+use crate::tui::commands::close_command_mode;
 use crate::tui::task_lifecycle::TuiTaskKind;
 use std::sync::Arc;
 
@@ -2324,5 +2325,254 @@ pub(crate) fn on_chat_action_updated(app: &mut App, action: ChatActionDto) {
                 Some(action.message_id.clone()),
             );
         }
+    }
+}
+
+pub(crate) fn dispatch_chat(app: &mut App) {
+    close_command_mode(app);
+    // M005: Workspace side panel owns chat while the view is
+    // active (explicit focus, no modal); otherwise the modal.
+    if crate::tui::commands::workspace_dashboard::is_workspace_view_active(app) {
+        crate::tui::commands::workspace_dashboard::focus_workspace_chat(app);
+    } else {
+        crate::tui::commands::chat::show_chat(app);
+    }
+}
+
+pub(crate) fn dispatch_chat_send(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    let body = argument.to_string();
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    crate::tui::commands::chat::start_chat_send(app, project_id, body, None);
+}
+
+pub(crate) fn dispatch_chat_reply(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    let rest = argument;
+    let Some((target, body)) = rest.split_once(' ') else {
+        app.messages_state
+            .toasts
+            .warning("Usage: /chat-reply <message-id> <text>");
+        return;
+    };
+    let body = body.trim();
+    if body.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /chat-reply <message-id> <text>");
+        return;
+    }
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    crate::tui::commands::chat::start_chat_send(
+        app,
+        project_id,
+        body.to_string(),
+        Some(target.trim().to_string()),
+    );
+}
+
+pub(crate) fn dispatch_chat_history(app: &mut App) {
+    close_command_mode(app);
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    let workspace_active = crate::tui::commands::workspace_dashboard::is_workspace_view_active(app);
+    crate::tui::commands::chat::start_chat_history(app, project_id);
+    if workspace_active {
+        crate::tui::commands::workspace_dashboard::sync_workspace_chat_panel(app);
+    } else {
+        // Refresh the panel view when it is showing chat.
+        crate::tui::commands::chat::show_chat(app);
+    }
+}
+
+pub(crate) fn dispatch_chat_sync(app: &mut App) {
+    close_command_mode(app);
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    crate::tui::commands::chat::start_chat_sync(app, project_id);
+}
+
+pub(crate) fn dispatch_chat_read(app: &mut App) {
+    close_command_mode(app);
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    crate::tui::commands::chat::start_chat_read(app, project_id);
+}
+
+pub(crate) fn dispatch_chat_edit(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    let rest = argument;
+    let Some((target, body)) = rest.split_once(' ') else {
+        app.messages_state
+            .toasts
+            .warning("Usage: /chat-edit <message-id> <new-text>");
+        return;
+    };
+    if body.trim().is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /chat-edit <message-id> <new-text>");
+        return;
+    }
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    crate::tui::commands::chat::start_chat_edit(
+        app,
+        project_id,
+        target.trim().to_string(),
+        body.trim().to_string(),
+    );
+}
+
+pub(crate) fn dispatch_chat_redact(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    let rest = argument;
+    if rest.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /chat-redact <message-id> [reason]");
+        return;
+    }
+    let (target, reason) = match rest.split_once(' ') {
+        Some((t, r)) if !r.trim().is_empty() => (t.trim().to_string(), Some(r.trim().to_string())),
+        _ => (rest.trim().to_string(), None),
+    };
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    crate::tui::commands::chat::start_chat_redact(app, project_id, target, reason);
+}
+
+pub(crate) fn dispatch_chat_composing(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    let arg = argument;
+    let composing = match arg.to_lowercase().as_str() {
+        "on" | "true" | "1" | "start" => true,
+        "off" | "false" | "0" | "stop" | "clear" => false,
+        _ => {
+            app.messages_state
+                .toasts
+                .warning("Usage: /chat-composing on|off");
+            return;
+        }
+    };
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    crate::tui::commands::chat::start_chat_composing(app, project_id, composing);
+}
+
+pub(crate) fn dispatch_chat_action_task(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    let rest = argument;
+    // Explicit form: <message-id> <workspace-id> <agent> <prompt…>.
+    let mut parts = rest.splitn(4, ' ');
+    let message_id = parts.next().unwrap_or_default().trim();
+    let workspace_id = parts.next().unwrap_or_default().trim();
+    let agent = parts.next().unwrap_or_default().trim();
+    let prompt = parts.next().unwrap_or_default().trim();
+    if message_id.is_empty() || workspace_id.is_empty() || agent.is_empty() || prompt.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /chat-action-task <message-id> <workspace-id> <agent> <prompt>");
+        return;
+    }
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    crate::tui::commands::chat::start_chat_action_task(
+        app,
+        project_id,
+        message_id.to_string(),
+        workspace_id.to_string(),
+        agent.to_string(),
+        prompt.to_string(),
+    );
+}
+
+pub(crate) fn dispatch_chat_action_review(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    let rest = argument;
+    let mut parts = rest.splitn(4, ' ');
+    let message_id = parts.next().unwrap_or_default().trim();
+    let workspace_id = parts.next().unwrap_or_default().trim();
+    let agent = parts.next().unwrap_or_default().trim();
+    let prompt = parts.next().unwrap_or_default().trim();
+    if message_id.is_empty() || workspace_id.is_empty() || agent.is_empty() || prompt.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /chat-action-review <message-id> <workspace-id> <agent> <prompt>");
+        return;
+    }
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    crate::tui::commands::chat::start_chat_action_review(
+        app,
+        project_id,
+        message_id.to_string(),
+        workspace_id.to_string(),
+        agent.to_string(),
+        prompt.to_string(),
+    );
+}
+
+pub(crate) fn dispatch_chat_action_list(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    let rest = argument;
+    let message_id = if rest.is_empty() {
+        None
+    } else {
+        Some(rest.to_string())
+    };
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    crate::tui::commands::chat::start_chat_action_list(app, project_id, message_id);
+    if crate::tui::commands::workspace_dashboard::is_workspace_view_active(app) {
+        crate::tui::commands::workspace_dashboard::sync_workspace_chat_panel(app);
+    } else {
+        crate::tui::commands::chat::show_chat(app);
     }
 }

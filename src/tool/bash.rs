@@ -1056,6 +1056,7 @@ impl BashTool {
                     execution_timeout,
                     audit_ctx.and_then(|ctx| ctx.execution_authorization.clone()),
                     audit_ctx.and_then(|ctx| ctx.session_id.as_deref()),
+                    audit_ctx.and_then(|ctx| ctx.cancellation.clone()),
                 )
                 .await
             {

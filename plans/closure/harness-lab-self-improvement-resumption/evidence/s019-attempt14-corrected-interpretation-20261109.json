@@ -1,0 +1,123 @@
+{
+  "active_work_span_ms": 3282033,
+  "activity_stall_triggered": false,
+  "agent_terminal": "timeout",
+  "artifact_contents_retained": false,
+  "attempt": 14,
+  "autonomous_followup_count": 8,
+  "billed_usd": "unknown",
+  "budget_elapsed_seconds": 3541.062,
+  "causal_events": 989,
+  "causal_events_dropped": 0,
+  "continuation_all_public_artifacts_present": true,
+  "continuation_completed_phases": 6,
+  "continuation_document_valid": false,
+  "continuation_missing_gates": [
+    "workspace_qualification",
+    "independent_review"
+  ],
+  "continuation_missing_phases": [
+    "workspace_qualification"
+  ],
+  "continuation_stop_reason": "turn_timeout",
+  "diagnosis": "This was a task-completion timeout, not a request-cap, provider-retry, activity-stall, event-loss, or disk-floor failure. The agent reached the measured active-work horizon and completed six of seven H007 stages plus four repairs, exact release-job overlap, and the public artifacts. The remaining workspace_qualification stage was not completed. The reviewer was not scheduled until 34.3 minutes of active work and spawned queued at about 34.8 minutes; the prompt explicitly prohibited status polling during implementation, and the agent never reached its final audit, so no exact reviewer status or result was retrieved. One test job remained unobserved as running when the parent timed out. Separately, the independent verifier ended in setup_error with zero tests after its setup command timed out; the safe classifier does not identify the command or underlying cause, and hidden verifier source/output were not inspected. The next corrective is limited to the agent-facing schedule: start review at 15 active minutes and check its exact Run ID after productive work, while starting workspace/Clippy jobs as soon as the CLI is stable so qualification overlaps with acceptance/probe work. If the same safe verifier timeout recurs with all background jobs terminal, add only bounded host-side setup timing/lock telemetry; do not inspect or alter the hidden verifier.",
+  "duration_ms": 3300218,
+  "duration_qualified": true,
+  "event_gap_count": 0,
+  "exact_job_running_and_terminal": true,
+  "frozen_case_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "hidden_verifier_inspected": false,
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "measurement_incomplete",
+  "lowest_free_disk_bytes": 31193460736,
+  "manifest_sha256": "ecc1c65d4a9bcc4e6d62963b92ed000ceff7d28b449d199387008514d23cc70b",
+  "maximum_activity_gap_limit_ms": 300000,
+  "maximum_activity_gap_ms": 191289,
+  "minimum_free_disk_bytes": 10737418240,
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "native_tool_call_limit": 1600,
+  "native_tool_calls": 422,
+  "native_tool_terminals": 422,
+  "parent_manifest_sha256": "5724f4af81ae93758a836fb4faf0df514507989150b12509937d158f75c6f879",
+  "productive_work_during_job": true,
+  "provider_allowance_usd": 0.167348,
+  "provider_attempt_diagnostic": {
+    "attempt_ids_retained": false,
+    "first_response_event_timeout_count": 0,
+    "later_stream_timeout_count": 0,
+    "provider_attempts_failed": 2,
+    "provider_attempts_started": 366,
+    "provider_attempts_succeeded": 363,
+    "raw_log_in_receipt": false,
+    "raw_provider_text_in_receipt": false,
+    "retry_chain_deadline_count": 0,
+    "retry_scheduled_count": 2,
+    "state": "observed"
+  },
+  "provider_request_limit": 1200,
+  "provider_requests": 366,
+  "public_artifact_status": {
+    "HARNESS_PROBE_REPORT.json": true,
+    "PUBLIC_ACCEPTANCE_AUDIT.md": true,
+    "tools/catalog_probe.py": true
+  },
+  "raw_receipt_path": "/private/tmp/s019-muse-runs/attempt14.json",
+  "raw_receipt_preserved": true,
+  "raw_receipt_sha256": "6344774c446122bb032a46c2c926f0897d6640753b167c3d2d34c6e5ddb1933a",
+  "raw_transcript_inspected": false,
+  "repair_cycles": 4,
+  "repeated_identical_failure": true,
+  "reviewer": {
+    "completed_review_result_observed": false,
+    "due_active_work_span_ms": 2056456,
+    "due_followup_number": 6,
+    "exact_run_status_observations": [],
+    "get_count": 0,
+    "raw_task_arguments_retained": false,
+    "spawn_count": 1,
+    "spawn_run_status": "queued",
+    "spawned_elapsed_ms": 2090864,
+    "start_threshold_active_ms": 1500000,
+    "task_result_body_retained": false,
+    "transcript_retained": false
+  },
+  "route": "opencode_go/muse-spark-1.3-contributor",
+  "schema": "s019_attempt_corrected_interpretation_v1",
+  "source_revision": "ac584c886f03847ff6b829f8509667637e42a052",
+  "stop_reason": "end_turn",
+  "submitted_test_jobs": {
+    "all_terminal_observed": false,
+    "raw_job_arguments_retained": false,
+    "raw_job_ids_retained": false,
+    "submission_count": 15,
+    "terminal_observed_count": 14,
+    "terminal_status_counts": {
+      "completed": 9,
+      "failed": 4,
+      "timed_out": 1
+    },
+    "unique_submitted_job_count": 15,
+    "unobserved_count": 1,
+    "unobserved_status_counts": {
+      "running": 1
+    }
+  },
+  "task_outcome": "inconclusive",
+  "verifier": {
+    "assertion_text_retained": false,
+    "diagnostic_detail_complete": true,
+    "duration_ms": 240328,
+    "exit_code": 1,
+    "failure_counts": {
+      "errors": 1,
+      "failures": 0
+    },
+    "passed_count": 0,
+    "raw_output_retained": false,
+    "setup_failure_reason": "setup_command_timeout",
+    "state": "setup_error",
+    "tests_run": 0,
+    "timed_out": false,
+    "traceback_retained": false
+  }
+}

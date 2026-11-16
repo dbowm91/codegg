@@ -1049,7 +1049,7 @@ fn user_prompt_queue_row_zero_suffix_never_replaces_a_latched_failure() {
 fn user_prompt_queue_suffix_adds_no_row_and_changes_no_geometry() {
     let mut empty = app_with_queue(Vec::new());
     let _ = render(&mut empty, 160, 40);
-    let empty_prompt = empty.prompt_area.expect("prompt area recorded");
+    let empty_prompt = empty.frame_plan.prompt;
 
     let mut full = app_with_queue(vec![
         entry("a", 0, "alpha", "pending"),
@@ -1057,7 +1057,7 @@ fn user_prompt_queue_suffix_adds_no_row_and_changes_no_geometry() {
         entry("c", 2, "charlie", "pending"),
     ]);
     let _ = render(&mut full, 160, 40);
-    let full_prompt = full.prompt_area.expect("prompt area recorded");
+    let full_prompt = full.frame_plan.prompt;
 
     assert_eq!(
         empty_prompt.y, full_prompt.y,

@@ -24,36 +24,75 @@
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::{Margin, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
 use super::super::scroll::CenteredScroll;
+use super::super::section::{Section, SectionFrame};
 
 use crate::tui::app::state::file_tree::{
     filter_rows, FileTreeStatus, FileTreeStructure, TreePanelMode, FALLBACK_PAGE_ROWS,
 };
 use crate::tui::app::TuiMsg;
+use crate::tui::components::hint_line::HintLine;
 use crate::tui::file_icons::{self, FileIconStyle};
 use crate::tui::file_tree::{TreeFilterField, TreeNodeKind, TreeRow};
 
-/// Hints rendered under the listing. Kept in one place so the box, its
-/// hosted panel, and the help dialog cannot disagree about what the keys do.
-/// [`Component::keymap_hint`] hands this exact string to the panel host.
-///
+/// The pinned rendering of [`hint`], which is the producer: the docking test in
+/// `panels` reads this constant, and
+/// `the_keymap_the_host_advertises_is_this_box_keymap` binds the two.
+/// [`Component::keymap_hint`] hands the builder's rendering to the panel host.
 /// The panel chrome owns the word **back**, so `h` is **up** one level here.
 pub const HINT: &str =
     "j/k move · ^d/^u page · l/→ peek · h/← up · enter open · i filter · r refresh · q/⇧Q close";
+
+fn hint() -> HintLine {
+    let mut hint = HintLine::new();
+    hint.push("j/k", "move")
+        .push("^d/^u", "page")
+        .push("l/→", "peek")
+        .push("h/←", "up")
+        .push("enter", "open")
+        .push("i", "filter")
+        .push("r", "refresh")
+        .push("q/⇧Q", "close");
+    hint
+}
 /// Separator between breadcrumb components. A `›` reads as "down one level".
 const BREADCRUMB_SEP: &str = " › ";
 
 /// The revision a box starts on: one no authority can hold, so the first
 /// refresh always copies.
 const NO_REVISION: u64 = u64::MAX;
+
+/// The box's filtered rows, derived once per `(structure, filter)` change.
+///
+/// The box never flattens the tree — it adopts an already-flattened
+/// [`FileTreeStructure`] — so its only row work is its **own** filter. This
+/// cache is that work's single producer: the render path reads the slice, and
+/// the cache is rebuilt at the three writes that can change it (the structure
+/// adoption and the two filter edits).
+///
+/// It holds **paths**, so it must not outlive the structure that produced
+/// them: [`FilesDialog::adopt_structure`] rebuilds it on the same revision
+/// that replaces the view.
+#[derive(Debug, Clone, Default)]
+struct RowsCache {
+    /// Whether [`Self::rows`] describes [`FilesDialog::view`] at all.
+    valid: bool,
+    /// The authority revision the view was adopted at.
+    view_revision: u64,
+    /// The filter the rows were narrowed with.
+    filter: String,
+    /// The rows this box draws.
+    rows: Vec<TreeRow>,
+}
+
 #[derive(Clone)]
 pub struct FilesDialog {
     pub theme: Arc<Theme>,
@@ -73,6 +112,8 @@ pub struct FilesDialog {
     scroll: CenteredScroll,
     /// The box's own measured viewport height, in rows.
     visible_height: usize,
+    /// The filtered rows this box draws. See [`RowsCache`].
+    rows_cache: RowsCache,
 }
 
 impl FilesDialog {
@@ -92,6 +133,7 @@ impl FilesDialog {
             panel_mode: TreePanelMode::Normal,
             scroll: CenteredScroll::new(),
             visible_height: FALLBACK_PAGE_ROWS,
+            rows_cache: RowsCache::default(),
         }
     }
 
@@ -109,17 +151,42 @@ impl FilesDialog {
         }
         self.view = build();
         self.view_revision = revision;
+        // The adopted structure carries the listing's paths, so the filtered
+        // rows derived from the previous one are dropped on the same
+        // revision that replaced it.
+        self.refresh_rows();
+    }
+
+    /// Rebuild the filtered rows when `(view_revision, filter)` moved.
+    ///
+    /// The three writes that can invalidate the cache call this: the
+    /// structure adoption above and the two filter edits in
+    /// `handle_insert_key`. Nothing on the render path may rebuild the rows.
+    fn refresh_rows(&mut self) {
+        if self.rows_cache.valid
+            && self.rows_cache.view_revision == self.view_revision
+            && self.rows_cache.filter == self.filter
+        {
+            return;
+        }
+        self.rows_cache = RowsCache {
+            valid: true,
+            view_revision: self.view_revision,
+            filter: self.filter.clone(),
+            rows: filter_rows(&self.view.rows, &self.filter),
+        };
     }
 
     /// The rows this box shows: the view's rows, narrowed by its own filter.
-    fn rows(&self) -> Vec<TreeRow> {
-        filter_rows(&self.view.rows, &self.filter)
+    ///
+    /// A borrow of the cache: no flatten, no filter, no allocation.
+    fn rows(&self) -> &[TreeRow] {
+        &self.rows_cache.rows
     }
 
     /// Index of the cursor within the rows this box shows.
     fn selected_index(&self) -> Option<usize> {
-        let rows = self.rows();
-        self.selected_index_in(&rows)
+        self.selected_index_in(self.rows())
     }
 
     fn selected_index_in(&self, rows: &[TreeRow]) -> Option<usize> {
@@ -137,9 +204,8 @@ impl FilesDialog {
 
     /// The row the cursor is on.
     fn selected_row(&self) -> Option<TreeRow> {
-        let rows = self.rows();
-        let index = self.selected_index_in(&rows)?;
-        rows.into_iter().nth(index)
+        let index = self.selected_index()?;
+        self.rows().get(index).cloned()
     }
 
     /// The path of the row `delta` rows from the cursor, if there is one.
@@ -148,7 +214,7 @@ impl FilesDialog {
         if rows.is_empty() {
             return None;
         }
-        let current = self.selected_index_in(&rows).unwrap_or(0) as isize;
+        let current = self.selected_index_in(rows).unwrap_or(0) as isize;
         let next = (current + delta).clamp(0, rows.len() as isize - 1) as usize;
         rows.get(next).map(|row| row.path.clone())
     }
@@ -190,8 +256,10 @@ impl FilesDialog {
     }
 
     fn reveal(&mut self) {
-        let index = self.selected_index().unwrap_or(0);
-        let total = self.rows().len();
+        let (index, total) = {
+            let rows = self.rows();
+            (self.selected_index_in(rows).unwrap_or(0), rows.len())
+        };
         self.scroll.clamp(index, total, self.visible_height);
     }
 
@@ -206,8 +274,10 @@ impl FilesDialog {
     }
 
     fn render_rows(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        // The box's cached slice: the structure was flattened by the
+        // authority and narrowed once by this box's own filter.
         let rows = self.rows();
-        let selected = self.selected_index_in(&rows);
+        let selected = self.selected_index_in(rows);
         let icon_style_kind = FileIconStyle::active();
         let mut lines: Vec<Line> = Vec::new();
 
@@ -247,7 +317,7 @@ impl FilesDialog {
                 // calculation, so a row nested one level in looks the same in
                 // this box and in the Ctrl+T pane.
                 let indent =
-                    file_icons::tree_indent(&rows, self.scroll.get() + offset, area.width as usize);
+                    file_icons::tree_indent(rows, self.scroll.get() + offset, area.width as usize);
                 let (glyph, icon_style) = file_icons::icon_style(
                     row.kind,
                     &row.name,
@@ -314,8 +384,22 @@ impl FilesDialog {
     /// The title is a breadcrumb of the scope: a pane scoped with `l` is not
     /// showing the workspace root, and a flat title would be wrong about
     /// every row under it.
+    ///
+    /// The frame calls [`Self::title_in`] with the slice it went on to draw,
+    /// so the title's count and the drawn rows cannot disagree; this is the
+    /// shorthand for the rest.
+    #[cfg(test)]
     pub(crate) fn title(&self) -> String {
-        let total = self.rows().len();
+        self.title_in(self.rows())
+    }
+
+    /// The title for a given slice of this box's rows.
+    ///
+    /// Split from [`Self::title`] so the frame's title and the frame's rows
+    /// come from **one** borrow: the count in the title is the count of rows
+    /// that were drawn, by construction.
+    fn title_in(&self, rows: &[TreeRow]) -> String {
+        let total = rows.len();
         let workspace = self
             .view
             .root
@@ -353,6 +437,10 @@ impl FilesDialog {
             }
             KeyCode::Backspace => {
                 self.filter.pop();
+                // The filter is the cache's second key, so the edit is what
+                // rebuilds the rows — never a frame that happens to draw
+                // after it.
+                self.refresh_rows();
                 self.reanchor()
             }
             // Only plain (or shifted) characters are typed. A control or alt
@@ -361,6 +449,7 @@ impl FilesDialog {
                 if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
             {
                 self.filter.push(character);
+                self.refresh_rows();
                 self.reanchor()
             }
             _ => None,
@@ -377,17 +466,22 @@ impl Component for FilesDialog {
     }
 
     /// The verbs this box implements, for the panel host to reuse verbatim.
-    fn keymap_hint(&self) -> Option<String> {
-        Some(HINT.to_string())
+    fn keymap_hint_line(&self) -> Option<HintLine> {
+        Some(hint())
     }
 
     /// The listing alone: no border, no title, no footer.
     fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        let inner = area.inner(Margin::new(1, 1));
+        let inner = Section::plain(theme)
+            .frame(SectionFrame::Hosted)
+            .draw(area, frame.buffer_mut());
         if inner.height == 0 || inner.width == 0 {
             return;
         }
         self.visible_height = inner.height as usize;
+        // The same borrow the modal render takes: the cursor index and the
+        // scroll clamp come from the cached slice, and the draw re-reads it
+        // rather than rebuilding it.
         self.reveal();
         self.render_rows(frame, inner, theme);
     }
@@ -458,18 +552,26 @@ impl Component for FilesDialog {
         if area.height < 3 {
             return;
         }
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(self.title())
-            .border_style(Style::default().fg(theme.border));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        // One borrow of the box's rows for the whole frame: the title's count,
+        // the cursor index and the scroll clamp all come from it, and the
+        // draw re-reads the same cached slice. A frame that changed nothing
+        // builds no rows and applies no filter.
+        let (title, index, total) = {
+            let rows = self.rows();
+            (
+                self.title_in(rows),
+                self.selected_index_in(rows).unwrap_or(0),
+                rows.len(),
+            )
+        };
+        let section = Section::verbatim(&title, theme).focused(true);
+        let inner = section.draw(area, frame.buffer_mut());
 
         // The listing gets the whole box. The hotkey line that used to sit
         // at the bottom of the box duplicated the keymap the composer status
         // line already carries above the input.
         self.visible_height = inner.height as usize;
-        self.reveal();
+        self.scroll.clamp(index, total, self.visible_height);
         self.render_rows(frame, inner, theme);
     }
 
@@ -554,6 +656,13 @@ mod tests {
 
     fn ctrl(code: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(code), KeyModifiers::CONTROL)
+    }
+
+    /// The operations `work` performed on the render cost counters.
+    fn cost_of(work: impl FnOnce()) -> crate::tui::render_cost::RenderCost {
+        let before = crate::tui::render_cost::snapshot();
+        work();
+        crate::tui::render_cost::snapshot().since(&before)
     }
 
     #[test]
@@ -1221,8 +1330,12 @@ mod tests {
         write(root.path(), "beta.txt");
 
         let mut fixture = Fixture::new(root.path());
-        fixture.dialog.filter = "alp".to_string();
-        fixture.dialog.panel_mode = TreePanelMode::Insert;
+        // Typed through the box's own key path, so the row cache is
+        // invalidated exactly the way it is in production.
+        let _ = fixture.dialog.handle_key(key(KeyCode::Char('i')));
+        for character in "alp".chars() {
+            let _ = fixture.dialog.handle_key(key(KeyCode::Char(character)));
+        }
         fixture.dialog.scroll.set(1);
 
         // The authority moves, so the refresh really copies.
@@ -1240,6 +1353,123 @@ mod tests {
             fixture.dialog.visible_row_count(),
             1,
             "the filter still narrows the rows"
+        );
+    }
+
+    /// The box's rows are built when its key moves — the adopted revision or
+    /// its own filter — and never by a frame that draws them.
+    #[test]
+    fn the_box_rebuilds_its_rows_on_a_filter_change_and_not_on_a_frame() {
+        let root = temp();
+        write(root.path(), "alpha.txt");
+        write(root.path(), "beta.txt");
+        let mut fixture = Fixture::new(root.path());
+
+        // A frame with nothing new: neither a row build (the box never
+        // flattens a tree — the authority owns that) nor a filter pass.
+        let cost = cost_of(|| {
+            let _ = render_text(&mut fixture.dialog, 40, 10);
+        });
+        assert_eq!(
+            cost.file_tree_row_builds, 0,
+            "the box flattened a tree it only holds a view of"
+        );
+        assert_eq!(
+            cost.file_tree_filter_passes, 0,
+            "a `/files` frame that changed nothing filtered the row list"
+        );
+
+        let cost = cost_of(|| {
+            let _ = fixture.dialog.handle_key(key(KeyCode::Char('i')));
+            let _ = fixture.dialog.handle_key(key(KeyCode::Char('b')));
+        });
+        assert_eq!(
+            cost.file_tree_row_builds, 0,
+            "typing a filter character flattened the tree"
+        );
+        assert_eq!(
+            cost.file_tree_filter_passes, 1,
+            "typing a filter character is one pass over the adopted rows"
+        );
+        assert_eq!(fixture.dialog.visible_row_count(), 1, "only beta survives");
+    }
+
+    /// A structure that replaced the listing drops the box's rows on the same
+    /// revision that replaced the view: the box never draws a path the
+    /// authority no longer holds.
+    #[test]
+    fn adopting_a_new_structure_drops_the_previous_rows() {
+        let root = temp();
+        write(root.path(), "before.txt");
+        let mut fixture = Fixture::new(root.path());
+        let before = render_text(&mut fixture.dialog, 40, 10);
+        assert!(before.contains("before.txt"), "got {before:?}");
+
+        let listing = crate::tui::file_tree::TreeListing {
+            prefix: String::new(),
+            nodes: vec![crate::tui::file_tree::TreeNode {
+                name: "after.txt".to_string(),
+                path: "after.txt".to_string(),
+                depth: 1,
+                kind: TreeNodeKind::File,
+                children: None,
+            }],
+            truncated: false,
+            truncated_reason: None,
+            examined: 1,
+        };
+        let (generation, request_id) = fixture.state.begin_rebuild(root.path().to_path_buf());
+        assert!(fixture.state.apply_listing(
+            generation,
+            request_id,
+            root.path().to_path_buf(),
+            listing
+        ));
+        fixture.refresh();
+
+        let after = render_text(&mut fixture.dialog, 40, 10);
+        assert!(
+            !after.contains("before.txt"),
+            "the box drew a removed path after adopting the new structure: {after:?}"
+        );
+        assert!(after.contains("after.txt"), "got {after:?}");
+    }
+
+    /// The scroll clamp still follows the rows this box **draws**: a filter
+    /// that shortens the list pulls the offset back with it, so the box can
+    /// never scroll past the end of the filtered view.
+    #[test]
+    fn a_filter_that_shortens_the_list_clamps_the_scroll_against_the_drawn_rows() {
+        let root = temp();
+        for index in 0..40 {
+            write(root.path(), &format!("file{index:02}.txt"));
+        }
+        let mut fixture = Fixture::new(root.path());
+        fixture.select("file39.txt");
+        // The box is far taller than the filtered view, so a clamp against
+        // the *unfiltered* count would leave 32 rows of blank offset.
+        let _ = fixture.dialog.handle_key(key(KeyCode::Char('i')));
+        for character in "file3".chars() {
+            let _ = fixture.dialog.handle_key(key(KeyCode::Char(character)));
+        }
+        fixture.dialog.scroll.set(32);
+
+        let text = render_text(&mut fixture.dialog, 40, 10);
+
+        assert_eq!(
+            fixture.dialog.scroll.get(),
+            2,
+            "the clamp is against the filtered row count (10) and the box's own \
+             height (8), not against the listing's 40 rows"
+        );
+        assert!(
+            text.contains("file32.txt"),
+            "the draw starts at the clamped offset (index 2 of the filtered \
+             view), got {text:?}"
+        );
+        assert!(
+            !text.contains("file30.txt"),
+            "the offset was not clamped to the filtered view's end, got {text:?}"
         );
     }
 

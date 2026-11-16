@@ -10,8 +10,11 @@ use crate::protocol::core::{
     AssetRefreshReasonDto, AssetRefreshRequestDto, AssetRefreshScopeDto, CoreRequest, CoreResponse,
 };
 use crate::tui::app::state::agent::AgentState;
+use crate::tui::app::App;
+use crate::tui::app::Dialog;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
+use crate::tui::commands::close_command_mode;
 use crate::tui::task_lifecycle::TuiTaskKind;
 use crate::util::truncate::truncate_prefix;
 
@@ -700,6 +703,180 @@ pub(crate) fn validate_agent_select(name: &str, agent_state: &AgentState) -> Res
     }
 
     Ok(idx)
+}
+
+pub(crate) fn dispatch_reload(app: &mut App) {
+    app.enqueue_tui_command(TuiCommand::RefreshAssets);
+    close_command_mode(app);
+}
+
+pub(crate) fn dispatch_agent_select(app: &mut App, argument: &str) {
+    let name = argument.to_string();
+    if name.is_empty() {
+        // No argument: open the agent selection dialog
+        app.ui_state.command_mode = false;
+        app.open_dialog(Dialog::Agent);
+        return;
+    }
+    match crate::tui::commands::agents::validate_agent_select(&name, &app.agent_state) {
+        Ok(idx) => {
+            app.agent_state.current_agent = idx;
+            let agent = &app.agent_state.agents[idx];
+            let model = app.agent_state.current_model.clone();
+            app.messages_state.toasts.info(&format!(
+                "selected agent: {} (model: {})",
+                agent.name, model
+            ));
+        }
+        Err(e) => {
+            app.messages_state.toasts.error(&e);
+        }
+    }
+}
+
+pub(crate) fn dispatch_agents(app: &mut App, argument: &str) {
+    let workspace_root = match app.project_execution_context() {
+        Ok(context) => context.workspace_root,
+        Err(error) => {
+            app.messages_state.toasts.error(&error);
+            return;
+        }
+    };
+    // The argument is everything after the command spelling.
+    let args = argument.to_string();
+
+    if args.is_empty() {
+        // Bare `/agents` opens **agents**, the same surface `/agent`
+        // opens. It used to open the panel picker instead — "where
+        // should this panel live?" — which answered a question the
+        // user did not ask: someone typing `/agents` wants to see
+        // agents, and asking them to choose a placement first made
+        // the command look broken.
+        //
+        // Panel *placement* is a real question and stays reachable
+        // through `/panels`; the two are different questions and
+        // should not share an entry point. Everything below here —
+        // `/agents show`, `--all`, `diff`, `validate`, `reload` —
+        // is unchanged, so nothing that worked before is now
+        // harder to reach.
+        app.ui_state.command_mode = false;
+        app.open_dialog(Dialog::Agent);
+        return;
+    }
+
+    let parts: Vec<&str> = args.splitn(2, ' ').collect();
+    let subcmd = parts[0];
+    let subargs = parts.get(1).copied().unwrap_or("").trim();
+
+    match subcmd {
+        "--all" | "-a" => {
+            let lines = crate::tui::commands::agents::format_agents_list_for_root(
+                &app.agent_state,
+                true,
+                &workspace_root,
+            );
+            app.show_short_or_info(
+                crate::tui::components::dialogs::info::InfoType::Agents,
+                lines,
+            );
+        }
+        "show" => {
+            if subargs.is_empty() {
+                app.messages_state
+                    .toasts
+                    .warning("Usage: /agents show <name>");
+                return;
+            }
+            let lines =
+                crate::tui::commands::agents::format_agent_show_for_root(subargs, &workspace_root);
+            app.show_short_or_info(
+                crate::tui::components::dialogs::info::InfoType::Agents,
+                lines,
+            );
+        }
+        "diff" => {
+            if subargs.is_empty() {
+                app.messages_state
+                    .toasts
+                    .warning("Usage: /agents diff <name>");
+                return;
+            }
+            let lines =
+                crate::tui::commands::agents::format_agent_diff_for_root(subargs, &workspace_root);
+            app.show_short_or_info(
+                crate::tui::components::dialogs::info::InfoType::Agents,
+                lines,
+            );
+        }
+        "validate" => {
+            let (lines, _) =
+                crate::tui::commands::agents::format_agents_validate_inner(&workspace_root);
+            app.show_short_or_info(
+                crate::tui::components::dialogs::info::InfoType::Agents,
+                lines,
+            );
+        }
+        "reload" | "rebuild" => {
+            let (new_agents, diags) =
+                crate::tui::commands::agents::rebuild_agents_for_root(&workspace_root);
+            if !new_agents.is_empty() {
+                // Preserve current agent if still valid
+                let current_name = app
+                    .agent_state
+                    .agents
+                    .get(app.agent_state.current_agent)
+                    .map(|a| a.name.clone());
+                app.agent_state.agents = new_agents;
+                if let Some(ref name) = current_name {
+                    if let Some(idx) = app.agent_state.agents.iter().position(|a| a.name == *name) {
+                        // Check if agent is still selectable (not hidden, not subagent-only)
+                        let agent = &app.agent_state.agents[idx];
+                        if !agent.hidden && !matches!(agent.mode, AgentMode::Subagent) {
+                            app.agent_state.current_agent = idx;
+                        } else {
+                            // Current agent became hidden or subagent-only, fall back
+                            if let Some(idx) = app
+                                .agent_state
+                                .agents
+                                .iter()
+                                .position(|a| a.name == "build")
+                            {
+                                app.agent_state.current_agent = idx;
+                            } else {
+                                app.agent_state.current_agent = 0;
+                            }
+                        }
+                    } else {
+                        // Current agent disappeared, fall back to default
+                        if let Some(idx) = app
+                            .agent_state
+                            .agents
+                            .iter()
+                            .position(|a| a.name == "build")
+                        {
+                            app.agent_state.current_agent = idx;
+                        } else {
+                            app.agent_state.current_agent = 0;
+                        }
+                    }
+                }
+            }
+            app.show_short_or_info(
+                crate::tui::components::dialogs::info::InfoType::Agents,
+                diags,
+            );
+        }
+        _ => {
+            // Treat unknown subcommand as agent name for convenience
+            // e.g., `/agents build` shows that agent
+            let lines =
+                crate::tui::commands::agents::format_agent_show_for_root(subcmd, &workspace_root);
+            app.show_short_or_info(
+                crate::tui::components::dialogs::info::InfoType::Agents,
+                lines,
+            );
+        }
+    }
 }
 
 #[cfg(test)]

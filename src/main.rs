@@ -488,8 +488,8 @@ enum Commands {
     },
     #[command(hide = true, name = "core-stdio")]
     CoreStdio,
-    /// Run diagnostics for search, MCP, LSP, deterministic tools,
-    /// providers, and credentials (default: all).
+    /// Run diagnostics for search, MCP, LSP, deterministic tools, providers,
+    /// credentials, and the session request ledger (default: all).
     Doctor {
         /// Restrict diagnostics to a single subsystem.
         #[arg(value_enum)]
@@ -503,6 +503,13 @@ enum Commands {
     Auth {
         #[command(subcommand)]
         command: AuthSubcommand,
+    },
+    /// Show the effective configuration and which layer won each key.
+    /// `--provenance` names every layer's file and the values it overrode;
+    /// `--format json` emits the same attribution as a stable array.
+    Config {
+        #[command(subcommand)]
+        command: ConfigSubcommand,
     },
     /// Run an ACP v1 agent over newline-delimited JSON-RPC on stdio.
     Acp {
@@ -584,6 +591,22 @@ enum ToolAdvisorDataCommand {
 }
 
 #[derive(Subcommand, Clone, Debug)]
+enum ConfigSubcommand {
+    /// Print the effective configuration.
+    ///
+    /// Values come from the same merge `Config::load` uses, and a credential
+    /// prints `(set)` or `(unset)`, never its value.
+    Show {
+        /// Name each layer's file and the layer that won every key
+        #[arg(long)]
+        provenance: bool,
+        /// Output format: text or json
+        #[arg(long, value_enum, default_value = "text")]
+        format: OutputFormat,
+    },
+}
+
+#[derive(Subcommand, Clone, Debug)]
 enum AuthSubcommand {
     /// List stored credentials (no plaintext, no ciphertext, no fingerprint).
     Status,
@@ -633,6 +656,8 @@ pub enum DoctorSubsystem {
     Credentials,
     /// Installation-owned runfiles (codegg siblings, versions, kernel probe).
     Installation,
+    #[value(help = "Session request ledger (row count and digests, never bodies).")]
+    Session,
 }
 
 /// Resolve the `doctor` subsystem from the positional argument and the
@@ -1256,6 +1281,99 @@ mod output_format_tests {
 }
 
 #[cfg(test)]
+mod session_ledger_report_tests {
+    use super::{session_ledger_report_lines, Cli, Commands, DoctorSubsystem};
+    use clap::Parser;
+    use codegg::session::request_ledger::{
+        RequestLedgerHealth, TurnRequestAttempt, TurnRequestLedgerStore, TurnRequestOutcome,
+    };
+    use std::str::FromStr;
+
+    async fn ledger_pool() -> sqlx::SqlitePool {
+        let name = format!("doctor_ledger_{}", uuid::Uuid::new_v4().simple());
+        let options = sqlx::sqlite::SqliteConnectOptions::from_str(&format!(
+            "file:{name}?mode=memory&cache=shared"
+        ))
+        .expect("valid sqlite options")
+        .create_if_missing(true)
+        .busy_timeout(std::time::Duration::from_secs(10));
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("connect in-memory sqlite");
+        codegg::session::schema::migrate(&pool)
+            .await
+            .expect("migrations run inside the helper");
+        pool
+    }
+
+    #[test]
+    fn an_empty_ledger_reports_no_rows() {
+        let lines = session_ledger_report_lines(&RequestLedgerHealth {
+            total_rows: 0,
+            last: None,
+        });
+        assert_eq!(lines, vec!["ledger: no ledger rows".to_string()]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_report_prints_the_last_digests_and_never_a_body() {
+        let store = TurnRequestLedgerStore::new(ledger_pool().await);
+        let id = store
+            .record_attempt(TurnRequestAttempt {
+                session_id: "session-doctor",
+                turn_index: 2,
+                attempt_index: 1,
+                attempt_id: "attempt-9",
+                model: "doctor-model",
+                effort: Some("high"),
+                system_digest: "system-digest",
+                tools_digest: "tools-digest",
+                message_digest: "message-digest",
+                message_count: 12,
+                section_digests: None,
+            })
+            .await
+            .expect("seed one attempt");
+        store
+            .settle_attempt(
+                &id,
+                TurnRequestOutcome::Failed,
+                Some("request body carrying SECRET-MARKER-9f3"),
+            )
+            .await
+            .expect("settle the seeded attempt");
+
+        let health = store.ledger_health().await.expect("read ledger health");
+        let rendered = session_ledger_report_lines(&health).join("\n");
+        assert!(rendered.contains("ledger: 1 row(s) retained"), "{rendered}");
+        assert!(rendered.contains("turn=2 attempt=1"), "{rendered}");
+        assert!(rendered.contains("outcome=failed"), "{rendered}");
+        assert!(rendered.contains("system=system-digest"), "{rendered}");
+        assert!(rendered.contains("tools=tools-digest"), "{rendered}");
+        assert!(rendered.contains("message=message-digest"), "{rendered}");
+        assert!(rendered.contains("body: present"), "{rendered}");
+        assert!(
+            !rendered.contains("SECRET-MARKER-9f3"),
+            "the diagnostic prints digests, never a body: {rendered}"
+        );
+    }
+
+    #[test]
+    fn the_session_subsystem_is_selectable() {
+        let cli = Cli::try_parse_from(["codegg", "doctor", "session"])
+            .expect("the session subsystem parses");
+        match cli.command {
+            Some(Commands::Doctor { subsystem, .. }) => {
+                assert_eq!(subsystem, Some(DoctorSubsystem::Session));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
 mod cli_surface_tests {
     use super::*;
     use clap::{CommandFactory, Parser};
@@ -1366,6 +1484,7 @@ mod cli_surface_tests {
                 "mcp",
                 "providers",
                 "search",
+                "session",
             ]
             .into_iter()
             .map(String::from)
@@ -1686,6 +1805,143 @@ mod cli_surface_tests {
             );
         }
     }
+
+    #[test]
+    fn config_show_is_registered_with_both_operator_flags() {
+        let command = Cli::command();
+        let config = command
+            .find_subcommand("config")
+            .expect("config subcommand exists");
+        let mut subcommands: Vec<_> = config
+            .get_subcommands()
+            .map(|subcommand| subcommand.get_name().to_owned())
+            .collect();
+        subcommands.sort();
+        assert_eq!(
+            subcommands,
+            vec!["show"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>(),
+            "`config` exposes exactly the `show` subcommand"
+        );
+
+        let bare = Cli::try_parse_from(["codegg", "config", "show"]).expect("bare show parses");
+        let Some(Commands::Config { command }) = bare.command else {
+            panic!("expected the config command");
+        };
+        match command {
+            ConfigSubcommand::Show { provenance, format } => {
+                assert!(!provenance, "provenance is opt-in");
+                assert_eq!(format, OutputFormat::Text, "text is the default format");
+            }
+        }
+
+        let flagged = Cli::try_parse_from([
+            "codegg",
+            "config",
+            "show",
+            "--provenance",
+            "--format",
+            "json",
+        ])
+        .expect("both operator flags parse");
+        let Some(Commands::Config { command }) = flagged.command else {
+            panic!("expected the config command");
+        };
+        match command {
+            ConfigSubcommand::Show { provenance, format } => {
+                assert!(provenance, "--provenance must be recorded");
+                assert_eq!(format, OutputFormat::Json, "--format json must be recorded");
+            }
+        }
+    }
+
+    #[test]
+    fn config_show_reports_a_broken_layer_and_fails_the_run() {
+        let broken = std::path::PathBuf::from("/fixture/broken-global.jsonc");
+        let good = std::path::PathBuf::from("/fixture/project.jsonc");
+        let layers = codegg::config::provenance::layers_from_sources(&[
+            (
+                paths::ConfigLayerKind::Global,
+                broken,
+                "{ this is not a configuration document",
+            ),
+            (
+                paths::ConfigLayerKind::Project,
+                good,
+                r#"{"model": "fixture-model"}"#,
+            ),
+        ]);
+
+        let show = config_show(&layers, true, OutputFormat::Text).expect("the dump is produced");
+
+        assert_eq!(
+            show.failures.len(),
+            1,
+            "exactly one layer failed: {:?}",
+            show.failures
+        );
+        assert!(
+            show.failures[0].contains("broken-global.jsonc"),
+            "the failure must name the layer's path: {:?}",
+            show.failures
+        );
+        assert!(
+            show.body.contains("broken-global.jsonc"),
+            "the dump must name the broken layer: {}",
+            show.body
+        );
+        assert!(
+            show.body.contains("project.jsonc") && show.body.contains("fixture-model"),
+            "the layers that parsed must still print: {}",
+            show.body
+        );
+        assert!(
+            config_show_exit(&show).is_err(),
+            "a partially-parsed layer set must never exit successfully"
+        );
+
+        let clean =
+            config_show(&layers[1..], true, OutputFormat::Text).expect("the dump is produced");
+        assert!(
+            clean.failures.is_empty(),
+            "a layer set that parsed carries no failure: {:?}",
+            clean.failures
+        );
+        assert!(
+            config_show_exit(&clean).is_ok(),
+            "a complete dump must exit successfully"
+        );
+    }
+
+    #[test]
+    fn config_show_default_text_keeps_credential_values_redacted() {
+        let layers = codegg::config::provenance::layers_from_sources(&[(
+            paths::ConfigLayerKind::Project,
+            std::path::PathBuf::from("/fixture/project.jsonc"),
+            r#"{"model": "fixture-model", "server": {"token": "sk-do-not-print"}}"#,
+        )]);
+
+        let text = config_show(&layers, false, OutputFormat::Text).expect("the dump is produced");
+        let json = config_show(&layers, false, OutputFormat::Json).expect("the dump is produced");
+
+        for body in [&text.body, &json.body] {
+            assert!(
+                !body.contains("sk-do-not-print"),
+                "a credential value must never be printed: {body}"
+            );
+            assert!(
+                body.contains("server.token") && body.contains("(set)"),
+                "the credential key must print (set): {body}"
+            );
+        }
+        assert!(
+            text.body.contains("fixture-model"),
+            "a non-credential value still prints: {}",
+            text.body
+        );
+    }
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -1810,6 +2066,9 @@ async fn main() -> Result<(), AppError> {
             }
             Commands::Auth { command } => {
                 cmd_auth(command.clone())?;
+            }
+            Commands::Config { command } => {
+                cmd_config(command.clone())?;
             }
             Commands::Acp { policy } => {
                 let root_policy = cli.policy.resolve().map_err(|e| {
@@ -3143,6 +3402,11 @@ async fn cmd_doctor(subsystem: DoctorSubsystem) -> Result<(), AppError> {
         print_credentials_report();
     }
 
+    if matches!(subsystem, DoctorSubsystem::All | DoctorSubsystem::Session) {
+        println!("\n== Session ledger ==");
+        print_session_ledger_report().await?;
+    }
+
     Ok(())
 }
 
@@ -3198,6 +3462,161 @@ fn print_credentials_report() {
             "  - {} [{}] account={} expires={} scopes={:?}",
             rec.provider_id, kind, account, expires, rec.scopes
         );
+    }
+}
+
+async fn print_session_ledger_report() -> Result<(), AppError> {
+    let paths = storage::DaemonPaths::default();
+    if !paths.catalog_db_path().exists() {
+        println!("ledger: no ledger rows");
+        return Ok(());
+    }
+    let pool = storage::init_daemon_catalog(&paths).await?;
+    let store = codegg::session::request_ledger::TurnRequestLedgerStore::new(pool.clone());
+    let health = match store.ledger_health().await {
+        Ok(health) => health,
+        Err(error) if codegg::session::request_ledger::is_missing_table(&error) => {
+            pool.close().await;
+            println!("ledger: no ledger rows");
+            return Ok(());
+        }
+        Err(error) => {
+            pool.close().await;
+            return Err(AppError::Other(anyhow::anyhow!(error.to_string())));
+        }
+    };
+    pool.close().await;
+    for line in session_ledger_report_lines(&health) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+fn session_ledger_report_lines(
+    health: &codegg::session::request_ledger::RequestLedgerHealth,
+) -> Vec<String> {
+    let Some(last) = health.last.as_ref() else {
+        return vec!["ledger: no ledger rows".to_string()];
+    };
+    vec![
+        format!("ledger: {} row(s) retained", health.total_rows),
+        format!(
+            "last attempt: session={} turn={} attempt={} id={} outcome={}",
+            last.session_id,
+            last.turn_index,
+            last.attempt_index,
+            last.attempt_id,
+            last.outcome.as_str()
+        ),
+        format!(
+            "last attempt selection: model={} effort={}",
+            last.model,
+            last.effort.as_deref().unwrap_or("none")
+        ),
+        format!(
+            "last attempt digests: system={} tools={} message={} messages={}",
+            last.system_digest, last.tools_digest, last.message_digest, last.message_count
+        ),
+        format!(
+            "last attempt body: {}",
+            if last.body.is_some() {
+                "present"
+            } else {
+                "absent"
+            }
+        ),
+    ]
+}
+
+/// One `config show` run: the dump to print and the layers that failed.
+struct ConfigShow {
+    /// The dump. It names every discovered layer, broken or not.
+    body: String,
+    /// One diagnostic per layer that failed; empty means the dump is complete.
+    failures: Vec<String>,
+}
+
+/// Render the `config show` dump from the discovered layers.
+///
+/// The merge is the engine's `analyze`, so values are the ones `Config::load`
+/// produces and credentials are already `(set)`/`(unset)`. `--provenance`
+/// selects the full text dump; JSON carries the attribution unconditionally,
+/// because its shape is the stable `{ path, value, layer, shadowed }` array.
+fn config_show(
+    layers: &[codegg::config::provenance::Layer],
+    provenance: bool,
+    format: OutputFormat,
+) -> Result<ConfigShow, AppError> {
+    let report = codegg::config::provenance::analyze(layers)
+        .map_err(|error| AppError::Other(anyhow::anyhow!(error)))?;
+
+    let body = match (provenance, format) {
+        (_, OutputFormat::Json) => codegg::config::provenance::render_json(&report),
+        (true, OutputFormat::Text) => codegg::config::provenance::render_text(&report),
+        (false, OutputFormat::Text) => render_effective_values(&report),
+    };
+
+    let failures = report
+        .layers
+        .iter()
+        .filter_map(|layer| {
+            layer.error.as_ref().map(|error| {
+                format!(
+                    "config layer {} {}: {error}",
+                    layer.kind,
+                    layer.path.display()
+                )
+            })
+        })
+        .collect();
+
+    Ok(ConfigShow { body, failures })
+}
+
+/// The default `config show` text: one `path = value` line per effective key.
+///
+/// It is `render_text` without the layer header and shadowed values, which is
+/// what `--provenance` adds. The values are already redacted.
+fn render_effective_values(report: &codegg::config::provenance::Report) -> String {
+    if report.entries.is_empty() {
+        return if report.layers.is_empty() {
+            "(no configuration file was found; every key is at its default)\n".to_string()
+        } else {
+            "effective keys: (none; every key is at its default)\n".to_string()
+        };
+    }
+    let mut out = String::new();
+    for entry in &report.entries {
+        out.push_str(&format!("{} = {}\n", entry.path, entry.value));
+    }
+    out
+}
+
+/// Decide the exit status of a run that already printed `show`.
+///
+/// A broken layer must never present as a clean result, so the caller prints
+/// the dump first and then fails here.
+fn config_show_exit(show: &ConfigShow) -> Result<(), AppError> {
+    if show.failures.is_empty() {
+        return Ok(());
+    }
+    for failure in &show.failures {
+        eprintln!("{failure}");
+    }
+    Err(AppError::Other(anyhow::anyhow!(
+        "{} configuration layer(s) failed to parse; the dump above is incomplete",
+        show.failures.len()
+    )))
+}
+
+fn cmd_config(command: ConfigSubcommand) -> Result<(), AppError> {
+    match command {
+        ConfigSubcommand::Show { provenance, format } => {
+            let layers = codegg::config::provenance::load_layers();
+            let show = config_show(&layers, provenance, format)?;
+            print!("{}", show.body);
+            config_show_exit(&show)
+        }
     }
 }
 
@@ -3534,6 +3953,34 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         Some(std::sync::Arc::new(
             codegg::tool::writer_fence::WorkspaceWriterFence::new(cli_workspace_root.clone()),
         ));
+    let ledger_pool =
+        match storage::init_migrated_daemon_catalog(&storage::DaemonPaths::default()).await {
+            Ok(pool) => Some(pool),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "request ledger store unavailable; this run records no ledger row"
+                );
+                None
+            }
+        };
+    let session_id = match &ledger_pool {
+        Some(pool) => {
+            match create_cli_turn_session(pool, &cli_workspace_root, &safe_agent.name, &model_name)
+                .await
+            {
+                Ok(session) => session.id,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "ephemeral session unavailable; this run's pool-backed stores degrade"
+                    );
+                    uuid::Uuid::new_v4().to_string()
+                }
+            }
+        }
+        None => uuid::Uuid::new_v4().to_string(),
+    };
     let mut agent_loop = codegg::agent::r#loop::AgentLoop::new(
         agents.clone(),
         provider,
@@ -3541,10 +3988,10 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         tool_registry,
         config.clone(),
         mcp_service,
-        None,
+        ledger_pool,
         std::sync::Arc::new(codegg::context::InMemoryArtifactStore::new()),
         cli_workspace_root.clone(),
-        uuid::Uuid::new_v4().to_string(),
+        session_id,
         writer_fence,
         // The CLI holds no daemon scope, so there is no reservation to
         // violate and processes stay unrestricted.
@@ -3617,6 +4064,9 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         },
     );
     agent_loop.set_prompt_compiler_fingerprint(compiled_prompt.fingerprint.clone());
+    agent_loop.set_prompt_section_digests(codegg::agent::prompt::section_digests(
+        &compiled_prompt.blocks,
+    ));
 
     let request = provider::ChatRequest {
         messages: vec![provider::Message::User {
@@ -3654,6 +4104,37 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
     }
 
     Ok(())
+}
+
+fn cli_project_id(workspace_root: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(workspace_root.to_string_lossy().as_bytes());
+    format!("cli-{:x}", hasher.finalize())
+}
+
+async fn create_cli_turn_session(
+    pool: &sqlx::SqlitePool,
+    workspace_root: &Path,
+    agent: &str,
+    model: &str,
+) -> Result<Session, StorageError> {
+    SessionStore::new(pool.clone())
+        .create(codegg::session::CreateSession {
+            project_id: cli_project_id(workspace_root),
+            directory: workspace_root.to_string_lossy().into_owned(),
+            title: Some("CLI run".to_string()),
+            parent_id: None,
+            workspace_id: None,
+            agent: Some(agent.to_string()),
+            model: Some(model.to_string()),
+            tags: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
+        })
+        .await
 }
 
 async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
@@ -4717,6 +5198,9 @@ async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
         )
         .await;
 
+    daemon.shutdown_jobs().await;
+    drop(daemon);
+
     // Cleanup: drop pid, Unix socket, and metadata (in that order so observers
     // never see socket-gone + PID-present). Windows pipe names are not files;
     // dropping the listener closes the kernel object. Guard removes metadata.
@@ -4816,6 +5300,7 @@ async fn run_core_stdio() -> Result<(), AppError> {
         stdout.write_all(b"\n").await.map_err(AppError::Io)?;
         stdout.flush().await.map_err(AppError::Io)?;
     }
+    core.shutdown_jobs().await;
     Ok(())
 }
 
@@ -4926,9 +5411,10 @@ async fn cmd_server(host: &str, port: u16, standalone_core: bool) -> Result<(), 
     // generation left in flight.
     daemon.reconcile_git_index_publications().await;
 
-    codegg::server::run_server(host, port, Some(daemon))
-        .await
-        .map_err(|e| AppError::Other(anyhow::anyhow!("Server error: {}", e)))
+    let serve_result = codegg::server::run_server(host, port, Some(Arc::clone(&daemon))).await;
+    daemon.shutdown_jobs().await;
+    drop(daemon);
+    serve_result.map_err(|e| AppError::Other(anyhow::anyhow!("Server error: {}", e)))
 }
 
 #[cfg(feature = "server")]
@@ -4966,4 +5452,648 @@ fn pid_is_alive(_pid: u32) -> Result<bool, std::io::Error> {
         std::io::ErrorKind::Unsupported,
         "process liveness is unavailable on this platform",
     ))
+}
+
+#[cfg(test)]
+mod single_shot_ledger_tests {
+    use super::*;
+    use async_trait::async_trait;
+    use codegg::agent::prompt::{PromptCompiler, PromptCompilerInput};
+    use codegg::agent::r#loop::AgentLoop;
+    use codegg::provider::{ChatEvent, EventStream, ModelInfo, Provider, ProviderError};
+
+    struct SilentProvider;
+
+    #[async_trait]
+    impl Provider for SilentProvider {
+        fn id(&self) -> &str {
+            "single-shot-silent"
+        }
+
+        fn name(&self) -> &str {
+            "Single Shot Silent"
+        }
+
+        fn clone_box(&self) -> Box<dyn Provider> {
+            Box::new(Self)
+        }
+
+        async fn stream(
+            &self,
+            _request: &codegg::provider::ChatRequest,
+        ) -> Result<EventStream, ProviderError> {
+            Ok(Box::pin(futures_util::stream::iter(Vec::<
+                Result<ChatEvent, ProviderError>,
+            >::new())))
+        }
+
+        async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn compiled_single_shot_prompt() -> codegg::agent::prompt::CompiledPrompt {
+        let agents = codegg::agent::builtins::generated_builtin_agents();
+        let agent = agents
+            .iter()
+            .find(|agent| agent.name == "build")
+            .expect("the build agent is a built-in");
+        let config = Config::default();
+        let model_profile =
+            codegg::model_profile::ModelProfileResolver::new(&config).resolve("single-shot-model");
+        let adapter = codegg::model_profile::resolve_adapter(None, "single-shot-model");
+        PromptCompiler::compile(PromptCompilerInput {
+            agent,
+            model_profile: &model_profile,
+            config: &config,
+            tools: &["read".to_string()],
+            skills: &[],
+            agents: &agents,
+            is_plan_mode: false,
+            snapshot: None,
+            pin: None,
+            execution: None,
+            adapter_fingerprint: Some(&adapter.fingerprint),
+            runtime_blocks: &[],
+        })
+    }
+
+    #[test]
+    fn the_single_shot_prompt_records_a_present_section_map() {
+        let compiled = compiled_single_shot_prompt();
+        let digests = codegg::agent::prompt::section_digests(&compiled.blocks);
+        assert!(
+            digests.contains_key("harness_contract"),
+            "the CLI's compiled prompt has a harness contract section"
+        );
+        assert!(
+            !digests.is_empty(),
+            "the CLI prompt is sectioned, so its recorded map is present and non-empty"
+        );
+        let workspace = tempfile::tempdir().expect("single-shot workspace");
+        let mut agent_loop = AgentLoop::new(
+            Vec::new(),
+            Box::new(SilentProvider),
+            codegg::permission::PermissionChecker::new(None, None),
+            codegg::tool::ToolRegistry::default(),
+            Config::default(),
+            None,
+            None,
+            Arc::new(codegg::context::InMemoryArtifactStore::new()),
+            workspace.path().to_path_buf(),
+            uuid::Uuid::new_v4().to_string(),
+            None,
+            None,
+        );
+        assert_eq!(
+            agent_loop.prompt_section_digests(),
+            None,
+            "the single-shot loop starts with no section identity"
+        );
+        agent_loop
+            .set_prompt_section_digests(codegg::agent::prompt::section_digests(&compiled.blocks));
+        assert_eq!(
+            agent_loop.prompt_section_digests(),
+            Some(&digests),
+            "the single-shot loop holds the compiled prompt's section map, not a rebuild"
+        );
+    }
+
+    struct RecordingProvider;
+
+    #[async_trait]
+    impl Provider for RecordingProvider {
+        fn id(&self) -> &str {
+            "single-shot-recording"
+        }
+
+        fn name(&self) -> &str {
+            "Single Shot Recording"
+        }
+
+        fn clone_box(&self) -> Box<dyn Provider> {
+            Box::new(Self)
+        }
+
+        async fn stream(
+            &self,
+            _request: &codegg::provider::ChatRequest,
+        ) -> Result<EventStream, ProviderError> {
+            Ok(Box::pin(futures_util::stream::iter(vec![
+                Ok(ChatEvent::TextDelta(Arc::new("recorded".to_string()))),
+                Ok(ChatEvent::Finish {
+                    stop_reason: Arc::new("stop".to_string()),
+                    usage: Default::default(),
+                }),
+            ])))
+        }
+
+        async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn single_shot_loop(
+        workspace: &std::path::Path,
+        session_id: &str,
+        pool: Option<sqlx::SqlitePool>,
+    ) -> AgentLoop {
+        AgentLoop::new(
+            Vec::new(),
+            Box::new(RecordingProvider),
+            codegg::permission::PermissionChecker::new(None, None),
+            codegg::tool::ToolRegistry::default(),
+            Config::default(),
+            None,
+            pool,
+            Arc::new(codegg::context::InMemoryArtifactStore::new()),
+            workspace.to_path_buf(),
+            session_id.to_string(),
+            None,
+            None,
+        )
+    }
+
+    fn single_shot_request() -> codegg::provider::ChatRequest {
+        codegg::provider::ChatRequest {
+            messages: vec![codegg::provider::Message::User {
+                content: vec![codegg::provider::ContentPart::Text {
+                    text: "single shot".to_string().into(),
+                }],
+            }],
+            model: "single-shot-model".to_string(),
+            tools: None,
+            system: Some("system".to_string()),
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            context: codegg::provider::ProviderRequestContext::default(),
+        }
+    }
+
+    async fn catalog_pool(root: &std::path::Path) -> sqlx::SqlitePool {
+        let paths =
+            codegg_core::storage::DaemonPaths::with_overrides(Some(root.to_path_buf()), None);
+        codegg::storage::init_migrated_daemon_catalog(&paths)
+            .await
+            .expect("migrated catalog")
+    }
+
+    fn rendered_text(events: &[ChatEvent]) -> String {
+        let mut processor = codegg::agent::processor::EventProcessor::new();
+        for event in events {
+            processor.process(event);
+        }
+        processor.text().to_string()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_single_shot_turn_records_its_attempt_in_the_ledger() {
+        let workspace = tempfile::tempdir().expect("single-shot workspace");
+        let catalog = tempfile::tempdir().expect("catalog root");
+        let pool = catalog_pool(catalog.path()).await;
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let mut agent_loop = single_shot_loop(workspace.path(), &session_id, Some(pool.clone()));
+        let sections =
+            codegg::agent::prompt::section_digests(&compiled_single_shot_prompt().blocks);
+        agent_loop.set_prompt_section_digests(sections.clone());
+
+        agent_loop
+            .run(single_shot_request())
+            .await
+            .expect("the one-shot turn completes");
+
+        let health = codegg::session::request_ledger::TurnRequestLedgerStore::new(pool)
+            .ledger_health()
+            .await
+            .expect("read the ledger the turn wrote");
+        assert_eq!(
+            health.total_rows, 1,
+            "a one-shot turn records exactly one ledger row for its one attempt"
+        );
+        let row = health.last.expect("the recorded attempt is readable");
+        assert_eq!(
+            row.session_id, session_id,
+            "the row names the invocation's own session"
+        );
+        assert_eq!(row.model, "single-shot-model");
+        assert_eq!(
+            row.section_digests.as_ref(),
+            Some(&sections),
+            "the compiled prompt's section identity is what the CLI threads into the loop"
+        );
+        assert_eq!(
+            row.outcome,
+            codegg::session::request_ledger::TurnRequestOutcome::Ok,
+            "the settled row reports the turn that actually finished"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_ledger_store_failure_leaves_the_turn_unchanged() {
+        let control_workspace = tempfile::tempdir().expect("control workspace");
+        let control_catalog = tempfile::tempdir().expect("control catalog root");
+        let control_pool = catalog_pool(control_catalog.path()).await;
+        let mut control = single_shot_loop(
+            control_workspace.path(),
+            "control-session",
+            Some(control_pool.clone()),
+        );
+        let control_events = control
+            .run(single_shot_request())
+            .await
+            .expect("the control turn completes");
+        let control_health =
+            codegg::session::request_ledger::TurnRequestLedgerStore::new(control_pool)
+                .ledger_health()
+                .await
+                .expect("read the control ledger");
+        assert_eq!(
+            control_health.total_rows, 1,
+            "the control turn recorded its attempt, so the comparison is not two silent no-ops"
+        );
+
+        let subject_workspace = tempfile::tempdir().expect("subject workspace");
+        let subject_catalog = tempfile::tempdir().expect("subject catalog root");
+        let subject_pool = catalog_pool(subject_catalog.path()).await;
+        sqlx::query("DROP TABLE turn_request_ledger")
+            .execute(&subject_pool)
+            .await
+            .expect("remove the ledger table to make the store fail");
+        let mut subject = single_shot_loop(
+            subject_workspace.path(),
+            "subject-session",
+            Some(subject_pool.clone()),
+        );
+        let subject_events = subject
+            .run(single_shot_request())
+            .await
+            .expect("a store failure must not fail the turn");
+
+        assert_eq!(
+            rendered_text(&subject_events),
+            rendered_text(&control_events),
+            "a store failure leaves the turn's output byte-identical"
+        );
+        assert_eq!(
+            subject_events.len(),
+            control_events.len(),
+            "a store failure leaves the turn's event sequence unchanged"
+        );
+        let error = codegg::session::request_ledger::TurnRequestLedgerStore::new(subject_pool)
+            .ledger_health()
+            .await
+            .expect_err("the removed table is the store failure under test");
+        assert!(
+            codegg::session::request_ledger::is_missing_table(&error),
+            "the failure is the absent store, not a different error: {error}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_ledger_write_failure_leaves_the_turn_unchanged() {
+        let workspace = tempfile::tempdir().expect("single-shot workspace");
+        let catalog = tempfile::tempdir().expect("catalog root");
+        let pool = catalog_pool(catalog.path()).await;
+        sqlx::query(
+            "CREATE TRIGGER ledger_insert_refused BEFORE INSERT ON turn_request_ledger \
+             BEGIN SELECT RAISE(ABORT, 'injected ledger write failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .expect("install the trigger that refuses every insert");
+        let refused = codegg::session::request_ledger::TurnRequestLedgerStore::new(pool.clone())
+            .record_attempt(codegg::session::TurnRequestAttempt {
+                session_id: "write-failure-session",
+                turn_index: 1,
+                attempt_index: 0,
+                attempt_id: "direct-probe",
+                model: "single-shot-model",
+                effort: None,
+                system_digest: "system",
+                tools_digest: "tools",
+                message_digest: "message",
+                message_count: 1,
+                section_digests: None,
+            })
+            .await;
+        assert!(
+            matches!(
+                &refused,
+                Err(codegg::session::request_ledger::RequestLedgerError::Storage(message))
+                    if message.contains("injected ledger write failure")
+            ),
+            "the trigger must refuse a direct write: {refused:?}"
+        );
+        let mut agent_loop = single_shot_loop(
+            workspace.path(),
+            "write-failure-session",
+            Some(pool.clone()),
+        );
+
+        let events = agent_loop
+            .run(single_shot_request())
+            .await
+            .expect("a ledger write failure must not fail the turn");
+
+        assert_eq!(
+            rendered_text(&events),
+            "recorded",
+            "the provider's whole reply is delivered although the write was refused"
+        );
+        assert_eq!(
+            codegg::session::request_ledger::TurnRequestLedgerStore::new(pool)
+                .ledger_health()
+                .await
+                .expect("the ledger table itself is still readable")
+                .total_rows,
+            0,
+            "the refused insert leaves no row rather than a half-recorded attempt"
+        );
+    }
+
+    fn cli_usage_record(session_id: &str) -> codegg::session::UsageRecord {
+        codegg::session::UsageRecord {
+            id: format!("usage_{}", uuid::Uuid::new_v4().simple()),
+            session_id: session_id.to_string(),
+            provider: "single-shot-silent".to_string(),
+            model: "single-shot-model".to_string(),
+            input_tokens: 7,
+            output_tokens: 3,
+            cached_tokens: 0,
+            cost_usd: 0.0,
+            timestamp: 1,
+        }
+    }
+
+    fn cli_checkpoint_payload() -> codegg::session::continuation::ContinuationCheckpointPayload {
+        codegg::session::continuation::ContinuationCheckpointPayload::new(
+            serde_json::json!({"frame": "single-shot"}),
+        )
+        .expect("the probe payload is a bounded object")
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_missing_session_row_refuses_the_pools_usage_and_checkpoint_stores() {
+        let catalog = tempfile::tempdir().expect("catalog root");
+        let pool = catalog_pool(catalog.path()).await;
+        let usage = codegg::session::UsageStore::new(pool.clone())
+            .insert(cli_usage_record("absent-session"))
+            .await;
+        assert!(
+            matches!(
+                &usage,
+                Err(StorageError::Database(message))
+                    if message.contains("FOREIGN KEY constraint failed")
+            ),
+            "the usage store's session foreign key is what the ephemeral row satisfies: {usage:?}"
+        );
+        let prepared = codegg::session::continuation::ContinuationCheckpointStore::new(pool)
+            .prepare("absent-session", None, cli_checkpoint_payload())
+            .await;
+        assert!(
+            matches!(
+                &prepared,
+                Err(StorageError::Database(message))
+                    if message.contains("FOREIGN KEY constraint failed")
+            ),
+            "the checkpoint store's session foreign key is the second refusal: {prepared:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_ephemeral_cli_session_admits_the_usage_and_checkpoint_stores() {
+        let workspace = tempfile::tempdir().expect("single-shot workspace");
+        let catalog = tempfile::tempdir().expect("catalog root");
+        let pool = catalog_pool(catalog.path()).await;
+        let session =
+            create_cli_turn_session(&pool, workspace.path(), "build", "single-shot-model")
+                .await
+                .expect("the CLI creates its ephemeral session row");
+        codegg::session::UsageStore::new(pool.clone())
+            .insert(cli_usage_record(&session.id))
+            .await
+            .expect("the usage insert resolves against the ephemeral session");
+        let recorded = codegg::session::UsageStore::new(pool.clone())
+            .get_session_usage(&session.id)
+            .await
+            .expect("read the usage row back");
+        assert_eq!(
+            recorded.len(),
+            1,
+            "the turn's usage is recorded once against its own session"
+        );
+        let prepared = codegg::session::continuation::ContinuationCheckpointStore::new(pool)
+            .prepare(&session.id, None, cli_checkpoint_payload())
+            .await
+            .expect("the checkpoint prepare resolves against the ephemeral session");
+        assert_eq!(
+            prepared.session_id, session.id,
+            "the durable checkpoint names the CLI turn's own session"
+        );
+        assert_eq!(
+            prepared.status.as_str(),
+            "prepared",
+            "a compacting CLI turn takes the durable path instead of degrading"
+        );
+    }
+
+    async fn settled_usage(
+        pool: &sqlx::SqlitePool,
+        session_id: &str,
+    ) -> Vec<codegg::session::UsageRecord> {
+        for _ in 0..100 {
+            let rows = codegg::session::UsageStore::new(pool.clone())
+                .get_session_usage(session_id)
+                .await
+                .expect("read the usage rows");
+            if !rows.is_empty() {
+                return rows;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        Vec::new()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_single_shot_turn_records_its_finish_usage_without_a_refusal() {
+        let workspace = tempfile::tempdir().expect("single-shot workspace");
+        let catalog = tempfile::tempdir().expect("catalog root");
+        let pool = catalog_pool(catalog.path()).await;
+        let session =
+            create_cli_turn_session(&pool, workspace.path(), "build", "single-shot-model")
+                .await
+                .expect("the CLI creates its ephemeral session row");
+        let mut agent_loop = single_shot_loop(workspace.path(), &session.id, Some(pool.clone()));
+        let events = agent_loop
+            .run(single_shot_request())
+            .await
+            .expect("the one-shot turn completes");
+        assert_eq!(
+            rendered_text(&events),
+            "recorded",
+            "the turn reached the provider's Finish event, so a usage record was attempted"
+        );
+        let recorded = settled_usage(&pool, &session.id).await;
+        assert_eq!(
+            recorded.len(),
+            1,
+            "the Finish usage is inserted against the ephemeral session without a refusal"
+        );
+        assert_eq!(
+            recorded[0].session_id, session.id,
+            "the usage row names the CLI turn's own session"
+        );
+
+        let degraded_workspace = tempfile::tempdir().expect("degraded workspace");
+        let degraded_catalog = tempfile::tempdir().expect("degraded catalog root");
+        let degraded_pool = catalog_pool(degraded_catalog.path()).await;
+        let mut degraded = single_shot_loop(
+            degraded_workspace.path(),
+            "absent-session",
+            Some(degraded_pool.clone()),
+        );
+        let degraded_events = degraded
+            .run(single_shot_request())
+            .await
+            .expect("the degraded turn still completes");
+        assert_eq!(
+            rendered_text(&degraded_events),
+            "recorded",
+            "the control turn reached the same Finish event"
+        );
+        assert!(
+            settled_usage(&degraded_pool, "absent-session")
+                .await
+                .is_empty(),
+            "without the session row the same Finish usage is refused and stays unrecorded"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_ephemeral_cli_session_shares_one_project_row_per_workspace() {
+        let workspace = tempfile::tempdir().expect("single-shot workspace");
+        let catalog = tempfile::tempdir().expect("catalog root");
+        let pool = catalog_pool(catalog.path()).await;
+        let first = create_cli_turn_session(&pool, workspace.path(), "build", "single-shot-model")
+            .await
+            .expect("the first CLI run creates its session");
+        let second = create_cli_turn_session(&pool, workspace.path(), "build", "single-shot-model")
+            .await
+            .expect("the second CLI run creates its own session");
+        assert_ne!(
+            first.id, second.id,
+            "each CLI run records its own ephemeral session"
+        );
+        assert_eq!(
+            first.project_id, second.project_id,
+            "the CLI workspace root is the project identity, so runs reuse one project row"
+        );
+        let project_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM project")
+            .fetch_one(&pool)
+            .await
+            .expect("count the catalog's project rows");
+        assert_eq!(
+            project_rows, 1,
+            "a run costs one session row, not another project row"
+        );
+        let worktree: String = sqlx::query_scalar("SELECT worktree FROM project WHERE id = ?")
+            .bind(&first.project_id)
+            .fetch_one(&pool)
+            .await
+            .expect("read the project row the session depends on");
+        assert_eq!(
+            worktree.as_str(),
+            workspace.path().to_string_lossy().as_ref(),
+            "the project row names the CLI workspace root"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_session_creation_failure_leaves_the_turn_unchanged() {
+        let control_workspace = tempfile::tempdir().expect("control workspace");
+        let control_catalog = tempfile::tempdir().expect("control catalog root");
+        let control_pool = catalog_pool(control_catalog.path()).await;
+        let control_session = create_cli_turn_session(
+            &control_pool,
+            control_workspace.path(),
+            "build",
+            "single-shot-model",
+        )
+        .await
+        .expect("the control run creates its session");
+        let mut control = single_shot_loop(
+            control_workspace.path(),
+            &control_session.id,
+            Some(control_pool),
+        );
+        let control_events = control
+            .run(single_shot_request())
+            .await
+            .expect("the control turn completes");
+        assert_eq!(
+            rendered_text(&control_events),
+            "recorded",
+            "the control turn really ran, so the comparison is not two silent no-ops"
+        );
+        let subject_workspace = tempfile::tempdir().expect("subject workspace");
+        let subject_catalog = tempfile::tempdir().expect("subject catalog root");
+        let subject_pool = catalog_pool(subject_catalog.path()).await;
+        sqlx::query(
+            "CREATE TRIGGER session_insert_refused BEFORE INSERT ON session \
+             BEGIN SELECT RAISE(ABORT, 'injected session creation failure'); END",
+        )
+        .execute(&subject_pool)
+        .await
+        .expect("install the trigger that refuses every session insert");
+        let refused = create_cli_turn_session(
+            &subject_pool,
+            subject_workspace.path(),
+            "build",
+            "single-shot-model",
+        )
+        .await;
+        assert!(
+            matches!(
+                &refused,
+                Err(StorageError::Database(message))
+                    if message.contains("injected session creation failure")
+            ),
+            "the trigger must refuse the ephemeral session: {refused:?}"
+        );
+        let subject_session_id = uuid::Uuid::new_v4().to_string();
+        let mut subject = single_shot_loop(
+            subject_workspace.path(),
+            &subject_session_id,
+            Some(subject_pool.clone()),
+        );
+        let subject_events = subject
+            .run(single_shot_request())
+            .await
+            .expect("a session creation failure must not fail the turn");
+        assert_eq!(
+            rendered_text(&subject_events),
+            rendered_text(&control_events),
+            "the refused session leaves the turn's output byte-identical"
+        );
+        assert_eq!(
+            subject_events.len(),
+            control_events.len(),
+            "the refused session leaves the turn's event sequence unchanged"
+        );
+        assert_eq!(
+            codegg::session::request_ledger::TurnRequestLedgerStore::new(subject_pool)
+                .ledger_health()
+                .await
+                .expect("the ledger is readable without a session row")
+                .last
+                .expect("the degraded turn still records its attempt")
+                .session_id,
+            subject_session_id,
+            "the ledger records the turn under the CLI's own session id"
+        );
+    }
 }

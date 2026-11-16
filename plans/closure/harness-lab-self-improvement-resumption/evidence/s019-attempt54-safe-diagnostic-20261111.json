@@ -1,0 +1,268 @@
+{
+  "attempt_number": 54,
+  "authorization_grant_id": "s019-supplemental-20261111-04",
+  "binary_sha256": "1bd4442ce7228b75e38703b407627b83d87dad09ca9d54a374c1ec66bfa64bc4",
+  "combined_starts_consumed": 54,
+  "combined_starts_remaining": 146,
+  "continuation_controller": {
+    "autonomous_followup_count": 100,
+    "final_prompt_remaining_wallclock_ms": 661.873,
+    "prompt_boundary_count": 101,
+    "prompt_boundary_stop_class_counts": {
+      "end_turn": 101
+    },
+    "prompt_request_count": 101,
+    "stop_reason": "followup_limit",
+    "tool_or_wallclock_cap_exhausted": false
+  },
+  "continuation_public_gates": {
+    "all_public_artifacts_present": true,
+    "contract_phase_order_matches": true,
+    "document_valid": false,
+    "invalid_public_artifact_count": 0,
+    "phase_order_matches": true,
+    "release_overlap_confirmed": true,
+    "required_review_observed": false,
+    "stage_order_matches": true
+  },
+  "external_billed_usd": "unknown_when_unreported",
+  "failed_background_submit": {
+    "request_result_identity_telemetry_complete": true,
+    "safe_tool_error_class": "not_observed_by_current_projection",
+    "serialized_transcript_projection_matches": true,
+    "unbound_failed_submit_count": 1
+  },
+  "fixture_manifest_sha256": "e87faea3f5da93ae300f2ae21ec46e6ff1f899cff0fdf6c1b9e860c97ffe57ee",
+  "fixture_version": "v97",
+  "grant_consumed": 10,
+  "grant_remaining": 30,
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "horizon": {
+    "active_work_span_ms": 2946455,
+    "continuation_confirmed": false,
+    "event_measurement_complete": true,
+    "exact_job_running_and_terminal": true,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 30181,
+    "measurement_complete": true,
+    "minimum_active_duration_ms": 1800000,
+    "productive_work_during_job": true,
+    "repair_cycles": 3,
+    "test_job_lifecycle": {
+      "all_terminal_observed": true,
+      "raw_job_arguments_retained": false,
+      "raw_job_ids_retained": false,
+      "submission_count": 14,
+      "terminal_observed_count": 14,
+      "terminal_status_counts": {
+        "completed": 11,
+        "failed": 3
+      },
+      "unique_submitted_job_count": 14,
+      "unobserved_count": 0,
+      "unobserved_status_counts": {}
+    },
+    "tool_call_cap_exceeded": false,
+    "tool_call_count": 1031,
+    "tool_call_limit": 1600
+  },
+  "job_sequence": {
+    "job_tool_call_count": 70,
+    "raw_job_ids_retained": false,
+    "request_result_correlation": {
+      "all_applicable_calls_match": true,
+      "applicable_call_count": 55,
+      "instrumentation_observed": true,
+      "job_id_digests_retained": false,
+      "raw_job_ids_retained": false,
+      "state_counts": {
+        "matched": 55
+      }
+    },
+    "sequence_truncated": false,
+    "state": "observed",
+    "tool_arguments_retained": false,
+    "tool_outputs_retained": false,
+    "unbound_call_state_counts": {
+      "submit:unobserved:failed": 1
+    },
+    "unbound_job_tool_call_count": 1
+  },
+  "ledger_row": {
+    "counted_as_start": true,
+    "provider_requests_observed": 1063,
+    "status": "completed_unqualified_pending_reconciliation"
+  },
+  "model": "muse-spark-1.3-contributor",
+  "outcome": {
+    "active_work_span_ms": 2946433,
+    "duration_ms": 2955477,
+    "duration_qualified": true,
+    "horizon_outcome": "not_qualified",
+    "horizon_reason": "task_not_passed",
+    "solved": false,
+    "task_outcome": "failed",
+    "terminal": "completed",
+    "verifier_outcome": "assertion_failures"
+  },
+  "post_run_disk_free_bytes_at_safe_diagnostic_time": 12708990976,
+  "preflight_evidence_path": "plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt54-preflight-20261111.json",
+  "private_receipt_sha256": "81ca06ed9b0e85f7411fbb6e155ca4f4dd13273be99bcf05745609091bb8f76a",
+  "provider": "opencode_go",
+  "public_verifier_reconciliation": {
+    "assertion_text_retained": false,
+    "classification": {
+      "continuation_boundary": "public_evidence_incomplete",
+      "transcript_job_lifecycle": "public_evidence_incomplete"
+    },
+    "failure_domain_counts": {
+      "continuation_boundary": 1,
+      "transcript_job_lifecycle": 1
+    },
+    "public_checks": {
+      "continuation_boundary": {
+        "contract_phase_order_matches": true,
+        "document_present": true,
+        "document_valid": false,
+        "incomplete_gates_empty": false,
+        "incomplete_required_success_jobs_empty": true,
+        "incomplete_stages_empty": true,
+        "missing_contract_phases_empty": true,
+        "missing_phases_empty": true,
+        "next_contract_phase_none": true,
+        "next_gate_none": false,
+        "next_phase_none": true,
+        "next_stage_none": true,
+        "phase_order_matches": true,
+        "pointer_fields_follow_progress_sections": null,
+        "pointer_fields_in_expected_order": true,
+        "progress_sections_ordered": null,
+        "public_artifacts_present": true,
+        "required_success_jobs_complete": true,
+        "stage_order_matches": true
+      },
+      "transcript_job_lifecycle": {
+        "event_measurement_complete": true,
+        "exact_job_running_and_terminal": true,
+        "job_request_result_ids_match": true,
+        "job_tool_calls_bound_to_id": false,
+        "minimum_repair_cycles_observed": true,
+        "productive_work_during_job": true,
+        "release_overlap_confirmed": true,
+        "repair_count_matches": true,
+        "repair_pairs_complete": true,
+        "required_review_observed": false,
+        "serialized_transcript_projection_matches": true,
+        "test_jobs_terminal": true
+      }
+    },
+    "public_domain_states": {
+      "continuation_boundary": "incomplete",
+      "transcript_job_lifecycle": "incomplete"
+    },
+    "raw_job_ids_retained": false,
+    "raw_output_retained": false,
+    "transcript_retained": false,
+    "unbound_call_state_counts": {
+      "submit:unobserved:failed": 1
+    },
+    "unbound_job_tool_call_count": 1
+  },
+  "raw_prompt_transcript_tool_arguments_tool_outputs_runner_log_and_hidden_verifier_output_inspected": false,
+  "recorded_at_utc": "2026-11-11T21:16:25+00:00",
+  "repair_trace": {
+    "event_count_matches": true,
+    "observed_repair_cycle_count": 3,
+    "persisted_correlated_repair_events": 3,
+    "raw_job_ids_retained": false,
+    "trace_complete": true
+  },
+  "reviewer_lifecycle": {
+    "completed_get_result_observed_count": 0,
+    "completed_review_result_observed": false,
+    "first_get_delay_after_terminal_ms": 547300,
+    "first_terminal_failure_class": "deadline_exceeded",
+    "first_terminal_observed_elapsed_ms": 1314977,
+    "first_terminal_status": "failed",
+    "get_calls_after_terminal": 1,
+    "parent_continued_failed_reviewer": false,
+    "raw_task_ids_retained": false,
+    "reviewer_spawn_count": 1,
+    "schema": "s019_terminal_task_observation_v1",
+    "spawn_elapsed_ms": 108801,
+    "status_or_wait_calls_after_terminal": 74,
+    "task_action_counts": {
+      "get": 1,
+      "spawn": 1,
+      "status": 91,
+      "wait": 29
+    },
+    "task_result_body_retained": false,
+    "task_transcript_retained": false
+  },
+  "route": "opencode_go",
+  "runner": {
+    "exit_code": 2,
+    "external_hard_stop_reason": null,
+    "minimum_free_disk_bytes": 12390535168,
+    "preflight_reserve_bytes": 32212254720,
+    "provider_requests_observed": 1063,
+    "raw_runner_log_inspected": false,
+    "receipt_present": true,
+    "runtime_disk_floor_bytes": 10737418240,
+    "tool_starts_observed": 1031,
+    "tool_terminals_observed": 1031
+  },
+  "sandbox_helper_sha256": "a65554f9baad92586016a89a9b75946001027e73d20a56422e0b41eee3364967",
+  "schema": "s019_safe_diagnostic_v1",
+  "serialized_transcript": {
+    "case_id_matches": true,
+    "failure_class": null,
+    "job_id_digests_retained": false,
+    "job_sequence_matches_source": true,
+    "job_tool_call_count": 70,
+    "lifecycle_projection_matches_source": true,
+    "ordered_activity_matches_source": true,
+    "raw_job_ids_retained": false,
+    "raw_transcript_retained": false,
+    "schema_version_matches": true,
+    "serialized_bytes": 321212,
+    "state": "observed",
+    "tool_arguments_retained": false,
+    "tool_call_count": 1031,
+    "tool_call_count_matches": true,
+    "tool_outputs_retained": false
+  },
+  "start_number": 54,
+  "transcript_request_result_correlation": {
+    "all_applicable_calls_match": true,
+    "applicable_call_count": 55,
+    "instrumentation_observed": true,
+    "job_id_digests_retained": false,
+    "raw_job_ids_retained": false,
+    "state_counts": {
+      "matched": 55
+    }
+  },
+  "verifier_safe_diagnostic": {
+    "assertion_text_retained": false,
+    "diagnostic_detail_complete": true,
+    "exit_code": 1,
+    "failed_test_count": 2,
+    "failure_counts": {
+      "errors": 0,
+      "failures": 2
+    },
+    "failure_domain_counts": {
+      "continuation_boundary": 1,
+      "transcript_job_lifecycle": 1
+    },
+    "passed_count": 3,
+    "raw_output_retained": false,
+    "skipped_count": 0,
+    "state": "assertion_failures",
+    "tests_run": 5,
+    "timed_out": false,
+    "traceback_retained": false
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "attempt": 23,
+  "binary_sha256": "4f867b6c318cdf1aca3fce1b4fa6f12412bc3848bad84317fa086f014a1a6c43",
+  "campaign_id": "s016-deepseek-raised-cap-20261102",
+  "diagnostic_finding": "The intended custom tool-surface manifest was placed at the repository root. The CLI resolved the canonical nested default manifest instead, so this bounded diagnostic ran the default seven-case autonomy suite rather than its intended prompt. This is invocation-selection evidence only, not H007 qualification evidence. Across seven default cases, 88 provider requests were admitted, five verifier runs passed and four cases were scored solved; no verifier contents were inspected. All 99 observed ACP tool starts had terminals and there were zero event gaps.",
+  "duration_ms": 413482,
+  "event_gap": {
+    "event_gap_count": 0,
+    "tool_started_count": 99,
+    "tool_terminal_count": 99,
+    "tool_unpaired_start_count": 0
+  },
+  "h007_qualification": false,
+  "manifest_requested": "/private/tmp/s016-tools-diagnostic-23.jsonl",
+  "manifest_sha256": "b5dfc2e767bf162f361f9b5cc2c83f6c2eafad0eab6a5dc8cfa079e384e17837",
+  "manifest_selected_case_ids": [
+    "read-search-patch-rust",
+    "read-search-patch-python",
+    "compile-debug-rust",
+    "background-job-wait",
+    "repeated-distinct-tool-calls",
+    "repeated-identical-failure-stall",
+    "repeated-identical-failure-injected"
+  ],
+  "model": "opencode_go/deepseek-v4.1-flash",
+  "provider_cost_source": "opencode_go_allowance_receipt",
+  "provider_cost_usd": 0.065822,
+  "provider_requests": 88,
+  "receipt_sha256": "3e66e888b27e0dd159e66906da9ffe602cd21286be3d31314deca0165d8cde7f",
+  "schema_version": 1,
+  "source_revision": "e15be6c95a8d6545db25d0b4f3e40c06c6352eb6",
+  "solved_cases": 4,
+  "status": "completed_wrong_manifest_selected"
+}

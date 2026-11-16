@@ -46,6 +46,26 @@ class CausalTraceTests(unittest.TestCase):
         self.assertNotIn("credential=never-store", joined)
         self.assertNotIn("ordinary private file contents", joined)
 
+    def test_trace_capacity_covers_a_long_run_with_one_thousand_tool_calls(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "trace.jsonl"
+            recorder = causal_trace.Recorder(path, run_id="run-long", case_id="h007",
+                                             source_sha256=None, binary_sha256=None)
+            for index in range(1000):
+                call_id = f"call-{index}"
+                recorder.observe(notification("tool_call", toolCallId=call_id, title="read"))
+                recorder.observe(notification("tool_call_update", toolCallId=call_id,
+                                               status="completed"))
+            summary = recorder.finish()
+            rows = causal_trace.read_trace(path)
+
+        self.assertEqual(summary["state"], "complete")
+        self.assertEqual(summary["dropped_events"], 0)
+        self.assertEqual(summary["event_count"], 2001)
+        self.assertEqual(sum(row["event_type"] == "tool_started" for row in rows), 1000)
+        self.assertEqual(sum(row["event_type"] == "tool_terminal" for row in rows), 1000)
+        self.assertLessEqual(summary["bytes"], causal_trace.MAX_BYTES)
+
     def test_trace_caps_record_incomplete_state_without_growing_past_bound(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "trace.jsonl"
@@ -164,6 +184,36 @@ class CausalTraceTests(unittest.TestCase):
                          ["failed", "passed", "passed"])
         self.assertEqual(rows[2]["elapsed_ms"], 120)
         self.assertNotIn("private-prompt-must-not-persist", persisted)
+
+    def test_repair_cycle_records_only_run_scoped_job_correlations(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "trace.jsonl"
+            recorder = causal_trace.Recorder(path, run_id="repair-run", case_id="h007",
+                                             source_sha256=None, binary_sha256=None)
+            recorder.record(
+                "repair_cycle", detail="passed", elapsed_ms=420,
+                related_job_ids=("seed-job-private", "repair-job-private"),
+            )
+            summary = recorder.finish()
+            rows = causal_trace.read_trace(path)
+            persisted = path.read_text(encoding="utf-8")
+
+        event = rows[0]
+        self.assertEqual(event["event_type"], "repair_cycle")
+        self.assertEqual(event["elapsed_ms"], 420)
+        self.assertEqual(len(event["failed_job_correlation"]), 24)
+        self.assertEqual(len(event["repair_job_correlation"]), 24)
+        self.assertNotEqual(event["failed_job_correlation"], event["repair_job_correlation"])
+        self.assertEqual(summary["correlated_repair_cycles"], 1)
+        self.assertNotIn("seed-job-private", persisted)
+        self.assertNotIn("repair-job-private", persisted)
+
+        report = causal_trace.attribution_report(rows, {
+            "task_outcome": "failed",
+            "causal_trace": {"state": "complete"},
+        })
+        self.assertEqual(report["repair_cycles_observed"], 1)
+        self.assertEqual(report["correlated_repair_cycles_observed"], 1)
 
     def test_cli_rejects_trace_receipt_identity_or_digest_mismatch(self):
         with tempfile.TemporaryDirectory() as temporary:

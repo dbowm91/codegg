@@ -78,34 +78,60 @@ impl EggsearchResolution {
 
 /// Resolve the installation directory for a given executable path.
 ///
-/// Canonicalizes the executable, takes its parent, and canonicalizes the
-/// parent. Cargo places test executables under `target/<profile>/deps`; the
-/// parent is lifted one level so integration tests (whose library dependency
-/// is not compiled with `cfg(test)`) resolve the same `target/<profile>`
-/// directory that holds the real sibling helper built by `cargo build`.
+/// The profile directory is the ancestor that owns `deps/`, because that is
+/// the one directory every Cargo layout puts beside the binaries it runs:
+/// test executables live in `deps/`, the `codegg` binary lives directly in the
+/// profile directory, and a build script's outputs live under
+/// `build/<pkg>/<hash>/out/`. Lifting only `deps/` found the first and the
+/// second and missed the third, so a helper resolved from a build-script
+/// output was sought in `<pkg>/<hash>/out/` and never existed there.
+///
+/// An installed binary has no ancestor that owns `deps/`, so it keeps using
+/// its own directory — which is what the installation-sibling rule means.
 pub fn installation_dir_for(current: &Path) -> Result<PathBuf, String> {
     let current = current
         .canonicalize()
         .map_err(|e| format!("CodeGG executable could not be resolved: {e}"))?;
-    let install_root = current
+    let parent = current
         .parent()
         .ok_or_else(|| "CodeGG executable has no installation directory".to_string())?
         .canonicalize()
         .map_err(|e| format!("CodeGG installation directory could not be resolved: {e}"))?;
-    if install_root.file_name().is_some_and(|name| name == "deps") {
-        return install_root
-            .parent()
-            .ok_or_else(|| "Cargo test executable has no target directory".to_string())?
-            .canonicalize()
-            .map_err(|e| format!("Cargo target directory could not be resolved: {e}"));
+    Ok(profile_directory(&parent))
+}
+
+/// The Cargo profile directory for a path that sits inside one.
+///
+/// Two shapes are known and both are matched structurally, because a probe
+/// cannot see the third: a test binary can itself live in a build-script
+/// output, and no ancestor of it owns a `deps` directory.
+///
+/// - `<profile>/build/<pkg>/<hash>/out/<exe>` -- a build-script output.
+/// - `<profile>/deps/<exe>` and `<profile>/<exe>` -- the ordinary shapes.
+fn profile_directory(start: &Path) -> PathBuf {
+    let components: Vec<&std::ffi::OsStr> = start.iter().collect();
+    for (index, component) in components.iter().enumerate() {
+        if *component == "build" && components.get(index + 3).is_some_and(|c| *c == "out") {
+            return components[..index].iter().copied().collect();
+        }
     }
-    Ok(install_root)
+    if start.file_name().is_some_and(|name| name == "deps") {
+        return start
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| start.to_path_buf());
+    }
+    start.to_path_buf()
 }
 
 /// Resolve the installation directory of the running executable.
 pub fn installation_dir() -> Result<PathBuf, String> {
     let current = std::env::current_exe().map_err(|e| format!("current executable: {e}"))?;
+    // Name the running executable. The sibling refusal already names the path
+    // it tried; without this the reader cannot tell whether that path was
+    // derived from the wrong executable or was simply absent.
     installation_dir_for(&current)
+        .map_err(|e| format!("{e} (running executable: {})", current.display()))
 }
 
 /// Strict sibling validation shared by the sandbox helper and the managed
@@ -114,24 +140,42 @@ pub fn installation_dir() -> Result<PathBuf, String> {
 /// indirection outside the directory).
 pub fn validate_installation_sibling(install_root: &Path, name: &str) -> Result<PathBuf, String> {
     let candidate = install_root.join(name);
-    let resolved = candidate
-        .canonicalize()
-        .map_err(|e| format!("installation-owned {name} could not be resolved: {e}"))?;
+    // Every arm names the candidate path. A refusal that says only "could not
+    // be resolved" cannot be told apart from a wrong installation directory,
+    // and the difference decides whether the build or the launch is at fault.
+    let resolved = candidate.canonicalize().map_err(|e| {
+        format!(
+            "installation-owned {name} could not be resolved: {e} (looked for {})",
+            candidate.display()
+        )
+    })?;
     if resolved.parent() != Some(install_root) {
         return Err(format!(
-            "installation-owned {name} escaped the installation directory"
+            "installation-owned {name} escaped the installation directory: {} is not inside {}",
+            resolved.display(),
+            install_root.display()
         ));
     }
-    let metadata = std::fs::metadata(&resolved)
-        .map_err(|e| format!("installation-owned {name} metadata unavailable: {e}"))?;
+    let metadata = std::fs::metadata(&resolved).map_err(|e| {
+        format!(
+            "installation-owned {name} metadata unavailable: {e} ({})",
+            resolved.display()
+        )
+    })?;
     if !metadata.file_type().is_file() {
-        return Err(format!("installation-owned {name} is not a regular file"));
+        return Err(format!(
+            "installation-owned {name} is not a regular file: {}",
+            resolved.display()
+        ));
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         if metadata.permissions().mode() & 0o111 == 0 {
-            return Err(format!("installation-owned {name} is not executable"));
+            return Err(format!(
+                "installation-owned {name} is not executable: {}",
+                resolved.display()
+            ));
         }
     }
     Ok(resolved)
@@ -153,7 +197,16 @@ pub fn managed_eggsearch_path_for(current_exe: &Path) -> Result<PathBuf, String>
 /// Resolve the trusted sandbox helper sibling (strict; no PATH fallback).
 pub fn trusted_sandbox_helper_path() -> Result<PathBuf, String> {
     let dir = installation_dir()?;
-    validate_installation_sibling(&dir, &sandbox_helper_name())
+    // The derived directory can be wrong without being invalid, so the
+    // sibling check is where a bad derivation surfaces. Name the executable
+    // that produced it: the candidate path alone cannot distinguish "derived
+    // from the wrong executable" from "correctly derived and absent".
+    validate_installation_sibling(&dir, &sandbox_helper_name()).map_err(|e| {
+        let running = std::env::current_exe()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|_| "unavailable".to_string());
+        format!("{e} (running executable: {running})")
+    })
 }
 
 /// Resolve the trusted helper for an explicit executable location.
@@ -529,6 +582,31 @@ mod tests {
             EggsearchResolution::ExplicitCommand {
                 command: "my-eggsearch".to_string(),
             }
+        );
+    }
+
+    /// A build-script output sits three directories below the profile
+    /// directory. Lifting only `deps/` sent the sibling lookup to
+    /// `build/<pkg>/<hash>/out/`, where no helper exists, and every lane that
+    /// launches a contained process from such an output failed on it.
+    #[test]
+    fn build_script_output_resolves_the_profile_directory() {
+        let target = tempfile::tempdir().expect("target directory");
+        let profile = target.path().join("debug");
+        std::fs::create_dir_all(profile.join("deps")).expect("deps directory");
+        let out = profile
+            .join("build")
+            .join("codegg")
+            .join("hash")
+            .join("out");
+        std::fs::create_dir_all(&out).expect("build-script output");
+        let exe = out.join("codegg");
+        std::fs::write(&exe, b"stub").expect("executable");
+
+        assert_eq!(
+            installation_dir_for(&exe).expect("profile directory"),
+            profile.canonicalize().expect("canonical profile"),
+            "a build-script output must resolve the profile directory that owns deps/"
         );
     }
 

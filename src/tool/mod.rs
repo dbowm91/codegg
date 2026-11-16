@@ -42,6 +42,7 @@ pub mod memory;
 pub mod patch_util;
 pub mod plan;
 pub mod plugin;
+pub mod present;
 pub mod process_admission;
 pub mod process_capability;
 pub mod program_cache;

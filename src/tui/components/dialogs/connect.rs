@@ -2,11 +2,13 @@ use crossterm::event::KeyEvent;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Widget, Wrap};
+use ratatui::widgets::{List, ListItem, ListState, Paragraph, Widget, Wrap};
 use std::sync::Arc;
 
 use super::super::component::{Component, DialogType};
+use super::super::section::Section;
 use crate::tui::app::TuiMsg;
+use crate::tui::components::hint_line::HintLine;
 use crate::tui::theme::Theme;
 use codegg_protocol::provider::{EggpoolTlsPolicy, ProviderCredentialKind, ProviderSetupEntryDto};
 
@@ -800,19 +802,9 @@ impl Widget for &ConnectDialog {
     fn render(self, area: Rect, buf: &mut ratatui::prelude::Buffer) {
         match self.step {
             ConnectStep::SelectProvider => {
-                let title = Line::from(vec![Span::styled(
-                    " Connect to Provider ",
-                    Style::default().add_modifier(Modifier::BOLD),
-                )]);
-
-                let block = Block::default()
-                    .title(title)
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(self.theme.border))
-                    .style(Style::default().bg(self.theme.background));
-
-                let inner_area = block.inner(area);
-                block.render(area, buf);
+                let inner_area = Section::new("Connect to Provider", &self.theme)
+                    .focused(true)
+                    .draw(area, buf);
 
                 if self.loading {
                     let loading = Paragraph::new(vec![
@@ -924,13 +916,30 @@ impl Widget for &ConnectDialog {
                 let list = List::new(list_items);
                 list.render(inner_area, buf);
 
-                let footer_text = vec![
+                let mut footer_text = vec![
                     Line::from(""),
                     Line::from(Span::styled(
-                        " j/k/↑/↓ select  |  Enter choose  |  Esc close ",
+                        HintLine::from_items(&[
+                            ("Esc", "close"),
+                            ("j/k/↑/↓", "select"),
+                            ("Enter", "choose"),
+                        ])
+                        .render(0),
                         Style::default().fg(self.theme.muted),
                     )),
                 ];
+                // `Enter` with no selectable provider sets `error_message` and
+                // returns, and this branch used to be the one render path that
+                // never read it: the press left the frame identical, so a key
+                // whose effect exists looked broken. The string is the one
+                // `advance_from_provider_selection` already stores; only the
+                // paint is new.
+                if let Some(error) = self.error_message.as_ref() {
+                    footer_text.push(Line::from(Span::styled(
+                        format!(" Error: {error} "),
+                        Style::default().fg(self.theme.error),
+                    )));
+                }
 
                 let footer = Paragraph::new(footer_text)
                     .alignment(Alignment::Center)
@@ -947,13 +956,9 @@ impl Widget for &ConnectDialog {
             | ConnectStep::SelectScope
             | ConnectStep::Review => {
                 let Some(provider) = self.providers.get(self.selected) else {
-                    let block = Block::default()
-                        .title(" Connect ")
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(self.theme.error))
-                        .style(Style::default().bg(self.theme.background));
-                    let inner_area = block.inner(area);
-                    block.render(area, buf);
+                    let inner_area = Section::new("Connect", &self.theme)
+                        .focused(true)
+                        .draw(area, buf);
                     let msg = Paragraph::new("Selected provider is invalid. Press Esc to go back.")
                         .alignment(Alignment::Center)
                         .wrap(Wrap { trim: true });
@@ -961,19 +966,10 @@ impl Widget for &ConnectDialog {
                     return;
                 };
 
-                let title = Line::from(vec![Span::styled(
-                    format!(" Connect to {} ", provider.name),
-                    Style::default().add_modifier(Modifier::BOLD),
-                )]);
-
-                let block = Block::default()
-                    .title(title)
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(self.theme.border))
-                    .style(Style::default().bg(self.theme.background));
-
-                let inner_area = block.inner(area);
-                block.render(area, buf);
+                let title = format!("Connect to {}", provider.name);
+                let inner_area = Section::verbatim(&title, &self.theme)
+                    .focused(true)
+                    .draw(area, buf);
 
                 let mut lines = vec![];
 
@@ -1142,7 +1138,12 @@ impl Widget for &ConnectDialog {
                 let footer_text = vec![
                     Line::from(""),
                     Line::from(Span::styled(
-                        " Enter: Continue  |  Backspace: delete  |  Esc: Back ",
+                        HintLine::from_items(&[
+                            ("Esc", "back"),
+                            ("Enter", "continue"),
+                            ("Backspace", "delete"),
+                        ])
+                        .render(0),
                         Style::default().fg(self.theme.muted),
                     )),
                 ];
@@ -1338,19 +1339,9 @@ impl Component for ConnectDialog {
                     .constraints([Constraint::Min(0), Constraint::Length(3)])
                     .split(area);
 
-                let title = Line::from(vec![Span::styled(
-                    " Connect to Provider ",
-                    Style::default().add_modifier(Modifier::BOLD),
-                )]);
-
-                let block = Block::default()
-                    .title(title)
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.border))
-                    .style(Style::default().bg(theme.background));
-
-                let inner_area = block.inner(chunks[0]);
-                frame.render_widget(block, chunks[0]);
+                let inner_area = Section::new("Connect to Provider", theme)
+                    .focused(true)
+                    .draw(chunks[0], frame.buffer_mut());
 
                 if self.loading {
                     let loading = Paragraph::new(vec![
@@ -1465,7 +1456,12 @@ impl Component for ConnectDialog {
                 let footer_text = vec![
                     Line::from(""),
                     Line::from(Span::styled(
-                        " j/k/↑/↓ select  |  Enter choose  |  Esc close ",
+                        HintLine::from_items(&[
+                            ("Esc", "close"),
+                            ("j/k/↑/↓", "select"),
+                            ("Enter", "choose"),
+                        ])
+                        .render(0),
                         Style::default().fg(theme.muted),
                     )),
                 ];
@@ -1485,12 +1481,9 @@ impl Component for ConnectDialog {
             | ConnectStep::SelectScope
             | ConnectStep::Review => {
                 let Some(provider) = self.providers.get(self.selected) else {
-                    let block = Block::default()
-                        .title(" Connect ")
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(theme.error))
-                        .style(Style::default().bg(theme.background));
-                    frame.render_widget(block, area);
+                    Section::new("Connect", theme)
+                        .focused(true)
+                        .draw(area, frame.buffer_mut());
                     let msg = Paragraph::new("Selected provider is invalid. Press Esc to go back.")
                         .alignment(Alignment::Center)
                         .wrap(Wrap { trim: true });
@@ -1498,19 +1491,10 @@ impl Component for ConnectDialog {
                     return;
                 };
 
-                let title = Line::from(vec![Span::styled(
-                    format!(" Connect to {} ", provider.name),
-                    Style::default().add_modifier(Modifier::BOLD),
-                )]);
-
-                let block = Block::default()
-                    .title(title)
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.border))
-                    .style(Style::default().bg(theme.background));
-
-                let inner_area = block.inner(area);
-                frame.render_widget(block, area);
+                let title = format!("Connect to {}", provider.name);
+                let inner_area = Section::verbatim(&title, theme)
+                    .focused(true)
+                    .draw(area, frame.buffer_mut());
 
                 let mut lines = vec![];
                 let (label, value) = match self.step {
@@ -1682,7 +1666,12 @@ impl Component for ConnectDialog {
                 let footer_text = vec![
                     Line::from(""),
                     Line::from(Span::styled(
-                        " Enter: Continue  |  Backspace: delete  |  Esc: Back ",
+                        HintLine::from_items(&[
+                            ("Esc", "back"),
+                            ("Enter", "continue"),
+                            ("Backspace", "delete"),
+                        ])
+                        .render(0),
                         Style::default().fg(theme.muted),
                     )),
                 ];
@@ -1930,6 +1919,52 @@ mod connect_restoration_tests {
         assert!(!dialog.advance_from_provider_selection());
         assert_eq!(dialog.step, ConnectStep::SelectProvider);
         assert!(dialog.error_message.is_some());
+    }
+
+    /// `Enter` with nothing to select stores an error and returns, so the whole
+    /// effect of the press is the paint. This is the property that was missing:
+    /// the `SelectProvider` branch was the one render path that never read
+    /// `error_message`, so the press left the frame identical and the key read
+    /// as broken.
+    #[test]
+    fn enter_with_no_provider_paints_why_it_did_nothing() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use ratatui::backend::TestBackend;
+        use ratatui::widgets::Widget;
+        use ratatui::Terminal;
+
+        fn frame_text(dialog: &ConnectDialog) -> String {
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+            terminal
+                .draw(|frame| dialog.render(frame.area(), frame.buffer_mut()))
+                .expect("draw connect dialog");
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol().to_string())
+                .collect()
+        }
+
+        let theme = Arc::new(Theme::dark());
+        let mut dialog = ConnectDialog::new(Vec::new(), theme);
+        let before = frame_text(&dialog);
+        assert!(
+            !before.contains("Select a provider"),
+            "nothing has been refused yet, so nothing should be explained: {before}"
+        );
+
+        assert_eq!(
+            dialog.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(dialog.error_message.as_deref(), Some("Select a provider"));
+        let after = frame_text(&dialog);
+        assert!(
+            after.contains("Select a provider"),
+            "the refused press changed nothing a user can see: {after}"
+        );
     }
 
     #[test]

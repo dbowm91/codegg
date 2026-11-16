@@ -5,12 +5,14 @@ use crossterm::event::KeyEvent;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
+use super::super::section::Section;
 use crate::tui::app::TuiMsg;
+use crate::tui::components::hint_line::HintLine;
 
 const MAX_PREVIEW_LINES: usize = 500;
 const MAX_FILE_SIZE: usize = 1024 * 1024;
@@ -210,24 +212,17 @@ impl Component for SourcePreviewDialog {
         } else {
             format!("{}{}", filename, line_str)
         };
-        let header_block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
-            .title(" Source Preview ");
+        let header_section = Section::new("Source Preview", theme).focused(true);
+        let header_inner = header_section.draw(chunks[0], frame.buffer_mut());
         let header_para = Paragraph::new(Line::from(Span::styled(
             header_text,
             Style::default()
                 .fg(theme.primary)
                 .add_modifier(Modifier::BOLD),
-        )))
-        .block(header_block);
-        frame.render_widget(header_para, chunks[0]);
+        )));
+        frame.render_widget(header_para, header_inner);
 
-        let content_block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border));
-        let content_inner = content_block.inner(chunks[1]);
-        frame.render_widget(content_block, chunks[1]);
+        let content_inner = Section::plain(theme).draw(chunks[1], frame.buffer_mut());
 
         if let Some(ref err) = self.error {
             let err_para = Paragraph::new(Line::from(Span::styled(
@@ -258,21 +253,31 @@ impl Component for SourcePreviewDialog {
             frame.render_widget(para, content_inner);
         }
 
-        let footer_text = format!(
-            "j/k/↑/↓ scroll  |  PgUp/PgDn  |  Home/End  |  q/Esc close ({}/{} lines)",
-            (self.scroll as usize + 1).min(self.lines.len()),
-            self.lines.len(),
-        );
+        // A bare key is its own item: this box has no declared keymap above it,
+        // so `PgUp/PgDn` and `Home/End` name the keys without inventing a verb
+        // the surface does not use. The line count is a value, which is the
+        // empty-verb form.
+        let footer_text = HintLine::from_items(&[
+            ("q/Esc", "close"),
+            ("j/k/↑/↓", "scroll"),
+            ("PgUp/PgDn", ""),
+            ("Home/End", ""),
+            (
+                &format!(
+                    "{}/{} lines",
+                    (self.scroll as usize + 1).min(self.lines.len()),
+                    self.lines.len()
+                ),
+                "",
+            ),
+        ])
+        .render(0);
+        let footer_inner = Section::plain(theme).draw(chunks[2], frame.buffer_mut());
         let footer = Paragraph::new(Line::from(Span::styled(
             footer_text,
             Style::default().fg(theme.muted),
-        )))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.border)),
-        );
-        frame.render_widget(footer, chunks[2]);
+        )));
+        frame.render_widget(footer, footer_inner);
     }
 
     fn dialog_type(&self) -> DialogType {

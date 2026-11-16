@@ -785,6 +785,123 @@ mod tests {
         assert_eq!(session.workspace_id, None);
     }
 
+    /// The top-level keys of one encoded part, counted rather than collected.
+    ///
+    /// `serde_json::Value` keeps only the last value of a duplicated key, which
+    /// is why a part that encoded `id` twice still looked well formed. Counting
+    /// keys is what makes the duplicate visible.
+    #[derive(Debug)]
+    struct TopLevelKeys {
+        id: usize,
+        tool_call_id: usize,
+    }
+
+    impl<'de> serde::Deserialize<'de> for TopLevelKeys {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            struct KeysVisitor;
+
+            impl<'de> serde::de::Visitor<'de> for KeysVisitor {
+                type Value = TopLevelKeys;
+
+                fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    formatter.write_str("one encoded part object")
+                }
+
+                fn visit_map<A>(self, mut map: A) -> Result<TopLevelKeys, A::Error>
+                where
+                    A: serde::de::MapAccess<'de>,
+                {
+                    let mut keys = TopLevelKeys {
+                        id: 0,
+                        tool_call_id: 0,
+                    };
+                    while let Some(key) = map.next_key::<String>()? {
+                        match key.as_str() {
+                            "id" => keys.id += 1,
+                            "toolCallID" => keys.tool_call_id += 1,
+                            _ => {}
+                        }
+                        map.next_value::<serde::de::IgnoredAny>()?;
+                    }
+                    Ok(keys)
+                }
+            }
+
+            deserializer.deserialize_map(KeysVisitor)
+        }
+    }
+
+    /// The **wire contract** for a tool-call part: exactly one `id` key, which
+    /// is the part id, and the tool-call id under a key of its own.
+    ///
+    /// This is the defect stated as an assertion. Two fields sharing a wire
+    /// name under `#[serde(flatten)]` emitted `id` twice, and a value-based
+    /// check cannot see that — the key counts below read the map itself.
+    #[test]
+    fn tool_call_part_encodes_exactly_one_id_key() {
+        let info = PartInfo {
+            id: "part_7".to_string(),
+            session_id: "sess_1".to_string(),
+            message_id: "msg_7".to_string(),
+            data: PartData::ToolCall {
+                id: "call_7".to_string(),
+                name: "grep".to_string(),
+                input: serde_json::json!({"pattern": "needle"}),
+                output: Some("found".to_string()),
+                status: ToolStatus::Completed,
+            },
+        };
+
+        let json = serde_json::to_string(&info).expect("serialize a tool-call part");
+        let keys: TopLevelKeys =
+            serde_json::from_str(&json).expect("a part encodes one JSON object");
+        assert_eq!(keys.id, 1, "a part carries exactly one `id` key");
+        assert_eq!(
+            keys.tool_call_id, 1,
+            "the tool-call id has a key of its own"
+        );
+
+        let wire: serde_json::Value = serde_json::from_str(&json).expect("the part is JSON");
+        assert_eq!(wire["id"], "part_7");
+        assert_eq!(wire["toolCallID"], "call_7");
+
+        // The counter must be able to see the defect it exists for. A value
+        // map cannot — that is how the duplicate `id` escaped review.
+        let duplicated: TopLevelKeys =
+            serde_json::from_str(r#"{"id":"a","toolCallID":"b","id":"c"}"#)
+                .expect("a duplicated key is still valid JSON");
+        assert_eq!(duplicated.id, 2, "the key counter sees a duplicate `id`");
+    }
+
+    /// A pre-rename part decodes through the same recovery as the domain type
+    /// and is **rewritten in the canonical shape**: the in-memory form carries
+    /// two distinct keys, so a legacy row cannot put its single `id` back on
+    /// the wire.
+    #[test]
+    fn legacy_part_info_reserializes_in_the_canonical_shape() {
+        let legacy = r#"{"id":"call_9","sessionID":"sess_1","messageID":"msg_9",
+            "type":"tool_call","name":"grep","input":{},"output":null,
+            "status":"pending"}"#;
+        let part: PartInfo = serde_json::from_str(legacy).expect("decode a pre-rename row");
+        assert_eq!(part.id, "msg_9:call_9");
+
+        let canonical = serde_json::to_string(&part).expect("serialize the recovered part");
+        let keys: TopLevelKeys =
+            serde_json::from_str(&canonical).expect("the rewritten part is one JSON object");
+        assert_eq!(keys.id, 1, "the rewritten part carries one `id` key");
+        assert_eq!(
+            keys.tool_call_id, 1,
+            "the rewritten part names the tool call"
+        );
+
+        let reparsed: PartInfo =
+            serde_json::from_str(&canonical).expect("the canonical shape decodes");
+        assert_eq!(reparsed.id, part.id, "the rewrite is stable");
+    }
+
     #[test]
     fn session_binding_round_trips_canonical_ids_and_compatibility_locator() {
         let binding = SessionBindingDto {
@@ -842,7 +959,25 @@ pub enum MessageRole {
     Assistant,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The wire name of a tool-call id.
+///
+/// It must not be `id`: [`PartInfo`] and [`PartData`] are joined by
+/// `#[serde(flatten)]`, so two fields that share a wire name serialize to a
+/// duplicate key and no reader can decode the result.
+const TOOL_CALL_ID_FIELD: &str = "toolCallID";
+
+/// One part of a persisted message DTO.
+///
+/// # Wire format
+///
+/// Mirrors `codegg_core::session::message::PartInfo`: the part id is `id`, the
+/// **tool-call** id is `toolCallID`. `message_to_dto` decodes the JSON that the
+/// domain type produced, so both sides must use the same wire names and the
+/// same recovery for rows written before `toolCallID` existed — that row
+/// carries a single `id`, which is the tool-call id, and the part id is
+/// synthesized as `{messageID}:{toolCallID}`. See the domain type for why the
+/// original part id cannot be recovered.
+#[derive(Debug, Clone, Serialize)]
 pub struct PartInfo {
     pub id: String,
     #[serde(rename = "sessionID")]
@@ -851,6 +986,54 @@ pub struct PartInfo {
     pub message_id: String,
     #[serde(flatten)]
     pub data: PartData,
+}
+
+impl<'de> Deserialize<'de> for PartInfo {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        /// The part's own fields plus every flattened key, undecoded.
+        #[derive(Deserialize)]
+        struct Flat {
+            #[serde(default)]
+            id: Option<String>,
+            #[serde(rename = "sessionID")]
+            session_id: String,
+            #[serde(rename = "messageID")]
+            message_id: String,
+            #[serde(flatten)]
+            data: serde_json::Map<String, serde_json::Value>,
+        }
+
+        let Flat {
+            id,
+            session_id,
+            message_id,
+            mut data,
+        } = Flat::deserialize(deserializer)?;
+        let id = id.ok_or_else(|| serde::de::Error::missing_field("id"))?;
+        let id = if data.get("type").and_then(|kind| kind.as_str()) == Some("tool_call")
+            && !data.contains_key(TOOL_CALL_ID_FIELD)
+        {
+            // Pre-rename row: the single `id` is the tool-call id. Recover it
+            // and synthesize the part id, exactly as the domain type does.
+            data.insert(
+                TOOL_CALL_ID_FIELD.to_string(),
+                serde_json::Value::String(id.clone()),
+            );
+            format!("{message_id}:{id}")
+        } else {
+            id
+        };
+        Ok(PartInfo {
+            id,
+            session_id,
+            message_id,
+            data: serde_json::from_value(serde_json::Value::Object(data))
+                .map_err(serde::de::Error::custom)?,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -863,6 +1046,7 @@ pub enum PartData {
         reasoning: String,
     },
     ToolCall {
+        #[serde(rename = "toolCallID")]
         id: String,
         name: String,
         input: serde_json::Value,

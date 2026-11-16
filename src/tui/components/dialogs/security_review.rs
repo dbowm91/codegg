@@ -1,33 +1,22 @@
 use std::sync::Arc;
 
 use crossterm::event::KeyEvent;
-use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
-use ratatui::prelude::Widget;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{List, ListItem, Paragraph};
 use ratatui::Frame;
 
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
+use super::super::section::{Section, SectionFrame};
 use crate::security::workflow::{
     filter_panel_items, project_receipt_to_panel_items, resolve_security_review_item_path,
     SecurityReviewFilter, SecurityReviewHunkLineKind, SecurityReviewPanelItem,
     SecurityReviewPanelItemKind, SecurityReviewReceipt,
 };
 use crate::tui::app::TuiMsg;
-
-/// Who owns this render's chrome.
-///
-/// The two paths differ only in that. [`Chrome::Owned`] is the modal box, which
-/// draws its own border, section titles and keymap footer; [`Chrome::Hosted`]
-/// is a column in a side panel, where the host has already painted a border, a
-/// title and the `●` focus marker into the same rect.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Chrome {
-    Owned,
-    Hosted,
-}
+use crate::tui::components::hint_line::HintLine;
 
 /// The verbs this box implements, for the panel host to reuse verbatim.
 ///
@@ -46,7 +35,24 @@ enum Chrome {
 ///   the keystroke first and the arm is unreachable from a column — dead code
 ///   that reads exactly like a working key. That is the reason this hint is
 ///   written next to the arms rather than next to the footer.
-const HINT: &str = "j/k move · ^d/^u page · f filter · n notes · p prompts · enter preview · h jump hunk · ]/[ hunk nav";
+///
+/// The page verb is spelled `PgUp/PgDn` because those are the keys
+/// `handle_key` answers; the hint used to say `^d/^u`, which no arm has ever
+/// seen, while the footer painted a few rows below it already named `PgUp` and
+/// `PgDn`. Two advertisements on one surface disagreeing about one verb is the
+/// defect this spelling removes.
+fn hint() -> HintLine {
+    let mut hint = HintLine::new();
+    hint.push("j/k", "move")
+        .push("PgUp/PgDn", "page")
+        .push("f", "filter")
+        .push("n", "notes")
+        .push("p", "prompts")
+        .push("enter", "preview")
+        .push("h", "jump hunk")
+        .push("]/[", "hunk nav");
+    hint
+}
 
 /// Which section of the detail pane is currently focused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -382,21 +388,23 @@ impl Component for SecurityReviewDialog {
     }
 
     /// The verbs this box owns, spelled the way this box spells them.
-    fn keymap_hint(&self) -> Option<String> {
-        Some(HINT.to_string())
+    fn keymap_hint_line(&self) -> Option<HintLine> {
+        Some(hint())
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        self.render_body(frame, area, theme, Chrome::Owned);
+        self.render_body(frame, area, theme, SectionFrame::Owned);
     }
 
     /// The panes alone, inside the frame the host already drew.
     fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        let inner = area.inner(Margin::new(1, 1));
+        let inner = Section::plain(theme)
+            .frame(SectionFrame::Hosted)
+            .draw(area, frame.buffer_mut());
         if inner.height == 0 || inner.width == 0 {
             return;
         }
-        self.render_body(frame, inner, theme, Chrome::Hosted);
+        self.render_body(frame, inner, theme, SectionFrame::Hosted);
     }
 
     fn dialog_type(&self) -> DialogType {
@@ -409,7 +417,7 @@ impl SecurityReviewDialog {
     /// branch — which is a render path too, and the one most easily left
     /// behind: it has its own block and would otherwise have been the one
     /// corner of this box that still drew a box over the host's.
-    fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: Chrome) {
+    fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: SectionFrame) {
         if area.height < 6 || area.width < 20 {
             return;
         }
@@ -418,16 +426,13 @@ impl SecurityReviewDialog {
                 "No security review result available.",
                 Style::default().fg(theme.muted),
             ));
-            let para = match chrome {
-                Chrome::Owned => Paragraph::new(message).block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(theme.border))
-                        .title(" Security Review "),
-                ),
-                Chrome::Hosted => Paragraph::new(message),
+            let inner = match chrome {
+                SectionFrame::Owned => Section::new("Security Review", theme)
+                    .focused(true)
+                    .draw(area, frame.buffer_mut()),
+                SectionFrame::Hosted => area,
             };
-            frame.render_widget(para, area);
+            frame.render_widget(Paragraph::new(message), inner);
             return;
         };
 
@@ -449,7 +454,7 @@ impl SecurityReviewDialog {
         );
 
         let (body_area, status_area) = match chrome {
-            Chrome::Owned => {
+            SectionFrame::Owned => {
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
@@ -459,20 +464,18 @@ impl SecurityReviewDialog {
                     ])
                     .split(area);
 
-                let header_block = Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.border))
-                    .title(" Security Review ");
+                let header_inner = Section::new("Security Review", theme)
+                    .focused(true)
+                    .draw(chunks[0], frame.buffer_mut());
                 let header_para = Paragraph::new(Line::from(Span::styled(
                     header_text,
                     Style::default().fg(theme.foreground),
-                )))
-                .block(header_block);
-                frame.render_widget(header_para, chunks[0]);
+                )));
+                frame.render_widget(header_para, header_inner);
 
                 (chunks[1], Some(chunks[2]))
             }
-            Chrome::Hosted => {
+            SectionFrame::Hosted => {
                 // The header is a count of findings, prompts and notes, so it
                 // is content and stays — but the border it was drawn inside
                 // does not, and with it the two rows it spent on one. The
@@ -506,41 +509,35 @@ impl SecurityReviewDialog {
         self.render_detail(frame, split[1], theme, chrome);
 
         if let Some(status_area) = status_area {
-            let footer_text = format!(
-                "j/k move | PgUp/PgDn page | f filter ({}) | ]/[ hunk nav | h jump hunk | H copy hunk | Enter preview | Esc close",
-                self.filter.label(),
-            );
+            let mut hint = HintLine::new();
+            hint.push_required("Esc", "close")
+                .push("j/k", "move")
+                .push("PgUp/PgDn", "page")
+                .push("f", &format!("filter ({})", self.filter.label()))
+                .push("]/[", "hunk nav")
+                .push("h", "jump hunk")
+                .push("H", "copy hunk")
+                .push("Enter", "preview");
+            let footer_inner = Section::plain(theme).draw(status_area, frame.buffer_mut());
+            let footer_text = hint.render(usize::from(footer_inner.width));
             let footer = Paragraph::new(Line::from(Span::styled(
                 footer_text,
                 Style::default().fg(theme.muted),
-            )))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.border)),
-            );
-            frame.render_widget(footer, status_area);
+            )));
+            frame.render_widget(footer, footer_inner);
         }
     }
 
-    fn render_list(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: Chrome) {
-        let block = match chrome {
-            Chrome::Owned => Some(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.border))
-                    .title(format!(" Items ({}) ", self.visible_items.len())),
-            ),
-            Chrome::Hosted => None,
+    fn render_list(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: SectionFrame) {
+        let inner = match chrome {
+            SectionFrame::Owned => {
+                let title = format!("Items ({})", self.visible_items.len());
+                Section::new(&title, theme)
+                    .focused(true)
+                    .draw(area, frame.buffer_mut())
+            }
+            SectionFrame::Hosted => area,
         };
-
-        let inner = match &block {
-            Some(block) => block.inner(area),
-            None => area,
-        };
-        if let Some(block) = &block {
-            block.render(area, frame.buffer_mut());
-        }
 
         if self.visible_items.is_empty() {
             let empty = Line::from(Span::styled(
@@ -606,24 +603,19 @@ impl SecurityReviewDialog {
         frame.render_widget(list, inner);
     }
 
-    fn render_detail(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: Chrome) {
-        let block = match chrome {
-            Chrome::Owned => Some(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.border))
-                    .title(" Detail "),
-            ),
-            Chrome::Hosted => None,
+    fn render_detail(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &Arc<Theme>,
+        chrome: SectionFrame,
+    ) {
+        let inner = match chrome {
+            SectionFrame::Owned => Section::new("Detail", theme)
+                .focused(true)
+                .draw(area, frame.buffer_mut()),
+            SectionFrame::Hosted => area,
         };
-
-        let inner = match &block {
-            Some(block) => block.inner(area),
-            None => area,
-        };
-        if let Some(block) = &block {
-            block.render(area, frame.buffer_mut());
-        }
 
         let Some(item) = self.selected_item() else {
             let empty = Line::from(Span::styled(
@@ -755,5 +747,85 @@ impl SecurityReviewDialog {
 impl Default for SecurityReviewDialog {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::security::workflow::{SecurityReviewCommandArgs, SecurityReviewOutput};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use std::path::PathBuf;
+
+    fn receipt() -> SecurityReviewReceipt {
+        SecurityReviewReceipt {
+            id: "receipt-1".to_string(),
+            root: PathBuf::from("/workspace"),
+            args: SecurityReviewCommandArgs::default(),
+            output: SecurityReviewOutput {
+                targets: Vec::new(),
+                findings: Vec::new(),
+                review_prompts: Vec::new(),
+                preflight_results: Vec::new(),
+                notes: Vec::new(),
+                hunks: Vec::new(),
+            },
+            rendered_report: "security review".to_string(),
+            completed_at_ms: 0,
+            enriched: false,
+            lsp_available: false,
+            hunk_context_requested: false,
+            hunk_context_available: false,
+            hunk_context_executed: false,
+            hunk_context_succeeded: false,
+            hunk_context_requests_attempted: 0,
+            hunk_context_requests_succeeded: 0,
+        }
+    }
+
+    fn footer_row(width: u16, height: u16) -> String {
+        let theme = Arc::new(Theme::dark());
+        let mut dialog = SecurityReviewDialog::with_receipt(receipt());
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        terminal
+            .draw(|frame| dialog.render(frame, frame.area(), &theme))
+            .expect("draw");
+        let rows: Vec<String> = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol().to_string())
+            .collect::<Vec<_>>()
+            .chunks(width as usize)
+            .map(|row| row.concat())
+            .collect();
+        rows.into_iter()
+            .find(|row| row.contains("Esc close"))
+            .unwrap_or_else(|| panic!("no footer row painted at {width}x{height}"))
+    }
+
+    #[test]
+    fn the_row_is_clipped_at_an_item_boundary_not_mid_item() {
+        assert!(
+            footer_row(60, 15).contains("Esc close · j/k move · PgUp/PgDn page · f filter (all)"),
+            "60x15 must show whole items only"
+        );
+        assert!(
+            !footer_row(60, 15).contains("hunk nav"),
+            "at 58 inner columns `]/[ hunk nav` does not fit and must be dropped whole"
+        );
+        let wide = footer_row(100, 30);
+        assert!(
+            wide.contains(
+                "Esc close · j/k move · PgUp/PgDn page · f filter (all) · ]/[ hunk nav · h jump hunk · H copy hunk"
+            ),
+            "100x30 must add whole items only, got {wide:?}"
+        );
+        assert!(
+            !footer_row(100, 30).contains("Enter preview"),
+            "`Enter preview` is the 100th column and the inner width is 98"
+        );
     }
 }

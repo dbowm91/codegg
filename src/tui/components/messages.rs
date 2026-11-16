@@ -442,6 +442,7 @@ pub struct MessagesWidget {
     rows_dirty_from: Cell<usize>,
 }
 
+use crate::tui::components::hint_line::HintLine;
 /// Split a string into wrapped lines of at most `width` display columns each.
 /// Returns one entry per visual line (preserves explicit newlines as line
 /// breaks).
@@ -622,26 +623,32 @@ impl MessagesWidget {
                 Style::default().fg(self.theme.muted),
             )));
             let tail_width = self.width.saturating_sub(2);
-            rows.extend(self.render_streaming_tail(tail_width));
+            self.append_streaming_tail_rows(tail_width, &mut rows);
         }
         (rows, spans)
     }
 
-    /// The streaming tail's rendered Markdown.
+    /// Append the streaming tail's rendered Markdown to `rows`.
     ///
     /// The tail is the whole response received so far, and it grows a token
     /// at a time. Parsing all of it on every token is quadratic in the
     /// response's length, so the tail is parsed **incrementally**: the blocks
     /// the new text cannot change keep the rows they were rendered to.
-    fn render_streaming_tail(&self, width: u16) -> Vec<Line<'static>> {
+    ///
+    /// The rows are appended from the cache's **borrow** — one copy into the
+    /// caller's rows, which is the materialization the row index needs. The
+    /// cell is borrowed for the append only, so no reference into it outlives
+    /// this call.
+    fn append_streaming_tail_rows(&self, width: u16, rows: &mut Vec<Line<'static>>) {
         let mut cache = self.streaming_tail.borrow_mut();
-        cache.render(
+        let cached = cache.render(
             &self.streaming_tokens,
             self.streaming_epoch,
             &self.theme,
             self.theme.muted,
             width,
-        )
+        );
+        rows.extend_from_slice(cached);
     }
 
     /// The streaming tail's rendered rows.
@@ -650,10 +657,12 @@ impl MessagesWidget {
     /// so far, through the tail's cache.
     pub fn streaming_tail_rows(&self) -> Vec<Line<'static>> {
         let width = self.width.saturating_sub(2);
-        self.render_streaming_tail(width)
+        let mut rows = Vec::new();
+        self.append_streaming_tail_rows(width, &mut rows);
+        rows
     }
 
-    /// The rendered rows of one message part's Markdown.
+    /// Append the rendered rows of one message part's Markdown to `out`.
     ///
     /// A message's parts are **appended**, never rewritten: a streaming
     /// response grows the last message by adding parts to it. So the rows of
@@ -664,29 +673,63 @@ impl MessagesWidget {
     /// The cache is keyed by the message and the part, and it is dropped
     /// whenever the transcript changes in a way that is not an append — an
     /// undo, a width change, a display-option change.
-    fn markdown_part_rows(
+    ///
+    /// The rows are appended **from the borrow**: a hit copies each row once,
+    /// into the caller's buffer, and the caller consumes them immediately.
+    /// Returning an owned `Vec` copied them twice — once out of the cache and
+    /// once into the caller. A miss renders into `out` and copies once into
+    /// the cache, so a miss is one parse and one copy as well.
+    ///
+    /// When `current_match` falls inside this part, the one row the match
+    /// recolours is rebuilt and the rows after it are appended from the
+    /// borrow — a search adds a row's worth of work, not a second copy of the
+    /// part.
+    fn extend_markdown_part_rows(
         &self,
         msg_idx: usize,
         part_idx: usize,
         content: &str,
         width: u16,
-    ) -> Vec<Line<'static>> {
+        current_match: Option<&SearchMatch>,
+        out: &mut Vec<Line<'static>>,
+    ) {
+        let key = (msg_idx, part_idx);
         let mut cache = self.markdown_parts.borrow_mut();
-        if let Some(entry) = cache.get(&(msg_idx, part_idx)) {
-            if entry.content_len == content.len() && entry.width == width {
-                return entry.rows.clone();
+        let hit = cache
+            .get(&key)
+            .is_some_and(|entry| entry.content_len == content.len() && entry.width == width);
+        if !hit {
+            let mut rows = render_markdown(content, &self.theme, self.theme.muted, width);
+            // The cache owns its copy; the caller's append is a move.
+            cache.insert(
+                key,
+                CachedMarkdown {
+                    content_len: content.len(),
+                    width,
+                    rows: rows.clone(),
+                },
+            );
+            let start = out.len();
+            out.append(&mut rows);
+            render_cost::count_part_row_copy();
+            if let Some(first) = current_match.and_then(|m| {
+                highlighted_first_row(&out[start..], content, m, self.theme.selection)
+            }) {
+                out[start] = first;
             }
+            return;
         }
-        let rows = render_markdown(content, &self.theme, self.theme.muted, width);
-        cache.insert(
-            (msg_idx, part_idx),
-            CachedMarkdown {
-                content_len: content.len(),
-                width,
-                rows: rows.clone(),
-            },
-        );
-        rows
+        let entry = cache.get(&key).expect("the part was just looked up");
+        render_cost::count_part_row_copy();
+        match current_match
+            .and_then(|m| highlighted_first_row(&entry.rows, content, m, self.theme.selection))
+        {
+            Some(first) => {
+                out.push(first);
+                out.extend_from_slice(&entry.rows[1..]);
+            }
+            None => out.extend_from_slice(&entry.rows),
+        }
     }
 
     pub fn new(theme: Arc<Theme>) -> Self {
@@ -2068,13 +2111,25 @@ impl Widget for &MessagesWidget {
                 0
             };
             let query_display = self.search_query.as_deref().unwrap_or("");
+            // One row, one grammar: the query and the position are values,
+            // the keys are items, and the exit leads because the buffer clips
+            // from the end. The `|`s here separated fields, not hints.
             let search_bar = if match_count > 0 {
-                format!(
-                    " Search: {} | {}/{} | n:next N:prev Esc:close ",
-                    query_display, current, match_count
-                )
+                HintLine::from_items(&[
+                    ("Esc", "close"),
+                    (&format!("Search: {query_display}"), ""),
+                    (&format!("{current}/{match_count}"), ""),
+                    ("n", "next"),
+                    ("N", "prev"),
+                ])
+                .render(0)
             } else {
-                format!(" Search: {} | no matches | Esc:close ", query_display)
+                HintLine::from_items(&[
+                    ("Esc", "close"),
+                    (&format!("Search: {query_display}"), ""),
+                    ("no matches", ""),
+                ])
+                .render(0)
             };
             let search_style = Style::default()
                 .fg(self.theme.foreground)
@@ -2244,19 +2299,15 @@ impl MessagesWidget {
         for (part_idx, part) in msg.parts.iter().enumerate() {
             match part {
                 MsgPart::Text { content } => {
-                    let rendered = self.markdown_part_rows(msg_idx, part_idx, content, self.width);
-                    if let Some(m) = current_match {
-                        if m.part_idx == part_idx {
-                            lines.extend(highlight_match_in_rendered(
-                                &rendered,
-                                content,
-                                m,
-                                self.theme.selection,
-                            ));
-                            continue;
-                        }
-                    }
-                    lines.extend(rendered);
+                    let matched = current_match.filter(|m| m.part_idx == part_idx);
+                    self.extend_markdown_part_rows(
+                        msg_idx, part_idx, content, self.width, matched, &mut lines,
+                    );
+                    // A text part always ends a reasoning run, whether or not a
+                    // search match landed on it. The search arm used to skip
+                    // this reset — it `continue`d before the flag was cleared —
+                    // so a searched prose part silently suppressed the header of
+                    // the reasoning block after it.
                     prev_was_reasoning = false;
                 }
                 MsgPart::Reasoning { content, collapsed } => {
@@ -2290,9 +2341,14 @@ impl MessagesWidget {
                     }
                     if self.show_thinking && !*collapsed {
                         let tail_width = self.width.saturating_sub(2);
-                        let rendered =
-                            self.markdown_part_rows(msg_idx, part_idx, content, tail_width);
-                        lines.extend(prefix_rendered_lines(rendered, "  ", Style::default()));
+                        // The rows are appended from the cache's borrow and
+                        // then indented where they landed, so the prefix costs
+                        // no second copy of the part.
+                        let start = lines.len();
+                        self.extend_markdown_part_rows(
+                            msg_idx, part_idx, content, tail_width, None, &mut lines,
+                        );
+                        prefix_rendered_lines_in_place(&mut lines[start..], "  ", Style::default());
                     }
                     spans.push(PartSpan {
                         part: RowPart::Reasoning { part_idx },
@@ -2370,23 +2426,36 @@ impl MessagesWidget {
                     // web-search style document: it prints every leaf scalar,
                     // so it *is* the readable form of the payload rather than a
                     // second copy of the document beside it.
-                    let output_body: Option<Vec<String>> = if read_lang.is_some() {
-                        None
-                    } else {
-                        Some(match render_structured_output_outline(name, payload) {
-                            Some(rows) => rows,
-                            None => format_payload_for_display(payload)
-                                .lines()
-                                .map(ToOwned::to_owned)
-                                .collect(),
-                        })
-                    };
+                    //
+                    // It is built **only when it is drawn** — an expanded call
+                    // with output. The disclosure model makes collapsed the
+                    // default, so building it here unconditionally meant the
+                    // common case paid for a JSON parse and a tree of formatted
+                    // rows that it dropped.
+                    let output_body: Option<Vec<String>> =
+                        if !*expanded || output.is_empty() || read_lang.is_some() {
+                            None
+                        } else {
+                            render_cost::count_tool_body_build();
+                            Some(match render_structured_output_outline(name, payload) {
+                                Some(rows) => rows,
+                                None => format_payload_for_display(payload)
+                                    .lines()
+                                    .map(ToOwned::to_owned)
+                                    .collect(),
+                            })
+                        };
                     // The header's expand affordance and the hidden-output
                     // counter have to describe the rows that are actually
-                    // drawn, so the count comes from the same body the rows do.
+                    // drawn, so the count is the body's own length whenever the
+                    // body exists. A collapsed call draws no body — and
+                    // building one just to count it is the cost this milestone
+                    // removes — so its count comes from a count-only read of
+                    // the payload that reproduces the same number.
                     let output_line_count = match &output_body {
                         Some(body) => body.len(),
-                        None => output.lines().count(),
+                        None if read_lang.is_some() => output.lines().count(),
+                        None => tool_output_body_line_count(name, payload),
                     };
                     // A collapsed call hides its whole body, so the counter
                     // counts every line of it. It moves into the header row:
@@ -2529,16 +2598,13 @@ impl MessagesWidget {
                         }
 
                         if let Some(lang) = read_lang {
-                            // The numbered renderer splits the text itself, so
-                            // the text it gets is the output's own lines.
-                            let preview = output.lines().collect::<Vec<_>>().join("\n");
+                            // The renderer reads the output's own lines, so
+                            // the caller hands it the output rather than a
+                            // pre-joined copy of it.
                             let wrap_width = self.tool_output_wrap_width();
-                            for output_line in render_numbered_code_output(
-                                &preview,
-                                &lang,
-                                &self.theme,
-                                wrap_width,
-                            ) {
+                            for output_line in
+                                render_numbered_code_output(output, &lang, &self.theme, wrap_width)
+                            {
                                 let mut spans = vec![Span::raw("    ")];
                                 spans.extend(output_line.spans);
                                 lines.push(Line::from(spans));
@@ -2819,23 +2885,30 @@ impl MessagesWidget {
     }
 }
 
-/// Apply search-match highlight to pre-rendered markdown lines by re-coloring
-/// the character range covered by `m` with a background color + REVERSED.
+/// The recoloured first row of a part's rendered rows, when the match falls in
+/// it.
+///
+/// The rows **after** it are untouched, so the caller appends them from the
+/// borrow: only the one row a match actually changes is rebuilt. The arms that
+/// leave every row as it is return `None`, which is the common case and the
+/// reason this no longer returns a `Vec` — the old return copied the part's
+/// whole row list a second time on every rebuild under a search.
+///
 /// Returns the original lines unchanged when the match is outside the rendered
 /// range or on a non-first logical line (pre-wrap may split logical lines
-/// across multiple rendered lines; for now we only highlight the first
-/// rendered line, which is the common case).
-fn highlight_match_in_rendered(
+/// across multiple rendered lines; for now only the first rendered line is
+/// highlighted, which is the common case).
+fn highlighted_first_row(
     rendered: &[Line<'static>],
     original_content: &str,
-    m: &crate::tui::components::messages::SearchMatch,
+    m: &SearchMatch,
     selection_bg: ratatui::style::Color,
-) -> Vec<Line<'static>> {
+) -> Option<Line<'static>> {
     if rendered.is_empty() || m.line_in_msg >= original_content.lines().count() {
-        return rendered.to_vec();
+        return None;
     }
     if m.line_in_msg != 0 {
-        return rendered.to_vec();
+        return None;
     }
     let mut first = rendered[0].clone();
     let total_width: usize = first
@@ -2844,7 +2917,7 @@ fn highlight_match_in_rendered(
         .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
         .sum();
     if m.end > total_width {
-        return rendered.to_vec();
+        return None;
     }
     let mut new_spans: Vec<Span<'static>> = Vec::new();
     let mut col = 0usize;
@@ -2877,9 +2950,7 @@ fn highlight_match_in_rendered(
         col = span_end;
     }
     first.spans = new_spans;
-    let mut out: Vec<Line<'static>> = vec![first];
-    out.extend_from_slice(&rendered[1..]);
-    out
+    Some(first)
 }
 
 // ── The streaming tail ───────────────────────────────────────────────────
@@ -2939,11 +3010,31 @@ struct StreamingTailCache {
     blocks: Vec<TailBlock>,
     /// The byte offset of each line's start, in the tail's text.
     line_offsets: Vec<usize>,
+    /// The rows the blocks assemble to.
+    ///
+    /// Kept beside the blocks because the assembly is the tail's most
+    /// frequently **read** value and one of its least frequently changed: the
+    /// blocks move when a token arrives, while the rows are read on every
+    /// rebuild of the streaming message — including the rebuilds a token did
+    /// not cause. Every mutation of `blocks` in this struct ends in
+    /// [`StreamingTailCache::reassemble_from`], so the rows cannot outlive the
+    /// block set they describe; a stale assembly would show text the response
+    /// no longer contains.
+    assembled: Vec<Line<'static>>,
+    /// The length of [`Self::assembled`] after each block, so a block change
+    /// re-assembles only the suffix the change could have touched.
+    assembled_ends: Vec<usize>,
 }
 
 impl StreamingTailCache {
     /// Render `text` as Markdown, reusing the blocks the new text cannot
-    /// change.
+    /// change, and hand back the rows the blocks assemble to.
+    ///
+    /// The rows are returned **by borrow**. The caller appends them into the
+    /// message's rows with one copy, which is the one materialization the row
+    /// index needs; an owned `Vec` here copied every block's every row on
+    /// every call, including the calls where the comment below says the rows
+    /// are already rendered.
     fn render(
         &mut self,
         text: &str,
@@ -2951,18 +3042,20 @@ impl StreamingTailCache {
         theme: &Arc<Theme>,
         default_color: ratatui::style::Color,
         width: u16,
-    ) -> Vec<Line<'static>> {
+    ) -> &[Line<'static>] {
         if text.is_empty() {
             self.epoch = epoch;
             self.text_len = 0;
             self.blocks.clear();
             self.line_offsets.clear();
-            return vec![Line::from("")];
+            self.assembled = vec![Line::from("")];
+            self.assembled_ends.clear();
+            return &self.assembled;
         }
 
         // The tail did not change: the rows are already rendered.
         if self.epoch == epoch && self.text_len == text.len() && !self.blocks.is_empty() {
-            return self.assemble();
+            return &self.assembled;
         }
 
         // The tail grew. The blocks the new text cannot change keep their
@@ -3001,7 +3094,7 @@ impl StreamingTailCache {
                 }
                 self.blocks.extend(blocks);
                 self.epoch = epoch;
-                return self.assemble();
+                return self.reassemble_from(kept);
             }
         }
 
@@ -3010,17 +3103,43 @@ impl StreamingTailCache {
         self.set_line_offsets(text);
         self.blocks =
             parse_markdown_blocks(text, &self.line_offsets, 0, theme, default_color, width);
-        self.assemble()
+        self.reassemble_from(0)
     }
 
-    /// The rows the blocks assemble to.
+    /// Re-assemble the rows for the blocks from `from` on, and hand them back.
     ///
     /// The assembly is the render's own rule — a blank line between two
-    /// blocks, and none where the block before it already ended with one —
-    /// so the rows a cached tail produces are the rows a fresh parse of the
-    /// same text produces.
-    fn assemble(&self) -> Vec<Line<'static>> {
-        assemble_markdown_blocks(&self.blocks)
+    /// blocks, and none where the block before it already ended with one — so
+    /// the rows a cached tail produces are the rows a fresh parse of the same
+    /// text produces. The rule is a fold over the line list, and the state it
+    /// carries between blocks is the line list itself, so the fold can start
+    /// from the rows the **unchanged** blocks already assembled to: a token
+    /// re-assembles the suffix from the first block it could have changed, not
+    /// the whole response. The rows of the blocks before `from` are the rows
+    /// they assembled to before, unmoved.
+    fn reassemble_from(&mut self, from: usize) -> &[Line<'static>] {
+        render_cost::count_tail_row_copy();
+        debug_assert!(
+            self.assembled_ends.len() >= from,
+            "the assembled rows must cover every block before the re-assembled \
+             suffix: {} ends for a rebuild from block {from}",
+            self.assembled_ends.len()
+        );
+        let truncate_to = if from == 0 {
+            0
+        } else {
+            self.assembled_ends[from - 1]
+        };
+        self.assembled.truncate(truncate_to);
+        self.assembled_ends.truncate(from);
+        for block in &self.blocks[from..] {
+            extend_assembly(std::slice::from_ref(block), &mut self.assembled);
+            self.assembled_ends.push(self.assembled.len());
+        }
+        if self.assembled.is_empty() {
+            self.assembled.push(Line::from(""));
+        }
+        &self.assembled
     }
 
     /// The first line that has to be parsed again for the tail's new text.
@@ -3036,12 +3155,29 @@ impl StreamingTailCache {
             .last()
             .map(|block| block.start_line)
             .unwrap_or(1);
+        // A block's *meaning* can depend on the block **before** it, not only on
+        // text that comes after it. A table's delimiter row reinterprets the
+        // paragraph above it as the header, and a setext underline reinterprets
+        // the paragraph above it as a heading; both arrive as a block of their
+        // own first. Re-parsing only the last block therefore leaves the earlier
+        // one committed to the wrong shape and the table can never form — which
+        // is what a bare `---` at a chunk boundary did to a streamed table.
+        //
+        // Backing up one block costs one extra block re-parse per tick, which is
+        // bounded by a block rather than by the response.
+        let previous = self
+            .blocks
+            .iter()
+            .rev()
+            .nth(1)
+            .map(|block| block.start_line)
+            .unwrap_or(last);
         self.blocks
             .iter()
             .find(|block| block.has_reference)
             .map(|block| block.start_line)
-            .unwrap_or(last)
-            .min(last)
+            .unwrap_or(previous)
+            .min(previous)
     }
 
     /// Rebuild the line offsets from the whole text.
@@ -3109,6 +3245,21 @@ fn markdown_line_offsets(text: &str) -> Vec<usize> {
 /// nothing but a blank line is dropped again.
 fn assemble_markdown_blocks(blocks: &[TailBlock]) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
+    extend_assembly(blocks, &mut lines);
+    if lines.is_empty() {
+        vec![Line::from("")]
+    } else {
+        lines
+    }
+}
+
+/// Fold `blocks` into `lines` by the assembly rule.
+///
+/// The state the rule carries from one block to the next is the line list
+/// itself, so a caller that already holds the rows of the blocks **before**
+/// these can fold only the suffix — which is what the streaming tail's cache
+/// does, so a token re-assembles the block it grew rather than the response.
+fn extend_assembly(blocks: &[TailBlock], lines: &mut Vec<Line<'static>>) {
     for block in blocks {
         let before_len = lines.len();
         if before_len > 0 && !is_blank_line(&lines[before_len - 1]) {
@@ -3118,11 +3269,6 @@ fn assemble_markdown_blocks(blocks: &[TailBlock]) -> Vec<Line<'static>> {
         if lines.len() == before_len + 1 && is_blank_line(&lines[before_len]) {
             lines.pop();
         }
-    }
-    if lines.is_empty() {
-        vec![Line::from("")]
-    } else {
-        lines
     }
 }
 
@@ -3622,6 +3768,26 @@ fn wrap_markdown_spans(
 }
 
 fn wrap_code_spans(spans: &[Span<'static>], width: u16) -> Vec<Line<'static>> {
+    let lines = wrap_code_spans_inner(spans, width);
+    let emitted: u64 = lines
+        .iter()
+        .map(|line| line.spans.len() as u64)
+        .sum::<u64>();
+    render_cost::count_code_block_spans(emitted);
+    lines
+}
+
+/// Wrap one highlighted code line at `width` columns, emitting one span per
+/// **style run per row**.
+///
+/// The break rule is unchanged: a character that would overflow the row starts
+/// the next one, a row never breaks before its first character, and a
+/// zero-width character never breaks. What changed is the unit a row
+/// accumulates — a run of characters sharing a style instead of one span per
+/// character. An 80-column line used to be 80 spans and 80 heap `String`s for
+/// ratatui to resolve one by one; `chunk_word` in `src/tui/wrap.rs` has the same
+/// shape for the shared wrap.
+fn wrap_code_spans_inner(spans: &[Span<'static>], width: u16) -> Vec<Line<'static>> {
     let width = width as usize;
     if width == 0 {
         return vec![Line::from(spans.to_vec())];
@@ -3632,14 +3798,23 @@ fn wrap_code_spans(spans: &[Span<'static>], width: u16) -> Vec<Line<'static>> {
     let mut col = 0usize;
     for span in spans {
         let style = span.style;
-        for ch in span.content.chars() {
+        let text = span.content.as_ref();
+        // The offset the run being accumulated starts at, within this span.
+        let mut run_start = 0usize;
+        for (offset, ch) in text.char_indices() {
             let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
             if col > 0 && col + ch_width > width {
+                if run_start < offset {
+                    current.push(Span::styled(text[run_start..offset].to_string(), style));
+                }
                 lines.push(Line::from(std::mem::take(&mut current)));
                 col = 0;
+                run_start = offset;
             }
-            current.push(Span::styled(ch.to_string(), style));
             col += ch_width;
+        }
+        if run_start < text.len() {
+            current.push(Span::styled(text[run_start..].to_string(), style));
         }
     }
     lines.push(Line::from(current));
@@ -3681,22 +3856,19 @@ fn render_code_block(code: &str, lang: &str, theme: &Arc<Theme>, width: u16) -> 
     lines
 }
 
-fn prefix_rendered_lines(
-    lines: Vec<Line<'static>>,
-    prefix: &str,
-    prefix_style: Style,
-) -> Vec<Line<'static>> {
+/// Indent already-appended rows by `prefix`, in place.
+///
+/// The rows are the caller's own — appended from a borrow — so indenting them
+/// where they landed costs no second copy of the rows, unlike a function that
+/// consumed a `Vec` and rebuilt every `Line` with the prefix in front.
+fn prefix_rendered_lines_in_place(lines: &mut [Line<'static>], prefix: &str, prefix_style: Style) {
     if prefix.is_empty() {
-        return lines;
+        return;
     }
-    lines
-        .into_iter()
-        .map(|line| {
-            let mut spans = vec![Span::styled(prefix.to_string(), prefix_style)];
-            spans.extend(line.spans);
-            Line::from(spans)
-        })
-        .collect()
+    for line in lines {
+        line.spans
+            .insert(0, Span::styled(prefix.to_string(), prefix_style));
+    }
 }
 
 /// Extract the payload inside an external-content trust frame — **for display
@@ -3827,6 +3999,40 @@ fn format_payload_for_display(payload: &str) -> String {
 /// the raw form is already the readable one — so ordinary command output is
 /// untouched.
 fn render_structured_output_outline(name: &str, output: &str) -> Option<Vec<String>> {
+    let value = structured_output_value(name, output)?;
+    let mut rows = Vec::new();
+    write_json_outline(&value, 0, &mut rows);
+    if rows.is_empty() {
+        None
+    } else {
+        Some(rows)
+    }
+}
+
+/// The number of rows [`render_structured_output_outline`] would produce.
+///
+/// The collapsed header needs the count and the expanded body needs the rows,
+/// and the two numbers have to agree — so there is one walker
+/// ([`write_json_outline`]) and the count is taken by handing it a sink that
+/// counts a row instead of formatting it. Nothing here builds a formatted row,
+/// which is what makes the collapsed call cheaper than the expanded one.
+fn count_structured_output_outline(name: &str, output: &str) -> Option<usize> {
+    let value = structured_output_value(name, output)?;
+    let mut count = OutlineRowCount::default();
+    write_json_outline(&value, 0, &mut count);
+    if count.0 == 0 {
+        None
+    } else {
+        Some(count.0)
+    }
+}
+
+/// The parsed JSON a structured tool's payload holds.
+///
+/// `None` for a tool whose output is not structured, and for a payload that is
+/// not a JSON object or array — the two cases whose raw form is already the
+/// readable one.
+fn structured_output_value(name: &str, output: &str) -> Option<serde_json::Value> {
     const STRUCTURED_TOOLS: &[&str] = &["websearch", "research", "webfetch"];
     if !STRUCTURED_TOOLS.contains(&name) {
         return None;
@@ -3835,14 +4041,115 @@ fn render_structured_output_outline(name: &str, output: &str) -> Option<Vec<Stri
     if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
         return None;
     }
-    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
-    let mut rows = Vec::new();
-    write_json_outline(&value, 0, &mut rows);
-    if rows.is_empty() {
-        None
-    } else {
-        Some(rows)
+    serde_json::from_str(trimmed).ok()
+}
+
+/// The number of rows a tool call's output body would draw.
+///
+/// This is the collapsed header's hidden-output count, and it must be the
+/// number the **expanded** body has: the count is how the user knows there is
+/// something to expand, so a cheaper number is a different number. It is
+/// derived from the same two sources the body is — the structured outline for a
+/// structured payload, the formatted payload otherwise — without building
+/// either: the outline is walked with a counting sink, and the pretty-printed
+/// payload is written to a writer that keeps only its newline count.
+fn tool_output_body_line_count(name: &str, payload: &str) -> usize {
+    if let Some(rows) = count_structured_output_outline(name, payload) {
+        return rows;
     }
+    payload_display_line_count(payload)
+}
+
+/// The number of lines [`format_payload_for_display`] would produce.
+fn payload_display_line_count(payload: &str) -> usize {
+    let trimmed = payload.trim();
+    if trimmed.is_empty() {
+        return 0;
+    }
+    // `format_payload_for_display` returns the trimmed text unchanged when it
+    // does not parse as JSON, so its line count is the text's own — and a text
+    // whose first byte cannot open a JSON value needs no parse to establish
+    // that. A plain command output is the common shape of a collapsed call, so
+    // the common shape parses nothing at all.
+    if !starts_json_value(trimmed) {
+        return trimmed.lines().count();
+    }
+    match serde_json::from_str::<serde_json::Value>(trimmed) {
+        Ok(value) => pretty_json_line_count(&value).unwrap_or_else(|| trimmed.lines().count()),
+        Err(_) => trimmed.lines().count(),
+    }
+}
+
+/// Whether `text`'s first byte can begin a JSON value.
+///
+/// The JSON grammar's first tokens are `{`, `[`, `"`, `-`, a digit, `t`
+/// (`true`), `f` (`false`) and `n` (`null`). A text that starts with anything
+/// else cannot parse, which is a sound and cheap reason not to ask.
+fn starts_json_value(text: &str) -> bool {
+    matches!(
+        text.as_bytes().first(),
+        Some(b'{' | b'[' | b'"' | b'-' | b'0'..=b'9' | b't' | b'f' | b'n')
+    )
+}
+
+/// The number of lines `serde_json::to_string_pretty` would produce.
+///
+/// The pretty printer is still the one producer of the layout — it writes into
+/// a sink that counts newlines and keeps no bytes, instead of into a `String`
+/// that the caller immediately counts and drops. `to_string_pretty` never ends
+/// with a newline, so the number of lines is one more than the number of
+/// newlines. `None` when the printer refuses the value, which is the case
+/// `format_payload_for_display` falls back to the raw text for.
+fn pretty_json_line_count(value: &serde_json::Value) -> Option<usize> {
+    struct LineCounter(usize);
+
+    impl std::io::Write for LineCounter {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.0 += buffer.iter().filter(|byte| **byte == b'\n').count();
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut counter = LineCounter(0);
+    serde_json::to_writer_pretty(&mut counter, value).ok()?;
+    Some(counter.0 + 1)
+}
+
+/// Where a structured outline's rows go.
+///
+/// The outline has two readers: the expanded body, which draws the rows, and the
+/// collapsed header, which needs only how many there are. One walker produces
+/// both by handing each row to a sink — [`Vec<String>`] keeps it,
+/// [`OutlineRowCount`] counts it and never builds the string — so the count and
+/// the rows cannot disagree.
+trait OutlineSink {
+    /// Take one row, built on demand.
+    fn row(&mut self, build: impl FnOnce() -> String);
+}
+
+impl OutlineSink for Vec<String> {
+    fn row(&mut self, build: impl FnOnce() -> String) {
+        self.push(build());
+    }
+}
+
+/// The number of rows an outline has, without formatting any of them.
+#[derive(Default)]
+struct OutlineRowCount(usize);
+
+impl OutlineSink for OutlineRowCount {
+    fn row(&mut self, _build: impl FnOnce() -> String) {
+        self.0 += 1;
+    }
+}
+
+/// The indent an outline row at `indent` levels carries.
+fn indent_pad(indent: usize) -> String {
+    "  ".repeat(indent)
 }
 
 fn json_scalar(value: &serde_json::Value) -> String {
@@ -3853,43 +4160,43 @@ fn json_scalar(value: &serde_json::Value) -> String {
     }
 }
 
-fn write_json_outline(value: &serde_json::Value, indent: usize, out: &mut Vec<String>) {
-    let pad = "  ".repeat(indent);
+fn write_json_outline(value: &serde_json::Value, indent: usize, out: &mut impl OutlineSink) {
     match value {
         serde_json::Value::Object(map) => {
             if map.is_empty() {
-                out.push(format!("{pad}(empty)"));
+                out.row(|| format!("{}(empty)", indent_pad(indent)));
                 return;
             }
             for (key, item) in map {
                 match item {
                     serde_json::Value::Array(items) => {
                         let noun = if items.len() == 1 { "item" } else { "items" };
-                        out.push(format!("{pad}{key} — {} {noun}:", items.len()));
+                        let count = items.len();
+                        out.row(|| format!("{}{key} — {count} {noun}:", indent_pad(indent)));
                         for (index, entry) in items.iter().enumerate() {
-                            out.push(format!("{pad}  [{index}]"));
-                            write_json_outline(entry, indent + 2, out);
+                            out.row(|| format!("{}  [{index}]", indent_pad(indent)));
+                            write_json_outline(entry, indent + 2, &mut *out);
                         }
                     }
                     serde_json::Value::Object(_) => {
-                        out.push(format!("{pad}{key}:"));
-                        write_json_outline(item, indent + 1, out);
+                        out.row(|| format!("{}{key}:", indent_pad(indent)));
+                        write_json_outline(item, indent + 1, &mut *out);
                     }
-                    _ => out.push(format!("{pad}{key}: {}", json_scalar(item))),
+                    _ => out.row(|| format!("{}{key}: {}", indent_pad(indent), json_scalar(item))),
                 }
             }
         }
         serde_json::Value::Array(items) => {
             if items.is_empty() {
-                out.push(format!("{pad}(empty)"));
+                out.row(|| format!("{}(empty)", indent_pad(indent)));
                 return;
             }
             for (index, entry) in items.iter().enumerate() {
-                out.push(format!("{pad}[{index}]"));
-                write_json_outline(entry, indent + 1, out);
+                out.row(|| format!("{}[{index}]", indent_pad(indent)));
+                write_json_outline(entry, indent + 1, &mut *out);
             }
         }
-        scalar => out.push(format!("{pad}{}", json_scalar(scalar))),
+        scalar => out.row(|| format!("{}{}", indent_pad(indent), json_scalar(scalar))),
     }
 }
 
@@ -3914,14 +4221,23 @@ fn render_numbered_code_output(
     theme: &Arc<Theme>,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let code = output
-        .lines()
-        .map(strip_read_line_number)
-        .collect::<Vec<_>>()
-        .join("\n");
+    // The highlighter needs one `&str`, so the stripped text is built **once**,
+    // here, and the rows come from the output's own line slices. The payload
+    // used to be materialized three times: the caller joined the output's
+    // lines, this function stripped and joined them again, and the highlighter
+    // split the result once more.
+    let mut code = String::with_capacity(output.len());
+    let mut originals: Vec<&str> = Vec::new();
+    for line in output.lines() {
+        if !originals.is_empty() {
+            code.push('\n');
+        }
+        originals.push(line);
+        code.push_str(strip_read_line_number(line));
+    }
     let highlighted = highlight_code(&code, lang, theme.code_theme());
     let mut lines = Vec::new();
-    for (original, highlighted_line) in output.lines().zip(highlighted) {
+    for (original, highlighted_line) in originals.into_iter().zip(highlighted) {
         let number_prefix = split_read_line_number(original)
             .map(|(prefix, _)| Span::styled(prefix.to_string(), Style::default().fg(theme.muted)));
         // `read` output is emitted without the surrounding code-block chrome,
@@ -6135,7 +6451,7 @@ mod tests {
     #[test]
     fn highlight_match_in_rendered_returns_lines_unchanged_for_non_first_logical_line_known_defect()
     {
-        // Known defect: the highlighter returns the rendered lines unchanged
+        // Known defect: the highlighter leaves the rendered lines unchanged
         // unless the match is on the first logical line of its part, so a
         // search inside a long paragraph highlights nothing at all.
         let rendered = vec![Line::from("first line"), Line::from("second line")];
@@ -6146,15 +6462,16 @@ mod tests {
             start: 11,
             end: 17,
         };
-        let out = highlight_match_in_rendered(
+        let out = highlighted_first_row(
             &rendered,
             "first line\nsecond line",
             &m,
             ratatui::style::Color::Red,
         );
         assert_eq!(
-            out, rendered,
-            "a match on a non-first logical line is left unhighlighted"
+            out, None,
+            "a match on a non-first logical line is left unhighlighted, so no \
+             row is rebuilt"
         );
     }
 
@@ -6172,11 +6489,11 @@ mod tests {
             start: 9,
             end: 12,
         };
-        let out =
-            highlight_match_in_rendered(&rendered, "日本語 abc", &m, ratatui::style::Color::Red);
+        let out = highlighted_first_row(&rendered, "日本語 abc", &m, ratatui::style::Color::Red);
         assert_eq!(
-            out, rendered,
-            "a match whose byte offset exceeds the display width is dropped"
+            out, None,
+            "a match whose byte offset exceeds the display width is dropped, so \
+             no row is rebuilt"
         );
     }
 
@@ -6477,5 +6794,464 @@ mod tests {
                 .any(|row| row.contains("The comparison is done.")),
             "the prose must still be drawn: {prose_rows:?}"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // M004 — the code-block wrapper emits one span per style run
+    // -----------------------------------------------------------------
+
+    /// The per-character wrapper the style-run wrapper replaced.
+    ///
+    /// This is the reference the geometry is proved against: it breaks rows at
+    /// the same place (the same `col + ch_width > width` rule, the same
+    /// wide-character widths) and it records the style each character carries,
+    /// so a run that changed a break or a style is a difference here.
+    fn wrap_code_spans_reference(spans: &[Span<'static>], width: u16) -> Vec<Vec<(char, Style)>> {
+        let width = width as usize;
+        if width == 0 {
+            return vec![spans
+                .iter()
+                .flat_map(|span| {
+                    span.content
+                        .chars()
+                        .map(|ch| (ch, span.style))
+                        .collect::<Vec<_>>()
+                })
+                .collect()];
+        }
+        let mut rows: Vec<Vec<(char, Style)>> = Vec::new();
+        let mut current: Vec<(char, Style)> = Vec::new();
+        let mut col = 0usize;
+        for span in spans {
+            for ch in span.content.chars() {
+                let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                if col > 0 && col + ch_width > width {
+                    rows.push(std::mem::take(&mut current));
+                    col = 0;
+                }
+                current.push((ch, span.style));
+                col += ch_width;
+            }
+        }
+        rows.push(current);
+        rows
+    }
+
+    /// A rendered row flattened to the style each character carries.
+    fn row_characters(line: &Line<'_>) -> Vec<(char, Style)> {
+        line.spans
+            .iter()
+            .flat_map(|span| span.content.chars().map(|ch| (ch, span.style)))
+            .collect()
+    }
+
+    /// The wrapper's rows are the per-character rows, with one span per run.
+    #[test]
+    fn wrap_code_spans_keeps_every_row_break_and_every_style() {
+        let bold = Style::default().add_modifier(Modifier::BOLD);
+        let comment = Style::default().fg(ratatui::style::Color::Green).italic();
+        for (name, spans) in [
+            (
+                "one plain run",
+                vec![Span::styled("a".repeat(30), Style::default())],
+            ),
+            (
+                "two runs that straddle a break",
+                vec![
+                    Span::styled("abcdefghij", Style::default()),
+                    Span::styled("klmnopqrst", bold),
+                ],
+            ),
+            (
+                "a multi-byte run",
+                vec![Span::styled(
+                    "日本語のテキストをここに置きます",
+                    Style::default(),
+                )],
+            ),
+            (
+                "a line wider than the wrap width with four styles",
+                vec![
+                    Span::styled("fn main() {", bold),
+                    Span::styled(" // a comment", comment),
+                    Span::styled(" let value = 1;", Style::default()),
+                    Span::styled(" }", Style::default().italic()),
+                ],
+            ),
+        ] {
+            for width in [0u16, 8, 20, 40] {
+                let actual: Vec<Vec<(char, Style)>> = wrap_code_spans(&spans, width)
+                    .iter()
+                    .map(row_characters)
+                    .collect();
+                assert_eq!(
+                    actual,
+                    wrap_code_spans_reference(&spans, width),
+                    "{name} at width {width}: the row breaks and the per-character \
+                     styles must be the per-character wrapper's"
+                );
+            }
+        }
+    }
+
+    /// A row costs one span per style run, not one per character.
+    ///
+    /// An 80x100 code block was eight thousand spans — and eight thousand heap
+    /// `String`s — for ratatui to resolve one by one when the paragraph was
+    /// drawn.
+    #[test]
+    fn wrap_code_spans_emits_one_span_per_style_run() {
+        let spans = vec![Span::styled("a".repeat(80), Style::default())];
+        let before = render_cost::snapshot();
+        let lines = wrap_code_spans(&spans, 80);
+        let cost = render_cost::snapshot().since(&before);
+
+        assert_eq!(lines.len(), 1, "eighty columns at width eighty is one row");
+        assert_eq!(
+            lines[0].spans.len(),
+            1,
+            "the row is one style run, so it is one span"
+        );
+        assert_eq!(
+            cost.code_block_spans, 1,
+            "one span emitted for one run, not one per character: {} spans",
+            cost.code_block_spans
+        );
+    }
+
+    /// A run that straddles a break is emitted once per row it occupies.
+    #[test]
+    fn wrap_code_spans_splits_a_run_once_per_row_it_occupies() {
+        let spans = vec![
+            Span::styled("abcdefghij", Style::default()),
+            Span::styled("klmnopqrst", Style::default()),
+        ];
+        let before = render_cost::snapshot();
+        let lines = wrap_code_spans(&spans, 8);
+        let cost = render_cost::snapshot().since(&before);
+
+        assert_eq!(
+            lines.len(),
+            3,
+            "twenty columns at width eight is three rows"
+        );
+        assert_eq!(
+            cost.code_block_spans, 4,
+            "one span per run segment per row — the first run is split at the \
+             break, the second closes the middle row, and the third row takes \
+             the rest — not one per character: {} spans",
+            cost.code_block_spans
+        );
+    }
+
+    /// The wrapper's cost is bounded by rows times style runs, not characters.
+    ///
+    /// The plan's fixtures: a 20-row block 40 columns wide and a 100-row block
+    /// 80 columns wide. A line of 40 (or 80) characters used to be 40 (or 80)
+    /// spans; one style run is one span per row, however wide the row is.
+    #[test]
+    fn wrap_code_spans_cost_is_bounded_by_rows_and_runs() {
+        for (rows, width) in [(20usize, 40u16), (100, 80)] {
+            let line = vec![Span::styled("x".repeat(width as usize), Style::default())];
+            let before = render_cost::snapshot();
+            let wrapped_rows: usize = (0..rows).map(|_| wrap_code_spans(&line, width).len()).sum();
+            let cost = render_cost::snapshot().since(&before);
+
+            assert_eq!(
+                wrapped_rows, rows,
+                "a line exactly as wide as the wrapper is one row"
+            );
+            assert_eq!(
+                cost.code_block_spans,
+                rows as u64,
+                "one span per row for one style run: {} spans for {rows}x{width}                  ({} characters)",
+                cost.code_block_spans,
+                rows * width as usize
+            );
+            assert!(
+                (cost.code_block_spans as usize) < rows * width as usize,
+                "the span count must be bounded by the rows, not by the                  characters: {} spans for {} characters",
+                cost.code_block_spans,
+                rows * width as usize
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // M004 — the recorded length-key limitation and search-path defect
+    // -----------------------------------------------------------------
+
+    /// A same-length replacement of a part's content hits the part cache
+    /// (known limitation).
+    ///
+    /// The cache's key is the part's **length**, on the argument that a
+    /// message's parts are appended and never rewritten. Every write path in
+    /// the widget appends — `push_str` on the last part, or a new part — so the
+    /// length moves whenever the content does, and the key cannot go stale
+    /// today. A same-length replacement made behind the widget's back would
+    /// serve the previous rows; widening the key to the content would put a
+    /// hash of the whole response on the per-token path, which is the cost the
+    /// cache exists to remove.
+    #[test]
+    fn a_same_length_replacement_of_a_part_serves_the_cached_rows_known_limitation() {
+        let mut widget = MessagesWidget::default();
+        widget.set_width(40);
+        widget.messages.push(UIMessage {
+            role: MessageRole::Assistant,
+            parts: vec![MsgPart::Text {
+                content: "alpha".to_string(),
+            }],
+            timestamp: None,
+            is_plan_mode: None,
+        });
+        widget.invalidate_rows();
+        let first = rows_drawn(&widget);
+        assert!(
+            first.iter().any(|row| row.contains("alpha")),
+            "the part's first rendering must be drawn: {first:?}"
+        );
+
+        // A replacement of the same length, made without telling the widget.
+        if let Some(MsgPart::Text { content }) = widget.messages[0].parts.first_mut() {
+            *content = "bravo".to_string();
+        }
+        let again = rows_drawn(&widget);
+        assert!(
+            again.iter().any(|row| row.contains("alpha")),
+            "the length key cannot see a same-length replacement: {again:?}"
+        );
+        assert!(
+            !again.iter().any(|row| row.contains("bravo")),
+            "the new content is not drawn until something invalidates the \
+             cache: {again:?}"
+        );
+    }
+
+    /// A searched prose part still draws the next reasoning block's header.
+    ///
+    /// The search arm used to `continue` past the reset of `prev_was_reasoning`
+    /// — the flag that says the reasoning header has already been drawn — so a
+    /// text part that *was* the searched part left the flag set and the
+    /// reasoning block after it drew no header: one row fewer than the same
+    /// transcript without a search. M004 preserved the behaviour because its
+    /// rendered output had to be byte-identical; the defect was recorded here so
+    /// a fix could not land unnoticed, and this is that fix. The fixture is the
+    /// shape that exposed it — a reasoning block, the searched prose, then a
+    /// second reasoning block — and the search now changes a row's colour, never
+    /// whether the row exists.
+    #[test]
+    fn a_searched_prose_part_still_draws_the_next_reasoning_header() {
+        fn widget() -> MessagesWidget {
+            let mut widget = MessagesWidget::default();
+            widget.set_width(40);
+            widget.set_visible_height(20);
+            widget.messages.push(UIMessage {
+                role: MessageRole::Assistant,
+                parts: vec![
+                    MsgPart::Reasoning {
+                        content: "a thought".to_string(),
+                        collapsed: true,
+                    },
+                    MsgPart::Text {
+                        content: "alpha beta gamma".to_string(),
+                    },
+                    MsgPart::Reasoning {
+                        content: "another thought".to_string(),
+                        collapsed: true,
+                    },
+                ],
+                timestamp: None,
+                is_plan_mode: None,
+            });
+            widget.invalidate_rows();
+            widget
+        }
+
+        fn headers(rows: &[String]) -> usize {
+            rows.iter().filter(|row| row.contains("Thinking")).count()
+        }
+
+        let plain = widget();
+        let plain_rows = rows_drawn(&plain);
+
+        let mut searched = widget();
+        searched.search("beta");
+        assert!(
+            searched.is_searching(),
+            "the fixture must have a live search for the highlight to apply"
+        );
+        let searched_rows = rows_drawn(&searched);
+
+        assert_eq!(
+            headers(&plain_rows),
+            2,
+            "the plain transcript draws both reasoning headers: {plain_rows:?}"
+        );
+        assert_eq!(
+            headers(&searched_rows),
+            2,
+            "a search recolours rows, it does not drop the header *after* the \
+             match: {searched_rows:?}"
+        );
+        assert_eq!(
+            searched.total_lines(),
+            plain.total_lines(),
+            "a search adds and drops no row"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // M004 — the tail cache's epoch and the part cache's miss
+    // -----------------------------------------------------------------
+
+    /// A new epoch drops the tail's assembly, because it describes one width.
+    #[test]
+    fn a_new_epoch_reassembles_the_tail_once() {
+        let mut widget = MessagesWidget::new(Arc::new(Theme::dark()));
+        widget.set_width(40);
+        widget.set_visible_height(20);
+        widget.add_streaming_token("a paragraph that has to be wrapped at the width it is drawn");
+        let wide = widget.streaming_tail_rows();
+
+        let before = render_cost::snapshot();
+        widget.set_width(20);
+        let narrow = widget.streaming_tail_rows();
+        let cost = render_cost::snapshot().since(&before);
+
+        assert_ne!(
+            wide, narrow,
+            "a different width wraps the tail into different rows, so the old \
+             rows must not be served"
+        );
+        assert_eq!(
+            cost.tail_row_copies, 1,
+            "the epoch change re-assembles the blocks once: {} assemblies",
+            cost.tail_row_copies
+        );
+    }
+
+    /// A part cache miss is one parse and one copy.
+    #[test]
+    fn a_part_cache_miss_parses_and_copies_once() {
+        let mut widget = MessagesWidget::default();
+        widget.set_width(40);
+        widget.messages.push(UIMessage {
+            role: MessageRole::Assistant,
+            parts: vec![MsgPart::Text {
+                content: "a paragraph that has to be wrapped at the width".to_string(),
+            }],
+            timestamp: None,
+            is_plan_mode: None,
+        });
+
+        // `invalidate_rows` drops the part cache, so the build that follows is a
+        // miss: the part is parsed, cached, and copied into the transcript once.
+        let cost = cost_of_rows(&mut widget);
+
+        assert_eq!(
+            cost.markdown_parses, 1,
+            "one parse for the part, and none for the tail — there is no tail"
+        );
+        assert_eq!(
+            cost.part_row_copies, 1,
+            "a miss copies the part's rows once, into the cache, not twice: {} \
+             copies",
+            cost.part_row_copies
+        );
+    }
+
+    /// The measurement helper the two cache tests share.
+    fn cost_of_rows(widget: &mut MessagesWidget) -> render_cost::RenderCost {
+        let before = render_cost::snapshot();
+        widget.invalidate_rows();
+        let _rows = widget.total_lines();
+        render_cost::snapshot().since(&before)
+    }
+
+    /// The numbered `read` rows do not depend on the caller pre-joining the
+    /// output.
+    ///
+    /// The caller used to join the output's lines and the renderer stripped and
+    /// joined them again. The rows are the same either way — which is what let
+    /// the pre-join go — and the payload is now materialized once, by the
+    /// renderer's single buffer for the highlighter.
+    #[test]
+    fn numbered_read_output_rows_do_not_depend_on_the_callers_pre_join() {
+        let theme = Arc::new(Theme::dark());
+        // `read` emits a six-column right-aligned number, a colon and a space:
+        // the eight-byte gutter `strip_read_line_number` recognises.
+        let output = "     1: fn main() {\n     2:     let value = 1;\n     3: }\n";
+        let pre_joined = output.lines().collect::<Vec<_>>().join("\n");
+
+        let rows = render_numbered_code_output(output, "rust", &theme, 40);
+        assert!(
+            rows.len() >= 3,
+            "the fixture must draw one row per source line at this width: {}",
+            rows.len()
+        );
+        assert_eq!(
+            rows,
+            render_numbered_code_output(&pre_joined, "rust", &theme, 40),
+            "the pre-joined text the caller used to pass must draw the same rows"
+        );
+        assert!(
+            rows.iter()
+                .flat_map(|line| line.spans.iter())
+                .any(|span| span.content.contains("     1: ")),
+            "the read gutter is part of the drawn row"
+        );
+    }
+
+    /// The outline's row count and its rows are one walk.
+    ///
+    /// The collapsed header's count is taken by walking the same tree the
+    /// expanded body draws, with a sink that counts instead of formatting. A
+    /// drift between the two would move the displayed number away from the rows
+    /// expanding adds, which is the invariant that keeps the cheap path honest.
+    #[test]
+    fn the_outline_row_count_equals_the_outline_rows() {
+        for payload in [
+            r#"{"query":"rust"}"#,
+            r#"{"query":"rust","results":[{"title":"Rust","url":"https://example.com/rust"},{"title":"Crab","url":"https://example.com/crab"}]}"#,
+            r#"[{"a":1},{"a":2}]"#,
+            r#"{}"#,
+            r#"[]"#,
+            r#"{"nested":{"deep":{"leaf":null}},"empty_list":[],"one":[true]}"#,
+        ] {
+            let rows = render_structured_output_outline("websearch", payload)
+                .expect("the fixture must be a structured payload");
+            assert_eq!(
+                count_structured_output_outline("websearch", payload),
+                Some(rows.len()),
+                "the count a collapsed header shows must be the rows an expanded body draws, for {payload}"
+            );
+        }
+        // A tool whose output is not structured has no outline in either form.
+        assert_eq!(render_structured_output_outline("bash", "plain text"), None);
+        assert_eq!(count_structured_output_outline("bash", "plain text"), None);
+    }
+
+    /// The count-only payload read is the formatted payload's line count.
+    ///
+    /// This is the guard on the counting writer: the pretty printer still
+    /// produces the layout, but into a sink that keeps only its newlines, so a
+    /// formatter change cannot silently disagree with the count the header shows.
+    #[test]
+    fn the_payload_line_count_matches_the_formatted_payload() {
+        for payload in [
+            "",
+            "one line",
+            "two\nlines",
+            r#"{"a":1,"b":[1,2]}"#,
+            r#""a string""#,
+            "not json at all",
+        ] {
+            let formatted = format_payload_for_display(payload);
+            assert_eq!(
+                payload_display_line_count(payload),
+                formatted.lines().count(),
+                "the count must be the formatted payload's line count for {payload:?}"
+            );
+        }
     }
 }

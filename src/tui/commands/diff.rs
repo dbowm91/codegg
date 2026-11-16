@@ -96,3 +96,12 @@ pub(crate) fn apply_diff_finished(
         }
     }
 }
+
+pub(crate) fn dispatch_diff(app: &mut App, argument: &str) {
+    let path_arg = argument;
+    app.ui_state.command_mode = false;
+    // M007-I (work package A): the daemon owns the read. The TUI
+    // no longer spawns `git` and no longer reads the working
+    // tree for this.
+    crate::tui::commands::diff::start_diff(app, path_arg.to_string());
+}

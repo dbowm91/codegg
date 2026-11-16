@@ -30,6 +30,8 @@ use crate::tui::app::state::project_picker::{
 use crate::tui::app::state::project_tabs::ProjectTabId;
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
+use crate::tui::components::hint_line::HintLine;
+use crate::tui::components::section::Section;
 use crate::tui::theme::Theme;
 
 #[derive(Clone)]
@@ -58,6 +60,10 @@ impl ProjectPickerDialog {
 }
 
 impl Component for ProjectPickerDialog {
+    fn preferred_area(&self, available: Rect) -> Rect {
+        Self::picker_area(available)
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
         // The picker state is owned by `App`. We only need to forward
         // Esc to close; all other key handling for the picker is done
@@ -79,14 +85,9 @@ impl Component for ProjectPickerDialog {
         if area.height < 5 {
             return;
         }
-        let dialog_area = Self::picker_area(area);
-        frame.render_widget(Clear, dialog_area);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
-            .title(" Project Picker ");
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        frame.render_widget(Clear, area);
+        let section = Section::new("Project Picker", theme).focused(true);
+        let inner = section.draw(area, frame.buffer_mut());
         let placeholder = Paragraph::new("Loading project catalog...")
             .style(Style::default().fg(theme.foreground))
             .wrap(Wrap { trim: true });
@@ -421,17 +422,36 @@ pub fn render_picker_body(
     );
 
     let footer_text = match picker.phase {
-        PickerPhase::DestroyConfirm => "Enter/y permanently destroy  |  Esc/n cancel",
-        PickerPhase::DestroyLoading => "Esc cancel",
-        PickerPhase::LifecycleChanging | PickerPhase::Destroying => "Working…",
-        PickerPhase::ProjectEditLoading | PickerPhase::ProjectUpdating => "Working…",
-        PickerPhase::ProjectEdit => "Tab switch field  |  Enter save  |  Esc cancel",
-        _ if picker.input_mode == crate::tui::input::InputMode::Normal => {
-            "j/k move  |  type to filter  |  i Insert  |  Enter select  |  Tab archived  |  Esc"
+        PickerPhase::DestroyConfirm => {
+            HintLine::from_items(&[("Esc/n", "cancel"), ("Enter/y", "permanently destroy")])
+                .render(0)
         }
-        _ => {
-            "type to filter  |  Backspace erase  |  Esc Normal  |  Enter select  |  Ctrl+R register"
-        }
+        PickerPhase::DestroyLoading => "Esc cancel".to_string(),
+        PickerPhase::LifecycleChanging | PickerPhase::Destroying => "Working…".to_string(),
+        PickerPhase::ProjectEditLoading | PickerPhase::ProjectUpdating => "Working…".to_string(),
+        PickerPhase::ProjectEdit => HintLine::from_items(&[
+            ("Esc", "cancel"),
+            ("Tab", "switch field"),
+            ("Enter", "save"),
+        ])
+        .render(0),
+        _ if picker.input_mode == crate::tui::input::InputMode::Normal => HintLine::from_items(&[
+            ("Esc", ""),
+            ("j/k", "move"),
+            ("type", "to filter"),
+            ("i", "insert"),
+            ("Enter", "select"),
+            ("Tab", "archived"),
+        ])
+        .render(0),
+        _ => HintLine::from_items(&[
+            ("Esc", "normal"),
+            ("type", "to filter"),
+            ("Backspace", "erase"),
+            ("Enter", "select"),
+            ("Ctrl+R", "register"),
+        ])
+        .render(0),
     };
     let footer = Paragraph::new(footer_text)
         .style(Style::default().fg(theme.muted))
@@ -595,7 +615,10 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(text.contains("INS"));
-        assert!(text.contains("Esc Normal"));
+        // The verb is lowercase now: `Esc Normal` was the only Title Case verb
+        // in the footer, and the vocabulary lowercases every verb while leaving
+        // the key alone.
+        assert!(text.contains("Esc normal"));
     }
 
     #[test]

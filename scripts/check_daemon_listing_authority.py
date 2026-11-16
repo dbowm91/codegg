@@ -27,6 +27,10 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import rust_test_scan  # noqa: E402  (path is set above)
+
 SRC = REPO_ROOT / "src"
 
 # Files that may enumerate directories for listing purposes: the single
@@ -69,30 +73,34 @@ def _strip_test_modules(text: str) -> list[tuple[int, str]]:
 
     Test fixtures build temp dirs through the public walker API; only
     production code is bound by the single-walker rule.
+
+    The module boundaries are `rust_test_scan.production_mask`'s, and the
+    line numbers are the file's own. The line-based counter this replaced
+    recognised only a bare `#[cfg(test)]` alone on its line followed by
+    `mod tests {`, and tracked braces per *line*, so a fixture's brace could
+    end a module early and an attribute-separated gate was not a gate at all.
+    On the six protected files its output is identical to this one today
+    (770/539/266/1,104/1,892/3,307 line pairs, 0 production lines dropped,
+    0 test lines retained); the replacement removes the shape before it can
+    disagree with the scanner.
     """
-    lines = text.splitlines()
-    kept: list[tuple[int, str]] = []
-    index = 0
-    pending_cfg_test = False
-    while index < len(lines):
-        line = lines[index]
-        stripped = line.strip()
-        if stripped == "#[cfg(test)]":
-            pending_cfg_test = True
-            index += 1
-            continue
-        if pending_cfg_test and re.match(r"(pub\s+)?mod\s+tests\s*\{", stripped):
-            pending_cfg_test = False
-            depth = line.count("{") - line.count("}")
-            index += 1
-            while index < len(lines) and depth > 0:
-                depth += lines[index].count("{") - lines[index].count("}")
-                index += 1
-            continue
-        pending_cfg_test = False
-        kept.append((index + 1, line))
-        index += 1
-    return kept
+    masked = rust_test_scan.production_mask(text)
+    return [
+        (index + 1, line)
+        for index, line in enumerate(masked.splitlines())
+        if line.strip()
+    ]
+
+
+def check_lines(rel: str, lines: list[tuple[int, str]]) -> list[str]:
+    """The single-walker rule over one file's production lines."""
+    failures: list[str] = []
+    for lineno, line in lines:
+        for regex in PATTERNS:
+            if regex.search(line):
+                failures.append(f"{rel}:{lineno}: {line.strip()}")
+                break
+    return failures
 
 
 def main() -> int:
@@ -103,11 +111,7 @@ def main() -> int:
             text = path.read_text(encoding="utf-8")
         except OSError:
             continue
-        for lineno, line in _strip_test_modules(text):
-            for regex in PATTERNS:
-                if regex.search(line):
-                    failures.append(f"{rel}:{lineno}: {line.strip()}")
-                    break
+        failures.extend(check_lines(rel, _strip_test_modules(text)))
     if failures:
         print("FAIL: TUI production code enumerates directories outside the")
         print("single shared walker (src/directory_listing.rs):")

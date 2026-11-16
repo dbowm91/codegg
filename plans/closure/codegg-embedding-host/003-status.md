@@ -4,7 +4,7 @@ Status: **closed**.
 
 Plan: [003-sdk-crate-and-conformance](../../implementation/codegg-embedding-host/003-sdk-crate-and-conformance.md).
 Roadmap: [codegg-embedding-host-roadmap](../../subsystems/codegg-embedding-host-roadmap.md#7-milestones).
-Stability policy: [ADR-0060](../../adrs/ADR-0061-embedding-host-wire-as-a-public-contract.md).
+Stability policy: [ADR-0061](../../adrs/ADR-0061-embedding-host-wire-as-a-public-contract.md).
 Commit: `089f9479c` on `feat/codegg-embedding-host`.
 
 ## Delivered

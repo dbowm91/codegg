@@ -2,6 +2,7 @@
 
 use crate::core::CoreClient;
 use crate::protocol::core::{CoreRequest, CoreResponse};
+use crate::tui::app::send_tui;
 use crate::tui::app::App;
 use crate::tui::app::Dialog;
 use crate::tui::app::TuiCommand;
@@ -925,6 +926,84 @@ pub(crate) fn handle_file_diff_stats_ready(
         })
         .collect();
     app.sidebar.set_file_changes(changes);
+}
+
+pub(crate) fn dispatch_worktree(app: &mut App) {
+    if let Some(ref tx) = app.tui_cmd_tx {
+        let _ = send_tui(tx, TuiCommand::WorktreeList);
+    } else {
+        let git_root = app.active_workspace_root().unwrap_or_default();
+        let trees = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                match crate::worktree::find_git_root(&git_root) {
+                    Some(root) => crate::worktree::list_worktrees(&root)
+                        .await
+                        .unwrap_or_default(),
+                    None => Vec::new(),
+                }
+            })
+        });
+        if trees.is_empty() {
+            app.messages_state.toasts.info("No worktrees found");
+        } else {
+            let names: Vec<String> = trees
+                .iter()
+                .map(|t| format!("{} ({})", t.path, t.branch))
+                .collect();
+            app.messages_state.toasts.info(&names.join(", "));
+        }
+    }
+}
+
+pub(crate) fn dispatch_loop(app: &mut App, argument: &str) {
+    // The argument is `<interval> "<message>"`; the command
+    // spelling was already removed by the extraction point.
+    let parts: Vec<&str> = argument.splitn(2, ' ').collect();
+    if parts.len() < 2 {
+        app.messages_state
+            .toasts
+            .warning("Usage: /loop <interval> \"<message>\" (e.g. /loop 5m \"check status\")");
+    } else if let Some(duration) = crate::background_task_migration::parse_duration(parts[0]) {
+        let message = parts[1].trim_matches('"').to_string();
+        if let Some(ref tx) = app.tui_cmd_tx {
+            let _ = send_tui(
+                tx,
+                TuiCommand::TaskSchedule {
+                    interval_secs: duration.as_secs(),
+                    message,
+                },
+            );
+        } else {
+            app.messages_state
+                .toasts
+                .error("Command channel unavailable");
+        }
+    } else {
+        app.messages_state
+            .toasts
+            .warning("Invalid interval. Examples: 30s, 5m, 1h, 1d");
+    }
+}
+
+pub(crate) fn dispatch_schedules(app: &mut App) {
+    if let Some(ref tx) = app.tui_cmd_tx {
+        let _ = send_tui(tx, TuiCommand::ListTasks);
+    } else {
+        app.messages_state.toasts.info("No background tasks");
+    }
+}
+
+pub(crate) fn dispatch_task_del(app: &mut App, argument: &str) {
+    let id = argument;
+    if id.is_empty() {
+        app.messages_state.toasts.warning(
+            "Usage: /task-del <id> (use the ID shown by /tasks; full schedule IDs also work)",
+        );
+    } else if let Some(ref tx) = app.tui_cmd_tx {
+        let _ = send_tui(tx, TuiCommand::DeleteTask { id: id.to_string() });
+    } else {
+        app.messages_state.toasts.warning("Scheduler not available");
+    }
 }
 
 #[cfg(test)]

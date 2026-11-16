@@ -18,7 +18,13 @@ import unittest
 from pathlib import Path
 
 from dev.harness_lab import budget, long_horizon_report, recovery_controls_v2, sustained
-from dev.harness_lab.supervisor import HarnessError, run_tool_trial
+from dev.harness_lab.supervisor import (
+    HarnessError,
+    _h006_compiler_diagnostics,
+    _h006_failure_log_category,
+    _h006_managed_test_diagnostics,
+    run_tool_trial,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -234,6 +240,203 @@ class TypedRecoveryControlTest(unittest.TestCase):
         self.assertTrue(control["control_exercised"])
 
 
+class H006FailureDiagnosticTest(unittest.TestCase):
+    def test_report_projection_is_bounded_and_does_not_retain_raw_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            run_dir = workspace / "job-check" / ".codegg" / "test-runs" / "run-1"
+            run_dir.mkdir(parents=True)
+            stdout_path = run_dir / "stdout.log"
+            stdout_path.write_text(
+                json.dumps({
+                    "reason": "compiler-message",
+                    "message": {
+                        "level": "error",
+                        "code": {"code": "E0425"},
+                        "message": "cannot find value PRIVATE_EXECUTOR_TEXT in this scope",
+                    },
+                }) + "\n" + ("padding\n" * 3000) + "error: could not compile\n",
+                encoding="utf-8")
+            stderr_path = run_dir / "stderr.log"
+            stderr_path.write_text(
+                "error: permission denied; PRIVATE_EXECUTOR_TEXT\n", encoding="utf-8")
+            stdout_bytes = stdout_path.stat().st_size
+            stderr_bytes = stderr_path.stat().st_size
+            (run_dir / "report.json").write_text(json.dumps({
+                "status": "Failed",
+                "exit_code": 101,
+                "duration_ms": 17,
+                "output_truncated": True,
+                "failures": [{
+                    "failure_class": "NonzeroExit",
+                    "message": "PRIVATE_EXECUTOR_TEXT",
+                }],
+                "stdout_log": str(stdout_path),
+                "stderr_log": str(stderr_path),
+                "argv": ["cargo", "test"],
+                "cwd": str(run_dir),
+            }), encoding="utf-8")
+
+            diagnostic = _h006_managed_test_diagnostics(workspace)
+
+        self.assertEqual(diagnostic, [{
+            "status": "failed",
+            "exit_code": 101,
+            "duration_ms": 17,
+            "cwd_scope": "job_check_subpath",
+            "output_truncated": True,
+            "stdout_log_bytes": stdout_bytes,
+            "stderr_log_bytes": stderr_bytes,
+            "failure_classes": ["nonzero_exit"],
+            "stdout_category": "compilation_failure",
+            "stderr_category": "filesystem_permission",
+            "compiler_error_codes": ["E0425"],
+            "compiler_error_families": ["unresolved_name", "cargo_compile_summary"],
+            "cargo_json_compiler_messages": 1,
+            "cargo_json_error_messages": 1,
+            "cargo_json_error_source_span_count": 0,
+            "cargo_json_error_without_source_span_count": 1,
+            "cargo_json_os_error_kinds": [],
+            "cargo_json_error_origins": [],
+            "cargo_json_error_message_kinds": [],
+            "cargo_json_error_path_roles": [],
+            "cargo_json_error_path_subroles": [],
+            "cargo_json_build_finished_events": 0,
+        }])
+        self.assertNotIn("PRIVATE_EXECUTOR_TEXT", json.dumps(diagnostic))
+
+    def test_unknown_h006_output_maps_to_a_closed_category(self):
+        self.assertEqual(
+            _h006_failure_log_category("PRIVATE_EXECUTOR_TEXT"), "unclassified")
+
+    def test_compiler_diagnostics_project_only_allowlisted_codes_and_families(self):
+        diagnostic = _h006_compiler_diagnostics(
+            "error[E0425]: cannot find value PRIVATE_EXECUTOR_TEXT in this scope\n"
+            "error[E0308]: mismatched types PRIVATE_EXECUTOR_TEXT\n")
+
+        expected = {
+            "compiler_error_codes": ["E0308", "E0425"],
+            "compiler_error_families": ["unresolved_name", "type_mismatch"],
+            "cargo_json_compiler_messages": 0,
+            "cargo_json_error_messages": 0,
+            "cargo_json_error_source_span_count": 0,
+            "cargo_json_error_without_source_span_count": 0,
+            "cargo_json_os_error_kinds": [],
+            "cargo_json_error_origins": [],
+            "cargo_json_error_message_kinds": [],
+            "cargo_json_error_path_roles": [],
+            "cargo_json_error_path_subroles": [],
+            "cargo_json_build_finished_events": 0,
+        }
+        self.assertEqual(diagnostic, expected)
+        self.assertNotIn("PRIVATE_EXECUTOR_TEXT", json.dumps(diagnostic))
+
+        cargo_event = json.dumps({
+            "reason": "compiler-message",
+            "package_id": "path+file:///workspace/job-check/core#job-core@0.1.0",
+            "target": {"kind": ["lib"]},
+            "message": {
+                "level": "error",
+                "code": {"code": "E0425"},
+                "message": "cannot find value PRIVATE_EXECUTOR_TEXT in this scope",
+            },
+        })
+        self.assertEqual(_h006_compiler_diagnostics(cargo_event), {
+            "compiler_error_codes": ["E0425"],
+            "compiler_error_families": ["unresolved_name"],
+            "cargo_json_compiler_messages": 1,
+            "cargo_json_error_messages": 1,
+            "cargo_json_error_source_span_count": 0,
+            "cargo_json_error_without_source_span_count": 1,
+            "cargo_json_os_error_kinds": [],
+            "cargo_json_error_origins": ["core:lib"],
+            "cargo_json_error_message_kinds": [],
+            "cargo_json_error_path_roles": [],
+            "cargo_json_error_path_subroles": [],
+            "cargo_json_build_finished_events": 0,
+        })
+        os_error_event = json.dumps({
+            "reason": "compiler-message",
+            "message": {
+                "level": "error",
+                "message": "failed to open PRIVATE_EXECUTOR_PATH (os error 13)",
+                "spans": [],
+            },
+        })
+        os_error_diagnostic = _h006_compiler_diagnostics(os_error_event)
+        self.assertEqual(os_error_diagnostic["cargo_json_os_error_kinds"], ["permission_denied"])
+        self.assertEqual(os_error_diagnostic["cargo_json_error_without_source_span_count"], 1)
+        self.assertNotIn("PRIVATE_EXECUTOR_PATH", json.dumps(os_error_diagnostic))
+
+        driver_error_event = json.dumps({
+            "reason": "compiler-message",
+            "package_id": "path+file:///workspace/job-check/core#job-core@0.1.0",
+            "target": {"kind": ["lib"]},
+            "message": {
+                "level": "error",
+                "message": "unknown option PRIVATE_EXECUTOR_FLAG",
+            },
+        })
+        driver_error_diagnostic = _h006_compiler_diagnostics(driver_error_event)
+        self.assertEqual(
+            driver_error_diagnostic["cargo_json_error_message_kinds"],
+            ["invalid_compiler_argument"],
+        )
+        self.assertEqual(driver_error_diagnostic["cargo_json_error_origins"], ["core:lib"])
+        self.assertNotIn("PRIVATE_EXECUTOR_FLAG", json.dumps(driver_error_diagnostic))
+
+        filesystem_event = json.dumps({
+            "reason": "compiler-message",
+            "package_id": "path+file:///workspace/job-check/core#job-core@0.1.0",
+            "target": {"kind": ["lib"]},
+            "message": {
+                "level": "error",
+                "message": "failed to write PRIVATE_EXECUTOR_PATH: permission denied",
+                "spans": [],
+            },
+        })
+        filesystem_diagnostic = _h006_compiler_diagnostics(filesystem_event)
+        self.assertEqual(
+            filesystem_diagnostic["cargo_json_error_message_kinds"],
+            ["filesystem_permission_denied", "filesystem_write_failure"],
+        )
+        self.assertEqual(filesystem_diagnostic["cargo_json_error_origins"], ["core:lib"])
+        self.assertNotIn("PRIVATE_EXECUTOR_PATH", json.dumps(filesystem_diagnostic))
+
+        environment_event = json.dumps({
+            "reason": "compiler-message",
+            "message": {
+                "level": "error",
+                "message": "environment variable PRIVATE_ENV is not set",
+                "spans": [],
+            },
+        })
+        environment_diagnostic = _h006_compiler_diagnostics(environment_event)
+        self.assertEqual(
+            environment_diagnostic["cargo_json_error_message_kinds"], ["environment_configuration"])
+        self.assertNotIn("PRIVATE_ENV", json.dumps(environment_diagnostic))
+
+    def test_write_path_diagnostic_emits_only_the_contained_path_role(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"
+            target = (workspace / "job-check" / ".cargo-target" / "debug"
+                      / "incremental" / "query-cache")
+            event = json.dumps({
+                "reason": "compiler-message",
+                "message": {
+                    "level": "error",
+                    "message": f"failed to write {target}: permission denied",
+                },
+            })
+            diagnostic = _h006_compiler_diagnostics(event, workspace=workspace)
+
+        self.assertEqual(
+            diagnostic["cargo_json_error_path_roles"], ["cargo_target_or_temp"])
+        self.assertEqual(
+            diagnostic["cargo_json_error_path_subroles"], ["cargo_incremental_state"])
+        self.assertNotIn(str(workspace), json.dumps(diagnostic))
+
+
 class LongHorizonNativeJobTest(unittest.TestCase):
     fixture = REPO_ROOT / "dev" / "harness_lab" / "fixtures" / "long_horizon_rust_job"
     verifier = fixture / "verifier" / "verify.py"
@@ -384,7 +587,9 @@ class LongHorizonNativeJobTest(unittest.TestCase):
         self.assertTrue(Path(rustc).is_file(), "rustup must resolve a real rustc executable")
         sequence = [
             {"name": "test", "arguments": {
-                "scope": "custom", "command": f"{shlex.quote(cargo)} test --offline --workspace",
+                "scope": "custom", "command": (
+                    f"{shlex.quote(cargo)} test --offline --workspace "
+                    "--message-format=json"),
                 "workdir": "job-check", "execution_mode": "background"}},
             # This is a bounded wait on the actual submitted job, not a fixture
             # delay. It gives the scheduler time to admit the real Cargo work
@@ -407,7 +612,9 @@ class LongHorizonNativeJobTest(unittest.TestCase):
             task_id="h006-real-job-observation", tool_sequence=sequence,
             expected_file="never-created", expected_text=None, expected_exists=False,
             workspace_snapshot=self.fixture, rustc_executable=Path(rustc),
+            cargo_home_under_test_workdir=True,
             initial_files={
+                "job-check/.cargo/config.toml": "[build]\ntarget-dir = \".cargo-target\"\n",
                 "job-check/Cargo.toml": "[workspace]\nmembers = [\"core\", \"index\", \"store\", \"cli\"]\nresolver = \"2\"\n",
                 "job-check/core/Cargo.toml": "[package]\nname = \"job-core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
                 "job-check/core/src/lib.rs": """#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -565,24 +772,11 @@ mod tests {
             })
         self.addCleanup(shutil.rmtree, Path(trial["workspace"]).parent, ignore_errors=True)
         calls = trial["tool_calls"]
-        submissions = [call for call in calls if call.get("job", {}).get("action") == "submit"]
-        observations = [call for call in calls if call.get("tool") == "job"]
-        self.assertEqual(len(submissions), 1)
-        job_id = submissions[0]["job"]["job_id"]
-        self.assertTrue(job_id)
-        exact = [call for call in observations if call.get("job", {}).get("job_id") == job_id]
-        running = [call for call in exact if call.get("job", {}).get("status") == "running"]
-        self.assertGreaterEqual(len(running), 2, calls)
-        self.assertTrue(_observed_completed_job(exact, job_id), calls)
-        first_running_at = running[0]["finished_elapsed_ms"]
-        second_running_at = running[1]["finished_elapsed_ms"]
-        intervening = [call for call in calls
-                       if first_running_at < call.get("started_elapsed_ms", 0) < second_running_at
-                       and call.get("tool") in {"write", "edit", "apply_patch"}]
-        self.assertGreaterEqual(len(intervening), 1, calls)
-        self.assertEqual(trial["event_observation_state"], "measured_no_gap")
+        test_diagnostics = trial.get("managed_test_diagnostics", [])
         receipt_path = os.environ.get("CODEGG_H006_JOB_RECEIPT")
         if receipt_path:
+            # Preserve the bounded receipt before assertions so failed lifecycle
+            # checks still leave enough sanitized evidence to diagnose the job.
             receipt = {
                 "schema_version": 1,
                 "provider": "local-openai-fixture",
@@ -591,6 +785,7 @@ mod tests {
                 "event_gap_count": trial["event_gap_count"],
                 "provider_calls": trial["provider_calls"],
                 "wall_time_ms": trial["wall_time_ms"],
+                "managed_test_diagnostics": test_diagnostics,
                 "tool_calls": [{
                     "tool": call["tool"],
                     "status": call["status"],
@@ -602,6 +797,26 @@ mod tests {
             path = Path(receipt_path)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+
+        submissions = [call for call in calls if call.get("job", {}).get("action") == "submit"]
+        observations = [call for call in calls if call.get("tool") == "job"]
+        self.assertEqual(len(submissions), 1)
+        job_id = submissions[0]["job"]["job_id"]
+        self.assertTrue(job_id)
+        exact = [call for call in observations if call.get("job", {}).get("job_id") == job_id]
+        running = [call for call in exact if call.get("job", {}).get("status") == "running"]
+        self.assertGreaterEqual(
+            len(running), 2,
+            {"calls": calls, "managed_test_diagnostics": test_diagnostics},
+        )
+        self.assertTrue(_observed_completed_job(exact, job_id), calls)
+        first_running_at = running[0]["finished_elapsed_ms"]
+        second_running_at = running[1]["finished_elapsed_ms"]
+        intervening = [call for call in calls
+                       if first_running_at < call.get("started_elapsed_ms", 0) < second_running_at
+                       and call.get("tool") in {"write", "edit", "apply_patch"}]
+        self.assertGreaterEqual(len(intervening), 1, calls)
+        self.assertEqual(trial["event_observation_state"], "measured_no_gap")
 
     def test_failed_background_job_cannot_satisfy_h006_completion(self):
         calls = [{"tool": "job", "job": {"job_id": "job-123", "status": "failed"}}]

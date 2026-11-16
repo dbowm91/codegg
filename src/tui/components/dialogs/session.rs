@@ -6,15 +6,17 @@ use crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::Frame;
 
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
 use super::super::scroll::CenteredScroll;
+use super::super::section::Section;
 use crate::session::Session;
 use crate::tui::app::state::tasks::TaskGroup;
 use crate::tui::app::TuiMsg;
+use crate::tui::components::hint_line::HintLine;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum SortBy {
@@ -1048,12 +1050,9 @@ impl Component for SessionDialog {
         self.set_theme(theme);
         let mut lines: Vec<Line> = Vec::new();
 
-        lines.push(Line::from(Span::styled(
-            " Sessions ",
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        )));
+        // The box's one title is the section's border title. The body used to
+        // repeat it as a bold first line, which was the drift the primitive
+        // exists to remove.
         if let Some(status) = &self.projection_status {
             let label = match status {
                 crate::tui::app::state::projection_client::PrimaryProjectionStatus::Loading => {
@@ -1304,19 +1303,35 @@ impl Component for SessionDialog {
         if self.bulk_mode {
             let count = self.selected_count();
             lines.push(Line::from(Span::styled(
-                format!(
-                    "↑/↓ navigate  Space select  Esc exit bulk mode  ({} selected)",
-                    count
-                ),
+                {
+                    let mut hint = HintLine::new();
+                    hint.push_required("Esc", "exit bulk mode")
+                        .push("↑/↓", "navigate")
+                        .push("Space", "select")
+                        .push(&format!("({count} selected)"), "");
+                    hint.render(0)
+                },
                 Style::default().fg(theme.muted),
             )));
             lines.push(Line::from(Span::styled(
-                "a archive  d delete  A select all  D deselect all",
+                HintLine::from_items(&[
+                    ("a", "archive"),
+                    ("d", "delete"),
+                    ("A", "select all"),
+                    ("D", "deselect all"),
+                ])
+                .render(0),
                 Style::default().fg(theme.muted),
             )));
         } else {
             lines.push(Line::from(Span::styled(
-                "↑/↓ navigate  |  Enter open  |  Esc close  |  b bulk mode",
+                HintLine::from_items(&[
+                    ("Esc", "close"),
+                    ("↑/↓", "navigate"),
+                    ("Enter", "open"),
+                    ("b", "bulk mode"),
+                ])
+                .render(0),
                 Style::default().fg(theme.muted),
             )));
             // Only claim the sections when they exist. A hint that advertises
@@ -1324,19 +1339,36 @@ impl Component for SessionDialog {
             // the user to look for something that is not there.
             if !self.subagents.is_empty() || !self.jobs.is_empty() {
                 lines.push(Line::from(Span::styled(
-                    "Enter opens child transcript · i inspects linked run/job",
+                    HintLine::from_items(&[
+                        ("Enter", "open child transcript"),
+                        ("i", "inspect linked run/job"),
+                    ])
+                    .render(0),
                     Style::default().fg(theme.muted),
                 )));
             }
             lines.push(Line::from(Span::styled(
-                "d delete  a archive  f fork  s sort  h toggle archived  m search messages",
+                HintLine::from_items(&[
+                    ("d", "delete"),
+                    ("a", "archive"),
+                    ("f", "fork"),
+                    ("s", "sort"),
+                    ("h", "toggle archived"),
+                    ("m", "search messages"),
+                ])
+                .render(0),
                 Style::default().fg(theme.muted),
             )));
             // M006: the launch actions are advertised here because a key
             // nobody can find is a feature nobody has. `f` and `F` are
             // different acts, so the hint says which is which.
             lines.push(Line::from(Span::styled(
-                "n new session in a checkout  w new session in this checkout  F fork into a checkout",
+                HintLine::from_items(&[
+                    ("n", "new session in a checkout"),
+                    ("w", "new session in this checkout"),
+                    ("F", "fork into a checkout"),
+                ])
+                .render(0),
                 Style::default().fg(theme.muted),
             )));
         }
@@ -1369,14 +1401,12 @@ impl Component for SessionDialog {
             }
         }
 
-        let block = Block::default()
-            .title(" Sessions ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
-            .style(Style::default().bg(theme.background));
-
-        let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
-        paragraph.render(area, frame.buffer_mut());
+        let inner = Section::new("Sessions", theme)
+            .focused(true)
+            .draw(area, frame.buffer_mut());
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .render(inner, frame.buffer_mut());
     }
 
     fn dialog_type(&self) -> DialogType {

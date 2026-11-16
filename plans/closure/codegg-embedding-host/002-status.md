@@ -4,7 +4,7 @@ Status: **closed**.
 
 Plan: [002-headless-host-protocol](../../implementation/codegg-embedding-host/002-headless-host-protocol.md).
 Roadmap: [codegg-embedding-host-roadmap](../../subsystems/codegg-embedding-host-roadmap.md#7-milestones).
-Stability policy: [ADR-0060](../../adrs/ADR-0061-embedding-host-wire-as-a-public-contract.md) (accepted).
+Stability policy: [ADR-0061](../../adrs/ADR-0061-embedding-host-wire-as-a-public-contract.md) (accepted).
 Contract: [`docs/embedding.md`](../../../docs/embedding.md).
 Commit: `089f9479c` on `feat/codegg-embedding-host`.
 

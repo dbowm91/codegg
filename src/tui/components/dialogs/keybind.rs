@@ -1,10 +1,10 @@
 #![allow(clippy::collapsible_match)]
 
 use crossterm::event::KeyEvent;
-use ratatui::layout::{Margin, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::Frame;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,19 +12,10 @@ use std::sync::Arc;
 use super::super::super::input::{ActionKey, KeybindConfig};
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
+use super::super::scroll::ListCursor;
+use super::super::section::{Section, SectionFrame};
 use crate::tui::app::TuiMsg;
-
-/// Who owns this render's chrome.
-///
-/// The two paths differ only in that. [`Chrome::Owned`] is the modal box, which
-/// draws its own border, heading and per-mode footer; [`Chrome::Hosted`] is a
-/// column in a side panel, where the host has already painted all three into
-/// the same rect.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Chrome {
-    Owned,
-    Hosted,
-}
+use crate::tui::components::hint_line::HintLine;
 
 /// The verbs this box implements in Normal mode, for the panel host to reuse
 /// verbatim.
@@ -37,13 +28,32 @@ enum Chrome {
 /// through the lowercase spelling. `Esc`, `↑`/`↓` and `q` are absent for the
 /// same reason — they are the host's directions and mode switch, and a hosted
 /// hint cannot promise a key whose meaning differs between the two surfaces.
-const HINT: &str = "j/k move · enter remap · r reset · e export · i import";
+fn hint() -> HintLine {
+    let mut hint = HintLine::new();
+    hint.push("j/k", "move")
+        .push("enter", "remap")
+        .push("r", "reset")
+        .push("e", "export")
+        .push("i", "import");
+    hint
+}
+
+fn mode_footer(mode: &KeybindMode) -> HintLine {
+    match mode {
+        KeybindMode::Normal => {
+            HintLine::from_items(&[("Esc", "close"), ("enter", "remap"), ("r", "reset")])
+        }
+        KeybindMode::WaitingForKey => HintLine::from_items(&[("Esc", "cancel")]),
+        KeybindMode::Export => HintLine::from_items(&[("Esc", "back")]),
+        KeybindMode::Import => HintLine::from_items(&[("Esc", "cancel"), ("Enter", "import")]),
+    }
+}
 
 #[derive(Clone)]
 pub struct KeybindDialog {
     pub theme: Arc<Theme>,
     pub bindings: HashMap<String, ActionKey>,
-    pub selected: usize,
+    pub cursor: ListCursor,
     pub waiting_for_key: Option<usize>,
     pub mode: KeybindMode,
     pub export_text: String,
@@ -64,7 +74,7 @@ impl KeybindDialog {
         Self {
             theme,
             bindings: HashMap::new(),
-            selected: 0,
+            cursor: ListCursor::new(),
             waiting_for_key: None,
             mode: KeybindMode::Normal,
             export_text: String::new(),
@@ -97,20 +107,15 @@ impl KeybindDialog {
     }
 
     pub fn select_up(&mut self) {
-        if self.selected > 0 {
-            self.selected -= 1;
-        }
+        self.cursor.up(Self::actions().len(), 0);
     }
 
     pub fn select_down(&mut self) {
-        let max = Self::actions().len().saturating_sub(1);
-        if self.selected < max {
-            self.selected += 1;
-        }
+        self.cursor.down(Self::actions().len(), 0);
     }
 
     pub fn start_remap(&mut self) {
-        self.waiting_for_key = Some(self.selected);
+        self.waiting_for_key = Some(self.cursor.index(Self::actions().len()));
         self.mode = KeybindMode::WaitingForKey;
         self.conflict = None;
     }
@@ -123,7 +128,7 @@ impl KeybindDialog {
 
     pub fn reset_to_defaults(&mut self) {
         self.bindings.clear();
-        self.selected = 0;
+        self.cursor.reset();
         self.mode = KeybindMode::Normal;
         self.conflict = None;
     }
@@ -300,26 +305,17 @@ impl KeybindDialog {
     /// either the Export or the Import footer offered — is the mode switch,
     /// so in a column it means something else, and those two footers spent a
     /// row in a column too narrow to wrap them onto a panel that taught a
-    /// dead key. They are now `Chrome::Owned`, where they are still the way a
+    /// dead key. They are now `SectionFrame::Owned`, where they are still the way a
     /// modal tells a human what Esc does.
-    fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: Chrome) {
+    fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: SectionFrame) {
         let mut lines: Vec<Line> = Vec::new();
 
         match self.mode {
             KeybindMode::Normal | KeybindMode::WaitingForKey => {
-                if chrome == Chrome::Owned {
-                    lines.push(Line::from(Span::styled(
-                        " Keybindings ",
-                        Style::default()
-                            .fg(theme.primary)
-                            .add_modifier(Modifier::BOLD),
-                    )));
-                    lines.push(Line::from(""));
-                }
-
                 let actions = KeybindDialog::actions();
+                let selected = self.cursor.index(actions.len());
                 for (i, action) in actions.iter().enumerate() {
-                    let is_selected = i == self.selected;
+                    let is_selected = i == selected;
                     let is_waiting = self.waiting_for_key == Some(i);
 
                     let binding = self.get_binding(action);
@@ -327,13 +323,17 @@ impl KeybindDialog {
                         .map(|b| KeybindDialog::format_key(&b))
                         .unwrap_or_else(|| "(unbound)".to_string());
 
+                    // `selection_text` is derived to read on `selection`;
+                    // `primary` is an accent and fails that fill on 14 themes.
                     let style = if is_waiting {
                         Style::default()
-                            .fg(theme.primary)
+                            .fg(theme.selection_text)
                             .bg(theme.selection)
                             .add_modifier(Modifier::BOLD)
                     } else if is_selected {
-                        Style::default().fg(theme.primary).bg(theme.selection)
+                        Style::default()
+                            .fg(theme.selection_text)
+                            .bg(theme.selection)
                     } else {
                         Style::default().fg(theme.foreground)
                     };
@@ -357,23 +357,16 @@ impl KeybindDialog {
                     )));
                 }
 
-                if chrome == Chrome::Owned {
+                if chrome == SectionFrame::Owned && self.waiting_for_key.is_some() {
                     lines.push(Line::from(""));
-                    if self.waiting_for_key.is_some() {
-                        lines.push(Line::from(Span::styled(
-                            "Press a key to bind, Esc to cancel...",
-                            Style::default().fg(theme.muted),
-                        )));
-                    } else {
-                        lines.push(Line::from(Span::styled(
-                            "Enter remap  |  R reset  |  Esc close",
-                            Style::default().fg(theme.muted),
-                        )));
-                    }
+                    lines.push(Line::from(Span::styled(
+                        "Press a key to bind, Esc to cancel...",
+                        Style::default().fg(theme.muted),
+                    )));
                 }
             }
             KeybindMode::Export => {
-                if chrome == Chrome::Owned {
+                if chrome == SectionFrame::Owned {
                     lines.push(Line::from(Span::styled(
                         " Export Keybindings ",
                         Style::default()
@@ -394,17 +387,9 @@ impl KeybindDialog {
                         Style::default().fg(theme.foreground),
                     )));
                 }
-
-                if chrome == Chrome::Owned {
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(Span::styled(
-                        "Press Esc to close",
-                        Style::default().fg(theme.muted),
-                    )));
-                }
             }
             KeybindMode::Import => {
-                if chrome == Chrome::Owned {
+                if chrome == SectionFrame::Owned {
                     lines.push(Line::from(Span::styled(
                         " Import Keybindings ",
                         Style::default()
@@ -425,29 +410,34 @@ impl KeybindDialog {
                         Style::default().fg(theme.foreground),
                     )));
                 }
-
-                if chrome == Chrome::Owned {
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(Span::styled(
-                        "Enter import  Esc cancel",
-                        Style::default().fg(theme.muted),
-                    )));
-                }
             }
         }
 
         match chrome {
-            Chrome::Owned => {
-                let block = Block::default()
-                    .title(" Keybinds ")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.border))
-                    .style(Style::default().bg(theme.background));
+            SectionFrame::Owned => {
+                let chunks = Layout::vertical([
+                    Constraint::Min(1),
+                    Constraint::Length(Section::owned_height(1)),
+                ])
+                .split(area);
+                let inner = Section::new("Keybinds", theme)
+                    .focused(true)
+                    .draw(chunks[0], frame.buffer_mut());
+                Paragraph::new(lines)
+                    .wrap(Wrap { trim: true })
+                    .render(inner, frame.buffer_mut());
 
-                let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
-                paragraph.render(area, frame.buffer_mut());
+                let footer_inner = Section::plain(theme).draw(chunks[1], frame.buffer_mut());
+                let text = mode_footer(&self.mode).render(usize::from(footer_inner.width));
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        text,
+                        Style::default().fg(theme.muted),
+                    ))),
+                    footer_inner,
+                );
             }
-            Chrome::Hosted => {
+            SectionFrame::Hosted => {
                 let paragraph = Paragraph::new(lines)
                     .style(Style::default().bg(theme.background))
                     .wrap(Wrap { trim: true });
@@ -460,142 +450,6 @@ impl KeybindDialog {
 impl Default for KeybindDialog {
     fn default() -> Self {
         Self::new(Arc::new(Theme::dark()))
-    }
-}
-
-impl Widget for &KeybindDialog {
-    fn render(self, area: Rect, buf: &mut ratatui::prelude::Buffer) {
-        let mut lines: Vec<Line> = Vec::new();
-
-        match self.mode {
-            KeybindMode::Normal | KeybindMode::WaitingForKey => {
-                lines.push(Line::from(Span::styled(
-                    " Keybindings ",
-                    Style::default()
-                        .fg(self.theme.primary)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                lines.push(Line::from(""));
-
-                let actions = KeybindDialog::actions();
-                for (i, action) in actions.iter().enumerate() {
-                    let is_selected = i == self.selected;
-                    let is_waiting = self.waiting_for_key == Some(i);
-
-                    let binding = self.get_binding(action);
-                    let binding_display = binding
-                        .map(|b| KeybindDialog::format_key(&b))
-                        .unwrap_or_else(|| "(unbound)".to_string());
-
-                    let style = if is_waiting {
-                        Style::default()
-                            .fg(self.theme.primary)
-                            .bg(self.theme.selection)
-                            .add_modifier(Modifier::BOLD)
-                    } else if is_selected {
-                        Style::default()
-                            .fg(self.theme.primary)
-                            .bg(self.theme.selection)
-                    } else {
-                        Style::default().fg(self.theme.foreground)
-                    };
-
-                    let marker = if is_waiting { "» " } else { "  " };
-                    lines.push(Line::from(vec![
-                        Span::styled(marker.to_string(), Style::default().fg(self.theme.muted)),
-                        Span::styled(format!("{:<20}", KeybindDialog::action_name(action)), style),
-                        Span::styled(
-                            format!(" {}", binding_display),
-                            Style::default().fg(self.theme.muted),
-                        ),
-                    ]));
-                }
-
-                if let Some(ref conflict) = self.conflict {
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(Span::styled(
-                        format!("Conflict: {} is already bound!", conflict),
-                        Style::default().fg(self.theme.error),
-                    )));
-                }
-
-                lines.push(Line::from(""));
-                if self.waiting_for_key.is_some() {
-                    lines.push(Line::from(Span::styled(
-                        "Press a key to bind, Esc to cancel...",
-                        Style::default().fg(self.theme.muted),
-                    )));
-                } else {
-                    lines.push(Line::from(Span::styled(
-                        "Enter remap  |  R reset  |  Esc close",
-                        Style::default().fg(self.theme.muted),
-                    )));
-                }
-            }
-            KeybindMode::Export => {
-                lines.push(Line::from(Span::styled(
-                    " Export Keybindings ",
-                    Style::default()
-                        .fg(self.theme.primary)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    "Copy the JSON below:",
-                    Style::default().fg(self.theme.muted),
-                )));
-                lines.push(Line::from(""));
-
-                for line in self.export_text.lines() {
-                    lines.push(Line::from(Span::styled(
-                        line,
-                        Style::default().fg(self.theme.foreground),
-                    )));
-                }
-
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    "Press Esc to close",
-                    Style::default().fg(self.theme.muted),
-                )));
-            }
-            KeybindMode::Import => {
-                lines.push(Line::from(Span::styled(
-                    " Import Keybindings ",
-                    Style::default()
-                        .fg(self.theme.primary)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    "Paste JSON config and press Enter:",
-                    Style::default().fg(self.theme.muted),
-                )));
-                lines.push(Line::from(""));
-
-                for (_i, line) in self.import_text.lines().enumerate().take(10) {
-                    lines.push(Line::from(Span::styled(
-                        line,
-                        Style::default().fg(self.theme.foreground),
-                    )));
-                }
-
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    "Enter import  Esc cancel",
-                    Style::default().fg(self.theme.muted),
-                )));
-            }
-        }
-
-        let block = Block::default()
-            .title(" Keybinds ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border))
-            .style(Style::default().bg(self.theme.background));
-
-        let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
-        paragraph.render(area, buf);
     }
 }
 
@@ -700,9 +554,9 @@ impl Component for KeybindDialog {
     /// `/keybinds` cannot leave those modes at all, and that is a host-level
     /// exit question already recorded under milestone M002a; answering it here
     /// would mean adding a key rather than removing a lie.
-    fn keymap_hint(&self) -> Option<String> {
+    fn keymap_hint_line(&self) -> Option<HintLine> {
         match self.mode {
-            KeybindMode::Normal | KeybindMode::WaitingForKey => Some(HINT.to_string()),
+            KeybindMode::Normal | KeybindMode::WaitingForKey => Some(hint()),
             KeybindMode::Export | KeybindMode::Import => None,
         }
     }
@@ -716,15 +570,17 @@ impl Component for KeybindDialog {
     /// unfocused one. The footers go with it: all three describe `Esc`, which is
     /// the host's. `area` is the host's full rect, so inset by its border first.
     fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        let inner = area.inner(Margin::new(1, 1));
+        let inner = Section::plain(theme)
+            .frame(SectionFrame::Hosted)
+            .draw(area, frame.buffer_mut());
         if inner.height == 0 || inner.width == 0 {
             return;
         }
-        self.render_body(frame, inner, theme, Chrome::Hosted);
+        self.render_body(frame, inner, theme, SectionFrame::Hosted);
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        self.render_body(frame, area, theme, Chrome::Owned);
+        self.render_body(frame, area, theme, SectionFrame::Owned);
     }
 
     fn dialog_type(&self) -> DialogType {
@@ -753,16 +609,43 @@ mod tests {
         dialog
             .bindings
             .insert("ctrl+b".to_string(), ActionKey::Cancel);
-        dialog.selected = ActionKey::all()
-            .iter()
-            .position(|action| *action == ActionKey::Cancel)
-            .unwrap();
+        dialog.cursor.set_index(
+            ActionKey::all()
+                .iter()
+                .position(|action| *action == ActionKey::Cancel)
+                .unwrap(),
+        );
         dialog.start_remap();
 
         let error = dialog.bind_waiting_key("ctrl+a".to_string()).unwrap_err();
         assert!(error.contains("Send"));
         assert_eq!(dialog.bindings.get("ctrl+a"), Some(&ActionKey::Send));
         assert_eq!(dialog.bindings.get("ctrl+b"), Some(&ActionKey::Cancel));
+    }
+
+    #[test]
+    fn keybind_cursor_clamps_at_both_ends_and_never_wraps() {
+        use crate::tui::components::scroll::ScrollPolicy;
+
+        let mut dialog = KeybindDialog::default();
+        let len = KeybindDialog::actions().len();
+        let last = len - 1;
+
+        dialog.select_up();
+        assert_eq!(
+            dialog.cursor.index(len),
+            0,
+            "ScrollPolicy::Clamp must stop on the first action, not wrap to the last"
+        );
+
+        dialog.cursor.set_index(last);
+        dialog.select_down();
+        assert_eq!(
+            dialog.cursor.index(len),
+            last,
+            "ScrollPolicy::Clamp must stop on the last action, not wrap to the first"
+        );
+        assert_eq!(dialog.cursor.policy(), ScrollPolicy::Clamp);
     }
 
     #[test]
@@ -777,6 +660,91 @@ mod tests {
         assert_eq!(
             parsed.bindings.get("ctrl+e"),
             Some(&ActionKey::ExternalEditor)
+        );
+    }
+
+    fn rendered_rows(dialog: &KeybindDialog, width: u16, height: u16) -> Vec<String> {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let theme = Arc::new(Theme::dark());
+        let mut dialog = dialog.clone();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        terminal
+            .draw(|frame| Component::render(&mut dialog, frame, frame.area(), &theme))
+            .expect("draw");
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol().to_string())
+            .collect::<Vec<_>>()
+            .chunks(width as usize)
+            .map(|row| row.concat())
+            .collect()
+    }
+
+    fn painted_footer(dialog: &KeybindDialog, width: u16, height: u16) -> String {
+        let rows = rendered_rows(dialog, width, height);
+        rows.into_iter()
+            .find(|row| {
+                row.contains("Esc close") || row.contains("Esc cancel") || row.contains("Esc back")
+            })
+            .unwrap_or_else(|| panic!("no footer row painted at {width}x{height}"))
+    }
+
+    #[test]
+    fn every_mode_paints_its_row_in_the_reserved_chunk() {
+        let normal = KeybindDialog::default();
+        assert!(
+            painted_footer(&normal, 100, 30).contains("Esc close · enter remap · r reset"),
+            "Normal must paint its row"
+        );
+
+        let mut waiting = KeybindDialog::default();
+        waiting.start_remap();
+        let painted = painted_footer(&waiting, 100, 30);
+        assert!(
+            painted.contains("Esc cancel"),
+            "WaitingForKey's Esc cancels the remap and the row must say so: {painted:?}"
+        );
+        assert!(
+            !painted.contains("Esc close"),
+            "WaitingForKey's Esc does not close the box: {painted:?}"
+        );
+
+        let mut export = KeybindDialog::default();
+        export.start_export();
+        let painted = painted_footer(&export, 100, 30);
+        assert!(
+            painted.contains("Esc back"),
+            "Export's row must be a row, not prose: {painted:?}"
+        );
+        assert!(
+            !painted.contains("Press Esc to close"),
+            "the prose footer must be gone: {painted:?}"
+        );
+
+        let mut import = KeybindDialog::default();
+        import.start_import();
+        assert!(
+            painted_footer(&import, 100, 30).contains("Esc cancel · Enter import"),
+            "Import must paint its row"
+        );
+    }
+
+    #[test]
+    fn the_minimum_size_keeps_one_body_row() {
+        let dialog = KeybindDialog::default();
+        let rows = rendered_rows(&dialog, 20, 6);
+        assert!(
+            rows.len() == 6 && rows[1].chars().any(|c| c.is_alphabetic()),
+            "the body must keep one painted row at 20x6: {rows:#?}"
+        );
+        assert!(
+            rows[4].contains("Esc close") || rows[5].contains("Esc close"),
+            "the footer must still paint at 20x6: {rows:#?}"
         );
     }
 }

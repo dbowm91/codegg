@@ -1,96 +1,12 @@
 # LSP (Language Server Protocol)
 
-> **Note:** This document is partially outdated. For comprehensive LSP documentation, see [`architecture/lsp.md`](../architecture/lsp.md). The phase 2 stdio test layout now lives under `crates/egglsp/tests/`, with the fake server built as the `egglsp-test-server` bin target from the `egglsp` package.
+CodeGG can connect to language servers for diagnostics, navigation, hover information, completion, formatting, rename, and code actions. The implementation lives in `crates/egglsp/`; `src/lsp/` is a thin re-export shim. See `architecture/lsp.md` for the module contract.
 
-codegg integrates with Language Server Protocol (LSP) to provide IDE-like features including diagnostics, code navigation, and intelligent completions.
+## Install and configure a language server
 
-## Architecture
+CodeGG resolves a server command from `PATH` and its LSP cache. The built-in `rust-analyzer` definition includes a download specification. Other language servers must be installed separately or configured with an explicit command.
 
-The authoritative LSP implementation is in **`crates/egglsp/`**. The `src/lsp/` directory is a thin shim that re-exports from egglsp.
-
-The egglsp crate consists of:
-
-- **`src/server.rs`** - Server definitions (`server_definitions()`; e.g. clangd, rust-analyzer, gopls, pyright, typescript-language-server)
-- **`src/service.rs`** - `LspService` managing LSP client lifecycle, explicit leader/waiter init election, lifecycle-validated publication, unpublished-client disposal, and quiescent shutdown driven by an absolute deadline
-- **`src/client.rs`** - Low-level LSP client implementation
-- **`src/operations/`** - `LspOperations` module directory: `code_actions.rs`, `completion.rs`, `formatting.rs`, `navigation.rs`, `overlay_ops.rs`, `rename.rs`, `semantic_tokens.rs`, `signature.rs`
-- **`src/diagnostics.rs`** - `DiagnosticsCollector` for collecting and debouncing diagnostics
-
-Phase 2 integration tests now live under `crates/egglsp/tests/`: the legacy fake-server suites use `FakeLspHarness`, the production-harness protocol subset uses `ProductionClientHarness`, and `scenario_engine.rs` contains inlined fake-server self-tests (no external `include!`). `egglsp::test_support` is feature-gated behind `lsp-test-support`.
-
-## Key Components
-
-### LspService
-
-Manages the lifecycle of LSP clients per project/language. Uses explicit leader/waiter init election for single-flight initialization (the first caller becomes leader, concurrent callers wait on the same completion fan-out), validates lifecycle generation before publication, and uses `Arc`-based handles to avoid serialization of unrelated clients behind process I/O:
-
-```rust
-pub struct LspService {
-    // Manages multiple language server clients
-    clients: ClientMap, // Arc<RwLock<HashMap<String, Arc<LspClient>>>>
-    // … plus init slots, document ownership, per-server operational
-    // state, and per-client generation tracking
-}
-```
-
-Client-map read/write lock discipline: non-mutating service methods (`open_file`, `update_file`, `close_file`, `save_file`, `is_file_open`, `get_diagnostics_for_key`, `get_all_diagnostics_for_key`, `diagnostics_may_still_be_warming`, `get_diagnostic_snapshot_for_key`, `send_request`, `client_keys`, `get_capabilities_for_key`) use `clients.read().await`. Write guards are reserved for client publication, insertion, removal, and shutdown drain.
-
-Each spawned initialization task is wrapped in `run_init_task_wrapper`, which awaits a start-registration barrier and owns the `Sender` end of an authoritative terminal completion channel. The wrapper owns an `ActiveTaskGuard` drop guard as a fallback for the cleanup path; the primary cleanup is explicit removal of the `active_init_tasks` entry before the wrapper sends its terminal `InitTaskExit`. `active_init_tasks: HashMap<u64, InitTaskControl>` stores each task's `CancellationToken`, `AbortHandle`, and a `oneshot::Receiver<InitTaskExit>` that is the **authoritative** terminal signal. The wrapper cannot begin its body until the leader registration code has installed the `InitTaskControl` entry — this is enforced by a one-shot start barrier, which eliminates the spawn-before-registration race. Cooperative cancellation races each long-running stage against the cancellation signal at five stages: before download, before process spawn, before initialize request, before initialized notification, and before publication. Injected test factories are wrapped in `tokio::select!` over the factory future and the `CancellationToken`, so test factories are cancellation-aware by default.
-
-If publication loses to an existing client or is invalidated by shutdown, the unpublished client is shut down with a bounded timeout before waiters are notified.
-
-`shutdown_all()` is quiescent: it transitions to `ShuttingDown` and broadcasts on a `tokio::sync::watch` channel (`lifecycle_tx`), drains init slots, signals cooperative cancellation to all tracked tasks concurrently, then awaits all completion receivers concurrently via `await_init_task_completions` (using `FuturesUnordered` with `tokio::select!` over each receiver and the aggregate deadline) under one 300ms grace period. Stragglers are forcibly aborted via `AbortHandle` and re-awaited through the same authoritative completion receiver path (no forwarding task ever wraps the real `JoinHandle`). Ready clients are drained concurrently via `futures::future::join_all` with a 2s per-client timeout, then `Cancelled` `SharedInitError` is notified to any waiters, and the lifecycle transitions to `Stopped`. The entire sequence is driven by an **absolute deadline** (`Instant::now() + SHUTDOWN_GLOBAL_TIMEOUT` = 6s), so the total shutdown is bounded regardless of client count. Concurrent shutdown callers observing `ShuttingDown` enter `await_stopped()`, which subscribes to the watch channel and waits for `Stopped` — race-free with no lost-wakeup window at the `ShuttingDown → Stopped` transition.
-
-### LspOperations
-
-Provides code navigation and analysis:
-
-- `go_to_definition()` - Jump to symbol definitions
-- `find_references()` - Find all references to a symbol
-- `hover()` - Get type/info hover for cursor position
-- `document_symbols()` - List all symbols in a document
-- `code_actions_unchecked()` - Get available code actions/quick fixes
-- `code_action_previews_for_warm_client()` - The **warm-only** code-action
-  read: one `textDocument/codeAction` request against a key the caller
-  resolved, with every action's edit previewed locally
-- `completion()` - Trigger completion at cursor
-- `signature_help()` - Show function signature hints
-- `code_lens()` - Get CodeLens data
-
-### DiagnosticsCollector
-
-Collects and manages diagnostics with 150ms debouncing:
-
-```rust
-pub struct DiagnosticsCollector {
-    service: Arc<LspService>,
-    last_update: Arc<Mutex<HashMap<String, Instant>>>,
-}
-```
-
-## Supported Languages
-
-`server_definitions()` in `crates/egglsp/src/server.rs` carries **39** built-in
-server definitions. Commonly used ones:
-
-| Language | Server id |
-|----------|--------|
-| Rust | rust-analyzer |
-| Python | pyright |
-| TypeScript/JavaScript | typescript-language-server |
-| Go | gopls |
-| C/C++ | clangd |
-
-A server binary is resolved from `PATH`, then from the LSP cache directory, and is
-downloaded only when the definition carries a download spec — `rust-analyzer` is the
-only one that does. Every other server must already be installed (or be configured
-explicitly, below).
-
-## Configuration
-
-LSP is configured via `codegg.jsonc`. The `lsp` map is keyed **directly by server
-id** — there is no `servers` level — and each rule's `command` is the full argv
-array (there is no separate `args` field):
+Add server settings to your CodeGG config. The `lsp` object is keyed directly by server id, and `command` is an array containing the executable and its arguments:
 
 ```jsonc
 {
@@ -105,153 +21,30 @@ array (there is no separate `args` field):
 }
 ```
 
-A rule may also set `extensions`, `env`, `initialization`,
-`workspace_configuration`, and `restart`; `{"disabled": true}` turns a single
-server off. Leaving a server out of the map keeps the default resolution described
-above.
+A server rule can also set `extensions`, `env`, `initialization`, `workspace_configuration`, or `restart`. Set `"disabled": true` on one rule to disable that server. Leaving an id out of the map uses its built-in definition.
 
-## Integration with Tools
+Common built-in server ids include `rust-analyzer`, `pyright`, `typescript-language-server`, `gopls`, and `clangd`.
 
-The `lsp` tool in the tool registry allows the agent to:
+## Let the model use LSP
 
-1. **Goto definition** - Jump to symbol definitions
-2. **Find references** - Find all symbol references
-3. **Hover** - Get type information
-4. **Document symbols** - List file symbols
-5. **Code actions** - Get quick fixes
-6. **Semantic checks** - Run `semanticCheckPreview` with either full proposed content or a single-file unified diff patch; the patch is applied in memory only, the overlay is restored after the check, and diagnostics/restore errors stay surfaced in the result
+The model-facing `lsp` tool is hidden by default. To expose it, add this setting to your config:
 
-Example usage in agent prompts:
-```
-Use the lsp tool to find the definition of the `processRequest` function
+```jsonc
+{
+  "experimental": {
+    "lsp_tool": true
+  }
+}
 ```
 
-## Diagnostics Flow
+This setting exposes the tool; it does not install a language server. CodeGG's LSP tool can then use the configured service for navigation, hover, diagnostics, and code actions.
 
-1. File changes are sent to LSP server via `textDocument/didChange`
-2. Server publishes diagnostics via `textDocument/publishDiagnostics`
-3. `DiagnosticsCollector` receives and debounces updates (150ms)
-4. The daemon's diagnostics cadence compares what changed and publishes an
-   envelope for each file whose set actually changed
-5. TUI displays diagnostics with severity indicators
+## Editor reads and previews
 
-The daemon drives step 4 on its own, every 750 ms, for each live session whose
-workspace already has a warm server. Nothing has to ask for it — the editor
-does not poll, and closing it does not stop diagnostics from being delivered.
-If you only need the current state once, `LspDiagnosticsGet` returns it
-directly and remains the correctness authority after a daemon restart.
+Editor reads such as hover, navigation, symbols, signature help, formatting preview, and rename preview are warm-only. They do not start a language server. If no server is running for the workspace, `NotReady` means there is no result yet, not that the server found nothing. If more than one server could handle a file and its extension does not select one, `Ambiguous` reports the candidates instead of choosing one silently.
 
-Diagnostics are reported by **workspace-relative path**, so `src/lib.rs` and
-`tests/lib.rs` are tracked separately.
-
-## Editor Reads
-
-Reads issued from the editor (hover, goto definition, goto implementation,
-references, declaration, document highlights, document and workspace symbols,
-signature help, semantic tokens, formatting preview, rename preview) go through
-the daemon and are **warm-only**: a read never starts a language server. If no
-server is running for your workspace, the read comes back `NotReady`, which
-means "nothing is running yet" — not "no results."
-
-If more than one language server is running for the same workspace and the
-file's extension does not single one out, the read comes back `Ambiguous` and
-names the candidates, rather than silently answering from whichever server
-happened to be first. Name a server explicitly to resolve it. `Ambiguous` is
-not a temporary state: retrying will not change the answer.
-
-If the server is running but does not offer that feature, the read comes back
-`Unsupported` and names the capability it lacks. That is different from
-`NotReady` on purpose: your language server is fine, it simply does not do this,
-and nothing you do will change that.
-
-### A preview you can apply
-
-Formatting and rename can both be asked for, and both return a **preview**: a
-diff, or the list of files a rename would touch.
-
-Both previews have a key:
-
-| Key | What it does |
-|---|---|
-| `=` | the **format preview** for the open document — the diff the formatter would produce, and how many edits that is |
-| `space r` | the **rename preview** for the symbol under the cursor — the old and new names, the files that would change, and the edits in each |
-
-`space r` asks for the new name first: it opens the editor's `:` line with
-`rename-preview ` already filled in, you type the name, and you press `Enter`.
-The line is the same one you could have typed by hand — `:rename-preview
-newname` — and `Esc` abandons it. An empty name, or one longer than the
-server's limit, is refused before a request is sent, and the refusal names the
-limit.
-
-**A preview that can be applied opens the review.** The diff in the review is
-the change that would be written, and the review is where you decide:
-
-- `[a]pply` sends the change through the daemon's checked apply path — the
-  same path `/lsp-preview-apply` uses, with the same revalidation of the file
-  it was computed against;
-- `Esc` rejects it. Nothing is written.
-
-So `=` and `space r` are no longer only a picture of what would change: they
-lead to the change itself, reviewed before it lands.
-
-**A preview that cannot be applied stays a preview, and says so.** The editor
-offers an apply only when the whole change is known. A truncated preview, a
-change with no edits, and a change too large to apply are all still previews,
-and the panel says which.
-
-Two refusals are the daemon's, not the editor's, and both appear verbatim in
-the review:
-
-- **Unsaved edits.** The apply will not write over a file you have edited but
-  not saved. Save it, then run the preview again.
-- **A file that changed.** If the file changed on disk since the preview was
-  built, the apply refuses and asks for a fresh preview.
-
-After a successful apply the editor reloads the file it wrote — unless your
-buffer holds edits the editor has not saved, in which case it keeps them and
-tells you the file changed on disk.
-
-`space a` — the code action — asks the server what code actions it would offer
-at the cursor. It is **one** `textDocument/codeAction` request, and the diff of
-each action's own edit is computed locally, so the action you pick is the
-action that was previewed. The panel is the picker: `j`/`k` move, `Enter`
-opens the change review on the selected action.
-
-An action that carries a **command** is never applied here, even one that also
-carries an edit — the LSP specification applies an action's edit *and then* its
-command, and this surface never runs commands. The panel says so, in the same
-words `Enter` uses.
-
-## Error Handling
-
-- Server launch failures return `LspError::LaunchFailed`
-- Invalid file paths return `LspError::LaunchFailed`
-- Request timeouts send a best-effort `$/cancelRequest`; if that cancel write fails, the transport is marked failed and later calls fail fast with `LspError::WriterClosed`
-- Immediate request/notification I/O failures surface as `LspError::RequestFailed`; once the transport is failed, later calls fail fast with `LspError::WriterClosed`
+Formatting and rename produce previews. Review the proposed change before applying it. The checked apply path refuses to overwrite unsaved edits or a file that changed after the preview was created. Code actions that include a command are not applied, because CodeGG does not execute LSP commands from that review surface.
 
 ## Source verification
 
-Checked 2026-10-23 against the source tree.
-
-- The authoritative implementation is `crates/egglsp/`; `src/lsp/` is a
-  re-export shim: `src/lsp/`, `crates/egglsp/src/lib.rs`.
-- Crate layout: `crates/egglsp/src/server.rs`, `service.rs`, `client.rs`,
-  `diagnostics.rs`, and `operations/` containing `code_actions.rs`,
-  `completion.rs`, `formatting.rs`, `navigation.rs`, `overlay_ops.rs`,
-  `rename.rs`, `semantic_tokens.rs`, `signature.rs`.
-- **39** server definitions and the `server_definitions()` ids
-  (`rust-analyzer`, `gopls`, `pyright`, `typescript-language-server`,
-  `jdtls`, `clangd`, …): `crates/egglsp/src/server.rs`. `rust-analyzer` is the
-  only definition carrying a `download:` spec.
-- The `egglsp::test_support` feature gate: `crates/egglsp/Cargo.toml`
-  (`lsp-test-support`).
-- `LspError` variants (`LaunchFailed`, `RequestFailed`, `WriterClosed`):
-  `crates/codegg-core/src/error.rs`.
-- `experimental.lsp_tool` gate: `crates/codegg-config/src/schema.rs`.
-- Diagnostics are reported by workspace-relative path:
-  `crates/codegg-protocol/src/`.
-
-- Corrected 2026-10-27: 39 server definitions — `rg -c '^\s+id: "'`
-  `crates/egglsp/src/server.rs` returns 39, confirmed by
-  `python3 scripts/measure_overview_counts.py`. A 2026-10-27 pass wrote 40
-  in error and has been reverted here and in `architecture/lsp.md`.
+Verified 2026-11-15 against `crates/egglsp/src/server.rs`, `crates/egglsp/src/config.rs`, `crates/egglsp/src/service.rs`, `crates/egglsp/src/operations/`, `src/lsp/`, `src/tool/lsp.rs`, `src/main.rs`, `crates/codegg-config/src/schema.rs`, and `crates/egglsp/src/mutation.rs`. Confirmed server resolution and download metadata, configuration fields, the default-off `experimental.lsp_tool` exposure gate, warm-only editor reads, preview application checks, and refusal to execute command-bearing code actions.

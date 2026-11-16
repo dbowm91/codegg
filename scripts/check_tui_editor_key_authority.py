@@ -68,6 +68,35 @@ guard block can shadow, so it is what the shadowing rule is about and what the
 summary line counts. `char is None` marks the **wildcard** catch-all, which
 deliberately owns every printable character in its modifier set.
 
+## The digit claim
+
+M004 of `plans/implementation/tui-editor-helix-capability-parity/` gives the
+editor a count, and a count is claimed by **one** arm over a *set* of
+characters:
+
+    (m, KeyCode::Char(ch))
+        if m == none && ch.is_ascii_digit() && (ch != '0' || count.is_some()) =>
+
+Read as the printable wildcard that would be a lie in the direction that
+matters: the arm claims digits, so a later `Char('3')` arm inside the same
+table is **dead**, and `0` is claimed only while a count is pending — which is
+what keeps the `Char('0')` -> `LineStart` arm below it reachable. The arm is
+therefore modelled as a **digit claim**: one claim over the digits its
+predicate admits, and the digits it admits are read from that predicate rather
+than assumed.
+
+* `ch.is_ascii_digit()` is what makes it a digit claim instead of the
+  wildcard. Without it the arm is the wildcard, exactly as before.
+* `ch != '0'` is what says `0` is **not** claimed unconditionally. An arm
+  without that exclusion claims all ten digits, and the `0` arm below it is
+  then reported as a shadowed chord — which is the trap M004 names, caught by
+  the ordinary duplicate rule rather than by a special case.
+
+A digit claim has `char is None` (it names no single glyph) and a non-empty
+`digits` set, so a consumer that skips `char is None` — the doc-drift guard —
+still reads it as "no single binding to document". Duplicate detection expands
+it per digit, so a shadowed digit fails rule 2 with the digit in the message.
+
 * The **tuple shape** spells the modifier in the pattern. A spelled-out
   modifier (`(KeyModifiers::CONTROL, KeyCode::Char('d'))`) matches exactly that
   modifier and is *not* subject to the arm's `if` predicate; a binding
@@ -133,7 +162,9 @@ the claim is counted from it.
 - `KeyCode::Char(ch)` arms that bind the character to an identifier, such as
   `handle_insert_key`'s `KeyCode::Char(ch) if key.modifiers == ...`. That arm
   deliberately owns *every* printable character in Insert; it does not name a
-  specific chord, so it is modelled as a wildcard rather than as a chord.
+  specific chord, so it is modelled as a wildcard rather than as a chord. The
+  one exception is the digit claim above: the same shape narrowed by
+  `ch.is_ascii_digit()`, which does name its chords.
 - The App layer's Normal-only pane gestures (`handle_editor_key`), which are a
   separate stage above this file's dispatch chain and are already documented at
   their call site.
@@ -159,8 +190,10 @@ through the *same* analysis the real tree goes through — not a
 reimplementation of it — and fails if a planted violation is not reported. The
 cases cover a duplicated Insert chord, an Insert chord shadowing a guard-block
 chord, a missing `Alt-Delete` claim, a duplicated `Alt-Backspace` claim, a
-shape the guard cannot resolve, and two clean sources (one per table shape) so
-the self-test proves the detector *discriminates* rather than always failing.
+shape the guard cannot resolve, a **shadowed digit** (a literal `3` claimed
+beside the count arm) and a count arm that loses its `0` exclusion and steals
+`LineStart`, and two clean sources (one per table shape) so the self-test
+proves the detector *discriminates* rather than always failing.
 
 Exit code 1 on violations, 2 on a shape it cannot resolve.
 
@@ -279,7 +312,16 @@ ALT_RE = re.compile(
     r"(KeyCode::\w+(?:\(\s*(?:'(?:\\.|[^'\\]){1}'|[a-z_]\w*)\s*\))?)\s*\)"
 )
 # `KeyCode::Char(ch)` where the char is a binding rather than a literal.
-CATCHALL_CHAR_RE = re.compile(r"KeyCode::Char\(\s*[a-z_]\w*\s*\)")
+CATCHALL_CHAR_RE = re.compile(r"KeyCode::Char\(\s*([a-z_]\w*)\s*\)")
+# The two halves of a **digit claim** — the same binding narrowed to digits.
+#
+# `<binding>.is_ascii_digit()` is what turns the wildcard into a claim over the
+# ten digits; `<binding> != '0'` is what says `0` is only claimed while a count
+# is pending, which is what keeps the `LineStart` arm below it reachable. Both
+# are read from the arm's own predicate rather than assumed, so an arm that
+# drops the exclusion is reported as shadowing `0`.
+DIGIT_TEST_RE = re.compile(r"\b([a-z_]\w*)\.is_ascii_digit\(\)")
+DIGIT_ZERO_EXCLUSION_RE = re.compile(r"\b([a-z_]\w*)\s*!=\s*'0'")
 # A non-`Char` key code — `KeyCode::Backspace`, `KeyCode::Down`, ... — which is
 # tracked as a key-code claim rather than as a character chord.
 NON_CHAR_KEYCODE_RE = re.compile(r"KeyCode::(?!Char\b)(\w+)")
@@ -305,9 +347,12 @@ class ParseError(Exception):
 class Chord:
     """One `(modifiers, char)` claim, attributed to an owner and a line.
 
-    `char` is `None` for a wildcard claim: `handle_insert_key` deliberately owns
-    *every* printable character in Insert mode, so any guard chord falling
-    inside that modifier set for Insert is dead.
+    `char` is `None` for a claim over more than one glyph: the printable
+    wildcard (`handle_insert_key` deliberately owns *every* printable character
+    in Insert) and the **digit claim** (a count arm owns `1`–`9`, and `0` too
+    unless its predicate excludes it). `digits` is empty for the wildcard and
+    for every single-glyph chord, so the two multi-glyph kinds cannot be
+    confused: `char is None` says "many", `digits` says "which many".
     """
 
     modifiers: frozenset[str]
@@ -317,10 +362,28 @@ class Chord:
     modes: frozenset[str]
     line_no: int
     text: str
+    digits: frozenset[str] = frozenset()
 
     def label(self) -> str:
-        target = f"'{self.char}'" if self.char is not None else "any printable char"
+        if self.digits:
+            target = "digits " + "".join(sorted(self.digits))
+        elif self.char is not None:
+            target = f"'{self.char}'"
+        else:
+            target = "any printable char"
         return f"{'|'.join(sorted(self.modifiers))}+{target}"
+
+    def covers(self, glyph: str | None) -> bool:
+        """Whether this claim could fire on `glyph` (`None` = any printable)."""
+        if self.digits:
+            return glyph is None or glyph in self.digits
+        if self.char is None:
+            return True
+        return glyph is None or self.char == glyph
+
+    def overlaps(self, other: "Chord") -> bool:
+        """Whether two claims could fire on the same keystroke."""
+        return self.covers(other.char) and other.covers(self.char)
 
 
 @dataclass(frozen=True)
@@ -718,6 +781,29 @@ def collect_guard_chords(body: list[str], base_line: int) -> list[Chord]:
     return chords
 
 
+def digit_claim(block: str, code_expr: str) -> frozenset[str]:
+    """The digits one `KeyCode::Char(ch)` alternative claims, or an empty set.
+
+    Empty means the alternative is the printable wildcard, exactly as it was
+    before counts existed. A non-empty set means the arm's own predicate
+    narrows `ch` to digits — `<ch>.is_ascii_digit()` — and `<ch> != '0'` removes
+    `0` from the claim, because `0` with nothing pending is `LineStart` and
+    only extends a count that is already armed. Both halves are read from the
+    predicate rather than assumed, so an arm that loses the exclusion is
+    reported as shadowing the `0` arm below it.
+    """
+    binding = CATCHALL_CHAR_RE.search(code_expr)
+    if binding is None:
+        return frozenset()
+    name = binding.group(1)
+    if name not in DIGIT_TEST_RE.findall(block):
+        return frozenset()
+    digits = set("123456789")
+    if name not in DIGIT_ZERO_EXCLUSION_RE.findall(block):
+        digits.add("0")
+    return frozenset(digits)
+
+
 def collect_table_claims(
     table: list[str],
     base_line: int,
@@ -824,10 +910,29 @@ def collect_table_claims(
                 )
                 continue
             if CATCHALL_CHAR_RE.search(code_expr) is not None:
-                # `KeyCode::Char(ch)` — the wildcard catch-all in the tuple
-                # shape. It is one claim over the modifiers it admits, so the
-                # alternatives of a single arm are merged into one wildcard
-                # chord: the same model the legacy shape produces.
+                # `KeyCode::Char(ch)` — either the wildcard catch-all in the
+                # tuple shape or a **digit claim**. Which one is decided by the
+                # arm's own predicate: `ch.is_ascii_digit()` narrows the claim
+                # to digits, and `ch != '0'` says `0` is not one of them
+                # unconditionally.
+                digits = digit_claim(block, code_expr)
+                if digits:
+                    arm_chords.append(
+                        Chord(
+                            modifiers=arm_modifiers,
+                            combos=arm_combos,
+                            char=None,
+                            owner=owner,
+                            modes=frozenset({mode}),
+                            line_no=line_no,
+                            text=block,
+                            digits=digits,
+                        )
+                    )
+                    continue
+                # The wildcard is one claim over the modifiers it admits, so
+                # the alternatives of a single arm are merged into one chord:
+                # the same model the legacy shape produces.
                 wildcard_combos |= arm_combos
                 continue
             # A non-`Char` key code: `KeyCode::Backspace`, `KeyCode::Delete`,
@@ -931,8 +1036,7 @@ def analyse(text: str) -> Analysis:
         for chord in chords:
             for guard in guard_chords:
                 shared_mode = chord.modes & guard.modes
-                same_char = chord.char is None or guard.char is None or chord.char == guard.char
-                if shared_mode and same_char and chord.modifiers & guard.modifiers:
+                if shared_mode and chord.overlaps(guard) and chord.modifiers & guard.modifiers:
                     where = ", ".join(sorted(shared_mode))
                     violations.append(
                         Violation(
@@ -956,17 +1060,37 @@ def analyse(text: str) -> Analysis:
         (insert_chords, insert_claims, "handle_insert_key"),
     ):
         seen: dict[tuple[str, str | None], list[tuple[frozenset[Combo], int, str]]] = {}
-        entries = [
-            (
-                chord.combos,
-                "wildcard" if chord.char is None else "char",
-                chord.char,
-                chord.label(),
-                chord.line_no,
-                chord.text,
+        entries = []
+        for chord in chords:
+            # A digit claim is expanded into the chords it covers, so a literal
+            # `Char('3')` anywhere in the same table is compared against the
+            # claim's `3` instead of against an opaque wildcard. One claim, nine
+            # (or ten) comparable chords — the same shape rule 2 already uses
+            # for a single-glyph claim.
+            if chord.digits:
+                for digit in sorted(chord.digits):
+                    entries.append(
+                        (
+                            chord.combos,
+                            "char",
+                            digit,
+                            f"{'|'.join(sorted(chord.modifiers))}+'{digit}'",
+                            chord.line_no,
+                            chord.text,
+                        )
+                    )
+                continue
+            entries.append(
+                (
+                    chord.combos,
+                    "wildcard" if chord.char is None else "char",
+                    chord.char,
+                    chord.label(),
+                    chord.line_no,
+                    chord.text,
+                )
             )
-            for chord in chords
-        ] + [
+        entries.extend(
             (
                 claim.combos,
                 "code",
@@ -976,7 +1100,7 @@ def analyse(text: str) -> Analysis:
                 claim.text,
             )
             for claim in claims
-        ]
+        )
         for combos, kind, target, label, line_no, block_text in entries:
             for prior_combos, prior_line, prior_text in seen.get((kind, target), []):
                 if combos_intersect(combos, prior_combos):
@@ -1118,22 +1242,45 @@ TUPLE_INSERT_TABLE = """    match (key.modifiers, key.code) {
 """
 
 
+# The Normal table with M004's count arm in it, in the shape the real tree
+# writes it: one arm, ahead of the `0` arm, narrowed by `is_ascii_digit` and
+# excluding `0` unless a count is already pending.
+DIGIT_NORMAL_TABLE = """        (m, KeyCode::Char('j')) if m == none => {
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char(ch))
+            if m == none
+                && ch.is_ascii_digit()
+                && (ch != '0' || pending_count.is_some()) =>
+        {
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('0')) if m == none => {
+            BufferKey::Consumed
+        }
+"""
+
+
 @dataclass(frozen=True)
 class Expectation:
     """What one self-test case must produce.
 
     `rules` is the exact set of guard rules that must fire, which is what
     separates "a duplicated chord" (rule 2) from "a chord shadowed by the
-    guard block" (rule 1).
+    guard block" (rule 1). `mentions` are substrings at least one violation
+    message must carry, so a case can prove *which* chord was reported rather
+    than only that some rule fired.
     """
 
     violations: int = 0
     problems: int = 0
     parse_error: bool = False
     rules: tuple[int, ...] = ()
-    normal_chars: tuple[str, ...] | None = None
+    normal_chars: tuple[str | None, ...] | None = None
     insert_chars: tuple[str | None, ...] | None = None
     wildcard_modifiers: frozenset[str] | None = None
+    digit_glyphs: frozenset[str] | None = None
+    mentions: tuple[str, ...] = ()
 
 
 def _expectation_problems(expected: Expectation, analysis: Analysis) -> list[str]:
@@ -1171,6 +1318,18 @@ def _expectation_problems(expected: Expectation, analysis: Analysis) -> list[str
                     f"expected wildcard modifiers {sorted(expected.wildcard_modifiers)}, "
                     f"found {sorted(found)}"
                 )
+    if expected.digit_glyphs is not None:
+        found_digits = frozenset(
+            digit for chord in analysis.normal_chords for digit in chord.digits
+        )
+        if found_digits != expected.digit_glyphs:
+            problems.append(
+                f"expected digit claim {sorted(expected.digit_glyphs)}, "
+                f"found {sorted(found_digits)}"
+            )
+    for needle in expected.mentions:
+        if not any(needle in violation.message for violation in analysis.violations):
+            problems.append(f"no violation names {needle!r}")
     return problems
 
 
@@ -1304,6 +1463,45 @@ SELF_TEST_CASES: list[tuple[str, str, Expectation]] = [
         Expectation(violations=0, rules=()),
     ),
     (
+        "a count arm is a digit claim, and `0` stays its own reachable chord",
+        synthetic_source(LEGACY_INSERT_TABLE, DIGIT_NORMAL_TABLE),
+        Expectation(
+            violations=0,
+            rules=(),
+            normal_chars=("j", None, "0"),
+            digit_glyphs=frozenset("123456789"),
+        ),
+    ),
+    (
+        "a literal digit claimed beside the count arm is a rule-2 violation",
+        synthetic_source(
+            LEGACY_INSERT_TABLE,
+            DIGIT_NORMAL_TABLE.replace(
+                "        (m, KeyCode::Char('0')) if m == none => {\n",
+                "        (m, KeyCode::Char('3')) if m == none => {\n"
+                "            BufferKey::Consumed\n"
+                "        }\n"
+                "        (m, KeyCode::Char('0')) if m == none => {\n",
+            ),
+        ),
+        Expectation(violations=1, rules=(2,), mentions=("'3'", "unreachable")),
+    ),
+    (
+        "a count arm that does not exclude `0` shadows LineStart",
+        synthetic_source(
+            LEGACY_INSERT_TABLE,
+            DIGIT_NORMAL_TABLE.replace(
+                " && (ch != '0' || pending_count.is_some())", ""
+            ),
+        ),
+        Expectation(
+            violations=1,
+            rules=(2,),
+            digit_glyphs=frozenset("0123456789"),
+            mentions=("'0'",),
+        ),
+    ),
+    (
         "a shape the guard cannot resolve is an error, not a pass",
         synthetic_source(
             _tuple_insert_table(
@@ -1400,10 +1598,25 @@ def main(argv: list[str]) -> int:
     print(
         "TUI editor key-authority guard passed — "
         f"{len(analysis.guard_chords)} guard-block chord(s), "
-        f"{len(analysis.normal_chords)} Normal-mode chord(s), "
+        f"{len(analysis.normal_chords)} Normal-mode chord(s)"
+        f"{digit_note(analysis)}, "
         f"{len(analysis.insert_chords)} Insert-mode chord(s), no shadowed arm"
     )
     return 0
+
+
+def digit_note(analysis: Analysis) -> str:
+    """The digit-claim footnote for the summary line, or `""`.
+
+    Printed because a count arm is one *claim* over nine chords: a summary that
+    said "90" without saying what the ninetieth was would read as a chord the
+    reader is expected to find by name.
+    """
+    claims = [chord for chord in analysis.normal_chords if chord.digits]
+    if not claims:
+        return ""
+    digits = "".join(sorted("".join(sorted(chord.digits)) for chord in claims))
+    return f" [{len(digits)} digits claimed by a count arm: {digits}]"
 
 
 if __name__ == "__main__":

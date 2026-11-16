@@ -5,6 +5,7 @@ use crate::protocol::core::CoreResponse;
 // handlers go through the daemon's command executor (M007-D).
 #[cfg(test)]
 use crate::protocol::core::CoreRequest;
+use crate::tui::app::send_tui;
 use crate::tui::app::App;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
@@ -771,5 +772,85 @@ pub(crate) fn apply_habit_result(app: &mut App, message: String, is_error: bool)
         } else {
             app.messages_state.toasts.info(&message);
         }
+    }
+}
+
+pub(crate) fn dispatch_memory(app: &mut App) {
+    if let Some(ref tx) = app.tui_cmd_tx {
+        let _ = send_tui(
+            tx,
+            TuiCommand::MemorySummary {
+                command_id: "memory".to_string(),
+            },
+        );
+    } else {
+        app.handle_memory_command(None);
+    }
+}
+
+pub(crate) fn dispatch_memory_search(app: &mut App, argument: &str) {
+    let query = argument.to_string();
+    if let Some(ref tx) = app.tui_cmd_tx {
+        let _ = send_tui(tx, TuiCommand::MemorySearch { query });
+    } else {
+        app.handle_memory_command(Some(("search", &query)));
+    }
+}
+
+pub(crate) fn dispatch_memory_list(app: &mut App, argument: &str) {
+    let query = argument.to_string();
+    if let Some(ref tx) = app.tui_cmd_tx {
+        let _ = send_tui(
+            tx,
+            TuiCommand::MemorySummary {
+                command_id: "memory_list".to_string(),
+            },
+        );
+    } else {
+        app.handle_memory_command(Some(("list", &query)));
+    }
+}
+
+pub(crate) fn dispatch_memory_remember(app: &mut App, argument: &str) {
+    let text = argument.to_string();
+    if let Some(ref tx) = app.tui_cmd_tx {
+        let _ = send_tui(tx, TuiCommand::MemoryRemember { text });
+    } else {
+        app.handle_memory_command(Some(("remember", &text)));
+    }
+}
+
+pub(crate) fn dispatch_memory_forget(app: &mut App, argument: &str) {
+    let id = argument.to_string();
+    if let Some(ref tx) = app.tui_cmd_tx {
+        let _ = send_tui(tx, TuiCommand::MemoryForget { id });
+    } else {
+        app.handle_memory_command(Some(("forget", &id)));
+    }
+}
+
+pub(crate) fn dispatch_memory_consolidate(app: &mut App) {
+    app.handle_memory_command(Some(("consolidate", "")));
+}
+
+pub(crate) fn dispatch_habits(app: &mut App, argument: &str) {
+    let ready_only = argument == "ready";
+    if let Some(ref tx) = app.tui_cmd_tx {
+        let _ = send_tui(tx, TuiCommand::HabitList { ready_only });
+    } else {
+        app.messages_state.toasts.warning("Habit store unavailable");
+    }
+}
+
+pub(crate) fn dispatch_habit_dismiss(app: &mut App, argument: &str) {
+    let id = argument.to_string();
+    if id.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /habit-dismiss <id> (use /habits)");
+    } else if let Some(ref tx) = app.tui_cmd_tx {
+        let _ = send_tui(tx, TuiCommand::HabitDismiss { id });
+    } else {
+        app.messages_state.toasts.warning("Habit store unavailable");
     }
 }
