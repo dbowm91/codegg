@@ -502,16 +502,16 @@ fn is_cargo_command(command: &str) -> bool {
         })
 }
 
-fn validated_workspace_cargo_home(workspace_root: &Path, candidate: &Path) -> Option<PathBuf> {
+fn validated_workspace_cargo_directory(workspace_root: &Path, candidate: &Path) -> Option<PathBuf> {
     if !candidate.is_absolute() {
         return None;
     }
     let workspace_root = workspace_root.canonicalize().ok()?;
-    let cargo_home = candidate.canonicalize().ok()?;
-    if !cargo_home.is_dir() || !cargo_home.starts_with(workspace_root) {
+    let cargo_directory = candidate.canonicalize().ok()?;
+    if !cargo_directory.is_dir() || !cargo_directory.starts_with(workspace_root) {
         return None;
     }
-    Some(cargo_home)
+    Some(cargo_directory)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -558,13 +558,21 @@ async fn run_managed_test_process(
             .map(|toolchain_bin| toolchain_bin.join("rustdoc"))
             .filter(|rustdoc| rustdoc.is_file());
     }
-    // Keep CARGO_HOME under the workspace grant; otherwise cache writes broaden authority.
-    let cargo_home = if is_cargo
-        && sandbox_profile.is_some_and(|profile| profile.requires_filesystem_containment())
-    {
+    // Cargo's cache and build outputs are writable, so constrained runs only
+    // receive paths already contained by the accepted workspace grant.
+    let constrained_cargo = is_cargo
+        && sandbox_profile.is_some_and(|profile| profile.requires_filesystem_containment());
+    let cargo_home = if constrained_cargo {
         std::env::var_os("CARGO_HOME")
             .map(PathBuf::from)
-            .and_then(|path| validated_workspace_cargo_home(&request.workdir, &path))
+            .and_then(|path| validated_workspace_cargo_directory(&request.workdir, &path))
+    } else {
+        None
+    };
+    let cargo_target_dir = if constrained_cargo {
+        std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .and_then(|path| validated_workspace_cargo_directory(&request.workdir, &path))
     } else {
         None
     };
@@ -582,6 +590,9 @@ async fn run_managed_test_process(
             let mut policy = crate::managed_process::EnvironmentPolicy::sanitized();
             if let Some(cargo_home) = cargo_home.as_ref() {
                 policy = policy.with_var("CARGO_HOME", cargo_home.as_os_str());
+            }
+            if let Some(cargo_target_dir) = cargo_target_dir.as_ref() {
+                policy = policy.with_var("CARGO_TARGET_DIR", cargo_target_dir.as_os_str());
             }
             if let Some(rustup_home) = std::env::var_os("RUSTUP_HOME") {
                 policy = policy.with_var("RUSTUP_HOME", rustup_home);
@@ -1179,33 +1190,39 @@ mod tests {
     }
 
     #[test]
-    fn constrained_cargo_home_must_resolve_inside_workspace() {
+    fn constrained_cargo_directories_must_resolve_inside_workspace() {
         let workspace = tempfile::tempdir().unwrap();
         let nested_home = workspace.path().join("job-check/.cargo-home");
+        let nested_target = workspace.path().join("job-check/.cargo-target");
         fs::create_dir_all(&nested_home).unwrap();
+        fs::create_dir_all(&nested_target).unwrap();
         assert_eq!(
-            validated_workspace_cargo_home(workspace.path(), &nested_home),
+            validated_workspace_cargo_directory(workspace.path(), &nested_home),
             Some(nested_home.canonicalize().unwrap())
+        );
+        assert_eq!(
+            validated_workspace_cargo_directory(workspace.path(), &nested_target),
+            Some(nested_target.canonicalize().unwrap())
         );
 
         let outside = tempfile::tempdir().unwrap();
         assert_eq!(
-            validated_workspace_cargo_home(workspace.path(), outside.path()),
+            validated_workspace_cargo_directory(workspace.path(), outside.path()),
             None,
-            "a constrained test must not inherit a Cargo home outside its workspace grant"
+            "constrained Cargo directories outside the workspace grant must be rejected"
         );
         assert_eq!(
-            validated_workspace_cargo_home(workspace.path(), Path::new("relative-cargo-home")),
+            validated_workspace_cargo_directory(workspace.path(), Path::new("relative-cargo-dir")),
             None,
-            "relative Cargo homes must not resolve against the daemon's cwd"
+            "relative Cargo directories must not resolve against the daemon's cwd"
         );
 
         #[cfg(unix)]
         {
-            let link = workspace.path().join("linked-cargo-home");
+            let link = workspace.path().join("linked-cargo-directory");
             std::os::unix::fs::symlink(outside.path(), &link).unwrap();
             assert_eq!(
-                validated_workspace_cargo_home(workspace.path(), &link),
+                validated_workspace_cargo_directory(workspace.path(), &link),
                 None,
                 "a symlink must not redirect Cargo writes outside the workspace grant"
             );
