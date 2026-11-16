@@ -705,25 +705,13 @@ pub(crate) fn is_normal_only(action: &InputAction) -> bool {
             // above prevent.
             | InputAction::NextSubagentTab
             | InputAction::PreviousSubagentTab
-            | InputAction::CloseSubagentTab // `ToggleAgentRun` used to be listed here because its only
-                                            // spelling was the bare letter `x`, and a bare letter is skipped
-                                            // in Insert mode by the `is_bare_char` rule above — the listing
-                                            // was belt-and-braces for a key the user types constantly. The
-                                            // composer now claims `x` (ADR-0042) and the action's only
-                                            // spelling is the `Ctrl+Alt+X` chord, so the entry is gone rather
-                                            // than the bug being documented: a chord cannot be composed as
-                                            // text, so it is already unambiguous in Insert mode.
+            | InputAction::CloseSubagentTab
     )
 }
 
 /// `Shift`-qualified pane directions: `←/→/↑/↓` and the vim `H/J/K/L` twins.
 ///
-/// The vertical pair used to be deliberately left unbound, reserved for a
-/// future stacked-pane layout. It is bound now because it is no longer inert:
-/// with a two-pane layout, `↑`/`↓` cycle which panel type is loaded in the
-/// side column. That is the same gesture a stacked layout would use to move
-/// between rows, so the key is now earning its place instead of advertising
-/// something the UI cannot do.
+/// Vertical keys cycle the side-panel type in the current two-pane layout.
 fn insert_panel_direction_bindings(map: &mut HashMap<(KeyModifiers, KeyCode), InputAction>) {
     for (key_code, action) in [
         (KeyCode::Left, InputAction::DirectionLeft),
@@ -768,25 +756,8 @@ fn insert_panel_direction_bindings(map: &mut HashMap<(KeyModifiers, KeyCode), In
         (KeyModifiers::NONE, KeyCode::Char('F')),
         InputAction::OpenProjectPicker,
     );
-    // `Shift+T` used to open the unified tasks overlay under both encodings.
-    // It is retired: a capital `T` mid-word is text the user is actively
-    // typing, so the action had to be `is_normal_only`, and the app boots in
-    // Insert — the first press composed a literal `T` and the overlay looked
-    // broken. `Ctrl+T` now owns the overlay and needs no mode gate, because a
-    // CONTROL chord is never composable text. Re-adding a shifted capital here
-    // would require re-adding the gate, and re-adding the gate would make the
-    // overlay unreachable from Insert again.
-    // `Shift+N` / `Shift+P` / `Shift+X` drive the subagent tab set in the main
-    // buffer: next, previous, close. All three are uppercase letters that were
-    // unbound in every keymap, and all three are bound under both encodings for
-    // the same legacy reason as `Shift+S`/`Shift+F`/`Shift+T` above.
-    //
-    // They are separate letters rather than a reused chord on purpose. These
-    // names the buffer itself, adjacent to `Tab` for project tabs — but they
-    // are a different axis entirely (subagents inside one session, versus
-    // projects beside it), so reusing `Ctrl+Alt+N`/`Ctrl+Alt+B` would have
-    // collapsed two independent navigations onto one gesture and made the
-    // project-tab muscle memory fire a subagent switch instead.
+    // Subagent tabs use distinct uppercase keys from project navigation; they
+    // control different levels of navigation within the session.
     for (letter, action) in [
         ('N', InputAction::NextSubagentTab),
         ('P', InputAction::PreviousSubagentTab),
@@ -973,12 +944,6 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         ),
         InputAction::FocusSidebar,
     );
-    // The side-panel manager used to answer a second key, `Ctrl+Alt+W`,
-    // here so it could be reached while composing. It is retired: the
-    // manager is a Normal-mode surface like the directionals that drive
-    // the same panels, and one key per surface is one less thing to
-    // remember and one fewer chord to get wrong in a legacy terminal.
-    // `Shift+S` (`OpenPanelManager`) is the only spelling now.
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('w')),
         InputAction::CloseSession,
@@ -1074,18 +1039,7 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         (KeyModifiers::CONTROL, KeyCode::Char('q')),
         InputAction::Quit,
     );
-    // Ctrl+T opens the unified tasks overlay: todos, then in-flight
-    // subagents, then jobs the session is waiting on. One chord, three
-    // groups, and a group with no rows is omitted rather than drawn empty.
-    //
-    // This replaced a two-key arrangement (`Ctrl+T` for the compact todo
-    // strip, `Shift+T` for the overlay) that was unreachable in practice:
-    // `Shift+T` is spelled as a capital, so it was `is_normal_only`, and the
-    // app boots in Insert — the first press composed a literal `T`. Because
-    // `Ctrl+T` carries CONTROL it is never composable text, so the action
-    // needs no mode gate at all and the overlay is reachable from the mode
-    // the user is actually in. The sidebar stayed on Ctrl+B so both panels
-    // remain independently reachable.
+    // Ctrl+T opens the tasks overlay; empty groups are omitted.
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('t')),
         InputAction::ToggleTasksList,
@@ -1269,9 +1223,6 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
         ),
         InputAction::FocusSidebar,
     );
-    // The side-panel switcher no longer has a `Ctrl+Alt+W` binding here or
-    // in the Insert map: `Shift+S` is the single spelling, and it is
-    // already inserted into every map by `insert_panel_direction_bindings`.
     map.insert(
         (KeyModifiers::SHIFT, KeyCode::Char('G')),
         InputAction::GoToBottom,
@@ -1292,18 +1243,7 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
     map.insert((KeyModifiers::NONE, KeyCode::Char('q')), InputAction::Quit);
     map.insert((KeyModifiers::NONE, KeyCode::Char('?')), InputAction::Help);
 
-    // Ctrl+T opens the unified tasks overlay: todos, then in-flight
-    // subagents, then jobs the session is waiting on. One chord, three
-    // groups, and a group with no rows is omitted rather than drawn empty.
-    //
-    // This replaced a two-key arrangement (`Ctrl+T` for the compact todo
-    // strip, `Shift+T` for the overlay) that was unreachable in practice:
-    // `Shift+T` is spelled as a capital, so it was `is_normal_only`, and the
-    // app boots in Insert — the first press composed a literal `T`. Because
-    // `Ctrl+T` carries CONTROL it is never composable text, so the action
-    // needs no mode gate at all and the overlay is reachable from the mode
-    // the user is actually in. The sidebar stayed on Ctrl+B so both panels
-    // remain independently reachable.
+    // Ctrl+T opens the tasks overlay in Vim mode too.
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('t')),
         InputAction::ToggleTasksList,

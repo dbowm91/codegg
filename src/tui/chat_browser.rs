@@ -1,37 +1,14 @@
-//! One chat browser, two surfaces.
+//! Shared chat-browser behavior for the dialog and side panel.
 //!
-//! `/chat` ([`ChatDialog`](crate::tui::components::dialogs::chat::ChatDialog))
-//! and the chat side panel
-//! ([`ChatPanel`](crate::tui::panels::chat::ChatPanel)) were written as
-//! peers with the same keymap copied between them. They then drifted in ways
-//! only a user could report: the panel could not reply or edit, and the
-//! panel opened scrolled to the oldest message so a populated channel looked
-//! empty. A fix applied to one surface and not the other is a fix that comes
-//! back.
-//!
-//! This module is that one implementation. It owns everything the two
-//! surfaces previously duplicated:
-//!
-//! * the message cursor, the channel highlight, and the armed-redact slot;
-//! * the Normal-mode keymap and what each key *means*;
-//! * message row rendering, including the selection contrast;
-//! * the viewport anchor, including the tail-follow rule;
-//! * the contextual key hints.
-//!
-//! What it deliberately does **not** own is text entry. The bottom composer is
-//! the single input surface for every destination, so a key that needs typing
-//! resolves to [`ChatKeyAction::Compose`] and the *host* materializes the
-//! editor — the dialog uses its own bounded composer, the panel arms the
-//! shared one. That is the whole difference between the two surfaces, and it
-//! is a difference of where the caret lives, not of what the keys do.
+//! Owns the cursor, channel highlight, redact selection, keymap, row rendering,
+//! viewport anchor, and key hints. Both surfaces route text entry through the
+//! host-owned composer; only caret ownership differs.
 //!
 //! ## Authority
 //!
-//! The browser owns view state only. It never mutates a message: every
-//! mutation resolves to a [`TuiMsg`] that `App::process_msg` routes into the
-//! existing `commands/chat.rs` `start_chat_*` seams, so daemon round-trips,
-//! authorization, idempotency keys, and the request-id / reconnect-epoch stale
-//! guards stay where they already are.
+//! Browser state is view-only. Mutations become [`TuiMsg`]s routed by
+//! `App::process_msg` through the chat command seams, preserving daemon
+//! authorization, idempotency, and stale-response guards.
 
 use std::collections::VecDeque;
 use std::sync::Arc;

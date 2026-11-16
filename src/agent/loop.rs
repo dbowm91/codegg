@@ -1949,10 +1949,7 @@ impl AgentLoop {
             self.capture_accepted_tool_calls(&tool_calls).await;
 
             if tool_calls.is_empty() {
-                // NOTE: Narration-based recovery (detecting "let me", "I'll", etc.
-                // without structured tool calls) was removed in ea4136ff because
-                // modern models produce structured tool calls reliably. The
-                // recovery system now relies on tool execution outcomes only.
+                // Recovery for an empty tool-call response relies on execution outcomes, not narration.
                 if just_executed_tools
                     && is_soft_stop_reason(processor.stop_reason())
                     && autonomy.continuation_allowed()

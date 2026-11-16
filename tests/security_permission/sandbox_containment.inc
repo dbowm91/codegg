@@ -157,7 +157,12 @@ fn launch_helper_impl(helper: PathBuf, spec: &Path, overrides: &[(&str, &str)]) 
         stdout,
         stderr,
         status: exit_status,
-    } = command.output().expect("sandbox helper process");
+    } = command.output().unwrap_or_else(|error| {
+        panic!(
+            "sandbox helper process at {}: {error}",
+            command.get_program().to_string_lossy()
+        )
+    });
     // Drop the parent's copy of the write end so the reader sees EOF. This
     // is what lets an `Enforced`-then-EOF stream decode as a clean success.
     drop(writer);
@@ -224,7 +229,12 @@ fn launch_helper_with_inherited_fd(
         stdout,
         stderr,
         status: exit_status,
-    } = command.output().expect("sandbox helper process");
+    } = command.output().unwrap_or_else(|error| {
+        panic!(
+            "sandbox helper process at {}: {error}",
+            command.get_program().to_string_lossy()
+        )
+    });
     drop(writer);
     let mut status = Vec::new();
     std::fs::File::from(reader)

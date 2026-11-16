@@ -1391,9 +1391,7 @@ impl CommandOutputProjector for TruncatedProjector {
 
         if let Some(handle) = run.stderr_handle() {
             input_bytes += run.stderr.retained_bytes;
-            // Always show stderr in full — the budget split already
-            // gives stderr at least half the room and stderr is
-            // typically smaller than stdout for failing commands.
+            // Budget stderr too; truncated bytes remain available through the expansion handle.
             match store.get_stream(handle) {
                 Some(bytes) => {
                     let label = format!("\n--- stderr ({} bytes) ---\n", bytes.len());

@@ -511,14 +511,9 @@ impl CoreDaemon {
                         }
                     }
                 }
-                // The selected connection's `secret_binding` is this turn's
-                // credential locator: the exact store account the connection
-                // is bound to. A turn bound to a connection must authenticate
-                // with that account, not with whichever record for the same
-                // provider happens to sit first in `credentials.json` — that
-                // file-order pick silently undid every rotation. A session
-                // with no durable selection passes `None`, leaving provider
-                // resolution to the (ambiguity-checked) store fallback.
+                // When present, a selected connection's `secret_binding` pins the turn's account.
+                // Unbound sessions use the ambiguity-checked locator when available;
+                // see `architecture/provider.md`, "Turn Credential Authority".
                 let credential_locator = match (
                     selected_connection.as_ref(),
                     self.selection_service.as_ref(),
@@ -570,20 +565,10 @@ impl CoreDaemon {
                     }
                     _ => None,
                 };
-                // Validate the provider exists before delegating to the turn
-                // runtime. This preserves the existing `provider_not_found`
-                // response shape from the daemon layer. The turn runtime
-                // also validates provider existence internally, so this is
-                // intentionally duplicated for backward-compatible error handling.
+                // Preserve the daemon's `provider_not_found` response shape.
                 let mut registry = crate::provider::ProviderRegistry::new();
-                // This pre-check must resolve providers with the *same*
-                // authority the turn runtime uses. Built without connection
-                // authority it falls through to the credential-store
-                // fallback, which refuses any provider a rotation has left an
-                // orphan record for — so `registry.get` came back empty and
-                // this returned `provider_not_found` for a provider the daemon
-                // was perfectly able to serve, aborting the turn before the
-                // runtime ever ran.
+                // Match the turn runtime's credential authority; see
+                // `architecture/provider.md`, "Turn Credential Authority".
                 let locators = match self.pool.clone() {
                     Some(pool) => {
                         crate::core::session_selection::pool_connection_credential_locators(&pool)

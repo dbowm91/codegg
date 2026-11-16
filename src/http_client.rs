@@ -135,12 +135,7 @@ mod tests {
 
     #[test]
     fn read_http_request_tolerates_transient_wouldblock() {
-        // C001 regression: prove the hardened reader survives the transient
-        // not-ready condition that panicked the old
-        // `stream.read(...).expect("read HTTP request")` helper (M001
-        // closure). Coordination (not chance): the client withholds bytes
-        // until the server has proven `WouldBlock` on the accepted
-        // nonblocking stream, so the old helper would panic here.
+        // C001: Hold the client write until the nonblocking read observes WouldBlock.
         use std::sync::mpsc::channel;
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind WouldBlock fixture");
         let address = listener.local_addr().expect("fixture address");
