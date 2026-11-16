@@ -247,14 +247,16 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             run_dir = workspace / "job-check" / ".codegg" / "test-runs" / "run-1"
             run_dir.mkdir(parents=True)
             stdout_path = run_dir / "stdout.log"
-            stdout_path.write_text(json.dumps({
-                "reason": "compiler-message",
-                "message": {
-                    "level": "error",
-                    "code": {"code": "E0425"},
-                    "message": "cannot find value PRIVATE_EXECUTOR_TEXT in this scope",
-                },
-            }) + "\n", encoding="utf-8")
+            stdout_path.write_text(
+                json.dumps({
+                    "reason": "compiler-message",
+                    "message": {
+                        "level": "error",
+                        "code": {"code": "E0425"},
+                        "message": "cannot find value PRIVATE_EXECUTOR_TEXT in this scope",
+                    },
+                }) + "\n" + ("padding\n" * 3000) + "error: could not compile\n",
+                encoding="utf-8")
             stderr_path = run_dir / "stderr.log"
             stderr_path.write_text(
                 "error: permission denied; PRIVATE_EXECUTOR_TEXT\n", encoding="utf-8")
@@ -262,6 +264,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
                 "status": "Failed",
                 "exit_code": 101,
                 "duration_ms": 17,
+                "output_truncated": True,
                 "failures": [{
                     "failure_class": "NonzeroExit",
                     "message": "PRIVATE_EXECUTOR_TEXT",
@@ -278,11 +281,12 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "status": "failed",
             "exit_code": 101,
             "duration_ms": 17,
+            "output_truncated": True,
             "failure_classes": ["nonzero_exit"],
-            "stdout_category": "unclassified",
+            "stdout_category": "compilation_failure",
             "stderr_category": "filesystem_permission",
             "compiler_error_codes": ["E0425"],
-            "compiler_error_families": ["unresolved_name"],
+            "compiler_error_families": ["unresolved_name", "cargo_compile_summary"],
             "cargo_json_compiler_messages": 1,
             "cargo_json_error_messages": 1,
             "cargo_json_build_finished_events": 0,
