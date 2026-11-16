@@ -3168,12 +3168,8 @@ mod tests {
         );
         request.sandbox = SandboxRequest::Required(spec);
 
-        let helper = std::env::current_exe()
-            .expect("test executable")
-            .parent()
-            .and_then(Path::parent)
-            .expect("target debug directory")
-            .join(crate::install::sandbox_helper_name());
+        let helper = crate::security::sandbox::sandbox_helper_path()
+            .expect("the built sandbox helper must resolve as production resolves it");
         let error = run_inner(request, None, Some(&helper))
             .await
             .expect_err("replacement must fail before target launch");
@@ -3225,12 +3221,8 @@ mod tests {
             ProcessProvenance::new("c009-race", "ancestor-replacement"),
         );
         request.sandbox = SandboxRequest::Required(spec);
-        let helper = std::env::current_exe()
-            .expect("test executable")
-            .parent()
-            .and_then(Path::parent)
-            .expect("target debug directory")
-            .join(crate::install::sandbox_helper_name());
+        let helper = crate::security::sandbox::sandbox_helper_path()
+            .expect("the built sandbox helper must resolve as production resolves it");
         let error = run_inner(request, None, Some(&helper))
             .await
             .expect_err("ancestor replacement must fail before target launch");
@@ -3358,12 +3350,8 @@ mod tests {
                 ProcessProvenance::new("c009-race", format!("{replacement}-replacement")),
             );
             request.sandbox = SandboxRequest::Required(spec);
-            let helper = std::env::current_exe()
-                .expect("test executable")
-                .parent()
-                .and_then(Path::parent)
-                .expect("target debug directory")
-                .join(crate::install::sandbox_helper_name());
+            let helper = crate::security::sandbox::sandbox_helper_path()
+                .expect("the built sandbox helper must resolve as production resolves it");
             let error = run_inner(request, None, Some(&helper))
                 .await
                 .expect_err("Git metadata replacement must fail before target launch");
@@ -3473,12 +3461,8 @@ mod tests {
             ProcessProvenance::default(),
         );
         request.sandbox = SandboxRequest::Required(spec);
-        let helper = std::env::current_exe()
-            .expect("test executable")
-            .parent()
-            .and_then(|path| path.parent())
-            .expect("target debug directory")
-            .join("codegg-sandbox-helper");
+        let helper = crate::security::sandbox::sandbox_helper_path()
+            .expect("the built sandbox helper must resolve as production resolves it");
         let permissions = std::fs::metadata(workspace.path())
             .expect("workspace metadata")
             .permissions();
@@ -4103,12 +4087,11 @@ mod tests {
         request.timeout = Some(Duration::from_secs(15));
         request.sandbox = SandboxRequest::Required(spec.clone());
 
-        let test_exe = std::env::current_exe().expect("unit test executable");
-        let helper = test_exe
-            .parent()
-            .and_then(Path::parent)
-            .expect("Cargo target directory")
-            .join(crate::install::sandbox_helper_name());
+        // The precondition must be the one production applies. Re-deriving it
+        // from `current_exe()` assumes the test binary sits in the profile
+        // directory, which is not guaranteed for a test harness.
+        let helper = crate::security::sandbox::sandbox_helper_path()
+            .expect("the built sandbox helper must resolve as production resolves it");
         assert!(
             helper.is_file(),
             "built sandbox helper missing: {}",
@@ -4411,12 +4394,8 @@ mod tests {
             ProcessProvenance::default(),
         );
         request.sandbox = SandboxRequest::Required(spec);
-        let helper = std::env::current_exe()
-            .expect("test executable")
-            .parent()
-            .and_then(|path| path.parent())
-            .expect("target debug directory")
-            .join("codegg-sandbox-helper");
+        let helper = crate::security::sandbox::sandbox_helper_path()
+            .expect("the built sandbox helper must resolve as production resolves it");
 
         let result = run_inner(request, None, Some(&helper))
             .await
@@ -4473,12 +4452,8 @@ mod tests {
             ProcessProvenance::default(),
         );
         request.sandbox = SandboxRequest::Required(spec);
-        let helper = std::env::current_exe()
-            .expect("test executable")
-            .parent()
-            .and_then(|path| path.parent())
-            .expect("target debug directory")
-            .join("codegg-sandbox-helper");
+        let helper = crate::security::sandbox::sandbox_helper_path()
+            .expect("the built sandbox helper must resolve as production resolves it");
 
         let result = run_inner(request, None, Some(&helper))
             .await
