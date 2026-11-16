@@ -391,7 +391,9 @@ class H006FailureDiagnosticTest(unittest.TestCase):
         })
         filesystem_diagnostic = _h006_compiler_diagnostics(filesystem_event)
         self.assertEqual(
-            filesystem_diagnostic["cargo_json_error_message_kinds"], ["filesystem_access"])
+            filesystem_diagnostic["cargo_json_error_message_kinds"],
+            ["filesystem_permission_denied", "filesystem_write_failure"],
+        )
         self.assertEqual(filesystem_diagnostic["cargo_json_error_origins"], ["core:lib"])
         self.assertNotIn("PRIVATE_EXECUTOR_PATH", json.dumps(filesystem_diagnostic))
 
