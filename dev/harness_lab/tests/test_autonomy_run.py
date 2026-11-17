@@ -1218,15 +1218,18 @@ class RunCaseRefusalTests(unittest.TestCase):
             )
             suite = autonomy.load_autonomy_suite(
                 REPO_ROOT / "dev/harness_lab/fixtures/agent_autonomy_h005")
-            with mock.patch("dev.harness_lab.autonomy_run.subprocess.run",
-                            return_value=report):
-                with self.assertRaisesRegex(HarnessError, "Sandbox helper.*MISSING"):
-                    autonomy_run.run_case(
-                        binary, suite.case("sustained-event-ledger"),
-                        "opencode_go/muse-spark-1.3-contributor",
-                        budget_policy=policy, guard=guard, lane_root=lane,
-                        repository=REPO_ROOT, timeout=3540,
-                        min_free_disk_bytes=10 * 1024**3)
+            with mock.patch(
+                    "dev.harness_lab.autonomy_run.shutil.disk_usage",
+                    return_value=mock.Mock(free=20 * 1024**3)):
+                with mock.patch("dev.harness_lab.autonomy_run.subprocess.run",
+                                return_value=report):
+                    with self.assertRaisesRegex(HarnessError, "Sandbox helper.*MISSING"):
+                        autonomy_run.run_case(
+                            binary, suite.case("sustained-event-ledger"),
+                            "opencode_go/muse-spark-1.3-contributor",
+                            budget_policy=policy, guard=guard, lane_root=lane,
+                            repository=REPO_ROOT, timeout=3540,
+                            min_free_disk_bytes=10 * 1024**3)
             self.assertEqual(guard.provider_requests, 0)
 
     def test_helper_failure_watcher_correlates_production_shaped_acp_events(self) -> None:
