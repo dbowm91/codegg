@@ -659,10 +659,39 @@ async fn a_delegated_run_records_the_tool_result_its_child_executed() {
 #[tokio::test]
 async fn a_delegated_run_records_a_bounded_tool_result_with_truncation_marked() {
     let pool = crate::common::pool::isolated_pool().await;
-    let oversized = "t".repeat(MAX_TRANSCRIPT_ROW_BYTES * 3);
+    // `read` now caps inline output below the loop retention / transcript
+    // row bounds (INLINE_BYTE_BUDGET). Use `grep` against a many-line file
+    // so the tool can still emit more than those bounds and this test keeps
+    // covering the layered truncation markers it owns.
+    let oversized = "match-line\n".repeat(MAX_TRANSCRIPT_ROW_BYTES);
     let workspace = ChildWorkspace::new("big.txt", &oversized);
     let mut registry = ProviderRegistry::new();
-    registry.register(reading_provider("big.txt"));
+    registry.register(ScriptedProvider::new(
+        "test",
+        vec![
+            vec![
+                ChatEvent::ToolCall(codegg::provider::ToolCall {
+                    id: "call-1".to_string().into(),
+                    name: "grep".to_string().into(),
+                    arguments: serde_json::json!({
+                        "pattern": "match-line",
+                        "path": "big.txt"
+                    }),
+                }),
+                ChatEvent::Finish {
+                    stop_reason: "tool_calls".to_string().into(),
+                    usage: TokenUsage::default(),
+                },
+            ],
+            vec![
+                ChatEvent::TextDelta("the child's final answer".to_string().into()),
+                ChatEvent::Finish {
+                    stop_reason: "stop".to_string().into(),
+                    usage: TokenUsage::default(),
+                },
+            ],
+        ],
+    ));
     let subagent_pool = durable_pool(
         pool.clone(),
         create_test_agent("transcript-agent", "test/model"),
@@ -673,7 +702,7 @@ async fn a_delegated_run_records_a_bounded_tool_result_with_truncation_marked() 
     let run_id = create_durable_run(&pool).await;
     run_delegated(
         &subagent_pool,
-        request_in(run_id.clone(), "read the big file", &workspace),
+        request_in(run_id.clone(), "grep the big file", &workspace),
     )
     .await;
 
