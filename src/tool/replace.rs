@@ -18,6 +18,31 @@ const MAX_FILE_SIZE: usize = 10 * 1024 * 1024;
 const MAX_PATTERN_SIZE: usize = 4096;
 const MAX_PATTERN_GROUPS: usize = 32;
 
+/// Compile the find and substitution regexes for one user pattern.
+///
+/// The find regex wraps the user pattern in a synthetic `(?P<whole>...)`
+/// group so `find_iter`/`count` observe exactly what executes; the
+/// substitution regex is the bare user pattern so numeric `$n` refs name the
+/// user's own groups. A wrapped substitution shifts every numeric index by
+/// one (`$1` becomes the whole match), which the single-group tests could
+/// not catch because the whole and the group coincide there.
+fn compile_replace_patterns(
+    pattern: &str,
+    case_sensitive: bool,
+) -> Result<(Regex, Regex), regex::Error> {
+    let (find_source, sub_source) = if case_sensitive {
+        (format!("(?P<whole>{pattern})"), pattern.to_string())
+    } else {
+        (
+            format!("(?i)(?P<whole>{pattern})"),
+            format!("(?i){pattern}"),
+        )
+    };
+    let re_find = Regex::new(&find_source)?;
+    let re_sub = Regex::new(&sub_source)?;
+    Ok((re_find, re_sub))
+}
+
 pub struct ReplaceTool {
     allowed_root: PathBuf,
     unrestricted: bool,
@@ -256,24 +281,23 @@ impl ReplaceTool {
                 ))));
             }
 
-            // Compile once with the `whole` wrapper and validate group count
-            // against what actually executes (previously the bare pattern was
-            // compiled separately, paying 2x compile cost and validating a
-            // different pattern than the one executed).
-            let regex_pattern = if case_sensitive {
-                format!("(?P<whole>{})", pattern_clone)
-            } else {
-                format!("(?i)(?P<whole>{})", pattern_clone)
-            };
-
-            let re = Regex::new(&regex_pattern).map_err(|e| {
-                no_effect(ToolError::Execution(format!(
-                    "invalid regex pattern: {}",
-                    e
-                )))
-            })?;
+            // Find/count through the `whole`-wrapped regex; substitute
+            // through the bare pattern so numeric `$n` refs name the user's
+            // own groups. Substituting with the wrapped regex shifts every
+            // numeric index by one (`$1` becomes the whole match).
+            let (re_find, re_sub) =
+                compile_replace_patterns(&pattern_clone, case_sensitive).map_err(|e| {
+                    no_effect(ToolError::Execution(format!(
+                        "invalid regex pattern: {}",
+                        e
+                    )))
+                })?;
             // Subtract the synthetic `whole` wrapper group.
-            let group_count = re.capture_names().flatten().count().saturating_sub(1);
+            let group_count = re_find
+                .capture_names()
+                .flatten()
+                .count()
+                .saturating_sub(1);
             if group_count > MAX_PATTERN_GROUPS {
                 return Err(no_effect(ToolError::Execution(format!(
                     "too many capture groups (max {})",
@@ -308,7 +332,7 @@ impl ReplaceTool {
                 )));
             }
 
-            let matches: Vec<_> = re.find_iter(&content).collect();
+            let matches: Vec<_> = re_find.find_iter(&content).collect();
             if matches.is_empty() {
                 let line_count = content.lines().count();
                 let byte_count = content.len();
@@ -318,12 +342,15 @@ impl ReplaceTool {
             }
 
             // `global:false` replaces the first occurrence only (F9); the
-            // default replaces all occurrences.
+            // default replaces all occurrences. Substitution runs on the
+            // bare pattern so `$1`/`$2` name user groups, not the wrapper.
             let new_content = if global {
-                re.replace_all(&content, replacement_clone.as_str())
+                re_sub
+                    .replace_all(&content, replacement_clone.as_str())
                     .to_string()
             } else {
-                re.replacen(&content, 1, replacement_clone.as_str())
+                re_sub
+                    .replacen(&content, 1, replacement_clone.as_str())
                     .to_string()
             };
 
@@ -526,6 +553,46 @@ mod tests {
         assert_eq!(
             re.replacen(content, 1, "goodbye"),
             "goodbye world hello world"
+        );
+    }
+
+    #[test]
+    fn two_group_numeric_refs_name_user_groups() {
+        // A1 repro: `AAA-BBB` with pattern `(AAA)-(BBB)` and replacement
+        // `[$1][$2]` must yield `[AAA][BBB]`. Substituting with the wrapped
+        // find regex shifts every index by one (`[$1][$2]` becomes
+        // `[AAA-BBB][AAA]`), so substitution must run on the bare pattern.
+        let (re_find, re_sub) = compile_replace_patterns("(AAA)-(BBB)", true).unwrap();
+        assert_eq!(re_find.find_iter("AAA-BBB").count(), 1);
+        assert_eq!(re_sub.replace_all("AAA-BBB", "[$1][$2]"), "[AAA][BBB]");
+    }
+
+    #[test]
+    fn two_group_numeric_refs_name_user_groups_case_insensitive() {
+        let (re_find, re_sub) = compile_replace_patterns("(aaa)-(bbb)", false).unwrap();
+        assert_eq!(re_find.find_iter("AAA-BBB").count(), 1);
+        assert_eq!(re_sub.replace_all("AAA-BBB", "[$1][$2]"), "[AAA][BBB]");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn two_group_replace_tool_writes_expected_bytes() {
+        use crate::tool::Tool as _;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("groups.txt");
+        std::fs::write(&path, "AAA-BBB").expect("seed file");
+        let tool = ReplaceTool::new().with_allowed_root(dir.path().to_path_buf());
+        let output = tool
+            .execute(serde_json::json!({
+                "path": path.to_string_lossy(),
+                "pattern": "(AAA)-(BBB)",
+                "replacement": "[$1][$2]",
+            }))
+            .await
+            .expect("replace executes");
+        assert!(output.contains("1 occurrence"), "got: {output}");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            "[AAA][BBB]"
         );
     }
 }

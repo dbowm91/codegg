@@ -1239,6 +1239,13 @@ pub fn classify_delegated_failure(
     error: &(dyn std::error::Error + 'static),
 ) -> Option<&'static str> {
     use codegg_core::error::{AppError, ToolError};
+    // The wall-clock timeout is a plain string error from the worker's own
+    // `tokio::time::timeout`, not an `AppError`, so it never reaches the
+    // taxonomy below. Name it here so the durable record carries
+    // `deadline_exceeded` instead of falling back to `"executor"`.
+    if error.to_string().contains("wall-clock timeout") {
+        return Some("deadline_exceeded");
+    }
     match error.downcast_ref::<AppError>()? {
         AppError::Provider(provider) => Some(match provider.error_class() {
             "auth" => "provider_authentication",
@@ -1252,6 +1259,34 @@ pub fn classify_delegated_failure(
         AppError::Tool(ToolError::Permission(_)) => Some("tool_permission_denied"),
         _ => None,
     }
+}
+
+/// The terminal text of a delegated run's provider events.
+///
+/// The boundary is the last tool interaction: everything after the final
+/// `ToolCall`/`ToolResult` is the terminal turn. Text before that boundary
+/// is pre-tool narration the transcript already records as its own context,
+/// so carrying it into the recorded result would append the stream onto the
+/// terminal message instead of replacing it. A run with no tool interaction
+/// has no boundary and keeps the whole stream.
+fn terminal_text(events: &[crate::provider::ChatEvent]) -> String {
+    let mut boundary: Option<usize> = None;
+    for (index, event) in events.iter().enumerate() {
+        if matches!(
+            event,
+            crate::provider::ChatEvent::ToolCall(_) | crate::provider::ChatEvent::ToolResult { .. }
+        ) {
+            boundary = Some(index);
+        }
+    }
+    let start = boundary.map(|index| index + 1).unwrap_or(0);
+    let mut output = String::new();
+    for event in &events[start..] {
+        if let crate::provider::ChatEvent::TextDelta(text) = event {
+            output.push_str(text);
+        }
+    }
+    output
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -2264,12 +2299,13 @@ async fn execute_agent_task(
     // never depends on an event stream the failed run did not produce.
     let events = events?;
 
-    let mut output = String::new();
-    for event in &events {
-        if let crate::provider::ChatEvent::TextDelta(text) = event {
-            output.push_str(text);
-        }
-    }
+    // A14: the recorded result is the terminal message, not the accumulated
+    // stream. Text before the last tool interaction is pre-tool narration
+    // (e.g. "I'll read the file..."), and appending it to the final answer
+    // repeats content the transcript already holds as its own rows. Only a
+    // run that never touched a tool has no boundary, and then the whole
+    // stream is the terminal message.
+    let mut output = terminal_text(&events);
 
     if output.is_empty() {
         output = format!(
@@ -2329,6 +2365,10 @@ fn extract_validation_evidence(
                 "failed" => codegg_core::run_result::ValidationStatus::Failed,
                 "cancelled" => codegg_core::run_result::ValidationStatus::Cancelled,
                 "timed_out" => codegg_core::run_result::ValidationStatus::TimedOut,
+                // A3: a vacuous run selected zero tests — not evidence of a
+                // pass and not a failure. Map to `Unknown` so it never reads
+                // green downstream.
+                "no_tests" => codegg_core::run_result::ValidationStatus::Unknown,
                 _ => codegg_core::run_result::ValidationStatus::Unknown,
             };
             validation.push(codegg_core::run_result::ValidationEvidence {
@@ -2579,6 +2619,30 @@ mod admission_tests {
         assert_eq!(artifacts[0].reference.as_deref(), Some("job:job-1"));
     }
 
+    /// A3: a `no_tests` marker is vacuous evidence — it maps to `Unknown`,
+    /// never `Passed`, so a zero-test run cannot read green downstream.
+    #[test]
+    fn no_tests_marker_maps_to_unknown_not_passed() {
+        let outcomes = crate::agent::r#loop::ExecutedToolOutcomes {
+            entries: vec![crate::agent::r#loop::ExecutedToolOutcome {
+                tool_call_id: "test-call".into(),
+                tool_name: "test".into(),
+                output: "no_tests: 0 tests selected (not a pass)\nCODEGG_VALIDATION_RESULT:{\"job_id\":\"job-9\",\"kind\":\"test\",\"status\":\"no_tests\",\"summary\":\"no_tests: 0 tests selected\"}"
+                    .into(),
+                success: true,
+                output_truncated: false,
+            }],
+            truncated: false,
+        };
+        let (validation, _) = extract_validation_evidence(&outcomes);
+        assert_eq!(validation.len(), 1);
+        assert_eq!(
+            validation[0].status,
+            codegg_core::run_result::ValidationStatus::Unknown,
+            "no_tests must not map to Passed"
+        );
+    }
+
     /// The delegated transcript capture reads the child's events; it never
     /// writes to them.
     ///
@@ -2723,6 +2787,52 @@ mod admission_tests {
         };
         agent.permissions.insert("git".into(), "allow".into());
         assert!(has_explicit_git_write(&agent));
+    }
+
+    /// A14: the recorded result is the terminal message, not the stream.
+    ///
+    /// Text before the last tool interaction is pre-tool narration the
+    /// transcript already holds; the terminal turn replaces it. A two-turn
+    /// run that calls a tool and then emits two paragraphs must record each
+    /// paragraph exactly once.
+    #[test]
+    fn terminal_text_replaces_pre_tool_narration() {
+        use crate::provider::{ChatEvent, ToolCall};
+        let events = vec![
+            ChatEvent::TextDelta("I'll read the file first.".to_string().into()),
+            ChatEvent::ToolCall(ToolCall {
+                id: "call-1".to_string().into(),
+                name: "read".to_string().into(),
+                arguments: serde_json::json!({ "path": "notes.txt" }),
+            }),
+            ChatEvent::ToolResult {
+                tool_call_id: "call-1".to_string().into(),
+                content: "contents".to_string().into(),
+            },
+            ChatEvent::TextDelta("First paragraph. ".to_string().into()),
+            ChatEvent::TextDelta("Second paragraph.".to_string().into()),
+        ];
+        assert_eq!(terminal_text(&events), "First paragraph. Second paragraph.");
+    }
+
+    #[test]
+    fn terminal_text_without_tools_keeps_the_whole_stream() {
+        use crate::provider::ChatEvent;
+        let events = vec![
+            ChatEvent::TextDelta("First paragraph. ".to_string().into()),
+            ChatEvent::TextDelta("Second paragraph.".to_string().into()),
+        ];
+        assert_eq!(terminal_text(&events), "First paragraph. Second paragraph.");
+    }
+
+    #[test]
+    fn wall_clock_timeout_classifies_as_deadline_exceeded() {
+        let error: Box<dyn std::error::Error + Send + Sync> =
+            "subagent wall-clock timeout exceeded".into();
+        assert_eq!(
+            classify_delegated_failure(error.as_ref()),
+            Some("deadline_exceeded")
+        );
     }
 
     /// `SessionStore` needs a pool; these assertions are about agent

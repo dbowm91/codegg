@@ -815,7 +815,7 @@ pub struct MeteredInterpreter {
     limits: RuntimeLimits,
     stack: Vec<ProgramValue>,
     locals: Vec<Option<ProgramValue>>,
-    pc: u32,
+    pub(crate) pc: u32,
     budget: BudgetSnapshot,
     /// Completed calls indexed by sequence number.
     completed_calls: HashMap<u32, CompletedCall>,
@@ -823,6 +823,10 @@ pub struct MeteredInterpreter {
     next_call_seq: u32,
     /// Whether the program has reached a terminal instruction.
     terminated: bool,
+    /// Whether `emit` has already produced the program's return value.
+    /// The first `emit` wins; a second `emit` is a typed runtime error
+    /// (`program already emitted`) instead of a silent discard.
+    emitted: bool,
     /// Checkpoints produced during execution.
     checkpoints: Vec<InterpreterCheckpoint>,
     /// Replay fingerprint for C-21 verification.
@@ -846,6 +850,7 @@ impl MeteredInterpreter {
             completed_calls: HashMap::new(),
             next_call_seq: 0,
             terminated: false,
+            emitted: false,
             checkpoints: Vec::new(),
             replay_fingerprint: None,
             pending_child_wait: None,
@@ -967,7 +972,7 @@ impl MeteredInterpreter {
 
     /// Execute a single instruction. Returns `Continue` to advance,
     /// `Yield` for emit, `Fail` for fail, or `Err` for runtime errors.
-    async fn execute_instruction(
+    pub(crate) async fn execute_instruction(
         &mut self,
         instruction: &IrInstruction,
         broker: &dyn BrokerCallback,
@@ -1650,7 +1655,13 @@ impl MeteredInterpreter {
 
             // ── Terminal ──
             IrOp::Emit => {
+                if self.emitted {
+                    return Err(InterpreterError::TypeError(
+                        "program already emitted".into(),
+                    ));
+                }
                 let value = self.pop()?;
+                self.emitted = true;
                 self.terminated = true;
                 return Ok(StepResult::Yield(value));
             }
@@ -1806,7 +1817,7 @@ impl MeteredInterpreter {
         }))
     }
 
-    fn push(&mut self, val: ProgramValue) -> Result<(), InterpreterError> {
+    pub(crate) fn push(&mut self, val: ProgramValue) -> Result<(), InterpreterError> {
         let new_bytes = val.byte_size();
         if self.budget.bytes + new_bytes > self.limits.max_value_growth {
             return Err(InterpreterError::BudgetExceeded(format!(
@@ -2655,7 +2666,7 @@ fn validate_json_schema(
 }
 
 /// Result of executing a single instruction.
-enum StepResult {
+pub(crate) enum StepResult {
     Continue,
     Yield(ProgramValue),
     Fail(String),
@@ -3667,5 +3678,64 @@ emit({k: v})
         assert_eq!(result.status, ProgramStatus::Completed);
         // Sequential call: max inflight should be 1
         assert_eq!(broker.max_inflight.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn duplicate_emit_is_rejected_not_silently_discarded() {
+        // `emit` is the program's return value (first call wins, the program
+        // ends); a second `emit` is a typed error, never a silent discard.
+        // Straight-line `emit x3` is unreachable after the first terminal,
+        // so compilation rejects it with `program already emitted`.
+        let err = compile_program("emit(\"first\")\nemit(\"second\")\nemit(\"third\")\n")
+            .expect_err("second emit must be rejected");
+        assert!(
+            err.to_string().contains("program already emitted"),
+            "unexpected error: {err}"
+        );
+        // A single trailing emit keeps the first-emit preview behavior.
+        let result = run_program("emit(\"first\")\n");
+        assert_eq!(result.status, ProgramStatus::Completed);
+        assert_eq!(result.output, Some(ProgramValue::String("first".into())));
+    }
+
+    #[tokio::test]
+    async fn second_emit_execution_is_a_typed_runtime_error() {
+        // Even if a second `Emit` instruction is reached at runtime (loops,
+        // replay), it errors with `program already emitted` instead of
+        // silently discarding the value.
+        let compilation = compile_program("emit(1)\n").unwrap();
+        let ir = compilation.ir.clone();
+        let emit_pc = ir
+            .instructions
+            .iter()
+            .position(|inst| matches!(inst.op, crate::tool_program::ir::IrOp::Emit))
+            .expect("emit instruction");
+        let limits = RuntimeLimits::from(&ir.bounds);
+        let mut interp = MeteredInterpreter::new(ir, limits);
+        let broker = NoopBroker;
+        let inst = compilation.ir.instructions[emit_pc].clone();
+        // First emit wins (push the operand the compiler would have left).
+        interp.push(ProgramValue::Int(1)).unwrap();
+        let first = interp
+            .execute_instruction(&inst, &broker, None, &RunConfig::default())
+            .await;
+        assert!(
+            matches!(first, Ok(StepResult::Yield(_))),
+            "first emit must yield"
+        );
+        // Second emit on the same interpreter errors.
+        interp.pc = emit_pc as u32;
+        interp.push(ProgramValue::Int(2)).unwrap();
+        let second = interp
+            .execute_instruction(&inst, &broker, None, &RunConfig::default())
+            .await;
+        let err = match second {
+            Ok(_) => panic!("second emit must error"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("program already emitted"),
+            "unexpected error: {err}"
+        );
     }
 }

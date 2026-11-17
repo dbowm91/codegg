@@ -88,6 +88,7 @@ fn ctx_for(session: &str, turn: Option<&str>, invocation: &str) -> ToolExecution
         parent_job_id: None,
         parent_attempt_id: None,
         provider_name: None,
+        session_model: None,
         backend_policy: None,
         cancellation: None,
         deadline: None,

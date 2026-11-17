@@ -289,6 +289,46 @@ fn page_hint(remaining: usize, next_offset: usize) -> String {
     format!("{remaining} more match; call with offset={next_offset}")
 }
 
+/// F5: independent relevance threshold for `tool_search::execute`.
+/// Mirrors `catalog::keyword_score`: single-term queries pass on any match;
+/// multi-term queries need >=2 matched terms, an exact-phrase hit, or a
+/// strong hit (score >= 8). `foobar_nonexistent_tool_xyz` (4 terms, one
+/// generic `tool` hit, even a name hit scoring 4) fails and falls to
+/// `no_results`.
+fn meets_search_threshold(
+    _query: &str,
+    terms: &[String],
+    candidates: &[crate::tool::catalog::ToolMetadata],
+) -> bool {
+    if terms.len() <= 1 {
+        return true;
+    }
+    let phrase = terms.join(" ");
+    for tool in candidates {
+        let name_terms = crate::tool::catalog::tokenize(&tool.name);
+        let desc_terms = crate::tool::catalog::tokenize(&tool.description);
+        if tool.name.to_lowercase().contains(&phrase)
+            || tool.description.to_lowercase().contains(&phrase)
+        {
+            return true;
+        }
+        let mut matched = 0;
+        let mut score = 0;
+        for term in terms {
+            let name_match = name_terms.iter().any(|c| c == term || c.starts_with(term));
+            let desc_match = desc_terms.iter().any(|c| c == term || c.starts_with(term));
+            if name_match || desc_match {
+                matched += 1;
+                score += if name_match { 4 } else { 1 };
+            }
+        }
+        if matched >= 2 || score >= 8 {
+            return true;
+        }
+    }
+    false
+}
+
 #[async_trait]
 impl Tool for ToolSearchTool {
     fn name(&self) -> &str {
@@ -399,7 +439,23 @@ impl Tool for ToolSearchTool {
             .filter(|metadata| self.policy_allows(metadata))
             .collect();
 
-        if filtered.is_empty() && self.advisor_mode != AdvisorMode::Promote {
+        // F5: independent relevance gate — even if the catalog returned hits,
+        // a multi-term query with no tool matching >=2 terms (and no exact
+        // phrase) is nonsense like `foobar_nonexistent_tool_xyz` and must
+        // fall to `no_results` instead of 10 low-relevance hits.
+        let thresholded: Vec<crate::tool::catalog::ToolMetadata> =
+            if exact_name.is_none() && !query.trim().is_empty() && !filtered.is_empty() {
+                let terms = crate::tool::catalog::tokenize(query);
+                if terms.len() > 1 && !meets_search_threshold(query, &terms, &filtered) {
+                    Vec::new()
+                } else {
+                    filtered
+                }
+            } else {
+                filtered
+            };
+
+        if thresholded.is_empty() && self.advisor_mode != AdvisorMode::Promote {
             // R20: math/calc/units queries without a registered math tool
             // still get an actionable fallback instead of a bare no_results.
             let lower = query.to_lowercase();
@@ -411,17 +467,25 @@ impl Tool for ToolSearchTool {
                  for arithmetic, or discover the deferred math_eval / unit_convert tools via query='math' \
                  (e.g. tool_search {\"query\": \"math eval units\"}). Example: python_script analyze 'print((100/7))'."
             } else {
-                "Try a shorter task phrase, or query='' with offset/limit to browse authorized tools."
+                "Try a shorter task phrase, or query='' with offset/limit to browse authorized tools. Curated bundles: file ops read/write/edit/apply_patch; validation validate_json/validate_toml/config_preflight; search websearch/repo_search; shell bash/test/python_script."
             };
             return Ok(json!({
                 "status": "no_results",
                 "query": query,
                 "name": exact_name,
                 "suggestion": suggestion,
+                // F5: bundle hints so nonsense queries still teach discovery.
+                "bundles": [
+                    "file ops: read/write/edit/apply_patch",
+                    "validation: validate_json/validate_toml/config_preflight",
+                    "search: websearch/repo_search",
+                    "shell: bash/test/python_script"
+                ],
                 "tools": []
             })
             .to_string());
         }
+        let filtered = thresholded;
 
         if exact_name.is_none() && query.trim().is_empty() {
             let total_matches = filtered.len();
@@ -967,5 +1031,35 @@ mod tests {
         let suggestion = value["suggestion"].as_str().unwrap_or_default();
         assert!(suggestion.contains("python_script"));
         assert!(suggestion.contains("math_eval"));
+    }
+
+    #[tokio::test]
+    async fn nonsense_query_returns_no_results_with_bundle_hints() {
+        // F5: `foobar_nonexistent_tool_xyz` must threshold to no_results
+        // with suggestion + bundle hints, capped at MAX 10.
+        let search = test_search();
+        let out = search
+            .execute(json!({"query": "foobar_nonexistent_tool_xyz"}))
+            .await
+            .expect("nonsense search");
+        let value: serde_json::Value = serde_json::from_str(&out).expect("json");
+        assert_eq!(
+            value["status"], "no_results",
+            "nonsense query must return no_results, got: {value}"
+        );
+        let suggestion = value["suggestion"].as_str().unwrap_or_default();
+        assert!(
+            !suggestion.is_empty(),
+            "no_results must carry a suggestion, got: {value}"
+        );
+        let bundles = value["bundles"].as_array().expect("bundles present");
+        assert!(
+            !bundles.is_empty(),
+            "no_results must carry bundle hints, got: {value}"
+        );
+        assert!(
+            value["tools"].as_array().unwrap().is_empty(),
+            "no_results must carry no tools"
+        );
     }
 }

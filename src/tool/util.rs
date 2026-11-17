@@ -331,6 +331,97 @@ pub(crate) fn is_macos_system_alias(path: &Path) -> bool {
 
 /// Read a whole-valued JSON number as `usize`.
 ///
+/// A3: allowlist sanitizer for third-party bytes entering the transcript.
+/// Permit CSI SGR (`ESC[0-9;…m`) only — the sequences CodeGG itself emits.
+/// Drop every other ESC/OSC/DCS sequence (clear-screen `ESC[2J`, clipboard
+/// `ESC]52;…BEL`, hyperlink `OSC 8`, …) and neutralise NUL/C0 except
+/// `\n`/`\t`. Lone `ESC` is dropped. Reuse instead of a third impl.
+///
+/// A11: NUL is escaped as the literal `\x00` (not lossy U+FFFD) and reported
+/// via [`sanitize_tool_output_with_presence`]'s `binary_present` flag, so a
+/// binary payload stays distinguishable from text with replacements.
+pub fn sanitize_tool_output(text: &str) -> String {
+    sanitize_tool_output_with_presence(text).0
+}
+
+/// Sanitizer plus a binary-presence flag.
+///
+/// Returns `(cleaned, binary_present)` where `binary_present` is true when a
+/// NUL byte was seen. NUL escapes as `\x00`; other C0 bytes (except `\n`,
+/// `\t`) still neutralise to U+FFFD.
+pub fn sanitize_tool_output_with_presence(text: &str) -> (String, bool) {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut binary_present = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == 0x1b {
+            // ESC — peek CSI / OSC / simple.
+            if i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+                // CSI: ESC [ params… final(0x40-0x7E). Only SGR (final `m`) passes.
+                let mut j = i + 2;
+                while j < bytes.len() && !(0x40..=0x7E).contains(&bytes[j]) {
+                    j += 1;
+                }
+                if j < bytes.len() && bytes[j] == b'm' {
+                    // SGR — copy through.
+                    if let Ok(seq) = std::str::from_utf8(&bytes[i..=j]) {
+                        out.push_str(seq);
+                    }
+                }
+                i = if j < bytes.len() { j + 1 } else { bytes.len() };
+                continue;
+            }
+            if i + 1 < bytes.len() && bytes[i + 1] == b']' {
+                // OSC: ESC ] … (BEL or ST). Drop entirely.
+                let mut j = i + 2;
+                while j < bytes.len() {
+                    if bytes[j] == 0x07 {
+                        j += 1;
+                        break;
+                    }
+                    if bytes[j] == 0x1b && j + 1 < bytes.len() && bytes[j + 1] == b'\\' {
+                        j += 2;
+                        break;
+                    }
+                    j += 1;
+                }
+                i = j;
+                continue;
+            }
+            // Any other ESC: drop the byte.
+            i += 1;
+            continue;
+        }
+        if b == 0x07 {
+            // BEL alone: drop (OSC terminator already consumed above).
+            i += 1;
+            continue;
+        }
+        if b < 0x20 && b != b'\n' && b != b'\t' {
+            // A11: NUL escapes as `\x00` with `binary_present:true`; other
+            // C0 neutralise to U+FFFD so binary stays distinguishable.
+            if b == 0x00 {
+                binary_present = true;
+                out.push_str("\\x00");
+            } else {
+                out.push('�');
+            }
+            i += 1;
+            continue;
+        }
+        // Normal char — copy one UTF-8 scalar.
+        if let Some(ch) = text[i..].chars().next() {
+            out.push(ch);
+            i += ch.len_utf8();
+        } else {
+            i += 1;
+        }
+    }
+    (out, binary_present)
+}
+
 /// Tool schemas declared integer parameters as `"type": "number"`, and a
 /// model that follows one literally sends `500.0` for a count. `as_u64()`
 /// rejects that, and a derived `usize` field rejects it harder — the call
@@ -338,15 +429,29 @@ pub(crate) fn is_macos_system_alias(path: &Path) -> bool {
 /// caller meant. A fractional number is still rejected: rounding a real
 /// `1.5` would hide a caller bug rather than absorb a formatting quirk.
 pub fn json_usize(value: &serde_json::Value) -> Option<usize> {
+    json_u64(value).and_then(|v| usize::try_from(v).ok())
+}
+
+/// Whole-valued JSON number as `u64`.
+///
+/// Same tolerance as [`json_usize`]: an integer-valued float like `1.0`
+/// carries exactly the integer the caller meant (schemas declare `"type":
+/// "number"`), while `1.5`, negatives, `NaN`, and non-numbers are rejected.
+pub fn json_u64(value: &serde_json::Value) -> Option<u64> {
     let number = value.as_number()?;
     if let Some(exact) = number.as_u64() {
-        return usize::try_from(exact).ok();
+        return Some(exact);
     }
     let float = number.as_f64()?;
     if !float.is_finite() || float < 0.0 || float.fract() != 0.0 {
         return None;
     }
-    usize::try_from(float as u64).ok()
+    // `as_u64` already failed, so this is a whole-valued float outside the
+    // `u64` integer encoding (e.g. `1.0`); range-check through the float.
+    if float > u64::MAX as f64 {
+        return None;
+    }
+    Some(float as u64)
 }
 
 fn whole_number_error(value: &serde_json::Value) -> String {
@@ -406,6 +511,17 @@ mod tests {
         assert_eq!(json_usize(&serde_json::json!(500.0)), Some(500));
         assert_eq!(json_usize(&serde_json::json!(0.0)), Some(0));
         assert_eq!(json_usize(&serde_json::json!(12)), Some(12));
+        assert_eq!(json_u64(&serde_json::json!(1.0)), Some(1));
+        assert_eq!(json_u64(&serde_json::json!(32.0)), Some(32));
+    }
+
+    #[test]
+    fn whole_float_u64_rejects_fractional_negative_and_nan() {
+        assert_eq!(json_u64(&serde_json::json!(1.5)), None);
+        assert_eq!(json_u64(&serde_json::json!(-1.0)), None);
+        assert_eq!(json_u64(&serde_json::json!(f64::NAN)), None);
+        assert_eq!(json_u64(&serde_json::json!("1")), None);
+        assert_eq!(json_u64(&serde_json::Value::Null), None);
     }
 
     #[test]
@@ -571,6 +687,47 @@ mod tests {
         assert!(
             error.to_string().contains("workdir '"),
             "the message must name a workdir, not a path: {error}"
+        );
+    }
+
+    #[test]
+    fn sanitize_drops_esc_but_keeps_sgr() {
+        assert_eq!(
+            sanitize_tool_output("\x1b[32mgreen\x1b[0m"),
+            "\x1b[32mgreen\x1b[0m"
+        );
+        // `ESC[2J` (clear-screen) drops; SGR `ESC[1;31m` survives per allowlist.
+        let evil = "\x1b[2J\x1b[1;31mFAKE";
+        let clean = sanitize_tool_output(evil);
+        assert!(
+            !clean.contains("[2J"),
+            "clear-screen must not survive, got: {clean:?}"
+        );
+        assert!(
+            clean.contains("\x1b[1;31mFAKE"),
+            "SGR must survive, got: {clean:?}"
+        );
+        let osc = "\x1b]52;c;YmFzZQ==\x07link\x1b]8;;https://evil.example/\x07";
+        let clean = sanitize_tool_output(osc);
+        assert!(!clean.contains('\x1b'), "OSC must not survive: {clean:?}");
+        assert!(!clean.contains('\x07'), "BEL must not survive: {clean:?}");
+    }
+
+    /// A11: NUL escapes as `\x00` with `binary_present:true` instead of lossy
+    /// U+FFFD; other C0 still neutralise, `\n`/`\t` survive.
+    #[test]
+    fn nul_escapes_with_binary_flag_not_lossy_replacement() {
+        let (clean, present) = sanitize_tool_output_with_presence("a\x00b");
+        assert!(present, "NUL must raise binary_present");
+        assert_eq!(clean, "a\\x00b", "NUL must escape, got: {clean:?}");
+        assert_eq!(sanitize_tool_output("a\x00b"), "a\\x00b");
+        let (text, absent) = sanitize_tool_output_with_presence("plain text");
+        assert!(!absent, "text without NUL must not flag binary");
+        assert_eq!(text, "plain text");
+        assert_eq!(
+            sanitize_tool_output("a\x01b\n\t"),
+            "a�b\n\t",
+            "non-NUL C0 still neutralises while \\n/\\t survive"
         );
     }
 }

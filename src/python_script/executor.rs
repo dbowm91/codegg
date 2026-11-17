@@ -73,6 +73,24 @@ fn make_result(
     }
 }
 
+/// Typed suffix for a pre-spawn static denial.
+///
+/// A banned import must not surface as an empty envelope: the stderr names
+/// the machine code (`IMPORT_DENIED`) and which import triggered it, so the
+/// denial is distinguishable from a transport bug. When the script carries
+/// no imports (e.g. a pure sensitive-path read) only the capability list in
+/// the prefix carries the signal.
+fn import_denial_suffix(risk: &PythonRiskAssessment) -> String {
+    if risk.imports.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " (machine_code: IMPORT_DENIED import: {})",
+            risk.imports.join(", ")
+        )
+    }
+}
+
 /// Execute a Python script request, returning a structured result.
 pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunResult {
     execute_python_script_with_cancellation(request, CancellationToken::new()).await
@@ -194,24 +212,37 @@ pub async fn execute_python_script_with_profile_and_network(
     // "denied by sandbox at exec".
     let denied_caps: Vec<String> = policy.denied.iter().map(|v| v.capability.clone()).collect();
     if !denied_caps.is_empty() {
-        let scanner_label = match super::analyze::analyze_python_risk(&request.code).scanner {
+        let risk = super::analyze::analyze_python_risk(&request.code);
+        let capabilities = PythonCapabilityEnvelope::from_mode_and_risk(request.mode, &risk);
+        let scanner_label = match risk.scanner {
             PythonRiskScanner::Ast => "Ast",
             PythonRiskScanner::Fallback => "Fallback",
         };
-        return make_result(
+        let stderr = format!(
+            "[python_script] refused pre-spawn by static analysis (scanner={scanner_label}): denied capability check failed for {}{}",
+            denied_caps.join(", "),
+            import_denial_suffix(&risk),
+        );
+        let mut result = make_result(
             PythonRunStatus::Failed(-3),
             String::new(),
-            format!(
-                "[python_script] refused pre-spawn by static analysis (scanner={scanner_label}): denied capability check failed for {}",
-                denied_caps.join(", ")
-            ),
+            stderr,
             start.elapsed(),
             request.mode,
             request.code.len(),
-            PythonRiskAssessment::safe(),
-            PythonCapabilityEnvelope::analyze(),
+            risk,
+            capabilities,
             script_body_hash,
         );
+        result.denied_capabilities = denied_caps.clone();
+        result.effective_read_roots = policy.profile.read_roots.clone();
+        result.effective_write_roots = policy.profile.write_roots.clone();
+        result.allowed_subprocesses = policy.profile.allowed_subprocesses.clone();
+        result.enforcement_warnings = policy.warnings.clone();
+        result.os_filesystem_isolation = policy.os_filesystem_isolation;
+        result.os_network_isolation = policy.os_network_isolation;
+        result.policy_decision = Some(policy.clone());
+        return result;
     }
 
     // Also run the legacy envelope check for backward compatibility
@@ -226,13 +257,15 @@ pub async fn execute_python_script_with_profile_and_network(
             PythonRiskScanner::Ast => "Ast",
             PythonRiskScanner::Fallback => "Fallback",
         };
-        return make_result(
+        let stderr = format!(
+            "[python_script] refused pre-spawn by static analysis (scanner={scanner_label}): denied capability check failed for {}{}",
+            legacy_violations.join(", "),
+            import_denial_suffix(&risk),
+        );
+        let mut result = make_result(
             PythonRunStatus::Failed(-3),
             String::new(),
-            format!(
-                "[python_script] refused pre-spawn by static analysis (scanner={scanner_label}): denied capability check failed for {}",
-                legacy_violations.join(", ")
-            ),
+            stderr,
             start.elapsed(),
             request.mode,
             request.code.len(),
@@ -240,6 +273,15 @@ pub async fn execute_python_script_with_profile_and_network(
             capabilities,
             script_body_hash,
         );
+        result.denied_capabilities = legacy_violations.clone();
+        result.effective_read_roots = policy.profile.read_roots.clone();
+        result.effective_write_roots = policy.profile.write_roots.clone();
+        result.allowed_subprocesses = policy.profile.allowed_subprocesses.clone();
+        result.enforcement_warnings = policy.warnings.clone();
+        result.os_filesystem_isolation = policy.os_filesystem_isolation;
+        result.os_network_isolation = policy.os_network_isolation;
+        result.policy_decision = Some(policy.clone());
+        return result;
     }
 
     // D4: transform writes are scoped to the workspace plus the session
@@ -1486,8 +1528,58 @@ mod tests {
         };
         let result = execute_python_script(&request).await;
         assert!(!result.is_success());
-        // Should have enforcement warnings on non-Linux
-        // Should report denied capabilities
+        assert!(
+            result
+                .denied_capabilities
+                .contains(&"subprocess".to_string()),
+            "denied must name subprocess, got {:?}",
+            result.denied_capabilities
+        );
+        assert!(
+            result.policy_decision.is_some(),
+            "pre-spawn denial must carry a policy decision"
+        );
+        assert!(
+            result.stderr.contains("IMPORT_DENIED"),
+            "denial must be typed IMPORT_DENIED, got: {}",
+            result.stderr
+        );
+        assert!(
+            result.stderr.contains("subprocess"),
+            "denial must name which import, got: {}",
+            result.stderr
+        );
+        let summary = result.summary();
+        assert!(
+            summary.contains("denied:"),
+            "summary must include denial line for Failed, got: {summary}"
+        );
+        assert!(
+            summary.contains("subprocess"),
+            "summary denial must name the capability, got: {summary}"
+        );
+    }
+
+    #[tokio::test]
+    async fn denied_summary_includes_error_line_for_failed() {
+        let dir = test_cwd("denied_summary");
+        let request = PythonScriptRequest {
+            code: "import subprocess\nprint('never runs')".to_string(),
+            mode: PythonExecutionMode::Analyze,
+            cwd: dir.clone(),
+            workspace_root: None,
+            timeout_secs: Some(10),
+            session_id: None,
+            intent: None,
+        };
+        let result = execute_python_script(&request).await;
+        assert!(matches!(result.status, PythonRunStatus::Failed(-3)));
+        assert!(!result.stderr.trim().is_empty());
+        let summary = result.summary();
+        assert!(
+            summary.contains("error:"),
+            "Failed summary must carry the denial reason, got: {summary}"
+        );
     }
 
     #[tokio::test]

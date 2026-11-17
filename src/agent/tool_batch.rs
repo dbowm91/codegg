@@ -301,6 +301,22 @@ fn mixed_batch_wait_rejection(tool_name: &str, action: &str, work_count: usize) 
     )
 }
 
+/// Whether a `question` call is a dry-run echo.
+///
+/// A dry-run validates and returns the question shape without blocking on a
+/// human, so the permission layer must let it through to
+/// `QuestionTool::execute` without touching `QuestionRegistry`. The tool
+/// itself remains the echo authority; this predicate only decides the
+/// permission path.
+pub(crate) fn is_question_dry_run(tc: &ToolCall) -> bool {
+    tc.name.as_str() == "question"
+        && tc
+            .arguments
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+}
+
 /// Whether a wired command preflight should force a human decision.
 ///
 /// Preflight is advisory and carries authority only when it actually found
@@ -597,6 +613,12 @@ impl AgentLoop {
             parent_attempt_id: None,
             provider_name: Some(self.services.provider.name().to_string()),
             backend_policy: Some("native_only".into()),
+            // A6: session-model threading point. The loop's turn model (the
+            // durable session selection the daemon bound for this turn) is
+            // not yet plumbed here, so this stays `None` and tools fall back
+            // to config — the same `None` means "no session model" contract
+            // as `session_id: None` for legacy callers.
+            session_model: None,
             cancellation: None,
             deadline: None,
             // M014-A2: Populate the real accepted decision fields.
@@ -731,6 +753,18 @@ impl AgentLoop {
         }
 
         if &*tc.name == "question" {
+            // Dry-run echoes the validated shape without blocking: it must
+            // never touch the QuestionRegistry. `QuestionTool::execute`
+            // remains the echo authority; permission only lets it through.
+            if is_question_dry_run(tc) {
+                return ToolPermissionOutcome::Allowed {
+                    tool_call: tc.clone(),
+                    receipt: self.accepted_permission_receipt(
+                        crate::permission::approval::source::PERMISSION_EVALUATION,
+                    ),
+                    command_preflight: None,
+                };
+            }
             if let Ok(questions) = parse_question_questions(tc.arguments.clone()) {
                 let questions_json = serde_json::to_string(&questions).unwrap_or_default();
                 let question_id = format!("q-{}", uuid::Uuid::new_v4());
@@ -2632,21 +2666,26 @@ impl AgentLoop {
                 Ok(output) => ToolExecutionOutcome::success(output),
                 Err(error) => ToolExecutionOutcome::from_tool_error(error),
             };
-            let output = &outcome.model_text;
-            if output.len() > max_tool_result_bytes {
-                let safe_end = output
+            // A8: single marker per payload (see
+            // `strip_projection_inline_footer`): the projection inline footer
+            // would claim a full payload alongside the truncation marker.
+            let output_owned = strip_projection_inline_footer(&outcome.model_text);
+            if output_owned.len() > max_tool_result_bytes {
+                let safe_end = output_owned
                     .char_indices()
                     .map(|(index, _)| index)
                     .take_while(|index| *index <= max_tool_result_bytes)
                     .last()
                     .unwrap_or(0);
-                let mut truncated = output[..safe_end].to_string();
+                let mut truncated = output_owned[..safe_end].to_string();
                 truncated.push_str(&format!(
                     "\n... [truncated: output was {} bytes, limit is {} bytes]",
-                    output.len(),
+                    output_owned.len(),
                     max_tool_result_bytes
                 ));
                 outcome.model_text = truncated;
+            } else if output_owned.len() != outcome.model_text.len() {
+                outcome.model_text = output_owned;
             }
             tool_results.push((idx, id.to_string(), outcome));
         }
@@ -2839,15 +2878,89 @@ fn truncate_for_audit(value: &str) -> String {
     out.replace('\0', "")
 }
 
+/// A8: strip the projection inline footer so the byte-cap layer emits a
+/// single marker per payload.
+///
+/// The projection layer (`context::projection`) appends
+/// `[Full output inline; do not re-fetch via context_read.]` when a payload
+/// fit its budget. When this byte-cap layer then truncates, that footer would
+/// claim a full inline payload alongside the truncation marker — so it is
+/// removed before cutting (collapsing the leftover blank line).
+pub(crate) fn strip_projection_inline_footer(text: &str) -> String {
+    const INLINE_FULL_FOOTER: &str = "[Full output inline; do not re-fetch via context_read.]";
+    if !text.contains(INLINE_FULL_FOOTER) {
+        return text.to_string();
+    }
+    let mut stripped = text.replace(INLINE_FULL_FOOTER, "");
+    while stripped.contains("\n\n\n") {
+        stripped = stripped.replace("\n\n\n", "\n\n");
+    }
+    stripped.trim_end().to_string()
+}
+
 #[cfg(test)]
 mod invocation_tests {
     use super::{
-        invocation_key_for, is_affirmatively_read_only_name, preflight_policy_denies_execution,
-        preflight_requires_escalation,
+        invocation_key_for, is_affirmatively_read_only_name, is_question_dry_run,
+        preflight_policy_denies_execution, preflight_requires_escalation,
+        strip_projection_inline_footer,
     };
     use crate::tool::authorization::CommandPreflightResult;
     use codegg_core::identity::AgentRunId;
     use serde_json::json;
+
+    /// A8: the projection inline footer strips so a later byte-cap cut leaves
+    /// a single truncation marker per payload.
+    #[test]
+    fn projection_inline_footer_strips_to_single_marker_basis() {
+        let with_footer = "body\n[Full output inline; do not re-fetch via context_read.]";
+        assert_eq!(strip_projection_inline_footer(with_footer), "body");
+        assert_eq!(strip_projection_inline_footer("plain body"), "plain body");
+    }
+
+    #[test]
+    fn question_dry_run_registers_nothing() {
+        use crate::provider::ToolCall;
+        let dry = ToolCall {
+            id: "call-dry".to_string().into(),
+            name: "question".to_string().into(),
+            arguments: json!({
+                "questions": [{"question": "dry-run probe: which color?"}],
+                "dry_run": true
+            }),
+        };
+        let before = crate::bus::QuestionRegistry::pending_question_ids().len();
+        assert!(
+            is_question_dry_run(&dry),
+            "dry_run:true must take the echo path"
+        );
+        // The predicate is pure: evaluating it must not touch the registry.
+        let after = crate::bus::QuestionRegistry::pending_question_ids().len();
+        assert_eq!(
+            before, after,
+            "dry-run detection must not register a pending question"
+        );
+        let live = ToolCall {
+            id: "call-live".to_string().into(),
+            name: "question".to_string().into(),
+            arguments: json!({
+                "questions": [{"question": "real?"}]
+            }),
+        };
+        assert!(
+            !is_question_dry_run(&live),
+            "a real question must still block on the registry path"
+        );
+        let other = ToolCall {
+            id: "call-other".to_string().into(),
+            name: "bash".to_string().into(),
+            arguments: json!({"command": "ls", "dry_run": true}),
+        };
+        assert!(
+            !is_question_dry_run(&other),
+            "dry_run on another tool is not a question dry-run"
+        );
+    }
 
     #[test]
     fn a_clean_command_preflight_does_not_force_a_human_decision() {
@@ -3433,5 +3546,46 @@ mod batch_admission_tests {
         .expect("work admits after release");
         drop(admitted);
         assert_eq!(queue_depth.load(Ordering::Acquire), 0);
+    }
+
+    /// F15: the solo-wait rule lives in the `task`/`job` descriptions, not
+    /// just in the rejection text — a wait batched with siblings is rejected
+    /// and must be re-issued alone, and a solo wait holds no batch slot.
+    #[test]
+    fn task_and_job_descriptions_state_the_solo_wait_rule() {
+        use crate::tool::Tool;
+        for (name, description) in [
+            ("task", crate::tool::task::TaskTool::default().description()),
+            ("job", crate::tool::job::JobTool::new().description()),
+        ] {
+            assert!(
+                description.contains("re-issued on its own"),
+                "{name} description must state the re-issue-alone recovery, got: {description}"
+            );
+            assert!(
+                description.contains("holds no batch execution slot"),
+                "{name} description must state a solo wait holds no batch slot, got: {description}"
+            );
+        }
+    }
+
+    /// F19: `task` (subagent runs) and `job` (background shell jobs) share
+    /// the words wait/status/output — each description names the other so
+    /// the model picks the right surface.
+    #[test]
+    fn task_and_job_descriptions_cross_link_each_other() {
+        use crate::tool::Tool;
+        let task = crate::tool::task::TaskTool::default()
+            .description()
+            .to_string();
+        assert!(
+            task.contains("For background shell jobs use job"),
+            "task description must cross-link job, got: {task}"
+        );
+        let job = crate::tool::job::JobTool::new().description().to_string();
+        assert!(
+            job.contains("For subagent runs use task"),
+            "job description must cross-link task, got: {job}"
+        );
     }
 }

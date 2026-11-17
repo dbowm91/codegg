@@ -32,13 +32,22 @@ impl SearchMode {
 }
 
 /// Tokenize text into lowercase alphanumeric terms.
-fn tokenize(text: &str) -> Vec<String> {
+pub(crate) fn tokenize(text: &str) -> Vec<String> {
     text.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
         .map(String::from)
         .collect()
 }
+
+/// F5: relevance threshold — a nonsense query like
+/// `foobar_nonexistent_tool_xyz` tokenizes to 4 terms with only `tool`
+/// matching (score 1, or 4 on a name hit like `tool_search`). Without a
+/// threshold it returns 10 hits. Require either >=2 matched terms or a
+/// strong multi-term hit (score >= 8: two name hits or an exact phrase)
+/// so single-term queries (`bash`) still pass while nonsense falls to
+/// `no_results`. Exact-phrase hits already carry `terms.len()*4`.
+const KEYWORD_MIN_NAME_SCORE: usize = 8;
 
 fn keyword_score(tool: &ToolMetadata, terms: &[String]) -> Option<usize> {
     let name = tokenize(&tool.name);
@@ -60,7 +69,34 @@ fn keyword_score(tool: &ToolMetadata, terms: &[String]) -> Option<usize> {
             score += if name_match { 4 } else { 1 };
         }
     }
-    (matched > 0).then_some(score)
+    if matched == 0 {
+        return None;
+    }
+    // Single-term queries keep the legacy behavior (any match counts).
+    if terms.len() == 1 {
+        return Some(score);
+    }
+    // Multi-term: require >=2 matched terms or a name-level hit.
+    if matched >= 2 || score >= KEYWORD_MIN_NAME_SCORE || exact_phrase {
+        return Some(score);
+    }
+    None
+}
+
+/// F5: count how many query terms appear (prefix) in a tool document.
+/// Used by the BM25 threshold so a 4-term nonsense query with one generic
+/// `tool` hit does not outrank the empty set.
+fn bm25_matched_terms(query_terms: &[String], doc_terms: &[String]) -> usize {
+    let mut matched = 0;
+    for term in query_terms {
+        if doc_terms
+            .iter()
+            .any(|candidate| candidate == term || candidate.starts_with(term))
+        {
+            matched += 1;
+        }
+    }
+    matched
 }
 
 /// Compute IDF (Inverse Document Frequency) for a set of tool documents.
@@ -245,18 +281,30 @@ impl ToolCatalog {
         let refs: Vec<&ToolMetadata> = metadata.iter().collect();
         let idf = compute_idf(&refs);
         let avg_dl = compute_avg_doc_length(&refs);
+        let query_terms = tokenize(query);
+        // F5: same threshold as keyword search — multi-term queries need
+        // >=2 matched terms or a strong BM25 score, so nonsense with one
+        // generic `tool` hit falls to empty.
+        const MIN_BM25_SCORE_MULTITERM: f64 = 1.0;
         let mut scored: Vec<(ToolMetadata, f64)> = metadata
             .iter()
-            .map(|tool| {
-                let score = bm25_score(
-                    query,
-                    &format!("{} {}", tool.name, tool.description),
-                    avg_dl,
-                    &idf,
-                );
-                (tool.clone(), score)
+            .filter_map(|tool| {
+                let doc = format!("{} {}", tool.name, tool.description);
+                let score = bm25_score(query, &doc, avg_dl, &idf);
+                if score <= 0.0 {
+                    return None;
+                }
+                if query_terms.len() == 1 {
+                    return Some((tool.clone(), score));
+                }
+                let doc_terms = tokenize(&doc);
+                let matched = bm25_matched_terms(&query_terms, &doc_terms);
+                if matched >= 2 || score >= MIN_BM25_SCORE_MULTITERM {
+                    Some((tool.clone(), score))
+                } else {
+                    None
+                }
             })
-            .filter(|(_, score)| *score > 0.0)
             .collect();
         scored.sort_by(|left, right| {
             right
@@ -372,6 +420,9 @@ impl ToolCatalog {
     /// BM25 ranked search.
     ///
     /// Returns tools ranked by BM25 score, filtering out zero-score results.
+    /// F5: multi-term queries need >=2 matched terms or a strong score
+    /// (>=1.0) so `foobar_nonexistent_tool_xyz` (one generic `tool` hit)
+    /// returns empty instead of 10 low-relevance hits.
     fn bm25_search(&self, query: &str) -> Vec<ToolMetadata> {
         if query.trim().is_empty() {
             return Vec::new();
@@ -380,15 +431,28 @@ impl ToolCatalog {
         let state = self.read();
         let tools: Vec<&ToolMetadata> = state.tools.values().collect();
         let avg_dl = state.avg_doc_length;
+        let query_terms = tokenize(query);
+        const MIN_BM25_SCORE_MULTITERM: f64 = 1.0;
 
         let mut scored: Vec<(ToolMetadata, f64)> = tools
             .iter()
-            .map(|tool| {
+            .filter_map(|tool| {
                 let doc = format!("{} {}", tool.name, tool.description);
                 let score = bm25_score(query, &doc, avg_dl, &state.idf_cache);
-                ((*tool).clone(), score)
+                if score <= 0.0 {
+                    return None;
+                }
+                if query_terms.len() == 1 {
+                    return Some(((*tool).clone(), score));
+                }
+                let doc_terms = tokenize(&doc);
+                let matched = bm25_matched_terms(&query_terms, &doc_terms);
+                if matched >= 2 || score >= MIN_BM25_SCORE_MULTITERM {
+                    Some(((*tool).clone(), score))
+                } else {
+                    None
+                }
             })
-            .filter(|(_, score)| *score > 0.0)
             .collect();
 
         scored.sort_by(|left, right| {
@@ -536,6 +600,31 @@ mod tests {
         let catalog = ToolCatalog::new();
         let results = catalog.search("nonexistent");
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn keyword_search_nonsense_multiword_falls_to_empty() {
+        // F5: `foobar_nonexistent_tool_xyz` tokenizes to 4 terms with only
+        // the generic `tool` description token matching — must threshold to
+        // empty, not 10 low-relevance hits.
+        let mut catalog = ToolCatalog::new();
+        catalog.register(&MockTool::new("bash", "Execute shell commands tool"));
+        catalog.register(&MockTool::new("read", "Read file contents tool"));
+        catalog.register(&MockTool::new("tool_search", "Search for tools"));
+        let results = catalog.search("foobar_nonexistent_tool_xyz");
+        assert!(
+            results.is_empty(),
+            "nonsense multi-term query must threshold to empty, got: {:?}",
+            results.iter().map(|t| &t.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn keyword_search_single_term_still_matches() {
+        let mut catalog = ToolCatalog::new();
+        catalog.register(&MockTool::new("bash", "Execute shell commands"));
+        let results = catalog.search("bash");
+        assert_eq!(results.len(), 1);
     }
 
     #[test]

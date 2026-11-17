@@ -57,7 +57,7 @@ impl Tool for EvidenceBundleTool {
                             "quality": { "type": "object" }
                         }
                     },
-                    "description": "Source-card inputs from search responses"
+                    "description": "Source-card inputs from search responses, e.g. [{\"id\": \"src-1\", \"url\": \"https://example.com\", \"title\": \"Example\", \"snippet\": \"…\"}]"
                 },
                 "fetches": {
                     "type": "array",

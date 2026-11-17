@@ -226,7 +226,7 @@ impl Tool for RepoSearchTool {
                 },
                 "max_results": {
                     "type": "number",
-                    "description": "Maximum results to return (default: 10, max: 30)"
+                    "description": "Maximum results to return (default: 5, max: 30)"
                 },
                 "compact": {
                     "type": "boolean",

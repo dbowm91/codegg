@@ -49,12 +49,13 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn helper_path() -> PathBuf {
-    std::env::current_exe()
-        .expect("test executable")
-        .parent()
-        .and_then(|path| path.parent())
-        .expect("target debug directory")
-        .join("codegg-sandbox-helper")
+    // Same rule production uses. Re-deriving from `current_exe().parent().parent()`
+    // assumes the test binary sits in `deps/`; filter-execution and some Cargo
+    // layouts place it under `build/<pkg>/<hash>/out/` instead, and that
+    // layout never holds the sibling helper.
+    codegg::security::sandbox::sandbox_helper_path().unwrap_or_else(|error| {
+        panic!("the managed sandbox helper must resolve as production resolves it: {error}")
+    })
 }
 
 /// Outcome of one helper launch.

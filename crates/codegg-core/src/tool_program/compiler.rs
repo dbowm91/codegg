@@ -216,9 +216,34 @@ fn preallocate_stmts(stmts: &[Stmt], compiler: &mut Compiler) {
     }
 }
 
+fn stmt_span(stmt: &Stmt) -> Span {
+    match stmt {
+        Stmt::Assign { span, .. }
+        | Stmt::If { span, .. }
+        | Stmt::For { span, .. }
+        | Stmt::Assert { span, .. }
+        | Stmt::ToolCall { span, .. }
+        | Stmt::Parallel { span, .. }
+        | Stmt::SubmitJob { span, .. }
+        | Stmt::Emit { span, .. }
+        | Stmt::Fail { span, .. }
+        | Stmt::Pass { span } => *span,
+    }
+}
+
 fn compile_stmts(stmts: &[Stmt], compiler: &mut Compiler) -> Result<(), ToolProgramError> {
+    let mut terminated = false;
     for stmt in stmts {
+        if terminated {
+            let span = stmt_span(stmt);
+            return Err(ToolProgramError::Compile(Diagnostic::new(
+                DiagnosticCode::UnsupportedSyntax,
+                "program already emitted (unreachable code after terminal emit/fail)".to_string(),
+                SourceSpan::new(span.start, span.len()),
+            )));
+        }
         compile_stmt(stmt, compiler)?;
+        terminated = matches!(stmt, Stmt::Emit { .. } | Stmt::Fail { .. });
     }
     Ok(())
 }

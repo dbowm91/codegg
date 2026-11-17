@@ -424,8 +424,13 @@ impl TestTool {
         let input = self.apply_default_workdir(input);
         let mut request = parse_test_request_in(&input, self.workspace_root.as_deref())?;
         request.session_id = Some(session_id.clone());
-        let resolved = crate::test_runner::resolve_test_command(&request)
+        let mut resolved = crate::test_runner::resolve_test_command(&request)
             .map_err(|e| ToolError::Execution(format!("test command resolution failed: {e}")))?;
+        // A10: a `test`-tool run must never carry the bare `bash-dispatch`
+        // label — that scope belongs to `bash`-owned dispatches.
+        if resolved.scope_label == "bash-dispatch" {
+            resolved.scope_label = "test:bash-dispatch".to_string();
+        }
         let workspace_id = submission
             .workspace_id_for_root(&request.workdir)
             .await
@@ -521,8 +526,11 @@ impl TestTool {
                 "test execution requires the daemon scheduler; standalone callers must provide a harness scheduler".into(),
             ));
         };
-        let resolved = crate::test_runner::resolve_test_command(&request)
+        let mut resolved = crate::test_runner::resolve_test_command(&request)
             .map_err(|e| ToolError::Execution(format!("test command resolution failed: {e}")))?;
+        if resolved.scope_label == "bash-dispatch" {
+            resolved.scope_label = "test:bash-dispatch".to_string();
+        }
         let workspace_id = submission
             .workspace_id_for_root(&request.workdir)
             .await
@@ -581,18 +589,14 @@ impl TestTool {
             .map_err(|e| ToolError::Execution(e.to_string()))?;
         let status = completion.status;
         let summary = completion.summary;
-        let completion_status = match completion.status {
-            crate::scheduler::ExecutorStatus::Completed => "passed",
-            crate::scheduler::ExecutorStatus::Failed => "failed",
-            crate::scheduler::ExecutorStatus::Cancelled => "cancelled",
-            crate::scheduler::ExecutorStatus::TimedOut => "timed_out",
-            crate::scheduler::ExecutorStatus::Interrupted => "unknown",
-        };
+        let completion_status = test_completion_status(completion.status, &summary);
+        let is_no_tests = completion_status == "no_tests";
         let marker = serde_json::json!({
             "job_id": job.job_id.as_str(),
             "kind": "test",
             "status": completion_status,
             "summary": summary,
+            "no_tests": is_no_tests,
         });
         Ok((
             format!(
@@ -643,6 +647,25 @@ fn truncate_report_text(text: &str, cap: usize) -> String {
         end -= 1;
     }
     format!("{}\n[report truncated]", &text[..end])
+}
+
+/// A3: map a scheduler completion to the marker status string, threading the
+/// vacuous-run flag from `TestParseState` (via `DelegatedTestRun` →
+/// formatted summary `no_tests:` prefix): a `Completed` run that selected
+/// zero tests emits `no_tests`, never `passed`.
+pub(crate) fn test_completion_status(
+    status: crate::scheduler::ExecutorStatus,
+    summary: &str,
+) -> &'static str {
+    let is_no_tests = summary.contains("no_tests:");
+    match status {
+        crate::scheduler::ExecutorStatus::Completed if is_no_tests => "no_tests",
+        crate::scheduler::ExecutorStatus::Completed => "passed",
+        crate::scheduler::ExecutorStatus::Failed => "failed",
+        crate::scheduler::ExecutorStatus::Cancelled => "cancelled",
+        crate::scheduler::ExecutorStatus::TimedOut => "timed_out",
+        crate::scheduler::ExecutorStatus::Interrupted => "unknown",
+    }
 }
 
 /// Parse JSON input into a `TestRunRequest` with a synthetic workspace root.
@@ -737,7 +760,7 @@ fn parse_test_request_in(
     };
 
     let timeout_secs = parse_positive_seconds(input.get("timeout"), "timeout")?;
-    let stall_timeout_secs = parse_positive_seconds(input.get("stall_timeout"), "stall_timeout")?;
+    let stall_timeout_secs = parse_stall_timeout_seconds(input.get("stall_timeout"))?;
 
     // F1: whole-valued floats coerce (20000.0 -> 20000) via the shared
     // tolerant parser, matching `timeout` above; fractional or negative
@@ -793,6 +816,33 @@ fn parse_positive_seconds(
         return Err(ToolError::Execution(format!(
             "{field} must be a positive integer number of seconds"
         )));
+    }
+    Ok(Some(n as u64))
+}
+
+/// Parse the `stall_timeout` watchdog value.
+///
+/// Identical to [`parse_positive_seconds`] except `0` is accepted and means
+/// "disabled" (`Some(0)`), matching the schema text ("set 0 to disable") and
+/// the runner, which skips the stall check when the bound is `0`. Negative,
+/// fractional, NaN, and non-numeric values still fail.
+fn parse_stall_timeout_seconds(
+    value: Option<&serde_json::Value>,
+) -> Result<Option<u64>, ToolError> {
+    let Some(v) = value else {
+        return Ok(None);
+    };
+    let n = v.as_f64().ok_or_else(|| {
+        ToolError::Execution(
+            "stall_timeout must be a positive integer number of seconds (0 disables the watchdog)"
+                .to_string(),
+        )
+    })?;
+    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
+        return Err(ToolError::Execution(
+            "stall_timeout must be a positive integer number of seconds (0 disables the watchdog)"
+                .to_string(),
+        ));
     }
     Ok(Some(n as u64))
 }
@@ -1060,6 +1110,26 @@ mod tests {
     fn test_tool_category_is_shell_exec() {
         let tool = TestTool::default();
         assert_eq!(tool.category(), ToolCategory::ShellExec);
+    }
+
+    /// A3: a completed run whose summary carries the vacuous prefix maps to
+    /// `no_tests`, never `passed`.
+    #[test]
+    fn completed_vacuous_summary_maps_to_no_tests_status() {
+        use crate::scheduler::ExecutorStatus;
+        assert_eq!(
+            test_completion_status(ExecutorStatus::Completed, "no_tests: 0 selected"),
+            "no_tests"
+        );
+        assert_eq!(
+            test_completion_status(ExecutorStatus::Completed, "12 passed"),
+            "passed"
+        );
+        assert_eq!(
+            test_completion_status(ExecutorStatus::Failed, "no_tests: x"),
+            "failed",
+            "only Completed maps to no_tests"
+        );
     }
 
     #[test]
@@ -1370,6 +1440,18 @@ mod tests {
             msg.contains("stall_timeout must be a positive integer"),
             "unexpected error: {msg}"
         );
+    }
+
+    #[test]
+    fn test_parse_request_accepts_zero_stall_timeout_as_disabled() {
+        // Schema documents `stall_timeout: 0` as "disable the watchdog";
+        // the runner already skips the check when the bound is 0.
+        let input = json!({"scope": "auto", "stall_timeout": 0});
+        let req = parse_test_request(&input).expect("stall_timeout 0 must parse");
+        assert_eq!(req.stall_timeout_secs, Some(0));
+        let whole_float = json!({"scope": "auto", "stall_timeout": 0.0});
+        let req = parse_test_request(&whole_float).expect("stall_timeout 0.0 must coerce");
+        assert_eq!(req.stall_timeout_secs, Some(0));
     }
 
     #[test]

@@ -164,6 +164,8 @@ impl Tool for ToolProgramTool {
          DirectOnly and mutating tools are rejected. \
          Intermediate tool call outputs stay in the program artifact ledger and do not \
          enter the parent transcript. \
+         emit is the program's return value (first call wins, the program ends); emit a small \
+         record once at the end. A second emit is rejected with `program already emitted`. \
          Example: result = call({\"tool\": \"read\", \"path\": \"src/main.rs\"}). \
          Extra tool args may be extra dict keys or trailing k=v pairs, and parallel \
          takes the same dicts (canonical parallel(d1, d2), e.g. \
@@ -184,7 +186,9 @@ impl Tool for ToolProgramTool {
                         parallel groups canonical parallel(d1, d2) e.g. \
                         parallel({\"tool\": \"read\", \"path\": \"a\"}, {\"tool\": \"grep\", \"pattern\": \"TODO\"}) \
                         (single-list parallel([d1, d2]) normalizes; each dict needs a `tool` key), \
-                        bare parallel(...) as a statement with discarded target, emit(), fail(), \
+                        bare parallel(...) as a statement with discarded target, emit() as the program's \
+                        return value (first call wins, the program ends; emit a small record once at the end; \
+                        a second emit fails with `program already emitted`), fail(), \
                         basic arithmetic, string operations, list/dict literals, and indexing."
                 },
                 "tools": {

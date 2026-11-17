@@ -347,6 +347,19 @@ impl PreflightService {
             return PreflightDecision::Allow { findings: vec![] };
         }
 
+        // H8: `foo: bar` YAML-ish input must report `format: yaml|unsupported`,
+        // never `format: json`. Detect `key: value` shape before delegating.
+        if looks_like_yaml_config(text) {
+            let findings = vec![PreflightFinding {
+                severity: PreflightSeverity::Block,
+                machine_code: Some("UNSUPPORTED_FORMAT".to_string()),
+                message: "config_preflight: YAML input is unsupported (format: yaml, verdict: unsupported); convert to JSON/TOML".to_string(),
+                location: None,
+                source_tool: "config_preflight".to_string(),
+            }];
+            return self.decide_from_findings(findings);
+        }
+
         let args = json!({ "text": text });
         match self.runtime.call_json("config_preflight", args) {
             Ok(result) => {
@@ -408,10 +421,23 @@ impl PreflightService {
         };
 
         let output = &result.output;
-        let is_risk_signal = verdict.as_deref() == Some("block")
+        let mut is_risk_signal = verdict.as_deref() == Some("block")
             || risk.as_deref() == Some("high")
             || output.contains("risk: high")
             || output.contains("verdict: block");
+        // A2: upstream only classifies the first segment (`program` hints at
+        // it). Classify every `| && || ; &` segment with the same authority
+        // the advisory scanner uses; any Block segment Blocks the compound.
+        // This closes `echo start && rm -rf …` grading `review`.
+        let mut segment_risk: Option<PreflightFinding> = None;
+        if !is_risk_signal {
+            if let Some(cmd) = command_text(result.result.as_ref()) {
+                segment_risk = segment_risk_postcheck(&cmd, result.machine_code.clone());
+                if segment_risk.is_some() {
+                    is_risk_signal = true;
+                }
+            }
+        }
         let mut is_warn = verdict.as_deref() == Some("warn")
             || risk.as_deref() == Some("medium")
             || output.contains("risk: medium")
@@ -492,6 +518,11 @@ impl PreflightService {
                 location: None,
                 source_tool: "command_preflight".to_string(),
             });
+        }
+        // A2: surface which later segment tripped the gate so the agent
+        // knows it was not just `has_control_operator`.
+        if let Some(extra) = segment_risk {
+            findings.push(extra);
         }
 
         self.decide_from_findings(findings)
@@ -889,6 +920,146 @@ fn process_spawn_postcheck(structured: Option<&serde_json::Value>) -> Option<Pre
     })
 }
 
+/// H8: YAML-ish `key: value` shape that is not JSON/TOML/dotenv.
+/// JSON starts with `{`/`[`/quote; TOML has `[section]`/`=`; dotenv is
+/// `KEY=value`. A bare `key: value` line is YAML per the documented
+/// contract and must surface as unsupported, not `format: json`.
+fn looks_like_yaml_config(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.starts_with('{') || trimmed.starts_with('[') || trimmed.starts_with('"') {
+        return false;
+    }
+    // TOML section or assignment wins over YAML.
+    if trimmed.contains('[') && trimmed.contains(']') {
+        return false;
+    }
+    let mut yaml_lines = 0;
+    for line in trimmed.lines().take(5) {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // `key: value` with a space after the colon; exclude `::` and URLs.
+        if let Some(colon) = line.find(':') {
+            let after = &line[colon + 1..];
+            if after.starts_with(' ') || after.starts_with('\t') || after.is_empty() {
+                let key = line[..colon].trim();
+                if !key.is_empty()
+                    && key
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.')
+                    && !key.contains('=')
+                    && !line.contains("://")
+                {
+                    yaml_lines += 1;
+                }
+            }
+        }
+    }
+    yaml_lines > 0
+}
+
+/// A2: split a shell command into top-level `| && || ; &` segments,
+/// quote-aware so operators inside `'...'`/`"..."` stay data.
+fn split_shell_segments(command: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut chars = command.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            current.push(ch);
+            if let Some(escaped) = chars.next() {
+                current.push(escaped);
+            }
+            continue;
+        }
+        match ch {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            _ => {}
+        }
+        if !in_single && !in_double && matches!(ch, ';' | '|' | '&' | '\n' | '\r') {
+            if !current.trim().is_empty() {
+                segments.push(current.trim().to_string());
+            }
+            current.clear();
+            // Consume the second char of `&&` / `||` so it does not open
+            // an empty segment.
+            if matches!(ch, '|' | '&') && chars.peek() == Some(&ch) {
+                chars.next();
+            }
+            continue;
+        }
+        current.push(ch);
+    }
+    if !current.trim().is_empty() {
+        segments.push(current.trim().to_string());
+    }
+    segments
+}
+
+/// A2: classify every segment with the same authority as the advisory
+/// scanner; any High/Critical segment escalates the compound. Intersection
+/// semantics: one Block segment Blocks the whole command.
+fn segment_risk_postcheck(command: &str, machine_code: Option<String>) -> Option<PreflightFinding> {
+    use crate::security::command::{classify_bash_command, CommandRisk};
+
+    let segments = split_shell_segments(command);
+    if segments.len() < 2 {
+        return None;
+    }
+    for segment in &segments {
+        let classification = classify_bash_command(segment);
+        if matches!(
+            classification.risk,
+            CommandRisk::High | CommandRisk::Critical
+        ) {
+            return Some(PreflightFinding {
+                severity: PreflightSeverity::Warn,
+                machine_code,
+                message: format!(
+                    "Command preflight: later segment carries {:?} risk ({}): {}",
+                    classification.risk,
+                    classification
+                        .categories
+                        .iter()
+                        .map(|c| format!("{c:?}"))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    truncate(segment, 120)
+                ),
+                location: None,
+                source_tool: "command_preflight".to_string(),
+            });
+        }
+        // Network egress in a later segment (`echo hi && curl …`) must not
+        // vanish when the first segment is benign.
+        let lower = segment.to_lowercase();
+        if lower.contains("curl")
+            || lower.contains("wget")
+            || lower.contains("ssh ")
+            || lower.contains("scp ")
+        {
+            return Some(PreflightFinding {
+                severity: PreflightSeverity::Warn,
+                machine_code,
+                message: format!(
+                    "Command preflight: later segment performs network access: {}",
+                    truncate(segment, 120)
+                ),
+                location: None,
+                source_tool: "command_preflight".to_string(),
+            });
+        }
+    }
+    None
+}
+
 /// F8: true when a text-security result carries an actionable signal beyond
 /// ASCII confusable noise (prompt-injection phrase, secrets, mixed-script
 /// with a non-confusable finding type).
@@ -947,6 +1118,9 @@ fn prioritize_actionable_text_signal(output: &str) -> String {
 /// tool output so an advisory finding never reads as an enforcement verdict.
 /// Detection is unchanged (callers still match on the raw `output`/structured
 /// fields); only the surfaced text changes. Severity stays `Warn`.
+/// A9: also rewrites `Command block ...` summaries and `blocking`
+/// dispositions — the command runs (advisory-only), so a residual "Command
+/// block under default policy" / `disposition: blocking` is a wording bug.
 fn sanitize_advisory_output(output: &str) -> String {
     output
         .replace("verdict: block", "verdict: advisory-block")
@@ -964,6 +1138,18 @@ fn sanitize_advisory_output(output: &str) -> String {
         .replace(
             "\"risk_level\":\"high\"",
             "\"risk_level\":\"advisory-high\"",
+        )
+        .replace("Command block", "Command advisory-block")
+        .replace("COMMAND BLOCK", "COMMAND ADVISORY-BLOCK")
+        .replace("disposition: blocking", "disposition: advisory")
+        .replace("disposition:blocking", "disposition:advisory")
+        .replace(
+            "\"disposition\": \"blocking\"",
+            "\"disposition\": \"advisory\"",
+        )
+        .replace(
+            "\"disposition\":\"blocking\"",
+            "\"disposition\":\"advisory\"",
         )
 }
 
@@ -1492,6 +1678,91 @@ mod tests {
             quiet_decision.findings().is_empty(),
             "quoted `;` alone must not sustain a Warn, got: {}",
             quiet_decision.summary()
+        );
+    }
+
+    #[test]
+    fn compound_echo_rm_escalates_to_advisory_block() {
+        let service = PreflightService::with_runtime(
+            std::sync::Arc::new(
+                crate::eggsact::adapter::EggsactRuntime::new(
+                    crate::eggsact::adapter::EggsactConfig::default(),
+                )
+                .unwrap(),
+            ),
+            PreflightPolicy::default(),
+        );
+        let cmd = "echo start && rm -rf /tmp/probe-disposable";
+        let result = EggsactCallResult {
+            output: "verdict: review\nRISKY_SHELL_FEATURE has_control_operator".to_string(),
+            success: true,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({
+                "verdict": "review",
+                "command": cmd,
+                "subresults": {
+                    "shell_split": {
+                        "argv": ["echo", "start", "&&", "rm", "-rf", "/tmp/probe-disposable"],
+                        "features": {"has_control_operator": true}
+                    }
+                }
+            })),
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        let decision = service.parse_command_result(result);
+        let summary = decision.summary();
+        assert!(
+            !decision.findings().is_empty(),
+            "later-segment rm must not stay a bare review, got: {summary}"
+        );
+        assert!(
+            summary.to_lowercase().contains("later segment")
+                || summary.to_lowercase().contains("advisory"),
+            "finding must name the later segment, got: {summary}"
+        );
+    }
+
+    #[test]
+    fn yaml_config_is_unsupported_not_json() {
+        assert!(looks_like_yaml_config("foo: bar\nbaz: 1"));
+        assert!(!looks_like_yaml_config("{\"a\": 1}"));
+        assert!(!looks_like_yaml_config("[section]\nkey=1"));
+    }
+
+    #[test]
+    fn split_shell_segments_respects_quotes() {
+        let segs = split_shell_segments("echo 'a; b' && rm -rf /tmp/x");
+        assert_eq!(segs.len(), 2);
+        assert!(segs[0].contains("echo"));
+        assert!(segs[1].contains("rm"));
+    }
+
+    #[test]
+    fn advisory_sanitizer_rewrites_command_block_and_blocking_disposition() {
+        // A9: advisory-only surface must not read as enforcement.
+        let sanitized = sanitize_advisory_output(
+            "summary: Command block under default policy\nverdict: block\ndisposition: blocking",
+        );
+        assert!(
+            sanitized.contains("Command advisory-block"),
+            "Command block must sanitize, got: {sanitized}"
+        );
+        assert!(
+            !sanitized.contains("Command block under"),
+            "no residual `Command block under`, got: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("disposition: advisory"),
+            "blocking disposition must map, got: {sanitized}"
+        );
+        assert!(
+            !sanitized.contains("blocking"),
+            "no residual blocking, got: {sanitized}"
         );
     }
 }

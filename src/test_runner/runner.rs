@@ -400,15 +400,24 @@ pub async fn run_resolved_test_with_profile_and_network(
         });
     }
 
-    Ok(DelegatedTestRun { report, run_id })
+    Ok(DelegatedTestRun {
+        report,
+        run_id,
+        // A3: thread the vacuous-run flag from the parser so the `test` tool
+        // marker can emit `no_tests` instead of `passed`.
+        no_tests: parse_state.is_no_tests(),
+    })
 }
 
 /// Result of a delegated test run. The `run_id` is `Some` iff a `RunStore`
 /// record was successfully begun — it is the proof of delegated ownership.
+/// `no_tests` threads `TestParseState::is_no_tests`: a vacuous run selected
+/// nothing and must never read as a pass downstream.
 #[derive(Debug, Clone)]
 pub struct DelegatedTestRun {
     pub report: TestReport,
     pub run_id: Option<codegg_core::run_store::RunId>,
+    pub no_tests: bool,
 }
 
 impl DelegatedTestRun {
@@ -417,6 +426,10 @@ impl DelegatedTestRun {
     }
     pub fn report(&self) -> &TestReport {
         &self.report
+    }
+    /// A3: vacuous-run flag for marker mapping.
+    pub fn is_no_tests(&self) -> bool {
+        self.no_tests
     }
 }
 
@@ -796,12 +809,38 @@ fn build_report(
         );
     }
 
+    // A10: never report a bare `process exited with code N` when the real
+    // diagnostic sits in `stderr.log` — surface its tail so the agent sees
+    // `error: unexpected argument …` without opening the log by hand.
     if failures.is_empty() && exit_code != Some(0) && status != TestStatus::Passed {
+        let stderr_tail = std::fs::read_to_string(stderr_log)
+            .map(|content| {
+                let lines: Vec<&str> = content.lines().collect();
+                let tail: Vec<&str> = lines
+                    .iter()
+                    .rev()
+                    .take(8)
+                    .rev()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                tail.join("\n")
+            })
+            .unwrap_or_default();
+        let message = if stderr_tail.is_empty() {
+            format!("process exited with code {}", exit_code.unwrap_or(-1))
+        } else {
+            format!(
+                "process exited with code {} — stderr tail:\n{}",
+                exit_code.unwrap_or(-1),
+                stderr_tail.chars().take(800).collect::<String>()
+            )
+        };
         failures.push(crate::test_runner::types::TestFailure {
             name: None,
             file: None,
             line: None,
-            message: format!("process exited with code {}", exit_code.unwrap_or(-1)),
+            message,
             failure_class: FailureClass::NonzeroExit,
         });
     }
@@ -839,10 +878,12 @@ fn build_summary(parse_state: &TestParseState, exit_code: Option<i32>) -> String
     }
     if parse_state.tests_seen == 0 && parse_state.tests_passed == 0 && parse_state.tests_failed == 0
     {
+        // A10: a vacuous run is not green — it is `no_tests`, so the agent
+        // does not mistake 0 tests for a pass.
         return match exit_code {
-            Some(0) => "completed successfully".into(),
-            Some(code) => format!("process exited with code {code}"),
-            None => "process terminated without exit code".into(),
+            Some(0) => "no_tests: 0 tests selected (not a pass)".into(),
+            Some(code) => format!("process exited with code {code} (0 tests ran)"),
+            None => "process terminated without exit code (0 tests ran)".into(),
         };
     }
 
@@ -1401,9 +1442,52 @@ mod tests {
 
     #[test]
     fn build_summary_no_tests_exits() {
+        // A3: a vacuous run is `no_tests`, never "completed successfully" —
+        // the summary prefix is what the `test` tool marker keys on.
         let state = TestParseState::default();
-        assert_eq!(build_summary(&state, Some(0)), "completed successfully");
-        assert_eq!(build_summary(&state, Some(1)), "process exited with code 1");
+        assert!(state.is_no_tests());
+        assert_eq!(
+            build_summary(&state, Some(0)),
+            "no_tests: 0 tests selected (not a pass)"
+        );
+        assert_eq!(
+            build_summary(&state, Some(1)),
+            "process exited with code 1 (0 tests ran)"
+        );
+    }
+
+    /// A3: the vacuous-run flag threads from the parser through
+    /// `DelegatedTestRun` (exit 0, zero counters) with the `no_tests:`
+    /// summary prefix the marker keys on.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn vacuous_run_threads_no_tests_flag() {
+        let dir = temp_dir_with_files("no-tests-flag", &[]);
+        let resolved = ResolvedTestCommand {
+            language: crate::test_runner::types::TestLanguage::Generic,
+            argv: vec!["true".into()],
+            cwd: dir.path().to_path_buf(),
+            scope_label: "test".into(),
+        };
+        let request = TestRunRequest {
+            scope: TestScope::Auto,
+            workdir: dir.path().to_path_buf(),
+            timeout_secs: Some(30),
+            stall_timeout_secs: None,
+            max_report_bytes: None,
+            session_id: None,
+            parent_run_id: None,
+            execution_cwd: None,
+            cancellation: None,
+        };
+        let delegated = run_resolved_test(&request, resolved, None, None)
+            .await
+            .expect("vacuous run completes");
+        assert!(delegated.is_no_tests(), "vacuous run must thread no_tests");
+        assert!(
+            delegated.report().summary.starts_with("no_tests:"),
+            "vacuous summary must carry the prefix, got: {}",
+            delegated.report().summary
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

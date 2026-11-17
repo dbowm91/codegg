@@ -100,9 +100,14 @@ impl crate::tool::Tool for ContextReadTool {
         }
         let max_bytes = requested_max_bytes as usize;
 
-        // Parse the handle with the typed parser
-        let parsed = ContextHandle::parse(handle_str)
-            .map_err(|e| crate::error::ToolError::Format(format!("invalid handle: {e}")))?;
+        // Parse the handle with the typed parser. A malformed handle is a
+        // caller parse error, not a tool formatting failure: name the
+        // expected shape so the caller can fix the handle.
+        let parsed = ContextHandle::parse(handle_str).map_err(|e| {
+            crate::error::ToolError::Execution(format!(
+                "invalid handle: {e} (expected ctx://tool/<session>/<turn>/<call> or ctx://evidence/<session>/<checkpoint>/<evidence>; handles are session-scoped)"
+            ))
+        })?;
 
         // Exact session match, not substring
         if !parsed.same_session(&self.session_id) {
@@ -227,6 +232,28 @@ mod tests {
         let result = tool.execute(input).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("invalid handle"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_context_read_parse_error_names_shape_not_formatting() {
+        // F17: a malformed handle is a caller parse error surfaced as
+        // Execution, never as the Format ("tool formatting failed") layer.
+        let store = Arc::new(InMemoryArtifactStore::new());
+        let tool = ContextReadTool::new(store, "s1".into());
+
+        let input = serde_json::json!({"handle": "ctx://tool/bad-session/bad-turn/bad-call"});
+        let error = tool.execute(input).await.expect_err("malformed handle");
+        assert!(
+            matches!(error, crate::error::ToolError::Execution(_)),
+            "parse error must be Execution, got: {error:?}"
+        );
+        let text = error.to_string();
+        assert!(text.contains("invalid handle"));
+        assert!(text.contains("expected ctx://tool/"));
+        assert!(
+            !text.contains("formatting failed"),
+            "parse error must not name the formatting layer, got: {text}"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

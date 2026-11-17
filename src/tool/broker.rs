@@ -1051,7 +1051,15 @@ impl ToolBroker {
                     let Some(chain_ref) = chain.as_mut() else {
                         let value = match &e {
                             ToolError::NotFound(name) => {
-                                ToolValue::infrastructure_error(format!("Tool not found: {name}"))
+                                // H14: extension misses already carry the
+                                // domain label; do not re-prefix them as tools.
+                                if name.starts_with("Extension not found in catalog:") {
+                                    ToolValue::infrastructure_error(name.clone())
+                                } else {
+                                    ToolValue::infrastructure_error(format!(
+                                        "Tool not found: {name}"
+                                    ))
+                                }
                             }
                             ToolError::Timeout(message) => self.timeout_value(message),
                             ToolError::Permission(msg) => ToolValue::denied(msg.clone()),
@@ -1149,9 +1157,15 @@ impl ToolBroker {
                                 "tool attempt failed terminally; not retried"
                             );
                             let value = match &e {
-                                ToolError::NotFound(name) => ToolValue::infrastructure_error(
-                                    format!("Tool not found: {name}"),
-                                ),
+                                ToolError::NotFound(name) => {
+                                    if name.starts_with("Extension not found in catalog:") {
+                                        ToolValue::infrastructure_error(name.clone())
+                                    } else {
+                                        ToolValue::infrastructure_error(format!(
+                                            "Tool not found: {name}"
+                                        ))
+                                    }
+                                }
                                 ToolError::Timeout(message) => self.timeout_value(message),
                                 ToolError::Permission(msg) => ToolValue::denied(msg.clone()),
                                 ToolError::Disabled(msg) => ToolValue::infrastructure_error(
@@ -1499,6 +1513,9 @@ fn execution_context_for_attempt(
         parent_attempt_id: ctx.attempt_id.clone(),
         provider_name: None,
         backend_policy: None,
+        // A6: the broker has no session-selection handle; the daemon turn
+        // path populates `session_model` when the session is bound.
+        session_model: None,
         cancellation: ctx.cancellation.clone(),
         deadline: ctx.deadline,
         decision_id: authorization

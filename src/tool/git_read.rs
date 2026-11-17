@@ -101,7 +101,7 @@ impl Tool for GitQueryTool {
     }
 
     fn description(&self) -> &str {
-        "Query bounded repository state with read-only operations: status, diff, log, and branches. Use git for mutations and recovery (git defaults to the session workspace root when workdir is absent, explicit workdir selects the checkout; git_query resolves the session workspace root and takes no workdir argument)."
+        "Query bounded repository state with read-only operations: status, diff, log, and branches. Split: `git_query`/`git_read` return porcelain display plus JSON results (`results` keeps the per-operation typed shape); `git` owns summaries plus typed mutations and recovery (git defaults to the session workspace root when workdir is absent, explicit workdir selects the checkout; git_query resolves the session workspace root and takes no workdir argument)."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -373,7 +373,7 @@ impl Tool for GitReadTool {
     }
 
     fn description(&self) -> &str {
-        "Program-only bounded git reads (status, diff, log, branches) delegating to the canonical git execution service. Hidden from ordinary model turns."
+        "Program-only bounded git reads (status, diff, log, branches) delegating to the canonical git execution service. Split: returns porcelain display plus JSON results (see `GitQueryTool` for the model-facing facade). Hidden from ordinary model turns."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -549,5 +549,23 @@ mod tests {
             let parsed: Result<GitReadInput, _> = serde_json::from_value(input);
             assert!(parsed.is_err(), "field '{extra}' must be rejected");
         }
+    }
+
+    /// F12: the read facades document the porcelain+JSON split (display plus
+    /// typed `results`) without changing any shape.
+    #[test]
+    fn git_query_description_documents_porcelain_json_split() {
+        let query = GitQueryTool::new();
+        let desc = query.description();
+        assert!(
+            desc.contains("porcelain display plus JSON"),
+            "git_query must document porcelain+JSON, got: {desc}"
+        );
+        let read = GitReadTool::new();
+        let hidden = read.description();
+        assert!(
+            hidden.contains("porcelain display plus JSON"),
+            "git_read must document porcelain+JSON, got: {hidden}"
+        );
     }
 }

@@ -51,7 +51,7 @@ impl Tool for GlobTool {
     }
 
     fn description(&self) -> &str {
-        "Find files matching a glob pattern. `read` sees ignored files; discovery skips them unless include_ignored:true. Note: `.codegg/test-runs/*` may be gitignored — use include_ignored:true or read directly."
+        "Find files matching a glob pattern. `read` sees ignored files; discovery skips them unless include_ignored:true. Note: `.codegg/test-runs/*` may be gitignored — use include_ignored:true or read directly. Always pass `path` as the search root (the 100k-entry cap applies to the root, so a narrow `path` makes `include_ignored` work)."
     }
 
     fn parameters(&self) -> serde_json::Value {

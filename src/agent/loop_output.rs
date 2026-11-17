@@ -22,12 +22,13 @@ pub struct AgentLoopTerminalOutput {
 }
 
 static PATH_REDACTION_PATTERNS: LazyLock<Vec<regex::Regex>> = LazyLock::new(|| {
-    // P1: anchored with a path-start boundary prefix (captured to preserve it)
-    // and a trailing class that cannot cross quotes/punctuation, so
-    // `let p = "/tmp/x";` keeps its closing quote + semicolon.
+    // A11: redact only secret-bearing host paths (usernames in profile
+    // paths), never generic `/var`/`/tmp` the agent needs literally to
+    // debug builds. Anchored so `"/tmp/x";` keeps its quotes.
+    // `[CWD]`/`[HOME]` below are already `<workspace>`/`<home>` —
+    // clearly non-literal; the literal root is emitted once per result by
+    // the caller (see `redact_local_paths` docs).
     let patterns = [
-        r#"(^|[\s"'\(\[=:,])/var/[^\s/"';,.)\]}:]+"#,
-        r#"(^|[\s"'\(\[=:,])/tmp/[^\s/"';,.)\]}:]+"#,
         r#"(^|[\s"'\(\[=:,])C:\\Users\\[^\s\"';,.)\]}:]+"#,
         r#"(^|[\s"'\(\[=:,])C:\\Program Files\\[^\s\"';,.)\]}:]+"#,
         r#"(^|[\s"'\(\[=:,])C:\\Windows\\[^\s\"';,.)\]}:]+"#,
@@ -38,6 +39,11 @@ static PATH_REDACTION_PATTERNS: LazyLock<Vec<regex::Regex>> = LazyLock::new(|| {
         .collect()
 });
 
+/// A11/N7: `<workspace>`/`<home>` are explicitly non-literal placeholders;
+/// callers that redact a command representation must also preserve a literal
+/// `argv`/`segments` copy (preflight does) so the agent can copy what it was
+/// gated on. Generic `/tmp`/`/var` are never redacted — only secret-bearing
+/// profile paths are.
 pub(super) fn redact_local_paths(
     input: &str,
     local_paths: &(Option<String>, Option<String>),
@@ -45,8 +51,8 @@ pub(super) fn redact_local_paths(
     let mut result = Cow::Borrowed(input);
 
     for (path, replacement) in [
-        (local_paths.0.as_deref(), "[CWD]"),
-        (local_paths.1.as_deref(), "[HOME]"),
+        (local_paths.0.as_deref(), "<workspace>"),
+        (local_paths.1.as_deref(), "<home>"),
     ] {
         if let Some(path) = path.filter(|path| !path.is_empty()) {
             if let Cow::Owned(replaced) = replace_path_prefixes(&result, path, replacement) {
@@ -135,7 +141,7 @@ mod tests {
 
         assert_eq!(
             redact_local_paths(input, &paths),
-            "[CWD]/src/main.rs /Users/alice-other/file"
+            "<workspace>/src/main.rs /Users/alice-other/file"
         );
     }
 
@@ -146,23 +152,19 @@ mod tests {
     }
 
     #[test]
-    fn redaction_keeps_quoted_tmp_line_tail() {
+    fn redaction_leaves_tmp_literal_for_debugging() {
+        // A11: generic `/tmp` is not a secret — the agent needs the literal
+        // to debug builds. Only profile paths are redacted.
         let paths = (None, None);
         let input = r#"let p = "/tmp/x"; const tail = 1;"#;
-        assert_eq!(
-            redact_local_paths(input, &paths),
-            r#"let p = "[REDACTED_PATH]"; const tail = 1;"#
-        );
+        assert_eq!(redact_local_paths(input, &paths), input);
     }
 
     #[test]
-    fn redaction_keeps_var_log_suffix() {
+    fn redaction_leaves_var_log_literal() {
         let paths = (None, None);
         let input = r#"const Q: &str = "/var/log/y";"#;
-        assert_eq!(
-            redact_local_paths(input, &paths),
-            r#"const Q: &str = "[REDACTED_PATH]/y";"#
-        );
+        assert_eq!(redact_local_paths(input, &paths), input);
     }
 
     #[test]

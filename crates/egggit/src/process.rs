@@ -144,7 +144,10 @@ impl std::fmt::Display for GitExecutionPolicyOutcome {
             Self::DeniedExplicitAuthority { reason } => write!(formatter, "Git denied: {reason}"),
             Self::InvalidRequest { reason } => write!(formatter, "invalid Git request: {reason}"),
             Self::BackendUnavailable { capabilities } => {
-                write!(formatter, "Git backend unavailable for {capabilities:?}")
+                write!(
+                    formatter,
+                    "Git backend unavailable for {capabilities:?} (expected the session workspace root; check how the session root is bound — prefer `git_query` for reads)"
+                )
             }
         }
     }

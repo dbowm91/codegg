@@ -76,6 +76,13 @@ pub struct ToolExecutionContext {
     pub parent_attempt_id: Option<String>,
     pub provider_name: Option<String>,
     pub backend_policy: Option<String>,
+    /// A6: the session's active `provider/model` string (e.g.
+    /// `openai/gpt-4o`) when the calling turn is bound to a durable session
+    /// selection. Threaded like `session_id`: the daemon/session layer sets
+    /// it, tools prefer it over config, and `None` means fall back to
+    /// `Config::model` (legacy/local callers). Never synthesized from model
+    /// output or tool input.
+    pub session_model: Option<String>,
     /// Cancellation propagated from the owning scheduler attempt.
     pub cancellation: Option<tokio_util::sync::CancellationToken>,
     /// Absolute parent deadline, when the caller is scheduler-owned.
@@ -200,6 +207,7 @@ impl ToolExecutionContext {
             parent_attempt_id: None,
             provider_name: None,
             backend_policy: None,
+            session_model: None,
             cancellation: None,
             deadline: None,
             decision_id: None,

@@ -383,10 +383,18 @@ impl WorkOrderTool {
             .ok_or_else(|| ToolError::Execution("missing 'id' parameter".into()))?;
         let id = WorkOrderId::parse(raw)
             .map_err(|e| ToolError::Execution(format!("invalid work order id: {e}")))?;
-        let expected_revision = input
-            .get("expected_revision")
-            .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| ToolError::Execution("missing 'expected_revision' parameter".into()))?;
+        let expected_revision = match input.get("expected_revision") {
+            None | Some(serde_json::Value::Null) => {
+                return Err(ToolError::Execution(
+                    "missing 'expected_revision' parameter".into(),
+                ));
+            }
+            Some(value) => crate::tool::util::json_u64(value).ok_or_else(|| {
+                ToolError::Execution(format!(
+                    "expected_revision must be a whole number >= 1, got {value}"
+                ))
+            })?,
+        };
         if expected_revision == 0 {
             return Err(ToolError::Execution(
                 "expected_revision must be >= 1".into(),
@@ -471,11 +479,23 @@ impl WorkOrderTool {
             .get("title")
             .and_then(|v| v.as_str())
             .map(str::to_string);
-        let repeat = input
-            .get("repeat_count")
-            .and_then(serde_json::Value::as_u64)
-            .map(|v| v as u32)
-            .unwrap_or(1);
+        let repeat = match input.get("repeat_count") {
+            None | Some(serde_json::Value::Null) => 1,
+            Some(value) => {
+                let whole = crate::tool::util::json_u64(value).ok_or_else(|| {
+                    ToolError::Execution(format!(
+                        "repeat_count must be a whole number 1..={} , got {value}",
+                        MAX_AGENT_REPEAT_COUNT
+                    ))
+                })?;
+                u32::try_from(whole).map_err(|_| {
+                    ToolError::Execution(format!(
+                        "repeat_count must be a whole number 1..={} , got {value}",
+                        MAX_AGENT_REPEAT_COUNT
+                    ))
+                })?
+            }
+        };
         enforce_agent_repeat(repeat)?;
         let (requested_model, requested_approval, requested_sandbox, workspace_policy) =
             resolve_requested_policy(&input, ctx, self)?;
@@ -652,11 +672,21 @@ impl WorkOrderTool {
                 .get("title")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            let repeat = raw
-                .get("repeat_count")
-                .and_then(serde_json::Value::as_u64)
-                .map(|v| v as u32)
-                .unwrap_or(1);
+            let repeat = match raw.get("repeat_count") {
+                None | Some(serde_json::Value::Null) => 1,
+                Some(value) => {
+                    let whole = crate::tool::util::json_u64(value).ok_or_else(|| {
+                        ToolError::Execution(format!(
+                            "items[{index}] repeat_count must be a whole number, got {value}"
+                        ))
+                    })?;
+                    u32::try_from(whole).map_err(|_| {
+                        ToolError::Execution(format!(
+                            "items[{index}] repeat_count must be a whole number, got {value}"
+                        ))
+                    })?
+                }
+            };
             enforce_agent_repeat(repeat)
                 .map_err(|e| ToolError::Execution(format!("items[{index}] {e}")))?;
             // Per-item policy overrides are not part of the narrow agent
@@ -803,10 +833,17 @@ impl WorkOrderTool {
         let project = self.bound_project()?;
         reject_project_override(&input, &project)?;
         let service = self.service()?;
-        let limit = input
-            .get("limit")
-            .and_then(serde_json::Value::as_u64)
-            .map(|v| v.clamp(1, 32) as u32);
+        let limit = match input.get("limit") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => {
+                let whole = crate::tool::util::json_u64(value).ok_or_else(|| {
+                    ToolError::Execution(format!(
+                        "limit must be a whole number 1..=32, got {value}"
+                    ))
+                })?;
+                Some(whole.clamp(1, 32) as u32)
+            }
+        };
         let state_filter = input
             .get("state_filter")
             .and_then(|v| v.as_str())
@@ -1570,5 +1607,20 @@ mod tests {
         let second = resolve_call_identity(&input, Some(&other_ctx));
         assert_ne!(first, second);
         assert!(first.len() <= MAX_IDEMPOTENCY_KEY_LEN);
+    }
+
+    #[test]
+    fn whole_float_revision_coerces_like_other_ints() {
+        use crate::tool::util::json_u64;
+        assert_eq!(json_u64(&json!(1.0)), Some(1));
+        assert_eq!(json_u64(&json!(1)), Some(1));
+        for bad in [json!(1.5), json!(-1.0), serde_json::Value::Null, json!("1")] {
+            assert_eq!(json_u64(&bad), None, "must reject {bad}");
+        }
+        assert_eq!(
+            json_u64(&serde_json::json!(f64::NAN)),
+            None,
+            "must reject NaN"
+        );
     }
 }

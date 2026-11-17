@@ -127,6 +127,14 @@ STORE_TRAIT = "AgentRunTranscriptStore"
 # transcript's marker for "this tool call has an outcome".
 TOOL_RESULT_EVENT = "ChatEvent::ToolResult"
 
+# Construction only — an assignment of a ToolResult value. Pattern arms in
+# `matches!` / `if let` also name `ChatEvent::ToolResult { .. }`, and reading
+# those is how the capture path finds the terminal turn boundary; they are
+# not a synthetic outcome.
+TOOL_RESULT_CONSTRUCTION_RE = re.compile(
+    r"=\s*(?:crate::provider::)?" + re.escape(TOOL_RESULT_EVENT) + r"\s*\{"
+)
+
 # The calls that would write into the child's event vector.
 EVENTS_MUTATORS: Tuple[str, ...] = (
     "events.push",
@@ -589,17 +597,18 @@ def check_capture_path(root: Path) -> List[Finding]:
         return findings
     text = capture_path.read_text(encoding="utf-8")
     masked = _mask_non_code(text)
-    at = masked.find(TOOL_RESULT_EVENT)
-    if at != -1:
+    constructed = TOOL_RESULT_CONSTRUCTION_RE.search(masked)
+    if constructed is not None:
         findings.append(
             Finding(
                 rule="delegated-transcript-tool-result-constructed",
                 file=CAPTURE_MODULE,
-                line=_line_of(masked, at),
+                line=_line_of(masked, constructed.start()),
                 message=(
-                    f"the capture path names {TOOL_RESULT_EVENT}: the delegated transcript "
-                    "must carry the tool outcomes the child executed, never a synthetic "
-                    "event that would change what the parent's transcript records"
+                    f"the capture path constructs {TOOL_RESULT_EVENT}: the delegated "
+                    "transcript must carry the tool outcomes the child executed, never "
+                    "a synthetic event that would change what the parent's transcript "
+                    "records"
                 ),
             )
         )
