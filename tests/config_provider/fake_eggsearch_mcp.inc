@@ -1284,6 +1284,10 @@ async fn structured_wrappers_preserve_upstream_value_and_bound_display() {
     });
     // A8: upstream backend names (`web_fetch`) are canonicalized to
     // executable registry names (`webfetch`) before reaching the model.
+    // Force `detail=full`: compact-first tools (`repo_search`,
+    // `research_search`, `repo_map`) default to summary, and the summary
+    // None-fallback strips `next_actions` — this case owns full-envelope
+    // preservation, not that strip.
     let response = fixture.to_string();
     let mut svc = McpService::new();
     let tools = [
@@ -1325,39 +1329,42 @@ async fn structured_wrappers_preserve_upstream_value_and_bound_display() {
     let cases: Vec<(Box<dyn Tool>, serde_json::Value)> = vec![
         (
             Box::new(WebSearchTool::with_search_runtime(ctx.clone())),
-            serde_json::json!({"query": "x"}),
+            serde_json::json!({"query": "x", "detail": "full"}),
         ),
         (
             Box::new(WebFetchTool::default().with_search_runtime(ctx.clone())),
-            serde_json::json!({"url": "https://example.com"}),
+            serde_json::json!({"url": "https://example.com", "detail": "full"}),
         ),
         (
             Box::new(RepoSearchTool::with_search_runtime(ctx.clone())),
-            serde_json::json!({"query": "x"}),
+            serde_json::json!({"query": "x", "detail": "full"}),
         ),
         (
             Box::new(RepoFetchTool::with_search_runtime(ctx.clone())),
-            serde_json::json!({"repo": "owner/repo", "path": "src/lib.rs"}),
+            serde_json::json!({"repo": "owner/repo", "path": "src/lib.rs", "detail": "full"}),
         ),
         (
             Box::new(RepoMapTool::with_search_runtime(ctx.clone())),
-            serde_json::json!({"repo": "owner/repo"}),
+            serde_json::json!({"repo": "owner/repo", "detail": "full"}),
         ),
         (
             Box::new(SecuritySearchTool::with_search_runtime(ctx.clone())),
-            serde_json::json!({"query": "CVE-1"}),
+            serde_json::json!({"query": "CVE-1", "detail": "full"}),
         ),
         (
             Box::new(ResearchSearchTool::with_search_runtime(ctx.clone())),
-            serde_json::json!({"query": "x"}),
+            serde_json::json!({"query": "x", "detail": "full"}),
         ),
         (
             Box::new(BatchFetchTool::with_search_runtime(ctx.clone())),
-            serde_json::json!({"urls": ["https://example.com"]}),
+            serde_json::json!({"urls": ["https://example.com"], "detail": "full"}),
         ),
         (
             Box::new(EvidenceBundleTool::with_search_runtime(ctx.clone())),
-            serde_json::json!({"sources": [{"id": "src-1", "url": "https://example.com"}]}),
+            serde_json::json!({
+                "sources": [{"id": "src-1", "url": "https://example.com"}],
+                "detail": "full"
+            }),
         ),
     ];
 
