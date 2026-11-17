@@ -733,32 +733,77 @@ def run_smoke(binary: Path, subjects: int = 2, timeout: float = 20.0, output_dir
             owned_temp.cleanup()
 
 
+def _snapshot_is_bookkeeping(relative_path: Path) -> bool:
+    """Product and build artifacts are not candidate source state."""
+    parts = relative_path.parts
+    # `.codegg` is product-owned wherever the job workdir is. H006 writes run
+    # manifests under `job-check/.codegg`, not only at the workspace root.
+    if ".codegg" in parts or (parts and parts[0] in {".cargo-target", "target"}):
+        return True
+    if parts[:2] in {("job-check", ".cargo-home"), ("job-check", ".cargo-target")}:
+        return True
+    return relative_path.as_posix() == "codegg_debug.log"
+
+
+def _snapshot_paths(workspace: Path) -> list[Path]:
+    """List files and symlinks, skipping directories removed during the walk."""
+    found: list[Path] = []
+
+    def walk(directory: Path) -> None:
+        try:
+            children = list(directory.iterdir())
+        except FileNotFoundError:
+            return
+        for child in children:
+            try:
+                if child.is_symlink():
+                    found.append(child)
+                    continue
+                if child.is_dir():
+                    walk(child)
+                    continue
+            except FileNotFoundError:
+                continue
+            found.append(child)
+
+    walk(workspace)
+    found.sort()
+    return found
+
+
 def _workspace_snapshot_digest(workspace: Path) -> tuple[str, dict[str, str]]:
-    """Hash a bounded private fixture tree without following symlinks."""
+    """Hash a bounded private fixture tree without following symlinks.
+
+    A path removed between the walk and the read is omitted. Live trials
+    snapshot a tree a background job is still writing, including an atomic
+    manifest replace.
+    """
     entries: dict[str, str] = {}
     files = 0
     total_bytes = 0
-    for path in sorted(workspace.rglob("*")):
-        if path.is_symlink():
+    for path in _snapshot_paths(workspace):
+        try:
+            symlink = path.is_symlink()
+            is_file = path.is_file()
+        except FileNotFoundError:
+            continue
+        if symlink:
             raise HarnessError("fixture workspace contains an unexpected symlink")
-        if not path.is_file():
+        if not is_file:
             continue
         relative_path = path.relative_to(workspace)
-        # Product-owned context artifacts, the private Cargo target directory,
-        # and the debug log are observer/build bookkeeping, not candidate
-        # source state. Cargo output can exceed the snapshot cap without
-        # changing any file the trial is measuring.
-        if (relative_path.parts[0] in {".codegg", ".cargo-target", "target"}
-                or relative_path.parts[:2] in {
-                    ("job-check", ".cargo-home"), ("job-check", ".cargo-target")
-                }
-                or relative_path.as_posix() == "codegg_debug.log"):
+        # Cargo output can exceed the snapshot cap without changing any file
+        # the trial is measuring.
+        if _snapshot_is_bookkeeping(relative_path):
+            continue
+        try:
+            payload = path.read_bytes()
+        except FileNotFoundError:
             continue
         files += 1
         if files > 10000:
             raise HarnessError("fixture workspace exceeds the revision file bound")
         relative = relative_path.as_posix()
-        payload = path.read_bytes()
         total_bytes += len(payload)
         if total_bytes > 64 * 1024 * 1024:
             raise HarnessError("fixture workspace exceeds the revision byte bound")
@@ -1846,8 +1891,16 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             client.close()
             log = spec.root / "acp.stderr"
             tail = log.read_text(encoding="utf-8", errors="replace")[-8192:] if log.exists() else ""
+            # `tool_updates` is built only after the prompt returns. A failure
+            # inside the notification observer, such as a snapshot race, has
+            # notifications but not that local. The tail only needs rawOutput.
+            received_updates = [
+                item.get("params", {}).get("update", {})
+                for item in client.notifications
+                if item.get("method") == "session/update"
+            ]
             managed_test_tail = (
-                _bounded_managed_test_log_tail(tool_updates, workspace)
+                _bounded_managed_test_log_tail(received_updates, workspace)
                 if task_id == "h006-real-job-observation" else ""
             )
             if ledger_root is not None:

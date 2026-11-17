@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from dev.harness_lab.supervisor import (
     AcpClient,
@@ -478,6 +479,80 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             b"pub fn stable() -> bool { true }\n").hexdigest()
         self.assertEqual(files, {"src/lib.rs": expected_source_digest})
         self.assertEqual(len(digest), 64)
+
+    def test_nested_product_run_manifest_is_excluded_from_candidate_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            source = workspace / "src" / "lib.rs"
+            source.parent.mkdir()
+            source.write_text("pub fn stable() -> bool { true }\n", encoding="utf-8")
+            manifest = (workspace / "job-check" / ".codegg" / "runs" / "2026-11-17"
+                        / "96c38d73-c5ca-4c9d-a7e8-5369efe3b224" / ".manifest.json.tmp")
+            manifest.parent.mkdir(parents=True)
+            with manifest.open("wb") as artifact:
+                artifact.truncate(64 * 1024 * 1024 + 1)
+
+            _digest, files = _workspace_snapshot_digest(workspace)
+
+        expected_source_digest = hashlib.sha256(
+            b"pub fn stable() -> bool { true }\n").hexdigest()
+        self.assertEqual(files, {"src/lib.rs": expected_source_digest})
+
+    def test_file_removed_between_listing_and_read_is_omitted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            source = workspace / "src" / "lib.rs"
+            source.parent.mkdir()
+            source.write_text("pub fn stable() -> bool { true }\n", encoding="utf-8")
+            ephemeral = workspace / "ephemeral.txt"
+            ephemeral.write_text("gone", encoding="utf-8")
+            original = Path.read_bytes
+
+            def read_bytes(path: Path) -> bytes:
+                if path.name == "ephemeral.txt":
+                    raise FileNotFoundError(path)
+                return original(path)
+
+            with mock.patch.object(Path, "read_bytes", read_bytes):
+                _digest, files = _workspace_snapshot_digest(workspace)
+
+        expected_source_digest = hashlib.sha256(
+            b"pub fn stable() -> bool { true }\n").hexdigest()
+        self.assertEqual(files, {"src/lib.rs": expected_source_digest})
+
+    def test_directory_removed_during_listing_is_omitted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            source = workspace / "src" / "lib.rs"
+            source.parent.mkdir()
+            source.write_text("pub fn stable() -> bool { true }\n", encoding="utf-8")
+            vanished = workspace / "ephemeral" / "note.txt"
+            vanished.parent.mkdir()
+            vanished.write_text("gone", encoding="utf-8")
+            original = Path.iterdir
+
+            def iterdir(path: Path):
+                if path.name == "ephemeral":
+                    raise FileNotFoundError(path)
+                return original(path)
+
+            with mock.patch.object(Path, "iterdir", iterdir):
+                _digest, files = _workspace_snapshot_digest(workspace)
+
+        expected_source_digest = hashlib.sha256(
+            b"pub fn stable() -> bool { true }\n").hexdigest()
+        self.assertEqual(files, {"src/lib.rs": expected_source_digest})
+
+    def test_symlink_in_the_fixture_tree_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            source = workspace / "src" / "lib.rs"
+            source.parent.mkdir()
+            source.write_text("pub fn stable() -> bool { true }\n", encoding="utf-8")
+            link = workspace / "src" / "link.rs"
+            link.symlink_to(source)
+            with self.assertRaisesRegex(HarnessError, "unexpected symlink"):
+                _workspace_snapshot_digest(workspace)
 
     def test_candidate_visible_tree_remains_subject_to_the_byte_bound(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
