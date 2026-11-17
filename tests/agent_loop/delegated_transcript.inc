@@ -1330,9 +1330,10 @@ async fn the_transcript_records_a_call_and_its_result_in_ordinal_order_with_one_
 /// final paragraph exactly once.
 ///
 /// The recorded result is the terminal message, not the accumulated stream:
-/// pre-tool narration the transcript already holds must not be appended to
-/// the final answer. The five-row shape (system, prompt, call, result, final
-/// message) pins the `transcript_total_entries==5` repro from the harness.
+/// pre-tool narration is already a durable `ModelMessage` row of its own, so
+/// carrying it into the final answer would append the stream onto the
+/// terminal turn. Six rows: system, prompt, pre-tool narration, call,
+/// result, final message.
 #[tokio::test]
 async fn a_multiturn_tool_call_records_each_final_paragraph_once() {
     let pool = crate::common::pool::isolated_pool().await;
@@ -1381,8 +1382,23 @@ async fn a_multiturn_tool_call_records_each_final_paragraph_once() {
     let entries = transcript_entries(&pool, &run_id).await;
     assert_eq!(
         entries.len(),
-        5,
-        "a tool call plus a final answer is five transcript rows, got: {entries:?}"
+        6,
+        "pre-tool narration plus a tool call and final answer is six transcript rows, got: {entries:?}"
+    );
+    let narration_row = entries
+        .iter()
+        .find(|entry| {
+            entry.kind == TranscriptKind::ModelMessage
+                && entry.redacted_body == "Reading the notes. "
+        })
+        .expect("pre-tool narration must be its own ModelMessage row");
+    let call_row = entries
+        .iter()
+        .find(|entry| entry.kind == TranscriptKind::ToolCall)
+        .expect("the tool call row");
+    assert!(
+        narration_row.ordinal < call_row.ordinal,
+        "pre-tool narration must be committed before the tool call"
     );
     let final_row = entries.last().expect("the final transcript row");
     assert_eq!(final_row.kind, TranscriptKind::ModelMessage);
