@@ -6384,6 +6384,30 @@ mod tests {
                         props.remove("detail").is_some(),
                         "expected post-M003 webfetch.detail"
                     );
+                    // Agentfindings paging added `offset` and reworded
+                    // `max_length` after M003; restore the frozen shape.
+                    assert_eq!(
+                        props.remove("offset"),
+                        Some(serde_json::json!({
+                            "type": "number",
+                            "description": "Character offset into the fetched document (default: 0). Use with max_length to page: offset=max_length windows, not the same 2000-char prefix"
+                        })),
+                        "unexpected post-M003 webfetch.offset"
+                    );
+                    let max_length = props
+                        .get_mut("max_length")
+                        .and_then(|v| v.as_object_mut())
+                        .expect("webfetch.max_length remains declared");
+                    assert_eq!(
+                        max_length.insert(
+                            "description".to_string(),
+                            serde_json::json!("Maximum characters to return (default: 10000)"),
+                        ),
+                        Some(serde_json::json!(
+                            "Maximum characters to return (default: 10000). Honoured as a window with `offset`, not just a prefix cap"
+                        )),
+                        "unexpected post-M003 webfetch.max_length description"
+                    );
                 }
                 _ => unreachable!(),
             }
@@ -6496,6 +6520,12 @@ mod tests {
                 "workdir",
                 "Working directory for git command (default: session workspace root; explicit workdir selects the checkout for mutations)",
                 "Working directory for git command (default: current directory)",
+            ),
+            (
+                "git",
+                "dry_run",
+                "Preview only: commit returns the message preview without mutating; clean_preview equivalent for clean (default: false)",
+                "Pass --dry-run (clean_preview)",
             ),
             (
                 "research",
@@ -6632,6 +6662,71 @@ mod tests {
                 "unexpected post-M003 {tool}.include_ignored property"
             );
             historical_schemas.insert(tool.to_string(), schema);
+        }
+
+        // Agentfindings operability added write modes / large-overwrite
+        // confirmation and commit dry-run after M003. Strip those live
+        // fields and restore the frozen content description so the receipt
+        // fingerprint stays immutable.
+        {
+            let mut write_schema = registry
+                .get("write")
+                .expect("write tool remains registered")
+                .parameters();
+            let write_props = write_schema["properties"]
+                .as_object_mut()
+                .expect("write input schema properties");
+            assert_eq!(
+                write_props
+                    .get_mut("content")
+                    .and_then(|v| v.as_object_mut())
+                    .expect("write.content remains declared")
+                    .insert(
+                        "description".to_string(),
+                        serde_json::json!("Content to write to the file"),
+                    ),
+                Some(serde_json::json!(
+                    "Content to write to the file (appended after existing content in append mode)"
+                )),
+                "unexpected post-M003 write.content description"
+            );
+            assert_eq!(
+                write_props.remove("mode"),
+                Some(serde_json::json!({
+                    "type": "string",
+                    "description": "Write mode: overwrite (default), append, or create_only (fail when the file exists)",
+                    "enum": ["overwrite", "append", "create_only"],
+                    "default": "overwrite"
+                })),
+                "unexpected post-M003 write.mode"
+            );
+            assert_eq!(
+                write_props.remove("overwrite"),
+                Some(serde_json::json!({
+                    "type": "boolean",
+                    "description": "Explicit confirmation required to overwrite a large existing file (over the large-file threshold); ignored in append/create_only modes",
+                    "default": false
+                })),
+                "unexpected post-M003 write.overwrite"
+            );
+            historical_schemas.insert("write".to_string(), write_schema);
+
+            let mut commit_schema = registry
+                .get("commit")
+                .expect("commit tool remains registered")
+                .parameters();
+            let commit_props = commit_schema["properties"]
+                .as_object_mut()
+                .expect("commit input schema properties");
+            assert_eq!(
+                commit_props.remove("dry_run"),
+                Some(serde_json::json!({
+                    "type": "boolean",
+                    "description": "Preview only: report the staged diff/message without staging or committing (default: false)"
+                })),
+                "unexpected post-M003 commit.dry_run"
+            );
+            historical_schemas.insert("commit".to_string(), commit_schema);
         }
 
         let historical_effect_fingerprint =
