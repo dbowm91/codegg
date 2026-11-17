@@ -22,6 +22,17 @@ SHA, content fingerprints, and disposition recorded in
 `plans/adrs/windows-adr-id-migration.md`. The aliases are historical provenance,
 not active ADR allocations.
 
+## Embedding-host identity migration (2026-11-17)
+
+The rebase brought mainline's accepted ADR-0061 into the embedding-host branch,
+where a different accepted decision had the same number. Mainline retains ADR-0061;
+ADR-0062 remains assigned to bundled palette contrast, and the embedding-host wire
+decision is now ADR-0063. Its exact former record is archived under
+`plans/archive/embedding-host-adr-id-aliases/`, with source provenance in
+`plans/adrs/embedding-host-adr-id-migration.md`. The decision, status, and
+acceptance date are unchanged; only its identity and inbound references moved.
+The archived alias is provenance, not an active allocation.
+
 ## Linux/command identity migrations (2026-10-14 onward)
 
 The C004 identity corrective archived the exact pre-migration Linux and command

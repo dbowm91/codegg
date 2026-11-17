@@ -10,7 +10,7 @@ Long-term references:
 
 Related ADRs:
 
-- ADR-0061 (accepted) — the embedding host wire is a public contract with its own stability policy. It governs E002, E003 and E004.
+- ADR-0063 (accepted) — the embedding host wire is a public contract with its own stability policy. It governs E002, E003 and E004.
 
 Research record: `research/codegg-embedding-host-2026-11-12.md`.
 

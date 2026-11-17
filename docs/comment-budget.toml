@@ -13,9 +13,9 @@ max_block_lines = 50
 unlisted_max_comment_lines = 20
 
 [global]
-max_comment_lines = 139392
-max_comment_words = 1242740
-max_ratio = 0.1354
+max_comment_lines = 140135
+max_comment_words = 1249809
+max_ratio = 0.1355
 
 # Per-file ceilings. A file may shrink; it may not grow past what is
 # recorded here. A file that crosses the unlisted floor must be added.
@@ -287,7 +287,7 @@ max_ratio = 0.1354
 "src/agent/instructions.rs" = { max_comment_lines = 67, max_ratio = 0.1573 }
 "src/agent/job_notification_recovery.rs" = { max_comment_lines = 79, max_ratio = 0.2245 }
 "src/agent/loop.rs" = { max_comment_lines = 391, max_ratio = 0.1687 }
-
+"src/agent/loop_output.rs" = { max_comment_lines = 25, max_ratio = 0.1786 }
 "src/agent/progress_recovery.rs" = { max_comment_lines = 182, max_ratio = 0.1896 }
 "src/agent/prompt.rs" = { max_comment_lines = 98, max_ratio = 0.0905 }
 "src/agent/provider_qualification.rs" = { max_comment_lines = 37, max_ratio = 0.5 }
@@ -403,7 +403,7 @@ max_ratio = 0.1354
 "src/goal_continuation.rs" = { max_comment_lines = 26, max_ratio = 0.1453 }
 "src/headless.rs" = { max_comment_lines = 21, max_ratio = 0.0597 }
 "src/http_client.rs" = { max_comment_lines = 32, max_ratio = 0.2148 }
-"src/install.rs" = { max_comment_lines = 102, max_ratio = 0.1918 }
+"src/install.rs" = { max_comment_lines = 96, max_ratio = 0.1805 }
 "src/interactive_process.rs" = { max_comment_lines = 239, max_ratio = 0.1305 }
 "src/interactive_process_attach.rs" = { max_comment_lines = 179, max_ratio = 0.1766 }
 "src/live_execution_audit.rs" = { max_comment_lines = 72, max_ratio = 0.2087 }
@@ -490,8 +490,8 @@ max_ratio = 0.1354
 "src/security/sandbox/host_admission.rs" = { max_comment_lines = 81, max_ratio = 0.4264 }
 "src/security/sandbox/landlock.rs" = { max_comment_lines = 75, max_ratio = 0.1778 }
 "src/security/sandbox/linux_launch.rs" = { max_comment_lines = 27, max_ratio = 0.0381 }
-"src/security/sandbox/linux_mount_view.rs" = { max_comment_lines = 76, max_ratio = 0.0836 }
-"src/security/sandbox/policy.rs" = { max_comment_lines = 190, max_ratio = 0.1538 }
+"src/security/sandbox/linux_mount_view.rs" = { max_comment_lines = 76, max_ratio = 0.0809 }
+"src/security/sandbox/policy.rs" = { max_comment_lines = 184, max_ratio = 0.1489 }
 "src/security/sandbox/seatbelt.rs" = { max_comment_lines = 108, max_ratio = 0.3034 }
 "src/security/workflow/context.rs" = { max_comment_lines = 115, max_ratio = 0.2118 }
 "src/security/workflow/diff.rs" = { max_comment_lines = 88, max_ratio = 0.236 }
@@ -526,9 +526,8 @@ max_ratio = 0.1354
 "src/test_runner/index.rs" = { max_comment_lines = 72, max_ratio = 0.1093 }
 "src/test_runner/parse.rs" = { max_comment_lines = 40, max_ratio = 0.058 }
 "src/test_runner/resolve.rs" = { max_comment_lines = 45, max_ratio = 0.081 }
-"src/test_runner/runner.rs" = { max_comment_lines = 76, max_ratio = 0.0518 }
+"src/test_runner/runner.rs" = { max_comment_lines = 91, max_ratio = 0.055 }
 "src/theme/halloy.rs" = { max_comment_lines = 170, max_ratio = 0.124 }
-
 "src/theme/native.rs" = { max_comment_lines = 26, max_ratio = 0.0826 }
 "src/theme/registry.rs" = { max_comment_lines = 91, max_ratio = 0.0991 }
 "src/theme/schema.rs" = { max_comment_lines = 44, max_ratio = 0.3166 }
@@ -586,8 +585,7 @@ max_ratio = 0.1354
 "src/tool/write.rs" = { max_comment_lines = 47, max_ratio = 0.0736 }
 "src/tool/writer_fence.rs" = { max_comment_lines = 247, max_ratio = 0.6622 }
 "src/tool_advisor/causal_active.rs" = { max_comment_lines = 79, max_ratio = 0.3225 }
-"src/tool_advisor/causal_frontier.rs" = { max_comment_lines = 788, max_ratio = 0.1395 }
-
+"src/tool_advisor/causal_frontier.rs" = { max_comment_lines = 797, max_ratio = 0.1379 }
 "src/tool_advisor/causal_observe.rs" = { max_comment_lines = 104, max_ratio = 0.2702 }
 "src/tool_advisor/mod.rs" = { max_comment_lines = 130, max_ratio = 0.0545 }
 "src/tool_advisor/order_invariance.rs" = { max_comment_lines = 115, max_ratio = 0.1056 }
@@ -923,7 +921,7 @@ max_ratio = 0.1354
 "tests/security_permission/preflight_integration.inc" = { max_comment_lines = 54, max_ratio = 0.0493 }
 "tests/security_permission/process_denial_c005.inc" = { max_comment_lines = 54, max_ratio = 0.1103 }
 "tests/security_permission/reviewer_broker_boundary.inc" = { max_comment_lines = 44, max_ratio = 0.2515 }
-"tests/security_permission/sandbox_containment.inc" = { max_comment_lines = 139, max_ratio = 0.0862 }
+"tests/security_permission/sandbox_containment.inc" = { max_comment_lines = 139, max_ratio = 0.0856 }
 "tests/security_permission/sandbox_landlock.inc" = { max_comment_lines = 64, max_ratio = 0.1517 }
 "tests/security_permission/sandbox_policy_wiring.inc" = { max_comment_lines = 44, max_ratio = 0.0972 }
 "tests/security_permission/security_review_panel.inc" = { max_comment_lines = 52, max_ratio = 0.0636 }
