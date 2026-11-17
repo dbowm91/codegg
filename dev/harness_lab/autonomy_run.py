@@ -87,6 +87,7 @@ H007_CONTINUATION_MAX_BYTES = 64 * 1024
 # Keep continuation bounded, but do not let a turn-count cap undercut the
 # larger run-wide provider-request, native-call, wall-clock, and disk limits.
 H007_MAX_AUTONOMOUS_FOLLOWUP_TURNS = 100
+_MAX_PROVIDER_ADMISSION_SOURCE_BYTES = 16 * 1024 * 1024
 H007_S018_REQUIRED_STAGE_ORDER = (
     "versioned_records", "durable_import", "dependency_index", "provenance_queries",
     "cli_contract", "acceptance_audit", "workspace_qualification",
@@ -950,6 +951,20 @@ def _h007_activity_calls_excluding_verifier_pauses(
                 row[key] = max(0, elapsed_ms - offset_ms)
         adjusted.append(row)
     return adjusted
+
+
+def _postrun_tool_call_projection(
+    client: AcpClient,
+    case: AutonomyCase,
+    verifier_pause_points: list[tuple[int, int]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Collect raw calls before deriving the H007 qualification clock."""
+    tool_calls = _observed_tool_calls(client)
+    qualification_tool_calls = (
+        _h007_activity_calls_excluding_verifier_pauses(tool_calls, verifier_pause_points)
+        if case.case_id == H007_CASE_ID else tool_calls
+    )
+    return tool_calls, qualification_tool_calls
 
 
 def _h007_repair_cycles(tool_calls: list[dict[str, Any]], *,
@@ -2796,11 +2811,45 @@ def _h007_can_reuse_verification(
     )
 
 
-def _provider_request_admissions(stderr_path: Path) -> Optional[int]:
+
+
+def _provider_request_admissions(
+    stderr_path: Path, *, require_receipt_jsonl: bool = False,
+) -> Optional[int]:
     """Count safe provider-boundary request admissions from JSONL or CodeGG logs."""
     try:
-        contents = stderr_path.read_text(encoding="utf-8")
+        with stderr_path.open("rb") as source:
+            raw_contents = source.read(_MAX_PROVIDER_ADMISSION_SOURCE_BYTES + 1)
     except OSError:
+        return None
+    if len(raw_contents) > _MAX_PROVIDER_ADMISSION_SOURCE_BYTES:
+        return None
+    try:
+        contents = raw_contents.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if require_receipt_jsonl:
+        if not contents.strip():
+            return 0
+        try:
+            rows = [json.loads(line) for line in contents.splitlines() if line.strip()]
+        except json.JSONDecodeError:
+            return None
+        if any(not isinstance(row, dict) for row in rows):
+            return None
+        for row in rows:
+            kind = row.get("kind", "request")
+            if not isinstance(kind, str) or kind not in {"request", "allowance_observed"}:
+                return None
+        requests = [row for row in rows if row.get("kind", "request") == "request"]
+        if all(isinstance(row.get("request_number"), int)
+               and not isinstance(row.get("request_number"), bool)
+               and row["request_number"] > 0
+               and isinstance(row.get("limit"), int)
+               and not isinstance(row.get("limit"), bool)
+               and row["limit"] > 0
+               for row in requests):
+            return len(requests)
         return None
     if contents.lstrip().startswith("{"):
         try:
@@ -3692,9 +3741,8 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
 
     duration_ms = int((time.monotonic() - started) * 1000)
     qualification_duration_ms = max(0, duration_ms - verifier_pause_total_ms)
-    qualification_tool_calls = (
-        _h007_activity_calls_excluding_verifier_pauses(tool_calls, verifier_pause_points)
-        if case.case_id == H007_CASE_ID else tool_calls
+    tool_calls, qualification_tool_calls = _postrun_tool_call_projection(
+        client, case, verifier_pause_points,
     )
     provider_attempt_diagnostic = (
         diagnostics.summarize_provider_attempt_log(
@@ -3710,7 +3758,6 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
             "category": "infrastructure_error",
             "cancel_error": infrastructure_watcher.cancel_error,
         }
-    tool_calls = _observed_tool_calls(client)
     if case.case_id == H007_CASE_ID:
         required_repair_ids = (
             h007_results.documented_repair_job_id_pairs(

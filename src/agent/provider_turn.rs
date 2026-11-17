@@ -1432,9 +1432,10 @@ mod tests {
         let mut request = ledger_request();
         request.system = Some(compiled.text);
 
-        let events = ProviderTurnAdapter::receive_with_retry_context(&mut loop_, &request, None)
-            .await
-            .expect("the attempt completes");
+        let events =
+            ProviderTurnAdapter::receive_with_retry_context(&mut loop_, &mut request, None)
+                .await
+                .expect("the attempt completes");
         assert!(events.is_empty(), "the stub provider streams no events");
 
         let rows = crate::session::request_ledger::TurnRequestLedgerStore::new(pool)
@@ -1461,7 +1462,8 @@ mod tests {
         let mut loop_ = loop_with_ledger(pool.clone(), workspace.path());
         loop_.set_prompt_section_digests(std::collections::BTreeMap::new());
 
-        ProviderTurnAdapter::receive_with_retry_context(&mut loop_, &ledger_request(), None)
+        let mut request = ledger_request();
+        ProviderTurnAdapter::receive_with_retry_context(&mut loop_, &mut request, None)
             .await
             .expect("the attempt completes");
 

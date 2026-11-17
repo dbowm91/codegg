@@ -15,7 +15,9 @@ from typing import Any
 from .diagnostics import (
     SAFE_JOB_STATUS_ERROR_CLASSES,
     SAFE_TEST_SUBMIT_ERROR_CLASSES,
+    SAFE_VERIFIER_SETUP_FAILURE_REASONS,
     safe_job_status_failure_attribution,
+    safe_job_tool_sequence_event_trace,
 )
 
 
@@ -136,6 +138,52 @@ _STATUS_RANK = {
     "completed_unqualified": 2,
     "qualified": 3,
 }
+
+_SAFE_RUNNER_FAILURE_CLASSES = frozenset({
+    "harness_error", "budget_exhausted", "timeout", "os_error",
+    "value_error", "runtime_error", "unexpected_exception",
+})
+_SAFE_RUNNER_FAILURE_SITE = re.compile(
+    r"dev\.harness_lab(?:\.[A-Za-z_][A-Za-z0-9_]*)+:[A-Za-z_][A-Za-z0-9_]*\Z"
+)
+_SAFE_RUNNER_EXCEPTION_TYPES = frozenset({
+    "AssertionError", "AttributeError", "BlockingIOError", "BrokenPipeError",
+    "ChildProcessError", "ConnectionAbortedError", "ConnectionError",
+    "ConnectionRefusedError", "ConnectionResetError", "EOFError", "ExceptionGroup",
+    "FileNotFoundError", "HarnessError", "HarnessTimeout", "HarnessTurnFailure",
+    "ImportError", "IndexError", "InterruptedError", "IsADirectoryError", "KeyError",
+    "LookupError", "MemoryError", "ModuleNotFoundError", "NameError", "NotADirectoryError",
+    "NotImplementedError", "OSError", "OverflowError", "PermissionError",
+    "ProcessLookupError", "RuntimeError", "StopIteration", "SyntaxError", "SystemError",
+    "TimeoutError", "TypeError", "UnicodeDecodeError", "UnicodeEncodeError", "UnicodeError",
+    "UnicodeTranslateError", "ValueError", "ZeroDivisionError", "non_builtin_exception",
+})
+_SAFE_RUNNER_EXCEPTION_LINE_MAX = 1_000_000
+
+
+def _unresolved_provider_admission_markers(
+    ledger: Mapping[str, Any],
+) -> list[Mapping[str, Any]]:
+    markers = ledger.get("unresolved_provider_admissions", [])
+    if not isinstance(markers, list):
+        raise CampaignLedgerError("unresolved provider admission table is invalid")
+    attempts: set[int] = set()
+    for marker in markers:
+        if not isinstance(marker, Mapping) or set(marker) != set(_IDENTITY_FIELDS):
+            raise CampaignLedgerError("unresolved provider admission marker is invalid")
+        if (any(not isinstance(value, (str, int)) or isinstance(value, bool)
+                for value in marker.values())
+                or not isinstance(marker["attempt"], int)
+                or not isinstance(marker["start_number"], int)
+                or marker["attempt"] <= 0 or marker["start_number"] <= 0
+                or not all(marker[key] for key in (
+                    "authorization_grant_id", "model", "route", "manifest_sha256",
+                    "binary_sha256"))):
+            raise CampaignLedgerError("unresolved provider admission marker is invalid")
+        if marker["attempt"] in attempts:
+            raise CampaignLedgerError("unresolved provider admission is duplicated")
+        attempts.add(marker["attempt"])
+    return markers
 
 _PUBLIC_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _PUBLIC_PROGRESS_STATUSES = frozenset({
@@ -274,6 +322,11 @@ def preflight_campaign_run_start(
             and fixture_manifest_sha256 != expected_manifest_sha256:
         raise CampaignLedgerError(
             "campaign preflight fixture manifest digest conflicts with canonical digest")
+
+    unresolved = _unresolved_provider_admission_markers(ledger)
+    if unresolved:
+        raise CampaignLedgerError(
+            "campaign has unresolved provider admission accounting")
 
     preview = copy.deepcopy(dict(ledger))
     return reconcile_campaign_run_start(
@@ -756,6 +809,10 @@ def _safe_h007_completion_projection(case_receipt: Mapping[str, Any] | None) -> 
                 reconciliation.get("failed_test_submit_error_class_counts"),
                 SAFE_TEST_SUBMIT_ERROR_CLASSES, maximum=1_600),
         }
+        setup_reason = reconciliation.get("verifier_setup_failure_reason")
+        if (isinstance(setup_reason, str)
+                and setup_reason in SAFE_VERIFIER_SETUP_FAILURE_REASONS):
+            verifier_projection["verifier_setup_failure_reason"] = setup_reason
         failed_job_status_attribution = safe_job_status_failure_attribution(
             reconciliation.get("failed_job_status_attribution")
         )
@@ -804,6 +861,56 @@ def safe_campaign_run_fields(
         key: run[key] for key in _SAFE_RUN_FIELDS
         if key in run and (canonical_identity is None or key not in _IDENTITY_FIELDS)
     }
+    failure_class = run.get("runner_failure_class")
+    if failure_class is not None:
+        safe["runner_failure_class"] = (
+            failure_class if isinstance(failure_class, str)
+            and failure_class in _SAFE_RUNNER_FAILURE_CLASSES
+            else "unexpected_exception"
+        )
+    failure_sites = run.get("runner_failure_sites")
+    if isinstance(failure_sites, Mapping):
+        raw_sites = failure_sites.get("sites")
+        sites = []
+        if isinstance(raw_sites, list):
+            for site in raw_sites[:8]:
+                if (isinstance(site, str) and len(site) <= 192
+                        and ".tests." not in site
+                        and _SAFE_RUNNER_FAILURE_SITE.fullmatch(site)
+                        and site not in sites):
+                    sites.append(site)
+        safe["runner_failure_sites"] = {
+            "state": "observed" if sites else "unavailable",
+            "sites": sites,
+        }
+    failure_context = run.get("runner_failure_context")
+    if isinstance(failure_context, Mapping):
+        raw_type = failure_context.get("exception_type")
+        exception_type = (
+            raw_type if isinstance(raw_type, str)
+            and raw_type in _SAFE_RUNNER_EXCEPTION_TYPES else "non_builtin_exception"
+        )
+        raw_locations = failure_context.get("locations")
+        locations: list[dict[str, object]] = []
+        if isinstance(raw_locations, list):
+            for item in raw_locations[:8]:
+                if not isinstance(item, Mapping) or set(item) != {"site", "line"}:
+                    continue
+                site = item.get("site")
+                line = item.get("line")
+                if (isinstance(site, str) and len(site) <= 192
+                        and ".tests." not in site
+                        and _SAFE_RUNNER_FAILURE_SITE.fullmatch(site)
+                        and isinstance(line, int) and not isinstance(line, bool)
+                        and 1 <= line <= _SAFE_RUNNER_EXCEPTION_LINE_MAX):
+                    location = {"site": site, "line": line}
+                    if location not in locations:
+                        locations.append(location)
+        safe["runner_failure_context"] = {
+            "state": "observed" if locations else "unavailable",
+            "exception_type": exception_type,
+            "locations": locations,
+        }
     if canonical_identity is not None:
         identity = {key: canonical_identity.get(key) for key in _IDENTITY_FIELDS}
         if any(not isinstance(value, (str, int)) or isinstance(value, bool)
@@ -819,6 +926,9 @@ def safe_campaign_run_fields(
         safe.update(identity)
     if case_receipt is not None:
         safe["h007_completion_diagnostic"] = _safe_h007_completion_projection(case_receipt)
+        safe["job_tool_sequence_event_trace"] = safe_job_tool_sequence_event_trace(
+            case_receipt.get("job_tool_sequence_diagnostic")
+        )
     return safe
 
 
@@ -918,6 +1028,14 @@ def reconcile_campaign_run_start(
     max_grant_starts = grant.get("maximum_additional_starts")
     if not isinstance(max_grant_starts, int) or isinstance(max_grant_starts, bool):
         raise CampaignLedgerError("grant start ceiling is invalid")
+    unresolved = _unresolved_provider_admission_markers(ledger)
+    matching_unresolved = [item for item in unresolved
+                           if item.get("attempt") == identity["attempt"]]
+    if len(matching_unresolved) > 1:
+        raise CampaignLedgerError("unresolved provider admission is duplicated")
+    if matching_unresolved and any(
+            matching_unresolved[0].get(key) != value for key, value in identity.items()):
+        raise CampaignLedgerError("unresolved provider admission identity conflicts")
     prior_grant_rows = sum(
         bool(row.get("counted_as_start"))
         and row.get("authorization_grant_id") == grant_id
@@ -965,6 +1083,10 @@ def reconcile_campaign_run_start(
     )
     grant["starts_consumed"] = grant_consumed
     grant["starts_remaining"] = max(0, max_grant_starts - grant_consumed)
+    ledger["unresolved_provider_admissions"] = [
+        marker for marker in unresolved
+        if not isinstance(marker, Mapping) or marker.get("attempt") != identity["attempt"]
+    ]
     return {
         "attempt": identity["attempt"],
         "start_number": identity["start_number"],
@@ -976,3 +1098,29 @@ def reconcile_campaign_run_start(
         "unrepresented_counted_starts": offset,
         "status": status,
     }
+
+
+def record_unresolved_provider_admission(
+    ledger: MutableMapping[str, Any], run: Mapping[str, Any],
+) -> None:
+    """Persist an identity-only marker when provider admissions cannot be counted."""
+    identity = {key: run.get(key) for key in _IDENTITY_FIELDS}
+    if (any(not isinstance(value, (str, int)) or isinstance(value, bool)
+            for value in identity.values())
+            or not isinstance(identity["attempt"], int)
+            or not isinstance(identity["start_number"], int)
+            or identity["attempt"] <= 0 or identity["start_number"] <= 0
+            or not all(identity[key] for key in (
+                "authorization_grant_id", "model", "route", "manifest_sha256",
+                "binary_sha256"))):
+        raise CampaignLedgerError("unresolved provider admission identity is invalid")
+    markers = _unresolved_provider_admission_markers(ledger)
+    existing = [item for item in markers if item.get("attempt") == identity["attempt"]]
+    if len(existing) > 1:
+        raise CampaignLedgerError("unresolved provider admission is duplicated")
+    if existing:
+        if any(existing[0].get(key) != value for key, value in identity.items()):
+            raise CampaignLedgerError("unresolved provider admission identity conflicts")
+        return
+    markers.append(identity)
+    ledger["unresolved_provider_admissions"] = markers

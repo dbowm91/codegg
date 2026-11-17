@@ -11,6 +11,7 @@ from dev.harness_lab.campaign_authorization import (
     _safe_event_measurement_diagnostic,
     _safe_required_success_jobs,
     preflight_campaign_run_start,
+    record_unresolved_provider_admission,
     reconcile_campaign_run_start,
     safe_campaign_run_fields,
 )
@@ -69,6 +70,121 @@ def _run(**overrides: object) -> dict:
 
 
 class CampaignAuthorizationTests(unittest.TestCase):
+    def test_unresolved_admission_blocks_preflight_until_reconciled(self) -> None:
+        ledger = _ledger()
+        pending = _run()
+        record_unresolved_provider_admission(ledger, pending)
+        record_unresolved_provider_admission(ledger, pending)
+
+        self.assertEqual(len(ledger["unresolved_provider_admissions"]), 1)
+        with self.assertRaisesRegex(CampaignLedgerError, "unresolved provider admission"):
+            preflight_campaign_run_start(
+                ledger, pending, expected_model=MODEL, expected_route="opencode_go",
+                expected_manifest_sha256="c" * 64,
+                expected_binary_sha256="d" * 64,
+                expected_provider_request_limit=1200,
+                expected_wallclock_limit_seconds=3600)
+
+        reconcile_campaign_run_start(
+            ledger, pending, provider_requests=3, status="completed_unqualified")
+        self.assertEqual(ledger["unresolved_provider_admissions"], [])
+        next_run = _run(attempt=3, start_number=4)
+        preview = preflight_campaign_run_start(
+            ledger, next_run, expected_model=MODEL, expected_route="opencode_go",
+            expected_manifest_sha256="c" * 64,
+            expected_binary_sha256="d" * 64,
+            expected_provider_request_limit=1200,
+            expected_wallclock_limit_seconds=3600)
+        self.assertEqual(preview["start_number"], 4)
+
+    def test_unresolved_admission_identity_conflict_is_refused(self) -> None:
+        ledger = _ledger()
+        record_unresolved_provider_admission(ledger, _run())
+        before = copy.deepcopy(ledger)
+
+        with self.assertRaisesRegex(CampaignLedgerError, "identity conflicts"):
+            record_unresolved_provider_admission(
+                ledger, _run(binary_sha256="f" * 64))
+
+        self.assertEqual(ledger, before)
+
+    def test_runner_failure_projection_is_fixed_and_drops_raw_values(self) -> None:
+        projected = safe_campaign_run_fields({
+            "runner_failure_class": "PRIVATE_EXCEPTION_WITH_DETAILS",
+            "runner_failure_sites": {
+                "state": "observed",
+                "sites": [
+                    "dev.harness_lab.autonomy_run:run_case",
+                    "dev.harness_lab.tests.test_cli:private_test_name",
+                    "/private/worktree/source.py:main",
+                ],
+            },
+            "runner_failure_context": {
+                "state": "observed",
+                "exception_type": "TypeError",
+                "locations": [
+                    {"site": "dev.harness_lab.autonomy_run:run_case", "line": 3210},
+                    {"site": "/private/path:leak", "line": 8},
+                    {"site": "dev.harness_lab.tests.test_cli:test", "line": 9},
+                    {"site": "dev.harness_lab.autonomy_run:run_case", "line": True},
+                    {"site": "dev.harness_lab.autonomy_run:run_case", "line": 0},
+                    {"site": "dev.harness_lab.autonomy_run:run_case", "line": 3210,
+                     "message": "PRIVATE"},
+                ],
+                "path": "/private/path",
+                "exception_text": "PRIVATE provider text",
+            },
+            "exception_text": "do not retain",
+        })
+
+        self.assertEqual(projected, {
+            "runner_failure_class": "unexpected_exception",
+            "runner_failure_sites": {
+                "state": "observed",
+                "sites": ["dev.harness_lab.autonomy_run:run_case"],
+            },
+            "runner_failure_context": {
+                "state": "observed",
+                "exception_type": "TypeError",
+                "locations": [{
+                    "site": "dev.harness_lab.autonomy_run:run_case", "line": 3210,
+                }],
+            },
+        })
+        self.assertNotIn("PRIVATE", json.dumps(projected))
+
+    def test_runner_failure_sites_fail_closed_for_malformed_or_unbounded_values(self) -> None:
+        projected = safe_campaign_run_fields({
+            "runner_failure_sites": {
+                "state": "observed",
+                "sites": ["/private/path:secret", "dev.harness_lab.autonomy_run:" + "x" * 240],
+            },
+        })
+
+        self.assertEqual(projected["runner_failure_sites"], {
+            "state": "unavailable",
+            "sites": [],
+        })
+
+    def test_runner_failure_context_rejects_malformed_source_locations(self) -> None:
+        projected = safe_campaign_run_fields({
+            "runner_failure_context": {
+                "state": "observed",
+                "exception_type": "PRIVATE_exception_name",
+                "locations": [
+                    {"site": "/private/source.py:fail", "line": 42},
+                    {"site": "dev.harness_lab.autonomy_run:run_case", "line": -1},
+                    {"site": "dev.harness_lab.autonomy_run:run_case", "line": True},
+                ],
+            },
+        })
+
+        self.assertEqual(projected["runner_failure_context"], {
+            "state": "unavailable",
+            "exception_type": "non_builtin_exception",
+            "locations": [],
+        })
+
     def test_required_success_job_projection_fails_closed_for_missing_or_bad_status(self) -> None:
         projected = _safe_required_success_jobs({
             "workspace_tests": {
@@ -246,6 +362,7 @@ class CampaignAuthorizationTests(unittest.TestCase):
                 "raw_job_ids_retained": False,
                 "verifier_public_reconciliation": {
                     "schema": "h007_verifier_public_reconciliation_v1",
+                    "verifier_setup_failure_reason": "workspace_build_failure",
                     "failure_domain_counts": {"transcript_job_lifecycle": 1},
                     "public_domain_states": {"transcript_job_lifecycle": "incomplete"},
                     "classification": {
@@ -301,6 +418,11 @@ class CampaignAuthorizationTests(unittest.TestCase):
         self.assertEqual(continuation["contract_phase_statuses"], {"cli_export": "not_started"})
         attribution = diagnostic["verifier_public_reconciliation"][
             "failed_job_status_attribution"]
+        self.assertEqual(
+            diagnostic["verifier_public_reconciliation"][
+                "verifier_setup_failure_reason"],
+            "workspace_build_failure",
+        )
         self.assertEqual(attribution["rows"], [{
             "error_class": "execution_backend_unavailable",
             "argument_state": "string",
@@ -313,6 +435,16 @@ class CampaignAuthorizationTests(unittest.TestCase):
                                "private_contract_phase"):
             self.assertNotIn(private_marker, encoded)
 
+        hostile_receipt = copy.deepcopy(case_receipt)
+        hostile_receipt["task_completion_diagnostic"]["verifier_public_reconciliation"][
+            "verifier_setup_failure_reason"] = "PRIVATE_PATH /tmp/secret"
+        hostile_projection = safe_campaign_run_fields(
+            _run(), canonical_identity=_run(), case_receipt=hostile_receipt)
+        self.assertNotIn(
+            "verifier_setup_failure_reason",
+            hostile_projection["h007_completion_diagnostic"]["verifier_public_reconciliation"],
+        )
+
         invalid_receipt = copy.deepcopy(case_receipt)
         invalid_receipt["task_completion_diagnostic"][
             "verifier_public_reconciliation"]["failed_job_status_attribution"][
@@ -323,6 +455,47 @@ class CampaignAuthorizationTests(unittest.TestCase):
             "failed_job_status_attribution",
             invalid["h007_completion_diagnostic"]["verifier_public_reconciliation"],
         )
+
+    def test_safe_campaign_projects_bounded_job_event_trace_without_raw_ids(self) -> None:
+        job_id = "5a4c2d88-29a7-4ea7-b617-1833bcb6c80b"
+        receipt = {
+            "job_tool_sequence_diagnostic": {
+                "schema": "h007_job_tool_sequence_v1",
+                "state": "observed",
+                "sequence_truncated": False,
+                "raw_job_ids_retained": False,
+                "tool_arguments_retained": False,
+                "tool_outputs_retained": False,
+                "events": [{
+                    "index": 41,
+                    "tool": "job",
+                    "job_alias": "J02",
+                    "job_id_present": True,
+                    "job_id_argument_state": "string",
+                    "job_id_argument_matches_result": "matched",
+                    "action": "status",
+                    "job_status": "unknown",
+                    "call_status": "failed",
+                    "tool_error_class": None,
+                    "job_status_error_class": "tool_execution_failed",
+                    "started_elapsed_ms": 1_000,
+                    "finished_elapsed_ms": 1_010,
+                    "job_id": job_id,
+                    "private_payload": "PRIVATE_PAYLOAD",
+                }],
+            },
+        }
+        projected = safe_campaign_run_fields(
+            _run(), canonical_identity=_run(), case_receipt=receipt)
+        trace = projected["job_tool_sequence_event_trace"]
+        self.assertEqual(trace["schema"], "campaign_h007_job_tool_sequence_event_trace_v1")
+        self.assertEqual(trace["state"], "observed")
+        self.assertEqual(trace["events"][0]["job_alias"], "J02")
+        self.assertEqual(trace["events"][0]["index"], 41)
+        self.assertEqual(trace["events"][0]["job_status_error_class"], "tool_execution_failed")
+        encoded = json.dumps(projected)
+        self.assertNotIn(job_id, encoded)
+        self.assertNotIn("PRIVATE_PAYLOAD", encoded)
 
     def test_event_measurement_projection_rejects_malformed_and_raw_fields(self) -> None:
         malformed = _safe_event_measurement_diagnostic({

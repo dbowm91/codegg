@@ -144,6 +144,41 @@ class JobIdArgumentTelemetryTests(unittest.TestCase):
         for private_value in (private_id, digest, "PRIVATE_DETAIL", "PRIVATE_UNRECOGNIZED_OUTPUT"):
             self.assertNotIn(private_value, encoded)
 
+    def test_failed_status_with_echoed_request_id_is_bound_in_safe_acp_projection(self) -> None:
+        requested_id = "5a4c2d88-29a7-4ea7-b617-1833bcb6c80b"
+        digest = hashlib.sha256(requested_id.encode("utf-8")).hexdigest()
+        projector = autonomy_run._ToolCallProjector()
+        projector.absorb({"method": "session/update", "_received_elapsed_ms": 10,
+                          "params": {"update": {
+                              "sessionUpdate": "tool_call", "toolCallId": "failed-status",
+                              "title": "job", "codeggAction": "status",
+                              "codeggJobIdArgumentState": "string",
+                              "codeggJobIdArgumentSha256": digest,
+                              "codeggArgumentsSha256": "a" * 64,
+                          }}})
+        projector.absorb({"method": "session/update", "_received_elapsed_ms": 20,
+                          "params": {"update": {
+                              "sessionUpdate": "tool_call_update", "toolCallId": "failed-status",
+                              "status": "failed",
+                              "rawOutput": (
+                                  "Error: tool execution failed: job not found\n"
+                                  f"job_id: {requested_id}"
+                              ),
+                          }}})
+
+        calls = projector.calls()
+        self.assertEqual(calls[0]["job_id_argument_matches_result"], "matched")
+        safe = autonomy_run.diagnostics.summarize_job_tool_sequence(calls)
+        self.assertEqual(safe["unbound_job_tool_call_count"], 0)
+        self.assertEqual(safe["failed_job_status_error_class_counts"], {"job_not_found": 1})
+        attribution = safe["failed_job_status_attribution"]
+        self.assertEqual(attribution["state"], "observed")
+        self.assertEqual(attribution["rows"][0]["request_result_state"], "matched")
+        encoded = json.dumps(safe)
+        self.assertNotIn(requested_id, encoded)
+        self.assertNotIn(digest, encoded)
+        self.assertNotIn("job not found", encoded)
+
     def test_failed_job_status_attribution_joins_error_and_result_binding_safely(self) -> None:
         requested_id = "5a4c2d88-29a7-4ea7-b617-1833bcb6c80b"
         digest = hashlib.sha256(requested_id.encode("utf-8")).hexdigest()
@@ -205,6 +240,116 @@ class JobIdArgumentTelemetryTests(unittest.TestCase):
             requested_id, digest, "PRIVATE_BACKEND_DETAIL", "PRIVATE_ATTRIBUTION_SENTINEL",
         ):
             self.assertNotIn(private_value, encoded)
+
+    def test_job_tool_sequence_event_trace_keeps_aliases_and_drops_private_fields(self) -> None:
+        requested_id = "5a4c2d88-29a7-4ea7-b617-1833bcb6c80b"
+        source = {
+            "schema": "h007_job_tool_sequence_v1",
+            "state": "observed",
+            "sequence_truncated": False,
+            "raw_job_ids_retained": False,
+            "tool_arguments_retained": False,
+            "tool_outputs_retained": False,
+            "events": [
+                {
+                    "index": 10,
+                    "tool": "test",
+                    "job_alias": "J01",
+                    "job_id_present": True,
+                    "job_id_argument_state": "unobserved",
+                    "job_id_argument_matches_result": "not_applicable",
+                    "action": "submit",
+                    "job_status": "running",
+                    "call_status": "completed",
+                    "tool_error_class": None,
+                    "job_status_error_class": None,
+                    "started_elapsed_ms": 100,
+                    "finished_elapsed_ms": 110,
+                    "job_id": requested_id,
+                    "private_arguments": "PRIVATE_ARGUMENTS",
+                },
+                {
+                    "index": 11,
+                    "tool": "job",
+                    "job_alias": "J01",
+                    "job_id_present": True,
+                    "job_id_argument_state": "string",
+                    "job_id_argument_matches_result": "matched",
+                    "action": "status",
+                    "job_status": "unknown",
+                    "call_status": "failed",
+                    "tool_error_class": None,
+                    "job_status_error_class": "tool_execution_failed",
+                    "started_elapsed_ms": 120,
+                    "finished_elapsed_ms": 130,
+                    "job_id": requested_id,
+                    "private_output": "PRIVATE_OUTPUT",
+                },
+            ],
+        }
+        safe = autonomy_run.diagnostics.safe_job_tool_sequence_event_trace(source)
+        self.assertEqual(safe["state"], "observed")
+        self.assertEqual(safe["event_count"], 2)
+        self.assertEqual(safe["events"][1]["job_alias"], "J01")
+        self.assertEqual(safe["events"][1]["job_status_error_class"], "tool_execution_failed")
+        encoded = json.dumps(safe)
+        for private_value in (requested_id, "PRIVATE_ARGUMENTS", "PRIVATE_OUTPUT"):
+            self.assertNotIn(private_value, encoded)
+
+    def test_job_tool_sequence_event_trace_fails_closed_on_invalid_or_truncated_input(self) -> None:
+        source = {
+            "schema": "h007_job_tool_sequence_v1",
+            "state": "observed",
+            "sequence_truncated": False,
+            "raw_job_ids_retained": False,
+            "tool_arguments_retained": False,
+            "tool_outputs_retained": False,
+            "events": [{
+                "index": 1,
+                "tool": "job",
+                "job_alias": "J01",
+                "job_id_present": True,
+                "job_id_argument_state": "string",
+                "job_id_argument_matches_result": "matched",
+                "action": "status",
+                "job_status": "unknown",
+                "call_status": "failed",
+                "tool_error_class": None,
+                "job_status_error_class": "PRIVATE_ERROR_CLASS",
+                "started_elapsed_ms": None,
+                "finished_elapsed_ms": None,
+            }],
+        }
+        invalid = autonomy_run.diagnostics.safe_job_tool_sequence_event_trace(source)
+        self.assertEqual(invalid["state"], "unavailable")
+        self.assertEqual(invalid["events"], [])
+        source["state"] = []
+        invalid_state = autonomy_run.diagnostics.safe_job_tool_sequence_event_trace(source)
+        self.assertEqual(invalid_state["state"], "unavailable")
+        source["state"] = "observed"
+        valid_event = {
+            "index": 1,
+            "tool": "job",
+            "job_alias": "J01",
+            "job_id_present": True,
+            "job_id_argument_state": "string",
+            "job_id_argument_matches_result": "matched",
+            "action": "status",
+            "job_status": "unknown",
+            "call_status": "failed",
+            "tool_error_class": None,
+            "job_status_error_class": "tool_execution_failed",
+            "started_elapsed_ms": None,
+            "finished_elapsed_ms": None,
+        }
+        source["events"] = [
+            valid_event
+            for _ in range(autonomy_run.diagnostics.MAX_JOB_SEQUENCE_EVENTS + 1)
+        ]
+        truncated = autonomy_run.diagnostics.safe_job_tool_sequence_event_trace(source)
+        self.assertEqual(truncated["state"], "truncated")
+        self.assertTrue(truncated["sequence_truncated"])
+        self.assertEqual(truncated["event_count"], 0)
 
     def test_failed_background_test_submit_keeps_only_allowlisted_error_class(self) -> None:
         projector = autonomy_run._ToolCallProjector()
@@ -970,6 +1115,17 @@ class ProviderRequestAccountingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             self.assertIsNone(autonomy_run._provider_request_admissions(
                 pathlib.Path(temp) / "missing.log"))
+
+    def test_oversized_or_non_utf8_provider_admission_source_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            source = pathlib.Path(temp) / "provider-admissions.jsonl"
+            source.write_bytes(b"{" * 9)
+            with mock.patch.object(autonomy_run,
+                                   "_MAX_PROVIDER_ADMISSION_SOURCE_BYTES", 8):
+                self.assertIsNone(autonomy_run._provider_request_admissions(source))
+
+            source.write_bytes(b"\xff\xfe")
+            self.assertIsNone(autonomy_run._provider_request_admissions(source))
 
     def test_each_lane_receives_only_the_remaining_shared_suite_cap(self) -> None:
         policy = budget.BudgetPolicy(max_provider_requests=5)
@@ -1776,6 +1932,27 @@ class H007TimeoutDiagnosticTests(unittest.TestCase):
             }),
             {},
         )
+
+    def test_postrun_projection_collects_calls_before_h007_pause_adjustment(self) -> None:
+        suite = autonomy.load_autonomy_suite(
+            REPO_ROOT / "dev/harness_lab/fixtures/agent_autonomy_s018_muse_continuation_v96")
+        case = suite.case(autonomy_run.H007_CASE_ID)
+        observed_calls = [
+            {"index": 0, "started_elapsed_ms": 900, "finished_elapsed_ms": 1_000},
+            {"index": 1, "started_elapsed_ms": 2_500, "finished_elapsed_ms": 2_800},
+        ]
+        with mock.patch.object(autonomy_run, "_observed_tool_calls",
+                               return_value=observed_calls) as collect:
+            raw_calls, qualification_calls = autonomy_run._postrun_tool_call_projection(
+                object(), case, [(1, 500)],
+            )
+
+        collect.assert_called_once()
+        self.assertIs(raw_calls, observed_calls)
+        self.assertEqual(qualification_calls[0]["finished_elapsed_ms"], 1_000)
+        self.assertEqual(qualification_calls[1]["started_elapsed_ms"], 2_000)
+        self.assertEqual(qualification_calls[1]["finished_elapsed_ms"], 2_300)
+        self.assertEqual(observed_calls[1]["started_elapsed_ms"], 2_500)
 
     def test_prompt_progress_snapshot_is_bounded_and_malformed_notes_are_unavailable(self) -> None:
         suite_root = REPO_ROOT / "dev/harness_lab/fixtures/agent_autonomy_s018_muse_continuation_v93"

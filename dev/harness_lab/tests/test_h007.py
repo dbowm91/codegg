@@ -1993,10 +1993,12 @@ class H007CaseAndResultTests(unittest.TestCase):
             "event_measurement_complete": True,
         }
         verifier = {
+            "state": "setup_error",
             "failure_domain_counts": {
                 "continuation_boundary": 1,
                 "transcript_job_lifecycle": 1,
             },
+            "setup_failure_reason": "workspace_build_failure",
         }
 
         result = h007_results.summarize_task_completion(
@@ -2008,6 +2010,8 @@ class H007CaseAndResultTests(unittest.TestCase):
         self.assertEqual(result["state"], "verification_failed")
         self.assertIn("independent_verifier_failures", result["reasons"])
         reconciliation = result["verifier_public_reconciliation"]
+        self.assertEqual(
+            reconciliation["verifier_setup_failure_reason"], "workspace_build_failure")
         self.assertEqual(reconciliation["public_domain_states"], {
             "continuation_boundary": "complete",
             "transcript_job_lifecycle": "complete",
@@ -2052,6 +2056,30 @@ class H007CaseAndResultTests(unittest.TestCase):
         self.assertFalse(reconciliation["assertion_text_retained"])
         self.assertFalse(reconciliation["raw_job_ids_retained"])
         self.assertNotIn("PRIVATE_ASSERTION_TEXT", json.dumps(result))
+
+        hostile_verifier = h007_results.summarize_task_completion(
+            terminal="completed", task_outcome="failed",
+            verifier_outcome="setup_error", continuation=continuation,
+            verifier_diagnostic={
+                "state": "setup_error",
+                "setup_failure_reason": "PRIVATE_PATH /tmp/secret",
+            },
+            horizon_evidence=horizon,
+            job_sequence_diagnostic={"unbound_job_tool_call_count": 0})
+        self.assertIsNone(hostile_verifier["verifier_public_reconciliation"]
+                          ["verifier_setup_failure_reason"])
+
+        non_setup_verifier = h007_results.summarize_task_completion(
+            terminal="completed", task_outcome="failed",
+            verifier_outcome="assertion_failures", continuation=continuation,
+            verifier_diagnostic={
+                "state": "assertion_failures",
+                "setup_failure_reason": "workspace_build_failure",
+            },
+            horizon_evidence=horizon,
+            job_sequence_diagnostic={"unbound_job_tool_call_count": 0})
+        self.assertIsNone(non_setup_verifier["verifier_public_reconciliation"]
+                          ["verifier_setup_failure_reason"])
 
     def test_verifier_failure_with_missing_public_evidence_is_not_a_disagreement(self):
         result = h007_results.summarize_task_completion(

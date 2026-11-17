@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import tempfile
@@ -21,6 +22,102 @@ from . import ledger
 from . import improve
 from . import pilot as pilot_module
 from . import sustained as sustained_module
+
+
+def _safe_runner_failure_class(error: Exception) -> str:
+    """Map runner failures to a fixed public class without retaining details."""
+    if isinstance(error, HarnessError):
+        return "harness_error"
+    if isinstance(error, budget.BudgetExhausted):
+        return "budget_exhausted"
+    if isinstance(error, TimeoutError):
+        return "timeout"
+    if isinstance(error, OSError):
+        return "os_error"
+    if isinstance(error, ValueError):
+        return "value_error"
+    if isinstance(error, RuntimeError):
+        return "runtime_error"
+    return "unexpected_exception"
+
+
+_SAFE_RUNNER_FAILURE_SITE_MODULE = re.compile(
+    r"dev\.harness_lab(?:\.[A-Za-z_][A-Za-z0-9_]*)+\Z"
+)
+_SAFE_RUNNER_FAILURE_SITE_FUNCTION = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_SAFE_RUNNER_BUILTIN_EXCEPTION_TYPES = frozenset({
+    "AssertionError", "AttributeError", "BlockingIOError", "BrokenPipeError",
+    "ChildProcessError", "ConnectionAbortedError", "ConnectionError",
+    "ConnectionRefusedError", "ConnectionResetError", "EOFError", "ExceptionGroup",
+    "FileNotFoundError", "ImportError", "IndexError", "InterruptedError", "IsADirectoryError",
+    "KeyError", "LookupError", "MemoryError", "ModuleNotFoundError", "NameError",
+    "NotADirectoryError", "NotImplementedError", "OSError", "OverflowError", "PermissionError",
+    "ProcessLookupError", "RuntimeError", "StopIteration", "SyntaxError", "SystemError",
+    "TimeoutError", "TypeError", "UnicodeDecodeError", "UnicodeEncodeError", "UnicodeError",
+    "UnicodeTranslateError", "ValueError", "ZeroDivisionError",
+})
+_SAFE_RUNNER_EXCEPTION_TYPE_ALIASES = ("HarnessError", "HarnessTimeout", "HarnessTurnFailure")
+_SAFE_RUNNER_EXCEPTION_LINE_MAX = 1_000_000
+
+
+def _safe_runner_exception_type(error: Exception) -> str:
+    """Return a fixed exception type label without retaining provider text."""
+    for alias in _SAFE_RUNNER_EXCEPTION_TYPE_ALIASES:
+        known_type = globals().get(alias)
+        if isinstance(known_type, type) and isinstance(error, known_type):
+            return alias
+    for error_type in type(error).__mro__:
+        module = getattr(error_type, "__module__", None)
+        name = getattr(error_type, "__name__", None)
+        if (module == "builtins" and isinstance(name, str)
+                and name in _SAFE_RUNNER_BUILTIN_EXCEPTION_TYPES):
+            return name
+    return "non_builtin_exception"
+
+
+def _safe_runner_failure_sites(error: Exception) -> dict[str, object]:
+    """Project bounded in-repository frame names, without paths, lines, or locals."""
+    sites: list[str] = []
+    traceback = error.__traceback__
+    while traceback is not None:
+        frame = traceback.tb_frame
+        module = frame.f_globals.get("__name__")
+        function = frame.f_code.co_name
+        if (isinstance(module, str) and ".tests." not in module
+                and _SAFE_RUNNER_FAILURE_SITE_MODULE.fullmatch(module)
+                and _SAFE_RUNNER_FAILURE_SITE_FUNCTION.fullmatch(function)):
+            site = f"{module}:{function}"
+            if len(site) <= 192 and site not in sites:
+                sites.append(site)
+        traceback = traceback.tb_next
+    sites = sites[-8:]
+    return {"state": "observed" if sites else "unavailable", "sites": sites}
+
+
+def _safe_runner_failure_context(error: Exception) -> dict[str, object]:
+    """Project allowlisted exception types and in-repository call-site lines."""
+    locations: list[dict[str, object]] = []
+    traceback = error.__traceback__
+    while traceback is not None:
+        frame = traceback.tb_frame
+        module = frame.f_globals.get("__name__")
+        function = frame.f_code.co_name
+        line = traceback.tb_lineno
+        if (isinstance(module, str) and ".tests." not in module
+                and _SAFE_RUNNER_FAILURE_SITE_MODULE.fullmatch(module)
+                and _SAFE_RUNNER_FAILURE_SITE_FUNCTION.fullmatch(function)
+                and isinstance(line, int) and not isinstance(line, bool)
+                and 1 <= line <= _SAFE_RUNNER_EXCEPTION_LINE_MAX):
+            location = {"site": f"{module}:{function}", "line": line}
+            if location not in locations:
+                locations.append(location)
+        traceback = traceback.tb_next
+    locations = locations[-8:]
+    return {
+        "state": "observed" if locations else "unavailable",
+        "exception_type": _safe_runner_exception_type(error),
+        "locations": locations,
+    }
 
 
 def _sustained_plans(trials: int) -> list:
@@ -522,17 +619,105 @@ def main(argv: list[str] | None = None) -> int:
                 )
             elif any((args.campaign_ledger, args.campaign_preflight, args.campaign_evidence)):
                 raise HarnessError("campaign accounting flags are only valid for the H007 case")
-            receipt = autonomy_run_module.run_suite(
-                _binary(args.binary), suite, args.model, budget_policy=policy,
-                lane_root=lane, profile=args.profile, timeout=args.timeout,
-                case_ids=case_ids,
-                min_free_disk_bytes=args.min_free_disk_bytes)
+            runner_exception_class = None
+            exception_provider_requests = None
+            exception_h007_run = None
+            try:
+                receipt = autonomy_run_module.run_suite(
+                    _binary(args.binary), suite, args.model, budget_policy=policy,
+                    lane_root=lane, profile=args.profile, timeout=args.timeout,
+                    case_ids=case_ids,
+                    min_free_disk_bytes=args.min_free_disk_bytes)
+            except Exception as error:
+                if not h007_selected or campaign_preflight is None \
+                        or campaign_ledger_path is None or campaign_evidence_path is None:
+                    raise
+                runner_exception_class = _safe_runner_failure_class(error)
+                admissions_path = lane / "case00" / "artifacts" \
+                    / "provider-request-admissions.jsonl"
+                try:
+                    admissions_path.stat()
+                except FileNotFoundError:
+                    exception_provider_requests = None
+                except OSError:
+                    exception_provider_requests = None
+                else:
+                    exception_provider_requests = (
+                        autonomy_run_module._provider_request_admissions(
+                            admissions_path, require_receipt_jsonl=True))
+
+                if exception_provider_requests is None:
+                    latest_ledger = json.loads(
+                        campaign_ledger_path.read_text(encoding="utf-8"))
+                    campaign_authorization.record_unresolved_provider_admission(
+                        latest_ledger, campaign_preflight)
+                    latest_ledger["last_reconciled_at_utc"] = datetime.now(
+                        timezone.utc).isoformat(timespec="seconds")
+                    _write_json_atomic(campaign_ledger_path, latest_ledger)
+                    exception_status = "provider_admission_unresolved"
+                    count_source = "provider_boundary_safe_aggregate_unavailable"
+                elif exception_provider_requests == 0:
+                    exception_status = "preflight_passed_without_provider_admission"
+                    count_source = "provider_boundary_safe_aggregate"
+                else:
+                    exception_status = "completed_unqualified"
+                    count_source = "provider_boundary_safe_aggregate"
+                    exception_h007_run = {
+                        "case_id": autonomy_run_module.H007_CASE_ID,
+                        "provider_request_count": exception_provider_requests,
+                        "solved": False,
+                        "runner_exit_code": 1,
+                        "runner_failure_class": runner_exception_class,
+                        "runner_failure_sites": _safe_runner_failure_sites(error),
+                        "runner_failure_context": _safe_runner_failure_context(error),
+                        "safe_completion_projection_available": False,
+                        "runner_failure_text_retained": False,
+                    }
+                    receipt = None
+
+                if exception_h007_run is None:
+                    evidence = {
+                        "schema": "s019_campaign_run_diagnostic_v1",
+                        "attempt": campaign_preflight["attempt"],
+                        "start_number": campaign_preflight["start_number"],
+                        "authorization_grant_id": campaign_preflight[
+                            "authorization_grant_id"],
+                        "model": campaign_preflight["model"],
+                        "route": campaign_preflight["route"],
+                        "manifest_sha256": campaign_preflight["manifest_sha256"],
+                        "binary_sha256": campaign_preflight["binary_sha256"],
+                        "status": exception_status,
+                        "provider_requests_observed": exception_provider_requests,
+                        "provider_request_count_source": count_source,
+                        "runner_failure_class": runner_exception_class,
+                        "runner_failure_text_retained": False,
+                        "safe_completion_projection_available": False,
+                        "raw_prompt_transcript_tool_arguments_tool_outputs_and_verifier_output_inspected": False,
+                        "credential_value_retained": False,
+                    }
+                    if exception_provider_requests == 0:
+                        evidence["campaign_ledger_unchanged"] = True
+                    campaign_evidence_path.write_text(
+                        json.dumps(evidence, indent=2, sort_keys=True) + "\n",
+                        encoding="utf-8")
+                    summary = {
+                        "ok": False,
+                        "attempt": campaign_preflight["attempt"],
+                        "campaign_status": exception_status,
+                        "runner_failure_class": runner_exception_class,
+                        "safe_evidence": str(campaign_evidence_path),
+                    }
+                    if exception_provider_requests == 0:
+                        summary["provider_requests_observed"] = 0
+                    print(json.dumps(summary, sort_keys=True))
+                    return 2
             campaign_result = None
             if h007_selected and campaign_ledger_path is not None \
                     and campaign_preflight is not None \
                     and campaign_evidence_path is not None:
-                h007_run = next((run for run in receipt.get("runs", [])
-                                 if run.get("case_id") == autonomy_run_module.H007_CASE_ID), {})
+                h007_run = exception_h007_run or next((
+                    run for run in receipt.get("runs", [])
+                    if run.get("case_id") == autonomy_run_module.H007_CASE_ID), {})
                 provider_requests = h007_run.get("provider_request_count")
                 if not isinstance(provider_requests, int) or isinstance(provider_requests, bool):
                     provider_requests = receipt.get("budget", {}).get("provider_requests")
@@ -569,6 +754,12 @@ def main(argv: list[str] | None = None) -> int:
                         "binary_sha256": campaign_preflight["binary_sha256"],
                         "status": status,
                         "provider_requests_observed": provider_requests,
+                        "provider_request_count_source": (
+                            "provider_boundary_safe_aggregate"
+                            if exception_h007_run is not None else "runner_receipt"),
+                        "runner_failure_class": runner_exception_class,
+                        "runner_failure_text_retained": False,
+                        "safe_completion_projection_available": exception_h007_run is None,
                         "current_goal_authorized_starts": goal_limit,
                         "current_goal_starts_consumed_before": goal_consumed,
                         "current_goal_starts_consumed_after": goal_consumed + 1,
@@ -614,6 +805,17 @@ def main(argv: list[str] | None = None) -> int:
                     campaign_evidence_path.write_text(
                         json.dumps(evidence, indent=2, sort_keys=True) + "\n",
                         encoding="utf-8")
+            if runner_exception_class is not None:
+                print(json.dumps({
+                    "ok": False,
+                    "attempt": campaign_preflight["attempt"],
+                    "campaign_status": "completed_unqualified",
+                    "provider_requests_observed": exception_provider_requests,
+                    "campaign_reconciliation": campaign_result,
+                    "runner_failure_class": runner_exception_class,
+                    "safe_evidence": str(campaign_evidence_path),
+                }, sort_keys=True))
+                return 2
             rendered = json.dumps(receipt, indent=2, sort_keys=True)
             if args.output is not None:
                 args.output.parent.mkdir(parents=True, exist_ok=True)

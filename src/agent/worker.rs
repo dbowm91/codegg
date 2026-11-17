@@ -3331,10 +3331,11 @@ mod prompt_ledger_tests {
             "a fresh child loop carries no section identity until the compiled prompt records it"
         );
         child.set_prompt_section_digests(digests.clone());
-        let request = delegated_ledger_request(&compiled);
-        let events = ProviderTurnAdapter::receive_with_retry_context(&mut child, &request, None)
-            .await
-            .expect("the delegated attempt completes");
+        let mut request = delegated_ledger_request(&compiled);
+        let events =
+            ProviderTurnAdapter::receive_with_retry_context(&mut child, &mut request, None)
+                .await
+                .expect("the delegated attempt completes");
         assert!(events.is_empty(), "the stub provider streams no events");
         let rows = crate::session::request_ledger::TurnRequestLedgerStore::new(pool)
             .turn_attempts("delegated-child-ledger", 1)

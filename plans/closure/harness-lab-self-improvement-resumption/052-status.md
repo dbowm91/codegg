@@ -20,9 +20,9 @@ S052 is closed at its declared diagnostic scope. The safe projection now exposes
 |---|---|---|
 | Only allowlisted complete statuses count as complete | 221 focused tests; attempt 66 phase and contract-phase summaries | Pass: 7/7 public phases and 5/5 contract phases project as complete; `document_valid` remains false because final required jobs are incomplete |
 | Attribute failed status calls without retaining IDs or error text | Attempt 66 safe cross-tab | Pass: five `execution_backend_unavailable` rows had string-shaped arguments, no returned ID, and unobserved request/result correlation; seven `tool_execution_failed` rows were matched and had returned IDs |
-| Preserve privacy and count bounds | S052 campaign projection tests; safe diagnostic and monitor summary | Pass: only fixed labels, enum values, and bounded counts are retained |
+| Preserve privacy and count bounds | S052 campaign projection tests; safe diagnostic | Pass: only fixed labels, enum values, and bounded counts are retained |
 | Exercise corrected diagnostics on unchanged v97 | Attempt 66 exact-head preflight and safe diagnostic | Pass for diagnostic coverage; H007 qualification failed |
-| Keep live telemetry and resource limits attributable | Attempt 66 preflight and monitor summary | Pass with caveat: request count was reconciled from the bounded lane-local admission parser because the monitor's per-sample request path was mispointed |
+| Keep live telemetry and resource limits attributable | Attempt 66 preflight and bounded lane-local admission parser | Pass with caveat: request count was reconciled from the bounded lane-local admission parser because the sampled request path was mispointed |
 
 ## 3. Production implementation evidence
 
@@ -71,7 +71,6 @@ Safe records:
 
 - Preflight: `plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt66-preflight-20261113.json`
 - Completion diagnostic: `plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt66-safe-diagnostic-20261113.json`
-- Monitor summary: `plans/closure/harness-lab-self-improvement-resumption/evidence/s019-attempt66-monitor-summary-20261113.json`
 - Campaign accounting: `plans/closure/harness-lab-self-improvement-resumption/evidence/s019-muse-diagnostic-authorization-20261109.json`
 
 Campaign counters after attempt 66: 66/200 combined starts, 22/40 supplemental-grant starts, and 37/120 task-authorized starts. The supplemental grant has 18 starts remaining; task authorization has 83 remaining. External billed USD is unknown when unreported.

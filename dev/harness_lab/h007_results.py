@@ -15,6 +15,7 @@ from typing import Any
 from .diagnostics import (
     SAFE_JOB_STATUS_ERROR_CLASSES,
     SAFE_TEST_SUBMIT_ERROR_CLASSES,
+    SAFE_VERIFIER_SETUP_FAILURE_REASONS,
     safe_job_status_failure_attribution,
 )
 
@@ -1390,6 +1391,14 @@ def _verifier_public_reconciliation(
     if not isinstance(lifecycle, Mapping):
         lifecycle = {}
     horizon = horizon_evidence if isinstance(horizon_evidence, Mapping) else {}
+    setup_failure_reason = (
+        verifier_diagnostic.get("setup_failure_reason")
+        if (isinstance(verifier_diagnostic, Mapping)
+            and verifier_diagnostic.get("state") == "setup_error") else None
+    )
+    if (not isinstance(setup_failure_reason, str)
+            or setup_failure_reason not in SAFE_VERIFIER_SETUP_FAILURE_REASONS):
+        setup_failure_reason = None
     job_sequence = (job_sequence_diagnostic
                     if isinstance(job_sequence_diagnostic, Mapping) else {})
     success_jobs = continuation.get("required_success_jobs")
@@ -1541,6 +1550,7 @@ def _verifier_public_reconciliation(
 
     result = {
         "schema": "h007_verifier_public_reconciliation_v1",
+        "verifier_setup_failure_reason": setup_failure_reason,
         "agent_transcript_terminal": {
             "state": (
                 "observed" if isinstance(serialized_transcript_diagnostic, Mapping)

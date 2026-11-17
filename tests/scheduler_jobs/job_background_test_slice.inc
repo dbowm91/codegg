@@ -433,6 +433,105 @@ async fn job_tool_enforces_exact_owner_and_wait_timeout_is_observation() {
     let _ = scheduler;
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn failed_job_status_is_a_successful_observation() {
+    use codegg_core::jobs::{AttemptCompletion, AttemptState};
+
+    let (submission, _scheduler, _notifications, store) = harness().await;
+    let workspace = tempfile::tempdir().expect("workspace fixture");
+    let workspace_id = submission
+        .workspace_id_for_root(workspace.path())
+        .await
+        .expect("workspace id");
+    let submitted = submission
+        .submit(
+            Some(codegg::scheduler::SubmissionKey::new("status-query-failed-job").unwrap()),
+            codegg_core::jobs::NewJob {
+                workspace_id,
+                session_id: Some("status-owner".into()),
+                turn_id: None,
+                kind: codegg_core::jobs::JobKind::Test,
+                source: codegg_core::jobs::JobSource::Interactive,
+                priority: codegg_core::jobs::JobPriority::Interactive,
+                payload: codegg_core::jobs::JobPayload::Test {
+                    command: "cargo test".into(),
+                    argv: vec!["cargo".into(), "test".into()],
+                    cwd: None,
+                    scope: None,
+                    parent_run_id: None,
+                    sandbox_profile: None,
+                    network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+                },
+                resource_request: codegg_core::jobs::ResourceRequest::for_kind(
+                    codegg_core::jobs::JobKind::Test,
+                ),
+                timeout: None,
+                retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
+                idempotency: codegg_core::jobs::IdempotencyClass::SafeRepeat,
+                not_before: None,
+                deadline: None,
+                schedule_id: None,
+                depends_on: vec![],
+                parent_job_id: None,
+                parent_attempt_id: None,
+                parent_call_id: None,
+                parent_program_id: None,
+                parent_instruction_sequence: None,
+                relation_kind: None,
+                target: Default::default(),
+            },
+        )
+        .await
+        .expect("submit job");
+    let attempt = store
+        .begin_attempt(
+            &submitted.job_id,
+            &DaemonGeneration::new_unchecked("status-query-test-generation"),
+        )
+        .await
+        .expect("begin attempt");
+    store
+        .finish_attempt(AttemptCompletion {
+            attempt_id: attempt.attempt_id,
+            state: AttemptState::Failed,
+            error: None,
+            run_id: None,
+        })
+        .await
+        .expect("finish failed attempt");
+
+    let tool = codegg::tool::job::JobTool::new().with_submission(submission);
+    let observed = tool
+        .execute_structured(
+            serde_json::json!({
+                "action": "status",
+                "job_id": submitted.job_id.as_str(),
+            }),
+            Some(ctx_for("status-owner", None, "status-query")),
+        )
+        .await
+        .expect("status lookup succeeds");
+    assert!(observed.success, "the status query itself succeeded");
+    assert_eq!(observed.value.as_ref().unwrap()["status"], "failed");
+    assert!(observed.output.starts_with("job failed\njob_id: "));
+
+    let missing = tool
+        .execute_structured(
+            serde_json::json!({
+                "action": "status",
+                "job_id": uuid::Uuid::new_v4().to_string(),
+            }),
+            Some(ctx_for("status-owner", None, "status-query-missing")),
+        )
+        .await
+        .expect("missing-job errors use the structured failure result");
+    assert!(!missing.success, "a failed lookup is still a failed call");
+    assert_eq!(
+        missing.value.as_ref().unwrap()["error_class"],
+        "job_not_found"
+    );
+}
+
 #[test]
 fn test_tool_schema_advertises_background_and_job_tool_registered() {
     let tool = codegg::tool::test::TestTool::new();
