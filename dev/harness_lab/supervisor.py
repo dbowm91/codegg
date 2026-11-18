@@ -1084,6 +1084,67 @@ def _h006_write_error_context(message: str) -> str | None:
     return lines[0] if lines else ""
 
 
+#: Artifact kinds a Cargo write can land on, in match order. Cargo 1.100
+#: compiles every target under `<target-dir>/debug/build/<pkg>/<META>/out/`,
+#: so the `build` component of a path is that layout rather than a build
+#: script. The kind says which artifact the write actually targeted.
+_H006_WRITE_ERROR_ARTIFACT_KINDS = (
+    (".rmeta", "rmeta"),
+    (".rlib", "rlib"),
+    (".timestamp", "timestamp"),
+    (".json", "metadata_json"),
+    (".o", "object"),
+    (".d", "dep_info"),
+)
+
+
+def _h006_write_error_os_numbers(message: str) -> list[int]:
+    """Return write-error `os error N` values outside the named vocabulary.
+
+    [`_H006_OS_ERROR_KINDS`] is a closed map, so an errno outside it was
+    previously dropped and left "a write failed" as the entire finding. The
+    syscall number is structural — never file content — so an unrecognised
+    value stays visible instead of being silently discarded.
+    """
+    if _h006_write_error_context(message) is None:
+        return []
+    numbers = {
+        int(raw) for raw in re.findall(r"\bos error\s+(\d{1,3})\b", message, re.IGNORECASE)
+    }
+    return sorted(numbers - set(_H006_OS_ERROR_KINDS))[:4]
+
+
+def _h006_write_error_artifact_kind(message: str, workspace: Path) -> str | None:
+    """Classify the artifact a failed write targeted, by extension alone.
+
+    Only the final path component's extension reaches the projection, so a
+    random rustc suffix, a hash, or a user path never does.
+    """
+    path_context = _h006_write_error_context(message)
+    if path_context is None:
+        return None
+    root = workspace.resolve()
+    normalized_context = path_context.replace("\\", "/").lower()
+    target_roots = (
+        str(root / "job-check" / ".cargo-target").replace("\\", "/").lower(),
+        "job-check/.cargo-target",
+    )
+    for target_root in target_roots:
+        match = re.search(re.escape(target_root) + r"(?=$|[/\s:'\"`,])",
+                          normalized_context)
+        if match is None:
+            continue
+        # Cut the written path at the first delimiter so the trailing error
+        # text ("... .rlib: invalid argument (os error 22)") is excluded.
+        written = re.split(r"[:\s'\"`,()]", normalized_context[match.end():], maxsplit=1)[0]
+        component = written.rstrip("/").rsplit("/", 1)[-1]
+        for extension, kind in _H006_WRITE_ERROR_ARTIFACT_KINDS:
+            if component.endswith(extension):
+                return kind
+        return "unclassified"
+    return None
+
+
 def _h006_write_error_path_role(message: str, workspace: Path) -> str | None:
     path_context = _h006_write_error_context(message)
     if path_context is None:
@@ -1178,6 +1239,8 @@ def _h006_compiler_diagnostics(
     compiler_error_message_kinds: set[str] = set()
     compiler_error_path_roles: set[str] = set()
     compiler_error_path_subroles: set[str] = set()
+    compiler_error_artifact_kinds: set[str] = set()
+    compiler_error_unmapped_os_numbers: set[int] = set()
     build_finished_count = 0
     lines = bounded.splitlines()
     sampled_lines = lines if len(lines) <= 256 else lines[:128] + lines[-128:]
@@ -1240,6 +1303,11 @@ def _h006_compiler_diagnostics(
             path_subrole = _h006_write_error_path_subrole(diagnostic_text, workspace)
             if path_subrole is not None:
                 compiler_error_path_subroles.add(path_subrole)
+            artifact_kind = _h006_write_error_artifact_kind(diagnostic_text, workspace)
+            if artifact_kind is not None:
+                compiler_error_artifact_kinds.add(artifact_kind)
+        compiler_error_unmapped_os_numbers.update(
+            _h006_write_error_os_numbers(diagnostic_text))
         for raw_os_error in re.findall(r"\bos error\s+(\d{1,3})\b", diagnostic_text, re.IGNORECASE):
             os_error_kind = _H006_OS_ERROR_KINDS.get(int(raw_os_error))
             if os_error_kind:
@@ -1265,6 +1333,8 @@ def _h006_compiler_diagnostics(
         ],
         "cargo_json_error_path_roles": sorted(compiler_error_path_roles),
         "cargo_json_error_path_subroles": sorted(compiler_error_path_subroles),
+        "cargo_json_write_error_artifact_kinds": sorted(compiler_error_artifact_kinds),
+        "cargo_json_write_error_os_numbers": sorted(compiler_error_unmapped_os_numbers)[:4],
         "cargo_json_build_finished_events": min(build_finished_count, 256),
     }
 
@@ -1339,6 +1409,8 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
         cargo_json_error_message_kinds: set[str] = set()
         cargo_json_error_path_roles: set[str] = set()
         cargo_json_error_path_subroles: set[str] = set()
+        cargo_json_write_error_artifact_kinds: set[str] = set()
+        cargo_json_write_error_os_numbers: set[int] = set()
         cargo_json_compiler_messages = 0
         cargo_json_error_messages = 0
         cargo_json_error_source_span_count = 0
@@ -1396,6 +1468,10 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
                     stream_diagnostics["cargo_json_error_path_roles"])
                 cargo_json_error_path_subroles.update(
                     stream_diagnostics["cargo_json_error_path_subroles"])
+                cargo_json_write_error_artifact_kinds.update(
+                    stream_diagnostics["cargo_json_write_error_artifact_kinds"])
+                cargo_json_write_error_os_numbers.update(
+                    stream_diagnostics["cargo_json_write_error_os_numbers"])
                 cargo_json_build_finished_events = min(
                     cargo_json_build_finished_events
                     + stream_diagnostics["cargo_json_build_finished_events"], 256)
@@ -1419,6 +1495,8 @@ def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
             ],
             "cargo_json_error_path_roles": sorted(cargo_json_error_path_roles),
             "cargo_json_error_path_subroles": sorted(cargo_json_error_path_subroles),
+            "cargo_json_write_error_artifact_kinds": sorted(cargo_json_write_error_artifact_kinds),
+            "cargo_json_write_error_os_numbers": sorted(cargo_json_write_error_os_numbers)[:4],
             "cargo_json_build_finished_events": cargo_json_build_finished_events,
         }
         diagnostics.append({

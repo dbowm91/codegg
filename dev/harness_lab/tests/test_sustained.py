@@ -301,6 +301,8 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "cargo_json_error_message_kinds": [],
             "cargo_json_error_path_roles": [],
             "cargo_json_error_path_subroles": [],
+            "cargo_json_write_error_artifact_kinds": [],
+            "cargo_json_write_error_os_numbers": [],
             "cargo_json_build_finished_events": 0,
         }])
         self.assertNotIn("PRIVATE_EXECUTOR_TEXT", json.dumps(diagnostic))
@@ -326,6 +328,8 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "cargo_json_error_message_kinds": [],
             "cargo_json_error_path_roles": [],
             "cargo_json_error_path_subroles": [],
+            "cargo_json_write_error_artifact_kinds": [],
+            "cargo_json_write_error_os_numbers": [],
             "cargo_json_build_finished_events": 0,
         }
         self.assertEqual(diagnostic, expected)
@@ -353,6 +357,8 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "cargo_json_error_message_kinds": [],
             "cargo_json_error_path_roles": [],
             "cargo_json_error_path_subroles": [],
+            "cargo_json_write_error_artifact_kinds": [],
+            "cargo_json_write_error_os_numbers": [],
             "cargo_json_build_finished_events": 0,
         })
         os_error_event = json.dumps({
@@ -435,6 +441,50 @@ class H006FailureDiagnosticTest(unittest.TestCase):
         self.assertEqual(
             diagnostic["cargo_json_error_path_subroles"], ["cargo_incremental_state"])
         self.assertNotIn(str(workspace), json.dumps(diagnostic))
+
+    def test_unmapped_write_errno_and_artifact_kind_stay_visible(self):
+        """An errno outside the named map must not vanish from the projection.
+
+        `cargo_json_os_error_kinds` only names eight numbers, so a hosted
+        write failure on any other one previously reported no syscall at all
+        and could not be diagnosed from the sanitized receipt. Cargo 1.100
+        also compiles every target under `debug/build/<pkg>/<META>/out/`, so
+        the subrole alone cannot say which artifact the write targeted.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"
+            artifact = (workspace / "job-check" / ".cargo-target" / "debug"
+                        / "build" / "job-core" / "607f04dd27ba51d5" / "out"
+                        / "libjob_core-607f04dd27ba51d5.rlib")
+            event = json.dumps({
+                "reason": "compiler-message",
+                "package_id": "path+file:///workspace/job-check/core#job-core@0.1.0",
+                "target": {"kind": ["lib"]},
+                "message": {
+                    "level": "error",
+                    "message": (
+                        f"failed to write {artifact}: "
+                        "invalid cross-device link (os error 18)"),
+                    "spans": [],
+                },
+            })
+            diagnostic = _h006_compiler_diagnostics(event, workspace=workspace)
+
+        self.assertEqual(
+            diagnostic["cargo_json_error_path_subroles"], ["cargo_build_script_artifact"])
+        self.assertEqual(diagnostic["cargo_json_write_error_artifact_kinds"], ["rlib"])
+        self.assertEqual(diagnostic["cargo_json_write_error_os_numbers"], [18])
+        # The number is named, so it is not duplicated as an unmapped one.
+        self.assertEqual(diagnostic["cargo_json_os_error_kinds"], [])
+        self.assertNotIn("607f04dd27ba51d5", json.dumps(diagnostic))
+
+        mapped = _h006_compiler_diagnostics(json.dumps({
+            "reason": "compiler-message",
+            "message": {"level": "error", "message": "failed to write out/x.rmeta: "
+                        "permission denied (os error 13)"},
+        }), workspace=workspace)
+        self.assertEqual(mapped["cargo_json_write_error_os_numbers"], [])
+        self.assertEqual(mapped["cargo_json_os_error_kinds"], ["permission_denied"])
 
 
 class LongHorizonNativeJobTest(unittest.TestCase):
@@ -603,6 +653,17 @@ class LongHorizonNativeJobTest(unittest.TestCase):
             {"name": "job", "arguments": {"action": "status", "job_id": "{job_id}"}},
             {"name": "write", "arguments": {
                 "path": "src/lib.rs", "content": "mod normalize;\nmod parser;\n\npub fn parse_version(input: &str) -> Option<(u32, u32, u32)> {\n    let parts = parser::split_version(input)?;\n    normalize::normalize(parts)\n}\n"}},
+            {"name": "job", "arguments": {"action": "status", "job_id": "{job_id}"}},
+            # A third write and a third observation. `job wait` reports a
+            # status only when the job reaches a terminal state inside its
+            # window, so a bounded wait that times out contributes no
+            # `running` sample: the assertion below had exactly two chances
+            # and both had to land while the job was still live. Every pair
+            # of adjacent observations keeps a write between them, so the
+            # intervening-write check holds for whichever pair reports
+            # `running`.
+            {"name": "write", "arguments": {
+                "path": "src/lib.rs", "content": "mod normalize;\nmod parser;\n\npub fn parse_version(input: &str) -> Option<(u32, u32, u32)> {\n    let parts = parser::split_version(input)?;\n    normalize::normalize(parts)\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn version_round_trips() {\n        assert_eq!(super::parse_version(\"v1.2.3\"), Some((1, 2, 3)));\n    }\n}\n"}},
             {"name": "job", "arguments": {"action": "status", "job_id": "{job_id}"}},
             {"name": "job", "arguments": {
                 "action": "wait", "job_id": "{job_id}", "timeout_ms": 300000}},
