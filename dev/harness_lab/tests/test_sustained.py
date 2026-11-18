@@ -29,6 +29,7 @@ from dev.harness_lab.supervisor import (
     _h006_path_mount_filesystem_pair_from_mountinfo,
     _h006_mount_id_from_fdinfo,
     _h006_mount_relationship_from_ids,
+    _h006_pid_path_mount_id,
     run_tool_trial,
 )
 
@@ -326,7 +327,8 @@ class H006FailureDiagnosticTest(unittest.TestCase):
                 encoding="utf-8")
             diagnostic = _h006_syscall_trace_diagnostics(
                 trace_path, ("same_mount",), (("overlay", "overlay"),),
-                ("same_resolved_mount",))
+                ("same_resolved_mount",),
+                (("exact_path", "nearest_existing_parent"),))
 
         self.assertEqual(diagnostic, {
             "state": "exdev_observed",
@@ -347,6 +349,9 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "path_mount_relationships": ["same_mount"],
             "path_mount_filesystem_pairs": [["overlay", "overlay"]],
             "path_resolved_mount_relationships": ["same_resolved_mount"],
+            "path_resolved_mount_path_states": [
+                ["exact_path", "nearest_existing_parent"]
+            ],
             "artifact_kinds": ["rmeta"],
         })
         serialized = json.dumps(diagnostic)
@@ -407,6 +412,40 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "resolved_mount_unavailable",
         )
 
+    @unittest.skipUnless(hasattr(os, "O_PATH"), "Linux path-mount probe requires O_PATH")
+    def test_resolved_mount_probe_matches_rename_symlink_and_missing_leaf_semantics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target_root = Path(directory) / "target"
+            target_root.mkdir()
+            pid = os.getpid()
+
+            root_mount, root_state = _h006_pid_path_mount_id(
+                pid, str(target_root), target_root)
+            self.assertTrue(root_mount and root_mount.isdigit())
+            self.assertEqual(root_state, "exact_path")
+
+            missing_mount, missing_state = _h006_pid_path_mount_id(
+                pid, str(target_root / "not-yet-created.rmeta"), target_root)
+            self.assertEqual(missing_mount, root_mount)
+            self.assertEqual(missing_state, "nearest_existing_parent")
+
+            link = target_root / "linked.rmeta"
+            link.symlink_to("/proc/1/stat")
+            link_mount, link_state = _h006_pid_path_mount_id(pid, str(link), target_root)
+            proc_mount, proc_state = _h006_pid_path_mount_id(
+                pid, "/proc/1/stat", Path("/"))
+            self.assertEqual(link_state, "exact_path")
+            self.assertEqual(proc_state, "exact_path")
+            self.assertEqual(link_mount, root_mount)
+            self.assertNotEqual(link_mount, proc_mount)
+
+            escape = target_root / "escape"
+            escape.symlink_to("/proc", target_is_directory=True)
+            escaped_mount, escaped_state = _h006_pid_path_mount_id(
+                pid, str(escape / "1" / "stat"), target_root)
+            self.assertIsNone(escaped_mount)
+            self.assertEqual(escaped_state, "path_open_unavailable")
+
     def test_syscall_trace_projection_rejects_oversize_input(self):
         with tempfile.TemporaryDirectory() as directory:
             trace_path = Path(directory) / "syscalls.trace"
@@ -423,6 +462,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "path_mount_relationships": [],
             "path_mount_filesystem_pairs": [],
             "path_resolved_mount_relationships": [],
+            "path_resolved_mount_path_states": [],
             "artifact_kinds": [],
         })
         self.assertNotIn("PRIVATE_TRACE", json.dumps(diagnostic))
