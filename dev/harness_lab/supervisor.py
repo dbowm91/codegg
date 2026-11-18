@@ -1406,6 +1406,62 @@ def _h006_syscall_path_subrole(path: str) -> str:
     return "cargo_target_root"
 
 
+def _h006_syscall_path_relationship(left: str, right: str) -> str:
+    """Describe endpoint layout with fixed labels, never returning path text."""
+    def absolute_components(path: str) -> tuple[str, ...] | None:
+        normalized = path.replace("\\", "/").lower()
+        if not normalized.startswith("/"):
+            return None
+        components = []
+        for component in normalized.split("/"):
+            if component in {"", "."}:
+                continue
+            if component == "..":
+                if components and components[-1] != "..":
+                    components.pop()
+                else:
+                    components.append(component)
+            else:
+                components.append(component)
+        return tuple(components)
+
+    left_parts = absolute_components(left)
+    right_parts = absolute_components(right)
+    if left_parts is None or right_parts is None:
+        return "relative_unresolved"
+    if left_parts == right_parts:
+        return "same_path"
+    if left_parts[:-1] == right_parts[:-1]:
+        return "same_parent"
+    if left_parts[:-1] == right_parts or right_parts[:-1] == left_parts:
+        return "ancestor_descendant"
+
+    def target_prefix(parts: tuple[str, ...]) -> tuple[str, ...] | None:
+        try:
+            index = parts.index(".cargo-target")
+        except ValueError:
+            return None
+        return parts[:index + 1]
+
+    left_root = target_prefix(left_parts)
+    right_root = target_prefix(right_parts)
+    if left_root is None or right_root is None or left_root != right_root:
+        return "different_roots"
+    left_tail = left_parts[len(left_root):]
+    right_tail = right_parts[len(right_root):]
+    left_profile = left_tail[0] if left_tail and left_tail[0] in {"debug", "release"} else None
+    right_profile = right_tail[0] if right_tail and right_tail[0] in {"debug", "release"} else None
+    if left_profile != right_profile:
+        return "different_profiles_same_target_root"
+    left_area = next((part for part in left_tail[1 if left_profile else 0:]
+                      if part in _H006_CARGO_TARGET_AREAS), None)
+    right_area = next((part for part in right_tail[1 if right_profile else 0:]
+                       if part in _H006_CARGO_TARGET_AREAS), None)
+    if left_area != right_area:
+        return "different_areas_same_profile"
+    return "different_paths_same_target_area"
+
+
 def _h006_syscall_trace_diagnostics(trace_path: Path) -> dict[str, Any]:
     """Project failed file-move syscalls without retaining any raw path text."""
     empty = {
@@ -1413,6 +1469,7 @@ def _h006_syscall_trace_diagnostics(trace_path: Path) -> dict[str, Any]:
         "operations": [],
         "path_role_pairs": [],
         "path_subrole_pairs": [],
+        "path_relationships": [],
         "artifact_kinds": [],
     }
     try:
@@ -1430,6 +1487,7 @@ def _h006_syscall_trace_diagnostics(trace_path: Path) -> dict[str, Any]:
     operations: set[str] = set()
     path_role_pairs: set[tuple[str, str]] = set()
     path_subrole_pairs: set[tuple[str, str]] = set()
+    path_relationships: set[str] = set()
     artifact_kinds: set[str] = set()
     for line in text.splitlines():
         match = _H006_SYSCALL_TRACE_LINE.match(line)
@@ -1442,6 +1500,9 @@ def _h006_syscall_trace_diagnostics(trace_path: Path) -> dict[str, Any]:
             path_role_pairs.add((roles[0], roles[1] if len(roles) > 1 else "unavailable"))
             path_subrole_pairs.add((
                 subroles[0], subroles[1] if len(subroles) > 1 else "unavailable"))
+            relationship = (_h006_syscall_path_relationship(paths[0], paths[1])
+                            if len(paths) > 1 else "unavailable")
+            path_relationships.add(relationship)
         lowered_paths = [path.lower() for path in paths[:2]]
         for extension, kind in _H006_WRITE_ERROR_ARTIFACT_KINDS:
             if any(path.endswith(extension) for path in lowered_paths):
@@ -1455,6 +1516,7 @@ def _h006_syscall_trace_diagnostics(trace_path: Path) -> dict[str, Any]:
         "operations": sorted(operations)[:8],
         "path_role_pairs": [list(pair) for pair in sorted(path_role_pairs)[:8]],
         "path_subrole_pairs": [list(pair) for pair in sorted(path_subrole_pairs)[:8]],
+        "path_relationships": sorted(path_relationships)[:8],
         "artifact_kinds": sorted(artifact_kinds)[:8],
     }
 

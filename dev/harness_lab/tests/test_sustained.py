@@ -334,6 +334,10 @@ class H006FailureDiagnosticTest(unittest.TestCase):
                 ["cargo_target_debug_rmeta_temp", "cargo_target_debug_deps"],
                 ["system_temp", "cargo_target_debug_deps"],
             ],
+            "path_relationships": [
+                "different_areas_same_profile",
+                "different_roots",
+            ],
             "artifact_kinds": ["rmeta"],
         })
         serialized = json.dumps(diagnostic)
@@ -353,6 +357,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "operations": [],
             "path_role_pairs": [],
             "path_subrole_pairs": [],
+            "path_relationships": [],
             "artifact_kinds": [],
         })
         self.assertNotIn("PRIVATE_TRACE", json.dumps(diagnostic))
