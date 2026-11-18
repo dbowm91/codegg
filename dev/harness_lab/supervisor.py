@@ -464,6 +464,12 @@ class AcpClient:
             return []
         return self._syscall_mount_probe.filesystem_pairs()
 
+    @property
+    def syscall_path_resolved_mount_relationships(self) -> list[str]:
+        if self._syscall_mount_probe is None:
+            return []
+        return self._syscall_mount_probe.resolved_relationships()
+
 
 def _signal_owned_group(process: subprocess.Popen[bytes], sig: int) -> None:
     if process.poll() is not None:
@@ -1550,22 +1556,66 @@ def _h006_path_mount_relationship_from_mountinfo(
     return "same_mount" if left_mount == right_mount else "different_mounts"
 
 
+def _h006_mount_id_from_fdinfo(text: str) -> str | None:
+    if len(text) > 4096:
+        return None
+    match = re.search(r"(?m)^mnt_id:\s*(\d+)\s*$", text)
+    return match.group(1) if match else None
+
+
+def _h006_mount_relationship_from_ids(
+    left_mount: str | None, right_mount: str | None,
+) -> str:
+    if left_mount is None or right_mount is None:
+        return "resolved_mount_unavailable"
+    return "same_resolved_mount" if left_mount == right_mount else "different_resolved_mounts"
+
+
+def _h006_pid_path_mount_id(pid: int, path: str, target_root: Path) -> str | None:
+    normalized = os.path.normpath(path)
+    if not _h006_is_target_path(normalized, target_root) or not hasattr(os, "O_PATH"):
+        return None
+    root = Path("/proc") / str(pid) / "root"
+    candidate = root / normalized.lstrip("/")
+    while candidate != root:
+        try:
+            fd = os.open(candidate, os.O_PATH | os.O_CLOEXEC)
+        except (FileNotFoundError, NotADirectoryError):
+            candidate = candidate.parent
+            continue
+        except (OSError, ValueError):
+            return None
+        try:
+            fdinfo_path = Path("/proc/self/fdinfo") / str(fd)
+            try:
+                with fdinfo_path.open("r", encoding="ascii", errors="replace") as source:
+                    return _h006_mount_id_from_fdinfo(source.read(4097))
+            except OSError:
+                return None
+        finally:
+            os.close(fd)
+    return None
+
+
 def _h006_pid_mount_diagnostics(
-    pid: int, left: str, right: str,
-) -> tuple[str, tuple[str, str] | None]:
+    pid: int, left: str, right: str, target_root: Path,
+) -> tuple[str, tuple[str, str] | None, str]:
     try:
         with (Path("/proc") / str(pid) / "mountinfo").open("rb") as source:
             payload = source.read(_H006_MOUNTINFO_MAX_BYTES + 1)
     except FileNotFoundError:
-        return "tracee_exited", None
+        return "tracee_exited", None, "resolved_mount_unavailable"
     except OSError:
-        return "mountinfo_unavailable", None
+        return "mountinfo_unavailable", None, "resolved_mount_unavailable"
     if len(payload) > _H006_MOUNTINFO_MAX_BYTES:
-        return "mountinfo_oversize", None
+        return "mountinfo_oversize", None, "resolved_mount_unavailable"
     mountinfo = payload.decode("utf-8", errors="replace")
+    left_resolved = _h006_pid_path_mount_id(pid, left, target_root)
+    right_resolved = _h006_pid_path_mount_id(pid, right, target_root)
     return (
         _h006_path_mount_relationship_from_mountinfo(left, right, mountinfo),
         _h006_path_mount_filesystem_pair_from_mountinfo(left, right, mountinfo),
+        _h006_mount_relationship_from_ids(left_resolved, right_resolved),
     )
 
 
@@ -1586,6 +1636,7 @@ class _H006SyscallMountProbe:
         self._pending = b""
         self._relationships: set[str] = set()
         self._filesystem_pairs: set[tuple[str, str]] = set()
+        self._resolved_relationships: set[str] = set()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def start(self) -> None:
@@ -1601,6 +1652,9 @@ class _H006SyscallMountProbe:
 
     def filesystem_pairs(self) -> list[tuple[str, str]]:
         return sorted(self._filesystem_pairs)[:8]
+
+    def resolved_relationships(self) -> list[str]:
+        return sorted(self._resolved_relationships)[:8]
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -1646,9 +1700,10 @@ class _H006SyscallMountProbe:
             if digits is None:
                 self._relationships.add("tracee_pid_unavailable")
                 continue
-            relationship, filesystems = _h006_pid_mount_diagnostics(
-                int(digits.group()), paths[0], paths[1])
+            relationship, filesystems, resolved_relationship = _h006_pid_mount_diagnostics(
+                int(digits.group()), paths[0], paths[1], self.target_root)
             self._relationships.add(relationship)
+            self._resolved_relationships.add(resolved_relationship)
             if filesystems is not None:
                 self._filesystem_pairs.add(filesystems)
 
@@ -1656,6 +1711,7 @@ class _H006SyscallMountProbe:
 def _h006_syscall_trace_diagnostics(
     trace_path: Path, path_mount_relationships: tuple[str, ...] | list[str] = (),
     path_mount_filesystem_pairs: tuple[tuple[str, str], ...] | list[tuple[str, str]] = (),
+    path_resolved_mount_relationships: tuple[str, ...] | list[str] = (),
 ) -> dict[str, Any]:
     """Project failed file-move syscalls without retaining any raw path text."""
     empty = {
@@ -1666,6 +1722,7 @@ def _h006_syscall_trace_diagnostics(
         "path_relationships": [],
         "path_mount_relationships": [],
         "path_mount_filesystem_pairs": [],
+        "path_resolved_mount_relationships": [],
         "artifact_kinds": [],
     }
     try:
@@ -1717,6 +1774,8 @@ def _h006_syscall_trace_diagnostics(
         "path_mount_filesystem_pairs": [
             list(pair) for pair in sorted(set(path_mount_filesystem_pairs))[:8]
         ],
+        "path_resolved_mount_relationships": sorted(
+            set(path_resolved_mount_relationships))[:8],
         "artifact_kinds": sorted(artifact_kinds)[:8],
     }
 
@@ -2444,6 +2503,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                         syscall_trace_path,
                         tuple(client.syscall_path_mount_relationships),
                         tuple(client.syscall_path_mount_filesystem_pairs),
+                        tuple(client.syscall_path_resolved_mount_relationships),
                     )
                     if syscall_trace_path is not None
                     else {
@@ -2455,6 +2515,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                         "path_relationships": [],
                         "path_mount_relationships": [],
                         "path_mount_filesystem_pairs": [],
+                        "path_resolved_mount_relationships": [],
                         "artifact_kinds": [],
                     }
                 )

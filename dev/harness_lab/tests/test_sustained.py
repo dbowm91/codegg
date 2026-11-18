@@ -27,6 +27,8 @@ from dev.harness_lab.supervisor import (
     _h006_syscall_trace_diagnostics,
     _h006_path_mount_relationship_from_mountinfo,
     _h006_path_mount_filesystem_pair_from_mountinfo,
+    _h006_mount_id_from_fdinfo,
+    _h006_mount_relationship_from_ids,
     run_tool_trial,
 )
 
@@ -323,7 +325,8 @@ class H006FailureDiagnosticTest(unittest.TestCase):
                 '= -1 EXDEV (Invalid cross-device link)\n',
                 encoding="utf-8")
             diagnostic = _h006_syscall_trace_diagnostics(
-                trace_path, ("same_mount",), (("overlay", "overlay"),))
+                trace_path, ("same_mount",), (("overlay", "overlay"),),
+                ("same_resolved_mount",))
 
         self.assertEqual(diagnostic, {
             "state": "exdev_observed",
@@ -343,12 +346,14 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             ],
             "path_mount_relationships": ["same_mount"],
             "path_mount_filesystem_pairs": [["overlay", "overlay"]],
+            "path_resolved_mount_relationships": ["same_resolved_mount"],
             "artifact_kinds": ["rmeta"],
         })
         serialized = json.dumps(diagnostic)
         self.assertNotIn("/home/runner", serialized)
         self.assertNotIn("libjob_core", serialized)
         self.assertNotIn("full.rmeta", serialized)
+        self.assertNotIn("12345", serialized)
 
     def test_syscall_mount_relationship_projection_uses_bounded_labels(self):
         mountinfo = (
@@ -385,6 +390,23 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             ("other", "other"),
         )
 
+    def test_resolved_mount_ids_are_reduced_to_fixed_relationship_labels(self):
+        fdinfo = "pos:\t0\nflags:\t0100000\nmnt_id:\t12345\nino:\t9876\n"
+        self.assertEqual(_h006_mount_id_from_fdinfo(fdinfo), "12345")
+        self.assertIsNone(_h006_mount_id_from_fdinfo(fdinfo + "x" * 4096))
+        self.assertEqual(
+            _h006_mount_relationship_from_ids("12345", "12345"),
+            "same_resolved_mount",
+        )
+        self.assertEqual(
+            _h006_mount_relationship_from_ids("12345", "67890"),
+            "different_resolved_mounts",
+        )
+        self.assertEqual(
+            _h006_mount_relationship_from_ids(None, "67890"),
+            "resolved_mount_unavailable",
+        )
+
     def test_syscall_trace_projection_rejects_oversize_input(self):
         with tempfile.TemporaryDirectory() as directory:
             trace_path = Path(directory) / "syscalls.trace"
@@ -400,6 +422,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "path_relationships": [],
             "path_mount_relationships": [],
             "path_mount_filesystem_pairs": [],
+            "path_resolved_mount_relationships": [],
             "artifact_kinds": [],
         })
         self.assertNotIn("PRIVATE_TRACE", json.dumps(diagnostic))
