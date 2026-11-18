@@ -1372,9 +1372,49 @@ def _h006_syscall_path_role(path: str) -> str:
     return "other"
 
 
+_H006_CARGO_TARGET_AREAS = {
+    "deps": "deps",
+    "build": "build",
+    ".fingerprint": "fingerprint",
+    "incremental": "incremental",
+    "rmeta.tmp": "rmeta_temp",
+    "tmp": "temporary",
+    "temp": "temporary",
+    "examples": "examples",
+}
+
+
+def _h006_syscall_path_subrole(path: str) -> str:
+    """Return an allowlisted Cargo target subtree, never a path component."""
+    components = path.replace("\\", "/").lower().split("/")
+    target_indexes = [index for index, component in enumerate(components)
+                      if component == ".cargo-target"]
+    if not target_indexes:
+        return _h006_syscall_path_role(path)
+
+    tail = components[target_indexes[-1] + 1:]
+    profile = tail[0] if tail and tail[0] in {"debug", "release"} else None
+    area = next((_H006_CARGO_TARGET_AREAS[component]
+                 for component in tail[1 if profile else 0:]
+                 if component in _H006_CARGO_TARGET_AREAS), None)
+    if profile and area:
+        return f"cargo_target_{profile}_{area}"
+    if profile:
+        return f"cargo_target_{profile}_other"
+    if area:
+        return f"cargo_target_{area}"
+    return "cargo_target_root"
+
+
 def _h006_syscall_trace_diagnostics(trace_path: Path) -> dict[str, Any]:
     """Project failed file-move syscalls without retaining any raw path text."""
-    empty = {"errno": None, "operations": [], "path_role_pairs": [], "artifact_kinds": []}
+    empty = {
+        "errno": None,
+        "operations": [],
+        "path_role_pairs": [],
+        "path_subrole_pairs": [],
+        "artifact_kinds": [],
+    }
     try:
         size = trace_path.stat().st_size
         if size == 0:
@@ -1389,6 +1429,7 @@ def _h006_syscall_trace_diagnostics(trace_path: Path) -> dict[str, Any]:
 
     operations: set[str] = set()
     path_role_pairs: set[tuple[str, str]] = set()
+    path_subrole_pairs: set[tuple[str, str]] = set()
     artifact_kinds: set[str] = set()
     for line in text.splitlines():
         match = _H006_SYSCALL_TRACE_LINE.match(line)
@@ -1396,8 +1437,11 @@ def _h006_syscall_trace_diagnostics(trace_path: Path) -> dict[str, Any]:
             continue
         paths = _H006_SYSCALL_TRACE_STRING.findall(match.group("arguments"))
         roles = [_h006_syscall_path_role(path) for path in paths[:2]]
+        subroles = [_h006_syscall_path_subrole(path) for path in paths[:2]]
         if roles:
             path_role_pairs.add((roles[0], roles[1] if len(roles) > 1 else "unavailable"))
+            path_subrole_pairs.add((
+                subroles[0], subroles[1] if len(subroles) > 1 else "unavailable"))
         lowered_paths = [path.lower() for path in paths[:2]]
         for extension, kind in _H006_WRITE_ERROR_ARTIFACT_KINDS:
             if any(path.endswith(extension) for path in lowered_paths):
@@ -1410,6 +1454,7 @@ def _h006_syscall_trace_diagnostics(trace_path: Path) -> dict[str, Any]:
         "errno": "EXDEV" if operations else None,
         "operations": sorted(operations)[:8],
         "path_role_pairs": [list(pair) for pair in sorted(path_role_pairs)[:8]],
+        "path_subrole_pairs": [list(pair) for pair in sorted(path_subrole_pairs)[:8]],
         "artifact_kinds": sorted(artifact_kinds)[:8],
     }
 

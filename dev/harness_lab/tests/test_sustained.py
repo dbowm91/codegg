@@ -309,7 +309,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
         }])
         self.assertNotIn("PRIVATE_EXECUTOR_TEXT", json.dumps(diagnostic))
 
-    def test_syscall_trace_projection_exposes_only_operation_errno_and_path_roles(self):
+    def test_syscall_trace_projection_exposes_only_allowlisted_path_roles(self):
         with tempfile.TemporaryDirectory() as directory:
             trace_path = Path(directory) / "syscalls.trace"
             trace_path.write_text(
@@ -330,9 +330,16 @@ class H006FailureDiagnosticTest(unittest.TestCase):
                 ["cargo_target", "cargo_target"],
                 ["system_temp", "cargo_target"],
             ],
+            "path_subrole_pairs": [
+                ["cargo_target_debug_rmeta_temp", "cargo_target_debug_deps"],
+                ["system_temp", "cargo_target_debug_deps"],
+            ],
             "artifact_kinds": ["rmeta"],
         })
-        self.assertNotIn("/home/runner", json.dumps(diagnostic))
+        serialized = json.dumps(diagnostic)
+        self.assertNotIn("/home/runner", serialized)
+        self.assertNotIn("libjob_core", serialized)
+        self.assertNotIn("full.rmeta", serialized)
 
     def test_syscall_trace_projection_rejects_oversize_input(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -345,6 +352,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "errno": None,
             "operations": [],
             "path_role_pairs": [],
+            "path_subrole_pairs": [],
             "artifact_kinds": [],
         })
         self.assertNotIn("PRIVATE_TRACE", json.dumps(diagnostic))
