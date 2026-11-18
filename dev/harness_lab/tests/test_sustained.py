@@ -25,6 +25,7 @@ from dev.harness_lab.supervisor import (
     _H006_SYSCALL_TRACE_MAX_BYTES,
     _h006_managed_test_diagnostics,
     _h006_syscall_trace_diagnostics,
+    _h006_path_mount_relationship_from_mountinfo,
     run_tool_trial,
 )
 
@@ -338,12 +339,33 @@ class H006FailureDiagnosticTest(unittest.TestCase):
                 "different_areas_same_profile",
                 "different_roots",
             ],
+            "path_mount_relationships": [],
             "artifact_kinds": ["rmeta"],
         })
         serialized = json.dumps(diagnostic)
         self.assertNotIn("/home/runner", serialized)
         self.assertNotIn("libjob_core", serialized)
         self.assertNotIn("full.rmeta", serialized)
+
+    def test_syscall_mount_relationship_projection_uses_bounded_labels(self):
+        mountinfo = (
+            "31 25 0:31 / / rw - overlay overlay rw\n"
+            "32 31 0:32 / /checkout/.cargo-target/debug/build rw - tmpfs tmpfs rw\n"
+        )
+        build_left = "/checkout/.cargo-target/debug/build/pkg-a/out/input.rmeta"
+        build_right = "/checkout/.cargo-target/debug/build/pkg-b/out/output.rmeta"
+        deps_path = "/checkout/.cargo-target/debug/deps/library.rmeta"
+
+        self.assertEqual(
+            _h006_path_mount_relationship_from_mountinfo(
+                build_left, build_right, mountinfo),
+            "same_mount",
+        )
+        self.assertEqual(
+            _h006_path_mount_relationship_from_mountinfo(
+                build_left, deps_path, mountinfo),
+            "different_mounts",
+        )
 
     def test_syscall_trace_projection_rejects_oversize_input(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -358,6 +380,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "path_role_pairs": [],
             "path_subrole_pairs": [],
             "path_relationships": [],
+            "path_mount_relationships": [],
             "artifact_kinds": [],
         })
         self.assertNotIn("PRIVATE_TRACE", json.dumps(diagnostic))

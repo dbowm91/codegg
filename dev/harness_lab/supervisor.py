@@ -12,6 +12,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 from typing import Any, Optional
 import uuid
@@ -253,7 +254,8 @@ class AcpClient:
 
     def __init__(self, binary: Path, env: dict[str, str], cwd: Path, timeout: float,
                  unattended_profile: str | None = None, *, strace_path: Path | None = None,
-                 syscall_trace_path: Path | None = None) -> None:
+                 syscall_trace_path: Path | None = None,
+                 syscall_target_root: Path | None = None) -> None:
         self.timeout = timeout
         self._started_monotonic = time.monotonic()
         command = [str(binary), "acp"]
@@ -274,6 +276,13 @@ class AcpClient:
                                and env.get("CODEGG_HARNESS_INHERIT_PROCESS_GROUP") != "1"),
         )
         assert self.process.stdin and self.process.stdout
+        self._syscall_mount_probe = (
+            _H006SyscallMountProbe(syscall_trace_path, syscall_target_root)
+            if syscall_trace_path is not None and syscall_target_root is not None
+            else None
+        )
+        if self._syscall_mount_probe is not None:
+            self._syscall_mount_probe.start()
         self._selector = selectors.DefaultSelector()
         self._selector.register(self.process.stdout, selectors.EVENT_READ)
         self._stdout_buffer = bytearray()
@@ -430,6 +439,8 @@ class AcpClient:
                 except subprocess.TimeoutExpired:
                     _signal_owned_group(self.process, signal.SIGKILL)
                     self.process.wait(timeout=2)
+        if self._syscall_mount_probe is not None:
+            self._syscall_mount_probe.close()
         self._selector.close()
         self._stderr_thread.join(timeout=1)
         # The child's pipes are file objects of this process: leaving them open
@@ -440,6 +451,12 @@ class AcpClient:
                     stream.close()
             except OSError:
                 pass
+
+    @property
+    def syscall_path_mount_relationships(self) -> list[str]:
+        if self._syscall_mount_probe is None:
+            return []
+        return self._syscall_mount_probe.relationships()
 
 
 def _signal_owned_group(process: subprocess.Popen[bytes], sig: int) -> None:
@@ -1351,7 +1368,7 @@ def _h006_compiler_diagnostics(
 
 _H006_SYSCALL_TRACE_MAX_BYTES = 1024 * 1024
 _H006_SYSCALL_TRACE_LINE = re.compile(
-    r"^(?:(?:\d+|\[pid\s+\d+\])\s+)?"
+    r"^(?:(?P<pid>\d+|\[pid\s+\d+\])\s+)?"
     r"(?P<operation>rename|renameat|renameat2|link|linkat|copy_file_range)"
     r"\((?P<arguments>.*)\)\s+=\s+-1\s+EXDEV(?:\s|$)"
 )
@@ -1462,7 +1479,135 @@ def _h006_syscall_path_relationship(left: str, right: str) -> str:
     return "different_paths_same_target_area"
 
 
-def _h006_syscall_trace_diagnostics(trace_path: Path) -> dict[str, Any]:
+_H006_MOUNTINFO_MAX_BYTES = 1024 * 1024
+
+
+def _h006_decode_mountinfo_path(path: str) -> str:
+    return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), path)
+
+
+def _h006_mount_id_for_path(path: str, mountinfo: str) -> str | None:
+    normalized = os.path.normpath(path)
+    if not normalized.startswith("/"):
+        return None
+    selected: tuple[int, str] | None = None
+    for line in mountinfo.splitlines():
+        fields = line.split(" - ", 1)[0].split()
+        if len(fields) < 5 or not fields[0].isdigit():
+            continue
+        mountpoint = os.path.normpath(_h006_decode_mountinfo_path(fields[4]))
+        covered = (mountpoint == "/" or normalized == mountpoint
+                   or normalized.startswith(mountpoint.rstrip("/") + "/"))
+        if covered and (selected is None or len(mountpoint) > selected[0]):
+            selected = (len(mountpoint), fields[0])
+    return selected[1] if selected else None
+
+
+def _h006_path_mount_relationship_from_mountinfo(
+    left: str, right: str, mountinfo: str,
+) -> str:
+    left_mount = _h006_mount_id_for_path(left, mountinfo)
+    right_mount = _h006_mount_id_for_path(right, mountinfo)
+    if left_mount is None or right_mount is None:
+        return "mountpoint_unresolved"
+    return "same_mount" if left_mount == right_mount else "different_mounts"
+
+
+def _h006_pid_mount_relationship(pid: int, left: str, right: str) -> str:
+    try:
+        with (Path("/proc") / str(pid) / "mountinfo").open("rb") as source:
+            payload = source.read(_H006_MOUNTINFO_MAX_BYTES + 1)
+    except FileNotFoundError:
+        return "tracee_exited"
+    except OSError:
+        return "mountinfo_unavailable"
+    if len(payload) > _H006_MOUNTINFO_MAX_BYTES:
+        return "mountinfo_oversize"
+    mountinfo = payload.decode("utf-8", errors="replace")
+    return _h006_path_mount_relationship_from_mountinfo(left, right, mountinfo)
+
+
+def _h006_is_target_path(path: str, target_root: Path) -> bool:
+    normalized = os.path.normpath(path)
+    root = os.path.normpath(str(target_root))
+    if not normalized.startswith("/") or not root.startswith("/"):
+        return False
+    return normalized == root or normalized.startswith(root.rstrip("/") + "/")
+
+
+class _H006SyscallMountProbe:
+    def __init__(self, trace_path: Path, target_root: Path) -> None:
+        self.trace_path = trace_path
+        self.target_root = target_root
+        self._stop = threading.Event()
+        self._offset = 0
+        self._pending = b""
+        self._relationships: set[str] = set()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def close(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=1)
+
+    def relationships(self) -> list[str]:
+        return sorted(self._relationships)[:8]
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self._scan()
+            self._stop.wait(0.005)
+        self._scan()
+
+    def _scan(self) -> None:
+        if len(self._relationships) >= 8:
+            return
+        try:
+            size = self.trace_path.stat().st_size
+            if size > _H006_SYSCALL_TRACE_MAX_BYTES:
+                return
+            remaining = _H006_SYSCALL_TRACE_MAX_BYTES - self._offset
+            if remaining <= 0:
+                return
+            with self.trace_path.open("rb") as source:
+                source.seek(self._offset)
+                chunk = source.read(min(64 * 1024, remaining))
+        except OSError:
+            return
+        if not chunk:
+            return
+        self._offset += len(chunk)
+        lines = (self._pending + chunk).split(b"\n")
+        self._pending = lines.pop()
+        for raw_line in lines:
+            line = raw_line.decode("utf-8", errors="replace")
+            match = _H006_SYSCALL_TRACE_LINE.match(line)
+            if match is None:
+                continue
+            paths = [
+                _h006_decode_mountinfo_path(path)
+                for path in _H006_SYSCALL_TRACE_STRING.findall(match.group("arguments"))[:2]
+            ]
+            if len(paths) < 2 or not all(
+                _h006_is_target_path(path, self.target_root) for path in paths
+            ):
+                continue
+            raw_pid = match.group("pid")
+            digits = re.search(r"\d+", raw_pid or "")
+            if digits is None:
+                self._relationships.add("tracee_pid_unavailable")
+                continue
+            self._relationships.add(
+                _h006_pid_mount_relationship(int(digits.group()), paths[0], paths[1])
+            )
+
+
+def _h006_syscall_trace_diagnostics(
+    trace_path: Path, path_mount_relationships: tuple[str, ...] | list[str] = (),
+) -> dict[str, Any]:
     """Project failed file-move syscalls without retaining any raw path text."""
     empty = {
         "errno": None,
@@ -1470,6 +1615,7 @@ def _h006_syscall_trace_diagnostics(trace_path: Path) -> dict[str, Any]:
         "path_role_pairs": [],
         "path_subrole_pairs": [],
         "path_relationships": [],
+        "path_mount_relationships": [],
         "artifact_kinds": [],
     }
     try:
@@ -1517,6 +1663,7 @@ def _h006_syscall_trace_diagnostics(trace_path: Path) -> dict[str, Any]:
         "path_role_pairs": [list(pair) for pair in sorted(path_role_pairs)[:8]],
         "path_subrole_pairs": [list(pair) for pair in sorted(path_subrole_pairs)[:8]],
         "path_relationships": sorted(path_relationships)[:8],
+        "path_mount_relationships": sorted(set(path_mount_relationships))[:8],
         "artifact_kinds": sorted(artifact_kinds)[:8],
     }
 
@@ -1843,6 +1990,8 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             binary, env, workspace, timeout, profile,
             strace_path=Path(strace_executable) if strace_executable else None,
             syscall_trace_path=syscall_trace_path,
+            syscall_target_root=(Path(env["CARGO_TARGET_DIR"])
+                                 if syscall_trace_path is not None else None),
         )
         from . import causal_trace
         causal_recorder = causal_trace.Recorder(
@@ -2238,13 +2387,17 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             client.close()
             if task_id == "h006-real-job-observation" and trace_h006_syscalls:
                 syscall_diagnostics = (
-                    _h006_syscall_trace_diagnostics(syscall_trace_path)
+                    _h006_syscall_trace_diagnostics(
+                        syscall_trace_path, tuple(client.syscall_path_mount_relationships))
                     if syscall_trace_path is not None
                     else {
                         "state": trace_state,
                         "errno": None,
                         "operations": [],
                         "path_role_pairs": [],
+                        "path_subrole_pairs": [],
+                        "path_relationships": [],
+                        "path_mount_relationships": [],
                         "artifact_kinds": [],
                     }
                 )
