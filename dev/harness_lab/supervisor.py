@@ -251,12 +251,22 @@ class SubjectSpec:
 class AcpClient:
     """Small bounded JSON-RPC v2 client for lifecycle-only ACP smoke tests."""
 
-    def __init__(self, binary: Path, env: dict[str, str], cwd: Path, timeout: float, unattended_profile: str | None = None) -> None:
+    def __init__(self, binary: Path, env: dict[str, str], cwd: Path, timeout: float,
+                 unattended_profile: str | None = None, *, strace_path: Path | None = None,
+                 syscall_trace_path: Path | None = None) -> None:
         self.timeout = timeout
         self._started_monotonic = time.monotonic()
         command = [str(binary), "acp"]
         if unattended_profile is not None:
             command.extend(["--approval-mode", "yolo", "--sandbox", unattended_profile])
+        if (strace_path is None) != (syscall_trace_path is None):
+            raise ValueError("strace executable and trace path must be supplied together")
+        if strace_path is not None and syscall_trace_path is not None:
+            command = [
+                str(strace_path), "-f", "-qq", "-s", "4096", "-e",
+                "trace=rename,renameat,renameat2,link,linkat,copy_file_range", "-o",
+                str(syscall_trace_path), *command,
+            ]
         self.process = subprocess.Popen(
             command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, cwd=cwd, env=env,
@@ -1339,6 +1349,71 @@ def _h006_compiler_diagnostics(
     }
 
 
+_H006_SYSCALL_TRACE_MAX_BYTES = 1024 * 1024
+_H006_SYSCALL_TRACE_LINE = re.compile(
+    r"^(?:(?:\d+|\[pid\s+\d+\])\s+)?"
+    r"(?P<operation>rename|renameat|renameat2|link|linkat|copy_file_range)"
+    r"\((?P<arguments>.*)\)\s+=\s+-1\s+EXDEV(?:\s|$)"
+)
+_H006_SYSCALL_TRACE_STRING = re.compile(r'"((?:\\.|[^"\\])*)"')
+
+
+def _h006_syscall_path_role(path: str) -> str:
+    lowered = path.replace("\\", "/").lower()
+    if ".cargo-target" in lowered:
+        return "cargo_target"
+    if ".cargo-home" in lowered:
+        return "cargo_home"
+    if ("/scratch/" in lowered or lowered.endswith("/scratch")
+            or "/codegg-run-" in lowered):
+        return "scratch"
+    if lowered.startswith("/tmp/") or lowered.startswith("/var/tmp/"):
+        return "system_temp"
+    return "other"
+
+
+def _h006_syscall_trace_diagnostics(trace_path: Path) -> dict[str, Any]:
+    """Project failed file-move syscalls without retaining any raw path text."""
+    empty = {"errno": None, "operations": [], "path_role_pairs": [], "artifact_kinds": []}
+    try:
+        size = trace_path.stat().st_size
+        if size == 0:
+            return {"state": "empty", **empty}
+        if size > _H006_SYSCALL_TRACE_MAX_BYTES:
+            return {"state": "oversize", **empty}
+        text = trace_path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return {"state": "missing", **empty}
+    except OSError:
+        return {"state": "unreadable", **empty}
+
+    operations: set[str] = set()
+    path_role_pairs: set[tuple[str, str]] = set()
+    artifact_kinds: set[str] = set()
+    for line in text.splitlines():
+        match = _H006_SYSCALL_TRACE_LINE.match(line)
+        if match is None:
+            continue
+        paths = _H006_SYSCALL_TRACE_STRING.findall(match.group("arguments"))
+        roles = [_h006_syscall_path_role(path) for path in paths[:2]]
+        if roles:
+            path_role_pairs.add((roles[0], roles[1] if len(roles) > 1 else "unavailable"))
+        lowered_paths = [path.lower() for path in paths[:2]]
+        for extension, kind in _H006_WRITE_ERROR_ARTIFACT_KINDS:
+            if any(path.endswith(extension) for path in lowered_paths):
+                artifact_kinds.add(kind)
+        operations.add(match.group("operation"))
+
+    return {
+        "state": "exdev_observed" if operations else "no_exdev",
+        **empty,
+        "errno": "EXDEV" if operations else None,
+        "operations": sorted(operations)[:8],
+        "path_role_pairs": [list(pair) for pair in sorted(path_role_pairs)[:8]],
+        "artifact_kinds": sorted(artifact_kinds)[:8],
+    }
+
+
 def _h006_cwd_scope(workspace: Path, raw_cwd: Any) -> str:
     if not isinstance(raw_cwd, str):
         return "unavailable"
@@ -1534,15 +1609,31 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                    rustc_executable: Path | None = None,
                    source_root: Path | None = None,
                    cargo_home_under_test_workdir: bool = False,
-                   causal_trace_output: Path | None = None) -> dict[str, Any]:
+                   causal_trace_output: Path | None = None,
+                   trace_h006_syscalls: bool = False) -> dict[str, Any]:
     """Run one native ACP turn against a local deterministic OpenAI wire fixture."""
     from .provider_fixture import FixtureProvider
     import shlex
     if profile not in {"full-host", "workspace-write"}:
         raise HarnessError("profile must be full-host or workspace-write")
+    if trace_h006_syscalls and task_id != "h006-real-job-observation":
+        raise HarnessError("syscall tracing is reserved for the H006 diagnostic trial")
     trial_started = time.monotonic()
     binary = binary.resolve()
-    with tempfile.TemporaryDirectory(prefix="codegg-harness-tool-"):
+    with tempfile.TemporaryDirectory(prefix="codegg-harness-tool-") as trace_temp:
+        trace_state = "not_requested"
+        strace_executable = None
+        syscall_trace_path = None
+        if trace_h006_syscalls:
+            if platform.system().lower() != "linux":
+                trace_state = "unsupported_platform"
+            else:
+                strace_executable = shutil.which("strace")
+                if strace_executable is None:
+                    trace_state = "strace_unavailable"
+                else:
+                    trace_state = "pending"
+                    syscall_trace_path = Path(trace_temp) / "h006-syscalls.trace"
         root = private_dir(lane_root("tool-" + uuid.uuid4().hex[:8]))
         lane_tracker = os.environ.get("CODEGG_HARNESS_S010_PRIVATE_LANE_TRACKER")
         if lane_tracker:
@@ -1641,7 +1732,11 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
         config_path = Path(env["CODEGG_TUI_CONFIG"])
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps(config), encoding="utf-8")
-        client = AcpClient(binary, env, workspace, timeout, profile)
+        client = AcpClient(
+            binary, env, workspace, timeout, profile,
+            strace_path=Path(strace_executable) if strace_executable else None,
+            syscall_trace_path=syscall_trace_path,
+        )
         from . import causal_trace
         causal_recorder = causal_trace.Recorder(
             root / "artifacts" / "causal-trace.jsonl", run_id=uuid.uuid4().hex,
@@ -1661,6 +1756,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
 
         client.notification_observer = observe_tool_completion
         session_id = None
+        h006_trial_result: dict[str, Any] | None = None
         try:
             client.request("initialize", {"protocolVersion": 1, "clientInfo": {"name": "codegg-harness-lab", "version": "1"}})
             opened = client.request("session/new", {"cwd": str(workspace), "title": "harness-lab-native-tool-fixture"})
@@ -1935,6 +2031,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                 "expected_file": expected_file,
             }
             if task_id == "h006-real-job-observation":
+                h006_trial_result = result
                 result["managed_test_diagnostics"] = _h006_managed_test_diagnostics(workspace)
             if ledger_root is not None:
                 from .ledger import record
@@ -2032,6 +2129,25 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                 except (HarnessError, OSError):
                     pass
             client.close()
+            if task_id == "h006-real-job-observation" and trace_h006_syscalls:
+                syscall_diagnostics = (
+                    _h006_syscall_trace_diagnostics(syscall_trace_path)
+                    if syscall_trace_path is not None
+                    else {
+                        "state": trace_state,
+                        "errno": None,
+                        "operations": [],
+                        "path_role_pairs": [],
+                        "artifact_kinds": [],
+                    }
+                )
+                if h006_trial_result is not None:
+                    h006_trial_result["syscall_diagnostics"] = syscall_diagnostics
+                if syscall_trace_path is not None:
+                    try:
+                        syscall_trace_path.unlink()
+                    except OSError:
+                        pass
             try:
                 _stop_daemon(spec, min(timeout, 5))
             except (HarnessError, FileNotFoundError, OSError, subprocess.TimeoutExpired):

@@ -22,7 +22,9 @@ from dev.harness_lab.supervisor import (
     HarnessError,
     _h006_compiler_diagnostics,
     _h006_failure_log_category,
+    _H006_SYSCALL_TRACE_MAX_BYTES,
     _h006_managed_test_diagnostics,
+    _h006_syscall_trace_diagnostics,
     run_tool_trial,
 )
 
@@ -306,6 +308,46 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "cargo_json_build_finished_events": 0,
         }])
         self.assertNotIn("PRIVATE_EXECUTOR_TEXT", json.dumps(diagnostic))
+
+    def test_syscall_trace_projection_exposes_only_operation_errno_and_path_roles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace_path = Path(directory) / "syscalls.trace"
+            trace_path.write_text(
+                '[pid 120] renameat(AT_FDCWD, "/home/runner/private/.cargo-target/debug/rmeta.tmp/full.rmeta", '
+                'AT_FDCWD, "/home/runner/private/.cargo-target/debug/deps/libjob_core.rmeta") '
+                '= -1 EXDEV (Invalid cross-device link)\n'
+                '121 linkat(AT_FDCWD, "/tmp/private-cache/full.rmeta", AT_FDCWD, '
+                '"/home/runner/private/.cargo-target/debug/deps/libjob_core.rmeta", 0) '
+                '= -1 EXDEV (Invalid cross-device link)\n',
+                encoding="utf-8")
+            diagnostic = _h006_syscall_trace_diagnostics(trace_path)
+
+        self.assertEqual(diagnostic, {
+            "state": "exdev_observed",
+            "errno": "EXDEV",
+            "operations": ["linkat", "renameat"],
+            "path_role_pairs": [
+                ["cargo_target", "cargo_target"],
+                ["system_temp", "cargo_target"],
+            ],
+            "artifact_kinds": ["rmeta"],
+        })
+        self.assertNotIn("/home/runner", json.dumps(diagnostic))
+
+    def test_syscall_trace_projection_rejects_oversize_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace_path = Path(directory) / "syscalls.trace"
+            trace_path.write_bytes(b"PRIVATE_TRACE" + b"x" * _H006_SYSCALL_TRACE_MAX_BYTES)
+            diagnostic = _h006_syscall_trace_diagnostics(trace_path)
+
+        self.assertEqual(diagnostic, {
+            "state": "oversize",
+            "errno": None,
+            "operations": [],
+            "path_role_pairs": [],
+            "artifact_kinds": [],
+        })
+        self.assertNotIn("PRIVATE_TRACE", json.dumps(diagnostic))
 
     def test_unknown_h006_output_maps_to_a_closed_category(self):
         self.assertEqual(
@@ -673,7 +715,7 @@ class LongHorizonNativeJobTest(unittest.TestCase):
             task_id="h006-real-job-observation", tool_sequence=sequence,
             expected_file="never-created", expected_text=None, expected_exists=False,
             workspace_snapshot=self.fixture, rustc_executable=Path(rustc),
-            cargo_home_under_test_workdir=True,
+            cargo_home_under_test_workdir=True, trace_h006_syscalls=True,
             initial_files={
                 "job-check/.cargo/config.toml": "[build]\ntarget-dir = \".cargo-target\"\n",
                 "job-check/Cargo.toml": "[workspace]\nmembers = [\"core\", \"index\", \"store\", \"cli\"]\nresolver = \"2\"\n",
@@ -847,6 +889,7 @@ mod tests {
                 "provider_calls": trial["provider_calls"],
                 "wall_time_ms": trial["wall_time_ms"],
                 "managed_test_diagnostics": test_diagnostics,
+                "syscall_diagnostics": trial.get("syscall_diagnostics"),
                 "tool_calls": [{
                     "tool": call["tool"],
                     "status": call["status"],
@@ -868,7 +911,11 @@ mod tests {
         running = [call for call in exact if call.get("job", {}).get("status") == "running"]
         self.assertGreaterEqual(
             len(running), 2,
-            {"calls": calls, "managed_test_diagnostics": test_diagnostics},
+            {
+                "calls": calls,
+                "managed_test_diagnostics": test_diagnostics,
+                "syscall_diagnostics": trial.get("syscall_diagnostics"),
+            },
         )
         self.assertTrue(_observed_completed_job(exact, job_id), calls)
         first_running_at = running[0]["finished_elapsed_ms"]
