@@ -458,6 +458,12 @@ class AcpClient:
             return []
         return self._syscall_mount_probe.relationships()
 
+    @property
+    def syscall_path_mount_filesystem_pairs(self) -> list[tuple[str, str]]:
+        if self._syscall_mount_probe is None:
+            return []
+        return self._syscall_mount_probe.filesystem_pairs()
+
 
 def _signal_owned_group(process: subprocess.Popen[bytes], sig: int) -> None:
     if process.poll() is not None:
@@ -1486,21 +1492,52 @@ def _h006_decode_mountinfo_path(path: str) -> str:
     return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), path)
 
 
-def _h006_mount_id_for_path(path: str, mountinfo: str) -> str | None:
+def _h006_filesystem_label(raw_type: str) -> str:
+    filesystem = raw_type.lower()
+    if filesystem in {"overlay", "overlayfs"}:
+        return "overlay"
+    if filesystem in {"ext4", "xfs", "btrfs", "tmpfs", "zfs", "f2fs"}:
+        return filesystem
+    if filesystem in {"nfs", "nfs4", "cifs", "smb3", "9p"}:
+        return "network_fs"
+    if filesystem in {"fuse", "fuseblk"} or filesystem.startswith("fuse."):
+        return "fuse"
+    return "other"
+
+
+def _h006_mount_details_for_path(path: str, mountinfo: str) -> tuple[str, str] | None:
     normalized = os.path.normpath(path)
     if not normalized.startswith("/"):
         return None
-    selected: tuple[int, str] | None = None
+    selected: tuple[int, str, str] | None = None
     for line in mountinfo.splitlines():
-        fields = line.split(" - ", 1)[0].split()
-        if len(fields) < 5 or not fields[0].isdigit():
+        mount_fields, separator, filesystem_fields = line.partition(" - ")
+        fields = mount_fields.split()
+        filesystem = filesystem_fields.split()
+        if (not separator or len(fields) < 5 or not fields[0].isdigit()
+                or not filesystem):
             continue
         mountpoint = os.path.normpath(_h006_decode_mountinfo_path(fields[4]))
         covered = (mountpoint == "/" or normalized == mountpoint
                    or normalized.startswith(mountpoint.rstrip("/") + "/"))
         if covered and (selected is None or len(mountpoint) > selected[0]):
-            selected = (len(mountpoint), fields[0])
-    return selected[1] if selected else None
+            selected = (len(mountpoint), fields[0], _h006_filesystem_label(filesystem[0]))
+    return (selected[1], selected[2]) if selected else None
+
+
+def _h006_mount_id_for_path(path: str, mountinfo: str) -> str | None:
+    details = _h006_mount_details_for_path(path, mountinfo)
+    return details[0] if details else None
+
+
+def _h006_path_mount_filesystem_pair_from_mountinfo(
+    left: str, right: str, mountinfo: str,
+) -> tuple[str, str] | None:
+    left_details = _h006_mount_details_for_path(left, mountinfo)
+    right_details = _h006_mount_details_for_path(right, mountinfo)
+    if left_details is None or right_details is None:
+        return None
+    return left_details[1], right_details[1]
 
 
 def _h006_path_mount_relationship_from_mountinfo(
@@ -1513,18 +1550,23 @@ def _h006_path_mount_relationship_from_mountinfo(
     return "same_mount" if left_mount == right_mount else "different_mounts"
 
 
-def _h006_pid_mount_relationship(pid: int, left: str, right: str) -> str:
+def _h006_pid_mount_diagnostics(
+    pid: int, left: str, right: str,
+) -> tuple[str, tuple[str, str] | None]:
     try:
         with (Path("/proc") / str(pid) / "mountinfo").open("rb") as source:
             payload = source.read(_H006_MOUNTINFO_MAX_BYTES + 1)
     except FileNotFoundError:
-        return "tracee_exited"
+        return "tracee_exited", None
     except OSError:
-        return "mountinfo_unavailable"
+        return "mountinfo_unavailable", None
     if len(payload) > _H006_MOUNTINFO_MAX_BYTES:
-        return "mountinfo_oversize"
+        return "mountinfo_oversize", None
     mountinfo = payload.decode("utf-8", errors="replace")
-    return _h006_path_mount_relationship_from_mountinfo(left, right, mountinfo)
+    return (
+        _h006_path_mount_relationship_from_mountinfo(left, right, mountinfo),
+        _h006_path_mount_filesystem_pair_from_mountinfo(left, right, mountinfo),
+    )
 
 
 def _h006_is_target_path(path: str, target_root: Path) -> bool:
@@ -1543,6 +1585,7 @@ class _H006SyscallMountProbe:
         self._offset = 0
         self._pending = b""
         self._relationships: set[str] = set()
+        self._filesystem_pairs: set[tuple[str, str]] = set()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def start(self) -> None:
@@ -1555,6 +1598,9 @@ class _H006SyscallMountProbe:
 
     def relationships(self) -> list[str]:
         return sorted(self._relationships)[:8]
+
+    def filesystem_pairs(self) -> list[tuple[str, str]]:
+        return sorted(self._filesystem_pairs)[:8]
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -1600,13 +1646,16 @@ class _H006SyscallMountProbe:
             if digits is None:
                 self._relationships.add("tracee_pid_unavailable")
                 continue
-            self._relationships.add(
-                _h006_pid_mount_relationship(int(digits.group()), paths[0], paths[1])
-            )
+            relationship, filesystems = _h006_pid_mount_diagnostics(
+                int(digits.group()), paths[0], paths[1])
+            self._relationships.add(relationship)
+            if filesystems is not None:
+                self._filesystem_pairs.add(filesystems)
 
 
 def _h006_syscall_trace_diagnostics(
     trace_path: Path, path_mount_relationships: tuple[str, ...] | list[str] = (),
+    path_mount_filesystem_pairs: tuple[tuple[str, str], ...] | list[tuple[str, str]] = (),
 ) -> dict[str, Any]:
     """Project failed file-move syscalls without retaining any raw path text."""
     empty = {
@@ -1616,6 +1665,7 @@ def _h006_syscall_trace_diagnostics(
         "path_subrole_pairs": [],
         "path_relationships": [],
         "path_mount_relationships": [],
+        "path_mount_filesystem_pairs": [],
         "artifact_kinds": [],
     }
     try:
@@ -1664,6 +1714,9 @@ def _h006_syscall_trace_diagnostics(
         "path_subrole_pairs": [list(pair) for pair in sorted(path_subrole_pairs)[:8]],
         "path_relationships": sorted(path_relationships)[:8],
         "path_mount_relationships": sorted(set(path_mount_relationships))[:8],
+        "path_mount_filesystem_pairs": [
+            list(pair) for pair in sorted(set(path_mount_filesystem_pairs))[:8]
+        ],
         "artifact_kinds": sorted(artifact_kinds)[:8],
     }
 
@@ -2388,7 +2441,10 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             if task_id == "h006-real-job-observation" and trace_h006_syscalls:
                 syscall_diagnostics = (
                     _h006_syscall_trace_diagnostics(
-                        syscall_trace_path, tuple(client.syscall_path_mount_relationships))
+                        syscall_trace_path,
+                        tuple(client.syscall_path_mount_relationships),
+                        tuple(client.syscall_path_mount_filesystem_pairs),
+                    )
                     if syscall_trace_path is not None
                     else {
                         "state": trace_state,
@@ -2398,6 +2454,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                         "path_subrole_pairs": [],
                         "path_relationships": [],
                         "path_mount_relationships": [],
+                        "path_mount_filesystem_pairs": [],
                         "artifact_kinds": [],
                     }
                 )

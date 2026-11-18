@@ -26,6 +26,7 @@ from dev.harness_lab.supervisor import (
     _h006_managed_test_diagnostics,
     _h006_syscall_trace_diagnostics,
     _h006_path_mount_relationship_from_mountinfo,
+    _h006_path_mount_filesystem_pair_from_mountinfo,
     run_tool_trial,
 )
 
@@ -321,7 +322,8 @@ class H006FailureDiagnosticTest(unittest.TestCase):
                 '"/home/runner/private/.cargo-target/debug/deps/libjob_core.rmeta", 0) '
                 '= -1 EXDEV (Invalid cross-device link)\n',
                 encoding="utf-8")
-            diagnostic = _h006_syscall_trace_diagnostics(trace_path)
+            diagnostic = _h006_syscall_trace_diagnostics(
+                trace_path, ("same_mount",), (("overlay", "overlay"),))
 
         self.assertEqual(diagnostic, {
             "state": "exdev_observed",
@@ -339,7 +341,8 @@ class H006FailureDiagnosticTest(unittest.TestCase):
                 "different_areas_same_profile",
                 "different_roots",
             ],
-            "path_mount_relationships": [],
+            "path_mount_relationships": ["same_mount"],
+            "path_mount_filesystem_pairs": [["overlay", "overlay"]],
             "artifact_kinds": ["rmeta"],
         })
         serialized = json.dumps(diagnostic)
@@ -349,7 +352,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
 
     def test_syscall_mount_relationship_projection_uses_bounded_labels(self):
         mountinfo = (
-            "31 25 0:31 / / rw - overlay overlay rw\n"
+            "31 25 0:31 / / rw - overlay overlay rw,lowerdir=/PRIVATE_MOUNT_SOURCE/lower,upperdir=/PRIVATE_MOUNT_SOURCE/upper\n"
             "32 31 0:32 / /checkout/.cargo-target/debug/build rw - tmpfs tmpfs rw\n"
         )
         build_left = "/checkout/.cargo-target/debug/build/pkg-a/out/input.rmeta"
@@ -366,6 +369,21 @@ class H006FailureDiagnosticTest(unittest.TestCase):
                 build_left, deps_path, mountinfo),
             "different_mounts",
         )
+        self.assertEqual(
+            _h006_path_mount_filesystem_pair_from_mountinfo(
+                build_left, build_right, mountinfo),
+            ("tmpfs", "tmpfs"),
+        )
+        filesystem_pair = _h006_path_mount_filesystem_pair_from_mountinfo(
+            build_left, deps_path, mountinfo)
+        self.assertEqual(filesystem_pair, ("tmpfs", "overlay"))
+        self.assertNotIn("PRIVATE_MOUNT_SOURCE", json.dumps(filesystem_pair))
+        unknown_mountinfo = "40 25 0:40 / /opaque rw - private-fs source rw\n"
+        self.assertEqual(
+            _h006_path_mount_filesystem_pair_from_mountinfo(
+                "/opaque/source", "/opaque/destination", unknown_mountinfo),
+            ("other", "other"),
+        )
 
     def test_syscall_trace_projection_rejects_oversize_input(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -381,6 +399,7 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "path_subrole_pairs": [],
             "path_relationships": [],
             "path_mount_relationships": [],
+            "path_mount_filesystem_pairs": [],
             "artifact_kinds": [],
         })
         self.assertNotIn("PRIVATE_TRACE", json.dumps(diagnostic))
