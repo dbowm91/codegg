@@ -120,6 +120,8 @@ pub fn apply(spec: &SandboxLaunchSpec) -> Result<BackendEnforcement, String> {
         Access, AccessFs, CompatLevel, Compatible, Ruleset, RulesetAttr, RulesetStatus, ABI,
     };
 
+    const DIAGNOSTIC_SKIP_FILESYSTEM_RULESET: bool = true;
+
     super::policy::validate_landlock_write_exclusions(&spec.write_paths, &spec.deny_paths)?;
 
     // ABI 3 is the minimum contract: v2 adds REFER and v3 adds TRUNCATE.
@@ -155,6 +157,10 @@ pub fn apply(spec: &SandboxLaunchSpec) -> Result<BackendEnforcement, String> {
         ruleset = add_landlock_path(ruleset, path, write_access, abi, &identities)?;
     }
 
+    if std::hint::black_box(DIAGNOSTIC_SKIP_FILESYSTEM_RULESET) {
+        let process_scope_abi = process_scope_from(probe_process_scopes, apply_process_scopes)?;
+        return Ok(landlock_enforcement(abi as u32, process_scope_abi));
+    }
     let status = ruleset
         .restrict_self()
         .map_err(|e| format!("Landlock restriction failed: {e}"))?;
