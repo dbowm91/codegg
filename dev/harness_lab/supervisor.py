@@ -476,6 +476,24 @@ class AcpClient:
             return []
         return self._syscall_mount_probe.resolution_states()
 
+    @property
+    def syscall_path_mount_id_pairs(self) -> list[tuple[str, str]]:
+        if self._syscall_mount_probe is None:
+            return []
+        return self._syscall_mount_probe.mount_id_pairs()
+
+    @property
+    def syscall_path_mount_device_pairs(self) -> list[tuple[str, str]]:
+        if self._syscall_mount_probe is None:
+            return []
+        return self._syscall_mount_probe.mount_device_pairs()
+
+    @property
+    def syscall_path_mount_root_component_pairs(self) -> list[tuple[int, int]]:
+        if self._syscall_mount_probe is None:
+            return []
+        return self._syscall_mount_probe.mount_root_component_pairs()
+
 
 def _signal_owned_group(process: subprocess.Popen[bytes], sig: int) -> None:
     if process.poll() is not None:
@@ -1562,6 +1580,77 @@ def _h006_path_mount_relationship_from_mountinfo(
     return "same_mount" if left_mount == right_mount else "different_mounts"
 
 
+def _h006_mount_signature_for_path(
+    path: str, mountinfo: str,
+) -> tuple[str, str, int] | None:
+    """The covering mount's id, device, and root depth for `path`.
+
+    The mount is chosen by longest mountpoint prefix, so the answer survives a
+    path a failed rename already removed. The mount root is reduced to its
+    component count because the root is itself a path and must not reach the
+    receipt.
+    """
+    normalized = os.path.normpath(path)
+    if not normalized.startswith("/"):
+        return None
+    selected: tuple[int, str, str, int] | None = None
+    for line in mountinfo.splitlines():
+        mount_fields, separator, filesystem_fields = line.partition(" - ")
+        fields = mount_fields.split()
+        if (not separator or len(fields) < 5 or not fields[0].isdigit()
+                or not filesystem_fields):
+            continue
+        mountpoint = os.path.normpath(_h006_decode_mountinfo_path(fields[4]))
+        covered = (mountpoint == "/" or normalized == mountpoint
+                   or normalized.startswith(mountpoint.rstrip("/") + "/"))
+        if not covered:
+            continue
+        root_components = len([
+            part for part in _h006_decode_mountinfo_path(fields[3]).split("/") if part
+        ])
+        if selected is None or len(mountpoint) > selected[0]:
+            selected = (len(mountpoint), fields[0], fields[2], root_components)
+    if selected is None:
+        return None
+    return selected[1], selected[2], selected[3]
+
+
+def _h006_mount_identity_pairs(
+    left: str, right: str, mountinfo: str,
+) -> tuple[tuple[str, str] | None, tuple[str, str] | None, tuple[int, int] | None]:
+    """Project both endpoints' mount identity as bounded, path-free pairs.
+
+    Two bind mounts of one filesystem share a device and a mount root but not a
+    mount id, so the id pair is what distinguishes "the same mount" from "the
+    same filesystem". `rename` refuses to cross a mount even when the device
+    matches, which is why a device-only comparison cannot see the boundary.
+    """
+    left_signature = _h006_mount_signature_for_path(left, mountinfo)
+    right_signature = _h006_mount_signature_for_path(right, mountinfo)
+    if left_signature is None or right_signature is None:
+        return None, None, None
+    return (
+        (left_signature[0], right_signature[0]),
+        (left_signature[1], right_signature[1]),
+        (left_signature[2], right_signature[2]),
+    )
+
+
+def _h006_pid_mount_identity(
+    pid: int, left: str, right: str,
+) -> tuple[tuple[str, str] | None, tuple[str, str] | None, tuple[int, int] | None]:
+    """Read the tracee's own mount table once and project both endpoints."""
+    try:
+        with (Path("/proc") / str(pid) / "mountinfo").open("rb") as source:
+            payload = source.read(_H006_MOUNTINFO_MAX_BYTES + 1)
+    except OSError:
+        return None, None, None
+    if len(payload) > _H006_MOUNTINFO_MAX_BYTES:
+        return None, None, None
+    return _h006_mount_identity_pairs(
+        left, right, payload.decode("utf-8", errors="replace"))
+
+
 def _h006_mount_id_from_fdinfo(text: str) -> str | None:
     if len(text) > 4096:
         return None
@@ -1678,6 +1767,9 @@ class _H006SyscallMountProbe:
         self._filesystem_pairs: set[tuple[str, str]] = set()
         self._resolved_relationships: set[str] = set()
         self._resolution_states: set[tuple[str, str]] = set()
+        self._mount_id_pairs: set[tuple[str, str]] = set()
+        self._mount_device_pairs: set[tuple[str, str]] = set()
+        self._mount_root_component_pairs: set[tuple[int, int]] = set()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def start(self) -> None:
@@ -1699,6 +1791,15 @@ class _H006SyscallMountProbe:
 
     def resolution_states(self) -> list[tuple[str, str]]:
         return sorted(self._resolution_states)[:8]
+
+    def mount_id_pairs(self) -> list[tuple[str, str]]:
+        return sorted(self._mount_id_pairs)[:8]
+
+    def mount_device_pairs(self) -> list[tuple[str, str]]:
+        return sorted(self._mount_device_pairs)[:8]
+
+    def mount_root_component_pairs(self) -> list[tuple[int, int]]:
+        return sorted(self._mount_root_component_pairs)[:8]
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -1753,6 +1854,14 @@ class _H006SyscallMountProbe:
             self._resolution_states.add(resolution_states)
             if filesystems is not None:
                 self._filesystem_pairs.add(filesystems)
+            mount_ids, devices, root_components = _h006_pid_mount_identity(
+                int(digits.group()), paths[0], paths[1])
+            if mount_ids is not None:
+                self._mount_id_pairs.add(mount_ids)
+            if devices is not None:
+                self._mount_device_pairs.add(devices)
+            if root_components is not None:
+                self._mount_root_component_pairs.add(root_components)
 
 
 def _h006_syscall_trace_diagnostics(
@@ -1760,6 +1869,11 @@ def _h006_syscall_trace_diagnostics(
     path_mount_filesystem_pairs: tuple[tuple[str, str], ...] | list[tuple[str, str]] = (),
     path_resolved_mount_relationships: tuple[str, ...] | list[str] = (),
     path_resolved_mount_path_states: tuple[tuple[str, str], ...] | list[tuple[str, str]] = (),
+    path_mount_id_pairs: tuple[tuple[str, str], ...] | list[tuple[str, str]] = (),
+    path_mount_device_pairs: tuple[tuple[str, str], ...] | list[tuple[str, str]] = (),
+    path_mount_root_component_pairs: (
+        tuple[tuple[int, int], ...] | list[tuple[int, int]]
+    ) = (),
 ) -> dict[str, Any]:
     """Project failed file-move syscalls without retaining any raw path text."""
     empty = {
@@ -1772,6 +1886,9 @@ def _h006_syscall_trace_diagnostics(
         "path_mount_filesystem_pairs": [],
         "path_resolved_mount_relationships": [],
         "path_resolved_mount_path_states": [],
+        "path_mount_id_pairs": [],
+        "path_mount_device_pairs": [],
+        "path_mount_root_component_pairs": [],
         "artifact_kinds": [],
     }
     try:
@@ -1827,6 +1944,15 @@ def _h006_syscall_trace_diagnostics(
             set(path_resolved_mount_relationships))[:8],
         "path_resolved_mount_path_states": [
             list(pair) for pair in sorted(set(path_resolved_mount_path_states))[:8]
+        ],
+        "path_mount_id_pairs": [
+            list(pair) for pair in sorted(set(path_mount_id_pairs))[:8]
+        ],
+        "path_mount_device_pairs": [
+            list(pair) for pair in sorted(set(path_mount_device_pairs))[:8]
+        ],
+        "path_mount_root_component_pairs": [
+            list(pair) for pair in sorted(set(path_mount_root_component_pairs))[:8]
         ],
         "artifact_kinds": sorted(artifact_kinds)[:8],
     }
@@ -2557,6 +2683,9 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                         tuple(client.syscall_path_mount_filesystem_pairs),
                         tuple(client.syscall_path_resolved_mount_relationships),
                         tuple(client.syscall_path_resolved_mount_path_states),
+                        tuple(client.syscall_path_mount_id_pairs),
+                        tuple(client.syscall_path_mount_device_pairs),
+                        tuple(client.syscall_path_mount_root_component_pairs),
                     )
                     if syscall_trace_path is not None
                     else {
@@ -2570,6 +2699,9 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                         "path_mount_filesystem_pairs": [],
                         "path_resolved_mount_relationships": [],
                         "path_resolved_mount_path_states": [],
+                        "path_mount_id_pairs": [],
+                        "path_mount_device_pairs": [],
+                        "path_mount_root_component_pairs": [],
                         "artifact_kinds": [],
                     }
                 )

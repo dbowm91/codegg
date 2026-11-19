@@ -28,6 +28,7 @@ from dev.harness_lab.supervisor import (
     _h006_path_mount_relationship_from_mountinfo,
     _h006_path_mount_filesystem_pair_from_mountinfo,
     _h006_mount_id_from_fdinfo,
+    _h006_mount_identity_pairs,
     _h006_mount_relationship_from_ids,
     _h006_pid_path_mount_id,
     run_tool_trial,
@@ -352,6 +353,9 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "path_resolved_mount_path_states": [
                 ["exact_path", "nearest_existing_parent"]
             ],
+            "path_mount_id_pairs": [],
+            "path_mount_device_pairs": [],
+            "path_mount_root_component_pairs": [],
             "artifact_kinds": ["rmeta"],
         })
         serialized = json.dumps(diagnostic)
@@ -394,6 +398,42 @@ class H006FailureDiagnosticTest(unittest.TestCase):
                 "/opaque/source", "/opaque/destination", unknown_mountinfo),
             ("other", "other"),
         )
+
+    def test_mount_identity_projection_separates_bind_mounts_of_one_filesystem(self):
+        # Two bind mounts of one ext4 filesystem: the device and the mount root
+        # agree, and only the mount id tells them apart. A rename between them
+        # fails with EXDEV even though every device-based check says "same".
+        mountinfo = (
+            "31 25 8:1 / / rw - ext4 /dev/sda1 rw\n"
+            "32 31 8:1 / /checkout rw - ext4 /dev/sda1 rw\n"
+            "33 31 8:1 / /scratch rw - ext4 /dev/sda1 rw\n"
+            "34 32 8:1 /sub /checkout/sub rw - ext4 /dev/sda1 rw\n"
+        )
+        build_left = "/checkout/.cargo-target/debug/build/pkg-a/out/full.rmeta"
+        build_right = "/checkout/.cargo-target/debug/build/pkg-b/out/full.rmeta"
+        scratch_right = "/scratch/.cargo-target/debug/build/pkg-b/out/full.rmeta"
+
+        self.assertEqual(
+            _h006_mount_identity_pairs(build_left, build_right, mountinfo),
+            (("32", "32"), ("8:1", "8:1"), (0, 0)),
+        )
+        self.assertEqual(
+            _h006_mount_identity_pairs(build_left, scratch_right, mountinfo),
+            (("32", "33"), ("8:1", "8:1"), (0, 0)),
+            "a bind mount of one filesystem must be distinguishable by mount id",
+        )
+        self.assertEqual(
+            _h006_mount_identity_pairs(
+                "/checkout/sub/inner.rmeta", build_left, mountinfo),
+            (("34", "32"), ("8:1", "8:1"), (1, 0)),
+            "a nested mount reports its own id and a non-empty root",
+        )
+        self.assertEqual(
+            _h006_mount_identity_pairs("relative.rmeta", build_left, mountinfo),
+            (None, None, None),
+        )
+        self.assertNotIn("/checkout", json.dumps(
+            _h006_mount_identity_pairs(build_left, scratch_right, mountinfo)))
 
     def test_resolved_mount_ids_are_reduced_to_fixed_relationship_labels(self):
         fdinfo = "pos:\t0\nflags:\t0100000\nmnt_id:\t12345\nino:\t9876\n"
@@ -463,6 +503,9 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "path_mount_filesystem_pairs": [],
             "path_resolved_mount_relationships": [],
             "path_resolved_mount_path_states": [],
+            "path_mount_id_pairs": [],
+            "path_mount_device_pairs": [],
+            "path_mount_root_component_pairs": [],
             "artifact_kinds": [],
         })
         self.assertNotIn("PRIVATE_TRACE", json.dumps(diagnostic))
