@@ -193,13 +193,12 @@ pub fn parse_present_display(text: &str) -> Option<Vec<PresentedFile>> {
     for line in lines {
         if let Some(body) = line.strip_prefix("    ") {
             delivered.last_mut()?.description = Some(body.to_string());
-        } else if let Some(body) = line.strip_prefix("  ") {
+        } else {
+            let body = line.strip_prefix("  ")?;
             delivered.push(PresentedFile {
                 path: unescape_line_breaks(body),
                 description: None,
             });
-        } else {
-            return None;
         }
     }
     (delivered.len() == count).then_some(delivered)
@@ -359,8 +358,7 @@ impl PresentTool {
             ));
         }
         let candidate = Path::new(declared);
-        // The lexical escapes are refused before any filesystem call, so a
-        // `..` path never causes a stat outside the workspace.
+        // Lexical escapes are refused before any filesystem call, so `..` cannot stat.
         if candidate.is_absolute() {
             return Err(refuse(
                 PresentRefusalKind::OutsideWorkspace,

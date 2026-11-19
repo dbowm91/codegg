@@ -437,12 +437,10 @@ impl EditorPrefix {
             | EditorPrefix::FindTillPrevious
             | EditorPrefix::ReplaceChar
             | EditorPrefix::MatchArg(_)
-            // The `"` grammar's two levels. The first is a capture (the name
-            // is data); the second takes a **verb**, not a glyph, and each of
-            // the four it accepts needs the captured name as an argument — so
-            // neither can be a `PrefixLeaf` row without a payload the action
-            // type does not carry. `commands::editor::resolve_register_verb`
-            // is the table for it.
+            // The `"` grammar's two levels: the first is a capture (the name is
+            // data); the second takes a **verb**, not a glyph, and each of the
+            // four it accepts needs the captured name as an argument, so neither
+            // fits a `PrefixLeaf` row. `commands::editor::resolve_register_verb`.
             | EditorPrefix::Register
             | EditorPrefix::RegisterNamed(_) => &[],
         }
@@ -4821,10 +4819,7 @@ fn detect_indent_unit(snapshot: &DocumentSnapshot) -> (IndentUnit, bool) {
     let mut space_lines = 0usize;
     let mut smallest: Option<usize> = None;
     let mut line = 0usize;
-    loop {
-        let Some(start) = line_start(snapshot, line) else {
-            break;
-        };
+    while let Some(start) = line_start(snapshot, line) {
         if start >= window_end {
             break;
         }
