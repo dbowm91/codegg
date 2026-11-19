@@ -567,9 +567,7 @@ async fn run_managed_test_process(
     }
     // Cargo's cache and build outputs are writable, so constrained runs only
     // receive paths already contained by the accepted workspace grant.
-    const CARGO_ENV_FORWARDING: bool = false;
     let constrained_cargo = is_cargo
-        && CARGO_ENV_FORWARDING
         && sandbox_profile.is_some_and(|profile| profile.requires_filesystem_containment());
     let cargo_home = if constrained_cargo {
         std::env::var_os("CARGO_HOME")
