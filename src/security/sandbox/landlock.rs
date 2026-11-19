@@ -378,9 +378,8 @@ mod tests {
         let staged = out.join("rmeta123");
         std::fs::create_dir(&staged).expect("staging directory created under the grant");
         std::fs::write(staged.join("full.rmeta"), b"x").expect("staged file");
-        std::fs::rename(staged.join("full.rmeta"), out.join("lib.rmeta")).expect(
-            "a rename staged after the ruleset was applied must be permitted",
-        );
+        std::fs::rename(staged.join("full.rmeta"), out.join("lib.rmeta"))
+            .expect("a rename staged after the ruleset was applied must be permitted");
     }
 
     #[cfg(target_os = "linux")]
