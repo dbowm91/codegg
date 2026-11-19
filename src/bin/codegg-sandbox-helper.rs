@@ -1,20 +1,14 @@
 //! One-shot child sandbox launcher.
 //!
-//! This binary intentionally has no daemon or public protocol. The parent
-//! supplies one bounded JSON launch description and one private status-pipe
-//! descriptor. This process applies the complete containment policy in a
-//! normal process context, reports setup state through the private pipe, and
-//! then replaces itself with the target executable.
+//! No daemon, no public protocol: the parent supplies one bounded JSON launch
+//! description and one private status-pipe descriptor; this process applies the
+//! containment policy, reports setup through that pipe, and execs the target.
 //!
-//! This binary carries the sandbox's reviewable `unsafe` blocks: the
-//! status-pipe descriptor plumbing, the `sandbox_init` FFI that the root
-//! library cannot make itself (`#![deny(unsafe_code)]`), the Linux PTY
-//! bootstrap ioctls, and the seccomp filter descriptor. The one shared
-//! exception now lives beside its consumer:
-//! `security::sandbox::linux_mount_view::open_pinned` owns the `openat2`
-//! syscall under an `#[allow(unsafe_code)]`, because the library's Landlock
-//! rule compiler needs the same no-follow open the helper used to keep to
-//! itself.
+//! It carries the reviewable `unsafe` blocks: status-pipe plumbing, the
+//! `sandbox_init` FFI the root library cannot make (`#![deny(unsafe_code)]`),
+//! the Linux PTY bootstrap ioctls, and the seccomp filter descriptor. The shared
+//! exception, `security::sandbox::linux_mount_view::open_pinned`, owns the
+//! `openat2` syscall under `#[allow(unsafe_code)]`.
 
 #[cfg(unix)]
 use codegg::security::sandbox::{
@@ -458,7 +452,7 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
         .arg("/tmp")
         .arg("--setenv")
         .arg("TMPDIR")
-        .arg("/tmp")
+        .arg(contained_temporary_directory(spec))
         .arg("--setenv")
         .arg("GIT_CONFIG_NOSYSTEM")
         .arg("1")
@@ -563,6 +557,58 @@ fn report_process_scope_abi(fd: RawFd, abi: u32) -> Result<(), String> {
     Ok(())
 }
 
+/// Resolve the child's temporary directory.
+///
+/// `/tmp` is a tmpfs while write grants are host bind mounts, so staging there
+/// and moving into a grant crosses a device. A request naming an absolute,
+/// resolved, existing directory inside a grant, clear of every deny path, gets
+/// it; everything else keeps the private tmpfs.
+#[cfg(any(target_os = "linux", all(test, unix)))]
+fn contained_temporary_directory(spec: &SandboxLaunchSpec) -> PathBuf {
+    let private_root = PathBuf::from("/tmp");
+    let Some(requested) = spec
+        .env
+        .iter()
+        .find(|(name, _)| name == "TMPDIR")
+        .map(|(_, value)| PathBuf::from(value))
+    else {
+        return private_root;
+    };
+    if !requested.is_absolute() {
+        return private_root;
+    }
+    if !spec
+        .write_paths
+        .iter()
+        .any(|grant| requested.starts_with(grant))
+    {
+        return private_root;
+    }
+    let Ok(resolved) = requested.canonicalize() else {
+        return private_root;
+    };
+    if !resolved.is_dir() {
+        return private_root;
+    }
+    if !spec.write_paths.iter().any(|grant| {
+        grant
+            .canonicalize()
+            .map(|grant| resolved.starts_with(grant))
+            .unwrap_or(false)
+    }) {
+        return private_root;
+    }
+    if spec.deny_paths.iter().any(|denied| {
+        requested.starts_with(denied)
+            || denied.starts_with(&requested)
+            || resolved.starts_with(denied)
+            || denied.starts_with(&resolved)
+    }) {
+        return private_root;
+    }
+    requested
+}
+
 #[cfg(target_os = "linux")]
 fn validated_target_environment(env: &[(String, String)]) -> Result<Vec<(String, String)>, String> {
     use std::collections::BTreeSet;
@@ -633,11 +679,10 @@ fn seccomp_filter_file(bytes: &[u8]) -> Result<File, String> {
 /// Pin one mount source by descriptor.
 ///
 /// The no-follow open and the device/inode verification are the shared
-/// [`open_pinned`] primitive — the same one the Landlock rule compiler uses —
-/// so the mount view and the ruleset cannot disagree about what "this path"
-/// means. The identity is optional here because device nodes and launch
-/// scratch are mounted without a captured snapshot; a source that has one is
-/// verified against it.
+/// [`open_pinned`] primitive the Landlock rule compiler also uses, so the view
+/// and the ruleset cannot disagree about "this path". The identity is optional:
+/// device nodes and launch scratch are mounted without a captured snapshot, and
+/// a source that has one is verified against it.
 ///
 /// [`open_pinned`]: codegg::security::sandbox::linux_mount_view::open_pinned
 #[cfg(target_os = "linux")]
@@ -653,6 +698,115 @@ fn open_mount_source(
 fn main() {
     eprintln!("codegg-sandbox-helper is unavailable on this platform");
     std::process::exit(125);
+}
+
+#[cfg(all(test, unix))]
+mod temporary_root_tests {
+    use super::contained_temporary_directory;
+    use codegg::security::sandbox::SandboxLaunchSpec;
+    use std::path::PathBuf;
+
+    fn spec(
+        env: Vec<(String, String)>,
+        write_paths: Vec<PathBuf>,
+        deny_paths: Vec<PathBuf>,
+    ) -> SandboxLaunchSpec {
+        SandboxLaunchSpec {
+            target: PathBuf::from("/bin/true"),
+            args: vec![],
+            env,
+            read_paths: vec![],
+            write_paths,
+            deny_paths,
+            linux_protected_mount_view: true,
+            linux_process_isolation: false,
+            linux_offline_network: false,
+            protected_readonly_paths: vec![],
+            path_identities: vec![],
+            expected_created_git_pointers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_granted_temporary_root_is_kept_so_temporary_files_share_the_workspace_filesystem() {
+        let fixture = tempfile::tempdir().expect("fixture directory");
+        let granted = fixture.path().join("granted");
+        let temporary = granted.join("cargo-target");
+        std::fs::create_dir_all(&temporary).expect("granted temporary directory");
+
+        let resolved = contained_temporary_directory(&spec(
+            vec![(
+                "TMPDIR".to_string(),
+                temporary.to_string_lossy().into_owned(),
+            )],
+            vec![granted.clone()],
+            vec![],
+        ));
+
+        assert_eq!(
+            resolved, temporary,
+            "a temporary root inside a writable grant must be honored"
+        );
+    }
+
+    #[test]
+    fn a_temporary_root_outside_every_grant_falls_back_to_the_private_tmpfs() {
+        let fixture = tempfile::tempdir().expect("fixture directory");
+        let granted = fixture.path().join("granted");
+        std::fs::create_dir_all(&granted).expect("granted directory");
+        let outside = fixture.path().join("outside");
+        std::fs::create_dir_all(&outside).expect("outside directory");
+
+        let resolved = contained_temporary_directory(&spec(
+            vec![("TMPDIR".to_string(), outside.to_string_lossy().into_owned())],
+            vec![granted],
+            vec![],
+        ));
+
+        assert_eq!(
+            resolved,
+            PathBuf::from("/tmp"),
+            "a temporary root outside every writable grant must not be honored"
+        );
+    }
+
+    #[test]
+    fn a_denied_or_missing_or_relative_temporary_root_falls_back_to_the_private_tmpfs() {
+        let fixture = tempfile::tempdir().expect("fixture directory");
+        let granted = fixture.path().join("granted");
+        std::fs::create_dir_all(&granted).expect("granted directory");
+        let denied = granted.join("denied");
+        std::fs::create_dir_all(&denied).expect("denied directory");
+        let missing = granted.join("missing");
+
+        for requested in [
+            denied.to_string_lossy().into_owned(),
+            missing.to_string_lossy().into_owned(),
+            "relative-temporary-root".to_string(),
+        ] {
+            let resolved = contained_temporary_directory(&spec(
+                vec![("TMPDIR".to_string(), requested.clone())],
+                vec![granted.clone()],
+                vec![denied.clone()],
+            ));
+            assert_eq!(
+                resolved,
+                PathBuf::from("/tmp"),
+                "an unusable temporary root must fall back to the private tmpfs: {requested}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_launch_without_a_requested_temporary_root_keeps_the_private_tmpfs() {
+        let resolved = contained_temporary_directory(&spec(vec![], vec![], vec![]));
+
+        assert_eq!(
+            resolved,
+            PathBuf::from("/tmp"),
+            "the helper-owned private tmpfs remains the default temporary root"
+        );
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
