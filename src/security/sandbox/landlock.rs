@@ -332,6 +332,58 @@ mod tests {
     use crate::security::sandbox::linux_mount_view;
 
     #[cfg(target_os = "linux")]
+    fn diagnostic_spec(root: &std::path::Path) -> SandboxLaunchSpec {
+        SandboxLaunchSpec {
+            target: root.join("true"),
+            args: Vec::new(),
+            env: Vec::new(),
+            read_paths: Vec::new(),
+            write_paths: vec![root.to_path_buf()],
+            deny_paths: Vec::new(),
+            linux_protected_mount_view: false,
+            linux_process_isolation: false,
+            linux_offline_network: false,
+            protected_readonly_paths: Vec::new(),
+            path_identities: Vec::new(),
+            expected_created_git_pointers: Vec::new(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_rename_inside_a_granted_write_root_is_permitted() {
+        let fixture = tempfile::tempdir().expect("fixture directory");
+        let root = fixture.path().canonicalize().expect("canonical fixture");
+        let out = root.join("debug").join("build").join("pkg").join("out");
+        let staged = out.join("rmeta123");
+        std::fs::create_dir_all(&staged).expect("staged directory");
+        std::fs::write(staged.join("full.rmeta"), b"x").expect("staged file");
+
+        apply(&diagnostic_spec(&root)).expect("the filesystem ruleset applies");
+
+        std::fs::rename(staged.join("full.rmeta"), out.join("lib.rmeta"))
+            .expect("a rename inside the granted write root must be permitted");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_rename_from_a_directory_created_after_the_ruleset_is_permitted() {
+        let fixture = tempfile::tempdir().expect("fixture directory");
+        let root = fixture.path().canonicalize().expect("canonical fixture");
+        let out = root.join("debug").join("build").join("pkg").join("out");
+        std::fs::create_dir_all(&out).expect("out directory");
+
+        apply(&diagnostic_spec(&root)).expect("the filesystem ruleset applies");
+
+        let staged = out.join("rmeta123");
+        std::fs::create_dir(&staged).expect("staging directory created under the grant");
+        std::fs::write(staged.join("full.rmeta"), b"x").expect("staged file");
+        std::fs::rename(staged.join("full.rmeta"), out.join("lib.rmeta")).expect(
+            "a rename staged after the ruleset was applied must be permitted",
+        );
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     fn landlock_access_keeps_directory_rights_for_directories() {
         use landlock::{AccessFs, ABI};
