@@ -920,7 +920,7 @@ class LongHorizonNativeJobTest(unittest.TestCase):
                 "action": "wait", "job_id": "{job_id}", "timeout_ms": 300000}},
         ]
         trial = run_tool_trial(
-            binary, "full-host", timeout=300.0,
+            binary, "workspace-write", timeout=300.0,
             task_id="h006-real-job-observation", tool_sequence=sequence,
             expected_file="never-created", expected_text=None, expected_exists=False,
             workspace_snapshot=self.fixture, rustc_executable=Path(rustc),
