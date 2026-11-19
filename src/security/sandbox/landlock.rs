@@ -122,9 +122,8 @@ pub fn apply(spec: &SandboxLaunchSpec) -> Result<BackendEnforcement, String> {
 
     super::policy::validate_landlock_write_exclusions(&spec.write_paths, &spec.deny_paths)?;
 
-    // ABI 3 is the minimum contract: v2 adds REFER and v3 adds TRUNCATE.
-    // Newer filesystem rights are requested best-effort after that hard
-    // minimum, so each host enforces the strongest ABI the crate supports.
+    // ABI 3 is the minimum contract (v2 adds REFER, v3 adds TRUNCATE); newer
+    // rights are requested best-effort, so each host enforces the strongest ABI.
     let abi = ABI::V9;
     let read_access = AccessFs::from_read(abi);
     let write_access = AccessFs::from_all(abi);
@@ -138,18 +137,25 @@ pub fn apply(spec: &SandboxLaunchSpec) -> Result<BackendEnforcement, String> {
         .create()
         .map_err(|e| format!("Landlock ruleset creation failed: {e}"))?;
 
-    // The policy is built (canonicalized, carved, sorted) once, and its
-    // object identities are captured here — before any rule opens a path.
-    // Opening a grant by name afterwards would let a replacement between the
-    // two steps become the granted object, so the open is no-follow and the
-    // opened metadata is checked against this snapshot.
+    // The policy is built (canonicalized, carved, sorted) once, and its object
+    // identities are captured here — before any rule opens a path. Opening a
+    // grant by name afterwards would let a replacement between the two steps
+    // become the granted object, so the open is no-follow and metadata-checked.
     let policy = BackendPolicy::for_spec(spec).landlock_effective();
     let identities = capture_grant_identities(&policy)?;
     for path in &policy.read_roots {
         ruleset = add_landlock_path(ruleset, path, read_access, abi, &identities)?;
     }
     for path in &policy.read_dir_roots {
-        ruleset = add_landlock_path(ruleset, path, AccessFs::ReadDir.into(), abi, &identities)?;
+        // REFER alone cannot create, remove, or read; a rename still needs
+        // MAKE_* at the destination and REMOVE_* at the source.
+        ruleset = add_landlock_path(
+            ruleset,
+            path,
+            AccessFs::ReadDir | AccessFs::Refer,
+            abi,
+            &identities,
+        )?;
     }
     for path in &policy.write_roots {
         ruleset = add_landlock_path(ruleset, path, write_access, abi, &identities)?;
