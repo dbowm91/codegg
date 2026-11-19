@@ -29,9 +29,8 @@ use http::header::{HeaderName, HeaderValue};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-/// Body-free SSE framing counters used to distinguish active incomplete frames
-/// from completed frames that produce no canonical ChatEvent. Payload bytes
-/// are never retained by this observer.
+/// Body-free SSE framing counters separating active incomplete frames from
+/// completed frames that produce no canonical ChatEvent; no payload is retained.
 #[derive(Default)]
 struct SseFrameProgress {
     completed_frames: u64,
