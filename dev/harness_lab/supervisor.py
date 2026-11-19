@@ -494,6 +494,30 @@ class AcpClient:
             return []
         return self._syscall_mount_probe.mount_root_component_pairs()
 
+    @property
+    def syscall_mount_table_state(self) -> str:
+        if self._syscall_mount_probe is None:
+            return "not_observed"
+        return self._syscall_mount_probe.mount_table_state()
+
+    @property
+    def syscall_mount_table_entry_count(self) -> int:
+        if self._syscall_mount_probe is None:
+            return 0
+        return self._syscall_mount_probe.mount_table_entry_count()
+
+    @property
+    def syscall_mount_table_root_filesystem(self) -> str:
+        if self._syscall_mount_probe is None:
+            return "absent"
+        return self._syscall_mount_probe.mount_table_root_filesystem()
+
+    @property
+    def syscall_mount_table_temp_filesystem(self) -> str:
+        if self._syscall_mount_probe is None:
+            return "absent"
+        return self._syscall_mount_probe.mount_table_temp_filesystem()
+
 
 def _signal_owned_group(process: subprocess.Popen[bytes], sig: int) -> None:
     if process.poll() is not None:
@@ -1651,6 +1675,62 @@ def _h006_pid_mount_identity(
         left, right, payload.decode("utf-8", errors="replace"))
 
 
+_H006_PROC_STAT_MAX_BYTES = 4096
+
+
+def _h006_process_identity(pid: int) -> tuple[int, int] | None:
+    """(pid, start time) for a live process, or None when it cannot be pinned.
+
+    `comm` may contain spaces and parentheses, so the fields are read after the
+    last ')'. The start time is field 22; with the pid it names one process
+    incarnation, which is what stops a recycled pid from answering for a tracee
+    that has already exited.
+    """
+    try:
+        with (Path("/proc") / str(pid) / "stat").open("rb") as source:
+            payload = source.read(_H006_PROC_STAT_MAX_BYTES + 1)
+    except OSError:
+        return None
+    if len(payload) > _H006_PROC_STAT_MAX_BYTES:
+        return None
+    tail = payload.decode("utf-8", errors="replace").rpartition(")")[2].split()
+    if len(tail) < 20 or not tail[19].isdigit():
+        return None
+    return pid, int(tail[19])
+
+
+def _h006_mount_table_evidence(mountinfo: str) -> tuple[str, int, str, str]:
+    """Classify the mount table the probe read.
+
+    Returns (state, entry count, root filesystem label, /tmp filesystem label).
+    The protected mount view builds its child from a tmpfs root, so a root on
+    any other filesystem means the run had no mount view and every mount
+    attribution describes the host instead. Recording that state is what keeps
+    a host measurement from being read as a view measurement.
+    """
+    root_filesystem = "absent"
+    temp_filesystem = "absent"
+    entries = 0
+    for line in mountinfo.splitlines():
+        mount_fields, separator, filesystem_fields = line.partition(" - ")
+        fields = mount_fields.split()
+        if (not separator or len(fields) < 5 or not fields[0].isdigit()
+                or not filesystem_fields):
+            continue
+        entries += 1
+        mountpoint = os.path.normpath(_h006_decode_mountinfo_path(fields[4]))
+        label = _h006_filesystem_label(filesystem_fields.split()[0])
+        if mountpoint == "/":
+            root_filesystem = label
+        elif mountpoint == "/tmp":
+            temp_filesystem = label
+    if entries == 0:
+        return "mount_table_unavailable", 0, "absent", "absent"
+    if root_filesystem == "tmpfs":
+        return "sandboxed_view", entries, root_filesystem, temp_filesystem
+    return "host_view", entries, root_filesystem, temp_filesystem
+
+
 def _h006_mount_id_from_fdinfo(text: str) -> str | None:
     if len(text) > 4096:
         return None
@@ -1770,6 +1850,11 @@ class _H006SyscallMountProbe:
         self._mount_id_pairs: set[tuple[str, str]] = set()
         self._mount_device_pairs: set[tuple[str, str]] = set()
         self._mount_root_component_pairs: set[tuple[int, int]] = set()
+        self._table_states: set[str] = set()
+        self._table_entry_count = 0
+        self._table_root_filesystem = "absent"
+        self._table_temp_filesystem = "absent"
+        self._identity: tuple[int, int] | None = None
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def start(self) -> None:
@@ -1800,6 +1885,43 @@ class _H006SyscallMountProbe:
 
     def mount_root_component_pairs(self) -> list[tuple[int, int]]:
         return sorted(self._mount_root_component_pairs)[:8]
+
+    def mount_table_state(self) -> str:
+        if not self._table_states:
+            return "not_observed"
+        # A host table outranks a later tracee exit: it says the run had no
+        # protected mount view at all, which no exit explains away.
+        for preferred in ("host_view", "mount_table_unavailable", "sandboxed_view"):
+            if preferred in self._table_states:
+                return preferred
+        return sorted(self._table_states)[0]
+
+    def mount_table_entry_count(self) -> int:
+        return self._table_entry_count
+
+    def mount_table_root_filesystem(self) -> str:
+        return self._table_root_filesystem
+
+    def mount_table_temp_filesystem(self) -> str:
+        return self._table_temp_filesystem
+
+    def _record_mount_table(self, pid: int) -> None:
+        try:
+            with (Path("/proc") / str(pid) / "mountinfo").open("rb") as source:
+                payload = source.read(_H006_MOUNTINFO_MAX_BYTES + 1)
+        except OSError:
+            self._table_states.add("mount_table_unavailable")
+            return
+        if len(payload) > _H006_MOUNTINFO_MAX_BYTES:
+            self._table_states.add("mount_table_unavailable")
+            return
+        state, entries, root_filesystem, temp_filesystem = _h006_mount_table_evidence(
+            payload.decode("utf-8", errors="replace"))
+        self._table_states.add(state)
+        self._table_entry_count = max(self._table_entry_count, entries)
+        if state != "mount_table_unavailable":
+            self._table_root_filesystem = root_filesystem
+            self._table_temp_filesystem = temp_filesystem
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -1845,9 +1967,24 @@ class _H006SyscallMountProbe:
             if digits is None:
                 self._relationships.add("tracee_pid_unavailable")
                 continue
+            pid = int(digits.group())
+            identity = _h006_process_identity(pid)
+            if identity is None:
+                # A tracee that has already exited cannot answer for its own
+                # mount table, and a reused pid would answer as somebody else.
+                if self._identity is None:
+                    self._table_states.add("tracee_unavailable")
+                continue
+            if self._identity is None:
+                self._identity = identity
+            elif identity != self._identity:
+                self._identity = None
+                self._table_states.add("tracee_replaced")
+                continue
+            self._record_mount_table(pid)
             relationship, filesystems, resolved_relationship, resolution_states = (
                 _h006_pid_mount_diagnostics(
-                    int(digits.group()), paths[0], paths[1], self.target_root)
+                    pid, paths[0], paths[1], self.target_root)
             )
             self._relationships.add(relationship)
             self._resolved_relationships.add(resolved_relationship)
@@ -1855,7 +1992,7 @@ class _H006SyscallMountProbe:
             if filesystems is not None:
                 self._filesystem_pairs.add(filesystems)
             mount_ids, devices, root_components = _h006_pid_mount_identity(
-                int(digits.group()), paths[0], paths[1])
+                pid, paths[0], paths[1])
             if mount_ids is not None:
                 self._mount_id_pairs.add(mount_ids)
             if devices is not None:
@@ -1874,6 +2011,10 @@ def _h006_syscall_trace_diagnostics(
     path_mount_root_component_pairs: (
         tuple[tuple[int, int], ...] | list[tuple[int, int]]
     ) = (),
+    mount_table_state: str = "not_observed",
+    mount_table_entry_count: int = 0,
+    mount_table_root_filesystem: str = "absent",
+    mount_table_temp_filesystem: str = "absent",
 ) -> dict[str, Any]:
     """Project failed file-move syscalls without retaining any raw path text."""
     empty = {
@@ -1889,6 +2030,10 @@ def _h006_syscall_trace_diagnostics(
         "path_mount_id_pairs": [],
         "path_mount_device_pairs": [],
         "path_mount_root_component_pairs": [],
+        "mount_table_state": "not_observed",
+        "mount_table_entry_count": 0,
+        "mount_table_root_filesystem": "absent",
+        "mount_table_temp_filesystem": "absent",
         "artifact_kinds": [],
     }
     try:
@@ -1954,6 +2099,10 @@ def _h006_syscall_trace_diagnostics(
         "path_mount_root_component_pairs": [
             list(pair) for pair in sorted(set(path_mount_root_component_pairs))[:8]
         ],
+        "mount_table_state": mount_table_state,
+        "mount_table_entry_count": min(max(int(mount_table_entry_count), 0), 1 << 20),
+        "mount_table_root_filesystem": mount_table_root_filesystem,
+        "mount_table_temp_filesystem": mount_table_temp_filesystem,
         "artifact_kinds": sorted(artifact_kinds)[:8],
     }
 
@@ -2686,6 +2835,10 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                         tuple(client.syscall_path_mount_id_pairs),
                         tuple(client.syscall_path_mount_device_pairs),
                         tuple(client.syscall_path_mount_root_component_pairs),
+                        client.syscall_mount_table_state,
+                        client.syscall_mount_table_entry_count,
+                        client.syscall_mount_table_root_filesystem,
+                        client.syscall_mount_table_temp_filesystem,
                     )
                     if syscall_trace_path is not None
                     else {
@@ -2702,6 +2855,10 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                         "path_mount_id_pairs": [],
                         "path_mount_device_pairs": [],
                         "path_mount_root_component_pairs": [],
+                        "mount_table_state": "not_observed",
+                        "mount_table_entry_count": 0,
+                        "mount_table_root_filesystem": "absent",
+                        "mount_table_temp_filesystem": "absent",
                         "artifact_kinds": [],
                     }
                 )

@@ -29,6 +29,8 @@ from dev.harness_lab.supervisor import (
     _h006_path_mount_filesystem_pair_from_mountinfo,
     _h006_mount_id_from_fdinfo,
     _h006_mount_identity_pairs,
+    _h006_mount_table_evidence,
+    _h006_process_identity,
     _h006_mount_relationship_from_ids,
     _h006_pid_path_mount_id,
     run_tool_trial,
@@ -356,6 +358,10 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "path_mount_id_pairs": [],
             "path_mount_device_pairs": [],
             "path_mount_root_component_pairs": [],
+            "mount_table_state": "not_observed",
+            "mount_table_entry_count": 0,
+            "mount_table_root_filesystem": "absent",
+            "mount_table_temp_filesystem": "absent",
             "artifact_kinds": ["rmeta"],
         })
         serialized = json.dumps(diagnostic)
@@ -435,6 +441,44 @@ class H006FailureDiagnosticTest(unittest.TestCase):
         self.assertNotIn("/checkout", json.dumps(
             _h006_mount_identity_pairs(build_left, scratch_right, mountinfo)))
 
+    def test_mount_table_evidence_separates_a_protected_view_from_the_host(self):
+        # The protected mount view builds its child from a tmpfs root, so a
+        # root on another filesystem is a host table, and no mount attribution
+        # taken from it can describe a view.
+        sandboxed = (
+            "20 1 0:20 / / rw - tmpfs tmpfs rw\n"
+            "21 20 0:21 / /tmp rw - tmpfs tmpfs rw\n"
+            "22 20 8:1 / /checkout rw - ext4 /dev/sda1 rw\n"
+        )
+        self.assertEqual(
+            _h006_mount_table_evidence(sandboxed),
+            ("sandboxed_view", 3, "tmpfs", "tmpfs"),
+        )
+        host = (
+            "28 1 259:1 / / rw - ext4 /dev/root rw\n"
+            "29 28 259:1 / /checkout rw - ext4 /dev/root rw\n"
+        )
+        self.assertEqual(
+            _h006_mount_table_evidence(host),
+            ("host_view", 2, "ext4", "absent"),
+        )
+        self.assertEqual(
+            _h006_mount_table_evidence(""),
+            ("mount_table_unavailable", 0, "absent", "absent"),
+        )
+        self.assertNotIn("/checkout", json.dumps(_h006_mount_table_evidence(host)))
+
+    @unittest.skipUnless(Path("/proc/self/stat").exists(), "requires a Linux /proc identity probe")
+    def test_process_identity_refuses_a_process_it_cannot_pin(self):
+        identity = _h006_process_identity(os.getpid())
+        self.assertIsNotNone(identity, "a live process must be pinnable")
+        self.assertEqual(identity[0], os.getpid())
+        self.assertGreater(identity[1], 0)
+        self.assertIsNone(
+            _h006_process_identity(2 ** 22 + 12345),
+            "a pid that names no process must not yield an identity",
+        )
+
     def test_resolved_mount_ids_are_reduced_to_fixed_relationship_labels(self):
         fdinfo = "pos:\t0\nflags:\t0100000\nmnt_id:\t12345\nino:\t9876\n"
         self.assertEqual(_h006_mount_id_from_fdinfo(fdinfo), "12345")
@@ -506,6 +550,10 @@ class H006FailureDiagnosticTest(unittest.TestCase):
             "path_mount_id_pairs": [],
             "path_mount_device_pairs": [],
             "path_mount_root_component_pairs": [],
+            "mount_table_state": "not_observed",
+            "mount_table_entry_count": 0,
+            "mount_table_root_filesystem": "absent",
+            "mount_table_temp_filesystem": "absent",
             "artifact_kinds": [],
         })
         self.assertNotIn("PRIVATE_TRACE", json.dumps(diagnostic))
