@@ -1917,7 +1917,7 @@ impl Tool for TaskTool {
 
     fn description(&self) -> &str {
         concat!(
-            "Never batch a wait with other work: a mixed batch rejects it, so issue it alone. A solo wait holds no batch execution slot but is bounded by timeout_ms (clamped to 30s). ",
+            "Never batch a wait with other work: a mixed batch rejects it, so it must be re-issued on its own. A solo wait holds no batch execution slot but is bounded by timeout_ms (clamped to 30s). ",
             "For background shell jobs use job. Spawn a subagent to handle a task independently. Use spawn_many for a bounded group of independent children, then wait_group/status_group/cancel_group. ",
             "For nonterminal runs, prefer wait or push notifications over polling status/get. A terminal run will not advance under more status/wait calls: retrieve its result once with get. Terminal status/wait/get results repeat this next-step guidance; if a terminal durable child failed with a recognized transient class and the work is still wanted, use the single permitted action=continue. ",
             "Spawn returns both Task and Run ids (durable path: `Task: <task_id> Run: <run_id>`); status/wait use run_id and get uses task_id, with aliases accepted on the durable path. Example: spawn -> `Task: agt-abc Run: agr-def` -> wait {\"run_id\": \"agr-def\"} -> get {\"task_id\": \"agt-abc\"} returns recorded_result (bounded to 4096 bytes, see recorded_result_* fields) plus a transcript tail of the last 20 lines / 2000 chars. ",
