@@ -49,14 +49,8 @@ impl SseFrameProgress {
                 self.tail.pop_front();
             }
             self.tail.push_back(*byte);
-            let delimited = self.tail.iter().rev().take(2).copied().eq([b'\n', b'\n'])
-                || self
-                    .tail
-                    .iter()
-                    .rev()
-                    .take(4)
-                    .copied()
-                    .eq([b'\n', b'\r', b'\n', b'\r']);
+            let delimited = self.tail.iter().rev().take(2).copied().eq(*b"\n\n")
+                || self.tail.iter().rev().take(4).copied().eq(*b"\n\r\n\r");
             if delimited {
                 self.completed_frames = self.completed_frames.saturating_add(1);
                 self.last_frame_bytes = self.current_frame_bytes;
