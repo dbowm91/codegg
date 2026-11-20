@@ -395,7 +395,10 @@ async fn job_tool_enforces_exact_owner_and_wait_timeout_is_observation() {
         .expect("missing status is the comparison observation");
     assert!(!missing.success);
     assert_eq!(
-        missing.value.as_ref().and_then(|value| value.get("error_class")),
+        missing
+            .value
+            .as_ref()
+            .and_then(|value| value.get("error_class")),
         Some(&serde_json::json!("job_not_found")),
         "foreign ownership must use the same class as absence"
     );
