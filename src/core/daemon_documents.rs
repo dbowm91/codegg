@@ -1720,24 +1720,37 @@ mod tests {
         );
         let one_len = serialized_listing_response_len(&one_response);
         assert!(full_len > one_len);
-        // Force a trim by feeding an oversized tree: duplicate the nodes
-        // until the full response exceeds the budget, then assert the
-        // enforcer retains a strict prefix with a reason.
-        let mut big = nodes.clone();
-        while {
-            let probe = build_bounded_listing_response(
-                "ws-1".to_owned(),
-                String::new(),
-                listing_with(big.clone()),
-            );
-            let result = result_of(&probe);
-            !result.truncated
-        } {
-            big.extend(nodes.clone());
-            if big.len() > 10_000 {
-                break;
-            }
-        }
+        // Size one oversized tree from a real serialization. Searching for
+        // the boundary re-serializes every intermediate tree.
+        let empty_len = serialized_listing_response_len(&listing_response(
+            "ws-1".to_owned(),
+            String::new(),
+            Vec::new(),
+            false,
+            None,
+            0,
+            WorkspaceDirectoryListStatusDto::Ready,
+        ));
+        let probe_count = 32usize;
+        let probe_nodes: Vec<_> = (0..probe_count)
+            .map(|i| node("a.txt", &format!("p{i}.txt")))
+            .collect();
+        let probe_len = serialized_listing_response_len(&listing_response(
+            "ws-1".to_owned(),
+            String::new(),
+            probe_nodes,
+            false,
+            None,
+            probe_count,
+            WorkspaceDirectoryListStatusDto::Ready,
+        ));
+        assert!(probe_len > empty_len);
+        let per_node = (probe_len - empty_len) / probe_count;
+        assert!(per_node > 0);
+        let count = (MAX_DIRECTORY_LISTING_RESPONSE_BYTES / per_node) + 2;
+        let big: Vec<_> = (0..count)
+            .map(|i| node("a.txt", &format!("p{i}.txt")))
+            .collect();
         let response = build_bounded_listing_response(
             "ws-1".to_owned(),
             String::new(),
@@ -1745,20 +1758,24 @@ mod tests {
         );
         let result = result_of(&response);
         assert!(listing_response_fits_budget(&response));
-        if result.nodes.len() < big.len() {
-            assert!(result.truncated);
-            assert!(
-                result
-                    .truncated_reason
-                    .as_deref()
-                    .is_some_and(|r| r.contains("response budget")),
-                "reason must name the budget, got {:?}",
-                result.truncated_reason
-            );
-            // Prefix order preserved.
-            for (kept, original) in result.nodes.iter().zip(big.iter()) {
-                assert_eq!(kept.name, original.name);
-            }
+        assert!(
+            result.nodes.len() < big.len(),
+            "over-budget listing must drop a trailing node, kept {} of {}",
+            result.nodes.len(),
+            big.len()
+        );
+        assert!(result.truncated);
+        assert!(
+            result
+                .truncated_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("response budget")),
+            "reason must name the budget, got {:?}",
+            result.truncated_reason
+        );
+        for (kept, original) in result.nodes.iter().zip(big.iter()) {
+            assert_eq!(kept.name, original.name);
+            assert_eq!(kept.path, original.path);
         }
     }
 
