@@ -374,15 +374,39 @@ fn denied_credential_nested_under_workspace_is_not_read_or_written() {
         ),
     ];
     let write = run_helper(&write_spec);
-    assert!(
-        marker.exists(),
-        "the contained child must have run for the credential write to have been \
-         attempted: outcome={:?} stderr={:?}",
-        write.outcome(),
-        write.stderr
-    );
+    if cfg!(target_os = "linux") {
+        let denied = std::fs::canonicalize(&credentials).unwrap_or_else(|_| credentials.clone());
+        match write.outcome() {
+            Some(SandboxLaunchOutcome::SetupError { reason }) => {
+                assert!(
+                    reason.contains("cannot represent a denied path beneath writable root"),
+                    "Landlock must name the unrepresentable grant: {reason}"
+                );
+                assert!(
+                    reason.contains(denied.to_string_lossy().as_ref()),
+                    "Landlock must name the nested credential: {reason}"
+                );
+            }
+            other => panic!(
+                "Landlock must refuse a deny beneath a writable root: outcome={other:?} stderr={:?}",
+                write.stderr
+            ),
+        }
+        assert!(
+            !marker.exists(),
+            "a refused Landlock launch must not run the credential write"
+        );
+    } else {
+        assert!(
+            marker.exists(),
+            "the contained child must have run for the credential write to have been \
+             attempted: outcome={:?} stderr={:?}",
+            write.outcome(),
+            write.stderr
+        );
+    }
     assert_eq!(
-        std::fs::read_to_string(credentials).expect("credential remains readable to fixture"),
+        std::fs::read_to_string(&credentials).expect("credential remains readable to fixture"),
         "token: secret-value\n",
         "a broad writable workspace root must not override a credential deny; output={:?}",
         write.stdout
