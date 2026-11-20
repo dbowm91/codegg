@@ -368,7 +368,9 @@ async fn job_tool_enforces_exact_owner_and_wait_timeout_is_observation() {
         .await
         .unwrap();
     assert!(status.success);
-    // Second principal gets the same denied message as not-found (no leak).
+    // Status lookup failures are unsuccessful observations, not tool errors.
+    // A foreign owner must get the same observation as a missing id, with
+    // no stored job fields, so existence does not leak.
     let attacker_ctx = ctx_for("attacker-s", None, "inv-y");
     let denied = tool
         .execute_structured(
@@ -376,10 +378,28 @@ async fn job_tool_enforces_exact_owner_and_wait_timeout_is_observation() {
             Some(attacker_ctx.clone()),
         )
         .await
-        .unwrap_err();
-    assert!(
-        denied.to_string().contains("not found"),
-        "must not leak, got {denied}"
+        .expect("foreign status is a structured not-found observation");
+    assert!(!denied.success, "foreign status must fail the call");
+    assert_eq!(denied.output, format!("job not found\njob_id: {job_id}"));
+    let denied_value = denied.value.expect("bounded failure value");
+    assert_eq!(
+        denied_value,
+        serde_json::json!({"job_id": job_id, "error_class": "job_not_found"}),
+        "foreign status must not carry stored job fields"
+    );
+    let missing_id = uuid::Uuid::new_v4().to_string();
+    let missing = tool
+        .execute_structured(
+            serde_json::json!({"action": "status", "job_id": missing_id}),
+            Some(attacker_ctx),
+        )
+        .await
+        .expect("missing status is the comparison observation");
+    assert!(!missing.success);
+    assert_eq!(
+        missing.value.as_ref().and_then(|value| value.get("error_class")),
+        Some(&serde_json::json!("job_not_found")),
+        "foreign ownership must use the same class as absence"
     );
     // Wait with a tiny timeout reports still-running, never kills the job.
     let owner_wait_ctx = ctx_for("owner-s", None, "inv-w");
