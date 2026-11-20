@@ -3289,3 +3289,4 @@ with no entry there fails generation and `scripts/check_storage_catalog.py`.
 | `idx_writer_permit_group` | v86 |
 | `idx_writer_permit_project` | v86 |
 | `idx_writer_permit_state` | v86 |
+
