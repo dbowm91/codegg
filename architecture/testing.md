@@ -973,15 +973,15 @@ The mode is **not** a way to skip work in CI, and it is not a substitute for
 9. Scheduler bypass guard (`check_scheduler_bypass.py`)
 10. Formatting (`cargo fmt --check --all`)
 11. Workspace Clippy (`cargo clippy --workspace --all-targets --locked`)
-12. Live-Eggwork relevance detection
-(`scripts/detect-live-eggwork-changes.sh`; main pushes always
-require live; PRs require live only for live-relevant paths)
-13. Conditional Eggwork fixture prebuild
-(`scripts/prebuild-eggwork-fixtures.sh`; skipped when live is omitted)
-14. Workspace tests (`cargo nextest run --workspace --locked --profile ci`;
-full suite on main/relevant-PR live path, `-E 'not
-binary(eggwork_remote_execution_live)'` on the ordinary unrelated-PR
-fast path).
+12. Workspace tests (`cargo nextest run --workspace --locked --profile ci
+-E 'not binary(eggwork_remote_execution_live)'`). The live Eggwork
+binary is omitted from routine pull requests and main pushes. Its
+helper can remain in `server-starting` for the whole 60-second
+readiness bound with empty stderr; that is a development
+qualification flake, not a product assertion. Dispatch the workflow
+with `run_live_eggwork` to include it, which also runs the fixture
+prebuild. `scripts/detect-live-eggwork-changes.sh` remains for local
+simulation and is no longer consulted by the routine job.
 
 CI uses default features, bounded resources. Optional feature, plugin,
 example, LSP, and cross-platform checks remain local.
