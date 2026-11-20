@@ -1575,7 +1575,7 @@ pub(crate) fn translate_provider_hint(
 }
 
 pub fn eggsearch_unavailable(detail: &str) -> ToolError {
-    ToolError::Execution(format!(
+    ToolError::BackendUnavailable(format!(
         "eggsearch backend is configured but unavailable: {detail}. \
          Configure the managed eggsearch sidecar or set [search].backend = \"disabled\"."
     ))
