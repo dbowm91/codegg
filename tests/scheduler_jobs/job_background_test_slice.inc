@@ -368,9 +368,7 @@ async fn job_tool_enforces_exact_owner_and_wait_timeout_is_observation() {
         .await
         .unwrap();
     assert!(status.success);
-    // Status lookup failures are unsuccessful observations, not tool errors.
-    // A foreign owner must get the same observation as a missing id, with
-    // no stored job fields, so existence does not leak.
+    // Foreign status is the same not-found observation as absence, with no stored fields.
     let attacker_ctx = ctx_for("attacker-s", None, "inv-y");
     let denied = tool
         .execute_structured(
